@@ -3994,7 +3994,26 @@ function Checkout({ biz, user, onDone, onBack }) {
   const [busy, setBusy] = useState(false);
   const price = applied ? +(biz.price * (1 - applied.pct / 100)).toFixed(2) : biz.price;
   const tryPromo = () => { const f = biz.promos.find((p) => p.code.toLowerCase() === promo.trim().toLowerCase()); setApplied(f || null); if (!f) setPromo(""); };
-  const pay = () => { setBusy(true); setTimeout(onDone, 900); };
+  const pay = () => { setBusy(true); onDone(); };
+  // When a real backend is connected, checkout hands off to Stripe (onDone -> startCheckout ->
+  // redirect). We don't show the simulated card form in that case.
+  if (hasBackend) {
+    return (
+      <div style={{ maxWidth: 480, margin: "0 auto", padding: "50px 20px" }}>
+        <button className="btn btn-mini" onClick={onBack}>← Back</button>
+        <div className="panel" style={{ padding: 24, marginTop: 14 }}>
+          <div className="disp" style={{ fontSize: 22, fontWeight: 700 }}>Season pass checkout</div>
+          <div className="mut" style={{ fontSize: 12.5, margin: "4px 0 16px" }}>{user.email} • valid through March 1</div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
+            <span>Fantasy Draft Compass season pass</span><b className="num">${biz.price.toFixed(2)}</b>
+          </div>
+          <div className="mut" style={{ fontSize: 12.5, margin: "14px 0 16px" }}>You'll be taken to our secure payment page to finish. Your card details are handled entirely by Stripe — they never touch our servers.</div>
+          <button className="btn btn-gold" style={{ width: "100%", padding: 12, fontSize: 15 }} onClick={pay} disabled={busy}>{busy ? "Taking you to checkout…" : `Continue to payment — $${biz.price.toFixed(2)}`}</button>
+        </div>
+      </div>
+    );
+  }
+  const paySim = () => { setBusy(true); setTimeout(onDone, 900); };
   return (
     <div style={{ maxWidth: 480, margin: "0 auto", padding: "50px 20px" }}>
       <button className="btn btn-mini" onClick={onBack}>← Back</button>
@@ -4027,7 +4046,7 @@ function Checkout({ biz, user, onDone, onBack }) {
             <div className="mut" style={{ fontSize: 12 }}>In production this button hands off to {method === "paypal" ? "PayPal" : "Venmo (via PayPal)"} — you approve there and return here with the pass active. Nothing financial is stored on our side.</div>
           </div>
         )}
-        <button className="btn btn-gold" style={{ width: "100%", padding: 12, fontSize: 15 }} onClick={pay} disabled={busy}>{busy ? "Processing…" : `Complete purchase — $${price.toFixed(2)} (simulated)`}</button>
+        <button className="btn btn-gold" style={{ width: "100%", padding: 12, fontSize: 15 }} onClick={paySim} disabled={busy}>{busy ? "Processing…" : `Complete purchase — $${price.toFixed(2)} (simulated)`}</button>
       </div>
     </div>
   );
