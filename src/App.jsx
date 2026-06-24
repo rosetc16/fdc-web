@@ -112,7 +112,7 @@ function migrateRankSets(user) {
 const setTeams = (n) => { TEAMS = Math.max(2, Math.min(20, n || 12)); };
 const POS = ["QB", "RB", "WR", "TE"];
 
-const RAW = [
+let RAW = [
   ["Ja'Marr Chase","WR","CIN",26,10,1.5,330],
   ["Bijan Robinson","RB","ATL",24,5,2.0,322],
   ["Jahmyr Gibbs","RB","DET",24,8,3.2,320],
@@ -650,7 +650,7 @@ const OUTLOOKS = {
   "Cairo Santos":{p:"Kicker tied to NE's scoring; stream by matchup, not a draft priority."}
 };
 
-const STATS = {
+let STATS = {
   "Ja'Marr Chase":{rec:135,tgt:202,recYd:1230,recTD:13,fum:3,hundredYd:2.0,bigPlay:10.7},
   "Bijan Robinson":{rushAtt:330,rushYd:1420,rushTD:15,rec:41,tgt:53,recYd:290,recTD:4,fum:2,hundredYd:4.0,bigPlay:14.9},
   "Jahmyr Gibbs":{rushAtt:408,rushYd:1755,rushTD:15,rec:33,tgt:43,recYd:275,fum:3,hundredYd:5.3,bigPlay:17.7},
@@ -931,7 +931,7 @@ const STATS = {
   "Kyle Hamilton":{solo:76,ast:34,idpSack:3,tfl:6,qbh:5,idpInt:3,pd:11,ff:1,fr:1}
 };
 
-const META = {
+let META = {
   "Ja'Marr Chase":{floor:271,ceil:398,consensus:5.5},
   "Bijan Robinson":{floor:276,ceil:375,consensus:6.2},
   "Jahmyr Gibbs":{floor:271,ceil:377,consensus:11.5},
@@ -1210,6 +1210,59 @@ const META = {
   "Jessie Bates III":{floor:128,ceil:178,consensus:196.0},
   "Kyle Hamilton":{floor:126,ceil:176,consensus:198.0}
 };
+
+// ---- LIVE DATA ----------------------------------------------------------------------------
+// The built-in RAW/STATS/META above are a fallback. When the backend is connected, we replace
+// them with live Sleeper data (real teams, projections, injuries, rookie status, and ADP) so the
+// board reflects reality. The engine logic is unchanged — it just reads fresher RAW/STATS/META.
+let LIVE_LOADED = false;
+export function isLivePackLoaded() { return LIVE_LOADED; }
+
+// Build engine structures from the backend player-pack response. Keyed by player name (the engine's
+// key). We keep only players with a usable position and (ADP or projection), already filtered server-side.
+export function applyLivePack(pack) {
+  if (!pack || !Array.isArray(pack.players) || pack.players.length === 0) return false;
+  const raw = [], stats = {}, meta = {};
+  const seen = new Set();
+  // Quick projected-points estimate (position-agnostic, just for ORDERING players who lack ADP).
+  // Real scoring happens in the engine; this only gives veterans a sensible board slot when current
+  // ADP is thin (e.g. early summer when only rookie drafts exist yet).
+  const projValue = (st) => {
+    if (!st) return 0;
+    return (st.passYd || 0) * 0.04 + (st.passTD || 0) * 4 + (st.rushYd || 0) * 0.1 + (st.rushTD || 0) * 6
+      + (st.rec || 0) * 0.5 + (st.recYd || 0) * 0.1 + (st.recTD || 0) * 6
+      + (st.solo || 0) * 1 + (st.idpSack || 0) * 2;
+  };
+  // players with real ADP keep it; others get a provisional ADP ranked after the known ADPs.
+  const withAdp = pack.players.filter((p) => p.adp != null).length;
+  const noAdpSorted = pack.players.filter((p) => p.adp == null)
+    .map((p) => ({ p, v: projValue(p.stats) }))
+    .sort((a, b) => b.v - a.v);
+  const provisionalAdp = new Map();
+  noAdpSorted.forEach((x, i) => provisionalAdp.set(x.p.id, withAdp + i + 1));
+
+  for (const p of pack.players) {
+    if (!p.name || !p.pos) continue;
+    let name = p.name;
+    if (seen.has(name)) { name = `${p.name} (${p.team || p.pos})`; if (seen.has(name)) continue; }
+    seen.add(name);
+    const hasAdp = p.adp != null;
+    const adp = hasAdp ? p.adp : (provisionalAdp.get(p.id) || 999);
+    raw.push([name, p.pos, p.team || "FA", p.age || 0, p.bye || 0, adp, p.adpHi || adp]);
+    if (p.stats && Object.keys(p.stats).length) stats[name] = p.stats;
+    meta[name] = {
+      consensus: hasAdp ? p.adp : null,   // only show a "consensus" number when it's real ADP
+      rookie: !!p.rookie,
+      inj: p.inj || null,
+      floor: p.floor != null ? p.floor : null,
+      ceil: p.ceil != null ? p.ceil : null,
+    };
+  }
+  if (raw.length < 50) return false; // sanity: don't swap in a too-small pool
+  RAW = raw; STATS = stats; META = meta;
+  LIVE_LOADED = true;
+  return true;
+}
 
 const TEAM_NAMES_POOL = ["Gridiron Gurus","Waiver Wolves","Bye Week Blues","The Audibles","Mahomes Alone","Run CMC","Fourth & Long","Hail Marys","The Handcuffs","Mock Draft Szn","Chasing Chase","Bench Mob","Pylon Pushers","Zero RB Zealots","Gravy Train","Red Zone Rebels","Pocket Presence","Flea Flickers","Snap Counters","Garbage Time"];
 // Active team names for the current league (may be overridden by manual/Sleeper entry).
@@ -2181,6 +2234,7 @@ export default function App() {
   const [setupReturn, setSetupReturn] = useState(null); // where the New League flow should return to
   const [biz, setBiz] = useState({ price: 19.99, promos: [] });
   const [loaded, setLoaded] = useState(false);
+  const [dataVersion, setDataVersion] = useState(0); // bumps when live player data loads, to refresh boards
   const [demoLeague, setDemoLeague] = useState(null); // unsaved demo draft from homepage
   const [mockLeague, setMockLeague] = useState(null); // transient mock draft running against a saved league
   const [quickMockOpen, setQuickMockOpen] = useState(false); // quick-mock pre-draft prompt
@@ -2195,6 +2249,11 @@ export default function App() {
         }
         // Backend mode: restore the real session from the token, and handle a Stripe return.
         if (hasBackend) {
+          // Load the live player pack (real teams, projections, injuries, ADP) and feed the engine.
+          try {
+            const pack = await api.playerPack("PPR|1QB|STD|REDRAFT|12", undefined);
+            if (applyLivePack(pack)) setDataVersion((v) => v + 1);
+          } catch (e) { /* fall back to built-in dataset if unavailable */ }
           try {
             const me = await api.me();
             if (me) { const merged = migrateRankSets({ ...me, rankSets: me.rankSets || [] }); setUser(merged); persist({ user: merged }); }

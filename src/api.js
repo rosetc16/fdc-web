@@ -61,6 +61,9 @@ export const api = {
   async projections(season) {
     return call(`/api/projections${season ? `?season=${season}` : ''}`, { auth: false });
   },
+  async playerPack(format, season) {
+    return call(`/api/player-pack?format=${encodeURIComponent(format)}${season ? `&season=${season}` : ''}`, { auth: false });
+  },
 
   // ---- leagues / drafts ----
   async listLeagues() { return (await call('/api/leagues')).leagues; },
