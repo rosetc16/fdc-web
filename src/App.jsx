@@ -1216,6 +1216,7 @@ let META = {
 // them with live Sleeper data (real teams, projections, injuries, rookie status, and ADP) so the
 // board reflects reality. The engine logic is unchanged — it just reads fresher RAW/STATS/META.
 let LIVE_LOADED = false;
+let LIVE_ADP_SPARSE = false; // true when live ADP is too thin to trust → engine ranks by VBD value
 export function isLivePackLoaded() { return LIVE_LOADED; }
 
 // Build engine structures from the backend player-pack response. Keyed by player name (the engine's
@@ -1233,14 +1234,12 @@ export function applyLivePack(pack) {
     DB: "DB", CB: "DB", S: "DB", FS: "DB", SS: "DB",
   };
   const normPos = (pos) => POS_MAP[pos] || null;
-  // Quick projected-points estimate (position-agnostic, just for ORDERING players who lack ADP).
-  // Real scoring happens in the engine; this only gives veterans a sensible board slot when current
-  // ADP is thin (e.g. early summer when only rookie drafts exist yet).
-  const projValue = (st) => {
+  // Provisional ranking uses the ENGINE's real scoring (scoreFromStats with default PPR), per
+  // position, so the order matches how the engine values players — not a crude guess. This keeps
+  // the displayed board and the draft AI consistent.
+  const projValue = (st, pos) => {
     if (!st) return 0;
-    return (st.passYd || 0) * 0.04 + (st.passTD || 0) * 4 + (st.rushYd || 0) * 0.1 + (st.rushTD || 0) * 6
-      + (st.rec || 0) * 0.5 + (st.recYd || 0) * 0.1 + (st.recTD || 0) * 6
-      + (st.solo || 0) * 1 + (st.idpSack || 0) * 2;
+    try { return scoreFromStats(pos, st, DEFAULT_SCORING); } catch { return 0; }
   };
   // Decide the ranking strategy. Real ADP is only trustworthy when we have a healthy amount of it
   // for *draftable* players. Early in the year the only drafts on Sleeper are rookie/dynasty drafts,
@@ -1251,7 +1250,7 @@ export function applyLivePack(pack) {
   // Healthy ADP coverage = at least ~120 players have real ADP. Below that, trust projections.
   const ADP_HEALTHY = adpCount >= 120;
 
-  const projValueAll = (p) => projValue(p.stats);
+  const projValueAll = (p) => projValue(p.stats, normPos(p.pos));
   // Provisional ADP for players lacking real ADP: rank by projection, placed after real-ADP players.
   const withAdp = ADP_HEALTHY ? draftable.filter((p) => p.adp != null).length : 0;
   const noAdpSorted = (ADP_HEALTHY ? draftable.filter((p) => p.adp == null) : draftable.slice())
@@ -1283,6 +1282,7 @@ export function applyLivePack(pack) {
   if (raw.length < 50) return false; // sanity: don't swap in a too-small pool
   RAW = raw; STATS = stats; META = meta;
   LIVE_LOADED = true;
+  LIVE_ADP_SPARSE = !ADP_HEALTHY; // when sparse, engine should rank by its own VBD value
   return true;
 }
 
@@ -1597,6 +1597,23 @@ function buildPlayers(cfg) {
   const blend = Math.max(0, Math.min(0.85, scoreDist * 0.12)); // 0 at standard, grows with weirdness
   if (blend > 0.02) {
     ps.forEach((p) => { if (p.valueOverall != null) p.adp = p.adpMarket * (1 - blend) + (p.valueOverall + 0.5) * blend; });
+  }
+  // SPARSE LIVE ADP: when live ADP is too thin to trust (early season / mostly rookie drafts), the
+  // market anchor is unreliable, so rank the board by the engine's own VBD value instead. We build a
+  // cross-position value ranking (incl. K/DST/IDP) and, in Superflex/2QB, lift QBs by their value so
+  // elite QBs land where they should. This produces a real, sensible board until live ADP matures.
+  if (typeof LIVE_ADP_SPARSE !== "undefined" && LIVE_ADP_SPARSE) {
+    const valPool = ps.filter((p) => VBD_POS.includes(p.pos) || p.pos === "K" || p.pos === "DST");
+    // effective value: VBD, but in SF give QBs a scarcity bump (QBs start ~2x, so their value rises)
+    const effVal = (p) => {
+      let v = p.vbd != null ? p.vbd : -50;
+      if (sf && p.pos === "QB") v += 60; // SF QB scarcity premium (keeps elite QBs in round 1-2)
+      return v;
+    };
+    const ranked = valPool.slice().sort((a, b) => effVal(b) - effVal(a));
+    ranked.forEach((p, i) => { p.adp = i + 1; p.adpMarket = i + 1; });
+    // players outside the value pool (shouldn't be many) sink below
+    ps.forEach((p) => { if (!valPool.includes(p)) { p.adp = ranked.length + 50; } });
   }
   // OVERALL value tiers across positions (VBD-based). Walk players in VBD order; a tier
   // breaks at an elbow — a drop clearly bigger than the local average — for chunky tiers.
@@ -6308,7 +6325,13 @@ function DraftRoom({ league, user, isMock, initialTab, onSave, onExit, onBuy, on
     const DEPTH_ORDER = ["QB", "RB", "WR", "TE", "K", "DST"];
     const ord2 = (pos) => { const i = DEPTH_ORDER.indexOf(pos); return i === -1 ? 99 : i; };
     const byTeam = {};
-    players.forEach((p) => { (byTeam[p.team] = byTeam[p.team] || []).push(p); });
+    players.forEach((p) => {
+      // Skip free agents / players with no real team, and players with no projected value —
+      // they bloat the charts and aren't useful (a real roster, not the whole player universe).
+      if (!p.team || p.team === "FA" || p.team === "FA*") return;
+      if (!(p.pts > 0)) return;
+      (byTeam[p.team] = byTeam[p.team] || []).push(p);
+    });
     Object.values(byTeam).forEach((arr) => arr.sort((a, b) => ord2(a.pos) - ord2(b.pos) || b.pts - a.pts));
     return Object.entries(byTeam).sort((a, b) => a[0].localeCompare(b[0]));
   }, [players]);
@@ -6928,7 +6951,7 @@ function DraftRoom({ league, user, isMock, initialTab, onSave, onExit, onBuy, on
       {tab === "depth" && (
         <div style={{ padding: 14 }}>
           <div className="panel" style={{ padding: "9px 12px", marginBottom: 12, background: "var(--panel2)", display: "flex", alignItems: "center", gap: 8 }}>            <i className="ti ti-info-circle" style={{ fontSize: 14, color: "var(--gold)" }} aria-hidden="true" />
-            <span className="mut" style={{ fontSize: 11.5, lineHeight: 1.45 }}>These charts are built from the static sample player pool, so some teams are missing players (a few QBs especially). The live product pulls full, current depth charts from the platform/data feed daily — every team, every position.</span>
+            <span className="mut" style={{ fontSize: 11.5, lineHeight: 1.45 }}>Depth charts are ordered by projected fantasy points from current Sleeper data. Players with no projected value and free agents are hidden. Updates daily.</span>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(225px,1fr))", gap: 10 }}>
           {depth.map(([team, arr]) => {
