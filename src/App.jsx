@@ -1981,20 +1981,27 @@ function needLevel(count, bestVbd, dem, pos) {
 function pickValue(p, overall, cfg) {
   // Gap between where he went and his ADP. Positive = fell past ADP (steal); negative = reached.
   const gap = (overall + 1) - p.adp;
-  const round = Math.floor(overall / TEAMS) + 1;
+  // TIER MULTIPLIER: weight by the player's ADP tier — i.e. the caliber of player involved.
+  // A move on a true 1st-rounder (low ADP) matters far more than the same-size move on a late guy,
+  // because early-round draft capital is the scarcest, most valuable resource. We derive the tier
+  // from the player's ADP (where he *should* go), in rounds.
+  const adpRound = Math.max(1, Math.ceil(p.adp / TEAMS));
+  // multiplier: ADP round 1 ≈ 1.8x, round 3 ≈ 1.35x, round 6 ≈ 1.0x, round 10+ ≈ 0.7x
+  const tierMult = Math.max(0.6, 1.9 - 0.15 * (adpRound - 1));
+
   if (gap >= 0) {
-    // STEAL: the gap IS the value — falling 50 picks past ADP is enormous value no matter the round.
-    // We barely damp by round (a late steal is still a steal), and we mildly amplify big slides so
-    // the truly absurd values stand out from ordinary ones.
-    const w = 1 / (1 + 0.05 * (round - 1)); // R1=1.0, R5≈0.83, R12≈0.65 — gentle
-    const amplified = gap * (1 + Math.min(0.6, gap / 40)); // big slides get up to +60% extra
-    return Math.round(amplified * w);
+    // STEAL: the gap is the value; amplify big slides a bit, then scale by the player's tier
+    // (a star sliding is a bigger story than a deep bench guy sliding the same distance).
+    const amplified = gap * (1 + Math.min(0.6, gap / 40));
+    // steals get a gentler tier effect than reaches (luck shouldn't be rewarded as hard as a
+    // premium-capital mistake is punished) — pull the multiplier partway toward 1.
+    const stealMult = 1 + (tierMult - 1) * 0.6;
+    return Math.round(amplified * stealMult);
   }
-  // REACH: reaching early is more wasteful in early rounds (you spent premium capital). Keep the
-  // round weighting here so a round-1 reach stings more than a round-12 reach.
-  const w = 1 / (1 + 0.18 * (round - 1));
-  const amplified = gap * (1 + Math.min(0.6, Math.abs(gap) / 40));
-  return Math.round(amplified * w);
+  // REACH: punished harder. Full tier multiplier — reaching with a 1st-round pick on a player who
+  // should go in round 3 is a serious misuse of premium capital.
+  const amplified = gap * (1 + Math.min(0.7, Math.abs(gap) / 35));
+  return Math.round(amplified * tierMult);
 }
 // Overall pick number (1-based) from a 0-based pick index.
 const overallPick = (o) => o + 1;
@@ -5867,7 +5874,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const dem = demand(cfg.sf);
 
   const userPicksMade = picks.filter((_, o) => teamAt(o) === userIdx).length;
-  const gated = !user?.paid && userPicksMade >= 5 && !done;
+  // Paywall gating. For the 3-round demo, let it play all the way through, then prompt to buy once
+  // the demo draft is complete. (Non-demo unpaid drafts still gate after 5 user picks as a fallback.)
+  const gated = !user?.paid && (isDemo ? done : (userPicksMade >= 5 && !done));
 
   // Auto-place any pick-cost keeper the instant the draft reaches its slot (before normal
   // drafting decides that pick). Runs at start and after every pick, for any team's slot.
@@ -7212,9 +7221,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
         <div className="modalbg">
           <div className="panel" style={{ maxWidth: 460, width: "100%", padding: 26, borderColor: "var(--gold)", textAlign: "center" }}>
             <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}><Compass size={38} /></div>
-            <div className="disp" style={{ fontSize: 24, fontWeight: 700 }}>Enjoying the demo?</div>
+            <div className="disp" style={{ fontSize: 24, fontWeight: 700 }}>{isDemo ? "That's the 3-round demo!" : "Enjoying the demo?"}</div>
             <div className="mut" style={{ fontSize: 13.5, margin: "10px 0 16px", lineHeight: 1.55 }}>
-              You've drafted five rounds on the real engine — the projected path, live availability odds, and waiting-cost math are all exactly what you'd get on draft night. The season pass opens the full draft plus unlimited leagues, mock drafts, your own rankings, trade tools, and everything else.
+              {isDemo
+                ? "You just drafted three rounds on the real engine — live projections, availability odds, and steal/reach value, all exactly what you'd get on draft night. The season pass opens the full draft plus unlimited leagues, mock drafts, your own rankings, trade tools, and everything else."
+                : "You've drafted five rounds on the real engine — the projected path, live availability odds, and waiting-cost math are all exactly what you'd get on draft night. The season pass opens the full draft plus unlimited leagues, mock drafts, your own rankings, trade tools, and everything else."}
             </div>
             <button className="btn btn-gold" style={{ width: "100%", padding: 12, fontSize: 15, marginBottom: 8 }} onClick={onBuy}>Get the Season Pass</button>
             <button className="btn" style={{ width: "100%" }} onClick={onExit}>Back to the Homepage</button>
