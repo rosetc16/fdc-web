@@ -1242,10 +1242,20 @@ export function applyLivePack(pack) {
       + (st.rec || 0) * 0.5 + (st.recYd || 0) * 0.1 + (st.recTD || 0) * 6
       + (st.solo || 0) * 1 + (st.idpSack || 0) * 2;
   };
-  // players with real ADP keep it; others get a provisional ADP ranked after the known ADPs.
-  const withAdp = pack.players.filter((p) => p.adp != null).length;
-  const noAdpSorted = pack.players.filter((p) => p.adp == null)
-    .map((p) => ({ p, v: projValue(p.stats) }))
+  // Decide the ranking strategy. Real ADP is only trustworthy when we have a healthy amount of it
+  // for *draftable* players. Early in the year the only drafts on Sleeper are rookie/dynasty drafts,
+  // so "real ADP" covers mostly rookies — using it would bury veterans. In that case we rank the
+  // WHOLE board by projections (a sensible redraft board) until real redraft ADP accumulates.
+  const draftable = pack.players.filter((p) => normPos(p.pos));
+  const adpCount = draftable.filter((p) => p.adp != null).length;
+  // Healthy ADP coverage = at least ~120 players have real ADP. Below that, trust projections.
+  const ADP_HEALTHY = adpCount >= 120;
+
+  const projValueAll = (p) => projValue(p.stats);
+  // Provisional ADP for players lacking real ADP: rank by projection, placed after real-ADP players.
+  const withAdp = ADP_HEALTHY ? draftable.filter((p) => p.adp != null).length : 0;
+  const noAdpSorted = (ADP_HEALTHY ? draftable.filter((p) => p.adp == null) : draftable.slice())
+    .map((p) => ({ p, v: projValueAll(p) }))
     .sort((a, b) => b.v - a.v);
   const provisionalAdp = new Map();
   noAdpSorted.forEach((x, i) => provisionalAdp.set(x.p.id, withAdp + i + 1));
@@ -1257,12 +1267,13 @@ export function applyLivePack(pack) {
     let name = p.name;
     if (seen.has(name)) { name = `${p.name} (${p.team || pos})`; if (seen.has(name)) continue; }
     seen.add(name);
-    const hasAdp = p.adp != null;
-    const adp = hasAdp ? p.adp : (provisionalAdp.get(p.id) || 999);
+    // Use real ADP only when coverage is healthy; otherwise everyone uses the projection ranking.
+    const useRealAdp = ADP_HEALTHY && p.adp != null;
+    const adp = useRealAdp ? p.adp : (provisionalAdp.get(p.id) || 999);
     raw.push([name, pos, p.team || "FA", p.age || 0, p.bye || 0, adp, p.adpHi || adp]);
     if (p.stats && Object.keys(p.stats).length) stats[name] = p.stats;
     meta[name] = {
-      consensus: hasAdp ? p.adp : null,   // only show a "consensus" number when it's real ADP
+      consensus: useRealAdp ? p.adp : null,   // only show a "consensus" number when it's real, trusted ADP
       rookie: !!p.rookie,
       inj: p.inj || null,
       floor: p.floor != null ? p.floor : null,
