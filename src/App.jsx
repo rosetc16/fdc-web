@@ -1224,6 +1224,15 @@ export function applyLivePack(pack) {
   if (!pack || !Array.isArray(pack.players) || pack.players.length === 0) return false;
   const raw = [], stats = {}, meta = {};
   const seen = new Set();
+  // Map Sleeper's granular positions into the engine's known buckets. Anything we can't place
+  // (offensive linemen, long snappers, etc.) is dropped — the engine only drafts fantasy positions.
+  const POS_MAP = {
+    QB: "QB", RB: "RB", FB: "RB", WR: "WR", TE: "TE", K: "K", DEF: "DST", DST: "DST",
+    DL: "DL", DE: "DL", DT: "DL", NT: "DL",
+    LB: "LB", ILB: "LB", OLB: "LB", MLB: "LB",
+    DB: "DB", CB: "DB", S: "DB", FS: "DB", SS: "DB",
+  };
+  const normPos = (pos) => POS_MAP[pos] || null;
   // Quick projected-points estimate (position-agnostic, just for ORDERING players who lack ADP).
   // Real scoring happens in the engine; this only gives veterans a sensible board slot when current
   // ADP is thin (e.g. early summer when only rookie drafts exist yet).
@@ -1243,12 +1252,14 @@ export function applyLivePack(pack) {
 
   for (const p of pack.players) {
     if (!p.name || !p.pos) continue;
+    const pos = normPos(p.pos);
+    if (!pos) continue; // skip positions the engine doesn't draft (OL, LS, etc.)
     let name = p.name;
-    if (seen.has(name)) { name = `${p.name} (${p.team || p.pos})`; if (seen.has(name)) continue; }
+    if (seen.has(name)) { name = `${p.name} (${p.team || pos})`; if (seen.has(name)) continue; }
     seen.add(name);
     const hasAdp = p.adp != null;
     const adp = hasAdp ? p.adp : (provisionalAdp.get(p.id) || 999);
-    raw.push([name, p.pos, p.team || "FA", p.age || 0, p.bye || 0, adp, p.adpHi || adp]);
+    raw.push([name, pos, p.team || "FA", p.age || 0, p.bye || 0, adp, p.adpHi || adp]);
     if (p.stats && Object.keys(p.stats).length) stats[name] = p.stats;
     meta[name] = {
       consensus: hasAdp ? p.adp : null,   // only show a "consensus" number when it's real ADP
@@ -1360,8 +1371,19 @@ const INJURY_INFO = {
 function injuryView(p) {
   if (!p || !p.inj) return null;
   const d = INJURY_DETAIL[p.name];
-  if (d) { const st = INJURY_STATUS[d.status]; return { color: st.color, abbr: st.abbr, label: st.label, note: d.note, back: d.back }; }
-  const g = INJURY_INFO[p.inj]; return { color: g.color, abbr: p.inj === "major" ? "INJ" : "Q", label: g.label, note: g.text, back: null };
+  if (d && INJURY_STATUS[d.status]) { const st = INJURY_STATUS[d.status]; return { color: st.color, abbr: st.abbr, label: st.label, note: d.note, back: d.back }; }
+  // Map live Sleeper injury statuses (e.g. "Questionable","Doubtful","Out","IR","PUP","Sus") to our tiers.
+  const sleeperToTier = {
+    questionable: "minor", probable: "minor", doubtful: "major", out: "major",
+    ir: "major", pup: "major", sus: "major", suspended: "major", cov: "minor", dnr: "major", na: "major",
+  };
+  let key = p.inj;
+  if (!INJURY_INFO[key]) key = sleeperToTier[String(p.inj).toLowerCase()] || "minor";
+  const g = INJURY_INFO[key] || INJURY_INFO.minor;
+  if (!g) return null; // ultimate safety: no badge rather than a crash
+  const major = key === "major";
+  const abbr = major ? "INJ" : (String(p.inj).slice(0, 1).toUpperCase() || "Q");
+  return { color: g.color, abbr, label: g.label, note: g.text, back: null };
 }
 
 /* ---------------- engine (cfg-threaded) ---------------- */
