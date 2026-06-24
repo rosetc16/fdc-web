@@ -2165,17 +2165,6 @@ function Wordmark({ size = 20 }) {
     </span>
   );
 }
-function Wordmark({ size = 20 }) {
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 9 }}>
-      <Compass size={size + 8} spin />
-      <span className="disp" style={{ fontSize: size, fontWeight: 700, letterSpacing: ".01em" }}>
-        FANTASY DRAFT <span className="gold">COMPASS</span>
-      </span>
-    </span>
-  );
-}
-
 const Dot = ({ pos }) => <span className="posdot" title={pos} style={{ background: POS_COLOR[pos] }} />;
 const PosName = ({ p }) => <span><Dot pos={p.pos} /><span className="mut" style={{ fontSize: "0.92em" }}>{p.pos}</span> <b>{p.name}</b></span>;
 
