@@ -1979,16 +1979,27 @@ function needLevel(count, bestVbd, dem, pos) {
   return 0;
 }
 function pickValue(p, overall, cfg) {
-  // Raw gap: positive = got him later than market (steal), negative = reached.
+  // Gap between where he went and his ADP. Positive = fell past ADP (steal); negative = reached.
   const gap = (overall + 1) - p.adp;
-  // Round weight: a gap in round 1 matters far more than the same gap in round 12.
-  // Weight decays with the round the pick was made in.
   const round = Math.floor(overall / TEAMS) + 1;
-  const w = 1 / (1 + 0.22 * (round - 1)); // R1=1.0, R3≈0.69, R6≈0.48, R12≈0.27
-  return Math.round(gap * w);
+  if (gap >= 0) {
+    // STEAL: the gap IS the value — falling 50 picks past ADP is enormous value no matter the round.
+    // We barely damp by round (a late steal is still a steal), and we mildly amplify big slides so
+    // the truly absurd values stand out from ordinary ones.
+    const w = 1 / (1 + 0.05 * (round - 1)); // R1=1.0, R5≈0.83, R12≈0.65 — gentle
+    const amplified = gap * (1 + Math.min(0.6, gap / 40)); // big slides get up to +60% extra
+    return Math.round(amplified * w);
+  }
+  // REACH: reaching early is more wasteful in early rounds (you spent premium capital). Keep the
+  // round weighting here so a round-1 reach stings more than a round-12 reach.
+  const w = 1 / (1 + 0.18 * (round - 1));
+  const amplified = gap * (1 + Math.min(0.6, Math.abs(gap) / 40));
+  return Math.round(amplified * w);
 }
+// Overall pick number (1-based) from a 0-based pick index.
+const overallPick = (o) => o + 1;
 const heat = (pct) => `hsla(${Math.round(pct * 1.25)},60%,45%,0.22)`;
-const valBg = (v) => (v === 0 ? "transparent" : v > 0 ? `rgba(124,217,178,${Math.min(0.4, Math.abs(v) / 50)})` : `rgba(242,101,92,${Math.min(0.4, Math.abs(v) / 50)})`);
+const valBg = (v) => (v === 0 ? "transparent" : v > 0 ? `rgba(124,217,178,${Math.min(0.5, Math.abs(v) / 80)})` : `rgba(242,101,92,${Math.min(0.5, Math.abs(v) / 80)})`);
 
 function makeOutlook(p, sims, drafted) {
   const out = [];
@@ -2419,7 +2430,7 @@ export default function App() {
   const updateUser = (patch) => { const merged = { ...user, ...patch }; const u = { ...merged, admin: isAdminEmail(merged.email) }; setUser(u); persist({ user: u }); };
 
   const startDemo = () => {
-    setDemoLeague({ id: "demo", name: "Free demo draft", cfg: { name: "Free demo draft", type: "redraft", teams: 12, rounds: 15, slot: 5, sf: false, tePrem: false, tePremMult: 0, caps: {}, start: { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0, DST: 0, K: 0 } }, picks: [], preds: [] });
+    setDemoLeague({ id: "demo", demo: true, name: "Free demo draft", cfg: { name: "Free demo draft", type: "redraft", teams: 12, rounds: 3, slot: 5, sf: false, tePrem: false, tePremMult: 0, caps: {}, start: { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0, DST: 0, K: 0 }, demo: true }, picks: [], preds: [] });
     setRoute("draft"); setActiveId("demo");
   };
 
@@ -2514,7 +2525,7 @@ export default function App() {
       {route === "rankings" && user && <RankingsHub user={user} leagues={leagues} onUpdate={updateUser} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} onNewLeague={() => { setSetupReturn("rankings"); setRoute("setup"); }} />}
       {route === "setup" && <Setup onCreate={createLeague} onBack={() => { const r = setupReturn || (user?.paid ? "home" : "library"); setSetupReturn(null); setRoute(r); }} backLabel={setupReturn === "rankings" ? "Rankings" : user?.paid ? "Home" : "Library"} />}
       {route === "draft" && active && (
-        <DraftRoom key={active.id} league={active} user={user} isMock={!!(mockLeague && active.id === mockLeague.id)} initialTab={draftTab}
+        <DraftRoom key={active.id} league={active} user={user} isMock={!!(mockLeague && active.id === mockLeague.id)} isDemo={!!active.demo} initialTab={draftTab}
           onSave={(picks, preds) => {
             if (active.id === "demo") setDemoLeague((d) => ({ ...d, picks, preds }));
             else if (mockLeague && active.id === mockLeague.id) { setMockLeague((m) => ({ ...m, picks, preds })); saveMock(picks, preds); }
@@ -5756,7 +5767,7 @@ function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
 }
 
 
-function DraftRoom({ league, user, isMock, initialTab, onSave, onExit, onBuy, onSettings, onEditRanks, onUseRankSet, onColPrefs }) {
+function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, onBuy, onSettings, onEditRanks, onUseRankSet, onColPrefs }) {
   const cfg = league.cfg;
   // set active team count + names for this league before any engine call
   setTeams(cfg.teams || 12);
@@ -5785,19 +5796,19 @@ function DraftRoom({ league, user, isMock, initialTab, onSave, onExit, onBuy, on
   const [fast, setFast] = useState(false);
   // Mocks wait for an explicit Start so you can watch them unfold. Official drafts run immediately.
   // Resuming an in-progress mock (picks already made) counts as already started.
-  const [started, setStarted] = useState(!isMock || (league.picks || []).length > 0);
-  // How picks are entered. Mocks default to AUTO (engine drafts opponents) and always ask.
-  // Official drafts: if a platform is already connected, adopt it automatically (no prompt) —
-  // Sleeper feeds picks live, other platforms come in via manual entry but we still know the source.
-  // If nothing is connected, we don't know, so we ask on arrival (default manual).
+  const [started, setStarted] = useState((!isMock && !isDemo) || (league.picks || []).length > 0);
+  // How picks are entered. Mocks AND the demo default to AUTO (engine drafts opponents, stops on
+  // your pick) and only ever offer auto/manual — never platform sync. Official drafts: if a platform
+  // is connected, adopt it; otherwise ask on arrival (default manual).
+  const mockLike = isMock || isDemo;
   const connectedPlatform = cfg.connect && cfg.connect.platform ? cfg.connect.platform : null;
   const defaultOfficialMode = connectedPlatform === "sleeper" ? "sleeper" : connectedPlatform ? connectedPlatform : "manual";
-  const [draftMode, setDraftModeRaw] = useState(cfg.draftMode || (isMock ? "auto" : defaultOfficialMode)); // auto | manual | sleeper | espn | yahoo | ...
-  const setDraftMode = (m) => { setDraftModeRaw(m); if (!isMock && onSettings) onSettings({ ...cfg, draftMode: m }); };
+  const [draftMode, setDraftModeRaw] = useState(cfg.draftMode || (mockLike ? "auto" : defaultOfficialMode)); // auto | manual | sleeper | espn | yahoo | ...
+  const setDraftMode = (m) => { setDraftModeRaw(m); if (!mockLike && onSettings) onSettings({ ...cfg, draftMode: m }); };
   const autoSim = draftMode === "auto"; // engine fills opponent picks only in auto mode
   // Only prompt an official draft for its mode when we genuinely don't know (no platform connected
-  // and the user hasn't already chosen). A connected league skips the prompt entirely.
-  const askOfficialMode = !isMock && !connectedPlatform && !cfg.draftMode;
+  // and the user hasn't already chosen). Mocks and the demo never show the platform prompt.
+  const askOfficialMode = !mockLike && !connectedPlatform && !cfg.draftMode;
   const [mockTradingOn, setMockTradingOn] = useState(false); // in-mock trading with CPU teams (opt-in)
   const [tab, setTab] = useState(initialTab || "hub");
   const [strategy, setStrategy] = useState("balanced");
@@ -6442,16 +6453,16 @@ function DraftRoom({ league, user, isMock, initialTab, onSave, onExit, onBuy, on
 
       {tab === "hub" && !done && (
         <>
-        {isMock && !started && (
+        {mockLike && !started && (
           <div style={{ padding: "12px 14px 0" }}>
             <div className="panel" style={{ padding: 16, borderColor: "var(--gold)", background: "#16140c", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
               <i className="ti ti-player-play" style={{ fontSize: 26, color: "var(--gold)" }} aria-hidden="true" />
               <div style={{ flex: "1 1 260px" }}>
-                <div className="disp" style={{ fontSize: 16, fontWeight: 700 }}>Ready to run this mock?</div>
-                <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.5 }}>{autoSim ? `The room won't auto-draft until you hit Start, so you can set your slot${cfg.pickTrading ? ", line up trades," : ""} and watch each pick land. Pause anytime.` : "Manual mock — you'll enter every pick yourself (great for rehearsing a real draft room). The engine still advises you and tracks the board."}</div>
+                <div className="disp" style={{ fontSize: 16, fontWeight: 700 }}>{isDemo ? "Ready to start the demo?" : "Ready to run this mock?"}</div>
+                <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.5 }}>{autoSim ? `The engine drafts the other teams and stops on your pick so you can choose. ${isDemo ? "This demo runs 3 rounds." : "Pause anytime."}` : "Manual entry — you'll enter every pick yourself. The engine still advises you and tracks the board."}</div>
                 <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
                   <span className="mut" style={{ fontSize: 11.5, alignSelf: "center" }}>Picks entered by:</span>
-                  {[["auto", "Auto-simulate", "The engine drafts the other teams"], ["manual", "Manual entry", "You type every pick as it comes"]].map(([m, lbl, tip]) => (
+                  {[["auto", "Autodraft", "The engine drafts the other teams and stops on your pick"], ["manual", "Manual entry", "You type every pick as it comes"]].map(([m, lbl, tip]) => (
                     <button key={m} className="btn btn-mini" title={tip} style={{ borderColor: draftMode === m ? "var(--gold)" : "var(--line)", color: draftMode === m ? "var(--gold)" : "var(--ink)", fontWeight: draftMode === m ? 700 : 400 }} onClick={() => setDraftMode(m)}>{lbl}</button>
                   ))}
                 </div>
@@ -7226,18 +7237,19 @@ function SummaryTable({ rows, userIdx }) {
   return (
     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
       <thead><tr className="mut" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em" }}>
-        <th style={{ textAlign: "left", paddingBottom: 4 }}>Player</th><th style={{ textAlign: "left" }}>Pick</th><th style={{ textAlign: "left" }}>By</th><th className="num">ADP</th><th className="num">Value</th>
+        <th style={{ textAlign: "left", paddingBottom: 4 }}>Player</th><th className="num">Pick</th><th style={{ textAlign: "left", paddingLeft: 8 }}>By</th><th className="num">ADP</th><th className="num">Value</th>
       </tr></thead>
       <tbody>
-        {rows.map((g) => (
+        {rows.map((g) => {
+          return (
           <tr key={g.o}>
             <td style={{ padding: "3px 6px 3px 0" }}><span className="posdot" style={{ background: POS_COLOR[g.p.pos] }} /><b>{g.p.name}</b></td>
-            <td className="num">{pickLabel(g.o)}</td>
-            <td style={{ color: g.t === userIdx ? "var(--gold)" : "var(--ink)" }}>{g.t === userIdx ? "You" : TEAM_NAMES[g.t].split(" ")[0]}</td>
+            <td className="num" style={{ textAlign: "right" }}>{overallPick(g.o)}<span className="mut" style={{ fontSize: 10.5, marginLeft: 4 }}>({pickLabel(g.o)})</span></td>
+            <td style={{ color: g.t === userIdx ? "var(--gold)" : "var(--ink)", paddingLeft: 8 }}>{g.t === userIdx ? "You" : TEAM_NAMES[g.t].split(" ")[0]}</td>
             <td className="num" style={{ textAlign: "right" }}>{g.p.adp.toFixed(1)}</td>
             <td className="num" style={{ textAlign: "right", background: valBg(g.val) }}>{g.val > 0 ? `+${g.val}` : g.val}</td>
           </tr>
-        ))}
+        );})}
       </tbody>
     </table>
   );
