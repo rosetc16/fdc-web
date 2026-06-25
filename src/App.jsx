@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.25e";
+const BUILD_TAG = "2026.06.25f";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2529,7 +2529,7 @@ export default function App() {
           } catch (e) { /* fall back to built-in dataset if unavailable */ }
           try {
             const me = await api.me();
-            if (me) { const admin = isAdminEmail(me.email); const merged = migrateRankSets({ ...me, rankSets: me.rankSets || [], admin, paid: me.paid || admin }); setUser(merged); persist({ user: merged }); }
+            if (me) { const admin = isAdminEmail(me.email); const merged = migrateRankSets({ ...me, rankSets: me.rankSets || [], admin, paid: me.paid || admin }); setUser(merged); /* don't persist here: initial load shouldn't write back (race could clobber leagues). state setters handle saving on real changes. */ }
           } catch (e) {}
           try {
             const params = new URLSearchParams(window.location.search);
@@ -2568,7 +2568,25 @@ export default function App() {
   }, [route]);
 
   const persist = async (next) => {
-    try { if (window.storage) await window.storage.set("gs-state", JSON.stringify({ leagues: next.leagues ?? leagues, user: next.user ?? user, biz: next.biz ?? biz, funMocks: next.funMocks ?? funMocks, feedback: next.feedback ?? feedback })); } catch (e) {}
+    // CRITICAL: write by merging against the freshest STORED value, not React state. During initial
+    // load (and other async flows) the `leagues`/`user` state captured in this closure can be stale
+    // (e.g. still [] before setLeagues has committed), so writing `next.leagues ?? leagues` could wipe
+    // saved leagues. Reading the current stored blob first and only overwriting the keys explicitly
+    // provided in `next` guarantees we never clobber data we didn't intend to touch.
+    try {
+      if (window.storage) {
+        let cur = {};
+        try { const r = await window.storage.get("gs-state"); if (r && r.value) cur = JSON.parse(r.value) || {}; } catch (e) {}
+        const merged = {
+          leagues: next.leagues ?? (leagues.length ? leagues : (cur.leagues || [])),
+          user: next.user !== undefined ? next.user : (user ?? cur.user ?? null),
+          biz: next.biz ?? biz ?? cur.biz,
+          funMocks: next.funMocks ?? (funMocks.length ? funMocks : (cur.funMocks || [])),
+          feedback: next.feedback ?? (feedback.length ? feedback : (cur.feedback || [])),
+        };
+        await window.storage.set("gs-state", JSON.stringify(merged));
+      }
+    } catch (e) {}
     // In backend mode, also save the user's personal ranking sets server-side so they survive a
     // refresh (the local storage copy would otherwise be overwritten by api.me() on reload).
     try {
@@ -8593,24 +8611,23 @@ function tradeValue(p, cfg) {
   cfg = cfg || {};
   const sf = (cfg.start && cfg.start.SUPER > 0) || cfg.sf;
   const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
-  // NOTE: in dynasty, p.vbd is ALREADY age-adjusted in buildPlayers, so we must NOT re-apply a youth
-  // multiplier here or elite-but-older players get double-penalized (the bug that sank Josh Allen below
-  // younger lesser QBs). We use vbd as-is and only apply light, non-age positional/format scarcity.
+  // NOTE: in dynasty, p.vbd is ALREADY age-adjusted in buildPlayers — do NOT re-apply a youth multiplier
+  // here or older elites get double-penalized.
   let base = Math.max(0, p.vbd) * 0.9 + Math.max(0, p.pts) * 0.12;
   let mult = p.pos === "RB" ? 1.08 : p.pos === "TE" ? 1.05 : 1.0;
   if (p.pos === "QB") {
     if (sf) {
-      // Superflex makes QBs premium. Elite QBs (top of the position) are the scarcest startable asset,
-      // so scale the premium by how good this QB is rather than a flat bump — keeps Allen/Daniels/Maye
-      // at the top of the chart instead of bunching all QBs together.
-      mult *= 1.9;
+      // Superflex QB premium must scale with the QB's QUALITY, not be a flat bump — a flat premium
+      // inflates QB12 (Bo Nix) above elite RB/WR, which is wrong. Elite QBs (high vbd) get the big
+      // premium; replacement QBs get little. p.vbd for QBs in SF is already replacement-relative, so we
+      // scale the premium by how far above replacement this QB is.
+      const qbStrength = Math.max(0, Math.min(1, (p.vbd || 0) / 110)); // ~1.0 for an elite SF QB
+      mult *= 1.15 + 1.05 * qbStrength; // elite QB ~2.2x, mid QB ~1.5x, streamer ~1.15x
     } else {
-      mult *= dynasty ? 0.78 : 0.6; // streamable in 1QB; a bit more durable in dynasty
+      mult *= dynasty ? 0.78 : 0.6;
     }
   }
   if (p.pos === "TE" && cfg.tePremMult > 0) mult *= 1 + 0.18 * cfg.tePremMult;
-  // A very small rookie nudge in dynasty (the age signal already lives in vbd). Keep tiny so it can't
-  // invert proven elites — youth shows through vbd, this is just a tiebreak for true startup/rookie value.
   if (dynasty && p.rookie) base *= 1.05;
   return Math.round(base * mult);
 }

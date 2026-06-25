@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Fantasy Draft Compass mark: a compass rose whose needle is a football, on the brand dark/gold. -->
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F2B63C"/>
+      <stop offset="1" stop-color="#D6AA4B"/>
+    </linearGradient>
+  </defs>
+  <!-- dark rounded background -->
+  <rect x="0" y="0" width="64" height="64" rx="14" fill="#14120B"/>
+  <!-- compass ring -->
+  <circle cx="32" cy="32" r="23" fill="none" stroke="url(#g)" stroke-width="3"/>
+  <!-- cardinal ticks -->
+  <g stroke="url(#g)" stroke-width="2.4" stroke-linecap="round">
+    <line x1="32" y1="9" x2="32" y2="15"/>
+    <line x1="32" y1="49" x2="32" y2="55"/>
+    <line x1="9" y1="32" x2="15" y2="32"/>
+    <line x1="49" y1="32" x2="55" y2="32"/>
+  </g>
+  <!-- compass needle: north (gold) + south (muted), forming the pointer -->
+  <polygon points="32,15 38,32 32,30 26,32" fill="url(#g)"/>
+  <polygon points="32,49 26,32 32,34 38,32" fill="#7A6A38"/>
+  <!-- football at the hub -->
+  <g transform="rotate(-45 32 32)">
+    <ellipse cx="32" cy="32" rx="9.5" ry="6" fill="#7A3B17" stroke="#3A1C0B" stroke-width="1.2"/>
+    <line x1="25" y1="32" x2="39" y2="32" stroke="#F4E9D8" stroke-width="1.3"/>
+    <g stroke="#F4E9D8" stroke-width="1.1" stroke-linecap="round">
+      <line x1="29" y1="30.4" x2="29" y2="33.6"/>
+      <line x1="31.5" y1="30" x2="31.5" y2="34"/>
+      <line x1="34" y1="30" x2="34" y2="34"/>
+      <line x1="36.5" y1="30.4" x2="36.5" y2="33.6"/>
+    </g>
+  </g>
+</svg>
