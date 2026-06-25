@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.25k";
+const BUILD_TAG = "2026.06.25l";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -6623,49 +6623,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const askOfficialMode = !mockLike && !connectedPlatform && !cfg.draftMode;
   const [mockTradingOn, setMockTradingOn] = useState(false); // in-mock trading with CPU teams (opt-in)
   const [tab, setTab] = useState(initialTab || "hub");
-  // Re-fetch the player pack using THIS league's actual format (SF/dynasty/TEP/teams) so the board shows
-  // the right ADP bucket — not the default 1QB-redraft board loaded at app start. Without this, an SF
-  // dynasty league would show 1QB-redraft ADP and the engine would then re-apply its own SF/dynasty
-  // premiums on top, double-counting and wildly overweighting QBs. Bump packVersion to refresh on load.
-  const [packVersion, setPackVersion] = useState(0);
-  // Player ids are array indices into the current pool. Re-fetching the pack for this league's format
-  // swaps the pool, which would invalidate any picks already stored as old indices (the bug where unknown
-  // names appeared and drafted stars showed as available). To be completely safe we ONLY load the
-  // league-format pool when the draft hasn't started (no picks yet) OR it's a connected live draft (whose
-  // picks are re-mapped from names on every sync poll). An in-progress manual/mock draft keeps its pool.
-  const poolSwapSafe = (league.picks || []).length === 0 || (cfg.connect && cfg.connect.platform);
-  useEffect(() => {
-    if (!hasBackend || isDemo || !poolSwapSafe) return;
-    let alive = true;
-    (async () => {
-      try {
-        const fmt = backendFormatKey(cfg);
-        const opts = {
-          k: !!(cfg.start && cfg.start.K > 0),
-          dst: !!(cfg.start && cfg.start.DST > 0),
-          idp: !!(cfg.start && ((cfg.start.DL || 0) + (cfg.start.LB || 0) + (cfg.start.DB || 0) + (cfg.start.IDPFLEX || 0)) > 0),
-        };
-        // snapshot current pool names BEFORE swap so we can translate any existing picks by name.
-        const beforeNames = buildPlayers(cfg).map((p) => p.name);
-        const pack = await api.playerPack(fmt, undefined, opts);
-        if (!alive) return;
-        if (applyLivePack(pack)) {
-          const after = buildPlayers(cfg);
-          const nameToNewId = {}; after.forEach((p) => { nameToNewId[normName(p.name)] = p.id; });
-          const remap = (arr) => (arr || []).map((idx) => {
-            const oldName = beforeNames[idx];
-            if (oldName == null) return idx;
-            const nid = nameToNewId[normName(oldName)];
-            return nid != null ? nid : idx;
-          });
-          setPicks((cur) => remap(cur));
-          setPreds((cur) => remap(cur));
-          setPackVersion((v) => v + 1);
-        }
-      } catch (e) { /* keep whatever board is loaded */ }
-    })();
-    return () => { alive = false; };
-  }, [cfg.type, cfg.sf, cfg.tePremMult, cfg.teams, cfg.scoring && cfg.scoring.rec]);
+  // NOTE: we deliberately do NOT re-fetch/swap the player pool inside the draft room. Player ids are
+  // array indices into the pool, and swapping the pool mid-session corrupts already-stored picks (they'd
+  // point at different players). The pool is loaded ONCE at app startup and stays stable for the session.
   const [tradeModalOpen, setTradeModalOpen] = useState(false); // quick pick-trade popover over the hub
   const [strategy, setStrategy] = useState("balanced");
   const [search, setSearch] = useState("");
@@ -6714,7 +6674,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const connected = !!cfg.connect;
   const [clock, setClock] = useState(90);
 
-  const players = useMemo(() => buildPlayers(cfg), [cfg, packVersion]);
+  const players = useMemo(() => buildPlayers(cfg), [cfg]);
   // Resolve keepers pulled from a connected league (Sleeper) — name+slot → engine id+team — and merge
   // them as no-cost roster adds, so each keeper shows on the right team and counts toward strength.
   useMemo(() => {
