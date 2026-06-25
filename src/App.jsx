@@ -2486,7 +2486,14 @@ export default function App() {
   };
   const deleteFunMock = (id) => { const next = funMocks.filter((m) => m.id !== id); setFunMocks(next); persist({ funMocks: next }); };
 
-  const submitFeedback = (entry) => {
+  const submitFeedback = async (entry) => {
+    // Send to the backend so it lands in the admin inbox. Falls back to local storage if no backend.
+    if (hasBackend) {
+      try {
+        await api.submitFeedback({ email: entry.email || (user && user.email) || null, category: (entry.topic || "other").toLowerCase(), message: entry.msg });
+        return;
+      } catch (e) { /* fall through to local */ }
+    }
     const e = { id: `fb-${Date.now()}`, email: entry.email, topic: entry.topic || "General", msg: entry.msg, ts: new Date().toLocaleString(), status: "new", reply: null };
     const next = [e, ...feedback].slice(0, 500);
     setFeedback(next); persist({ feedback: next });
@@ -5521,14 +5528,41 @@ function Setup({ onCreate, onBack, backLabel }) {
 
 /* ============================================================ ADMIN */
 function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedback, onGrantComp, onRevokeComp, onBack }) {
-  const [price, setPrice] = useState(String(biz.price));
-  const [code, setCode] = useState("");
-  const [pct, setPct] = useState("20");
-  const [compEmail, setCompEmail] = useState("");
-  const [compScope, setCompScope] = useState("season");
-  const activeComps = (biz.comps || []).filter((c) => !c.revoked);
-  const visitors = [320, 410, 380, 560, 720, 690, 940, 1180, 1050, 1390, 1620, 1810];
-  const max = Math.max(...visitors);
+  const [tab, setTab] = useState("users"); // users | invites | feedback | tools
+  const [users, setUsers] = useState(null);
+  const [totals, setTotals] = useState(null);
+  const [uSearch, setUSearch] = useState("");
+  const [invites, setInvites] = useState(null);
+  const [fb, setFb] = useState(null);
+  const [fbNew, setFbNew] = useState(0);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteScope, setInviteScope] = useState("season");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const note = (t) => { setMsg(t); setTimeout(() => setMsg(null), 3500); };
+
+  const loadUsers = async (search) => { try { const r = await api.adminUsers(search); setUsers(r.users); setTotals(r.totals); } catch (e) { note("Couldn't load users: " + (e.data?.error || e.message)); } };
+  const loadInvites = async () => { try { const r = await api.adminInvites(); setInvites(r.invites); } catch (e) {} };
+  const loadFeedback = async () => { try { const r = await api.adminFeedback(); setFb(r.feedback); setFbNew(r.newCount); } catch (e) {} };
+  useEffect(() => { if (!hasBackend) return; loadUsers(); loadInvites(); loadFeedback(); }, []);
+
+  const toggleDisabled = async (email, disabled) => { setBusy(true); try { await api.adminSetDisabled(email, disabled); await loadUsers(uSearch); note(disabled ? `Access turned OFF for ${email}` : `Access restored for ${email}`); } catch (e) { note(e.data?.error || e.message); } finally { setBusy(false); } };
+  const revoke = async (email) => { setBusy(true); try { await api.adminRevokeComp(email); await loadUsers(uSearch); note(`Comp revoked for ${email}`); } catch (e) { note(e.data?.error || e.message); } finally { setBusy(false); } };
+  const sendInvite = async () => {
+    const email = inviteEmail.trim().toLowerCase();
+    if (!email.includes("@")) return;
+    setBusy(true);
+    try { const r = await api.adminInvite(email, inviteScope); note(r.applied ? `Free access granted to ${email}` : `Invite saved — ${email} gets free access when they sign up`); setInviteEmail(""); await loadInvites(); await loadUsers(uSearch); }
+    catch (e) { note(e.data?.error || e.message); } finally { setBusy(false); }
+  };
+  const cancelInvite = async (email) => { setBusy(true); try { await api.adminCancelInvite(email); await loadInvites(); note(`Invite canceled for ${email}`); } catch (e) {} finally { setBusy(false); } };
+  const setFbStatus = async (id, status) => { try { await api.adminFeedbackStatus(id, status); await loadFeedback(); } catch (e) {} };
+
+  const fmtDate = (d) => d ? new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "—";
+  const statusOf = (u) => u.disabled ? { t: "Disabled", c: "var(--red)" } : u.active_paid ? { t: u.comp ? "Comped" : "Active pass", c: "var(--green)" } : { t: "Free", c: "var(--gold)" };
+
+  const TABS = [["users", "Users", users ? users.length : null], ["invites", "Free invites", null], ["feedback", "Feedback", fbNew || null], ["tools", "Stripe & analytics", null]];
+
   return (
     <div>
       <div className="hairline" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px" }}>
@@ -5538,80 +5572,130 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
         <div style={{ flex: 1 }} />
         <button className="btn" onClick={onBack}>← Back to app</button>
       </div>
-      <div style={{ maxWidth: 980, margin: "0 auto", padding: 18, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 14 }}>
-        <div className="panel" style={{ padding: 16 }}>
-          <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 10 }}>Site analytics <span className="mut" style={{ fontSize: 11 }}>(demo data)</span></div>
-          <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 90, marginBottom: 8 }}>
-            {visitors.map((v, i) => <div key={i} title={`${v} visitors`} style={{ flex: 1, height: `${(v / max) * 100}%`, background: i === visitors.length - 1 ? "var(--gold)" : "#33476B", borderRadius: 3 }} />)}
-          </div>
-          <div className="mut" style={{ fontSize: 12, display: "flex", justifyContent: "space-between" }}><span>Visitors (12 wks)</span><b style={{ color: "var(--ink)" }}>1,810 this week</b></div>
-          <div className="mut" style={{ fontSize: 12, display: "flex", justifyContent: "space-between", marginTop: 6 }}><span>Demo → signup</span><b style={{ color: "var(--ink)" }}>11.2%</b></div>
-          <div className="mut" style={{ fontSize: 12, display: "flex", justifyContent: "space-between", marginTop: 4 }}><span>Signup → purchase</span><b style={{ color: "var(--ink)" }}>38.4%</b></div>
-        </div>
-        <div className="panel" style={{ padding: 16 }}>
-          <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 10 }}>Users</div>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-            <thead><tr className="mut" style={{ fontSize: 11, textTransform: "uppercase" }}><th style={{ textAlign: "left", paddingBottom: 6 }}>Email</th><th style={{ textAlign: "left" }}>Status</th><th className="num">Leagues</th></tr></thead>
-            <tbody>
-              <tr><td style={{ padding: "3px 0" }}>{user.email}</td><td style={{ color: user.paid ? "var(--green)" : "var(--gold)" }}>{user.paid ? "Active pass" : "Free"}</td><td className="num" style={{ textAlign: "right" }}>{leagues.length}</td></tr>
-              {[["mike.r@example.com","Active pass",3],["dynastydegen@example.com","Active pass",7],["caseyffb@example.com","Lapsed",1],["newuser22@example.com","Free",0]].map((u, i) => (
-                <tr key={i} className="mut"><td style={{ padding: "3px 0" }}>{u[0]}</td><td style={{ color: u[1] === "Active pass" ? "var(--green)" : u[1] === "Lapsed" ? "var(--red)" : "var(--gold)" }}>{u[1]}</td><td className="num" style={{ textAlign: "right" }}>{u[2]}</td></tr>
-              ))}
-            </tbody>
-          </table>
-          <button className="btn btn-mini" style={{ marginTop: 10 }} onClick={() => {}}>Export CSV (demo)</button>
-        </div>
-        <div className="panel" style={{ padding: 16 }}>
-          <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 10 }}>Pricing & promotions</div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
-            <label className="mut" style={{ fontSize: 13 }}>Season pass $</label>
-            <input className="gs" style={{ width: 90 }} value={price} onChange={(e) => setPrice(e.target.value.replace(/[^0-9.]/g, ""))} />
-            <button className="btn" onClick={() => { const p = parseFloat(price); if (p > 0) setBiz({ ...biz, price: p }); }}>Update</button>
-          </div>
-          <div className="mut" style={{ fontSize: 11.5, marginBottom: 12 }}>Changes apply instantly to the homepage and checkout — try it. In production this is a processor API call from this form; never a code change.</div>
-          <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-            <input className="gs" style={{ flex: 1 }} placeholder="Promo code" value={code} onChange={(e) => setCode(e.target.value)} />
-            <input className="gs" style={{ width: 64 }} value={pct} onChange={(e) => setPct(e.target.value.replace(/\D/g, ""))} />
-            <span className="mut" style={{ alignSelf: "center", fontSize: 12 }}>%</span>
-            <button className="btn" onClick={() => { if (code.trim() && +pct > 0) { setBiz({ ...biz, promos: [...biz.promos, { code: code.trim(), pct: +pct }] }); setCode(""); } }}>Create</button>
-          </div>
-          {biz.promos.map((p, i) => (
-            <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "3px 0" }}>
-              <span><b>{p.code}</b> — {p.pct}% off</span>
-              <button className="btn btn-mini" onClick={() => setBiz({ ...biz, promos: biz.promos.filter((_, j) => j !== i) })}>Remove</button>
-            </div>
-          ))}
-          {!biz.promos.length && <div className="mut" style={{ fontSize: 12 }}>No active promos. Create one and apply it at checkout.</div>}
-        </div>
 
-        <div className="panel" style={{ padding: 16 }}>
-          <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Free subscriptions</div>
-          <div className="mut" style={{ fontSize: 11.5, marginBottom: 12 }}>Comp an account by email — for one season or all-time. When that email signs in, the pass is active automatically with no charge. Revoke any time.</div>
-          <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
-            <input className="gs" style={{ flex: "1 1 180px" }} type="email" placeholder="email@example.com" value={compEmail} onChange={(e) => setCompEmail(e.target.value)} />
-            <select className="gs" value={compScope} onChange={(e) => setCompScope(e.target.value)}>
-              <option value="season">This season ({CURRENT_SEASON})</option>
-              <option value="forever">All-time</option>
-            </select>
-            <button className="btn btn-gold" onClick={() => { if (compEmail.trim() && compEmail.includes("@")) { onGrantComp(compEmail.trim(), compScope); setCompEmail(""); } }}><i className="ti ti-gift" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Send invite</button>
-          </div>
-          {activeComps.length === 0 ? (
-            <div className="mut" style={{ fontSize: 12 }}>No comped accounts yet.</div>
-          ) : activeComps.map((c, i) => (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, padding: "5px 0", borderTop: "1px solid var(--line)" }}>
-              <i className="ti ti-gift" style={{ fontSize: 13, color: "var(--green)" }} aria-hidden="true" />
-              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}><b>{c.email}</b></span>
-              <span className="chip" style={{ fontSize: 9 }}>{c.scope === "forever" ? "All-time" : `${c.season} season`}</span>
-              <button className="btn btn-mini" onClick={() => onRevokeComp(c.email)}>Revoke</button>
-            </div>
+      {!hasBackend && <div className="mut" style={{ maxWidth: 980, margin: "12px auto 0", padding: "0 18px", fontSize: 12.5 }}>Connect the backend to manage real users, invites, and feedback. (Currently running without a backend.)</div>}
+
+      {totals && (
+        <div style={{ maxWidth: 980, margin: "0 auto", padding: "14px 18px 0", display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }}>
+          {[["Total accounts", totals.total], ["Active passes", totals.paid], ["Comped", totals.comp]].map(([l, v]) => (
+            <div key={l} className="panel" style={{ padding: "12px 16px" }}><div className="num" style={{ fontSize: 24, fontWeight: 700 }}>{v}</div><div className="mut" style={{ fontSize: 11.5 }}>{l}</div></div>
           ))}
-          <div className="mut" style={{ fontSize: 11, marginTop: 10 }}>In production this emails a one-click activation link and is enforced server-side. Here the comp applies the moment that email signs in.</div>
         </div>
+      )}
+
+      <div style={{ maxWidth: 980, margin: "0 auto", padding: "14px 18px 0", display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {TABS.map(([k, l, badge]) => (
+          <button key={k} className="btn btn-mini" style={{ borderColor: tab === k ? "var(--gold)" : "var(--line)", color: tab === k ? "var(--gold)" : "var(--ink)", fontWeight: tab === k ? 700 : 400 }} onClick={() => setTab(k)}>
+            {l}{badge ? <span className="chip" style={{ fontSize: 9, marginLeft: 6, borderColor: "var(--gold)", color: "var(--gold)" }}>{badge}</span> : null}
+          </button>
+        ))}
       </div>
-      <div style={{ maxWidth: 980, margin: "0 auto", padding: "0 18px 18px" }}>
-        <FeedbackInbox feedback={feedback || []} onRespond={onRespond} onDelete={onDeleteFeedback} />
+
+      {msg && <div style={{ maxWidth: 980, margin: "10px auto 0", padding: "0 18px" }}><div className="panel" style={{ padding: "8px 12px", fontSize: 12.5, borderColor: "var(--gold)", background: "#16140c" }}>{msg}</div></div>}
+
+      <div style={{ maxWidth: 980, margin: "0 auto", padding: 18 }}>
+        {/* USERS */}
+        {tab === "users" && (
+          <div className="panel" style={{ padding: 16 }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+              <input className="gs" style={{ flex: "1 1 220px" }} placeholder="Search by email" value={uSearch} onChange={(e) => setUSearch(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") loadUsers(uSearch); }} />
+              <button className="btn" onClick={() => loadUsers(uSearch)}>Search</button>
+              {uSearch && <button className="btn btn-mini" onClick={() => { setUSearch(""); loadUsers(""); }}>Clear</button>}
+            </div>
+            {!users ? <div className="mut" style={{ fontSize: 13 }}>Loading users…</div> : users.length === 0 ? <div className="mut" style={{ fontSize: 13 }}>No users found.</div> : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                  <thead><tr className="mut" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em" }}>
+                    <th style={{ textAlign: "left", paddingBottom: 6 }}>Email</th><th style={{ textAlign: "left" }}>Status</th><th style={{ textAlign: "left" }}>Joined</th><th style={{ textAlign: "left" }}>Pass until</th><th></th>
+                  </tr></thead>
+                  <tbody>
+                    {users.map((u) => { const st = statusOf(u); return (
+                      <tr key={u.id} style={{ borderTop: "1px solid var(--line)" }}>
+                        <td style={{ padding: "6px 8px 6px 0" }}>{u.email}{u.is_admin && <span className="chip" style={{ fontSize: 9, marginLeft: 6 }}>admin</span>}</td>
+                        <td style={{ color: st.c }}>{st.t}</td>
+                        <td className="mut">{fmtDate(u.created_at)}</td>
+                        <td className="mut">{u.comp ? "—" : fmtDate(u.paid_until)}</td>
+                        <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                          {u.comp && !u.disabled && <button className="btn btn-mini" disabled={busy} onClick={() => revoke(u.email)} style={{ marginRight: 4 }}>Revoke comp</button>}
+                          {!u.is_admin && (u.disabled
+                            ? <button className="btn btn-mini" disabled={busy} onClick={() => toggleDisabled(u.email, false)} style={{ borderColor: "var(--green)", color: "var(--green)" }}>Restore</button>
+                            : <button className="btn btn-mini" disabled={busy} onClick={() => toggleDisabled(u.email, true)} style={{ borderColor: "var(--red)", color: "var(--red)" }}>Turn off</button>)}
+                        </td>
+                      </tr>
+                    );})}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* INVITES */}
+        {tab === "invites" && (
+          <div className="panel" style={{ padding: 16 }}>
+            <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Give free access</div>
+            <div className="mut" style={{ fontSize: 12, marginBottom: 12, lineHeight: 1.5 }}>Grant a free season pass by email. If they already have an account, it's applied instantly. If they haven't signed up yet, the free pass activates automatically the moment they create that account.</div>
+            <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+              <input className="gs" style={{ flex: "1 1 200px" }} type="email" placeholder="email@example.com" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") sendInvite(); }} />
+              <select className="gs" value={inviteScope} onChange={(e) => setInviteScope(e.target.value)}>
+                <option value="season">This season ({CURRENT_SEASON})</option>
+                <option value="forever">All-time</option>
+              </select>
+              <button className="btn btn-gold" disabled={busy || !inviteEmail.includes("@")} onClick={sendInvite}><i className="ti ti-gift" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Grant access</button>
+            </div>
+            <div className="disp" style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>Pending invites <span className="mut" style={{ fontSize: 11 }}>(not yet signed up)</span></div>
+            {!invites ? <div className="mut" style={{ fontSize: 12 }}>Loading…</div> : invites.length === 0 ? <div className="mut" style={{ fontSize: 12 }}>No pending invites. Granted access to existing accounts shows on the Users tab as "Comped."</div> : invites.map((iv) => (
+              <div key={iv.email} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, padding: "5px 0", borderTop: "1px solid var(--line)" }}>
+                <i className="ti ti-mail" style={{ fontSize: 13, color: "var(--gold)" }} aria-hidden="true" />
+                <span style={{ flex: 1 }}><b>{iv.email}</b></span>
+                <span className="chip" style={{ fontSize: 9 }}>{iv.scope === "forever" ? "All-time" : "Season"}</span>
+                <button className="btn btn-mini" disabled={busy} onClick={() => cancelInvite(iv.email)}>Cancel</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* FEEDBACK */}
+        {tab === "feedback" && (
+          <div className="panel" style={{ padding: 16 }}>
+            <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 10 }}>Feedback inbox</div>
+            {!fb ? <div className="mut" style={{ fontSize: 13 }}>Loading…</div> : fb.length === 0 ? <div className="mut" style={{ fontSize: 13 }}>No feedback yet. Messages sent from the site's contact form show up here.</div> : fb.map((f) => (
+              <div key={f.id} style={{ padding: "10px 0", borderTop: "1px solid var(--line)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <span className="chip" style={{ fontSize: 9, borderColor: f.status === "new" ? "var(--gold)" : "var(--line)", color: f.status === "new" ? "var(--gold)" : "var(--mut)" }}>{f.status}</span>
+                  <span className="chip" style={{ fontSize: 9 }}>{f.category}</span>
+                  <span className="mut" style={{ fontSize: 11.5 }}>{f.email || "anonymous"}</span>
+                  <div style={{ flex: 1 }} />
+                  <span className="mut" style={{ fontSize: 11 }}>{fmtDate(f.created_at)}</span>
+                </div>
+                <div style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 6 }}>{f.message}</div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {f.status !== "read" && <button className="btn btn-mini" onClick={() => setFbStatus(f.id, "read")}>Mark read</button>}
+                  {f.status !== "resolved" && <button className="btn btn-mini" onClick={() => setFbStatus(f.id, "resolved")} style={{ borderColor: "var(--green)", color: "var(--green)" }}>Resolve</button>}
+                  {f.email && <a className="btn btn-mini" href={`mailto:${f.email}`} style={{ textDecoration: "none" }}>Reply by email</a>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* TOOLS — pointers to Stripe + Cloudflare (the right homes for these) */}
+        {tab === "tools" && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 14 }}>
+            <div className="panel" style={{ padding: 16 }}>
+              <div className="disp" style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Pricing & promo codes</div>
+              <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 10 }}>Price changes and discount codes are managed in Stripe, not here — Stripe enforces them securely at checkout. Create a coupon, then a promotion code customers type at checkout.</div>
+              <a className="btn btn-mini" href="https://dashboard.stripe.com/coupons" target="_blank" rel="noreferrer" style={{ textDecoration: "none", marginRight: 6 }}>Open Stripe coupons ↗</a>
+              <a className="btn btn-mini" href="https://dashboard.stripe.com/products" target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>Stripe products ↗</a>
+            </div>
+            <div className="panel" style={{ padding: 16 }}>
+              <div className="disp" style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Site analytics</div>
+              <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 10 }}>Real visitor traffic, sources, and conversions live in Cloudflare Web Analytics (free, privacy-friendly, already part of your Cloudflare account). Turn it on for fantasydraftcompass.com and view the dashboard there.</div>
+              <a className="btn btn-mini" href="https://dash.cloudflare.com/?to=/:account/web-analytics" target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>Open Cloudflare Analytics ↗</a>
+            </div>
+          </div>
+        )}
       </div>
-      <div className="mut" style={{ maxWidth: 980, margin: "0 auto", padding: "0 18px 24px", fontSize: 11.5 }}>Full admin console also includes: rankings/projection uploads, source weights, player identity resolution queue, injury status events (informational vs. material), engine parameter versions, and Sleeper miner health.</div>
     </div>
   );
 }
