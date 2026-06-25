@@ -1783,10 +1783,10 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
   const dem = demand(sf);
   const baseDrafted = new Uint8Array(players.length);
   const baseCounts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
-  picks.forEach((pk, o) => { baseDrafted[pk] = 1; baseCounts[teamAt(o)][players[pk].pos]++; });
+  picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; baseDrafted[pk] = 1; const c = baseCounts[teamAt(o)]; if (c[pl.pos] != null) c[pl.pos]++; });
   for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, baseCounts[t]); }
   allKeeperAddIds().forEach((id) => { baseDrafted[id] = 1; });
-  const baseRecent = picks.slice(-8).map((id) => players[id].pos);
+  const baseRecent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   const surv = [new Float64Array(players.length), new Float64Array(players.length), new Float64Array(players.length)];
   const expBest1 = { QB: 0, RB: 0, WR: 0, TE: 0 };
   const end = nexts[nexts.length - 1];
@@ -1825,10 +1825,10 @@ function survivalAtPick(players, sortedAdp, picks, targetOverall, cfg, nSims) {
   const target = Math.max(picks.length, Math.min(TOTAL, targetOverall - 1)); // 0-indexed exclusive boundary
   const baseDrafted = new Uint8Array(players.length);
   const baseCounts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
-  picks.forEach((pk, o) => { baseDrafted[pk] = 1; baseCounts[teamAt(o)][players[pk].pos]++; });
+  picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; baseDrafted[pk] = 1; const c = baseCounts[teamAt(o)]; if (c[pl.pos] != null) c[pl.pos]++; });
   for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, baseCounts[t]); }
   allKeeperAddIds().forEach((id) => { baseDrafted[id] = 1; });
-  const baseRecent = picks.slice(-8).map((id) => players[id].pos);
+  const baseRecent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   // Count, per player, how many sims they SURVIVE past `target`. One simulation per sim run,
   // stopping at the target boundary — anyone still undrafted survived. Single shared random
   // process guarantees the result is monotonic in target (later target ⇒ ≤ survival).
@@ -1856,15 +1856,15 @@ function projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId)
   const dem = demand(sf);
   const drafted = new Uint8Array(players.length);
   const rosters = Array.from({ length: TEAMS }, () => []);
-  picks.forEach((pk, o) => { drafted[pk] = 1; rosters[teamAt(o)].push(players[pk]); });
+  picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; drafted[pk] = 1; rosters[teamAt(o)].push(pl); });
   for (let t = 0; t < TEAMS; t++) { seedKeeperRoster(players, t, rosters[t]); }
   allKeeperAddIds().forEach((id) => { drafted[id] = 1; });
-  let recent = picks.slice(-8).map((id) => players[id].pos);
+  let recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   let userFirstDone = false;
   for (let o = picks.length; o < TOTAL; o++) {
     const t = teamAt(o), round = Math.floor(o / TEAMS) + 1, pickNum = o + 1;
     const counts = { QB: 0, RB: 0, WR: 0, TE: 0 };
-    rosters[t].forEach((p) => counts[p.pos]++);
+    rosters[t].forEach((p) => { if (counts[p.pos] != null) counts[p.pos]++; });
     let choice = null;
     if (t === userIdx) {
       if (!userFirstDone && forcedId != null && !drafted[forcedId]) { choice = players[forcedId]; }
@@ -1891,10 +1891,10 @@ function projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, forcedI
   const dem = demand(sf);
   const drafted = new Uint8Array(players.length);
   const counts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
-  picks.forEach((pk, o) => { drafted[pk] = 1; counts[teamAt(o)][players[pk].pos]++; });
+  picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; drafted[pk] = 1; const c = counts[teamAt(o)]; if (c[pl.pos] != null) c[pl.pos]++; });
   for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, counts[t]); }
   allKeeperAddIds().forEach((id) => { drafted[id] = 1; });
-  let recent = picks.slice(-8).map((id) => players[id].pos);
+  let recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   let userFirstDone = false;
   const board = new Array(TOTAL).fill(undefined);
   for (let o = picks.length; o < TOTAL; o++) {
@@ -1919,10 +1919,10 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
   const dem = demand(sf);
   const drafted = new Uint8Array(players.length);
   const counts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
-  picks.forEach((pk, o) => { drafted[pk] = 1; counts[teamAt(o)][players[pk].pos]++; });
+  picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; drafted[pk] = 1; const c = counts[teamAt(o)]; if (c[pl.pos] != null) c[pl.pos]++; });
   for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, counts[t]); }
   allKeeperAddIds().forEach((id) => { drafted[id] = 1; });
-  let recent = picks.slice(-8).map((id) => players[id].pos);
+  let recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   const path = []; let passedUser = false, afterUser = 0;
   for (let o = picks.length; o < TOTAL && path.length < 20; o++) {
     const t = teamAt(o), round = Math.floor(o / TEAMS) + 1, pickNum = o + 1;
@@ -2532,7 +2532,7 @@ export default function App() {
         onLibrary={() => setRoute("library")} onNewLeague={() => { setSetupReturn(null); setRoute("setup"); }} onDatabase={() => setRoute("database")}
         onOfficial={(id) => { setActiveId(id); setRoute("draft"); }} onMock={startMock} onQuickMock={() => setQuickMockOpen(true)}
         onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} onGuide={() => { setHelpTab("guide"); setRoute("help"); }} onAccount={() => setRoute("account")} onAdmin={() => setRoute("admin")} onSignOut={signOut}
-        onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} />}
+        onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} />}
       {route === "leagueHub" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? <LeagueUmbrella user={user} league={lg} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")}
         onOfficial={(id) => { setDraftTab(null); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
         onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [] }); setActiveId(m.id); setRoute("draft"); }}
@@ -3340,7 +3340,7 @@ function QuickMockSetup({ onStart, onCancel }) {
   );
 }
 
-function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel }) {
+function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete }) {
   const totalMocks = leagues.reduce((s, l) => s + (l.mocks || []).length, 0) + funMocks.length;
   const inProgress = leagues.filter((l) => l.picks.length > 0 && l.picks.length < (l.cfg.teams || 12) * l.cfg.rounds);
   const [q, setQ] = useState("");
@@ -3358,6 +3358,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
   const [openPick, setOpenPick] = useState(false); // top quick-action league picker
   const [openPickFlow, setOpenPickFlow] = useState(false); // in-flow (Get started) league picker
   const [mockPick, setMockPick] = useState(false); // expand the "run a mock" picker box
+  const [delConfirm, setDelConfirm] = useState(null); // league id pending delete confirmation
   // open exactly one picker at a time
   const openLeaguePanel = () => { setMockPick(false); setOpenPickFlow(false); setOpenPick((v) => !v); };
   const openLeagueFlow = () => { setMockPick(false); setOpenPick(false); setOpenPickFlow((v) => !v); };
@@ -3442,18 +3443,25 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
               {sortedLeagues.map((l) => {
                 const st = leagueStatus(l); const mocks = (l.mocks || []).length;
                 return (
-                  <button key={l.id} className="hubtile" onClick={() => onUmbrella(l.id)} style={{ textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1px solid var(--line)", background: "var(--panel2)", borderRadius: 11, padding: "11px 13px", display: "flex", alignItems: "center", gap: 12 }}>
+                  <div key={l.id} style={{ border: "1px solid var(--line)", background: "var(--panel2)", borderRadius: 11, padding: "11px 13px", display: "flex", alignItems: "center", gap: 12 }}>
                     <div style={{ width: 34, height: 34, borderRadius: 9, background: "var(--panel)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className={`ti ${st.icon}`} style={{ fontSize: 16, color: st.color }} aria-hidden="true" /></div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
+                    <button onClick={() => onUmbrella(l.id)} style={{ flex: 1, minWidth: 0, textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: "transparent", padding: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                         <span className="disp" style={{ fontSize: 15, fontWeight: 700 }}>{l.name}</span>
                         {(l.cfg.keepers || []).length > 0 && <span className="chip" style={{ fontSize: 9 }}><i className="ti ti-lock" style={{ fontSize: 9, marginRight: 2 }} aria-hidden="true" />{(l.cfg.keepers || []).length}</span>}
                         {mocks > 0 && <span className="chip" style={{ fontSize: 9 }}>{mocks} mock{mocks === 1 ? "" : "s"}</span>}
                       </div>
                       <div className="mut" style={{ fontSize: 11, marginTop: 1 }}>{l.cfg.teams || 12}T · {l.cfg.sf ? "Superflex" : "1QB"}{l.cfg.tePremMult > 0 ? " · TE+" : ""} · {l.cfg.rounds} rds · <span style={{ color: st.color, fontWeight: 600 }}>{st.label}</span></div>
-                    </div>
-                    <span className="gold" style={{ fontSize: 12, fontWeight: 600, flexShrink: 0 }}>Open →</span>
-                  </button>
+                    </button>
+                    <button className="btn btn-mini" onClick={() => onUmbrella(l.id)} style={{ flexShrink: 0 }}>Open</button>
+                    {onDelete && (delConfirm === l.id
+                      ? <span style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                          <button className="btn btn-mini" style={{ borderColor: "var(--red)", color: "var(--red)" }} onClick={() => { onDelete(l.id); setDelConfirm(null); }} title="Confirm delete"><i className="ti ti-check" style={{ fontSize: 12 }} aria-hidden="true" /></button>
+                          <button className="btn btn-mini" onClick={() => setDelConfirm(null)} title="Cancel"><i className="ti ti-x" style={{ fontSize: 12 }} aria-hidden="true" /></button>
+                        </span>
+                      : <button className="btn btn-mini" onClick={() => setDelConfirm(l.id)} title="Delete league" style={{ flexShrink: 0, borderColor: "var(--line)", color: "var(--mut)" }}><i className="ti ti-trash" style={{ fontSize: 13 }} aria-hidden="true" /></button>
+                    )}
+                  </div>
                 );
               })}
               {q.trim() && sortedLeagues.length === 0 && (
@@ -3552,18 +3560,25 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
               {sortedLeagues.map((l) => {
                 const st = leagueStatus(l); const mocks = (l.mocks || []).length;
                 return (
-                  <button key={l.id} className="hubtile" onClick={() => onUmbrella(l.id)} style={{ textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1px solid var(--line)", background: "var(--panel2)", borderRadius: 11, padding: "11px 13px", display: "flex", alignItems: "center", gap: 12 }}>
+                  <div key={l.id} style={{ border: "1px solid var(--line)", background: "var(--panel2)", borderRadius: 11, padding: "11px 13px", display: "flex", alignItems: "center", gap: 12 }}>
                     <div style={{ width: 34, height: 34, borderRadius: 9, background: "var(--panel)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className={`ti ${st.icon}`} style={{ fontSize: 16, color: st.color }} aria-hidden="true" /></div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
+                    <button onClick={() => onUmbrella(l.id)} style={{ flex: 1, minWidth: 0, textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: "transparent", padding: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                         <span className="disp" style={{ fontSize: 15, fontWeight: 700 }}>{l.name}</span>
                         {(l.cfg.keepers || []).length > 0 && <span className="chip" style={{ fontSize: 9 }}><i className="ti ti-lock" style={{ fontSize: 9, marginRight: 2 }} aria-hidden="true" />{(l.cfg.keepers || []).length}</span>}
                         {mocks > 0 && <span className="chip" style={{ fontSize: 9 }}>{mocks} mock{mocks === 1 ? "" : "s"}</span>}
                       </div>
                       <div className="mut" style={{ fontSize: 11, marginTop: 1 }}>{l.cfg.teams || 12}T · {l.cfg.sf ? "Superflex" : "1QB"}{l.cfg.tePremMult > 0 ? " · TE+" : ""} · {l.cfg.rounds} rds · <span style={{ color: st.color, fontWeight: 600 }}>{st.label}</span></div>
-                    </div>
-                    <span className="gold" style={{ fontSize: 12, fontWeight: 600, flexShrink: 0 }}>Open →</span>
-                  </button>
+                    </button>
+                    <button className="btn btn-mini" onClick={() => onUmbrella(l.id)} style={{ flexShrink: 0 }}>Open</button>
+                    {onDelete && (delConfirm === l.id
+                      ? <span style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                          <button className="btn btn-mini" style={{ borderColor: "var(--red)", color: "var(--red)" }} onClick={() => { onDelete(l.id); setDelConfirm(null); }} title="Confirm delete"><i className="ti ti-check" style={{ fontSize: 12 }} aria-hidden="true" /></button>
+                          <button className="btn btn-mini" onClick={() => setDelConfirm(null)} title="Cancel"><i className="ti ti-x" style={{ fontSize: 12 }} aria-hidden="true" /></button>
+                        </span>
+                      : <button className="btn btn-mini" onClick={() => setDelConfirm(l.id)} title="Delete league" style={{ flexShrink: 0, borderColor: "var(--line)", color: "var(--mut)" }}><i className="ti ti-trash" style={{ fontSize: 13 }} aria-hidden="true" /></button>
+                    )}
+                  </div>
                 );
               })}
               {q.trim() && sortedLeagues.length === 0 && (
@@ -6226,7 +6241,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     if (!sims || done) return null;
     const pickNum = picks.length + 1;
     const myCounts = { QB: 0, RB: 0, WR: 0, TE: 0 };
-    picks.forEach((pk, o) => { if (teamAt(o) === userIdx) myCounts[players[pk].pos]++; });
+    picks.forEach((pk, o) => { const pl = players[pk]; if (teamAt(o) === userIdx && pl && myCounts[pl.pos] != null) myCounts[pl.pos]++; });
     const bestNow = { QB: null, RB: null, WR: null, TE: null };
     for (const p of sortedAdp) if (!draftedSet.has(p.id) && (!bestNow[p.pos] || p.vbd > bestNow[p.pos].vbd)) bestNow[p.pos] = p;
     const waitCost = {};
@@ -6241,7 +6256,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     const verdict = ranked[0]; const alts = ranked.slice(1, 4);
     const impacts = {};
     [verdict, ...alts].forEach((c) => { if (!c) return; const pr = projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, c.id); impacts[c.id] = { pts: pr.pts[userIdx], rank: pr.rank[userIdx] }; });
-    const recent = picks.slice(-8).map((id) => players[id].pos);
+    const recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
     let run = null;
     POS.forEach((pos) => { const c = recent.filter((x) => x === pos).length; if (c >= 3 && (!run || c > run.count)) run = { pos, count: c }; });
     return { bestNow, waitCost, verdict, alts, impacts, run, myCounts };
@@ -6320,8 +6335,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
         const drafted = new Set(prev);
         Object.values(noCostByTeam).flat().forEach((id) => drafted.add(id));
         const counts = { QB: 0, RB: 0, WR: 0, TE: 0 };
-        prev.forEach((pk, o) => { if (teamAt(o) === teamAt(prev.length)) counts[players[pk].pos]++; });
-        const recent = prev.slice(-8).map((id) => players[id].pos);
+        prev.forEach((pk, o) => { const pl = players[pk]; if (pl && teamAt(o) === teamAt(prev.length) && counts[pl.pos] != null) counts[pl.pos]++; });
+        const recent = prev.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
         const pickNum = prev.length + 1, rd = Math.floor(prev.length / TEAMS) + 1;
         const cands0 = []; for (const p of sortedAdp) { if (!drafted.has(p.id)) { cands0.push(p); if (cands0.length >= 34) break; } }
         const cands = legalCands(cands0, counts, cfg);
@@ -6613,7 +6628,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     const nm = (i) => (i === userIdx ? "You" : TEAM_NAMES[i]);
     const isU = (i) => i === userIdx;
     let streak = { pos: null, len: 0 }, cur = { pos: null, len: 0 };
-    picks.forEach((pk) => { const pos = players[pk].pos; if (pos === cur.pos) cur.len++; else cur = { pos, len: 1 }; if (cur.len > streak.len) streak = { ...cur }; });
+    picks.forEach((pk) => { const pl = players[pk]; if (!pl) return; const pos = pl.pos; if (pos === cur.pos) cur.len++; else cur = { pos, len: 1 }; if (cur.len > streak.len) streak = { ...cur }; });
     const L = [];
     L.push(pick([
       `${nm(leader)} ${isU(leader) ? "sit" : "sits"} on top of the projections at ${proj.pts[leader]} points. ${isU(leader) ? "Soak it in." : "The rest of the room has some explaining to do."}`,
@@ -6668,7 +6683,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     const cellar = proj.rank.indexOf(TEAMS);
     // your team's positional trend (which positions you've leaned into vs the field)
     const myPos = {}; POS.forEach((p) => (myPos[p] = 0));
-    picks.forEach((pk, o) => { if (teamAt(o) === userIdx && myPos[players[pk].pos] != null) myPos[players[pk].pos]++; });
+    picks.forEach((pk, o) => { const pl = players[pk]; if (teamAt(o) === userIdx && pl && myPos[pl.pos] != null) myPos[pl.pos]++; });
     const leanedInto = Object.entries(myPos).sort((a, b) => b[1] - a[1])[0];
     const myCount = picks.filter((_, o) => teamAt(o) === userIdx).length;
     return {
@@ -7229,11 +7244,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(258px,1fr))", gap: 12 }}>
             {TEAM_NAMES.map((n, i) => {
-              const current = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => teamAt(x.o) === i).map((x) => x.p);
+              const current = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => x.p && teamAt(x.o) === i).map((x) => x.p);
               const roster = teamsProj ? proj.rosters[i] : current;
               const curSet = new Set(current.map((p) => p.id));
               const counts = { QB: 0, RB: 0, WR: 0, TE: 0 };
-              current.forEach((p) => counts[p.pos]++);
+              current.forEach((p) => { if (counts[p.pos] != null) counts[p.pos]++; });
               return (
                 <div key={i} className="panel" style={{ padding: 12, borderColor: i === userIdx ? "var(--gold)" : "var(--line)" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
