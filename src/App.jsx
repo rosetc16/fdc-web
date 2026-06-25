@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.25i";
+const BUILD_TAG = "2026.06.25j";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1225,6 +1225,8 @@ let META = {
 // board reflects reality. The engine logic is unchanged — it just reads fresher RAW/STATS/META.
 let LIVE_LOADED = false;
 let LIVE_ADP_SPARSE = false; // true when live ADP is too thin to trust → engine ranks by VBD value
+let LIVE_PACK_FORMAT = null;     // the format key the backend actually served (for display/debug)
+let LIVE_PACK_PUB_FORMAT = null; // the PUBLISHED-ADP format bucket actually used (null if none matched)
 export function isLivePackLoaded() { return LIVE_LOADED; }
 
 // Build engine structures from the backend player-pack response. Keyed by player name (the engine's
@@ -1295,6 +1297,8 @@ export function applyLivePack(pack) {
   if (raw.length < 50) return false; // sanity: don't swap in a too-small pool
   RAW = raw; STATS = stats; META = meta;
   LIVE_LOADED = true;
+  LIVE_PACK_FORMAT = pack.format || null;
+  LIVE_PACK_PUB_FORMAT = pack.publishedFormat || null;
   LIVE_ADP_SPARSE = !ADP_HEALTHY; // when sparse/rookie-contaminated, rank by VBD value instead
   return true;
 }
@@ -4536,7 +4540,7 @@ function AppHeader({ user, onAdmin, onSignOut, onHome, onAccount, onApp, onHelp,
       {user?.admin && <button className="btn" onClick={onAdmin}>Admin</button>}
       {onAccount && <button className="btn" onClick={onAccount} title="Account settings"><i className="ti ti-user" style={{ fontSize: 14 }} aria-hidden="true" /> Account</button>}
       <button className="btn btn-mini" onClick={onSignOut}>Sign out</button>
-      <span className="mut" style={{ fontSize: 9, opacity: 0.5, marginLeft: 2 }} title="App version — confirms the latest deploy is live">v{BUILD_TAG}</span>
+      <span className="mut" style={{ fontSize: 9, opacity: 0.5, marginLeft: 2 }} title={`App version — confirms the latest deploy is live${typeof LIVE_PACK_FORMAT !== "undefined" && LIVE_PACK_FORMAT ? ` · ADP: ${LIVE_PACK_FORMAT}${LIVE_PACK_PUB_FORMAT ? ` (published ${LIVE_PACK_PUB_FORMAT})` : " (no published ADP — using harvested)"}` : ""}`}>v{BUILD_TAG}</span>
     </div>
   );
 }
@@ -6619,6 +6623,28 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const askOfficialMode = !mockLike && !connectedPlatform && !cfg.draftMode;
   const [mockTradingOn, setMockTradingOn] = useState(false); // in-mock trading with CPU teams (opt-in)
   const [tab, setTab] = useState(initialTab || "hub");
+  // Re-fetch the player pack using THIS league's actual format (SF/dynasty/TEP/teams) so the board shows
+  // the right ADP bucket — not the default 1QB-redraft board loaded at app start. Without this, an SF
+  // dynasty league would show 1QB-redraft ADP and the engine would then re-apply its own SF/dynasty
+  // premiums on top, double-counting and wildly overweighting QBs. Bump packVersion to refresh on load.
+  const [packVersion, setPackVersion] = useState(0);
+  useEffect(() => {
+    if (!hasBackend || isDemo) return;
+    let alive = true;
+    (async () => {
+      try {
+        const fmt = backendFormatKey(cfg);
+        const opts = {
+          k: !!(cfg.start && cfg.start.K > 0),
+          dst: !!(cfg.start && cfg.start.DST > 0),
+          idp: !!(cfg.start && ((cfg.start.DL || 0) + (cfg.start.LB || 0) + (cfg.start.DB || 0) + (cfg.start.IDPFLEX || 0)) > 0),
+        };
+        const pack = await api.playerPack(fmt, undefined, opts);
+        if (alive && applyLivePack(pack)) setPackVersion((v) => v + 1);
+      } catch (e) { /* keep whatever board is loaded */ }
+    })();
+    return () => { alive = false; };
+  }, [cfg.type, cfg.sf, cfg.tePremMult, cfg.teams, cfg.scoring && cfg.scoring.rec]);
   const [tradeModalOpen, setTradeModalOpen] = useState(false); // quick pick-trade popover over the hub
   const [strategy, setStrategy] = useState("balanced");
   const [search, setSearch] = useState("");
@@ -6667,7 +6693,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const connected = !!cfg.connect;
   const [clock, setClock] = useState(90);
 
-  const players = useMemo(() => buildPlayers(cfg), [cfg]);
+  const players = useMemo(() => buildPlayers(cfg), [cfg, packVersion]);
   // Resolve keepers pulled from a connected league (Sleeper) — name+slot → engine id+team — and merge
   // them as no-cost roster adds, so each keeper shows on the right team and counts toward strength.
   useMemo(() => {
@@ -8548,6 +8574,20 @@ function formatKey(cfg) {
   const te = cfg.tePremMult > 0 ? `TEP${cfg.tePremMult}` : "TEstd";
   const mode = cfg.type === "dynasty" || cfg.type === "keeper" ? "DYN" : cfg.type === "bestball" ? "BB" : "RE";
   return `${mode}-${qb}-${te}`;
+}
+// Build the BACKEND ADP format string (SCORING|QB|TE|POOL|TEAMS) from a league cfg. Must match the
+// backend's formatKey so the player pack returns the ADP bucket that matches the league the user is in
+// (e.g. an SF dynasty TEP 12-team league gets the SF dynasty board, not the default 1QB redraft board).
+function backendFormatKey(cfg) {
+  const rec = (cfg.scoring && cfg.scoring.rec != null) ? cfg.scoring.rec : 1;
+  const scoring = rec >= 0.75 ? "PPR" : rec >= 0.25 ? "HALF" : "STD";
+  const qb = ((cfg.start && cfg.start.SUPER > 0) || cfg.sf || (cfg.start && cfg.start.QB >= 2)) ? "SF" : "1QB";
+  const te = cfg.tePremMult > 0 ? "TEP" : "STD";
+  const t = (cfg.type || "redraft").toLowerCase();
+  const pool = t === "dynasty" ? "DYNASTY" : t === "keeper" ? "KEEPER" : t === "bestball" ? "BESTBALL" : (t === "rookie" || t === "rookie only") ? "ROOKIE" : "REDRAFT";
+  const n = Number(cfg.teams || 12);
+  const teams = n <= 10 ? "8-10" : n >= 14 ? "14+" : "12";
+  return `${scoring}|${qb}|${te}|${pool}|${teams}`;
 }
 // Friendly label for a ranking-set key.
 function rankSetLabel(key) {
