@@ -1642,13 +1642,14 @@ function buildPlayers(cfg) {
     const effVal = (p) => {
       let v = p.vbd != null ? p.vbd : -50;
       if (sf && p.pos === "QB") {
-        // scarcity premium that decays by QB rank: ~the first ~1.5 starting QBs per team are scarce.
-        const rank = qbRankById.get(p.id) ?? 99;
-        const startersNeeded = TEAMS * 1.4; // SF ≈ 1.4 QBs started per team (1 QB + ~40% of SF slots)
-        const scarcity = Math.max(0, 1 - rank / startersNeeded); // 1.0 for QB1 → 0 past the starter pool
-        // Mostly proportional (rewards genuinely elite QBs) with a modest scarcity floor. Tuned so the
-        // top ~5 QBs interleave with elite RB/WR rather than sweeping the top of the board.
-        v += 0.55 * Math.max(0, v) + 30 * scarcity;
+        // SuperFlex QB premium. Elite QBs (Allen, Lamar) belong at/near the very top, and the top
+        // ~5-8 QBs go early — but not ALL QBs, which would bury elite RB/WR. So the lift is largest
+        // for the top few QBs and fades by QB rank: QB1-2 get a real boost (top of board), tapering
+        // to ~0 by QB10+. Tuned to interleave the elite QBs with elite skill players like real SF.
+        const rank = qbRankById.get(p.id) ?? 99; // 0 = QB1
+        // exponential-ish decay: QB1 full, QB3 ~60%, QB6 ~28%, QB10 ~8%
+        const decay = Math.pow(0.82, rank);
+        v += 42 * decay;
       }
       return v;
     };
@@ -2291,6 +2292,15 @@ input.gs:focus,select.gs:focus{outline:2px solid var(--gold);outline-offset:0}
 .bcell .lbl{font-size:9px;display:flex;align-items:center;gap:3px;opacity:.85}
 .bcell .posdot{display:inline-block;width:14px;text-align:center;font-size:8px;font-weight:800;border-radius:3px;padding:0 2px;color:#0a0a0a}
 .bcell .val{font-size:9px;font-weight:700;margin-top:1px}
+/* --- Availability tab (modern) --- */
+.availrow{display:grid;align-items:center;gap:10px;padding:9px 12px;border-radius:11px;background:var(--panel2);border:1px solid var(--line);transition:border-color .12s,transform .1s}
+.availrow:hover{border-color:#4a4a3c;transform:translateY(-1px)}
+.availrow .pname{font-weight:700;font-size:13.5px}
+.availpct{position:relative;height:30px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;overflow:hidden;border:1px solid var(--line)}
+.availpct .fill{position:absolute;left:0;top:0;bottom:0;border-radius:6px 0 0 6px;opacity:.34}
+.availpct .txt{position:relative;z-index:1}
+.availhead{display:grid;gap:10px;padding:6px 12px;font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);font-weight:700}
+.posbadge{display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:20px;border-radius:5px;font-size:9.5px;font-weight:800;color:#0a0a0a}
 .tooltip{position:fixed;z-index:90;width:300px;max-width:300px;background:#0A0A0C;border:1px solid #3A3A30;border-radius:10px;padding:12px 13px;font-size:12.5px;line-height:1.5;pointer-events:none;box-shadow:0 12px 40px #000D}
 .needcell{text-align:center;border-radius:5px;padding:3px 0;font-size:12px}
 .info{cursor:help;border-bottom:1px dotted var(--mut)}
@@ -6242,7 +6252,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const [search, setSearch] = useState("");
   const [posFilter, setPosFilter] = useState("ALL");
   const [sortState, setSortState] = useState({ key: "adp", dir: 1 });
-  const [showDrafted, setShowDrafted] = useState(true);
+  const [showDrafted, setShowDrafted] = useState(false); // default: show best AVAILABLE; toggle to include drafted
   const [rookieOnly, setRookieOnly] = useState(false);
   const DEFAULT_COLS = { adp: true, consensus: false, edge: true, proj: true, floor: false, ceil: false, vbd: true, rank: true, vbdTier: true, adpTier: false, mockAdp: false, myRank: false, blendAdp: false, age: false, bye: true, avail: true, nextpick: false, passYd: true, passTD: true, rushYd: true, rushTD: true, rec: true, recYd: true, recTD: true, tgt: false };
   const DEFAULT_SECTION_ORDER = ["market", "mine", "value", "demo", "avail", "stat"];
@@ -7324,15 +7334,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                     const remaining = ROUNDS - drafted;
                     return (
                       <tr key={i}>
-                        <td style={{ padding: "2px 4px 2px 0", color: i === userIdx ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 110 }}>{i === userIdx ? "You" : n}</td>
+                        <td style={{ padding: "2px 4px 2px 0", color: i === userIdx ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 110 }}>{i === userIdx ? (n || "Your team") : n}</td>
                         {POS.map((pos) => {
                           let lvl, tip;
                           if (needMode === "strength") {
-                            // QUALITY x QUANTITY via the shared helper, so this table and the team-view
-                            // chips always agree on what "strong / middle / weak" means.
-                            const req = REQ_F(cfg.sf)[pos] || 0;
-                            lvl = posStrength(counts[pos], best[pos], req, remaining);
-                            tip = lvl === 0 ? "Strong — starters set with real talent" : lvl === 1 ? "Middle of the pack" : "Weak — thin or below-replacement";
+                            // League-RELATIVE strength (same as the Teams tab): top third green, middle
+                            // amber, bottom third red — so the hub and Teams tab always agree.
+                            lvl = posRel[i] ? posRel[i][pos] : 1;
+                            tip = lvl === 0 ? `${pos}: top third of the league` : lvl === 1 ? `${pos}: middle of the league` : `${pos}: bottom third of the league`;
                           } else {
                             const req = REQ_F(cfg.sf)[pos] || 0;
                             const short = req - counts[pos];
@@ -7379,7 +7388,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               <div className="bteam" style={{ background: "transparent", border: "none" }} />
               {TEAM_NAMES.map((n, i) => (
                 <div key={i} className={`bteam${i === userIdx ? " you" : ""}`} title={n}>
-                  <div className="nm" style={{ color: i === userIdx ? "var(--gold)" : "var(--ink)" }}>{i === userIdx ? "YOUR TEAM" : n}</div>
+                  <div className="nm" style={{ color: i === userIdx ? "var(--gold)" : "var(--ink)" }}>{i === userIdx ? (TEAM_NAMES[i] || "Your team") : n}</div>
                   <div className="sub mut">{i === userIdx ? "you" : `slot ${i + 1}`}</div>
                 </div>
               ))}
@@ -7482,7 +7491,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               return (
                 <div key={i} className="panel" style={{ padding: 12, borderColor: i === userIdx ? "var(--gold)" : "var(--line)" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                    <div className="disp" style={{ fontSize: 16, fontWeight: 700, color: i === userIdx ? "var(--gold)" : "var(--ink)" }}>{i === userIdx ? "You" : n}</div>
+                    <div className="disp" style={{ fontSize: 16, fontWeight: 700, color: i === userIdx ? "var(--gold)" : "var(--ink)" }}>{i === userIdx ? (n || "Your team") : n}{i === userIdx && <span className="mut" style={{ fontSize: 10, fontWeight: 600, marginLeft: 6, letterSpacing: ".06em" }}>YOU</span>}</div>
                     <div className="num"><b>{lineupPts(roster, cfg.sf)}</b> <span className="mut">pts{teamsProj && ` • ${ordinal(proj.rank[i])}`}</span></div>
                   </div>
                   <div style={{ display: "flex", gap: 6, margin: "7px 0", flexWrap: "wrap" }}>
@@ -7513,41 +7522,64 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
 
       {tab === "avail" && (
         <div style={{ padding: 14 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
-            <div className="mut" style={{ fontSize: 12.5 }}>Survival odds at your upcoming picks. Trading for a different pick?</div>
-            <div className="chip">
-              Check pick #<input className="gs" style={{ width: 60, padding: "3px 6px", marginLeft: 6 }} type="number" min={picks.length + 1} placeholder="e.g. 30" value={customPick} onChange={(e) => setCustomPick(e.target.value.replace(/\D/g, ""))} />
-              {customPick && <button className="btn btn-mini" style={{ marginLeft: 6 }} onClick={() => setCustomPick("")}>clear</button>}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+            <div>
+              <div className="disp" style={{ fontSize: 19, fontWeight: 700 }}>Availability odds</div>
+              <div className="mut" style={{ fontSize: 12 }}>Chance each player survives to your upcoming picks — from live simulations.</div>
             </div>
-            {customSims && <span className="mut" style={{ fontSize: 12 }}>Showing odds at overall pick {customPick} ({pickLabel(+customPick - 1)})</span>}
-            <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden", marginLeft: "auto" }} title="Sort the list by draft order (ADP) or by value (VBD).">
-              <span className="mut" style={{ fontSize: 11, alignSelf: "center", padding: "0 8px" }}>Sort by</span>
-              {[["adp", "ADP"], ["vbd", "VBD"]].map(([k, lbl]) => (
-                <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: availSort === k ? "var(--gold)" : "transparent", color: availSort === k ? "#1A1505" : "var(--ink)", fontWeight: availSort === k ? 700 : 400 }} onClick={() => setAvailSort(k)}>{lbl}</button>
-              ))}
-            </div>
-          </div>
-          <div className="panel" style={{ maxWidth: 900 }}>
-            <table className="board">
-              <thead><tr>
-                <th>Top available by {availSort === "adp" ? "ADP" : "VBD"}</th><th className="num">{availSort === "adp" ? "ADP" : "VBD"}</th>
-                {sims && sims.nexts.map((o, i) => <th key={i} className="num">@ your {pickLabel(o)}</th>)}
-                {customSims && <th className="num" style={{ color: "var(--gold)" }}>@ pick {customPick}</th>}
-              </tr></thead>
-              <tbody>
-                {players.filter((p) => !draftedSet.has(p.id)).sort((a, b) => availSort === "adp" ? a.adp - b.adp : b.vbd - a.vbd).slice(0, 30).map((p) => (
-                  <tr key={p.id}>
-                    <td onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, false))} onMouseLeave={hideTip} style={{ cursor: "help" }}><PosName p={p} /> <span className="mut">{p.team}</span></td>
-                    <td className="num">{availSort === "adp" ? p.adp.toFixed(1) : p.vbd.toFixed(0)}</td>
-                    {sims && sims.nexts.map((_, i) => (
-                      <td key={i} className="num" style={{ background: heat(sims.pct[i][p.id]), textAlign: "center" }}>{sims.pct[i][p.id]}%</td>
-                    ))}
-                    {customSims && <td className="num" style={{ background: heat(customSims[p.id]), textAlign: "center", fontWeight: 600 }}>{customSims[p.id]}%</td>}
-                  </tr>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginLeft: "auto", flexWrap: "wrap" }}>
+              <div className="chip" style={{ display: "flex", alignItems: "center" }}>
+                Check pick #<input className="gs" style={{ width: 58, padding: "3px 6px", marginLeft: 6 }} type="number" min={picks.length + 1} placeholder="30" value={customPick} onChange={(e) => setCustomPick(e.target.value.replace(/\D/g, ""))} />
+                {customPick && <button className="btn btn-mini" style={{ marginLeft: 6 }} onClick={() => setCustomPick("")}>clear</button>}
+              </div>
+              <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }} title="Sort by draft order (ADP) or value (VBD).">
+                <span className="mut" style={{ fontSize: 11, alignSelf: "center", padding: "0 8px" }}>Sort</span>
+                {[["adp", "ADP"], ["vbd", "VBD"]].map(([k, lbl]) => (
+                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: availSort === k ? "var(--gold)" : "transparent", color: availSort === k ? "#1A1505" : "var(--ink)", fontWeight: availSort === k ? 700 : 400 }} onClick={() => setAvailSort(k)}>{lbl}</button>
                 ))}
-              </tbody>
-            </table>
+              </div>
+            </div>
           </div>
+          {(() => {
+            const cols = sims ? sims.nexts.length : 0;
+            const extra = customSims ? 1 : 0;
+            const grid = `minmax(150px,1.6fr) 56px repeat(${cols + extra}, minmax(64px,1fr))`;
+            const heatBar = (pct) => pct >= 70 ? "var(--green)" : pct >= 40 ? "var(--gold)" : "var(--red)";
+            const rows = players.filter((p) => !draftedSet.has(p.id)).sort((a, b) => availSort === "adp" ? a.adp - b.adp : b.vbd - a.vbd).slice(0, 30);
+            return (
+              <div style={{ maxWidth: 920 }}>
+                <div className="availhead" style={{ gridTemplateColumns: grid }}>
+                  <div>Best available</div>
+                  <div style={{ textAlign: "center" }}>{availSort === "adp" ? "ADP" : "VBD"}</div>
+                  {sims && sims.nexts.map((o, i) => <div key={i} style={{ textAlign: "center" }}>@ {pickLabel(o)}</div>)}
+                  {customSims && <div style={{ textAlign: "center", color: "var(--gold)" }}>@ {pickLabel(+customPick - 1)}</div>}
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {rows.map((p) => (
+                    <div key={p.id} className="availrow" style={{ gridTemplateColumns: grid, borderLeft: `3px solid ${POS_COLOR[p.pos]}` }}
+                      onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, false))} onMouseLeave={hideTip}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                        <span className="posbadge" style={{ background: POS_COLOR[p.pos] }}>{p.pos}{p.posRank}</span>
+                        <span style={{ minWidth: 0 }}><span className="pname" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>{p.name}</span><span className="mut" style={{ fontSize: 10.5 }}>{p.team} · Tier {p.tier}</span></span>
+                      </div>
+                      <div className="num" style={{ textAlign: "center", fontWeight: 700, color: "var(--mut)" }}>{availSort === "adp" ? p.adp.toFixed(0) : `+${p.vbd.toFixed(0)}`}</div>
+                      {sims && sims.nexts.map((_, i) => { const pct = sims.pct[i][p.id]; return (
+                        <div key={i} className="availpct"><span className="fill" style={{ width: `${pct}%`, background: heatBar(pct) }} /><span className="txt" style={{ color: pct >= 70 ? "var(--green)" : pct >= 40 ? "var(--gold)" : "var(--red)" }}>{pct}%</span></div>
+                      ); })}
+                      {customSims && (() => { const pct = customSims[p.id]; return (
+                        <div className="availpct" style={{ borderColor: "rgba(242,182,60,.4)" }}><span className="fill" style={{ width: `${pct}%`, background: heatBar(pct) }} /><span className="txt" style={{ color: pct >= 70 ? "var(--green)" : pct >= 40 ? "var(--gold)" : "var(--red)" }}>{pct}%</span></div>
+                      ); })()}
+                    </div>
+                  ))}
+                </div>
+                <div className="mut" style={{ fontSize: 11, marginTop: 10, display: "flex", gap: 14 }}>
+                  <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: "var(--green)", marginRight: 4 }} />Likely there (≥70%)</span>
+                  <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: "var(--gold)", marginRight: 4 }} />Coin-flip (40–70%)</span>
+                  <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: "var(--red)", marginRight: 4 }} />Likely gone (&lt;40%)</span>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -7599,7 +7631,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
             <span className="mut" style={{ fontSize: 11.5 }}>{summaryTeam == null ? "Steals & reaches show the whole league; your roster is highlighted." : `Showing ${summaryTeam === userIdx ? "your" : TEAM_NAMES[summaryTeam] + "'s"} picks, steals & reaches.`}</span>
           </div>
           <div className="panel" style={{ padding: 14 }}>
-            <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>{done ? "Final grades" : "Live grades"} <span className="mut" style={{ fontSize: 12 }}>value drafted + projected finish</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
+              <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{done ? "Final grades" : "Live grades"} <span className="mut" style={{ fontSize: 12 }}>value drafted + projected finish</span></div>
+              <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }}>
+                <span className="mut" style={{ fontSize: 11, alignSelf: "center", padding: "0 8px" }}>Sort by</span>
+                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "z" ? "var(--gold)" : "transparent", color: sumSort.key === "z" ? "#1A1505" : "var(--ink)", fontWeight: sumSort.key === "z" ? 700 : 400 }} onClick={() => setSumSort({ key: "z", dir: -1 })}>Grade</button>
+                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "val" ? "var(--gold)" : "transparent", color: sumSort.key === "val" ? "#1A1505" : "var(--ink)", fontWeight: sumSort.key === "val" ? 700 : 400 }} onClick={() => setSumSort({ key: "val", dir: -1 })}>Value</button>
+              </div>
+            </div>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead><tr className="mut" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", cursor: "pointer" }}>
                 <th style={{ textAlign: "left", paddingBottom: 5 }}>Team</th>
@@ -7616,7 +7655,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                   return (va - vb) * sumSort.dir;
                 }).map((i) => (
                   <tr key={i} style={{ color: i === userIdx ? "var(--gold)" : "var(--ink)" }}>
-                    <td style={{ padding: "3px 0" }}>{i === userIdx ? "You" : TEAM_NAMES[i]}</td>
+                    <td style={{ padding: "3px 0" }}>{i === userIdx ? `${TEAM_NAMES[i] || "Your team"}` : TEAM_NAMES[i]}{i === userIdx && <span className="mut" style={{ fontSize: 9, marginLeft: 5 }}>YOU</span>}</td>
                     <td className="num" style={{ textAlign: "right", background: valBg(valByTeam[i]) }}>{valByTeam[i] > 0 ? `+${valByTeam[i]}` : valByTeam[i]}</td>
                     <td className="num" style={{ textAlign: "right" }}>{proj.pts[i]}</td>
                     <td className="num" style={{ textAlign: "right" }}>{ordinal(proj.rank[i])}</td>
