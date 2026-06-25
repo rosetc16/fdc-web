@@ -5,19 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Fantasy Draft Compass</title>
     <meta name="description" content="Live draft intelligence for fantasy football — your format, every pick." />
-    <!-- Tabler icons webfont (the app uses ti ti-* icon classes).
-         Preconnect so the CDN handshake happens immediately, and preload the stylesheet so the font
-         starts downloading right away instead of after the JS bundle. font-display:swap (below) makes
-         icons appear as soon as the font is ready instead of being hidden while it loads. -->
-    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
-    <link rel="dns-prefetch" href="https://cdn.jsdelivr.net" />
-    <link rel="preload" as="style" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.30.0/dist/tabler-icons.min.css" />
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.30.0/dist/tabler-icons.min.css" />
-    <style>
-      /* Force the icon font to render as soon as it's available (no invisible-icon wait). The Tabler
-         webfont family is "tabler-icons"; overriding font-display avoids the multi-second block. */
-      @font-face { font-family: "tabler-icons"; font-display: swap; }
-    </style>
+    <!-- Tabler icons are bundled locally (imported in main.jsx), so they ship with the app and render
+         instantly instead of waiting on a CDN font download. -->
   </head>
   <body>
     <div id="root"></div>

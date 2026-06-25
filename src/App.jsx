@@ -36,6 +36,8 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // One account holds every season. The user picks an active season; rankings, leagues, and
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
+// Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
+const BUILD_TAG = "2026.06.25b";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1466,6 +1468,17 @@ const seedKeeperCounts = (players, teamIdx, counts) => { keeperAddIds(teamIdx).f
 const seedKeeperRoster = (players, teamIdx, arr) => { keeperAddIds(teamIdx).forEach((id) => { if (players[id]) arr.push(players[id]); }); };
 // every no-cost keeper id (all teams) — these are unavailable to draft
 const allKeeperAddIds = () => Object.values(KEEPER_ADDS).flat();
+
+// EXISTING ROSTERS (rookie / dynasty / keeper drafts): each team's current holdings BEFORE this draft.
+// Unlike keepers, these players are NOT in this draft's pool (they're already rostered elsewhere) — we
+// only use them to seed each team's POSITION COUNTS so predictions respect roster construction (a team
+// with two elite QBs won't be predicted to draft a rookie QB). { teamIdx: [{pos}, ...] }
+let ROSTER_ADDS = {};
+const setRosterAdds = (map) => { ROSTER_ADDS = map || {}; };
+// how many existing players a team has at a position (used to damp prediction demand at filled spots)
+const rosterCountAt = (teamIdx, pos) => (ROSTER_ADDS[teamIdx] || []).reduce((n, r) => n + (r.pos === pos ? 1 : 0), 0);
+const seedRosterCounts = (teamIdx, counts) => { (ROSTER_ADDS[teamIdx] || []).forEach((r) => { if (counts[r.pos] != null) counts[r.pos]++; }); };
+const hasRosterAdds = () => Object.keys(ROSTER_ADDS).length > 0;
 const pickLabel = (o) => `${Math.floor(o / TEAMS) + 1}.${String((o % TEAMS) + 1).padStart(2, "0")}`;
 const ordinal = (n) => { const s = ["th","st","nd","rd"], v = n % 100; return n + (s[(v-20)%10] || s[v] || s[0]); };
 const totalOf = (cfg) => TEAMS * cfg.rounds;
@@ -1890,9 +1903,16 @@ function needMult(counts, pos, round, dem, R) {
 function runMultF(recent, pos) { const c = recent.filter((x) => x === pos).length; return c >= 3 ? Math.min(1.5, 1 + 0.18 * (c - 2)) : 1; }
 function weightFor(p, pickNum, counts, round, recent, dem, R) { return baseW(p, pickNum) * needMult(counts, p.pos, round, dem, R) * runMultF(recent, p.pos) + 1e-7; }
 function candidatesOf(sortedAdp, drafted, limit) { const out = []; for (const p of sortedAdp) { if (!drafted[p.id]) { out.push(p); if (out.length >= limit) break; } } return out; }
-function sample(cands, ws) { const sum = ws.reduce((a, b) => a + b, 0); let r = Math.random() * sum; for (let i = 0; i < cands.length; i++) { r -= ws[i]; if (r <= 0) return i; } return cands.length - 1; }
+// Seeded PRNG (mulberry32) so Monte Carlo sims are STABLE for a given draft state — the availability
+// percentages shouldn't flicker between renders when nothing has changed. We reseed from the draft
+// state (pick count) at the start of each sim run, so results only change when picks actually change.
+let _rngState = 123456789;
+function seedRng(seed) { _rngState = (seed >>> 0) || 1; }
+function rng() { _rngState |= 0; _rngState = (_rngState + 0x6D2B79F5) | 0; let t = Math.imul(_rngState ^ (_rngState >>> 15), 1 | _rngState); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
+function sample(cands, ws) { const sum = ws.reduce((a, b) => a + b, 0); let r = rng() * sum; for (let i = 0; i < cands.length; i++) { r -= ws[i]; if (r <= 0) return i; } return cands.length - 1; }
 
 function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
+  seedRng(picks.length * 2654435761 + userIdx * 40503 + (cfg.teams || 12)); // stable per draft state
   const TOTAL = totalOf(cfg), R = cfg.rounds, sf = cfg.sf;
   const start = picks.length;
   const nexts = []; for (let o = start; o < TOTAL && nexts.length < 3; o++) if (teamAt(o) === userIdx) nexts.push(o);
@@ -1901,7 +1921,7 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
   const baseDrafted = new Uint8Array(players.length);
   const baseCounts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
   picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; baseDrafted[pk] = 1; const c = baseCounts[teamAt(o)]; if (c[pl.pos] != null) c[pl.pos]++; });
-  for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, baseCounts[t]); }
+  for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, baseCounts[t]); seedRosterCounts(t, baseCounts[t]); }
   allKeeperAddIds().forEach((id) => { baseDrafted[id] = 1; });
   const baseRecent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   const surv = [new Float64Array(players.length), new Float64Array(players.length), new Float64Array(players.length)];
@@ -1938,12 +1958,13 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
 // Survival odds for every player at an arbitrary OVERALL pick number (e.g. a pick you
 // might trade for). Simulates opponents from the current state up to that pick.
 function survivalAtPick(players, sortedAdp, picks, targetOverall, cfg, nSims) {
+  seedRng(picks.length * 2654435761 + targetOverall * 2246822519); // stable per draft state + target
   const TOTAL = totalOf(cfg), R = cfg.rounds, sf = cfg.sf, dem = demand(sf);
   const target = Math.max(picks.length, Math.min(TOTAL, targetOverall - 1)); // 0-indexed exclusive boundary
   const baseDrafted = new Uint8Array(players.length);
   const baseCounts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
   picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; baseDrafted[pk] = 1; const c = baseCounts[teamAt(o)]; if (c[pl.pos] != null) c[pl.pos]++; });
-  for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, baseCounts[t]); }
+  for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, baseCounts[t]); seedRosterCounts(t, baseCounts[t]); }
   allKeeperAddIds().forEach((id) => { baseDrafted[id] = 1; });
   const baseRecent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   // Count, per player, how many sims they SURVIVE past `target`. One simulation per sim run,
@@ -2009,7 +2030,7 @@ function projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, forcedI
   const drafted = new Uint8Array(players.length);
   const counts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
   picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; drafted[pk] = 1; const c = counts[teamAt(o)]; if (c[pl.pos] != null) c[pl.pos]++; });
-  for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, counts[t]); }
+  for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, counts[t]); seedRosterCounts(t, counts[t]); }
   allKeeperAddIds().forEach((id) => { drafted[id] = 1; });
   let recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   let userFirstDone = false;
@@ -2043,7 +2064,7 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
   const drafted = new Uint8Array(players.length);
   const counts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
   picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; drafted[pk] = 1; const c = counts[teamAt(o)]; if (c[pl.pos] != null) c[pl.pos]++; });
-  for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, counts[t]); }
+  for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, counts[t]); seedRosterCounts(t, counts[t]); }
   allKeeperAddIds().forEach((id) => { drafted[id] = 1; });
   let recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   const path = []; let passedUser = false, afterUser = 0;
@@ -4451,6 +4472,7 @@ function AppHeader({ user, onAdmin, onSignOut, onHome, onAccount, onApp, onHelp,
       {user?.admin && <button className="btn" onClick={onAdmin}>Admin</button>}
       {onAccount && <button className="btn" onClick={onAccount} title="Account settings"><i className="ti ti-user" style={{ fontSize: 14 }} aria-hidden="true" /> Account</button>}
       <button className="btn btn-mini" onClick={onSignOut}>Sign out</button>
+      <span className="mut" style={{ fontSize: 9, opacity: 0.5, marginLeft: 2 }} title="App version — confirms the latest deploy is live">v{BUILD_TAG}</span>
     </div>
   );
 }
@@ -5437,6 +5459,7 @@ function ConnectBox({ connect, onConnect, onClear }) {
         cfg: d.cfg || null, picks: d.picks || [], status: d.status || lg.draft_status || null,
         teams: d.teams || null, yourSlot: d.yourSlot || null, slotNames: d.slotNames || null,
         draftType: d.draftType || "snake", tradedPicks: d.tradedPicks || [], keepers: d.keepers || [],
+        existingRosters: d.existingRosters || null,
       });
       setOpen(false); setSel(null); setVal(""); setSleeperLeagues(null);
     } catch (e) { setError(e.data?.error || e.message || "Couldn't load that league's draft."); }
@@ -5617,9 +5640,17 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
     for (let i = 0; i < n; i++) { names.push(f.teamNames[i] || TEAM_NAMES_POOL[i] || `Team ${i + 1}`); favs.push(f.favTeams[i] || ""); }
     upd({ teamNames: names, favTeams: favs });
   };
-  // If we open the form directly on the Teams/Pick-trades tab (deep link from the hub), make sure
-  // team names exist so those editors render with real names instead of being blank.
-  useEffect(() => { if (initialSeg === "trades" || initialSeg === "order") ensureNames(); /* eslint-disable-next-line */ }, []);
+  // Populate team names whenever the user views the Teams/Pick-trades tabs (or deep-links there), so
+  // those editors always render with real names. Done in an effect (after render) rather than in the
+  // click handler, so switching tabs can never be blocked by a state update mid-click.
+  useEffect(() => {
+    if (seg === "trades" || seg === "order") {
+      const n = +f.teams;
+      const needFill = !(f.teamNames && f.teamNames.length === n && f.teamNames.every((x) => x));
+      if (needFill) ensureNames();
+    }
+    /* eslint-disable-next-line */
+  }, [seg]);
 
   const submit = () => {
     const teRec = f.scoring.recTE != null ? f.scoring.recTE : f.scoring.rec;
@@ -5664,7 +5695,7 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
     <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
       <div style={{ display: "flex", borderBottom: "1px solid var(--line)" }}>
         {SEGS.map(([k, l]) => (
-          <button key={k} onClick={() => { if (k === "order" || k === "trades") { ensureNames(); } setSeg(k); }}
+          <button key={k} onClick={() => setSeg(k)}
             style={{ flex: 1, padding: "12px 6px", background: seg === k ? "var(--panel2)" : "transparent", border: "none", borderBottom: seg === k ? "2px solid var(--gold)" : "2px solid transparent", color: seg === k ? "var(--gold)" : "var(--mut)", fontWeight: 600, fontSize: 12, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
             {l}
           </button>
@@ -5718,7 +5749,7 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
               <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
                 <div style={{ flex: 1, minWidth: 220 }}>
                   <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--green)", marginBottom: 3 }}><i className="ti ti-circle-check" style={{ fontSize: 15, marginRight: 5 }} aria-hidden="true" />Connected to {f.connect.leagueName || "your Sleeper league"}</div>
-                  <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>Everything's set automatically — teams, scoring, roster, draft order{f.connect.yourSlot ? `, your slot (${f.connect.yourSlot})` : ""}{(f.connect.tradedPicks || []).length ? ", traded picks" : ""}{(f.connect.keepers || []).length ? ", keepers" : ""}. <b style={{ color: "var(--ink)" }}>You don't need to fill in anything below.</b></div>
+                  <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>Everything's set automatically — teams, scoring, roster, draft order{f.connect.yourSlot ? `, your slot (${f.connect.yourSlot})` : ""}{(f.connect.tradedPicks || []).length ? ", traded picks" : ""}{(f.connect.keepers || []).length ? ", keepers" : ""}{f.connect.existingRosters && Object.keys(f.connect.existingRosters).length ? ", existing rosters (used to predict picks)" : ""}. <b style={{ color: "var(--ink)" }}>You don't need to fill in anything below.</b></div>
                 </div>
                 <button className="btn btn-gold" style={{ padding: "11px 20px", fontSize: 14, fontWeight: 700, alignSelf: "center", flexShrink: 0 }} onClick={submit}>
                   <i className="ti ti-player-play" style={{ fontSize: 15, marginRight: 6 }} aria-hidden="true" />Enter draft room
@@ -6496,6 +6527,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const [pickLens, setPickLens] = useState("market");
   const [sumSort, setSumSort] = useState({ key: "z", dir: -1 });
   const [summaryTeam, setSummaryTeam] = useState(null); // null = you + league-wide; else a team idx
+  const [summaryExpand, setSummaryExpand] = useState(false); // show more steals/reaches
   const [capWarn, setCapWarn] = useState(null);
   const connected = !!cfg.connect;
   const [clock, setClock] = useState(90);
@@ -6516,6 +6548,22 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     });
     setKeeperAdds(merged);
   }, [cfg, players]);
+  // Resolve EXISTING rosters from a connected rookie/dynasty league into per-team position counts, so
+  // the prediction engine respects roster construction (a team stacked at QB won't be predicted to draft
+  // a rookie QB). We only need positions here — these players aren't in the draft pool. We exclude any
+  // player that's a no-cost keeper for that team (already counted) to avoid double-counting.
+  useMemo(() => {
+    const er = cfg.connect && cfg.connect.existingRosters ? cfg.connect.existingRosters : null;
+    if (!er) { setRosterAdds({}); return; }
+    const POS_OK = { QB: 1, RB: 1, WR: 1, TE: 1 };
+    const map = {};
+    Object.entries(er).forEach(([slot, list]) => {
+      const team = (+slot) - 1;
+      if (team < 0 || !Array.isArray(list)) return;
+      map[team] = list.filter((r) => r && POS_OK[r.pos]).map((r) => ({ pos: r.pos }));
+    });
+    setRosterAdds(map);
+  }, [cfg]);
   // ADP-Mock: average overall pick a player went at across THIS league's stored mocks.
   // Only meaningful in the official draft (mocks belong to this league's umbrella).
   const mockAdp = useMemo(() => {
@@ -6767,7 +6815,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
           }
         }
         setSyncState({ status: d.status, lastAt: Date.now(), error: null });
-        setLiveSlots(slotTeam);
+        // Only replace liveSlots when the mapping actually changed — otherwise a new object every poll
+        // (every 5s) would invalidate the sims useMemo and make availability % flicker with no real change.
+        setLiveSlots((prev) => { const next = JSON.stringify(slotTeam); return prev && JSON.stringify(prev) === next ? prev : slotTeam; });
         // Capture Sleeper's real clock. serverNowMs lets us correct for any difference between the
         // server's clock and this browser's, so the countdown lines up with what Sleeper shows.
         if (d.pickDeadlineMs && d.serverNowMs) {
@@ -6854,7 +6904,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
       case "name": return p.name;
       case "adp": return p.adp;
       case "consensus": return p.consensus;
-      case "edge": return p.adp - p.consensus;
+      case "edge": { const r = myRanks.map[p.id]; if (!r || !r.exact) return -9999; return Math.round(p.adp - r.rank); }
       case "pts": case "proj": return p.pts;
       case "floor": return p.floor;
       case "ceil": return p.ceil;
@@ -6922,21 +6972,22 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     };
 
     // tilt multiplier for the Your-build lens. Combines AGE (window) and NEED (roster construction).
+    // Made strong enough to VISIBLY reshape the board — a committed rebuild should clearly surface young
+    // upside over aging vets, and a need position should jump established starters.
     const tilt = (pos, age) => {
       if (!["QB", "RB", "WR", "TE"].includes(pos)) return 1;
       let m = 1;
-      // age/window component (only once you've committed to a lane)
       if (decided && lane !== "balanced" && age) {
         const center = pos === "RB" ? 25 : pos === "WR" ? 26 : pos === "TE" ? 27 : 28;
-        const youthScore = (center - age) / 4;
-        const strength = (isDyn ? 0.42 : 0.10) * confidence;
+        const youthScore = (center - age) / 3.5;
+        const strength = (isDyn ? 0.6 : 0.18) * (0.5 + 0.5 * confidence); // strong, esp. dynasty
         m *= lane === "rebuild" ? 1 + strength * youthScore : 1 - strength * youthScore;
       }
-      // need component (always on — your roster always has shape). A real starting hole lifts a
-      // position ~25%; a heavily stacked position is pushed down. Tuned to visibly reshape the board.
+      // need component (always on). A true starting hole lifts a position ~40%; a heavily stacked one
+      // is pushed down hard. This is what makes the board visibly reorder toward your roster's shape.
       const ns = needScore(pos);
-      m *= 1 + ns * 0.28;
-      return Math.max(0.3, Math.min(1.7, m));
+      m *= 1 + ns * 0.45;
+      return Math.max(0.25, Math.min(2.0, m));
     };
     return { lane, label, confidence, picksIn: aged.length, avgAge, decided, tilt, have, req };
   }, [myCurrent, cfg.type, cfg.sf]);
@@ -6969,9 +7020,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   // section groups columns under labeled dividers in the table + columns menu.
   const COL_DEFS = [
     // — ADP & market —
-    { key: "adp", label: "ADP", group: "draft", section: "market", num: true, sortable: true, tip: "This platform's average draft position." },
-    { key: "consensus", label: "Consensus", group: "draft", section: "market", num: true, sortable: true, tip: "Field-wide consensus ADP — the average draft position across many public sources, independent of your platform." },
-    { key: "edge", label: "Edge", group: "draft", section: "market", num: true, sortable: true, needsPlatform: true },
+    { key: "adp", label: "ADP", group: "draft", section: "market", num: true, sortable: true, tip: "Sleeper ADP for this league's format — the average pick across real Sleeper drafts. This is the board everyone in your league sees." },
+    { key: "consensus", label: "Sleeper ADP", group: "draft", section: "market", num: true, sortable: true, hidden: true, tip: "Sleeper ADP (same source as ADP). Hidden by default since this app uses Sleeper as its single source." },
+    { key: "edge", label: "Edge", group: "draft", section: "mine", num: true, sortable: true, needsRanks: true, tip: "Your edge: Sleeper ADP minus YOUR personal rank. Positive (green) = the market lets him slide past where you'd take him (wait for value). Negative (red) = you rank him above the market, so you'd have to reach. Requires your personal rankings." },
     { key: "adpTier", label: "ADP tier", group: "draft", section: "market", num: true, sortable: true, tip: "Tier from gaps in market ADP." },
     { key: "mockAdp", label: "ADP mock", group: "draft", section: "market", num: true, sortable: true, needsMocks: true, tip: "Average pick this player went at across your mock drafts for this league." },
     // — Your board (only when you have ranks matching this league's type + format) —
@@ -7023,11 +7074,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const cellFor = (p, key, gone) => {
     const av = sims ? sims.pct[0][p.id] : null;
     const av2 = sims && sims.pct[1] ? sims.pct[1][p.id] : null;
-    const edge = Math.round(p.adp - p.consensus);
+    const _er = myRanks.map[p.id];
+    const edge = (_er && _er.exact) ? Math.round(p.adp - _er.rank) : null;
     switch (key) {
       case "adp": return p.adp.toFixed(1);
       case "consensus": return <span className="mut">{p.consensus.toFixed(1)}</span>;
-      case "edge": return <span style={{ color: edge > 3 ? "var(--green)" : edge < -3 ? "var(--red)" : "var(--mut)" }}>{edge > 0 ? `+${edge}` : edge}</span>;
+      case "edge": return edge == null ? <span className="mut" title="Set your personal rankings to see your edge vs the market">—</span> : <span style={{ color: edge > 3 ? "var(--green)" : edge < -3 ? "var(--red)" : "var(--mut)" }}>{edge > 0 ? `+${edge}` : edge}</span>;
       case "proj": return p.pts;
       case "floor": return <span className="mut">{p.floor}</span>;
       case "ceil": return <span className="mut">{p.ceil}</span>;
@@ -7268,7 +7320,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
             <div className="tickcard clock" style={{ borderColor: onClock === userIdx ? "var(--gold)" : "#33476B" }}>
               <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".07em", color: onClock === userIdx ? "var(--gold)" : "var(--mut)" }}>On the clock</div>
               <div className="disp" style={{ fontSize: 17, fontWeight: 700, color: onClock === userIdx ? "var(--gold)" : "var(--ink)" }}>
-                {pickLabel(picks.length)} — {onClock === userIdx ? "YOU" : TEAM_NAMES[onClock]}
+                {pickLabel(picks.length)} <span className="mut" style={{ fontWeight: 600, fontSize: 14 }}>(#{picks.length + 1} overall)</span> — {onClock === userIdx ? "YOU" : TEAM_NAMES[onClock]}
               </div>
               {connected && (
                 <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 3 }}>
@@ -7500,7 +7552,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                       return (
                       <div key={sec} style={{ marginBottom: 6 }}>
                         <div className="disp" style={{ fontSize: 9.5, letterSpacing: ".08em", color: "var(--gold)", margin: "6px 0 3px", textTransform: "uppercase" }}>{SECTION_LABELS[sec]}{sec === "market" && <span className="mut" style={{ fontSize: 9 }}> · pinned left</span>}</div>
-                        {colsInSec.map((c) => {
+                        {colsInSec.filter((c) => !c.hidden).map((c) => {
                           const avail = colAvailable(c);
                           const why = !avail ? (c.needsRanks ? "Set personal rankings for this format to unlock" : c.needsPlatform ? "Connect a platform to unlock" : c.needsMocks ? "Run mocks for this league to unlock" : "Unavailable") : "";
                           return (
@@ -8022,9 +8074,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
 
           <div className="panel" style={{ padding: 14 }}>
             <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Biggest steals <span className="mut" style={{ fontSize: 12 }}>{summaryTeam == null ? "(league-wide, curve-weighted)" : `(${summaryTeam === userIdx ? "your team" : TEAM_NAMES[summaryTeam]})`}</span></div>
-            <SummaryTable rows={graded.filter((g) => summaryTeam == null || g.t === summaryTeam).slice().sort((a, b) => b.val - a.val).slice(0, 8).filter((g) => g.val > 0)} userIdx={summaryTeam == null ? userIdx : summaryTeam} />
+            <SummaryTable rows={graded.filter((g) => summaryTeam == null || g.t === summaryTeam).slice().sort((a, b) => b.val - a.val).filter((g) => g.val > 0).slice(0, summaryExpand ? 40 : 8)} userIdx={summaryTeam == null ? userIdx : summaryTeam} />
             <div className="disp" style={{ fontSize: 18, fontWeight: 700, margin: "14px 0 8px" }}>Biggest reaches</div>
-            <SummaryTable rows={graded.filter((g) => summaryTeam == null || g.t === summaryTeam).slice().sort((a, b) => a.val - b.val).slice(0, 8).filter((g) => g.val < 0)} userIdx={summaryTeam == null ? userIdx : summaryTeam} />
+            <SummaryTable rows={graded.filter((g) => summaryTeam == null || g.t === summaryTeam).slice().sort((a, b) => a.val - b.val).filter((g) => g.val < 0).slice(0, summaryExpand ? 40 : 8)} userIdx={summaryTeam == null ? userIdx : summaryTeam} />
+            <button className="btn btn-mini" style={{ marginTop: 10, width: "100%" }} onClick={() => setSummaryExpand((s) => !s)}>{summaryExpand ? "Show less" : "Show more"}</button>
           </div>
 
           <div className="panel" style={{ padding: 14 }}>
@@ -8795,6 +8848,7 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
   const [findMode, setFindMode] = useState("position");
   const [findPos, setFindPos] = useState("RB");
   const [findPlayerId, setFindPlayerId] = useState(null);
+  const [findPlayerQ, setFindPlayerQ] = useState("");
   const req = REQ_F(cfg.sf);
   const superOnly = (cfg.start && cfg.start.SUPER || 0) > 0;
   const myCounts = {}; POS.forEach((p) => (myCounts[p] = myRoster.filter((x) => x.pos === p).length));
@@ -9000,12 +9054,23 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
             {findMode === "position" ? (
               <select className="gs" value={findPos} onChange={(e) => setFindPos(e.target.value)}>{POS.map((p) => <option key={p} value={p}>{p}</option>)}</select>
             ) : (
-              <select className="gs" value={findPlayerId == null ? "" : findPlayerId} onChange={(e) => setFindPlayerId(e.target.value ? +e.target.value : null)}>
-                <option value="">Pick a target…</option>
-                {players.filter((p) => draftedSet.has(p.id) && teamAt(picks.indexOf(p.id)) !== userIdx && POS.includes(p.pos))
-                  .sort((a, b) => tradeValue(b, cfg) - tradeValue(a, cfg)).slice(0, 60)
-                  .map((p) => <option key={p.id} value={p.id}>{p.name} ({p.pos})</option>)}
-              </select>
+              <div style={{ position: "relative", minWidth: 240 }}>
+                <input className="gs" style={{ width: "100%" }} placeholder="Search any rostered player…" value={findPlayerQ} onChange={(e) => { setFindPlayerQ(e.target.value); setFindPlayerId(null); }} />
+                {findPlayerQ.trim() && findPlayerId == null && (
+                  <div className="panel" style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20, maxHeight: 240, overflowY: "auto", marginTop: 2, boxShadow: "0 8px 24px #000C" }}>
+                    {players.filter((p) => draftedSet.has(p.id) && teamAt(picks.indexOf(p.id)) !== userIdx && POS.includes(p.pos) && p.name.toLowerCase().includes(findPlayerQ.toLowerCase()))
+                      .sort((a, b) => tradeValue(b, cfg) - tradeValue(a, cfg)).slice(0, 30)
+                      .map((p) => (
+                        <div key={p.id} onClick={() => { setFindPlayerId(p.id); setFindPlayerQ(p.name); }} style={{ display: "flex", alignItems: "center", gap: 7, padding: "6px 9px", cursor: "pointer", fontSize: 12.5, borderBottom: "1px solid var(--line)" }}>
+                          <Dot pos={p.pos} /><span style={{ flex: 1 }}>{p.name}</span><span className="mut" style={{ fontSize: 11 }}>{TEAM_NAMES[teamAt(picks.indexOf(p.id))]?.split(" ")[0]}</span>
+                        </div>
+                      ))}
+                    {players.filter((p) => draftedSet.has(p.id) && teamAt(picks.indexOf(p.id)) !== userIdx && POS.includes(p.pos) && p.name.toLowerCase().includes(findPlayerQ.toLowerCase())).length === 0 && (
+                      <div className="mut" style={{ padding: "8px 9px", fontSize: 12 }}>No rostered player matches — only players drafted by other teams can be trade targets.</div>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
           </div>
           {(() => {
