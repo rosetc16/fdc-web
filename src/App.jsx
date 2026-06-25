@@ -5371,7 +5371,9 @@ const PLATFORMS = [
 // leagues so you can pick which one to connect (and sync live). Other platforms are still simulated.
 function ConnectBox({ connect, onConnect, onClear }) {
   const [open, setOpen] = useState(false);
-  const [sel, setSel] = useState(null);
+  // When Sleeper is the only platform, skip the platform picker entirely and go straight to the
+  // username step — one fewer click on the path everyone takes.
+  const [sel, setSel] = useState(PLATFORMS.length === 1 ? PLATFORMS[0] : null);
   const [val, setVal] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -5428,14 +5430,14 @@ function ConnectBox({ connect, onConnect, onClear }) {
   return (
     <div style={{ marginBottom: 16 }}>
       {!open ? (
-        <button className="btn" style={{ width: "100%", padding: 11, borderColor: "var(--gold)", color: "var(--gold)" }} onClick={() => setOpen(true)}>
-          <i className="ti ti-link" style={{ fontSize: 15 }} aria-hidden="true" /> Connect a league for instant setup & live sync
+        <button className="btn btn-gold" style={{ width: "100%", padding: 13, fontSize: 14, fontWeight: 700 }} onClick={() => setOpen(true)}>
+          <i className="ti ti-brand-sleeper" style={{ fontSize: 16, marginRight: 2 }} aria-hidden="true" /><i className="ti ti-bolt" style={{ fontSize: 15 }} aria-hidden="true" /> Connect your Sleeper league — instant setup & live sync
         </button>
       ) : (
         <div className="panel" style={{ padding: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
             <div className="disp" style={{ fontSize: 15, fontWeight: 700 }}>Connect your league</div>
-            <button className="btn btn-mini" onClick={() => { setOpen(false); setSel(null); setSleeperLeagues(null); setError(null); }}>Cancel</button>
+            <button className="btn btn-mini" onClick={() => { setOpen(false); setSel(PLATFORMS.length === 1 ? PLATFORMS[0] : null); setSleeperLeagues(null); setError(null); }}>Cancel</button>
           </div>
           {!sel ? (
             <div>
@@ -5465,9 +5467,13 @@ function ConnectBox({ connect, onConnect, onClear }) {
                 <div>
                   {/* Step 1: username → fetch leagues */}
                   {sleeperLeagues == null ? (
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <input className="gs" style={{ flex: 1 }} placeholder="Sleeper username" value={val} onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && val.trim()) fetchSleeperLeagues(); }} />
-                      <button className="btn btn-gold" onClick={fetchSleeperLeagues} disabled={busy || !val.trim()}>{busy ? "Finding…" : "Find my leagues"}</button>
+                    <div>
+                      <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>Enter your Sleeper username to pull your leagues</div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <input className="gs" autoFocus style={{ flex: 1 }} placeholder="Sleeper username" value={val} onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && val.trim()) fetchSleeperLeagues(); }} />
+                        <button className="btn btn-gold" onClick={fetchSleeperLeagues} disabled={busy || !val.trim()}>{busy ? "Finding…" : "Find my leagues"}</button>
+                      </div>
+                      <div className="mut" style={{ fontSize: 11, marginTop: 6 }}>It's the @username on your Sleeper profile — not your email.</div>
                     </div>
                   ) : (
                     /* Step 2: choose a league */
@@ -5562,8 +5568,8 @@ function DraftOrderTab({ f, upd, ensureNames }) {
   );
 }
 
-function ConfigForm({ initial, onSubmit, submitLabel, onCancel }) {
-  const [seg, setSeg] = useState("basics");
+function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
+  const [seg, setSeg] = useState(initialSeg || "basics");
   const [keeperModal, setKeeperModal] = useState(false);
   const [f, setF] = useState(() => ({
     name: "My league", type: "redraft", teams: 12, rounds: 15, slot: "", order: "snake", excludeRookies: false, pickTrading: false, keeper: false, idp: false,
@@ -5588,6 +5594,9 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel }) {
     for (let i = 0; i < n; i++) { names.push(f.teamNames[i] || TEAM_NAMES_POOL[i] || `Team ${i + 1}`); favs.push(f.favTeams[i] || ""); }
     upd({ teamNames: names, favTeams: favs });
   };
+  // If we open the form directly on the Teams/Pick-trades tab (deep link from the hub), make sure
+  // team names exist so those editors render with real names instead of being blank.
+  useEffect(() => { if (initialSeg === "trades" || initialSeg === "order") ensureNames(); /* eslint-disable-next-line */ }, []);
 
   const submit = () => {
     const teRec = f.scoring.recTE != null ? f.scoring.recTE : f.scoring.rec;
@@ -5682,11 +5691,22 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel }) {
             upd(patch);
           }} onClear={() => upd({ connect: null })} />
           {f.connect && f.connect.platform === "sleeper" && (
-            <div className="panel" style={{ padding: "10px 12px", marginBottom: 12, marginTop: -6, background: "#0E1206", borderColor: "#3A4A1A" }}>
-              <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--green)", marginBottom: 3 }}><i className="ti ti-check" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Pulled from {f.connect.leagueName || "your Sleeper league"} — nothing below to fill in</div>
-              <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>Teams, scoring, roster spots, draft order, team names{(f.connect.tradedPicks || []).length ? ", and traded picks" : ""} are set automatically{f.connect.yourSlot ? `, and you're slot ${f.connect.yourSlot}` : ""}. {(f.connect.picks || []).length ? `${f.connect.picks.length} pick${f.connect.picks.length === 1 ? "" : "s"} already made will load.` : ""} Everything stays in sync with your league as the draft (and any trades) happen — you can review the settings below, but you don't need to change anything.</div>
+            <div className="panel" style={{ padding: "14px 16px", marginBottom: 16, marginTop: -6, background: "#0E1206", borderColor: "var(--green)" }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--green)", marginBottom: 3 }}><i className="ti ti-circle-check" style={{ fontSize: 15, marginRight: 5 }} aria-hidden="true" />Connected to {f.connect.leagueName || "your Sleeper league"}</div>
+                  <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>Everything's set automatically — teams, scoring, roster, draft order{f.connect.yourSlot ? `, your slot (${f.connect.yourSlot})` : ""}{(f.connect.tradedPicks || []).length ? ", traded picks" : ""}{(f.connect.keepers || []).length ? ", keepers" : ""}. <b style={{ color: "var(--ink)" }}>You don't need to fill in anything below.</b></div>
+                </div>
+                <button className="btn btn-gold" style={{ padding: "11px 20px", fontSize: 14, fontWeight: 700, alignSelf: "center", flexShrink: 0 }} onClick={submit}>
+                  <i className="ti ti-player-play" style={{ fontSize: 15, marginRight: 6 }} aria-hidden="true" />Enter draft room
+                </button>
+              </div>
+              <details style={{ marginTop: 10 }}>
+                <summary style={{ fontSize: 11.5, color: "var(--mut)", cursor: "pointer", userSelect: "none" }}>Review or tweak settings (optional)</summary>
+                <div className="mut" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.5 }}>The fields below are pre-filled from your league. You can adjust them, but for a connected Sleeper league you normally don't need to — just hit “Enter draft room” above.</div>
+              </details>
             </div>
-          )}          {Row("League name", <input className="gs" style={{ width: "100%" }} value={f.name} onChange={(e) => upd({ name: e.target.value })} />)}
+          )}{Row("League name", <input className="gs" style={{ width: "100%" }} value={f.name} onChange={(e) => upd({ name: e.target.value })} />)}
           {Row("League type",
             <select className="gs" style={{ width: "100%" }} value={f.type} onChange={(e) => upd({ type: e.target.value })}>
               {LEAGUE_TYPES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
@@ -6308,6 +6328,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const askOfficialMode = !mockLike && !connectedPlatform && !cfg.draftMode;
   const [mockTradingOn, setMockTradingOn] = useState(false); // in-mock trading with CPU teams (opt-in)
   const [tab, setTab] = useState(initialTab || "hub");
+  const [settingsSeg, setSettingsSeg] = useState(null); // which Settings sub-tab to open (e.g. "trades")
   const [strategy, setStrategy] = useState("balanced");
   const [search, setSearch] = useState("");
   const [posFilter, setPosFilter] = useState("ALL");
@@ -6726,30 +6747,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const defaultDir = (key) => (["adp", "consensus", "rank", "vbdTier", "adpTier", "age", "bye", "name"].includes(key) ? 1 : -1);
   const setSort = (key) => setSortState((s) => (s.key === key ? { key, dir: -s.dir } : { key, dir: defaultDir(key) }));
 
-  const rows = useMemo(() => {
-    let list = players.slice();
-    if (posFilter !== "ALL") list = list.filter((p) => p.pos === posFilter);
-    if (rookieOnly) list = list.filter((p) => p.rookie);
-    if (search) { const q = search.toLowerCase(); list = list.filter((p) => p.name.toLowerCase().includes(q)); }
-    if (!showDrafted) list = list.filter((p) => !draftedSet.has(p.id));
-    const { key, dir } = sortState;
-    // "Your build" lens = sorting by VBD. When you've committed to a contention window (round 4+),
-    // tilt the value by how well each player fits your window (younger for a rebuild, proven for
-    // win-now). Before you've picked a lane, this is a no-op, so early rounds rank on pure value.
-    const buildLens = key === "vbd";
-    list.sort((a, b) => {
-      if (buildLens && myWindow.decided) {
-        const va = (a.vbd ?? -50) * myWindow.tilt(a.pos, a.age);
-        const vb = (b.vbd ?? -50) * myWindow.tilt(b.pos, b.age);
-        return (va - vb) * dir;
-      }
-      const va = colVal(a, key), vb = colVal(b, key);
-      if (typeof va === "string") return va.localeCompare(vb) * dir;
-      return (va - vb) * dir;
-    });
-    return list.slice(0, 130);
-  }, [players, posFilter, search, showDrafted, sortState, draftedSet, sims, rookieOnly, myWindow]);
-
   const myCurrent = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => teamAt(x.o) === userIdx).map((x) => x.p);
 
   // ---- CONTENTION WINDOW ("Your build" demographics) -----------------------------------------
@@ -6760,7 +6757,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   // applies in any league. Returns { lane, label, confidence, picksIn, tilt(pos,age)->multiplier }.
   const myWindow = useMemo(() => {
     const isDyn = cfg.type === "dynasty" || cfg.type === "keeper";
-    const myRound = Math.floor(myCurrent.length); // ~ how many picks you've made
     // Weight earlier picks more (they define your core). Use only skill positions with a known age.
     const aged = myCurrent.filter((p) => p.age && ["QB", "RB", "WR", "TE"].includes(p.pos));
     let wsum = 0, asum = 0;
@@ -6794,6 +6790,30 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     };
     return { lane, label, confidence, picksIn: aged.length, avgAge, decided, tilt };
   }, [myCurrent, cfg.type]);
+
+  const rows = useMemo(() => {
+    let list = players.slice();
+    if (posFilter !== "ALL") list = list.filter((p) => p.pos === posFilter);
+    if (rookieOnly) list = list.filter((p) => p.rookie);
+    if (search) { const q = search.toLowerCase(); list = list.filter((p) => p.name.toLowerCase().includes(q)); }
+    if (!showDrafted) list = list.filter((p) => !draftedSet.has(p.id));
+    const { key, dir } = sortState;
+    // "Your build" lens = sorting by VBD. When you've committed to a contention window (round 4+),
+    // tilt the value by how well each player fits your window (younger for a rebuild, proven for
+    // win-now). Before you've picked a lane, this is a no-op, so early rounds rank on pure value.
+    const buildLens = key === "vbd";
+    list.sort((a, b) => {
+      if (buildLens && myWindow.decided) {
+        const va = (a.vbd ?? -50) * myWindow.tilt(a.pos, a.age);
+        const vb = (b.vbd ?? -50) * myWindow.tilt(b.pos, b.age);
+        return (va - vb) * dir;
+      }
+      const va = colVal(a, key), vb = colVal(b, key);
+      if (typeof va === "string") return va.localeCompare(vb) * dir;
+      return (va - vb) * dir;
+    });
+    return list.slice(0, 130);
+  }, [players, posFilter, search, showDrafted, sortState, draftedSet, sims, rookieOnly, myWindow]);
 
   // Column registry. group: "draft" (board intelligence) or "stat" (projection inputs).
   // section groups columns under labeled dividers in the table + columns menu.
@@ -7292,6 +7312,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 <i className={`ti ${showDrafted ? "ti-eye" : "ti-eye-off"}`} style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />{showDrafted ? "All players" : "Available only"}
               </button>
               <button className="btn btn-mini" onClick={() => setRanksWarn(true)} title="Edit your personal rankings (leaves the draft — it'll auto-save)"><i className="ti ti-list-numbers" style={{ fontSize: 13 }} aria-hidden="true" /> My ranks</button>
+              <button className="btn btn-mini" onClick={() => { setSettingsSeg("trades"); setTab("settings"); }} title="Record a draft-pick trade — who traded which pick to whom. The board updates instantly." style={{ borderColor: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--line)", color: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--ink)" }}><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks{(cfg.pickTrades || []).length ? ` (${(cfg.pickTrades || []).length})` : ""}</button>
               <button className="btn btn-mini" onClick={() => setColMenu((m) => !m)}><i className="ti ti-columns" style={{ fontSize: 13 }} aria-hidden="true" /> Columns</button>
               {colMenu && (
                 <div className="panel" style={{ position: "absolute", right: 10, top: 46, zIndex: 30, padding: 12, width: 252, boxShadow: "0 10px 30px #000C" }}>
@@ -7536,6 +7557,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               <input type="checkbox" checked={showBoardVal} onChange={(e) => setShowBoardVal(e.target.checked)} style={{ accentColor: "var(--gold)", cursor: "pointer" }} />
               Show pick value
             </label>
+            <button className="btn btn-mini" onClick={() => { setSettingsSeg("trades"); setTab("settings"); }} title="Record a draft-pick trade — the board updates instantly to show picks in their new owners' columns." style={{ borderColor: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--line)", color: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--ink)" }}><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks{(cfg.pickTrades || []).length ? ` (${(cfg.pickTrades || []).length})` : ""}</button>
             <span className="mut" style={{ fontSize: 11.5, marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: "var(--gold)", marginRight: 4, verticalAlign: "middle" }} />Your picks</span>
               <span><i className="ti ti-arrows-exchange" style={{ fontSize: 11, color: "#4FD1A1", marginRight: 2 }} aria-hidden="true" />Traded</span>
@@ -7935,7 +7957,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
           <div className="mut" style={{ fontSize: 12.5, marginBottom: 12 }}>
             Edit any league setting — roster, scoring, draft order, keepers, pick trades, caps, teams. Use the tabs below. Saving recomputes projections and re-grades the board against your picks so far. {hasSlot ? "" : "You haven't set your draft slot yet — set it on the Draft order tab."}
           </div>
-          <ConfigForm initial={{ ...cfg, slot: cfg.slot == null ? "" : cfg.slot, scoring: { ...DEFAULT_SCORING, ...(cfg.scoring || {}) } }} submitLabel="Save settings" onSubmit={(newCfg) => { onSettings(newCfg); setTab("hub"); }} onCancel={() => setTab("hub")} />
+          <ConfigForm initial={{ ...cfg, slot: cfg.slot == null ? "" : cfg.slot, scoring: { ...DEFAULT_SCORING, ...(cfg.scoring || {}) } }} initialSeg={settingsSeg} submitLabel="Save settings" onSubmit={(newCfg) => { onSettings(newCfg); setSettingsSeg(null); setTab("hub"); }} onCancel={() => { setSettingsSeg(null); setTab("hub"); }} />
         </div>
       )}
 
