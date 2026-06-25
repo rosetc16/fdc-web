@@ -36,6 +36,12 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // One account holds every season. The user picks an active season; rankings, leagues, and
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
+// Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
+// strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
+const normName = (s) => String(s || "").toLowerCase()
+  .replace(/[.,'’]/g, "")
+  .replace(/\b(jr|sr|ii|iii|iv|v)\b/g, "")
+  .replace(/\s+/g, " ").trim();
 // Comp subscriptions granted by an admin, keyed by email. A comp can be "season" (this league
 // year only) or "forever". Returns the active comp for an email, or null. In production this
 // lives server-side; here it's stored in biz.comps and applied at sign-in.
@@ -5158,38 +5164,69 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
 const LEAGUE_TYPES = [["redraft","Redraft"],["dynasty","Dynasty"],["bestball","Best ball"],["rookie","Rookie only"]];
 const NFL_TEAMS = ["ARI","ATL","BAL","BUF","CAR","CHI","CIN","CLE","DAL","DEN","DET","GB","HOU","IND","JAX","KC","LV","LAC","LAR","MIA","MIN","NE","NO","NYG","NYJ","PHI","PIT","SF","SEA","TB","TEN","WAS"];
 const DRAFT_ORDERS = [["snake","Snake"],["linear","Linear (same order each round)"],["3rr","Third-round reversal"]];
-// Platforms we can connect to, and what credential each one needs.
+// Platforms we can connect to for live sync. Sleeper is supported via its free public API. Other
+// platforms either have no usable public draft API or require fragile credentials, so those users
+// draft with fast manual entry — which has the exact same engine, advice, and tracking.
 const PLATFORMS = [
-  { id: "sleeper", name: "Sleeper", field: "Sleeper username", hint: "We read your leagues from Sleeper's public API.", icon: "ti-moon" },
-  { id: "espn", name: "ESPN", field: "ESPN league URL or ID", hint: "Public leagues import directly; private leagues need a one-time cookie.", icon: "ti-ball-football" },
-  { id: "yahoo", name: "Yahoo", field: null, oauth: true, hint: "Connect securely with Yahoo — you approve access on Yahoo's site.", icon: "ti-brand-yahoo" },
-  { id: "mfl", name: "MyFantasyLeague", field: "MFL league ID", login: true, hint: "Enter your league ID; sign in with your MFL login.", icon: "ti-trophy" },
-  { id: "cbs", name: "CBS Fantasy", field: "CBS user token", hint: "Paste the access token from your CBS account settings.", icon: "ti-device-tv" },
-  { id: "fantrax", name: "Fantrax", field: "Fantrax league URL or ID", hint: "Paste your league link or ID.", icon: "ti-list-check" },
-  { id: "fleaflicker", name: "Fleaflicker", field: "Fleaflicker league URL or ID", hint: "Paste your league link or ID.", icon: "ti-bug" },
-  { id: "underdog", name: "Underdog", field: "Underdog draft link", hint: "Best-ball drafts only; paste your draft link.", icon: "ti-paw" },
+  { id: "sleeper", name: "Sleeper", field: "Sleeper username", hint: "We read your leagues from Sleeper's free public API and sync your draft live.", icon: "ti-moon" },
 ];
 
-// League-connect box: pick a platform, provide its credential, simulate an import.
+// League-connect box: pick a platform, provide its credential. Sleeper does a REAL fetch of your
+// leagues so you can pick which one to connect (and sync live). Other platforms are still simulated.
 function ConnectBox({ connect, onConnect, onClear }) {
   const [open, setOpen] = useState(false);
   const [sel, setSel] = useState(null);
   const [val, setVal] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [sleeperLeagues, setSleeperLeagues] = useState(null); // null=not fetched, []=none, [...]=list
   if (connect) {
     const p = PLATFORMS.find((x) => x.id === connect.platform);
     return (
       <div className="panel" style={{ padding: 12, marginBottom: 14, background: "#0E1206", borderColor: "#3A4A1A", display: "flex", alignItems: "center", gap: 10 }}>
         <i className={`ti ${p?.icon || "ti-link"}`} style={{ fontSize: 20, color: "var(--green)" }} aria-hidden="true" />
         <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 600, color: "var(--green)" }}>Connected to {p?.name}</div>
-          <div className="mut" style={{ fontSize: 11.5 }}>Settings, teams, rosters & live picks sync automatically. Fields below are pre-filled — adjust if needed.</div>
+          <div style={{ fontWeight: 600, color: "var(--green)" }}>Connected to {p?.name}{connect.leagueName ? ` · ${connect.leagueName}` : ""}</div>
+          <div className="mut" style={{ fontSize: 11.5 }}>{connect.platform === "sleeper" ? "Picks sync live during your draft. Settings below are pre-filled from this league — adjust if needed." : "Settings, teams, rosters & live picks sync automatically. Fields below are pre-filled — adjust if needed."}</div>
         </div>
         <button className="btn btn-mini" onClick={onClear}>Disconnect</button>
       </div>
     );
   }
+  // Sleeper: fetch the user's leagues so they can choose one.
+  const fetchSleeperLeagues = async () => {
+    setError(null); setBusy(true); setSleeperLeagues(null);
+    try {
+      if (!hasBackend) { setError("Connecting a live league needs the backend (you're running locally)."); setBusy(false); return; }
+      const r = await api.sleeperLeagues(val.trim());
+      setSleeperLeagues(r.leagues || []);
+      if (!r.leagues || r.leagues.length === 0) setError("No leagues found for that username this season.");
+    } catch (e) { setError(e.data?.error || e.message || "Couldn't reach Sleeper."); }
+    finally { setBusy(false); }
+  };
+  // Pick a specific Sleeper league → pull its draft config + picks, hand up to the league form.
+  const pickSleeperLeague = async (lg) => {
+    setError(null); setBusy(true);
+    try {
+      const d = await api.sleeperDraft(lg.league_id);
+      onConnect({
+        platform: "sleeper", credential: val.trim(),
+        leagueId: lg.league_id, leagueName: lg.name,
+        draftId: d.draft_id || lg.draft_id || null,
+        cfg: d.cfg || null, picks: d.picks || [], status: d.status || lg.draft_status || null,
+      });
+      setOpen(false); setSel(null); setVal(""); setSleeperLeagues(null);
+    } catch (e) { setError(e.data?.error || e.message || "Couldn't load that league's draft."); }
+    finally { setBusy(false); }
+  };
   const doConnect = () => { setBusy(true); setTimeout(() => { setBusy(false); setOpen(false); onConnect({ platform: sel.id, credential: val || "(oauth)" }); setSel(null); setVal(""); }, 800); };
+  const statusChip = (s) => {
+    if (s === "drafting") return { t: "Drafting now", c: "var(--green)" };
+    if (s === "complete") return { t: "Draft complete", c: "var(--mut)" };
+    if (s === "pre_draft") return { t: "Pre-draft", c: "var(--gold)" };
+    if (s === "paused") return { t: "Paused", c: "var(--gold)" };
+    return null;
+  };
   return (
     <div style={{ marginBottom: 16 }}>
       {!open ? (
@@ -5200,25 +5237,60 @@ function ConnectBox({ connect, onConnect, onClear }) {
         <div className="panel" style={{ padding: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
             <div className="disp" style={{ fontSize: 15, fontWeight: 700 }}>Connect your league</div>
-            <button className="btn btn-mini" onClick={() => { setOpen(false); setSel(null); }}>Cancel</button>
+            <button className="btn btn-mini" onClick={() => { setOpen(false); setSel(null); setSleeperLeagues(null); setError(null); }}>Cancel</button>
           </div>
           {!sel ? (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(150px,1fr))", gap: 8 }}>
-              {PLATFORMS.map((p) => (
-                <button key={p.id} className="btn" style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-start", padding: "9px 11px" }} onClick={() => { setSel(p); setVal(""); }}>
-                  <i className={`ti ${p.icon}`} style={{ fontSize: 17, color: "var(--gold)" }} aria-hidden="true" />{p.name}
-                </button>
-              ))}
+            <div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(150px,1fr))", gap: 8 }}>
+                {PLATFORMS.map((p) => (
+                  <button key={p.id} className="btn" style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-start", padding: "9px 11px" }} onClick={() => { setSel(p); setVal(""); setSleeperLeagues(null); setError(null); }}>
+                    <i className={`ti ${p.icon}`} style={{ fontSize: 17, color: "var(--gold)" }} aria-hidden="true" />{p.name}
+                  </button>
+                ))}
+              </div>
+              <div className="panel" style={{ marginTop: 10, padding: "10px 12px", background: "var(--panel2)" }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>On another platform (ESPN, Yahoo, CBS, Fantrax, etc.)?</div>
+                <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>No problem — close this and set the league up by hand. You enter each pick as it happens (it's fast), and you get the <b style={{ color: "var(--ink)" }}>exact same</b> engine: live recommendations, availability odds, cost-of-waiting, and steal/reach grades. Live auto-sync is currently Sleeper-only.</div>
+                <button className="btn btn-mini" style={{ marginTop: 8 }} onClick={() => { setOpen(false); setSel(null); setError(null); }}>Set up manually instead</button>
+              </div>
             </div>
           ) : (
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
                 <i className={`ti ${sel.icon}`} style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
                 <b>{sel.name}</b>
-                <button className="btn btn-mini" style={{ marginLeft: "auto" }} onClick={() => setSel(null)}>← Other platform</button>
+                {PLATFORMS.length > 1 && <button className="btn btn-mini" style={{ marginLeft: "auto" }} onClick={() => { setSel(null); setSleeperLeagues(null); setError(null); }}>← Other platform</button>}
               </div>
               <div className="mut" style={{ fontSize: 12, marginBottom: 10 }}>{sel.hint}</div>
-              {sel.oauth ? (
+
+              {sel.id === "sleeper" ? (
+                <div>
+                  {/* Step 1: username → fetch leagues */}
+                  {sleeperLeagues == null ? (
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <input className="gs" style={{ flex: 1 }} placeholder="Sleeper username" value={val} onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && val.trim()) fetchSleeperLeagues(); }} />
+                      <button className="btn btn-gold" onClick={fetchSleeperLeagues} disabled={busy || !val.trim()}>{busy ? "Finding…" : "Find my leagues"}</button>
+                    </div>
+                  ) : (
+                    /* Step 2: choose a league */
+                    <div>
+                      <div className="mut" style={{ fontSize: 12, marginBottom: 8 }}>Pick the league to connect{sleeperLeagues.some((l) => l.draft_status === "drafting") ? " — your live draft is highlighted." : "."}</div>
+                      <div style={{ maxHeight: 260, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
+                        {sleeperLeagues.map((lg) => { const st = statusChip(lg.draft_status); const live = lg.draft_status === "drafting"; return (
+                          <button key={lg.league_id} className="btn" disabled={busy}
+                            style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-start", padding: "10px 12px", textAlign: "left", borderColor: live ? "var(--green)" : "var(--line)", background: live ? "rgba(124,217,178,0.07)" : "transparent" }}
+                            onClick={() => pickSleeperLeague(lg)}>
+                            <i className="ti ti-trophy" style={{ fontSize: 16, color: live ? "var(--green)" : "var(--gold)" }} aria-hidden="true" />
+                            <span style={{ flex: 1 }}><b>{lg.name}</b> <span className="mut" style={{ fontSize: 11 }}>· {lg.total_rosters} teams</span></span>
+                            {st && <span className="chip" style={{ fontSize: 9, borderColor: st.c, color: st.c }}>{st.t}</span>}
+                          </button>
+                        ); })}
+                      </div>
+                      <button className="btn btn-mini" style={{ marginTop: 8 }} onClick={() => { setSleeperLeagues(null); setError(null); }}>← Different username</button>
+                    </div>
+                  )}
+                </div>
+              ) : sel.oauth ? (
                 <button className="btn btn-gold" style={{ width: "100%", padding: 10 }} onClick={doConnect} disabled={busy}>{busy ? "Connecting…" : `Sign in with ${sel.name}`}</button>
               ) : (
                 <div style={{ display: "flex", gap: 8 }}>
@@ -5226,8 +5298,9 @@ function ConnectBox({ connect, onConnect, onClear }) {
                   <button className="btn btn-gold" onClick={doConnect} disabled={busy || !val.trim()}>{busy ? "Importing…" : "Connect"}</button>
                 </div>
               )}
+
+              {error && <div style={{ color: "var(--red)", fontSize: 12, marginTop: 8 }}>{error}</div>}
               {sel.login && <div className="mut" style={{ fontSize: 11, marginTop: 6 }}>You'll also sign in with your {sel.name} login on the next step.</div>}
-              <div className="mut" style={{ fontSize: 11, marginTop: 8 }}>Prototype: connection is simulated. Production reads from each platform's API (Sleeper & Fleaflicker public; ESPN/MFL/Fantrax by ID; CBS token; Yahoo OAuth).</div>
             </div>
           )}
         </div>
@@ -5371,8 +5444,26 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel }) {
 
       {seg === "basics" && (
         <>
-          <ConnectBox connect={f.connect} onConnect={(c) => upd({ connect: c, name: c ? `${PLATFORMS.find((p) => p.id === c.platform)?.name} league` : f.name })} onClear={() => upd({ connect: null })} />
-          {Row("League name", <input className="gs" style={{ width: "100%" }} value={f.name} onChange={(e) => upd({ name: e.target.value })} />)}
+          <ConnectBox connect={f.connect} onConnect={(c) => {
+            if (!c) { upd({ connect: null }); return; }
+            // Apply settings pulled from the connected league (Sleeper) so the form is pre-filled.
+            const patch = { connect: c, name: c.leagueName || `${PLATFORMS.find((p) => p.id === c.platform)?.name} league` };
+            if (c.cfg) {
+              const k = c.cfg;
+              if (k.teams) patch.teams = k.teams;
+              if (k.rounds) patch.rounds = k.rounds;
+              if (k.type) patch.type = k.type;
+              if (k.start) patch.start = { ...f.start, ...k.start };
+              if (k.scoringType) {
+                const rec = k.scoringType === "ppr" ? 1 : k.scoringType === "half" ? 0.5 : 0;
+                patch.scoring = { ...f.scoring, rec, recTE: k.tePrem ? rec + (k.tePremMult || 1) : rec };
+              }
+            }
+            upd(patch);
+          }} onClear={() => upd({ connect: null })} />
+          {f.connect && f.connect.platform === "sleeper" && (f.connect.picks || []).length > 0 && (
+            <div className="mut" style={{ fontSize: 11.5, marginBottom: 10, marginTop: -6 }}><i className="ti ti-check" style={{ fontSize: 12, marginRight: 4, color: "var(--green)" }} aria-hidden="true" />{f.connect.picks.length} pick{f.connect.picks.length === 1 ? "" : "s"} already in this draft will load when you create the league. New picks sync live.</div>
+          )}          {Row("League name", <input className="gs" style={{ width: "100%" }} value={f.name} onChange={(e) => upd({ name: e.target.value })} />)}
           {Row("League type",
             <select className="gs" style={{ width: "100%" }} value={f.type} onChange={(e) => upd({ type: e.target.value })}>
               {LEAGUE_TYPES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
@@ -6206,6 +6297,42 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     return () => clearTimeout(t);
   }, [started, paused, done, picks, onClock, userIdx, players, sortedAdp, dem, fast, currentPred, gated, cfg, ROUNDS, TOTAL, autoSim]);
 
+  // ---- LIVE SLEEPER SYNC ----------------------------------------------------------------------
+  // When this league is connected to Sleeper and we're in "sleeper" mode, poll the draft every few
+  // seconds and translate incoming Sleeper picks into engine picks (matched by player name). You make
+  // each pick inside Sleeper; the compass reads them in and keeps your board current.
+  const nameToId = useMemo(() => { const m = {}; players.forEach((p) => { m[normName(p.name)] = p.id; }); return m; }, [players]);
+  const [syncState, setSyncState] = useState({ status: null, lastAt: null, error: null });
+  const sleeperLive = connectedPlatform === "sleeper" && draftMode === "sleeper" && !!(cfg.connect && cfg.connect.leagueId) && hasBackend;
+  useEffect(() => {
+    if (!sleeperLive || done) return;
+    let alive = true;
+    const pull = async () => {
+      try {
+        const d = await api.sleeperDraft(cfg.connect.leagueId);
+        if (!alive) return;
+        // Build the engine pick list from Sleeper's pick order, mapping names→ids and dropping any
+        // we can't match (rare). We only grow the list; we never reorder existing picks.
+        const mapped = [];
+        for (const pk of (d.picks || [])) {
+          const id = nameToId[normName(pk.name)];
+          if (id != null) mapped.push(id);
+        }
+        setSyncState({ status: d.status, lastAt: Date.now(), error: null });
+        setPicks((prev) => {
+          // Only update if Sleeper is ahead of us (more picks) to avoid clobbering local state.
+          if (mapped.length > prev.length) return mapped;
+          return prev;
+        });
+      } catch (e) {
+        if (alive) setSyncState((s) => ({ ...s, error: "Sync paused — retrying…" }));
+      }
+    };
+    pull(); // immediate
+    const iv = setInterval(pull, 5000);
+    return () => { alive = false; clearInterval(iv); };
+  }, [sleeperLive, done, cfg, nameToId]);
+
   const draftPlayer = (id) => {
     if (done || draftedSet.has(id) || (gated && onClock === userIdx)) return;
     const p = players[id];
@@ -6683,7 +6810,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                   </button>
                 ))}
               </div>
-              {draftMode !== "manual" && <div className="mut" style={{ fontSize: 11, marginTop: 10, lineHeight: 1.45 }}><i className="ti ti-info-circle" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Live platform sync is part of the production build — in this prototype, {draftMode === "sleeper" ? "Sleeper sync" : "platform sync"} is simulated and you can still enter picks manually to try the flow.</div>}
+              {draftMode !== "manual" && <div className="mut" style={{ fontSize: 11, marginTop: 10, lineHeight: 1.45 }}><i className="ti ti-info-circle" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />{draftMode === "sleeper" && sleeperLive ? "Sleeper sync is live — picks made in your Sleeper draft flow in automatically every few seconds. You can also enter a pick manually if needed." : "Live auto-sync is Sleeper-only. On any other platform, enter each pick here as it happens — the engine advises in real time exactly the same way."}</div>}
             </div>
           </div>
         )}

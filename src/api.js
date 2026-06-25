@@ -76,6 +76,10 @@ export const api = {
   async deleteLeague(id) { return call(`/api/leagues/${id}`, { method: 'DELETE' }); },
   async saveDraft(leagueId, draft) { return (await call(`/api/leagues/${leagueId}/drafts`, { method: 'POST', body: draft })).draft; },
 
+  // ---- Sleeper connect / live sync ----
+  async sleeperLeagues(username) { return call(`/api/connect/sleeper/leagues?username=${encodeURIComponent(username)}`); },
+  async sleeperDraft(leagueId) { return call(`/api/connect/sleeper/draft?league_id=${encodeURIComponent(leagueId)}`); },
+
   // ---- feedback (public submit) ----
   async submitFeedback(payload) { return call('/api/feedback', { method: 'POST', auth: false, body: payload }); },
 
