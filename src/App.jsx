@@ -2536,7 +2536,7 @@ export default function App() {
       {route === "leagueHub" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? <LeagueUmbrella user={user} league={lg} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")}
         onOfficial={(id) => { setDraftTab(null); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
         onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [] }); setActiveId(m.id); setRoute("draft"); }}
-        onDeleteMock={deleteMock} /> : null; })()}
+        onDeleteMock={deleteMock} onDelete={(id) => { deleteLeague(id); setRoute(user.paid ? "home" : "library"); }} /> : null; })()}
       {route === "home" && !user?.paid && <HomePage biz={biz} user={user} onSignIn={() => setAuthOpen(true)} onDemo={startDemo} onBuy={() => (user ? setRoute("checkout") : setAuthOpen(true))} onApp={() => setRoute("library")} onHelp={(t) => { setHelpTab(t || null); setRoute("help"); }} />}
       {route === "learn" && <HomePage biz={biz} user={user} onSignIn={() => setAuthOpen(true)} onDemo={startDemo} onBuy={() => (user ? setRoute("checkout") : setAuthOpen(true))} onApp={() => setRoute(user?.paid ? "home" : "library")} onHelp={(t) => { setHelpTab(t || null); setRoute("help"); }} initialTab="how" />}
       {route === "trends" && user && <TrendsPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user?.paid ? "home" : "library")} />}
@@ -2873,12 +2873,13 @@ function TrendsPage({ user, onBack, onHome, onSignOut }) {
   );
 }
 
-function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, onMock, onSettings, onViewMock, onDeleteMock }) {
+function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, onMock, onSettings, onViewMock, onDeleteMock, onDelete }) {
   const total = (league.cfg.teams || 12) * league.cfg.rounds;
   const st = league.picks.length >= total ? "complete" : league.picks.length > 0 ? "progress" : "fresh";
   const mocks = league.mocks || [];
   const keepers = league.cfg.keepers || [];
   const [showMocks, setShowMocks] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
   return (
     <div>
       <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="League" />
@@ -2933,12 +2934,27 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
             )}
           </div>
         )}
+
+        {/* Delete this league */}
+        {onDelete && (
+          <div style={{ marginTop: 28, paddingTop: 16, borderTop: "1px solid var(--line)" }}>
+            {!confirmDel ? (
+              <button className="btn btn-mini" onClick={() => setConfirmDel(true)} style={{ borderColor: "var(--line)", color: "var(--mut)" }}><i className="ti ti-trash" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Delete this league</button>
+            ) : (
+              <div className="panel" style={{ padding: 14, borderColor: "var(--red)", background: "var(--panel2)", maxWidth: 460 }}>
+                <div style={{ fontSize: 13.5, marginBottom: 10 }}>Delete <b>{league.name}</b>{mocks.length ? ` and its ${mocks.length} mock draft${mocks.length === 1 ? "" : "s"}` : ""}? This permanently removes the league, its official draft, and all settings. This can't be undone.</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="btn btn-mini" style={{ borderColor: "var(--red)", color: "var(--red)" }} onClick={() => onDelete(league.id)}><i className="ti ti-trash" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Yes, delete it</button>
+                  <button className="btn btn-mini" onClick={() => setConfirmDel(false)}>Cancel</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
 }
-
-// Small inline-SVG illustrations for the hub tool cards — give the page something to look at.
 function ToolGraphic({ kind, color }) {
   const c = color || "var(--gold)";
   const bg = { width: "100%", height: "100%", display: "block" };
@@ -4538,7 +4554,7 @@ function LeagueCard({ l, onUmbrella, onDelete, onOpenMockView, onDeleteMock }) {
       <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
         <button className="btn btn-gold" style={{ flex: 1 }} onClick={() => onUmbrella(l.id)}><i className="ti ti-layout-dashboard" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Open league</button>
         {mocks.length > 0 && <button className="btn btn-mini" onClick={() => setShowMocks((s) => !s)} title="Peek at this league's mock history">{showMocks ? "Hide" : `Mocks (${mocks.length})`}</button>}
-        <button className="btn btn-mini" onClick={() => setConfirmDel(true)} title="Delete league">✕</button>
+        <button className="btn btn-mini" onClick={() => setConfirmDel(true)} title="Delete league" style={{ borderColor: "var(--line)", color: "var(--mut)" }}><i className="ti ti-trash" style={{ fontSize: 13 }} aria-hidden="true" /></button>
       </div>
       <div className="mut" style={{ fontSize: 10.5, marginTop: 6 }}>Official draft, mocks, and settings all live in the league hub.</div>
       {confirmDel && (
