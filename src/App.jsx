@@ -1247,29 +1247,28 @@ export function applyLivePack(pack) {
     if (!st) return 0;
     try { return scoreFromStats(pos, st, DEFAULT_SCORING); } catch { return 0; }
   };
-  // Decide the ranking strategy. The PREDICTION side (what the room will draft) should follow real
-  // public ADP wherever it exists, because everyone in the league sees the same Sleeper board. We only
-  // fall back to projection/VBD ordering for players who have NO real ADP yet, and we slot those into
-  // the gaps rather than letting them override the players the market has already priced.
+  // Decide the ranking strategy. Real ADP is only trustworthy when we have a healthy amount of it for
+  // *draftable* players AND it isn't dominated by rookie/dynasty drafts. Early in the year the only
+  // drafts harvested on Sleeper are rookie/dynasty drafts, so "real ADP" covers mostly rookies — using
+  // it would bury veterans (Allen, Tua) and float no-name rookies to the top. Until real REDRAFT ADP
+  // accumulates broadly, we rank the board by projections/VBD, which is a far more sensible default.
   const draftable = pack.players.filter((p) => normPos(p.pos));
   const withRealAdp = draftable.filter((p) => p.adp != null);
   const adpCount = withRealAdp.length;
-  // "Healthy" coverage = enough real ADP to anchor the early/mid board. Below a small floor we can't
-  // trust ADP at all (e.g. only a handful of rookie-draft data points) and rank purely by projection.
-  const ADP_USABLE = adpCount >= 24;   // we have a meaningful top-of-board market signal
-  const ADP_HEALTHY = adpCount >= 90;  // deep enough to anchor most of the draftable pool
+  // Guard against rookie-contaminated samples: only trust ADP when coverage is BROAD (lots of players,
+  // i.e. real redraft drafts are happening) — not just a handful of early rookie picks. A high count is
+  // the signal that the market has matured past rookie-only drafts.
+  const rookieShareOfAdp = adpCount > 0 ? withRealAdp.filter((p) => p.rookie).length / adpCount : 0;
+  const ADP_HEALTHY = adpCount >= 120 && rookieShareOfAdp < 0.5; // broad coverage, not rookie-dominated
 
   const projValueAll = (p) => projValue(p.stats, normPos(p.pos));
-  // For players WITHOUT real ADP, rank them by projection and place them AFTER the deepest real-ADP
-  // pick, so the market-priced players keep their real positions and projection only fills the tail.
-  const maxRealAdp = withRealAdp.reduce((m, p) => Math.max(m, p.adp), 0);
-  const noAdpSorted = draftable.filter((p) => p.adp == null)
+  // Provisional ADP for players lacking real ADP: rank by projection, placed after real-ADP players.
+  const withAdp = ADP_HEALTHY ? withRealAdp.length : 0;
+  const noAdpSorted = (ADP_HEALTHY ? draftable.filter((p) => p.adp == null) : draftable.slice())
     .map((p) => ({ p, v: projValueAll(p) }))
     .sort((a, b) => b.v - a.v);
   const provisionalAdp = new Map();
-  // if ADP is usable, fill gaps starting just past the deepest real ADP; otherwise rank everyone by proj
-  const gapStart = ADP_USABLE ? Math.max(maxRealAdp, adpCount) : 0;
-  noAdpSorted.forEach((x, i) => provisionalAdp.set(x.p.id, gapStart + i + 1));
+  noAdpSorted.forEach((x, i) => provisionalAdp.set(x.p.id, withAdp + i + 1));
 
   for (const p of pack.players) {
     if (!p.name || !p.pos) continue;
@@ -1278,9 +1277,8 @@ export function applyLivePack(pack) {
     let name = p.name;
     if (seen.has(name)) { name = `${p.name} (${p.team || pos})`; if (seen.has(name)) continue; }
     seen.add(name);
-    // Use real ADP whenever the player HAS it and ADP is usable at all — this is the market signal that
-    // drives predictions. Only players without real ADP fall to the projection-derived provisional slot.
-    const useRealAdp = ADP_USABLE && p.adp != null;
+    // Use real ADP only when coverage is healthy AND not rookie-dominated; else rank by projection.
+    const useRealAdp = ADP_HEALTHY && p.adp != null;
     const adp = useRealAdp ? p.adp : (provisionalAdp.get(p.id) || 999);
     raw.push([name, pos, p.team || "FA", p.age || 0, p.bye || 0, adp, p.adpHi || adp]);
     if (p.stats && Object.keys(p.stats).length) stats[name] = p.stats;
@@ -1295,9 +1293,7 @@ export function applyLivePack(pack) {
   if (raw.length < 50) return false; // sanity: don't swap in a too-small pool
   RAW = raw; STATS = stats; META = meta;
   LIVE_LOADED = true;
-  // Only treat the board as "sparse" (rank everything by VBD) when ADP isn't even usable. Once we have
-  // a real top-of-board market signal, predictions follow ADP and VBD is reserved for YOUR pick advice.
-  LIVE_ADP_SPARSE = !ADP_USABLE;
+  LIVE_ADP_SPARSE = !ADP_HEALTHY; // when sparse/rookie-contaminated, rank by VBD value instead
   return true;
 }
 
@@ -6264,6 +6260,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   // Live per-pick ownership from a connected platform (Sleeper draft_slot). Declared here so it can
   // be applied to the engine's team-assignment BEFORE any roster/sim computation in this render.
   const [liveSlots, setLiveSlots] = useState(null); // { overallPickIndex: teamIndex } or null
+  // Real Sleeper clock: { deadlineMs, timerSec, skewMs } from the live draft. skewMs aligns the
+  // server's clock to the browser's so the countdown matches Sleeper exactly and survives refreshes.
+  const [liveClock, setLiveClock] = useState(null);
   // set active team count + names for this league before any engine call
   setTeams(cfg.teams || 12);
   setSpec(cfg.start);
@@ -6339,6 +6338,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const [needMode, setNeedMode] = useState("strength"); // strength | filled
   const [customPick, setCustomPick] = useState("");
   const [availSort, setAvailSort] = useState("adp"); // "adp" | "vbd" — Availability tab sort
+  // Pick lens: how ranked lists are ordered on the pick-decision views (Hub + Availability).
+  //  "market"  = how the LEAGUE sees it — ADP order (what others will draft). Best for predicting.
+  //  "yourbuild" = how YOUR demographic should value it — VBD/age-adjusted edge (dynasty youth tilt).
+  const [pickLens, setPickLens] = useState("market");
   const [sumSort, setSumSort] = useState({ key: "z", dir: -1 });
   const [summaryTeam, setSummaryTeam] = useState(null); // null = you + league-wide; else a team idx
   const [capWarn, setCapWarn] = useState(null);
@@ -6613,6 +6616,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
         }
         setSyncState({ status: d.status, lastAt: Date.now(), error: null });
         setLiveSlots(slotTeam);
+        // Capture Sleeper's real clock. serverNowMs lets us correct for any difference between the
+        // server's clock and this browser's, so the countdown lines up with what Sleeper shows.
+        if (d.pickDeadlineMs && d.serverNowMs) {
+          setLiveClock({ deadlineMs: d.pickDeadlineMs, timerSec: d.pickTimerSec || 0, skewMs: Date.now() - d.serverNowMs });
+        } else {
+          setLiveClock(d.pickTimerSec ? { deadlineMs: null, timerSec: d.pickTimerSec, skewMs: 0 } : null);
+        }
         setPicks((prev) => {
           // Only update if Sleeper is ahead of us (more picks) to avoid clobbering local state.
           if (mapped.length > prev.length) return mapped;
@@ -6656,13 +6666,31 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     setSearch(""); setTip(null);
   };
   const undo = () => { setPaused(true); setTip(null); setPicks((p) => p.slice(0, -1)); setPreds((p) => p.slice(0, -1)); };
-  // Simulated pick clock for connected/live leagues (production reads the real timer from the platform).
-  useEffect(() => { if (!connected || done) return; setClock(90); }, [picks.length, connected, done]);
+  // Pick clock. For a live Sleeper draft we compute remaining time from Sleeper's REAL deadline
+  // (deadlineMs, corrected for server/client clock skew), so it matches the Sleeper app exactly and
+  // stays correct across refreshes. For mock/simulated drafts we fall back to a local countdown.
   useEffect(() => {
-    if (!connected || done || paused) return;
+    if (done) return;
+    // Live Sleeper clock: derive remaining seconds from the real deadline, tick every second.
+    if (liveClock && liveClock.deadlineMs) {
+      const compute = () => {
+        const nowAligned = Date.now() - (liveClock.skewMs || 0); // browser time aligned to server
+        const remaining = Math.max(0, Math.round((liveClock.deadlineMs - nowAligned) / 1000));
+        setClock(remaining);
+      };
+      compute();
+      const t = setInterval(compute, 1000);
+      return () => clearInterval(t);
+    }
+    // Untimed/slow Sleeper draft: no countdown (Sleeper allows hours/days per pick).
+    if (liveClock && liveClock.timerSec === 0) { setClock(0); return; }
+    // Simulated/mock fallback: local countdown from the per-pick timer (or 90s default).
+    if (!connected) return;
+    setClock(liveClock?.timerSec || 90);
+    if (paused) return;
     const t = setInterval(() => setClock((c) => (c > 0 ? c - 1 : 0)), 1000);
     return () => clearInterval(t);
-  }, [connected, done, paused, picks.length]);
+  }, [connected, done, paused, picks.length, liveClock]);
   const exit = () => { onSave(picks, preds); onExit(); };
 
   const hits = preds.filter((pr, i) => pr != null && pr === picks[i]).length;
@@ -6705,15 +6733,67 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     if (search) { const q = search.toLowerCase(); list = list.filter((p) => p.name.toLowerCase().includes(q)); }
     if (!showDrafted) list = list.filter((p) => !draftedSet.has(p.id));
     const { key, dir } = sortState;
+    // "Your build" lens = sorting by VBD. When you've committed to a contention window (round 4+),
+    // tilt the value by how well each player fits your window (younger for a rebuild, proven for
+    // win-now). Before you've picked a lane, this is a no-op, so early rounds rank on pure value.
+    const buildLens = key === "vbd";
     list.sort((a, b) => {
+      if (buildLens && myWindow.decided) {
+        const va = (a.vbd ?? -50) * myWindow.tilt(a.pos, a.age);
+        const vb = (b.vbd ?? -50) * myWindow.tilt(b.pos, b.age);
+        return (va - vb) * dir;
+      }
       const va = colVal(a, key), vb = colVal(b, key);
       if (typeof va === "string") return va.localeCompare(vb) * dir;
       return (va - vb) * dir;
     });
     return list.slice(0, 130);
-  }, [players, posFilter, search, showDrafted, sortState, draftedSet, sims, rookieOnly]);
+  }, [players, posFilter, search, showDrafted, sortState, draftedSet, sims, rookieOnly, myWindow]);
 
   const myCurrent = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => teamAt(x.o) === userIdx).map((x) => x.p);
+
+  // ---- CONTENTION WINDOW ("Your build" demographics) -----------------------------------------
+  // Reads YOUR roster's age lean to infer your window: rebuild (young) / balanced / win-now (old).
+  // Crucially it stays UNDECIDED in the early rounds — you haven't committed to a lane until you've
+  // made enough picks (you can't tell a build from 2 players). Once decided, the "Your build" lens
+  // tilts the board toward players that fit your window. Most meaningful in dynasty, but a mild bias
+  // applies in any league. Returns { lane, label, confidence, picksIn, tilt(pos,age)->multiplier }.
+  const myWindow = useMemo(() => {
+    const isDyn = cfg.type === "dynasty" || cfg.type === "keeper";
+    const myRound = Math.floor(myCurrent.length); // ~ how many picks you've made
+    // Weight earlier picks more (they define your core). Use only skill positions with a known age.
+    const aged = myCurrent.filter((p) => p.age && ["QB", "RB", "WR", "TE"].includes(p.pos));
+    let wsum = 0, asum = 0;
+    aged.forEach((p, i) => { const w = 1 / (1 + i * 0.25); wsum += w; asum += w * p.age; });
+    const avgAge = wsum ? asum / wsum : null;
+    // Don't pick a lane until round ~4 — before that you're just taking value, no window yet.
+    const DECIDE_AT = 4;
+    const decided = aged.length >= DECIDE_AT && avgAge != null;
+    let lane = "undecided", label = "Reading your build…";
+    if (decided) {
+      // thresholds differ slightly by format; dynasty cares more about youth
+      const youngCut = isDyn ? 24.5 : 25.0;
+      const oldCut = isDyn ? 27.5 : 28.0;
+      if (avgAge <= youngCut) { lane = "rebuild"; label = "Young / rebuild window"; }
+      else if (avgAge >= oldCut) { lane = "winnow"; label = "Win-now window"; }
+      else { lane = "balanced"; label = "Balanced window"; }
+    }
+    // confidence grows with how many picks in you are past the decision point
+    const confidence = decided ? Math.min(1, (aged.length - DECIDE_AT + 1) / 6) : 0;
+    // tilt multiplier for the Your-build lens. Strength scales with confidence and (in redraft) is
+    // muted. Rebuild favors younger; win-now favors proven/older; balanced is neutral.
+    const tilt = (pos, age) => {
+      if (!decided || !age || !["QB", "RB", "WR", "TE"].includes(pos)) return 1;
+      const strength = (isDyn ? 0.16 : 0.06) * confidence; // dynasty tilts harder
+      // center age by position (roughly the prime); + younger, - older relative to center
+      const center = pos === "RB" ? 25 : pos === "WR" ? 26 : pos === "TE" ? 27 : 28;
+      const youthScore = (center - age) / 6; // >0 younger than center, <0 older
+      if (lane === "rebuild") return 1 + strength * youthScore;     // reward youth
+      if (lane === "winnow") return 1 - strength * youthScore;      // reward proven/older
+      return 1; // balanced
+    };
+    return { lane, label, confidence, picksIn: aged.length, avgAge, decided, tilt };
+  }, [myCurrent, cfg.type]);
 
   // Column registry. group: "draft" (board intelligence) or "stat" (projection inputs).
   // section groups columns under labeled dividers in the table + columns menu.
@@ -7022,8 +7102,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               </div>
               {connected && (
                 <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 3 }}>
-                  <i className="ti ti-clock" style={{ fontSize: 12, color: clock <= 15 ? "var(--red)" : "var(--mut)" }} aria-hidden="true" />
-                  <span className="num" style={{ fontSize: 12, color: clock <= 15 ? "var(--red)" : "var(--mut)", fontWeight: clock <= 15 ? 700 : 400 }}>{Math.floor(clock / 60)}:{String(clock % 60).padStart(2, "0")} on the clock</span>
+                  {liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? (
+                    <span className="num" style={{ fontSize: 12, color: "var(--mut)" }}>Slow draft — no per-pick timer</span>
+                  ) : clock <= 0 ? (
+                    <span className="num" style={{ fontSize: 12, color: "var(--red)", fontWeight: 700 }}><i className="ti ti-clock-exclamation" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Time expired — pick is overdue</span>
+                  ) : (
+                    <>
+                      <i className="ti ti-clock" style={{ fontSize: 12, color: clock <= 15 ? "var(--red)" : "var(--mut)" }} aria-hidden="true" />
+                      <span className="num" style={{ fontSize: 12, color: clock <= 15 ? "var(--red)" : "var(--mut)", fontWeight: clock <= 15 ? 700 : 400 }}>{Math.floor(clock / 60)}:{String(clock % 60).padStart(2, "0")} on the clock{liveClock && liveClock.deadlineMs ? " · live" : ""}</span>
+                    </>
+                  )}
                 </div>
               )}
               {currentPred && (
@@ -7184,6 +7272,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 <button key={p} className="btn btn-mini" style={{ borderColor: posFilter === p ? "var(--gold)" : "var(--line)" }} onClick={() => setPosFilter(p)}>{p}</button>
               ))}
               <button className="btn btn-mini" style={{ borderColor: rookieOnly ? "var(--gold)" : "var(--line)", color: rookieOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => setRookieOnly((r) => !r)}>Rookies</button>
+              <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }} title="Market = order the league is likely to draft in (ADP). Your build = your demographic edge — tilts toward players that fit your contention window (young/rebuild vs win-now), once you've committed to a lane around round 4-6.">
+                <span className="mut" style={{ fontSize: 10.5, alignSelf: "center", padding: "0 7px" }}>View</span>
+                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sortState.key === "adp" ? "var(--gold)" : "transparent", color: sortState.key === "adp" ? "#1A1505" : "var(--ink)", fontWeight: sortState.key === "adp" ? 700 : 400 }} onClick={() => setSortState({ key: "adp", dir: 1 })} title="How the league sees it — ADP order">Market</button>
+                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sortState.key === "vbd" ? "var(--gold)" : "transparent", color: sortState.key === "vbd" ? "#1A1505" : "var(--ink)", fontWeight: sortState.key === "vbd" ? 700 : 400 }} onClick={() => setSortState({ key: "vbd", dir: -1 })} title="Your demographic edge — value tilted to your window">Your build</button>
+              </div>
+              {sortState.key === "vbd" && (
+                <span className="mut" style={{ fontSize: 10.5, alignSelf: "center", display: "inline-flex", alignItems: "center", gap: 4 }} title={myWindow.decided ? `Based on your roster's age lean (avg ~${myWindow.avgAge?.toFixed(1)}). Tilt strengthens as you draft.` : "You haven't committed to a contention window yet — ranking on pure value until ~round 4."}>
+                  <i className={`ti ${myWindow.lane === "rebuild" ? "ti-seedling" : myWindow.lane === "winnow" ? "ti-flame" : myWindow.lane === "balanced" ? "ti-scale" : "ti-loader"}`} style={{ fontSize: 12, color: myWindow.decided ? "var(--gold)" : "var(--mut)" }} aria-hidden="true" />
+                  {myWindow.label}
+                </span>
+              )}
               <div style={{ flex: 1 }} />
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }} title="ADP always shows on the left. This switches the rest of the columns between value/info (rankings, projections, demographics, availability) and projected stats.">
                 <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: boardMode === "info" ? "var(--gold)" : "transparent", color: boardMode === "info" ? "#1A1505" : "var(--ink)", fontWeight: boardMode === "info" ? 700 : 400 }} onClick={() => setBoardMode("info")} title="Rankings, projections, value, demographics & availability">Value &amp; info</button>
@@ -7593,12 +7692,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 Check pick #<input className="gs" style={{ width: 58, padding: "3px 6px", marginLeft: 6 }} type="number" min={picks.length + 1} placeholder="30" value={customPick} onChange={(e) => setCustomPick(e.target.value.replace(/\D/g, ""))} />
                 {customPick && <button className="btn btn-mini" style={{ marginLeft: 6 }} onClick={() => setCustomPick("")}>clear</button>}
               </div>
-              <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }} title="Sort by draft order (ADP) or value (VBD).">
-                <span className="mut" style={{ fontSize: 11, alignSelf: "center", padding: "0 8px" }}>Sort</span>
-                {[["adp", "ADP"], ["vbd", "VBD"]].map(([k, lbl]) => (
+              <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }} title="Market = how the league will draft (ADP). Your build = your demographic edge (value, dynasty youth tilt).">
+                <span className="mut" style={{ fontSize: 11, alignSelf: "center", padding: "0 8px" }}>View</span>
+                {[["adp", "Market"], ["vbd", "Your build"]].map(([k, lbl]) => (
                   <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: availSort === k ? "var(--gold)" : "transparent", color: availSort === k ? "#1A1505" : "var(--ink)", fontWeight: availSort === k ? 700 : 400 }} onClick={() => setAvailSort(k)}>{lbl}</button>
                 ))}
               </div>
+            </div>
+            <div className="mut" style={{ fontSize: 11.5, marginTop: -4, marginBottom: 6 }}>
+              {availSort === "adp" ? "Market view — ordered by ADP, how your league is likely to draft these players." : myWindow.decided ? `Your-build view — value tilted to your ${myWindow.label.toLowerCase()} (avg age ~${myWindow.avgAge?.toFixed(1)}). Where you can out-draft the room for your window.` : "Your-build view — pure value for now. Once you commit to a window (~round 4), this tilts toward players that fit your build."}
             </div>
           </div>
           {(() => {
@@ -7606,7 +7708,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
             const extra = customSims ? 1 : 0;
             const grid = `minmax(150px,1.6fr) 56px repeat(${cols + extra}, minmax(64px,1fr))`;
             const heatBar = (pct) => pct >= 70 ? "var(--green)" : pct >= 40 ? "var(--gold)" : "var(--red)";
-            const rows = players.filter((p) => !draftedSet.has(p.id)).sort((a, b) => availSort === "adp" ? a.adp - b.adp : b.vbd - a.vbd).slice(0, 30);
+            const rows = players.filter((p) => !draftedSet.has(p.id)).sort((a, b) => {
+              if (availSort === "adp") return a.adp - b.adp;
+              // Your-build view: VBD tilted by your contention window (once you've picked a lane).
+              const va = (a.vbd ?? -50) * (myWindow.decided ? myWindow.tilt(a.pos, a.age) : 1);
+              const vb = (b.vbd ?? -50) * (myWindow.decided ? myWindow.tilt(b.pos, b.age) : 1);
+              return vb - va;
+            }).slice(0, 30);
             return (
               <div style={{ maxWidth: 920 }}>
                 <div className="availhead" style={{ gridTemplateColumns: grid }}>
