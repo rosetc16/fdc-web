@@ -1412,6 +1412,23 @@ const setPickTrades = (trades) => {
   PICK_OWNER = {};
   (trades || []).forEach((t) => { if (t && t.o != null && t.to != null) PICK_OWNER[t.o] = t.to; });
 };
+// Convert platform traded picks [{round, fromSlot, toSlot}] into owner overrides [{o, to, round}],
+// computing the actual overall pick index for each (round, original-slot) under the given order.
+function tradesToOwnerOverrides(tradedPicks, N, order) {
+  const naturalTeamAt = (o) => {
+    const r = Math.floor(o / N), i = o % N;
+    if (order === "linear") return i;
+    if (order === "3rr") { if (r === 0) return i; if (r === 1) return N - 1 - i; return (r % 2 === 1) ? i : N - 1 - i; }
+    return r % 2 === 0 ? i : N - 1 - i; // snake
+  };
+  const out = [];
+  (tradedPicks || []).forEach((t) => {
+    const fromTeam = (t.fromSlot || 0) - 1, toTeam = (t.toSlot || 0) - 1, r = (t.round || 1) - 1;
+    if (fromTeam < 0 || toTeam < 0) return;
+    for (let i = 0; i < N; i++) { const o = r * N + i; if (naturalTeamAt(o) === fromTeam) { out.push({ o, to: toTeam, round: t.round }); break; } }
+  });
+  return out;
+}
 // Live ownership from a connected platform: overall-pick-index -> team index (slot-1), taken from
 // the real draft_slot of each pick. This is the SOURCE OF TRUTH for who made each pick when synced,
 // overriding any snake recompute so rosters and team assignment match the real draft exactly.
@@ -1903,6 +1920,9 @@ function projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, forcedI
   let recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   let userFirstDone = false;
   const board = new Array(TOTAL).fill(undefined);
+  // Pre-rank a deep fallback list (by ADP, then projection value) so we can always fill late slots
+  // even when the top-of-board candidate window is exhausted in very deep (e.g. 26-round) drafts.
+  const deepPool = sortedAdp.slice();
   for (let o = picks.length; o < TOTAL; o++) {
     const t = teamAt(o), round = Math.floor(o / TEAMS) + 1, pickNum = o + 1;
     let choice = null;
@@ -1914,8 +1934,11 @@ function projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, forcedI
       const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts[t], cfg);
       let bs = -1e9; for (const c of cands) { const w = weightFor(c, pickNum, counts[t], round, recent, dem, R); if (w > bs) { bs = w; choice = c; } }
     }
-    if (!choice) break;
-    board[o] = choice.id; drafted[choice.id] = 1; counts[t][choice.pos]++; recent = [...recent.slice(-7), choice.pos];
+    // Fallback: if the ranked window produced nothing (deep draft, thin pool), take the best
+    // remaining undrafted player by ADP so the projected board still completes all rounds.
+    if (!choice) { for (const c of deepPool) { if (!drafted[c.id]) { choice = c; break; } } }
+    if (!choice) break; // truly no players left at all
+    board[o] = choice.id; drafted[choice.id] = 1; if (counts[t][choice.pos] != null) counts[t][choice.pos]++; recent = [...recent.slice(-7), choice.pos];
   }
   return board;
 }
@@ -1993,6 +2016,30 @@ function needLevel(count, bestVbd, dem, pos) {
   if (qty > 0.05) return 1;
   if (bestVbd != null && bestVbd < 0) return 1;
   return 0;
+}
+// Position strength for a team: quality × quantity, returning 0 (green/strong), 1 (amber/middle),
+// 2 (red/weak). Mirrors the "League needs — strength" table so chips and that table always agree.
+//  - count: how many at this position the team rosters
+//  - bestVbd: best VBD among them (null = none) — the QUALITY signal
+//  - req: starting slots required at this position in this format
+//  - remaining: picks the team still has left (so we can weight urgency of unfilled starters)
+// Logic: full starters + real talent = strong; full starters w/ weak talent OR partial w/ strong
+// talent = middle; otherwise weak. A team with the WR1 but only 1 of 3 WR slots filled and lots of
+// draft left still reads weak/amber, because the unfilled slots will drag the lineup down.
+function posStrength(count, bestVbd, req, remaining) {
+  const haveStarters = count >= req;
+  const short = Math.max(0, req - count);
+  const quality = bestVbd; // best VBD at position (null = none)
+  if (req === 0 && count === 0) return 0; // not a starting position here
+  // Strong: starters filled AND at least one genuinely useful (above-replacement) player. Filling
+  // your slots when others haven't is real strength, so the quality bar here is modest.
+  if (haveStarters && quality != null && quality >= 8) return 0;
+  // Middle: starters filled but only replacement-level talent, OR not yet filled but holding a
+  // strong piece with the picks left to round it out.
+  if (haveStarters && quality != null && quality >= -8) return 1;
+  if (!haveStarters && quality != null && quality >= 40 && remaining != null && remaining > short) return 1;
+  // Otherwise weak: thin headcount, below-replacement talent, or running out of picks to fix it.
+  return 2;
 }
 // Draft-pick value curve. Like a trade-value chart, early picks are worth dramatically more than
 // late ones (non-linear). We score a pick position into "value points" so the WORTH of moving a
@@ -2213,6 +2260,24 @@ input.gs,select.gs{background:var(--panel2);border:1px solid var(--line);color:v
 input.gs:focus,select.gs:focus{outline:2px solid var(--gold);outline-offset:0}
 .gridboard{display:grid;grid-template-columns:repeat(12,minmax(88px,1fr));gap:3px;font-size:11px}
 .cell{border-radius:5px;padding:5px 6px;background:var(--panel2);border:1px solid var(--line);min-height:44px;cursor:default}
+/* --- Sleeper-style draft board --- */
+.boardwrap{position:relative;border:1px solid var(--line);border-radius:12px;overflow:auto;max-height:72vh;background:var(--panel)}
+.bgrid{display:grid;gap:4px;padding:8px}
+.bhead{position:sticky;top:0;z-index:5;display:grid;gap:4px;padding:8px 8px 6px;background:linear-gradient(180deg,var(--panel) 78%,transparent);backdrop-filter:blur(2px)}
+.bteam{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:7px 4px;border-radius:9px;background:var(--panel2);border:1px solid var(--line);min-height:42px;text-align:center}
+.bteam.you{background:linear-gradient(180deg,rgba(242,182,60,.18),rgba(242,182,60,.05));border-color:var(--gold)}
+.bteam .nm{font-size:11px;font-weight:700;line-height:1.1;letter-spacing:.02em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.bteam .sub{font-size:8.5px;letter-spacing:.08em;text-transform:uppercase}
+.bcell{position:relative;border-radius:9px;padding:6px 7px;background:var(--panel2);border:1px solid var(--line);min-height:48px;display:flex;flex-direction:column;gap:1px;cursor:default;transition:transform .1s,border-color .1s}
+.bcell:hover{transform:translateY(-1px);border-color:#4a4a3c}
+.bcell.you{background:linear-gradient(180deg,rgba(242,182,60,.13),rgba(242,182,60,.03));border-color:rgba(242,182,60,.55)}
+.bcell.you.oncl{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold) inset}
+.bcell.upcoming{border-style:dashed;border-color:rgba(242,182,60,.6)}
+.bcell.empty{opacity:.4}
+.bcell .pl{font-size:10px;font-weight:600;line-height:1.12;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.bcell .lbl{font-size:9px;display:flex;align-items:center;gap:3px;opacity:.85}
+.bcell .posdot{display:inline-block;width:14px;text-align:center;font-size:8px;font-weight:800;border-radius:3px;padding:0 2px;color:#0a0a0a}
+.bcell .val{font-size:9px;font-weight:700;margin-top:1px}
 .tooltip{position:fixed;z-index:90;width:300px;max-width:300px;background:#0A0A0C;border:1px solid #3A3A30;border-radius:10px;padding:12px 13px;font-size:12.5px;line-height:1.5;pointer-events:none;box-shadow:0 12px 40px #000D}
 .needcell{text-align:center;border-radius:5px;padding:3px 0;font-size:12px}
 .info{cursor:help;border-bottom:1px dotted var(--mut)}
@@ -5522,11 +5587,12 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel }) {
               // Sleeper draft order is already slot order, so draftOrder = identity (slot i → team i)
               patch.draftOrder = Array.from({ length: c.teams }, (_, i) => i);
             }
-            if (c.draftType) patch.order = c.draftType === "linear" ? "linear" : "snake";
-            // Traded picks → our pickTrades shape (round/fromSlot/toSlot as team indices, 0-based)
-            if (Array.isArray(c.tradedPicks) && c.tradedPicks.length) {
-              patch.pickTrading = true;
-              patch.pickTrades = c.tradedPicks.map((t) => ({ round: t.round, from: t.fromSlot - 1, to: t.toSlot - 1 }));
+            if (c.draftType) patch.order = c.draftType === "linear" ? "linear" : c.draftType === "3rr" ? "3rr" : "snake";
+            // Traded picks → owner overrides keyed by the ACTUAL overall pick index (accounting for
+            // the draft type, incl. 3RR), so picks you traded for are attributed to your team.
+            if (Array.isArray(c.tradedPicks) && c.tradedPicks.length && c.teams) {
+              const trades = tradesToOwnerOverrides(c.tradedPicks, c.teams, patch.order || f.order || "snake");
+              if (trades.length) { patch.pickTrading = true; patch.pickTrades = trades; }
             }
             // Keepers from Sleeper (name + slot). Stored on connect; the draft room resolves names→ids
             // against the live player pool and pre-places them on the right team (no-cost roster adds).
@@ -6179,6 +6245,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const [railProj, setRailProj] = useState(true);
   const [teamsProj, setTeamsProj] = useState(false);
   const [boardProj, setBoardProj] = useState(false);
+  const [showBoardVal, setShowBoardVal] = useState(false); // toggle pick-value under each name
   const [pastBig, setPastBig] = useState(false);
   const [futureBig, setFutureBig] = useState(false);
   const [tip, setTip] = useState(null);
@@ -6366,6 +6433,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
 
   const proj = useMemo(() => projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, advice?.verdict?.id ?? null), [players, sortedAdp, picks, userIdx, cfg, strategy, advice, liveSlots]);
   const projBoard = useMemo(() => (boardProj ? projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, advice?.verdict?.id ?? null) : null), [boardProj, players, sortedAdp, picks, userIdx, cfg, strategy, advice]);
+  // The user's next few upcoming pick indices (for highlighting on the board).
+  const myUpcoming = useMemo(() => {
+    const set = new Set(); let n = 0;
+    for (let o = picks.length; o < TOTAL && n < 3; o++) { if (teamAt(o) === userIdx) { set.add(o); n++; } }
+    return set;
+  }, [picks.length, TOTAL, userIdx, cfg, liveSlots]);
   const path = useMemo(() => (!done ? projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, advice?.verdict?.id ?? null, futureBig) : []), [players, sortedAdp, picks, userIdx, cfg, strategy, advice, done, futureBig, liveSlots]);
 
   const currentPred = !done ? (onClock === userIdx ? advice?.verdict ?? null : path[0]?.p ?? null) : null;
@@ -6435,7 +6508,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
           const incoming = JSON.stringify(d.tradedPicks);
           const have = JSON.stringify(cfg.connect.tradedPicks || []);
           if (incoming !== have) {
-            const pickTrades = d.tradedPicks.map((t) => ({ round: t.round, from: t.fromSlot - 1, to: t.toSlot - 1 }));
+            const N = cfg.teams || 12;
+            const pickTrades = tradesToOwnerOverrides(d.tradedPicks, N, cfg.order || "snake");
             onSettings({ ...cfg, pickTrading: true, pickTrades, connect: { ...cfg.connect, tradedPicks: d.tradedPicks } });
           }
         }
@@ -7201,14 +7275,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                         {POS.map((pos) => {
                           let lvl, tip;
                           if (needMode === "strength") {
-                            // QUALITY x QUANTITY: filled starters AND above-replacement talent = strong
+                            // QUALITY x QUANTITY via the shared helper, so this table and the team-view
+                            // chips always agree on what "strong / middle / weak" means.
                             const req = REQ_F(cfg.sf)[pos] || 0;
-                            const haveStarters = counts[pos] >= req;
-                            const quality = best[pos]; // best VBD at position (null = none)
-                            if (haveStarters && quality != null && quality >= 25) { lvl = 0; tip = "Strong — starters set with real talent"; }
-                            else if ((haveStarters && quality != null && quality >= 0) || (!haveStarters && quality != null && quality >= 40)) { lvl = 1; tip = "Middle of the pack"; }
-                            else if (counts[pos] === 0 && req === 0) { lvl = 0; tip = "Not a starting position here"; }
-                            else { lvl = 2; tip = "Weak — thin or below-replacement"; }
+                            lvl = posStrength(counts[pos], best[pos], req, remaining);
+                            tip = lvl === 0 ? "Strong — starters set with real talent" : lvl === 1 ? "Middle of the pack" : "Weak — thin or below-replacement";
                           } else {
                             const req = REQ_F(cfg.sf)[pos] || 0;
                             const short = req - counts[pos];
@@ -7233,57 +7304,102 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
       )}
 
       {tab === "board" && (
-        <div style={{ padding: 14, overflowX: "auto" }}>
+        <div style={{ padding: 14 }}>
           <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
-            <button className="btn" style={{ borderColor: !boardProj ? "var(--gold)" : "var(--line)" }} onClick={() => setBoardProj(false)}>Current</button>
-            <button className="btn" style={{ borderColor: boardProj ? "var(--gold)" : "var(--line)" }} onClick={() => setBoardProj(true)}>Projected</button>
-            {boardProj
-              ? <span className="mut" style={{ fontSize: 12 }}><span className="gold">Gold names</span> = projected picks from here to the end of the draft, using the current model.</span>
-              : <span className="mut" style={{ fontSize: 12 }}>Showing actual picks only. Switch to Projected to fill the rest of the board.</span>}
+            <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 9, overflow: "hidden" }}>
+              <button className="btn" style={{ border: "none", borderRadius: 0, background: !boardProj ? "rgba(242,182,60,.14)" : "transparent", color: !boardProj ? "var(--gold)" : "var(--mut)" }} onClick={() => setBoardProj(false)}>Current</button>
+              <button className="btn" style={{ border: "none", borderRadius: 0, background: boardProj ? "rgba(242,182,60,.14)" : "transparent", color: boardProj ? "var(--gold)" : "var(--mut)" }} onClick={() => setBoardProj(true)}>Projected</button>
+            </div>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, cursor: "pointer", color: showBoardVal ? "var(--ink)" : "var(--mut)" }}>
+              <input type="checkbox" checked={showBoardVal} onChange={(e) => setShowBoardVal(e.target.checked)} style={{ accentColor: "var(--gold)", cursor: "pointer" }} />
+              Show pick value
+            </label>
+            <span className="mut" style={{ fontSize: 11.5, marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: "var(--gold)", marginRight: 4, verticalAlign: "middle" }} />Your picks</span>
+              <span><i className="ti ti-arrows-exchange" style={{ fontSize: 11, color: "#4FD1A1", marginRight: 2 }} aria-hidden="true" />Traded</span>
+              {boardProj && <span><span className="gold">italic</span> = projected</span>}
+            </span>
           </div>
-          <div className="gridboard" style={{ minWidth: 1070, gridTemplateColumns: `repeat(${TEAMS}, minmax(88px, 1fr))` }}>
-            {TEAM_NAMES.map((n, i) => (
-              <div key={i} className="disp" style={{ fontSize: 12, fontWeight: 700, textAlign: "center", color: i === userIdx ? "var(--gold)" : "var(--mut)", padding: 4 }}>{i === userIdx ? "YOU" : n.split(" ")[0].toUpperCase()}</div>
-            ))}
-            {Array.from({ length: ROUNDS }, (_, r) =>
-              Array.from({ length: TEAMS }, (_, col) => {
-                // Each COLUMN is one team for the whole draft. Within a round, snake drafting
-                // reverses the pick ORDER on even rounds, but the team in this column is always
-                // `col` — so we find the overall pick number whose natural owner is this team.
-                const inRound = r % 2 === 0 ? col : TEAMS - 1 - col; // position within the round for team `col`
-                const o = r * TEAMS + inRound;
-                const realPk = picks[o];
-                const keeperHere = realPk == null && keeperByPick[o] != null;
-                const isKeeper = (realPk != null && keeperByPick[o] === realPk) || keeperHere;
-                const isProjected = realPk == null && !keeperHere && projBoard && projBoard[o] != null;
-                const pk = realPk != null ? realPk : keeperHere ? keeperByPick[o] : (isProjected ? projBoard[o] : null);
-                const p = pk != null ? players[pk] : null;
-                const v = p && !isProjected && !isKeeper ? pickValue(p, o, cfg) : 0;
-                return (
-                  <div key={`${r}-${col}`} className="cell" style={{ borderLeft: p ? `3px solid ${POS_COLOR[p.pos]}` : undefined, opacity: p ? (isProjected ? 0.92 : 1) : 0.45 }}
-                    onMouseEnter={p ? (e) => showTip(e, isKeeper ? [
-                      { t: "Keeper", x: `${pickLabel(o)} — ${teamAt(o) === userIdx ? "You" : TEAM_NAMES[teamAt(o)]}` },
-                      { t: "Kept", x: `${p.name} (${p.pos}${p.posRank}) — kept at this pick, locked to this slot.` },
-                    ] : isProjected ? [
-                      { t: "Projected pick", x: `${pickLabel(o)} — ${teamAt(o) === userIdx ? "You" : TEAM_NAMES[teamAt(o)]}` },
-                      { t: "Most likely", x: `${p.name} (${p.pos}${p.posRank}, Tier ${p.tier}) — the engine's current projection for this slot.` },
-                      { t: "Note", x: "Projection only — updates every time a real pick is made." },
-                    ] : [
-                      ...boardPickOutlook(
-                        p, o, cfg,
-                        teamAt(o) === userIdx ? "You" : TEAM_NAMES[teamAt(o)],
-                        picks.slice(0, o).map((pk2, o2) => (pk2 != null && teamAt(o2) === teamAt(o)) ? players[pk2] : null).filter(Boolean),
-                        REQ_F(isSuperflex(cfg))
-                      ),
-                    ]) : undefined}
-                    onMouseLeave={hideTip}>
-                    <div className="mut num" style={{ fontSize: 10 }}>{pickLabel(o)}{isKeeper && <span className="gold" style={{ marginLeft: 4, fontWeight: 700 }}>K</span>}</div>
-                    {p ? <div style={{ fontWeight: 600, color: isKeeper ? "var(--green)" : isProjected ? "var(--gold)" : "var(--ink)", fontStyle: isProjected ? "italic" : "normal" }}>{p.name}</div> : <div className="mut">—</div>}
-                    {p && !isProjected && !isKeeper && Math.abs(v) > 3 && <div className="num" style={{ fontSize: 10, color: v > 0 ? "var(--green)" : "var(--red)" }}>{v > 0 ? `+${v}` : v}</div>}
-                  </div>
-                );
-              })
-            )}
+          <div className="boardwrap">
+            {/* sticky team-name header */}
+            <div className="bhead" style={{ gridTemplateColumns: `40px repeat(${TEAMS}, minmax(92px,1fr))`, minWidth: 60 + TEAMS * 96 }}>
+              <div className="bteam" style={{ background: "transparent", border: "none" }} />
+              {TEAM_NAMES.map((n, i) => (
+                <div key={i} className={`bteam${i === userIdx ? " you" : ""}`} title={n}>
+                  <div className="nm" style={{ color: i === userIdx ? "var(--gold)" : "var(--ink)" }}>{i === userIdx ? "YOUR TEAM" : n}</div>
+                  <div className="sub mut">{i === userIdx ? "you" : `slot ${i + 1}`}</div>
+                </div>
+              ))}
+            </div>
+            {/* body grid: a round-number gutter + one cell per team */}
+            <div className="bgrid" style={{ gridTemplateColumns: `40px repeat(${TEAMS}, minmax(92px,1fr))`, minWidth: 60 + TEAMS * 96 }}>
+              {Array.from({ length: ROUNDS }, (_, r) => (
+                <React.Fragment key={r}>
+                  <div className="mut num" style={{ display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>R{r + 1}</div>
+                  {Array.from({ length: TEAMS }, (_, col) => {
+                    // Find the overall pick number in this round whose owner is this team (real order +
+                    // trades + live slots), so the board lays out correctly for any draft type.
+                    let o = -1;
+                    for (let i = 0; i < TEAMS; i++) { const oo = r * TEAMS + i; if (teamAt(oo) === col) { o = oo; break; } }
+                    if (o < 0) o = r * TEAMS + col;
+                    const traded = naturalOwner(o) !== teamAt(o);
+                    const realPk = picks[o];
+                    const keeperHere = realPk == null && keeperByPick[o] != null;
+                    const isKeeper = (realPk != null && keeperByPick[o] === realPk) || keeperHere;
+                    const isProjected = realPk == null && !keeperHere && projBoard && projBoard[o] != null;
+                    const pk = realPk != null ? realPk : keeperHere ? keeperByPick[o] : (isProjected ? projBoard[o] : null);
+                    const p = pk != null ? players[pk] : null;
+                    const v = p && !isProjected && !isKeeper ? pickValue(p, o, cfg) : 0;
+                    const isYou = col === userIdx;
+                    const isUpcoming = realPk == null && !isKeeper && myUpcoming.has(o);
+                    const isOnClock = o === picks.length && !done;
+                    const cls = `bcell${isYou ? " you" : ""}${isYou && isOnClock ? " oncl" : ""}${isUpcoming ? " upcoming" : ""}${!p ? " empty" : ""}`;
+                    return (
+                      <div key={`${r}-${col}`} className={cls}
+                        style={{ borderLeft: p ? `3px solid ${POS_COLOR[p.pos]}` : undefined, opacity: p ? (isProjected ? 0.9 : 1) : undefined }}
+                        onMouseEnter={p ? (e) => showTip(e, isKeeper ? [
+                          { t: "Keeper", x: `${pickLabel(o)} — ${teamAt(o) === userIdx ? "You" : TEAM_NAMES[teamAt(o)]}` },
+                          { t: "Kept", x: `${p.name} (${p.pos}${p.posRank}) — kept at this pick, locked to this slot.` },
+                        ] : isProjected ? [
+                          { t: "Projected pick", x: `${pickLabel(o)} — ${teamAt(o) === userIdx ? "You" : TEAM_NAMES[teamAt(o)]}` },
+                          ...(traded ? [{ t: "Traded pick", x: `Originally ${TEAM_NAMES[naturalOwner(o)]}'s pick, now owned by ${teamAt(o) === userIdx ? "you" : TEAM_NAMES[teamAt(o)]}.` }] : []),
+                          { t: "Most likely", x: `${p.name} (${p.pos}${p.posRank}, Tier ${p.tier}) — the engine's current projection for this slot.` },
+                          { t: "Note", x: "Projection only — updates every time a real pick is made." },
+                        ] : [
+                          ...boardPickOutlook(
+                            p, o, cfg,
+                            teamAt(o) === userIdx ? "You" : TEAM_NAMES[teamAt(o)],
+                            picks.slice(0, o).map((pk2, o2) => (pk2 != null && teamAt(o2) === teamAt(o)) ? players[pk2] : null).filter(Boolean),
+                            REQ_F(isSuperflex(cfg))
+                          ),
+                          ...(traded ? [{ t: "Traded pick", x: `Originally ${TEAM_NAMES[naturalOwner(o)]}'s pick, now owned by ${teamAt(o) === userIdx ? "you" : TEAM_NAMES[teamAt(o)]}.` }] : []),
+                        ]) : undefined}
+                        onMouseLeave={hideTip}>
+                        <div className="lbl mut">
+                          <span className="num">{pickLabel(o)}</span>
+                          {isKeeper && <span className="gold" style={{ fontWeight: 800 }}>K</span>}
+                          {traded && <i className="ti ti-arrows-exchange" style={{ fontSize: 9, color: "#4FD1A1" }} title="Traded pick" aria-hidden="true" />}
+                        </div>
+                        {p ? (
+                          <>
+                            <div className="pl" style={{ color: isKeeper ? "var(--green)" : isProjected ? "var(--gold)" : "var(--ink)", fontStyle: isProjected ? "italic" : "normal" }}>
+                              <span className="posdot" style={{ background: POS_COLOR[p.pos] }}>{p.pos}</span> {p.name}
+                            </div>
+                            {showBoardVal && !isProjected && !isKeeper && Math.abs(v) > 0 && (
+                              <div className="val num" style={{ color: v > 0 ? "var(--green)" : "var(--red)" }}>{v > 0 ? `+${v}` : v}</div>
+                            )}
+                          </>
+                        ) : isUpcoming ? (
+                          <div className="pl gold" style={{ fontStyle: "italic", opacity: .85 }}>Your pick →</div>
+                        ) : (
+                          <div className="pl mut">—</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </React.Fragment>
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -7301,7 +7417,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               const roster = teamsProj ? proj.rosters[i] : current;
               const curSet = new Set(current.map((p) => p.id));
               const counts = { QB: 0, RB: 0, WR: 0, TE: 0 };
-              current.forEach((p) => { if (counts[p.pos] != null) counts[p.pos]++; });
+              const best = { QB: null, RB: null, WR: null, TE: null };
+              current.forEach((p) => { if (counts[p.pos] != null) { counts[p.pos]++; if (best[p.pos] == null || p.vbd > best[p.pos]) best[p.pos] = p.vbd; } });
+              const teamRemaining = ROUNDS - current.length;
               return (
                 <div key={i} className="panel" style={{ padding: 12, borderColor: i === userIdx ? "var(--gold)" : "var(--line)" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -7310,8 +7428,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                   </div>
                   <div style={{ display: "flex", gap: 6, margin: "7px 0", flexWrap: "wrap" }}>
                     {POS.map((pos) => {
-                      const lvl = needLevel(counts[pos], null, dem, pos);
-                      return <span key={pos} className="chip" style={{ borderColor: lvl === 0 ? "#2E5C49" : "var(--line)", color: lvl === 0 ? "var(--green)" : "var(--mut)" }}>{pos} {counts[pos]}</span>;
+                      const req = REQ_F(cfg.sf)[pos] || 0;
+                      const lvl = posStrength(counts[pos], best[pos], req, teamRemaining);
+                      const col = lvl === 0 ? "var(--green)" : lvl === 1 ? "var(--gold)" : "var(--red)";
+                      const bdr = lvl === 0 ? "#2E5C49" : lvl === 1 ? "#5C4A1E" : "#5C2624";
+                      const bg = lvl === 0 ? "rgba(124,217,178,0.12)" : lvl === 1 ? "rgba(242,182,60,0.12)" : "rgba(242,101,92,0.14)";
+                      const tip = lvl === 0 ? `${pos}: strong — starters set with real talent` : lvl === 1 ? `${pos}: middle — ${counts[pos] >= req ? "filled but thin on quality" : "still needs starters"}` : `${pos}: weak — thin or below-replacement for your starting slots`;
+                      return <span key={pos} className="chip" title={tip} style={{ borderColor: bdr, color: col, background: bg, fontWeight: 600 }}>{pos} {counts[pos]}</span>;
                     })}
                   </div>
                   {lineupSlots(roster, cfg.sf).slots.map((s, j) => {
