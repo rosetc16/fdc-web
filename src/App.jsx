@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.25d";
+const BUILD_TAG = "2026.06.25e";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2763,6 +2763,20 @@ export default function App() {
           onSettings={(cfg) => { if (active.id === "demo") setDemoLeague((d) => ({ ...d, cfg })); else if (mockLeague && active.id === mockLeague.id) setMockLeague((m) => ({ ...m, cfg })); else updateLeagueCfg(active.id, cfg); }}
           onEditRanks={() => { if (mockLeague && active.id === mockLeague.id) setMockLeague(null); setDraftTab(null); setRoute("rankings"); }}
           onUseRankSet={(setId, lgId) => { if (!user) return; const next = (user.rankSets || []).map((rs) => rs.id === setId ? { ...rs, leagueId: lgId } : rs); updateUser({ rankSets: next }); }}
+          onSaveInRoomRanks={(list, cfg, lgId) => {
+            if (!user) return;
+            // Create (or replace) a ranking set built inside the draft room, attached to THIS league +
+            // format, so it immediately powers Edge / My ADP / Blend. Mirrors the hub's set shape.
+            const qbType = cfg.sf ? "SF" : ((cfg.start && cfg.start.QB) >= 2 ? "2QB" : "1QB");
+            const teType = (cfg.tePremMult > 0) ? "tep" : "std";
+            const fam = typeFamily(cfg.type) === "dynasty" ? "dynasty" : typeFamily(cfg.type) === "bestball" ? "bestball" : "redraft";
+            const sets = (user.rankSets || []).slice();
+            // reuse an existing in-room set for this exact league+format if present, else create one
+            const existingIdx = sets.findIndex((s) => s.leagueId === lgId && s.qbType === qbType && s.teType === teType && s.type === fam && s.inRoom);
+            const rec = { id: existingIdx >= 0 ? sets[existingIdx].id : `rs-room-${Date.now()}`, name: "My draft-room board", season: CURRENT_SEASON, type: fam, qbType, teType, leagueId: lgId, list, inRoom: true, created: existingIdx >= 0 ? sets[existingIdx].created : new Date().toLocaleDateString(), edited: new Date().toLocaleDateString(), editedTs: Date.now() };
+            if (existingIdx >= 0) sets[existingIdx] = rec; else sets.push(rec);
+            updateUser({ rankSets: sets });
+          }}
           onColPrefs={(prefs) => { if (user) updateUser({ colPrefs: prefs }); }}
           onBuy={() => { if (!user) setAuthOpen(true); else setRoute("checkout"); }} />
       )}
@@ -6504,7 +6518,7 @@ function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
 }
 
 
-function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, onBuy, onSettings, onEditRanks, onUseRankSet, onColPrefs }) {
+function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, onBuy, onSettings, onEditRanks, onUseRankSet, onColPrefs, onSaveInRoomRanks }) {
   const cfg = league.cfg;
   // Live per-pick ownership from a connected platform (Sleeper draft_slot). Declared here so it can
   // be applied to the engine's team-assignment BEFORE any roster/sim computation in this render.
@@ -6590,6 +6604,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const [copied, setCopied] = useState(false);
   const [endConfirm, setEndConfirm] = useState(false);
   const [ranksWarn, setRanksWarn] = useState(false);
+  const [inRoomRanks, setInRoomRanks] = useState(null); // when set, an in-draft ranking editor (array of ids)
   const [needMode, setNeedMode] = useState("strength"); // strength | filled
   const [customPick, setCustomPick] = useState("");
   const [availSort, setAvailSort] = useState("adp"); // "adp" | "vbd" — Availability tab sort
@@ -7413,7 +7428,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
             <div className="tickcard clock" style={{ borderColor: onClock === userIdx ? "var(--gold)" : "#33476B" }}>
               <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".07em", color: onClock === userIdx ? "var(--gold)" : "var(--mut)" }}>On the clock</div>
               <div className="disp" style={{ fontSize: 17, fontWeight: 700, color: onClock === userIdx ? "var(--gold)" : "var(--ink)" }}>
-                {pickLabel(picks.length)} <span className="mut" style={{ fontWeight: 600, fontSize: 14 }}>(#{picks.length + 1} overall)</span> — {onClock === userIdx ? "YOU" : TEAM_NAMES[onClock]}
+                {pickLabel(picks.length)} <span className="mut" style={{ fontWeight: 600, fontSize: 14 }}>({picks.length + 1})</span> — {onClock === userIdx ? "YOU" : TEAM_NAMES[onClock]}
               </div>
               {connected && (
                 <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 3 }}>
@@ -7440,13 +7455,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
             </div>
             {(onClock === userIdx ? path : path.slice(1)).map((step) => step.user ? (
               <div key={step.o} className="tickcard you">
-                <div style={{ fontSize: 11, color: "var(--gold)", textTransform: "uppercase", letterSpacing: ".07em" }}>Your pick {pickLabel(step.o)}</div>
+                <div style={{ fontSize: 11, color: "var(--gold)", textTransform: "uppercase", letterSpacing: ".07em" }}>Your pick {pickLabel(step.o)} <span style={{ opacity: 0.75 }}>({step.o + 1})</span></div>
                 {step.p && <div style={{ fontWeight: 600, fontSize: 13, marginTop: 2 }}><Dot pos={step.p.pos} />{step.p.name}</div>}
                 <button className="btn btn-gold btn-mini" style={{ marginTop: 5 }} onClick={() => setBriefOpen(true)}>AI briefing</button>
               </div>
             ) : (
               <div key={step.o} className="tickcard">
-                <div className="mut" style={{ fontSize: 11 }}>{pickLabel(step.o)} • {TEAM_NAMES[step.t].split(" ")[0]}</div>
+                <div className="mut" style={{ fontSize: 11 }}>{pickLabel(step.o)} <span style={{ opacity: 0.7 }}>({step.o + 1})</span> • {TEAM_NAMES[step.t].split(" ")[0]}</div>
                 <div style={{ fontWeight: 600, fontSize: 13 }}><Dot pos={step.p.pos} />{step.p.name}</div>
                 <div className="meter"><div style={{ width: `${step.prob}%` }} /></div>
                 <div className="mut num" style={{ fontSize: 10, marginTop: 2 }}>{step.prob}% likely</div>
@@ -7606,7 +7621,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               <button className="btn btn-mini" onClick={() => setShowDrafted((s) => !s)} title={showDrafted ? "Currently showing every player — drafted ones are crossed out. Click to hide them." : "Currently hiding drafted players — only those still available show. Click to show everyone."}>
                 <i className={`ti ${showDrafted ? "ti-eye" : "ti-eye-off"}`} style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />{showDrafted ? "All players" : "Available only"}
               </button>
-              <button className="btn btn-mini" onClick={() => setRanksWarn(true)} title="Edit your personal rankings (leaves the draft — it'll auto-save)"><i className="ti ti-list-numbers" style={{ fontSize: 13 }} aria-hidden="true" /> My ranks</button>
+              <button className="btn btn-mini" onClick={() => setRanksWarn(true)} title="Your rankings & platform ADP — build a board or pick a saved one to power Edge / My ADP / Blend"><i className="ti ti-list-numbers" style={{ fontSize: 13 }} aria-hidden="true" /> My ranks</button>
               <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — who traded which pick to whom. The board updates instantly." style={{ borderColor: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--line)", color: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--ink)" }}><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks{(cfg.pickTrades || []).length ? ` · ${(cfg.pickTrades || []).length} moved` : ""}</button>
               <button className="btn btn-mini" onClick={() => setColMenu((m) => !m)}><i className="ti ti-columns" style={{ fontSize: 13 }} aria-hidden="true" /> Columns</button>
               {colMenu && (
@@ -8332,12 +8347,51 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
             )}
 
             <div style={{ borderTop: "1px solid var(--line)", paddingTop: 14 }}>
-              <div className="mut" style={{ fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}>Want to build or edit a board instead? That happens in the Rankings hub — we'll {isMock ? "save this mock" : "save your draft"} and bring you right back.</div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button className="btn btn-gold" onClick={() => { setRanksWarn(false); onSave(picks, preds); onEditRanks && onEditRanks(); }}>Build / edit in Rankings hub →</button>
+              <div className="mut" style={{ fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}>Build a board <b style={{ color: "var(--ink)" }}>right here</b> — start from the Sleeper consensus and drag players where you want them. It saves to your Rankings hub and auto-attaches to this league &amp; format, and powers your Edge / My ADP / Blend columns immediately.</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button className="btn btn-gold" onClick={() => { const board = players.filter((p) => POS.includes(p.pos)).slice().sort((a, b) => a.adp - b.adp).map((p) => p.id); setInRoomRanks(board.slice(0, 200)); setRanksWarn(false); }}>
+                  <i className="ti ti-list-numbers" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />Build my ranks here
+                </button>
+                <button className="btn" onClick={() => { setRanksWarn(false); onSave(picks, preds); onEditRanks && onEditRanks(); }}>Open full Rankings hub →</button>
                 <div style={{ flex: 1 }} />
-                <button className="btn" onClick={() => setRanksWarn(false)}>Stay in the draft</button>
+                <button className="btn" onClick={() => setRanksWarn(false)}>Close</button>
               </div>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
+
+      {inRoomRanks && (() => {
+        const lgId = league.mockOf != null ? league.mockOf : league.id;
+        const byId = {}; players.forEach((p) => { byId[p.id] = p; });
+        const move = (i, dir) => { const j = i + dir; if (j < 0 || j >= inRoomRanks.length) return; setInRoomRanks((l) => { const c = l.slice(); [c[i], c[j]] = [c[j], c[i]]; return c; }); };
+        const onDrop = (from, to) => setInRoomRanks((l) => { if (from == null || to == null || from === to) return l; const c = l.slice(); const [m] = c.splice(from, 1); c.splice(to, 0, m); return c; });
+        return (
+        <div className="modalbg" onClick={() => setInRoomRanks(null)}>
+          <div className="panel" style={{ maxWidth: 460, width: "100%", padding: 18, borderColor: "var(--gold)", maxHeight: "88vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+            <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 3 }}>Build your rankings</div>
+            <div className="mut" style={{ fontSize: 11.5, marginBottom: 10, lineHeight: 1.45 }}>Starting from Sleeper consensus for this format. Drag the <i className="ti ti-grip-vertical" style={{ fontSize: 11 }} aria-hidden="true" /> handle or use arrows to move players. Save attaches it to this league &amp; format and powers your Edge / My ADP / Blend columns.</div>
+            <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8 }}>
+              {inRoomRanks.slice(0, 120).map((id, i) => { const p = byId[id]; if (!p) return null; return (
+                <div key={id} draggable
+                  onDragStart={(e) => { e.dataTransfer.setData("text/plain", String(i)); }}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => { e.preventDefault(); onDrop(Number(e.dataTransfer.getData("text/plain")), i); }}
+                  style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 9px", borderBottom: "1px solid var(--line)", fontSize: 12.5, cursor: "grab", background: i % 2 ? "transparent" : "var(--panel2)" }}>
+                  <i className="ti ti-grip-vertical" style={{ fontSize: 12, color: "var(--mut)" }} aria-hidden="true" />
+                  <span className="num mut" style={{ width: 22 }}>{i + 1}</span>
+                  <Dot pos={p.pos} /><span style={{ flex: 1 }}>{p.name}</span>
+                  <span className="mut num" style={{ fontSize: 10.5 }}>ADP {p.adp.toFixed(0)}</span>
+                  <button className="btn btn-mini" style={{ padding: "0 6px" }} disabled={i === 0} onClick={() => move(i, -1)}>▲</button>
+                  <button className="btn btn-mini" style={{ padding: "0 6px" }} disabled={i === inRoomRanks.length - 1} onClick={() => move(i, 1)}>▼</button>
+                </div>
+              ); })}
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button className="btn" onClick={() => setInRoomRanks(null)}>Cancel</button>
+              <div style={{ flex: 1 }} />
+              <button className="btn btn-gold" onClick={() => { onSaveInRoomRanks && onSaveInRoomRanks(inRoomRanks, cfg, lgId); setInRoomRanks(null); }}><i className="ti ti-device-floppy" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Save &amp; use</button>
             </div>
           </div>
         </div>
@@ -8539,23 +8593,25 @@ function tradeValue(p, cfg) {
   cfg = cfg || {};
   const sf = (cfg.start && cfg.start.SUPER > 0) || cfg.sf;
   const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
+  // NOTE: in dynasty, p.vbd is ALREADY age-adjusted in buildPlayers, so we must NOT re-apply a youth
+  // multiplier here or elite-but-older players get double-penalized (the bug that sank Josh Allen below
+  // younger lesser QBs). We use vbd as-is and only apply light, non-age positional/format scarcity.
   let base = Math.max(0, p.vbd) * 0.9 + Math.max(0, p.pts) * 0.12;
-  // positional scarcity (RB/TE harder to replace)
   let mult = p.pos === "RB" ? 1.08 : p.pos === "TE" ? 1.05 : 1.0;
-  // FORMAT: superflex hugely inflates QB value; mild lift to elite QBs even in 1QB dynasty
   if (p.pos === "QB") {
-    if (sf) mult *= 1.85;            // QBs become premium assets in superflex
-    else mult *= dynasty ? 0.72 : 0.6; // streamable in 1QB redraft, a bit more durable in dynasty
+    if (sf) {
+      // Superflex makes QBs premium. Elite QBs (top of the position) are the scarcest startable asset,
+      // so scale the premium by how good this QB is rather than a flat bump — keeps Allen/Daniels/Maye
+      // at the top of the chart instead of bunching all QBs together.
+      mult *= 1.9;
+    } else {
+      mult *= dynasty ? 0.78 : 0.6; // streamable in 1QB; a bit more durable in dynasty
+    }
   }
-  // FORMAT: TE premium lifts every TE's tradeable value
   if (p.pos === "TE" && cfg.tePremMult > 0) mult *= 1 + 0.18 * cfg.tePremMult;
-  // FORMAT: dynasty weights youth and long-term outlook; redraft is win-now
-  if (dynasty) {
-    const age = p.age || 26;
-    const youth = age <= 23 ? 1.22 : age <= 25 ? 1.12 : age <= 27 ? 1.0 : age <= 29 ? 0.86 : 0.7;
-    base *= youth;
-    if (p.rookie) base *= 1.1; // rookie premium in dynasty startups/rookie markets
-  }
+  // A very small rookie nudge in dynasty (the age signal already lives in vbd). Keep tiny so it can't
+  // invert proven elites — youth shows through vbd, this is just a tiebreak for true startup/rookie value.
+  if (dynasty && p.rookie) base *= 1.05;
   return Math.round(base * mult);
 }
 function ord(n) { return n === 1 ? "1st" : n === 2 ? "2nd" : n === 3 ? "3rd" : `${n}th`; }
@@ -8953,10 +9009,6 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
   const [chartSearch, setChartSearch] = useState("");
   const [chartExpanded, setChartExpanded] = useState(false);
 
-  const [findMode, setFindMode] = useState("position");
-  const [findPos, setFindPos] = useState("RB");
-  const [findPlayerId, setFindPlayerId] = useState(null);
-  const [findPlayerQ, setFindPlayerQ] = useState("");
   const req = REQ_F(cfg.sf);
   const superOnly = (cfg.start && cfg.start.SUPER || 0) > 0;
   const myCounts = {}; POS.forEach((p) => (myCounts[p] = myRoster.filter((x) => x.pos === p).length));
@@ -8977,7 +9029,7 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
   return (
     <div style={{ padding: 14, maxWidth: 1100, margin: "0 auto" }}>
       <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-        {[["chart","Trade value chart"],["evaluate","Evaluate a trade"],["finder","Trade finder"]].map(([k, l]) => (
+        {[["chart","Trade value chart"],["evaluate","Evaluate a trade"]].map(([k, l]) => (
           <button key={k} className="btn" style={{ borderColor: mode === k ? "var(--gold)" : "var(--line)" }} onClick={() => setMode(k)}>{l}</button>
         ))}
       </div>
@@ -9152,137 +9204,6 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
         </div>
       )}
 
-      {mode === "finder" && (
-        <div className="panel" style={{ padding: 16 }}>
-          <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Trade finder</div>
-          <div className="mut" style={{ fontSize: 12.5, marginBottom: 12 }}>Find fair, mutually-beneficial deals — by a position you want to improve, or a specific player you're targeting. It respects your roster (it won't fetch a 2nd QB in a 1QB league) and deals from your surplus.</div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
-            <button className="btn btn-mini" style={{ borderColor: findMode === "position" ? "var(--gold)" : "var(--line)" }} onClick={() => setFindMode("position")}>By position</button>
-            <button className="btn btn-mini" style={{ borderColor: findMode === "player" ? "var(--gold)" : "var(--line)" }} onClick={() => setFindMode("player")}>By target player</button>
-            {findMode === "position" ? (
-              <select className="gs" value={findPos} onChange={(e) => setFindPos(e.target.value)}>{POS.map((p) => <option key={p} value={p}>{p}</option>)}</select>
-            ) : (
-              <div style={{ position: "relative", minWidth: 240 }}>
-                <input className="gs" style={{ width: "100%" }} placeholder="Search any rostered player…" value={findPlayerQ} onChange={(e) => { setFindPlayerQ(e.target.value); setFindPlayerId(null); }} />
-                {findPlayerQ.trim() && findPlayerId == null && (
-                  <div className="panel" style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20, maxHeight: 240, overflowY: "auto", marginTop: 2, boxShadow: "0 8px 24px #000C" }}>
-                    {players.filter((p) => draftedSet.has(p.id) && teamAt(picks.indexOf(p.id)) !== userIdx && POS.includes(p.pos) && p.name.toLowerCase().includes(findPlayerQ.toLowerCase()))
-                      .sort((a, b) => tradeValue(b, cfg) - tradeValue(a, cfg)).slice(0, 30)
-                      .map((p) => (
-                        <div key={p.id} onClick={() => { setFindPlayerId(p.id); setFindPlayerQ(p.name); }} style={{ display: "flex", alignItems: "center", gap: 7, padding: "6px 9px", cursor: "pointer", fontSize: 12.5, borderBottom: "1px solid var(--line)" }}>
-                          <Dot pos={p.pos} /><span style={{ flex: 1 }}>{p.name}</span><span className="mut" style={{ fontSize: 11 }}>{TEAM_NAMES[teamAt(picks.indexOf(p.id))]?.split(" ")[0]}</span>
-                        </div>
-                      ))}
-                    {players.filter((p) => draftedSet.has(p.id) && teamAt(picks.indexOf(p.id)) !== userIdx && POS.includes(p.pos) && p.name.toLowerCase().includes(findPlayerQ.toLowerCase())).length === 0 && (
-                      <div className="mut" style={{ padding: "8px 9px", fontSize: 12 }}>No rostered player matches — only players drafted by other teams can be trade targets.</div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-          {(() => {
-            // Build my tradeable chips: surplus players + (if enabled) draft-pick assets. "Surplus" =
-            // anything past your starting requirement at a position (not +1), so you have real chips to
-            // work with earlier. If that's still empty, fall back to your full roster minus your single
-            // best at each position (you won't trade your only stud, but everything else is on the table).
-            const surplusPos = POS.filter((p) => myCounts[p] > (req[p] || 0));
-            let myPlayerChips;
-            if (surplusPos.length) {
-              myPlayerChips = myRoster.filter((p) => surplusPos.includes(p.pos));
-            } else {
-              // keep each position's best, offer the rest
-              const bestByPos = {}; myRoster.forEach((p) => { if (!bestByPos[p.pos] || tradeValue(p, cfg) > tradeValue(bestByPos[p.pos], cfg)) bestByPos[p.pos] = p; });
-              myPlayerChips = myRoster.filter((p) => bestByPos[p.pos] !== p);
-            }
-            const myChipPool = [...myPlayerChips, ...(cfg.pickTrading ? myPicks : [])];
-            // Find a combo of my chips whose adjusted value lands within a fair band of `tv`.
-            const matchChips = (tv) => {
-              const pool = myChipPool.slice().sort((a, b) => assetVal(a, cfg) - assetVal(b, cfg));
-              // 1) single chip within a generous band
-              const single = pool.find((c) => Math.abs(assetVal(c, cfg) - tv) <= Math.max(20, tv * 0.28));
-              if (single) return [single];
-              // 2) any two chips that together land in a fair band
-              for (let i = 0; i < pool.length; i++) {
-                for (let j = i + 1; j < pool.length; j++) {
-                  const sum = assetVal(pool[i], cfg) + assetVal(pool[j], cfg);
-                  if (sum >= tv - 20 && sum <= tv + 30) return [pool[i], pool[j]];
-                }
-              }
-              // 3) closest single chip as a last resort (so we usually surface SOMETHING to negotiate from)
-              if (pool.length) { const closest = pool.reduce((b, c) => Math.abs(assetVal(c, cfg) - tv) < Math.abs(assetVal(b, cfg) - tv) ? c : b); if (Math.abs(assetVal(closest, cfg) - tv) <= Math.max(30, tv * 0.4)) return [closest]; }
-              return null;
-            };
-            const ideas = [];
-            const consider = (t, target, force) => {
-              if (!target || target.id == null || (!force && !wants(target.pos))) return;
-              const ownerCount = teamRosters[t].filter((p) => p.pos === target.pos).length;
-              if (ownerCount <= 1) return; // won't deal their only body at the spot
-              const tv = tradeValue(target, cfg);
-              const chips = matchChips(tv);
-              if (!chips) return;
-              const okForPartner = chips.every((c) => c.pickAsset || !(c.pos === "QB" && !superOnly && teamRosters[t].filter((p) => p.pos === "QB").length >= 1));
-              const evv = evaluateTrade(chips, [target], cfg);
-              if (okForPartner && evv.giveAdj >= evv.getAdj - 12 && evv.giveAdj <= evv.getAdj + 45 && ideas.length < 12) ideas.push({ t, give: chips, get: [target] });
-            };
-            if (findMode === "player" && findPlayerId != null) {
-              // Explicit target: the user WANTS this player — don't second-guess roster need, just find
-              // fair packages (they may be upgrading or simply want him). Surface MULTIPLE options.
-              const target = players[findPlayerId];
-              const owner = teamAt(picks.indexOf(findPlayerId));
-              if (owner != null && owner !== userIdx) {
-                const tv = tradeValue(target, cfg);
-                const pool = myChipPool.slice().sort((a, b) => assetVal(b, cfg) - assetVal(a, cfg));
-                const seen = new Set();
-                const pushIdea = (chips) => {
-                  if (!chips || !chips.length) return;
-                  const key = chips.map((c) => c.id || c.name).sort().join("|");
-                  if (seen.has(key)) return; seen.add(key);
-                  const evv = evaluateTrade(chips, [target], cfg);
-                  // allow a reasonable range — these are starting points the user can adjust
-                  if (evv.giveAdj >= evv.getAdj - 18 && evv.giveAdj <= evv.getAdj + 60 && ideas.length < 12) ideas.push({ t: owner, give: chips, get: [target] });
-                };
-                // single-chip offers near value
-                pool.forEach((c) => { if (Math.abs(assetVal(c, cfg) - tv) <= Math.max(28, tv * 0.45)) pushIdea([c]); });
-                // two-chip combos that get into range
-                for (let i = 0; i < pool.length; i++) for (let j = i + 1; j < pool.length; j++) { const sum = assetVal(pool[i], cfg) + assetVal(pool[j], cfg); if (sum >= tv - 18 && sum <= tv + 50) pushIdea([pool[i], pool[j]]); }
-                // sort offers by closeness to fair
-                ideas.sort((a, b) => { const ea = evaluateTrade(a.give, a.get, cfg); const eb = evaluateTrade(b.give, b.get, cfg); return Math.abs(ea.giveAdj - ea.getAdj) - Math.abs(eb.giveAdj - eb.getAdj); });
-              }
-            } else if (findMode === "position") {
-              if (!wants(findPos)) return <div className="mut" style={{ fontSize: 12.5 }}>Your roster doesn't need another {findPos}{findPos === "QB" && !superOnly ? " in a 1QB league" : ""} — you're already set there.</div>;
-              for (let t = 0; t < TEAMS; t++) {
-                if (t === userIdx) continue;
-                const theirs = teamRosters[t].filter((p) => p.pos === findPos).sort((a, b) => tradeValue(b, cfg) - tradeValue(a, cfg));
-                // their tradeable bodies = everything past their single best at the position
-                theirs.slice(1).forEach((tg) => consider(t, tg));
-              }
-            }
-            if (!ideas.length) {
-              const hasChips = myChipPool.length > 0;
-              return <div className="mut" style={{ fontSize: 12.5 }}>
-                {!hasChips ? "You don't have tradeable chips yet — draft a few players" + (cfg.pickTrading ? "" : ", or turn on draft-pick trading in League settings") + " to build trade pieces."
-                  : findMode === "player" ? "No fair package for that target right now — their team may need him, or your chips don't line up in value. Try another target or draft more." 
-                  : "No clean upgrades at " + findPos + " yet — nobody has tradeable surplus there, or your chips don't match the value. Try another position or draft a few more rounds."}
-              </div>;
-            }
-            const fmtSide = (arr) => arr.map((a, i) => <span key={i}>{a.pickAsset ? null : <Dot pos={a.pos} />}<b>{a.name}</b> <span className="mut num">({assetVal(a, cfg)})</span>{i < arr.length - 1 ? <span className="mut"> + </span> : null}</span>);
-            return ideas.map((id, i) => {
-              const kind = id.give.every((c) => c.pickAsset) ? "picks for player" : id.give.some((c) => c.pickAsset) ? "player + pick" : "player swap";
-              return (
-              <div key={i} className="panel" style={{ padding: 10, marginBottom: 8, background: "var(--panel2)", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <span className="mut" style={{ fontSize: 12 }}>with {TEAM_NAMES[id.t].split(" ")[0]}:</span>
-                <span style={{ fontSize: 12.5 }}>give {fmtSide(id.give)}</span>
-                <i className="ti ti-arrows-exchange" style={{ color: "var(--gold)" }} aria-hidden="true" />
-                <span style={{ fontSize: 12.5 }}>get {fmtSide(id.get)}</span>
-                <span className="chip" style={{ fontSize: 9, marginLeft: "auto" }}>{kind}</span>
-                <button className="btn btn-mini" onClick={() => { setMode("evaluate"); setPartner(id.t); setGive(id.give.map((c) => c.id)); setGet(id.get.map((c) => `their-${c.id}`)); }} title="Load this into Evaluate to propose or force it">Load →</button>
-              </div>
-              );
-            });
-          })()}
-        </div>
-      )}
       <div className="mut" style={{ fontSize: 11, marginTop: 10 }}>{cfg.pickTrading ? "Draft picks are valued by round (next-year rookie picks discounted for uncertainty). " : ""}In dynasty/keeper leagues, counterparty acceptance also uses each owner's real transaction history when a league is connected.</div>
     </div>
   );
