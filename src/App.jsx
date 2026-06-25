@@ -2324,13 +2324,13 @@ export default function App() {
           } catch (e) { /* fall back to built-in dataset if unavailable */ }
           try {
             const me = await api.me();
-            if (me) { const merged = migrateRankSets({ ...me, rankSets: me.rankSets || [] }); setUser(merged); persist({ user: merged }); }
+            if (me) { const admin = isAdminEmail(me.email); const merged = migrateRankSets({ ...me, rankSets: me.rankSets || [], admin, paid: me.paid || admin }); setUser(merged); persist({ user: merged }); }
           } catch (e) {}
           try {
             const params = new URLSearchParams(window.location.search);
             if (params.get("paid") === "1") {
               const me = await api.me();
-              if (me) { setUser(migrateRankSets({ ...me, rankSets: me.rankSets || [] })); }
+              if (me) { const admin = isAdminEmail(me.email); setUser(migrateRankSets({ ...me, rankSets: me.rankSets || [], admin, paid: me.paid || admin })); }
               window.history.replaceState({}, "", window.location.pathname); // clean the URL
               setRoute("home");
             }
@@ -2372,7 +2372,8 @@ export default function App() {
       try {
         const u = mode === "signup" ? await api.signup(email, password) : await api.signin(email, password);
         setAuthError(null);
-        const merged = migrateRankSets({ ...u, rankSets: u.rankSets || [] });
+        const admin = isAdminEmail(u.email || email);
+        const merged = migrateRankSets({ ...u, rankSets: u.rankSets || [], admin, paid: u.paid || admin });
         setUser(merged); persist({ user: merged });
         return merged;
       } catch (e) {
@@ -2381,7 +2382,8 @@ export default function App() {
       }
     }
     const comped = !!compFor(biz, email);
-    const u = { email, paid: comped, comp: comped, admin: isAdminEmail(email), rankSets: [], season: CURRENT_SEASON };
+    const admin = isAdminEmail(email);
+    const u = { email, paid: comped || admin, comp: comped, admin, rankSets: [], season: CURRENT_SEASON };
     setUser(u); persist({ user: u });
     return u;
   };
