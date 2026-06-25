@@ -3395,6 +3395,11 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
             <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Choose Existing League</span>
             <i className={`ti ti-chevron-${openPick ? "up" : "down"}`} style={{ fontSize: 14, color: "var(--mut)" }} aria-hidden="true" />
           </button>
+          <div style={{ width: 1, background: "rgba(214,170,75,0.30)" }} />
+          <button onClick={() => onRankings()} className="menuitem" style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: "transparent", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
+            <i className="ti ti-list-numbers" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
+            <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>My Rankings</span>
+          </button>
         </div>
       </div>
 
