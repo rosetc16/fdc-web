@@ -2364,6 +2364,13 @@ export default function App() {
 
   const persist = async (next) => {
     try { if (window.storage) await window.storage.set("gs-state", JSON.stringify({ leagues: next.leagues ?? leagues, user: next.user ?? user, biz: next.biz ?? biz, funMocks: next.funMocks ?? funMocks, feedback: next.feedback ?? feedback })); } catch (e) {}
+    // In backend mode, also save the user's personal ranking sets server-side so they survive a
+    // refresh (the local storage copy would otherwise be overwritten by api.me() on reload).
+    try {
+      if (hasBackend && next.user && Array.isArray(next.user.rankSets)) {
+        await api.saveRankSets(next.user.rankSets);
+      }
+    } catch (e) { /* keep local copy; will retry on next change */ }
   };
 
   const signUp = async (email, password, mode = "signup") => {

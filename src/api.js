@@ -40,6 +40,10 @@ export const api = {
     if (!getToken()) return null;
     const r = await call('/api/auth/me'); return r.user;
   },
+  async saveRankSets(rankSets) {
+    const r = await call('/api/auth/rank-sets', { method: 'POST', body: { rankSets } });
+    return r.user;
+  },
   signout() { setToken(null); },
 
   // ---- payments ----
