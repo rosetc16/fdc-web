@@ -1247,23 +1247,29 @@ export function applyLivePack(pack) {
     if (!st) return 0;
     try { return scoreFromStats(pos, st, DEFAULT_SCORING); } catch { return 0; }
   };
-  // Decide the ranking strategy. Real ADP is only trustworthy when we have a healthy amount of it
-  // for *draftable* players. Early in the year the only drafts on Sleeper are rookie/dynasty drafts,
-  // so "real ADP" covers mostly rookies — using it would bury veterans. In that case we rank the
-  // WHOLE board by projections (a sensible redraft board) until real redraft ADP accumulates.
+  // Decide the ranking strategy. The PREDICTION side (what the room will draft) should follow real
+  // public ADP wherever it exists, because everyone in the league sees the same Sleeper board. We only
+  // fall back to projection/VBD ordering for players who have NO real ADP yet, and we slot those into
+  // the gaps rather than letting them override the players the market has already priced.
   const draftable = pack.players.filter((p) => normPos(p.pos));
-  const adpCount = draftable.filter((p) => p.adp != null).length;
-  // Healthy ADP coverage = at least ~120 players have real ADP. Below that, trust projections.
-  const ADP_HEALTHY = adpCount >= 120;
+  const withRealAdp = draftable.filter((p) => p.adp != null);
+  const adpCount = withRealAdp.length;
+  // "Healthy" coverage = enough real ADP to anchor the early/mid board. Below a small floor we can't
+  // trust ADP at all (e.g. only a handful of rookie-draft data points) and rank purely by projection.
+  const ADP_USABLE = adpCount >= 24;   // we have a meaningful top-of-board market signal
+  const ADP_HEALTHY = adpCount >= 90;  // deep enough to anchor most of the draftable pool
 
   const projValueAll = (p) => projValue(p.stats, normPos(p.pos));
-  // Provisional ADP for players lacking real ADP: rank by projection, placed after real-ADP players.
-  const withAdp = ADP_HEALTHY ? draftable.filter((p) => p.adp != null).length : 0;
-  const noAdpSorted = (ADP_HEALTHY ? draftable.filter((p) => p.adp == null) : draftable.slice())
+  // For players WITHOUT real ADP, rank them by projection and place them AFTER the deepest real-ADP
+  // pick, so the market-priced players keep their real positions and projection only fills the tail.
+  const maxRealAdp = withRealAdp.reduce((m, p) => Math.max(m, p.adp), 0);
+  const noAdpSorted = draftable.filter((p) => p.adp == null)
     .map((p) => ({ p, v: projValueAll(p) }))
     .sort((a, b) => b.v - a.v);
   const provisionalAdp = new Map();
-  noAdpSorted.forEach((x, i) => provisionalAdp.set(x.p.id, withAdp + i + 1));
+  // if ADP is usable, fill gaps starting just past the deepest real ADP; otherwise rank everyone by proj
+  const gapStart = ADP_USABLE ? Math.max(maxRealAdp, adpCount) : 0;
+  noAdpSorted.forEach((x, i) => provisionalAdp.set(x.p.id, gapStart + i + 1));
 
   for (const p of pack.players) {
     if (!p.name || !p.pos) continue;
@@ -1272,8 +1278,9 @@ export function applyLivePack(pack) {
     let name = p.name;
     if (seen.has(name)) { name = `${p.name} (${p.team || pos})`; if (seen.has(name)) continue; }
     seen.add(name);
-    // Use real ADP only when coverage is healthy; otherwise everyone uses the projection ranking.
-    const useRealAdp = ADP_HEALTHY && p.adp != null;
+    // Use real ADP whenever the player HAS it and ADP is usable at all — this is the market signal that
+    // drives predictions. Only players without real ADP fall to the projection-derived provisional slot.
+    const useRealAdp = ADP_USABLE && p.adp != null;
     const adp = useRealAdp ? p.adp : (provisionalAdp.get(p.id) || 999);
     raw.push([name, pos, p.team || "FA", p.age || 0, p.bye || 0, adp, p.adpHi || adp]);
     if (p.stats && Object.keys(p.stats).length) stats[name] = p.stats;
@@ -1288,7 +1295,9 @@ export function applyLivePack(pack) {
   if (raw.length < 50) return false; // sanity: don't swap in a too-small pool
   RAW = raw; STATS = stats; META = meta;
   LIVE_LOADED = true;
-  LIVE_ADP_SPARSE = !ADP_HEALTHY; // when sparse, engine should rank by its own VBD value
+  // Only treat the board as "sparse" (rank everything by VBD) when ADP isn't even usable. Once we have
+  // a real top-of-board market signal, predictions follow ADP and VBD is reserved for YOUR pick advice.
+  LIVE_ADP_SPARSE = !ADP_USABLE;
   return true;
 }
 
@@ -1614,6 +1623,42 @@ function buildPlayers(cfg) {
   if (useIdp) IDP_POS.forEach((pos) => { const s = ps.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts); repl[pos] = s.length ? s[Math.min(idpCounts[pos] - 1, s.length - 1)].pts : 0; });
   const VBD_POS = useIdp ? [...POS, ...IDP_POS] : POS;
   ps.forEach((p) => { p.vbd = VBD_POS.includes(p.pos) ? Math.round((p.pts - repl[p.pos]) * 10) / 10 : -50; });
+  // ---- DYNASTY AGE ADJUSTMENT ----------------------------------------------------------------
+  // In dynasty/keeper leagues, a player's long-term value depends heavily on age, and it ages very
+  // differently by position: RBs fall off a cliff in their late 20s, WRs decline more gently, TEs and
+  // especially QBs hold value into their 30s. We compute an age multiplier per player and apply it to
+  // their VBD so the dynasty board slides aging players (e.g. a 29-yo RB) down toward where the dynasty
+  // market actually has them, while young ascending players hold or rise. Redraft is unaffected.
+  const isDynasty = cfg.type === "dynasty" || cfg.type === "keeper";
+  if (isDynasty) {
+    // peak age (full value at/below this) and yearly decline rate past peak, by position.
+    const AGE = {
+      RB: { peak: 24, decline: 0.115, floor: 0.26 }, // steepest fall — RBs age worst in dynasty
+      WR: { peak: 25, decline: 0.052, floor: 0.40 },
+      TE: { peak: 26, decline: 0.045, floor: 0.45 },
+      QB: { peak: 28, decline: 0.028, floor: 0.55 }, // ages best
+    };
+    const youthBump = (pos, age) => {
+      // young players (below peak) get a modest dynasty bump for years of control ahead
+      const cfgA = AGE[pos]; if (!cfgA) return 1;
+      const yearsYoung = Math.max(0, cfgA.peak - age);
+      return 1 + Math.min(0.18, yearsYoung * (pos === "RB" ? 0.05 : 0.035));
+    };
+    const ageMult = (pos, age) => {
+      const a = AGE[pos]; if (!a || !age || age <= 0) return 1;
+      if (age <= a.peak) return youthBump(pos, age);
+      const yearsPast = age - a.peak;
+      // exponential-ish decline, clamped to a floor so a great old player isn't zeroed out
+      return Math.max(a.floor, Math.pow(1 - a.decline, yearsPast));
+    };
+    ps.forEach((p) => {
+      if (!VBD_POS.includes(p.pos)) return;
+      const m = ageMult(p.pos, p.age);
+      p.ageMult = m;
+      // Apply to VBD. Shift so even discounted players keep a sensible relative order within position.
+      p.vbd = Math.round(p.vbd * m * 10) / 10;
+    });
+  }
   [...POS, "K", "DST", ...IDP_POS].forEach((pos) => { const s = ps.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts); s.forEach((p, i) => (p.posRank = i + 1)); });
   // How far is this league's scoring from standard? Public ADP is anchored to standard
   // scoring, so for an unusual league (e.g. points-per-carry) the market doesn't reflect
@@ -1639,6 +1684,12 @@ function buildPlayers(cfg) {
     // QBs get little. Tuned so an SF board interleaves top QBs with top RB/WR like the market does.
     const qbs = valPool.filter((p) => p.pos === "QB").sort((a, b) => (b.vbd ?? -50) - (a.vbd ?? -50));
     const qbRankById = new Map(); qbs.forEach((p, i) => qbRankById.set(p.id, i)); // 0 = QB1
+    // Position rank within RBs (by value) — used to lift elite bell-cow RBs toward where the human
+    // market actually drafts them. VBD alone undervalues elite RBs vs how people really draft (a proven
+    // top-3 scorer like CMC goes top-5 in nearly every redraft, recency + bell-cow scarcity). Since this
+    // fallback board stands in for the MARKET (what others will pick), it should mirror that behavior.
+    const rbs = valPool.filter((p) => p.pos === "RB").sort((a, b) => (b.vbd ?? -50) - (a.vbd ?? -50));
+    const rbRankById = new Map(); rbs.forEach((p, i) => rbRankById.set(p.id, i)); // 0 = RB1
     const effVal = (p) => {
       let v = p.vbd != null ? p.vbd : -50;
       if (sf && p.pos === "QB") {
@@ -1650,6 +1701,16 @@ function buildPlayers(cfg) {
         // exponential-ish decay: QB1 full, QB3 ~60%, QB6 ~28%, QB10 ~8%
         const decay = Math.pow(0.82, rank);
         v += 42 * decay;
+      }
+      if (p.pos === "RB") {
+        // Market-realism lift for elite RBs: top bell-cows get drafted ahead of pure VBD. The human
+        // market bunches the top ~6 RBs near the top of the board (proven producers go early on recency
+        // + bell-cow scarcity), so the lift is strong and fairly flat across RB1-6, fading after. This
+        // nudges the PREDICTED board (what the room does), not your pick advice (raw VBD via userScore).
+        // In dynasty it's muted because vbd is already age-discounted, so aging RBs don't get re-inflated.
+        const rank = rbRankById.get(p.id) ?? 99; // 0 = RB1
+        const decay = Math.pow(0.90, rank); // RB1 full → RB6 ~53% → RB10 ~35%
+        v += 44 * decay;
       }
       return v;
     };
