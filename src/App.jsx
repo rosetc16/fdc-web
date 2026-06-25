@@ -4890,6 +4890,15 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
   const add = (id) => { setList((l) => [...l, id]); setSearch(""); };
   const remove = (id) => setList((l) => l.filter((x) => x !== id));
   const move = (i, dir) => setList((l) => { const j = i + dir; if (j < 0 || j >= l.length) return l; const c = l.slice(); [c[i], c[j]] = [c[j], c[i]]; return c; });
+  // Drag-and-drop reorder (native HTML5 DnD — no library). dragFrom holds the index being dragged.
+  const [dragFrom, setDragFrom] = useState(null);
+  const [dragOver, setDragOver] = useState(null);
+  const reorder = (from, to) => setList((l) => {
+    if (from == null || to == null || from === to || from < 0 || to < 0 || from >= l.length || to >= l.length) return l;
+    const c = l.slice(); const [moved] = c.splice(from, 1); c.splice(to, 0, moved); return c;
+  });
+  // O(1) lookup of a player's position in the list (avoids O(n²) indexOf in the board view).
+  const listIndex = useMemo(() => { const m = {}; list.forEach((id, i) => (m[id] = i)); return m; }, [list]);
   const prefillTop = (n) => setList(byAdp.slice(0, n).map((p) => p.id));
   const fillRest = () => setList((l) => { const have = new Set(l); return [...l, ...byAdp.filter((p) => !have.has(p.id)).map((p) => p.id)]; });
   const saveList = () => { onSaveList(list); flashMsg("Rankings saved"); };
@@ -4998,17 +5007,35 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
             </div>
             {list.length > 0 && (
               <div style={{ maxHeight: 360, overflowY: "auto", marginBottom: 12 }}>
-                {list.map((id, i) => { const p = byId[id]; if (!p) return null; const a = adj[p.name]; return (
-                  <div key={id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderTop: i ? "1px solid var(--line)" : "none", fontSize: 13 }}>
+                {list.map((id, i) => { const p = byId[id]; if (!p) return null; const a = adj[p.name];
+                  const isDragging = dragFrom === i;
+                  const isOver = dragOver === i && dragFrom !== i;
+                  return (
+                  <div key={id}
+                    draggable
+                    onDragStart={(e) => { setDragFrom(i); e.dataTransfer.effectAllowed = "move"; }}
+                    onDragEnter={(e) => { e.preventDefault(); setDragOver(i); }}
+                    onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
+                    onDrop={(e) => { e.preventDefault(); reorder(dragFrom, i); setDragFrom(null); setDragOver(null); }}
+                    onDragEnd={() => { setDragFrom(null); setDragOver(null); }}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 8, padding: "7px 6px", fontSize: 13,
+                      borderRadius: 7, marginBottom: 2, userSelect: "none",
+                      background: isDragging ? "rgba(214,170,75,0.14)" : isOver ? "rgba(214,170,75,0.06)" : "transparent",
+                      borderTop: isOver ? "2px solid var(--gold)" : "2px solid transparent",
+                      opacity: isDragging ? 0.5 : 1, cursor: "grab", transition: "background .12s",
+                    }}>
+                    <i className="ti ti-grip-vertical" style={{ fontSize: 15, color: "var(--mut)", cursor: "grab" }} aria-hidden="true" title="Drag to reorder" />
                     <span className="num mut" style={{ width: 24 }}>{i + 1}</span>
                     <Dot pos={p.pos} /><span style={{ flex: 1 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank}</span>{a && <span className="chip" style={{ marginLeft: 6, fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>adjusted</span>}</span>
-                    <button className="btn btn-mini" onClick={() => move(i, -1)} disabled={i === 0}>▲</button>
-                    <button className="btn btn-mini" onClick={() => move(i, 1)} disabled={i === list.length - 1}>▼</button>
-                    <button className="btn btn-mini" onClick={() => remove(id)}>✕</button>
+                    <button className="btn btn-mini" onClick={() => move(i, -1)} disabled={i === 0} title="Move up" style={{ padding: "2px 6px" }}><i className="ti ti-chevron-up" style={{ fontSize: 12 }} aria-hidden="true" /></button>
+                    <button className="btn btn-mini" onClick={() => move(i, 1)} disabled={i === list.length - 1} title="Move down" style={{ padding: "2px 6px" }}><i className="ti ti-chevron-down" style={{ fontSize: 12 }} aria-hidden="true" /></button>
+                    <button className="btn btn-mini" onClick={() => remove(id)} title="Remove" style={{ padding: "2px 6px" }}><i className="ti ti-x" style={{ fontSize: 12 }} aria-hidden="true" /></button>
                   </div>
                 ); })}
               </div>
             )}
+            <div className="mut" style={{ fontSize: 11, marginBottom: 10, marginTop: -4 }}><i className="ti ti-info-circle" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Drag the <i className="ti ti-grip-vertical" style={{ fontSize: 11 }} aria-hidden="true" /> handle to reorder, or use the arrows.</div>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <button className="btn btn-gold" onClick={saveList}>Save ranks</button>
               {list.length > 0 && <button className="btn btn-mini" onClick={fillRest} title="Append the rest of the board (by consensus) below what you've already ranked">Fill rest of board</button>}
@@ -5027,7 +5054,7 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
                   <i className={`ti ${placed ? "ti-checkbox" : "ti-square"}`} style={{ fontSize: 16, color: placed ? "var(--green)" : "var(--mut)" }} aria-hidden="true" />
                   <Dot pos={p.pos} />
                   <span style={{ flex: 1, textDecoration: placed ? "line-through" : "none" }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank}</span>{a && <span className="chip" style={{ marginLeft: 6, fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>adjusted</span>}</span>
-                  {placed && <span className="gold num" style={{ fontSize: 11 }}>#{list.indexOf(p.id) + 1}</span>}
+                  {placed && <span className="gold num" style={{ fontSize: 11 }}>#{(listIndex[p.id] ?? -1) + 1}</span>}
                 </div>
               ); })}
             </div>
