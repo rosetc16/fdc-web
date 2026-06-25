@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.25b";
+const BUILD_TAG = "2026.06.25d";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3092,6 +3092,35 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
         </div>
         {keepers.length > 0 && <div className="gold" style={{ fontSize: 12, marginBottom: 4 }}><i className="ti ti-lock" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />{keepers.length} keeper{keepers.length > 1 ? "s" : ""} set — applied to the official draft and every mock.</div>}
 
+        {/* Live status banner — make it unmistakable when the connected Sleeper draft is actually live
+            (or already complete), so the choices below read correctly instead of looking like setup. */}
+        {(() => {
+          const cs = league.cfg.connect && league.cfg.connect.status;
+          if (cs === "drafting") return (
+            <div className="panel" style={{ padding: "12px 14px", marginTop: 10, background: "#16140c", borderColor: "var(--gold)", display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ display: "inline-flex", width: 9, height: 9, borderRadius: "50%", background: "#4FD1A1", boxShadow: "0 0 0 3px rgba(79,209,161,.2)" }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--gold)" }}>Your draft is LIVE right now on Sleeper</div>
+                <div className="mut" style={{ fontSize: 11.5 }}>Jump into the official draft below — it's syncing your league's picks in real time. Don't run a mock for this; use “{st === "progress" ? "Resume" : "Start"} Official Draft”.</div>
+              </div>
+              <button className="btn btn-gold" style={{ flexShrink: 0 }} onClick={() => onOfficial(league.id)}><i className="ti ti-player-play" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />Enter live draft</button>
+            </div>
+          );
+          if (cs === "complete") return (
+            <div className="panel" style={{ padding: "10px 14px", marginTop: 10, background: "var(--panel2)", display: "flex", alignItems: "center", gap: 10 }}>
+              <i className="ti ti-circle-check" style={{ fontSize: 16, color: "var(--green)" }} aria-hidden="true" />
+              <div className="mut" style={{ fontSize: 12 }}>This Sleeper draft is <b style={{ color: "var(--ink)" }}>complete</b> — open the official draft to review results, or run a mock to practice for next year.</div>
+            </div>
+          );
+          if (cs === "pre_draft") return (
+            <div className="panel" style={{ padding: "10px 14px", marginTop: 10, background: "var(--panel2)", display: "flex", alignItems: "center", gap: 10 }}>
+              <i className="ti ti-clock" style={{ fontSize: 16, color: "var(--mut)" }} aria-hidden="true" />
+              <div className="mut" style={{ fontSize: 12 }}>This Sleeper draft <b style={{ color: "var(--ink)" }}>hasn't started yet</b> — run mocks to prep now; the official draft will sync live once Sleeper begins.</div>
+            </div>
+          );
+          return null;
+        })()}
+
         {/* THREE CHOICES INSIDE THE UMBRELLA */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(230px,1fr))", gap: 12, marginTop: 18 }}>
           <button className="hubtile" onClick={() => onOfficial(league.id)} style={{ textAlign: "left", background: "#16140c", border: "1px solid var(--gold)", borderRadius: 12, padding: 18, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)" }}>
@@ -5141,6 +5170,8 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
   const [search, setSearch] = useState("");
   const [showImport, setShowImport] = useState(false);
   const [impQ, setImpQ] = useState("");
+  const [showPaste, setShowPaste] = useState(false);
+  const [pasteText, setPasteText] = useState("");
   useEffect(() => { setList(set.list || []); setName(set.name); }, [set.id]);
 
   const inList = new Set(list);
@@ -5148,6 +5179,18 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
   const results = search.trim() ? players.filter((p) => !inList.has(p.id) && p.name.toLowerCase().includes(search.toLowerCase())).slice(0, 8) : [];
   const add = (id) => { setList((l) => [...l, id]); setSearch(""); };
   const remove = (id) => setList((l) => l.filter((x) => x !== id));
+  // Parse a pasted ranking list (one player per line; ignores leading numbers/dots/parens like "1. " or
+  // "12) "). Matches names to players via normName, dedups, and sets the list to the matched order.
+  // This is how you import your league platform's ADP/ranks to power the Edge / My ADP / Blend columns.
+  const applyPaste = () => {
+    const byName = {}; players.forEach((p) => { byName[normName(p.name)] = p.id; });
+    const lines = pasteText.split(/\r?\n/).map((ln) => ln.replace(/^\s*\d+[.)\]]?\s*/, "").replace(/\s*\([^)]*\)\s*$/, "").trim()).filter(Boolean);
+    const ids = []; const seen = new Set(); const missed = [];
+    lines.forEach((ln) => { const id = byName[normName(ln)]; if (id != null && !seen.has(id)) { ids.push(id); seen.add(id); } else if (id == null) missed.push(ln); });
+    if (ids.length) { setList(ids); flashMsg(`Imported ${ids.length} players${missed.length ? ` · ${missed.length} not matched` : ""}`); }
+    else flashMsg("No players matched — check the names");
+    setShowPaste(false); setPasteText("");
+  };
   const move = (i, dir) => setList((l) => { const j = i + dir; if (j < 0 || j >= l.length) return l; const c = l.slice(); [c[i], c[j]] = [c[j], c[i]]; return c; });
   // Drag-and-drop reorder (native HTML5 DnD — no library). dragFrom holds the index being dragged.
   const [dragFrom, setDragFrom] = useState(null);
@@ -5338,8 +5381,24 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
             <div className="mut" style={{ fontSize: 11, marginBottom: 10, marginTop: -4 }}><i className="ti ti-info-circle" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Drag the <i className="ti ti-grip-vertical" style={{ fontSize: 11 }} aria-hidden="true" /> handle to reorder, or use the arrows. {list.length > 0 && <b style={{ color: "var(--ink)" }}>{list.length} ranked.</b>}</div>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <button className="btn btn-gold" onClick={saveList}>Save ranks</button>
+              <button className="btn btn-mini" onClick={() => setShowPaste(true)} title="Paste a ranking or ADP list (e.g. from your league platform) to fill your ranks fast"><i className="ti ti-clipboard-text" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Paste a list</button>
               {list.length > 0 && <button className="btn btn-mini" onClick={fillRest} title="Append the rest of the board (by consensus) below what you've already ranked">Fill rest of board</button>}
               {list.length > 0 && <button className="btn btn-mini" onClick={() => setList([])}>Clear all</button>}
+            </div>
+          </div>
+        )}
+
+        {showPaste && (
+          <div className="modalbg" onClick={() => setShowPaste(false)}>
+            <div className="panel" style={{ maxWidth: 460, width: "100%", padding: 20 }} onClick={(e) => e.stopPropagation()}>
+              <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Paste a ranking list</div>
+              <div className="mut" style={{ fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}>One player per line, in your preferred order. Paste your league platform's ADP/ranks or your own board. Leading numbers like “1.” or “12)” and trailing notes in (parentheses) are ignored. This replaces your current order with the matched players.</div>
+              <textarea className="gs" style={{ width: "100%", minHeight: 200, resize: "vertical", fontFamily: "inherit", fontSize: 13 }} placeholder={"e.g.\n1. Ja'Marr Chase\n2. Bijan Robinson\n3. Justin Jefferson\n..."} value={pasteText} onChange={(e) => setPasteText(e.target.value)} />
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <button className="btn" onClick={() => { setShowPaste(false); setPasteText(""); }}>Cancel</button>
+                <div style={{ flex: 1 }} />
+                <button className="btn btn-gold" onClick={applyPaste} disabled={!pasteText.trim()}>Import list</button>
+              </div>
             </div>
           </div>
         )}
@@ -5617,15 +5676,24 @@ function DraftOrderTab({ f, upd, ensureNames }) {
 function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
   const [seg, setSeg] = useState(initialSeg || "basics");
   const [keeperModal, setKeeperModal] = useState(false);
-  const [f, setF] = useState(() => ({
-    name: "My league", type: "redraft", teams: 12, rounds: 15, slot: "", order: "snake", excludeRookies: false, pickTrading: false, keeper: false, idp: false,
-    start: { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0, DST: 0, K: 0, DL: 0, LB: 0, DB: 0, IDPFLEX: 0 },
-    caps: { QB: "", RB: "", WR: "", TE: "" },
-    scoring: { ...DEFAULT_SCORING },
-    teamNames: [], favTeams: [], manual: false, connect: null,
-    draftOrder: null, keepers: [], pickTrades: [],
-    ...initial,
-  }));
+  const [f, setF] = useState(() => {
+    const base = {
+      name: "My league", type: "redraft", teams: 12, rounds: 15, slot: "", order: "snake", excludeRookies: false, pickTrading: false, keeper: false, idp: false,
+      start: { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0, DST: 0, K: 0, DL: 0, LB: 0, DB: 0, IDPFLEX: 0 },
+      caps: { QB: "", RB: "", WR: "", TE: "" },
+      scoring: { ...DEFAULT_SCORING },
+      teamNames: [], favTeams: [], manual: false, connect: null,
+      draftOrder: null, keepers: [], pickTrades: [],
+      ...initial,
+    };
+    // A saved/connected cfg can carry null for these arrays; the editors index into them, so coerce to
+    // arrays to prevent a crash when opening the Teams & Order tab.
+    base.teamNames = Array.isArray(base.teamNames) ? base.teamNames : [];
+    base.favTeams = Array.isArray(base.favTeams) ? base.favTeams : [];
+    base.keepers = Array.isArray(base.keepers) ? base.keepers : [];
+    base.pickTrades = Array.isArray(base.pickTrades) ? base.pickTrades : [];
+    return base;
+  });
   const upd = (patch) => setF((s) => ({ ...s, ...patch }));
   const updStart = (k, v) => setF((s) => ({ ...s, start: { ...s.start, [k]: v } }));
   const updCap = (k, v) => setF((s) => ({ ...s, caps: { ...s.caps, [k]: v.replace(/\D/g, "") } }));
@@ -5919,8 +5987,8 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
             {Array.from({ length: +f.teams }, (_, i) => (
               <div key={i} style={{ display: "flex", gap: 8, marginBottom: 7, alignItems: "center" }}>
                 <span className="mut num" style={{ width: 22, fontSize: 12 }}>{i + 1}</span>
-                <input className="gs" style={{ flex: 1 }} value={f.teamNames[i] || ""} onChange={(e) => { const a = f.teamNames.slice(); a[i] = e.target.value; upd({ teamNames: a, manual: true }); }} placeholder={TEAM_NAMES_POOL[i] || `Team ${i + 1}`} />
-                <select className="gs" style={{ width: 110 }} value={f.favTeams[i] || ""} onChange={(e) => { const a = f.favTeams.slice(); a[i] = e.target.value; upd({ favTeams: a, manual: true }); }}>
+                <input className="gs" style={{ flex: 1 }} value={(f.teamNames && f.teamNames[i]) || ""} onChange={(e) => { const a = (f.teamNames || []).slice(); a[i] = e.target.value; upd({ teamNames: a, manual: true }); }} placeholder={TEAM_NAMES_POOL[i] || `Team ${i + 1}`} />
+                <select className="gs" style={{ width: 110 }} value={(f.favTeams && f.favTeams[i]) || ""} onChange={(e) => { const a = (f.favTeams || []).slice(); a[i] = e.target.value; upd({ favTeams: a, manual: true }); }}>
                   <option value="">No fav</option>
                   {NFL_TEAMS.map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
@@ -6502,8 +6570,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const [cols, setCols] = useState({ ...DEFAULT_COLS, ...(savedPrefs?.cols || {}) });
   const [boardMode, setBoardMode] = useState(savedPrefs?.boardMode || "info");
   const [sectionOrder, setSectionOrder] = useState(savedPrefs?.sectionOrder || DEFAULT_SECTION_ORDER);
+  // Custom per-column order (within sections). Lets you drag actual table headers to rearrange columns;
+  // persisted so it becomes your default for future drafts. Keys not present here keep their natural order.
+  const [colOrder, setColOrder] = useState(savedPrefs?.colOrder || []);
+  const [dragCol, setDragCol] = useState(null); // column key being dragged in the header row
   // Persist column layout to the user so future drafts open the same way (until they change it again).
-  useEffect(() => { if (onColPrefs) onColPrefs({ cols, boardMode, sectionOrder }); }, [cols, boardMode, sectionOrder]);
+  useEffect(() => { if (onColPrefs) onColPrefs({ cols, boardMode, sectionOrder, colOrder }); }, [cols, boardMode, sectionOrder, colOrder]);
   const [colMenu, setColMenu] = useState(false);
   const [dragSec, setDragSec] = useState(null); // section being dragged in the columns menu
   const [briefOpen, setBriefOpen] = useState(false);
@@ -6974,7 +7046,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     // tilt multiplier for the Your-build lens. Combines AGE (window) and NEED (roster construction).
     // Made strong enough to VISIBLY reshape the board — a committed rebuild should clearly surface young
     // upside over aging vets, and a need position should jump established starters.
-    const tilt = (pos, age) => {
+    const tilt = (pos, age, rookie) => {
       if (!["QB", "RB", "WR", "TE"].includes(pos)) return 1;
       let m = 1;
       if (decided && lane !== "balanced" && age) {
@@ -6982,12 +7054,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
         const youthScore = (center - age) / 3.5;
         const strength = (isDyn ? 0.6 : 0.18) * (0.5 + 0.5 * confidence); // strong, esp. dynasty
         m *= lane === "rebuild" ? 1 + strength * youthScore : 1 - strength * youthScore;
+        // In a dynasty rebuild, rookies are the explicit target (unproven but full window of control) —
+        // give them a real extra lift so they surface over established vets of similar projection.
+        if (rookie && isDyn) { if (lane === "rebuild") m *= 1.35; else if (lane === "winnow") m *= 0.78; }
       }
-      // need component (always on). A true starting hole lifts a position ~40%; a heavily stacked one
-      // is pushed down hard. This is what makes the board visibly reorder toward your roster's shape.
       const ns = needScore(pos);
       m *= 1 + ns * 0.45;
-      return Math.max(0.25, Math.min(2.0, m));
+      return Math.max(0.2, Math.min(2.2, m));
     };
     return { lane, label, confidence, picksIn: aged.length, avgAge, decided, tilt, have, req };
   }, [myCurrent, cfg.type, cfg.sf]);
@@ -7005,8 +7078,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     const buildLens = key === "vbd";
     list.sort((a, b) => {
       if (buildLens && myWindow.decided) {
-        const va = (a.vbd ?? -50) * myWindow.tilt(a.pos, a.age);
-        const vb = (b.vbd ?? -50) * myWindow.tilt(b.pos, b.age);
+        const va = (a.vbd ?? -50) * myWindow.tilt(a.pos, a.age, a.rookie);
+        const vb = (b.vbd ?? -50) * myWindow.tilt(b.pos, b.age, b.rookie);
         return (va - vb) * dir;
       }
       const va = colVal(a, key), vb = colVal(b, key);
@@ -7063,9 +7136,29 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   };
   // market is force-pinned first; the rest follow the user's chosen order.
   const orderedSections = ["market", ...sectionOrder.filter((s) => s !== "market")];
+  // Within each section, honor any custom drag order (colOrder); columns not in colOrder keep their
+  // natural position after the ordered ones. This keeps section grouping intact while letting you drag.
+  const colRank = (k) => { const i = colOrder.indexOf(k); return i < 0 ? 9999 : i; };
   const activeCols = orderedSections
     .filter(sectionVisible)
-    .flatMap((sec) => COL_DEFS.filter((c) => c.section === sec && cols[c.key] && colAvailable(c)));
+    .flatMap((sec) => {
+      const inSec = COL_DEFS.filter((c) => c.section === sec && cols[c.key] && colAvailable(c));
+      // stable sort by custom rank (unranked keep their declared order)
+      return inSec.map((c, i) => [c, i]).sort((a, b) => { const ra = colRank(a[0].key), rb = colRank(b[0].key); return ra !== rb ? ra - rb : a[1] - b[1]; }).map(([c]) => c);
+    });
+  // Reorder a dragged column to land just before a target column (only within the same section).
+  const moveColumn = (fromKey, toKey) => {
+    if (!fromKey || !toKey || fromKey === toKey) return;
+    const fromCol = COL_DEFS.find((c) => c.key === fromKey), toCol = COL_DEFS.find((c) => c.key === toKey);
+    if (!fromCol || !toCol || fromCol.section !== toCol.section) return; // keep columns within their group
+    // build the current full within-section order for this section, then splice
+    const secKeys = activeCols.filter((c) => c.section === fromCol.section).map((c) => c.key);
+    const fi = secKeys.indexOf(fromKey), ti = secKeys.indexOf(toKey);
+    if (fi < 0 || ti < 0) return;
+    secKeys.splice(ti, 0, secKeys.splice(fi, 1)[0]);
+    // merge this section's new order into the global colOrder (replace any of these keys, keep others)
+    setColOrder((prev) => { const others = prev.filter((k) => !secKeys.includes(k)); return [...others, ...secKeys]; });
+  };
   // mark the first active column of each section so we can draw a divider line before it
   const sectionStart = {};
   let _prevSec = null;
@@ -7311,7 +7404,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               const wasHit = preds[o] != null && preds[o] === pk;
               return (
                 <div key={o} className="tickcard" style={{ opacity: 0.75 }}>
-                  <div className="mut" style={{ fontSize: 11 }}>{pickLabel(o)} • {teamAt(o) === userIdx ? "You" : TEAM_NAMES[teamAt(o)].split(" ")[0]}</div>
+                  <div className="mut" style={{ fontSize: 11 }}>{pickLabel(o)} <span style={{ opacity: 0.7 }}>(#{o + 1})</span> • {teamAt(o) === userIdx ? "You" : TEAM_NAMES[teamAt(o)].split(" ")[0]}</div>
                   <div style={{ fontWeight: 600, fontSize: 13 }}><Dot pos={p.pos} />{p.name}</div>
                   <div style={{ fontSize: 10, marginTop: 2, color: wasHit ? "var(--green)" : "var(--mut)" }}>{preds[o] != null ? (wasHit ? "✓ engine called it" : `engine: ${players[preds[o]].name.split(" ").slice(-1)}`) : ""}</div>
                 </div>
@@ -7568,22 +7661,37 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                     })}
                   </div>
                   <div style={{ display: "flex", gap: 4, marginTop: 8 }}>
-                    <button className="btn btn-mini" style={{ flex: 1 }} onClick={() => { setCols({ ...DEFAULT_COLS }); setSectionOrder(["market", "mine", "value", "demo", "avail", "stat"]); }}>Reset this view</button>
+                    <button className="btn btn-mini" style={{ flex: 1 }} onClick={() => { setCols({ ...DEFAULT_COLS }); setSectionOrder(["market", "mine", "value", "demo", "avail", "stat"]); setColOrder([]); }}>Reset this view</button>
                     <button className="btn btn-mini" onClick={() => setColMenu(false)}>Done</button>
                   </div>
                 </div>
               )}
             </div>
+            {!myRanks.has && (
+              <div className="panel" style={{ padding: "9px 12px", margin: "0 0 8px", background: "var(--panel2)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <i className="ti ti-bulb" style={{ fontSize: 15, color: "var(--gold)" }} aria-hidden="true" />
+                <div className="mut" style={{ fontSize: 11.5, flex: 1, lineHeight: 1.45 }}>
+                  Want the <b style={{ color: "var(--ink)" }}>Edge</b>, <b style={{ color: "var(--ink)" }}>My ADP</b>, and <b style={{ color: "var(--ink)" }}>Blend</b> columns? They compare <b style={{ color: "var(--ink)" }}>your</b> rankings against Sleeper ADP to surface where you can out-draft the room. Add your rankings (or import your league platform's ranks) to unlock them.
+                </div>
+                <button className="btn btn-mini btn-gold" style={{ flexShrink: 0 }} onClick={() => setRanksWarn(true)}><i className="ti ti-list-numbers" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Set my rankings</button>
+              </div>
+            )}
             <div style={{ maxHeight: 540, overflow: "auto" }}>
               <table className="board">
                 <thead><tr>
                   <th className="frz" onClick={() => setSort("name")} style={{ minWidth: 188 }}>Player{arrow("name")}</th>
                   {activeCols.map((c) => (
-                    <th key={c.key} className="num" onClick={() => c.sortable && setSort(c.sortKey || c.key)} title={c.tip || ""} style={sectionStart[c.key] ? { borderLeft: "2px solid var(--line)" } : undefined}>
+                    <th key={c.key} className="num" draggable
+                      onDragStart={(e) => { setDragCol(c.key); e.dataTransfer.effectAllowed = "move"; }}
+                      onDragOver={(e) => { e.preventDefault(); }}
+                      onDrop={(e) => { e.preventDefault(); moveColumn(dragCol, c.key); setDragCol(null); }}
+                      onDragEnd={() => setDragCol(null)}
+                      onClick={() => c.sortable && setSort(c.sortKey || c.key)} title={c.tip ? c.tip + " · drag to reorder" : "Drag to reorder"}
+                      style={{ cursor: "grab", ...(sectionStart[c.key] ? { borderLeft: "2px solid var(--line)" } : {}), ...(dragCol === c.key ? { opacity: 0.4 } : {}) }}>
                       {c.key === "edge" || c.key === "vbd" ? (
                         <span className="info" onMouseEnter={(e) => showTip(e, c.key === "edge" ? [
-                          { t: "Value edge", x: "This platform's ADP minus the field consensus. Positive (green) = your platform drafts him later than everyone else, so you can wait or grab a discount." },
-                          { t: "Negative (red)", x: "Your platform over-drafts him vs. the field — don't pay the local premium." },
+                          { t: "Edge", x: "Sleeper ADP minus YOUR personal rank. Positive (green) = the market lets him slide past where you'd take him — a value you can wait on." },
+                          { t: "Negative (red)", x: "You rank him higher than the market, so you'd have to reach to get him. Needs your rankings set." },
                         ] : [
                           { t: "VBD — value based drafting", x: "Projected points above a replacement-level starter at the position." },
                           { t: "Why it matters", x: "Makes positions comparable: a +60 RB beats a +40 WR even if the WR scores more raw points." },
@@ -7948,8 +8056,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
             const rows = players.filter((p) => !draftedSet.has(p.id)).sort((a, b) => {
               if (availSort === "adp") return a.adp - b.adp;
               // Your-build view: VBD tilted by your contention window (once you've picked a lane).
-              const va = (a.vbd ?? -50) * (myWindow.decided ? myWindow.tilt(a.pos, a.age) : 1);
-              const vb = (b.vbd ?? -50) * (myWindow.decided ? myWindow.tilt(b.pos, b.age) : 1);
+              const va = (a.vbd ?? -50) * (myWindow.decided ? myWindow.tilt(a.pos, a.age, a.rookie) : 1);
+              const vb = (b.vbd ?? -50) * (myWindow.decided ? myWindow.tilt(b.pos, b.age, b.rookie) : 1);
               return vb - va;
             }).slice(0, 30);
             return (
@@ -9106,8 +9214,8 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
               return null;
             };
             const ideas = [];
-            const consider = (t, target) => {
-              if (!target || target.id == null || !wants(target.pos)) return;
+            const consider = (t, target, force) => {
+              if (!target || target.id == null || (!force && !wants(target.pos))) return;
               const ownerCount = teamRosters[t].filter((p) => p.pos === target.pos).length;
               if (ownerCount <= 1) return; // won't deal their only body at the spot
               const tv = tradeValue(target, cfg);
@@ -9115,15 +9223,31 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
               if (!chips) return;
               const okForPartner = chips.every((c) => c.pickAsset || !(c.pos === "QB" && !superOnly && teamRosters[t].filter((p) => p.pos === "QB").length >= 1));
               const evv = evaluateTrade(chips, [target], cfg);
-              // fairness: you shouldn't massively overpay; allow a slightly wider band so ideas surface.
               if (okForPartner && evv.giveAdj >= evv.getAdj - 12 && evv.giveAdj <= evv.getAdj + 45 && ideas.length < 12) ideas.push({ t, give: chips, get: [target] });
             };
             if (findMode === "player" && findPlayerId != null) {
+              // Explicit target: the user WANTS this player — don't second-guess roster need, just find
+              // fair packages (they may be upgrading or simply want him). Surface MULTIPLE options.
               const target = players[findPlayerId];
               const owner = teamAt(picks.indexOf(findPlayerId));
               if (owner != null && owner !== userIdx) {
-                if (!wants(target.pos)) return <div className="mut" style={{ fontSize: 12.5 }}>Your roster doesn't need another {target.pos}{target.pos === "QB" && !superOnly ? " in a 1QB league" : ""} — targeting {target.name} would leave value on your bench.</div>;
-                consider(owner, target);
+                const tv = tradeValue(target, cfg);
+                const pool = myChipPool.slice().sort((a, b) => assetVal(b, cfg) - assetVal(a, cfg));
+                const seen = new Set();
+                const pushIdea = (chips) => {
+                  if (!chips || !chips.length) return;
+                  const key = chips.map((c) => c.id || c.name).sort().join("|");
+                  if (seen.has(key)) return; seen.add(key);
+                  const evv = evaluateTrade(chips, [target], cfg);
+                  // allow a reasonable range — these are starting points the user can adjust
+                  if (evv.giveAdj >= evv.getAdj - 18 && evv.giveAdj <= evv.getAdj + 60 && ideas.length < 12) ideas.push({ t: owner, give: chips, get: [target] });
+                };
+                // single-chip offers near value
+                pool.forEach((c) => { if (Math.abs(assetVal(c, cfg) - tv) <= Math.max(28, tv * 0.45)) pushIdea([c]); });
+                // two-chip combos that get into range
+                for (let i = 0; i < pool.length; i++) for (let j = i + 1; j < pool.length; j++) { const sum = assetVal(pool[i], cfg) + assetVal(pool[j], cfg); if (sum >= tv - 18 && sum <= tv + 50) pushIdea([pool[i], pool[j]]); }
+                // sort offers by closeness to fair
+                ideas.sort((a, b) => { const ea = evaluateTrade(a.give, a.get, cfg); const eb = evaluateTrade(b.give, b.get, cfg); return Math.abs(ea.giveAdj - ea.getAdj) - Math.abs(eb.giveAdj - eb.getAdj); });
               }
             } else if (findMode === "position") {
               if (!wants(findPos)) return <div className="mut" style={{ fontSize: 12.5 }}>Your roster doesn't need another {findPos}{findPos === "QB" && !superOnly ? " in a 1QB league" : ""} — you're already set there.</div>;

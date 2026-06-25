@@ -65,8 +65,13 @@ export const api = {
   async projections(season) {
     return call(`/api/projections${season ? `?season=${season}` : ''}`, { auth: false });
   },
-  async playerPack(format, season) {
-    return call(`/api/player-pack?format=${encodeURIComponent(format)}${season ? `&season=${season}` : ''}`, { auth: false });
+  async playerPack(format, season, opts = {}) {
+    const extra = [];
+    if (season) extra.push(`season=${season}`);
+    if (opts.k) extra.push("k=1");
+    if (opts.dst) extra.push("dst=1");
+    if (opts.idp) extra.push("idp=1");
+    return call(`/api/player-pack?format=${encodeURIComponent(format)}${extra.length ? "&" + extra.join("&") : ""}`, { auth: false });
   },
 
   // ---- leagues / drafts ----
