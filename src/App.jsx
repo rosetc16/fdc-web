@@ -5021,7 +5021,7 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
         )}
 
         <div className="hairline" style={{ display: "flex", gap: 4, marginBottom: 14, flexWrap: "wrap" }}>
-          {[["list","My list"],["board","Work the board"],["adjust","Global adjustments"]].map(([k, l]) => (
+          {[["list","My rankings"],["adjust","Global adjustments"]].map(([k, l]) => (
             <button key={k} onClick={() => setMode(k)} style={{ background: "transparent", border: "none", borderBottom: mode === k ? "2px solid var(--gold)" : "2px solid transparent", color: mode === k ? "var(--gold)" : "var(--mut)", fontWeight: 600, fontSize: 14, padding: "9px 14px", cursor: "pointer", fontFamily: "inherit" }}>{l}{k === "adjust" && Object.keys(adj).length > 0 ? ` (${Object.keys(adj).length})` : ""}</button>
           ))}
         </div>
@@ -5093,27 +5093,6 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
               <button className="btn btn-gold" onClick={saveList}>Save ranks</button>
               {list.length > 0 && <button className="btn btn-mini" onClick={fillRest} title="Append the rest of the board (by consensus) below what you've already ranked">Fill rest of board</button>}
               {list.length > 0 && <button className="btn btn-mini" onClick={() => setList([])}>Clear all</button>}
-            </div>
-          </div>
-        )}
-
-        {mode === "board" && (
-          <div>
-            <div className="mut" style={{ fontSize: 12.5, marginBottom: 10 }}>Consensus board top-to-bottom. Tap a player to drop them onto your list in order — placed players cross off so you can see who's left. <b style={{ color: "var(--ink)" }}>{list.length}</b> placed.</div>
-            <div style={{ maxHeight: 460, overflowY: "auto" }}>
-              {byAdp.map((p, i) => { const placed = placedSet.has(p.id); const a = adj[p.name]; return (
-                <div key={p.id} onClick={() => placed ? remove(p.id) : add(p.id)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 6px", borderTop: i ? "1px solid var(--line)" : "none", fontSize: 13, cursor: "pointer", opacity: placed ? 0.4 : 1 }}>
-                  <span className="num mut" style={{ width: 30, fontSize: 11 }}>ADP {p.adp.toFixed(0)}</span>
-                  <i className={`ti ${placed ? "ti-checkbox" : "ti-square"}`} style={{ fontSize: 16, color: placed ? "var(--green)" : "var(--mut)" }} aria-hidden="true" />
-                  <Dot pos={p.pos} />
-                  <span style={{ flex: 1, textDecoration: placed ? "line-through" : "none" }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank}</span>{a && <span className="chip" style={{ marginLeft: 6, fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>adjusted</span>}</span>
-                  {placed && <span className="gold num" style={{ fontSize: 11 }}>#{(listIndex[p.id] ?? -1) + 1}</span>}
-                </div>
-              ); })}
-            </div>
-            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-              <button className="btn btn-gold" onClick={saveList}>Save ranks</button>
-              <button className="btn btn-mini" onClick={() => setMode("list")}>Review my list →</button>
             </div>
           </div>
         )}
