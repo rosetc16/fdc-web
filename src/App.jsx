@@ -1412,6 +1412,11 @@ const setPickTrades = (trades) => {
   PICK_OWNER = {};
   (trades || []).forEach((t) => { if (t && t.o != null && t.to != null) PICK_OWNER[t.o] = t.to; });
 };
+// Live ownership from a connected platform: overall-pick-index -> team index (slot-1), taken from
+// the real draft_slot of each pick. This is the SOURCE OF TRUTH for who made each pick when synced,
+// overriding any snake recompute so rosters and team assignment match the real draft exactly.
+let LIVE_PICK_TEAM = null; // null when not connected; array/object otherwise
+const setLivePickTeams = (map) => { LIVE_PICK_TEAM = map && Object.keys(map).length ? map : null; };
 const baseTeamAt = (o) => {
   const r = Math.floor(o / TEAMS), i = o % TEAMS;
   if (ORDER === "linear") return i;
@@ -1422,9 +1427,10 @@ const baseTeamAt = (o) => {
   }
   return r % 2 === 0 ? i : TEAMS - 1 - i; // snake
 };
-const teamAt = (o) => (PICK_OWNER[o] != null ? PICK_OWNER[o] : baseTeamAt(o));
+// Order of precedence: explicit pick trade > live real ownership > computed draft order.
+const teamAt = (o) => (PICK_OWNER[o] != null ? PICK_OWNER[o] : (LIVE_PICK_TEAM && LIVE_PICK_TEAM[o] != null ? LIVE_PICK_TEAM[o] : baseTeamAt(o)));
 // The natural (pre-trade) owner of an overall pick — used to list a team's tradeable picks.
-const naturalOwner = (o) => baseTeamAt(o);
+const naturalOwner = (o) => (LIVE_PICK_TEAM && LIVE_PICK_TEAM[o] != null ? LIVE_PICK_TEAM[o] : baseTeamAt(o));
 
 // No-cost keepers: players defaulted onto a roster WITHOUT consuming a pick. Stored as
 // team-index -> [playerId]. They seed the projection demographics and value/summary so a
@@ -1937,12 +1943,16 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
       drafted[choice.id] = 1; counts[t][choice.pos]++; recent = [...recent.slice(-7), choice.pos];
     } else {
       const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts[t], cfg);
+      if (!cands.length) { continue; } // nothing legal/left to project at this slot — skip it
       const ws = cands.map((c) => weightFor(c, pickNum, counts[t], round, recent, dem, R));
       const sum = ws.reduce((a, b) => a + b, 0);
       let bi = 0; for (let i = 1; i < ws.length; i++) if (ws[i] > ws[bi]) bi = i;
       const c = cands[bi];
-      entry = { o, t, p: c, prob: Math.round((ws[bi] / sum) * 100) };
-      drafted[c.id] = 1; counts[t][c.pos]++; recent = [...recent.slice(-7), c.pos];
+      if (!c) { continue; }
+      // guard the probability: if total weight is 0 (degenerate), fall back to an even split
+      const prob = sum > 0 ? Math.round((ws[bi] / sum) * 100) : Math.round(100 / cands.length);
+      entry = { o, t, p: c, prob: Number.isFinite(prob) ? prob : 0 };
+      drafted[c.id] = 1; if (counts[t][c.pos] != null) counts[t][c.pos]++; recent = [...recent.slice(-7), c.pos];
     }
     path.push(entry);
     if (passedUser) { if (!extend || afterUser >= 5) break; if (!entry.user) afterUser++; }
@@ -2546,7 +2556,7 @@ export default function App() {
       {route === "database" && user && <DraftsDatabase leagues={leagues} funMocks={funMocks} user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")}
         onOpenLeague={(id) => { setActiveId(id); setRoute("draft"); }}
         onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [] }); setActiveId(m.id); setRoute("draft"); }}
-        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [] }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onTrendsTime={() => setRoute("trendsTime")} />}
+        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [] }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onTrendsTime={() => setRoute("trendsTime")} onDelete={deleteLeague} />}
       {route === "trendsTime" && user && <TrendsOverTimePage user={user} leagues={leagues} funMocks={funMocks} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} onOpenLeague={(id) => { setActiveId(id); setRoute("leagueHub"); }} />}
       {route === "tradeTools" && user && <TradeToolsPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} />}
       {route === "adpIntel" && user && <AdpIntelPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} />}
@@ -4444,11 +4454,12 @@ function TrendsOverTimePage({ user, leagues, funMocks, onBack, onHome, onSignOut
   );
 }
 
-function DraftsDatabase({ leagues, funMocks, onBack, onOpenLeague, onOpenMock, onOpenFun, user, onSignOut, onHome, onQuickMock, onTrendsTime }) {
+function DraftsDatabase({ leagues, funMocks, onBack, onOpenLeague, onOpenMock, onOpenFun, user, onSignOut, onHome, onQuickMock, onTrendsTime, onDelete }) {
   const [kind, setKind] = useState("all"); // all | official | mock | fun
   const [typeF, setTypeF] = useState("all");
   const [q, setQ] = useState("");
   const [sort, setSort] = useState("recent");
+  const [delConfirm, setDelConfirm] = useState(null);
 
   // flatten everything into one row model
   const rows = useMemo(() => {
@@ -4531,7 +4542,16 @@ function DraftsDatabase({ leagues, funMocks, onBack, onOpenLeague, onOpenMock, o
                         <td className="num">{r.teams}</td>
                         <td className="num">{r.complete ? <span className="gold">complete</span> : `${r.n}/${r.total}`}</td>
                         <td className="mut" style={{ fontSize: 12 }}>{r.when}</td>
-                        <td><button className="btn btn-mini" onClick={() => open(r)}>open</button></td>
+                        <td><div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
+                          <button className="btn btn-mini" onClick={() => open(r)}>open</button>
+                          {onDelete && r.k === "official" && (delConfirm === r.leagueId
+                            ? <>
+                                <button className="btn btn-mini" style={{ borderColor: "var(--red)", color: "var(--red)" }} onClick={() => { onDelete(r.leagueId); setDelConfirm(null); }} title="Confirm delete"><i className="ti ti-check" style={{ fontSize: 12 }} aria-hidden="true" /></button>
+                                <button className="btn btn-mini" onClick={() => setDelConfirm(null)} title="Cancel"><i className="ti ti-x" style={{ fontSize: 12 }} aria-hidden="true" /></button>
+                              </>
+                            : <button className="btn btn-mini" onClick={() => setDelConfirm(r.leagueId)} title="Delete league" style={{ borderColor: "var(--line)", color: "var(--mut)" }}><i className="ti ti-trash" style={{ fontSize: 12 }} aria-hidden="true" /></button>
+                          )}
+                        </div></td>
                       </tr>
                     );
                   })}
@@ -5246,7 +5266,7 @@ function ConnectBox({ connect, onConnect, onClear }) {
         draftId: d.draft_id || lg.draft_id || null,
         cfg: d.cfg || null, picks: d.picks || [], status: d.status || lg.draft_status || null,
         teams: d.teams || null, yourSlot: d.yourSlot || null, slotNames: d.slotNames || null,
-        draftType: d.draftType || "snake", tradedPicks: d.tradedPicks || [],
+        draftType: d.draftType || "snake", tradedPicks: d.tradedPicks || [], keepers: d.keepers || [],
       });
       setOpen(false); setSel(null); setVal(""); setSleeperLeagues(null);
     } catch (e) { setError(e.data?.error || e.message || "Couldn't load that league's draft."); }
@@ -5507,6 +5527,11 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel }) {
             if (Array.isArray(c.tradedPicks) && c.tradedPicks.length) {
               patch.pickTrading = true;
               patch.pickTrades = c.tradedPicks.map((t) => ({ round: t.round, from: t.fromSlot - 1, to: t.toSlot - 1 }));
+            }
+            // Keepers from Sleeper (name + slot). Stored on connect; the draft room resolves names→ids
+            // against the live player pool and pre-places them on the right team (no-cost roster adds).
+            if (Array.isArray(c.keepers) && c.keepers.length) {
+              patch.connect = { ...c, keepers: c.keepers };
             }
             upd(patch);
           }} onClear={() => upd({ connect: null })} />
@@ -6086,11 +6111,17 @@ function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
 
 function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, onBuy, onSettings, onEditRanks, onUseRankSet, onColPrefs }) {
   const cfg = league.cfg;
+  // Live per-pick ownership from a connected platform (Sleeper draft_slot). Declared here so it can
+  // be applied to the engine's team-assignment BEFORE any roster/sim computation in this render.
+  const [liveSlots, setLiveSlots] = useState(null); // { overallPickIndex: teamIndex } or null
   // set active team count + names for this league before any engine call
   setTeams(cfg.teams || 12);
   setSpec(cfg.start);
   setOrder(cfg.order || "snake");
   setPickTrades(cfg.pickTrades);
+  // When connected and synced, the real draft_slot of each pick is the source of truth for who made
+  // it — this makes 3rd-round-reversal, custom orders, and traded picks all correct automatically.
+  setLivePickTeams(liveSlots);
   // Keepers: pick-cost keepers occupy a board slot; no-cost keepers default onto a roster.
   const keepers = cfg.keepers || [];
   const keeperByPick = {}; // overall pick index -> playerId (pick-cost keepers)
@@ -6163,6 +6194,21 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const [clock, setClock] = useState(90);
 
   const players = useMemo(() => buildPlayers(cfg), [cfg]);
+  // Resolve keepers pulled from a connected league (Sleeper) — name+slot → engine id+team — and merge
+  // them as no-cost roster adds, so each keeper shows on the right team and counts toward strength.
+  useMemo(() => {
+    const ck = cfg.connect && Array.isArray(cfg.connect.keepers) ? cfg.connect.keepers : [];
+    if (!ck.length) return;
+    const byName = {}; players.forEach((p) => { byName[normName(p.name)] = p.id; });
+    const merged = {};
+    Object.entries(KEEPER_ADDS).forEach(([t, ids]) => { merged[t] = [...ids]; });
+    ck.forEach((k) => {
+      const id = byName[normName(k.name)];
+      const team = (k.slot || 0) - 1;
+      if (id != null && team >= 0) { (merged[team] = merged[team] || []).push(id); }
+    });
+    setKeeperAdds(merged);
+  }, [cfg, players]);
   // ADP-Mock: average overall pick a player went at across THIS league's stored mocks.
   // Only meaningful in the official draft (mocks belong to this league's umbrella).
   const mockAdp = useMemo(() => {
@@ -6230,7 +6276,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   /* autosave every 5 picks and on completion */
   useEffect(() => { if (picks.length && (picks.length % 5 === 0 || done)) onSave(picks, preds); }, [picks.length, done]);
 
-  const sims = useMemo(() => (!done ? runSims(players, sortedAdp, picks, userIdx, cfg, strategy, 300) : null), [players, sortedAdp, picks, userIdx, cfg, done, strategy]);
+  const sims = useMemo(() => (!done ? runSims(players, sortedAdp, picks, userIdx, cfg, strategy, 300) : null), [players, sortedAdp, picks, userIdx, cfg, done, strategy, liveSlots]);
   const customSims = useMemo(() => {
     const n = parseInt(customPick, 10);
     if (!n || n <= picks.length || done) return null;
@@ -6318,9 +6364,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     return highlights[p.id] || null;
   };
 
-  const proj = useMemo(() => projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, advice?.verdict?.id ?? null), [players, sortedAdp, picks, userIdx, cfg, strategy, advice]);
+  const proj = useMemo(() => projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, advice?.verdict?.id ?? null), [players, sortedAdp, picks, userIdx, cfg, strategy, advice, liveSlots]);
   const projBoard = useMemo(() => (boardProj ? projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, advice?.verdict?.id ?? null) : null), [boardProj, players, sortedAdp, picks, userIdx, cfg, strategy, advice]);
-  const path = useMemo(() => (!done ? projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, advice?.verdict?.id ?? null, futureBig) : []), [players, sortedAdp, picks, userIdx, cfg, strategy, advice, done, futureBig]);
+  const path = useMemo(() => (!done ? projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, advice?.verdict?.id ?? null, futureBig) : []), [players, sortedAdp, picks, userIdx, cfg, strategy, advice, done, futureBig, liveSlots]);
 
   const currentPred = !done ? (onClock === userIdx ? advice?.verdict ?? null : path[0]?.p ?? null) : null;
   const currentProb = !done && onClock !== userIdx ? path[0]?.prob : null;
@@ -6364,13 +6410,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
         const d = await api.sleeperDraft(cfg.connect.leagueId, cfg.connect.username);
         if (!alive) return;
         // Build the engine pick list from Sleeper's pick order, mapping names→ids and dropping any
-        // we can't match (rare). We only grow the list; we never reorder existing picks.
+        // we can't match (rare). We only grow the list; we never reorder existing picks. We also
+        // capture each pick's REAL team (draft_slot-1) so rosters match the actual draft exactly.
         const mapped = [];
+        const slotTeam = {}; // overall pick index -> team index (draft_slot - 1)
         for (const pk of (d.picks || [])) {
           const id = nameToId[normName(pk.name)];
-          if (id != null) mapped.push(id);
+          if (id != null) {
+            const o = mapped.length; // overall index in our compacted list
+            if (pk.draft_slot) slotTeam[o] = pk.draft_slot - 1;
+            mapped.push(id);
+          }
         }
         setSyncState({ status: d.status, lastAt: Date.now(), error: null });
+        setLiveSlots(slotTeam);
         setPicks((prev) => {
           // Only update if Sleeper is ahead of us (more picks) to avoid clobbering local state.
           if (mapped.length > prev.length) return mapped;
