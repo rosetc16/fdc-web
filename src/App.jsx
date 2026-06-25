@@ -1689,29 +1689,52 @@ function buildPlayers(cfg) {
     const effVal = (p) => {
       let v = p.vbd != null ? p.vbd : -50;
       if (sf && p.pos === "QB") {
-        // SuperFlex QB premium. Elite QBs (Allen, Lamar) belong at/near the very top, and the top
-        // ~5-8 QBs go early — but not ALL QBs, which would bury elite RB/WR. So the lift is largest
-        // for the top few QBs and fades by QB rank: QB1-2 get a real boost (top of board), tapering
-        // to ~0 by QB10+. Tuned to interleave the elite QBs with elite skill players like real SF.
+        // SuperFlex QB premium. In SF, the top ~4-5 QBs anchor the very top of the board — they're the
+        // scarcest startable asset (you need 1.5-2 per team). In DYNASTY this is even stronger, because
+        // QBs hold value for a decade while RBs decay fast. So the lift is large for QB1-5 and dynasty
+        // gets an extra multiplier. Tuned so elite QBs (Allen, Daniels, Maye) clearly lead, with elite
+        // young RB/WR just behind — matching real SF (dynasty) ADP.
         const rank = qbRankById.get(p.id) ?? 99; // 0 = QB1
-        // exponential-ish decay: QB1 full, QB3 ~60%, QB6 ~28%, QB10 ~8%
-        const decay = Math.pow(0.82, rank);
-        v += 42 * decay;
+        const decay = Math.pow(0.86, rank);       // QB1 full → QB5 ~53% → QB10 ~22%
+        const base = isDynasty ? 78 : 52;          // dynasty QBs anchor the top harder
+        v += base * decay;
       }
       if (p.pos === "RB") {
-        // Market-realism lift for elite RBs: top bell-cows get drafted ahead of pure VBD. The human
-        // market bunches the top ~6 RBs near the top of the board (proven producers go early on recency
-        // + bell-cow scarcity), so the lift is strong and fairly flat across RB1-6, fading after. This
-        // nudges the PREDICTED board (what the room does), not your pick advice (raw VBD via userScore).
-        // In dynasty it's muted because vbd is already age-discounted, so aging RBs don't get re-inflated.
+        // Market-realism lift for elite RBs: top bell-cows get drafted ahead of pure VBD (recency +
+        // scarcity). Kept MODEST so it doesn't leapfrog elite QBs in SuperFlex. In dynasty it's smaller
+        // still — RBs age out fast, so the market doesn't push old RBs up, and vbd is already age-cut.
         const rank = rbRankById.get(p.id) ?? 99; // 0 = RB1
-        const decay = Math.pow(0.90, rank); // RB1 full → RB6 ~53% → RB10 ~35%
-        v += 44 * decay;
+        const decay = Math.pow(0.88, rank);       // RB1 full → RB6 ~46% → RB10 ~28%
+        const base = isDynasty ? 18 : 38;          // much smaller in dynasty
+        v += base * decay;
       }
       return v;
     };
     const ranked = valPool.slice().sort((a, b) => effVal(b) - effVal(a));
-    ranked.forEach((p, i) => { p.adp = i + 1; p.adpMarket = i + 1; });
+    // Assign a fractional "ADP-like" position rather than flat 1,2,3. We start at 1.0 and step forward
+    // by an amount proportional to the value gap to the next player: tightly-bunched players land close
+    // together (1.2, 1.5, 1.9…) and a real drop-off creates a bigger jump. This is an honest reflection
+    // of the model's value spacing (not invented market data) and reads far more naturally than integers.
+    // It also stays monotonic and averages ~1 step per player so overall pick numbers remain realistic.
+    if (ranked.length) {
+      // Use RAW vbd gaps (not the premium-inflated effVal) so the QB/RB premiums don't blow up the
+      // spacing. Keep the average step at ~1 pick per player so overall ADP tracks rank, with small
+      // fractional offsets that reflect how tightly players are bunched. Reads like real ADP (1.4, 2.1…).
+      const vs = ranked.map((p) => (p.vbd != null ? p.vbd : -50));
+      const gaps = [];
+      for (let i = 0; i < ranked.length - 1; i++) gaps.push(Math.max(0, vs[i] - vs[i + 1]));
+      const avgGap = gaps.length ? (gaps.reduce((a, b) => a + b, 0) / gaps.length) : 1;
+      let pos = 1.0;
+      ranked.forEach((p, i) => {
+        p.adp = Math.round(pos * 10) / 10;
+        p.adpMarket = p.adp;
+        // step ~1 on average; nudged ±0.3 by how this player's gap compares to the average gap.
+        const g = i < gaps.length ? gaps[i] : avgGap;
+        const rel = avgGap > 0 ? g / avgGap : 1;            // 1 = average gap
+        const step = Math.max(0.7, Math.min(1.4, 0.7 + rel * 0.35)); // stays close to 1
+        pos += step;
+      });
+    }
     // players outside the value pool (shouldn't be many) sink below
     ps.forEach((p) => { if (!valPool.includes(p)) { p.adp = ranked.length + 50; } });
   }
@@ -6144,6 +6167,113 @@ function FeedbackInbox({ feedback, onRespond, onDelete }) {
 }
 
 /* ============================================================ DRAFT ROOM */
+// Quick pick-trade popover (opens over the hub). Pick two teams, see the picks each currently owns
+// (respecting any trades already recorded), check the ones changing hands, and apply. We translate the
+// final ownership into the engine's {o,to,from} override list so the board + projections update.
+function TradePickModal({ teams, rounds, teamNames, userIdx, ownerOf, naturalOwnerOf, pickLabelOf, existingTrades, onClose, onApply }) {
+  const TOTAL = teams * rounds;
+  const others = Array.from({ length: teams }, (_, i) => i).filter((i) => i !== userIdx);
+  const [teamA, setTeamA] = useState(userIdx);
+  const [teamB, setTeamB] = useState(others[0] ?? (userIdx === 0 ? 1 : 0));
+  // local working ownership: start from current owner of every pick, then let the user reassign.
+  const [owner, setOwner] = useState(() => { const m = {}; for (let o = 0; o < TOTAL; o++) m[o] = ownerOf(o); return m; });
+  const [selA, setSelA] = useState(new Set()); // picks (currently A's) to send to B
+  const [selB, setSelB] = useState(new Set()); // picks (currently B's) to send to A
+
+  const picksOf = (team) => { const out = []; for (let o = 0; o < TOTAL; o++) if (owner[o] === team) out.push(o); return out; };
+  const aPicks = picksOf(teamA);
+  const bPicks = picksOf(teamB);
+  const toggle = (set, setter, o) => { const n = new Set(set); n.has(o) ? n.delete(o) : n.add(o); setter(n); };
+
+  const applySwap = () => {
+    const next = { ...owner };
+    selA.forEach((o) => { next[o] = teamB; });
+    selB.forEach((o) => { next[o] = teamA; });
+    setOwner(next); setSelA(new Set()); setSelB(new Set());
+  };
+
+  const submit = () => {
+    // Build the override list: any pick whose current owner != its NATURAL owner is a trade.
+    const trades = [];
+    for (let o = 0; o < TOTAL; o++) {
+      const nat = naturalOwnerOf(o);
+      if (owner[o] !== nat) trades.push({ o, to: owner[o], from: nat });
+    }
+    onApply(trades);
+  };
+
+  const name = (i) => (i === userIdx ? `${teamNames[i] || "Your team"} (you)` : teamNames[i]);
+  const movedCount = (() => { let n = 0; for (let o = 0; o < TOTAL; o++) if (owner[o] !== naturalOwnerOf(o)) n++; return n; })();
+
+  const PickChip = ({ o, checked, onToggle }) => (
+    <button className="btn btn-mini" onClick={onToggle}
+      style={{ borderColor: checked ? "var(--gold)" : "var(--line)", background: checked ? "rgba(242,182,60,.14)" : "transparent", color: checked ? "var(--gold)" : "var(--ink)", fontWeight: checked ? 700 : 400, padding: "3px 8px" }}>
+      {checked ? "✓ " : ""}{pickLabelOf(o)}
+    </button>
+  );
+
+  return (
+    <div className="modalbg" onClick={onClose}>
+      <div className="panel" style={{ maxWidth: 560, width: "100%", padding: 20, borderColor: "var(--gold)", maxHeight: "88vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <div className="disp" style={{ fontSize: 19, fontWeight: 700 }}><i className="ti ti-arrows-exchange" style={{ fontSize: 17, marginRight: 6, color: "var(--gold)" }} aria-hidden="true" />Trade picks</div>
+          <button className="btn btn-mini" onClick={onClose}>Close</button>
+        </div>
+        <div className="mut" style={{ fontSize: 12, marginBottom: 14, lineHeight: 1.5 }}>Pick the two teams, check the picks each is sending, and hit Swap. Repeat for multiple swaps, then Apply — the board and projections update instantly.</div>
+
+        {/* team selectors */}
+        <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+          <div style={{ flex: 1 }}>
+            <div className="mut" style={{ fontSize: 11, marginBottom: 3 }}>Team A</div>
+            <select className="gs" style={{ width: "100%" }} value={teamA} onChange={(e) => { setTeamA(+e.target.value); setSelA(new Set()); }}>
+              {Array.from({ length: teams }, (_, i) => i).filter((i) => i !== teamB).map((i) => <option key={i} value={i}>{name(i)}</option>)}
+            </select>
+          </div>
+          <div style={{ flex: 1 }}>
+            <div className="mut" style={{ fontSize: 11, marginBottom: 3 }}>Team B</div>
+            <select className="gs" style={{ width: "100%" }} value={teamB} onChange={(e) => { setTeamB(+e.target.value); setSelB(new Set()); }}>
+              {Array.from({ length: teams }, (_, i) => i).filter((i) => i !== teamA).map((i) => <option key={i} value={i}>{name(i)}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {/* picks each team owns */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+          <div className="panel" style={{ padding: 10, background: "var(--panel2)" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6, color: teamA === userIdx ? "var(--gold)" : "var(--ink)" }}>{name(teamA)} sends →</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+              {aPicks.length ? aPicks.map((o) => <PickChip key={o} o={o} checked={selA.has(o)} onToggle={() => toggle(selA, setSelA, o)} />) : <span className="mut" style={{ fontSize: 11 }}>No remaining picks</span>}
+            </div>
+          </div>
+          <div className="panel" style={{ padding: 10, background: "var(--panel2)" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6, color: teamB === userIdx ? "var(--gold)" : "var(--ink)" }}>{name(teamB)} sends →</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+              {bPicks.length ? bPicks.map((o) => <PickChip key={o} o={o} checked={selB.has(o)} onToggle={() => toggle(selB, setSelB, o)} />) : <span className="mut" style={{ fontSize: 11 }}>No remaining picks</span>}
+            </div>
+          </div>
+        </div>
+
+        <button className="btn btn-gold" style={{ width: "100%", marginBottom: 12 }} disabled={selA.size === 0 && selB.size === 0} onClick={applySwap}>
+          <i className="ti ti-switch-horizontal" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />Swap selected picks
+        </button>
+
+        {movedCount > 0 && (
+          <div className="panel" style={{ padding: "8px 10px", marginBottom: 12, background: "#16140c", borderColor: "var(--gold)" }}>
+            <div className="gold" style={{ fontSize: 11.5, fontWeight: 600 }}>{movedCount} pick{movedCount === 1 ? "" : "s"} moved from their original owner.</div>
+            <div className="mut" style={{ fontSize: 10.5, marginTop: 2 }}>Apply to save these into the draft. Anything you swap by mistake can be swapped back before applying.</div>
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <div style={{ flex: 1 }} />
+          <button className="btn btn-gold" onClick={submit}>Apply trades</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
   const teamsN = cfg.teams || 12;
   const names = (cfg.teamNames && cfg.teamNames.length === teamsN) ? cfg.teamNames : TEAM_NAMES_POOL.slice(0, teamsN);
@@ -6328,7 +6458,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const askOfficialMode = !mockLike && !connectedPlatform && !cfg.draftMode;
   const [mockTradingOn, setMockTradingOn] = useState(false); // in-mock trading with CPU teams (opt-in)
   const [tab, setTab] = useState(initialTab || "hub");
-  const [settingsSeg, setSettingsSeg] = useState(null); // which Settings sub-tab to open (e.g. "trades")
+  const [tradeModalOpen, setTradeModalOpen] = useState(false); // quick pick-trade popover over the hub
   const [strategy, setStrategy] = useState("balanced");
   const [search, setSearch] = useState("");
   const [posFilter, setPosFilter] = useState("ALL");
@@ -6776,17 +6906,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     }
     // confidence grows with how many picks in you are past the decision point
     const confidence = decided ? Math.min(1, (aged.length - DECIDE_AT + 1) / 6) : 0;
-    // tilt multiplier for the Your-build lens. Strength scales with confidence and (in redraft) is
-    // muted. Rebuild favors younger; win-now favors proven/older; balanced is neutral.
+    // tilt multiplier for the Your-build lens. For a committed rebuild, an old player should clearly
+    // fall behind a younger one of similar value — a small haircut isn't enough, so the tilt is strong
+    // and scales with how far the player is from your window's ideal age. Win-now is the mirror image.
     const tilt = (pos, age) => {
       if (!decided || !age || !["QB", "RB", "WR", "TE"].includes(pos)) return 1;
-      const strength = (isDyn ? 0.16 : 0.06) * confidence; // dynasty tilts harder
-      // center age by position (roughly the prime); + younger, - older relative to center
+      if (lane === "balanced") return 1;
+      // center age by position (rough prime). youthScore > 0 = younger than center, < 0 = older.
       const center = pos === "RB" ? 25 : pos === "WR" ? 26 : pos === "TE" ? 27 : 28;
-      const youthScore = (center - age) / 6; // >0 younger than center, <0 older
-      if (lane === "rebuild") return 1 + strength * youthScore;     // reward youth
-      if (lane === "winnow") return 1 - strength * youthScore;      // reward proven/older
-      return 1; // balanced
+      const youthScore = (center - age) / 4; // steeper than before (÷4 not ÷6)
+      // strength scales with confidence; dynasty tilts hard, redraft only mildly.
+      const strength = (isDyn ? 0.42 : 0.10) * confidence;
+      const raw = lane === "rebuild" ? 1 + strength * youthScore : 1 - strength * youthScore;
+      // clamp so we lift/penalize meaningfully but never invert value entirely
+      return Math.max(0.35, Math.min(1.6, raw));
     };
     return { lane, label, confidence, picksIn: aged.length, avgAge, decided, tilt };
   }, [myCurrent, cfg.type]);
@@ -7294,8 +7427,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               <button className="btn btn-mini" style={{ borderColor: rookieOnly ? "var(--gold)" : "var(--line)", color: rookieOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => setRookieOnly((r) => !r)}>Rookies</button>
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }} title="Market = order the league is likely to draft in (ADP). Your build = your demographic edge — tilts toward players that fit your contention window (young/rebuild vs win-now), once you've committed to a lane around round 4-6.">
                 <span className="mut" style={{ fontSize: 10.5, alignSelf: "center", padding: "0 7px" }}>View</span>
-                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sortState.key === "adp" ? "var(--gold)" : "transparent", color: sortState.key === "adp" ? "#1A1505" : "var(--ink)", fontWeight: sortState.key === "adp" ? 700 : 400 }} onClick={() => setSortState({ key: "adp", dir: 1 })} title="How the league sees it — ADP order">Market</button>
-                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sortState.key === "vbd" ? "var(--gold)" : "transparent", color: sortState.key === "vbd" ? "#1A1505" : "var(--ink)", fontWeight: sortState.key === "vbd" ? 700 : 400 }} onClick={() => setSortState({ key: "vbd", dir: -1 })} title="Your demographic edge — value tilted to your window">Your build</button>
+                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", minWidth: 64, textAlign: "center", background: sortState.key === "adp" ? "var(--gold)" : "transparent", color: sortState.key === "adp" ? "#1A1505" : "var(--ink)", fontWeight: sortState.key === "adp" ? 700 : 400 }} onClick={() => setSortState({ key: "adp", dir: 1 })} title="How the league sees it — ADP order">Market</button>
+                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", minWidth: 76, textAlign: "center", background: sortState.key === "vbd" ? "var(--gold)" : "transparent", color: sortState.key === "vbd" ? "#1A1505" : "var(--ink)", fontWeight: sortState.key === "vbd" ? 700 : 400 }} onClick={() => setSortState({ key: "vbd", dir: -1 })} title="Your demographic edge — value tilted to your window">Your build</button>
               </div>
               {sortState.key === "vbd" && (
                 <span className="mut" style={{ fontSize: 10.5, alignSelf: "center", display: "inline-flex", alignItems: "center", gap: 4 }} title={myWindow.decided ? `Based on your roster's age lean (avg ~${myWindow.avgAge?.toFixed(1)}). Tilt strengthens as you draft.` : "You haven't committed to a contention window yet — ranking on pure value until ~round 4."}>
@@ -7312,7 +7445,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 <i className={`ti ${showDrafted ? "ti-eye" : "ti-eye-off"}`} style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />{showDrafted ? "All players" : "Available only"}
               </button>
               <button className="btn btn-mini" onClick={() => setRanksWarn(true)} title="Edit your personal rankings (leaves the draft — it'll auto-save)"><i className="ti ti-list-numbers" style={{ fontSize: 13 }} aria-hidden="true" /> My ranks</button>
-              <button className="btn btn-mini" onClick={() => { setSettingsSeg("trades"); setTab("settings"); }} title="Record a draft-pick trade — who traded which pick to whom. The board updates instantly." style={{ borderColor: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--line)", color: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--ink)" }}><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks{(cfg.pickTrades || []).length ? ` (${(cfg.pickTrades || []).length})` : ""}</button>
+              <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — who traded which pick to whom. The board updates instantly." style={{ borderColor: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--line)", color: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--ink)" }}><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks{(cfg.pickTrades || []).length ? ` (${(cfg.pickTrades || []).length})` : ""}</button>
               <button className="btn btn-mini" onClick={() => setColMenu((m) => !m)}><i className="ti ti-columns" style={{ fontSize: 13 }} aria-hidden="true" /> Columns</button>
               {colMenu && (
                 <div className="panel" style={{ position: "absolute", right: 10, top: 46, zIndex: 30, padding: 12, width: 252, boxShadow: "0 10px 30px #000C" }}>
@@ -7557,7 +7690,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               <input type="checkbox" checked={showBoardVal} onChange={(e) => setShowBoardVal(e.target.checked)} style={{ accentColor: "var(--gold)", cursor: "pointer" }} />
               Show pick value
             </label>
-            <button className="btn btn-mini" onClick={() => { setSettingsSeg("trades"); setTab("settings"); }} title="Record a draft-pick trade — the board updates instantly to show picks in their new owners' columns." style={{ borderColor: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--line)", color: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--ink)" }}><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks{(cfg.pickTrades || []).length ? ` (${(cfg.pickTrades || []).length})` : ""}</button>
+            <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — the board updates instantly to show picks in their new owners' columns." style={{ borderColor: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--line)", color: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--ink)" }}><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks{(cfg.pickTrades || []).length ? ` (${(cfg.pickTrades || []).length})` : ""}</button>
             <span className="mut" style={{ fontSize: 11.5, marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: "var(--gold)", marginRight: 4, verticalAlign: "middle" }} />Your picks</span>
               <span><i className="ti ti-arrows-exchange" style={{ fontSize: 11, color: "#4FD1A1", marginRight: 2 }} aria-hidden="true" />Traded</span>
@@ -7717,7 +7850,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }} title="Market = how the league will draft (ADP). Your build = your demographic edge (value, dynasty youth tilt).">
                 <span className="mut" style={{ fontSize: 11, alignSelf: "center", padding: "0 8px" }}>View</span>
                 {[["adp", "Market"], ["vbd", "Your build"]].map(([k, lbl]) => (
-                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: availSort === k ? "var(--gold)" : "transparent", color: availSort === k ? "#1A1505" : "var(--ink)", fontWeight: availSort === k ? 700 : 400 }} onClick={() => setAvailSort(k)}>{lbl}</button>
+                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", minWidth: 76, textAlign: "center", background: availSort === k ? "var(--gold)" : "transparent", color: availSort === k ? "#1A1505" : "var(--ink)", fontWeight: availSort === k ? 700 : 400 }} onClick={() => setAvailSort(k)}>{lbl}</button>
                 ))}
               </div>
             </div>
@@ -7780,7 +7913,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
             <i className="ti ti-chart-dots" style={{ fontSize: 16, color: "var(--gold)" }} aria-hidden="true" />
             <span style={{ fontSize: 12.5 }} className="mut">ADP for this league's format, built from thousands of real Sleeper drafts — consensus, how it's trending, spread, sample size, and your blended number.</span>
           </div>
-          <AdpIntel players={players} cfg={cfg} myRanks={myRanks} />
+          <AdpIntel players={players} cfg={cfg} myRanks={myRanks} draftedSet={draftedSet} />
         </div>
       )}
 
@@ -7957,7 +8090,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
           <div className="mut" style={{ fontSize: 12.5, marginBottom: 12 }}>
             Edit any league setting — roster, scoring, draft order, keepers, pick trades, caps, teams. Use the tabs below. Saving recomputes projections and re-grades the board against your picks so far. {hasSlot ? "" : "You haven't set your draft slot yet — set it on the Draft order tab."}
           </div>
-          <ConfigForm initial={{ ...cfg, slot: cfg.slot == null ? "" : cfg.slot, scoring: { ...DEFAULT_SCORING, ...(cfg.scoring || {}) } }} initialSeg={settingsSeg} submitLabel="Save settings" onSubmit={(newCfg) => { onSettings(newCfg); setSettingsSeg(null); setTab("hub"); }} onCancel={() => { setSettingsSeg(null); setTab("hub"); }} />
+          <ConfigForm initial={{ ...cfg, slot: cfg.slot == null ? "" : cfg.slot, scoring: { ...DEFAULT_SCORING, ...(cfg.scoring || {}) } }} submitLabel="Save settings" onSubmit={(newCfg) => { onSettings(newCfg); setTab("hub"); }} onCancel={() => setTab("hub")} />
         </div>
       )}
 
@@ -8033,6 +8166,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
           </div>
         </div>
       )}
+
+      {tradeModalOpen && (() => {
+        return <TradePickModal
+          teams={TEAMS} rounds={ROUNDS} teamNames={TEAM_NAMES} userIdx={userIdx}
+          ownerOf={(o) => teamAt(o)} naturalOwnerOf={(o) => naturalOwner(o)} pickLabelOf={(o) => pickLabel(o)}
+          existingTrades={cfg.pickTrades || []}
+          onClose={() => setTradeModalOpen(false)}
+          onApply={(newTrades) => { onSettings({ ...cfg, pickTrading: true, pickTrades: newTrades }); setTradeModalOpen(false); }}
+        />;
+      })()}
 
       {briefOpen && briefing && (
         <div className="modalbg" onClick={() => setBriefOpen(false)}>
@@ -8302,11 +8445,15 @@ function adpSources(p, cfg) {
 
 // The ADP intelligence view — consensus, per-source breakdown (date/type/weight), spread, trend,
 // and your blended number. Used as a toolkit page and as a draft-room tab.
-function AdpIntel({ players, cfg, myRanks, compact }) {
+function AdpIntel({ players, cfg, myRanks, compact, draftedSet }) {
   const pool = useMemo(() => players.filter((p) => POS.includes(p.pos) || (idpOn(cfg) && IDP_POS.includes(p.pos))).slice().sort((a, b) => a.adp - b.adp), [players, cfg]);
   const [q, setQ] = useState("");
+  const [showDrafted, setShowDrafted] = useState(false); // default: only available
+  const hasDrafted = !!(draftedSet && draftedSet.size);
   const [selId, setSelId] = useState(pool[0] ? pool[0].id : null);
-  const filtered = q.trim() ? pool.filter((p) => p.name.toLowerCase().includes(q.toLowerCase())).slice(0, 40) : pool.slice(0, 40);
+  // Filter list by search + (optionally) hide drafted players. The "best available" view is the default.
+  const visible = pool.filter((p) => (showDrafted || !draftedSet || !draftedSet.has(p.id)));
+  const filtered = q.trim() ? visible.filter((p) => p.name.toLowerCase().includes(q.toLowerCase())).slice(0, 60) : visible.slice(0, 60);
   const sel = pool.find((p) => p.id === selId) || pool[0] || null;
   const data = useMemo(() => (sel ? adpSources(sel, cfg) : null), [sel, cfg]);
   const myAdp = sel && myRanks && myRanks.map && myRanks.map[sel.id] != null ? myRanks.map[sel.id] : null;
@@ -8326,13 +8473,18 @@ function AdpIntel({ players, cfg, myRanks, compact }) {
           <i className="ti ti-search" style={{ position: "absolute", left: 10, top: 9, fontSize: 13, color: "var(--mut)" }} aria-hidden="true" />
           <input className="gs" style={{ width: "100%", paddingLeft: 30, paddingTop: 7, paddingBottom: 7 }} placeholder="Search a player…" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
-        {filtered.map((p) => (
-          <div key={p.id} onClick={() => setSelId(p.id)} style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 7px", borderRadius: 6, cursor: "pointer", background: sel.id === p.id ? "rgba(214,170,75,0.12)" : "transparent", border: `1px solid ${sel.id === p.id ? "var(--gold)" : "transparent"}`, marginBottom: 2 }}>
+        {hasDrafted && (
+          <button className="btn btn-mini" style={{ width: "100%", marginBottom: 8, borderColor: showDrafted ? "var(--gold)" : "var(--line)", color: showDrafted ? "var(--gold)" : "var(--ink)" }} onClick={() => setShowDrafted((s) => !s)}>
+            <i className={`ti ${showDrafted ? "ti-eye" : "ti-eye-off"}`} style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />{showDrafted ? "Showing all players" : "Available only"}
+          </button>
+        )}
+        {filtered.map((p) => { const gone = draftedSet && draftedSet.has(p.id); return (
+          <div key={p.id} onClick={() => setSelId(p.id)} style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 7px", borderRadius: 6, cursor: "pointer", background: sel.id === p.id ? "rgba(214,170,75,0.12)" : "transparent", border: `1px solid ${sel.id === p.id ? "var(--gold)" : "transparent"}`, marginBottom: 2, opacity: gone ? 0.5 : 1 }}>
             <span className="posdot" style={{ background: POS_COLOR[p.pos] }} />
-            <span style={{ flex: 1, fontSize: 12.5, fontWeight: sel.id === p.id ? 700 : 400, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</span>
+            <span style={{ flex: 1, fontSize: 12.5, fontWeight: sel.id === p.id ? 700 : 400, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textDecoration: gone ? "line-through" : "none" }}>{p.name}</span>
             <span className="mut num" style={{ fontSize: 11 }}>{p.adp.toFixed(1)}</span>
           </div>
-        ))}
+        ); })}
       </div>
 
       {/* detail */}
