@@ -1978,30 +1978,30 @@ function needLevel(count, bestVbd, dem, pos) {
   if (bestVbd != null && bestVbd < 0) return 1;
   return 0;
 }
+// Draft-pick value curve. Like a trade-value chart, early picks are worth dramatically more than
+// late ones (non-linear). We score a pick position into "value points" so the WORTH of moving a
+// player is the change in curve value between his ADP and where he actually went — not a flat
+// pick-count difference. This makes reaches/steals at the top of the draft carry far more weight.
+function pickCurve(overallPick) {
+  // overallPick is 1-based. Smooth exponential-ish decay: pick 1 ≈ 1000, ~halves every ~14 picks.
+  // Tuned so R1 picks tower over late picks (pick 1≈1000, 12≈590, 24≈360, 60≈120, 120≈22, 180≈4).
+  const x = Math.max(1, overallPick);
+  return 1000 * Math.pow(0.955, x - 1);
+}
 function pickValue(p, overall, cfg) {
-  // Gap between where he went and his ADP. Positive = fell past ADP (steal); negative = reached.
-  const gap = (overall + 1) - p.adp;
-  // TIER MULTIPLIER: weight by the player's ADP tier — i.e. the caliber of player involved.
-  // A move on a true 1st-rounder (low ADP) matters far more than the same-size move on a late guy,
-  // because early-round draft capital is the scarcest, most valuable resource. We derive the tier
-  // from the player's ADP (where he *should* go), in rounds.
-  const adpRound = Math.max(1, Math.ceil(p.adp / TEAMS));
-  // multiplier: ADP round 1 ≈ 1.8x, round 3 ≈ 1.35x, round 6 ≈ 1.0x, round 10+ ≈ 0.7x
-  const tierMult = Math.max(0.6, 1.9 - 0.15 * (adpRound - 1));
-
-  if (gap >= 0) {
-    // STEAL: the gap is the value; amplify big slides a bit, then scale by the player's tier
-    // (a star sliding is a bigger story than a deep bench guy sliding the same distance).
-    const amplified = gap * (1 + Math.min(0.6, gap / 40));
-    // steals get a gentler tier effect than reaches (luck shouldn't be rewarded as hard as a
-    // premium-capital mistake is punished) — pull the multiplier partway toward 1.
-    const stealMult = 1 + (tierMult - 1) * 0.6;
-    return Math.round(amplified * stealMult);
-  }
-  // REACH: punished harder. Full tier multiplier — reaching with a 1st-round pick on a player who
-  // should go in round 3 is a serious misuse of premium capital.
-  const amplified = gap * (1 + Math.min(0.7, Math.abs(gap) / 35));
-  return Math.round(amplified * tierMult);
+  const actual = overall + 1;            // where he was actually taken (1-based)
+  const adp = Math.max(1, p.adp);        // where he should have gone
+  // Value = how much draft-capital value the pick gained or lost vs. his market price, on the curve.
+  // Steal (fell past ADP): actual > adp → you spent a cheaper pick on a pricier asset → positive.
+  // Reach (taken early):   actual < adp → you spent a premium pick on a cheaper asset → negative.
+  const curveGap = pickCurve(adp) - pickCurve(actual);
+  // Scale to a readable range and round. The curve already bakes in round disparity (a few picks at
+  // the top swing far more value than many picks at the bottom), so no separate round multiplier.
+  let v = curveGap / 6;
+  // Reaches sting a touch harder than equivalent steals reward — premium capital misused is worse
+  // than capital saved. Asymmetric by ~25%.
+  if (v < 0) v *= 1.25;
+  return Math.round(v);
 }
 // Overall pick number (1-based) from a 0-based pick index.
 const overallPick = (o) => o + 1;
@@ -2437,7 +2437,7 @@ export default function App() {
   const updateUser = (patch) => { const merged = { ...user, ...patch }; const u = { ...merged, admin: isAdminEmail(merged.email) }; setUser(u); persist({ user: u }); };
 
   const startDemo = () => {
-    setDemoLeague({ id: "demo", demo: true, name: "Free demo draft", cfg: { name: "Free demo draft", type: "redraft", teams: 12, rounds: 3, slot: 5, sf: false, tePrem: false, tePremMult: 0, caps: {}, start: { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0, DST: 0, K: 0 }, demo: true }, picks: [], preds: [] });
+    setDemoLeague({ id: "demo", demo: true, name: "Free demo draft", cfg: { name: "Free demo draft", type: "redraft", teams: 12, rounds: 15, demoRounds: 3, slot: 5, sf: false, tePrem: false, tePremMult: 0, caps: {}, start: { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0, DST: 0, K: 0 }, demo: true }, picks: [], preds: [] });
     setRoute("draft"); setActiveId("demo");
   };
 
@@ -5869,14 +5869,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   useEffect(() => { if (myRanks.has) setCols((c) => (c.myRank && c.blendAdp ? c : { ...c, myRank: true, blendAdp: true })); }, [myRanks.has]);
   const draftedSet = useMemo(() => { const s = new Set(picks); Object.values(noCostByTeam).flat().forEach((id) => s.add(id)); return s; }, [picks, cfg]);
   const done = picks.length >= TOTAL;
+  // Demo stops after a limited number of rounds (it's not "complete" — you must purchase to continue).
+  const demoCap = isDemo && cfg.demoRounds ? cfg.demoRounds * TEAMS : null;
+  const demoCapped = demoCap != null && picks.length >= demoCap && !user?.paid;
   const onClock = !done ? teamAt(picks.length) : -1;
   const round = Math.floor(Math.min(picks.length, TOTAL - 1) / TEAMS) + 1;
   const dem = demand(cfg.sf);
 
   const userPicksMade = picks.filter((_, o) => teamAt(o) === userIdx).length;
-  // Paywall gating. For the 3-round demo, let it play all the way through, then prompt to buy once
-  // the demo draft is complete. (Non-demo unpaid drafts still gate after 5 user picks as a fallback.)
-  const gated = !user?.paid && (isDemo ? done : (userPicksMade >= 5 && !done));
+  // Paywall gating. The demo plays its capped rounds, then stops with a purchase prompt (the draft is
+  // NOT marked complete — you'd continue if you bought). Non-demo unpaid drafts gate after 5 picks.
+  const gated = !user?.paid && (isDemo ? demoCapped : (userPicksMade >= 5 && !done));
 
   // Auto-place any pick-cost keeper the instant the draft reaches its slot (before normal
   // drafting decides that pick). Runs at start and after every pick, for any team's slot.
@@ -7221,10 +7224,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
         <div className="modalbg">
           <div className="panel" style={{ maxWidth: 460, width: "100%", padding: 26, borderColor: "var(--gold)", textAlign: "center" }}>
             <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}><Compass size={38} /></div>
-            <div className="disp" style={{ fontSize: 24, fontWeight: 700 }}>{isDemo ? "That's the 3-round demo!" : "Enjoying the demo?"}</div>
+            <div className="disp" style={{ fontSize: 24, fontWeight: 700 }}>{isDemo ? "End of the free demo" : "Enjoying the demo?"}</div>
             <div className="mut" style={{ fontSize: 13.5, margin: "10px 0 16px", lineHeight: 1.55 }}>
               {isDemo
-                ? "You just drafted three rounds on the real engine — live projections, availability odds, and steal/reach value, all exactly what you'd get on draft night. The season pass opens the full draft plus unlimited leagues, mock drafts, your own rankings, trade tools, and everything else."
+                ? `The free demo covers the first ${cfg.demoRounds || 3} rounds on the real engine — live projections, availability odds, and steal/reach value, exactly what you'd get on draft night. Unlock the season pass to finish this draft and get unlimited leagues, mock drafts, your own rankings, trade tools, depth charts, and every other feature.`
                 : "You've drafted five rounds on the real engine — the projected path, live availability odds, and waiting-cost math are all exactly what you'd get on draft night. The season pass opens the full draft plus unlimited leagues, mock drafts, your own rankings, trade tools, and everything else."}
             </div>
             <button className="btn btn-gold" style={{ width: "100%", padding: 12, fontSize: 15, marginBottom: 8 }} onClick={onBuy}>Get the Season Pass</button>
