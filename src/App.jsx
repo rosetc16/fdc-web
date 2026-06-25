@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.25f";
+const BUILD_TAG = "2026.06.25g";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -8617,12 +8617,10 @@ function tradeValue(p, cfg) {
   let mult = p.pos === "RB" ? 1.08 : p.pos === "TE" ? 1.05 : 1.0;
   if (p.pos === "QB") {
     if (sf) {
-      // Superflex QB premium must scale with the QB's QUALITY, not be a flat bump — a flat premium
-      // inflates QB12 (Bo Nix) above elite RB/WR, which is wrong. Elite QBs (high vbd) get the big
-      // premium; replacement QBs get little. p.vbd for QBs in SF is already replacement-relative, so we
-      // scale the premium by how far above replacement this QB is.
-      const qbStrength = Math.max(0, Math.min(1, (p.vbd || 0) / 110)); // ~1.0 for an elite SF QB
-      mult *= 1.15 + 1.05 * qbStrength; // elite QB ~2.2x, mid QB ~1.5x, streamer ~1.15x
+      // Superflex QB premium scaled by quality. Calibrated so an ELITE QB is worth ~1.3-1.5x an elite
+      // RB/WR (real SF dynasty), NOT 2x+. A flat or too-high premium made every QB outrank skill players.
+      const qbStrength = Math.max(0, Math.min(1, (p.vbd || 0) / 110)); // ~1 for elite SF QB
+      mult *= 1.1 + 0.55 * qbStrength; // elite QB ~1.65x, mid ~1.35x, streamer ~1.1x
     } else {
       mult *= dynasty ? 0.78 : 0.6;
     }
