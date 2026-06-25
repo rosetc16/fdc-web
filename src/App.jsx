@@ -4054,11 +4054,22 @@ function Faq({ q, a }) {
 function AuthModal({ onClose, onSignUp, hasBackend, authError }) {
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");        // confirm password (signup only)
+  const [showPw, setShowPw] = useState(false); // show/hide password text
   const [mode, setMode] = useState("signin"); // signin | signup | forgotpw | forgotuser
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
   const title = mode === "signup" ? "Create your account" : mode === "forgotpw" ? "Reset your password" : mode === "forgotuser" ? "Find your username" : "Sign in";
-  const submit = async () => { setBusy(true); try { await onSignUp(email, pw, mode); } finally { setBusy(false); } };
+  const pwMismatch = mode === "signup" && pw2.length > 0 && pw !== pw2;
+  const canSubmit = email.includes("@") && pw.length >= 6 && (mode !== "signup" || pw === pw2);
+  const submit = async () => { if (!canSubmit) return; setBusy(true); try { await onSignUp(email, pw, mode); } finally { setBusy(false); } };
+  // a small reusable eye button for the password fields
+  const EyeBtn = () => (
+    <button type="button" tabIndex={-1} onClick={() => setShowPw((s) => !s)} aria-label={showPw ? "Hide password" : "Show password"}
+      style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "var(--mut)", cursor: "pointer", padding: 4, lineHeight: 0 }}>
+      <i className={`ti ${showPw ? "ti-eye-off" : "ti-eye"}`} style={{ fontSize: 16 }} aria-hidden="true" />
+    </button>
+  );
   return (
     <div className="modalbg" onClick={onClose}>
       <div className="panel" style={{ maxWidth: 380, width: "100%", padding: 22 }} onClick={(e) => e.stopPropagation()}>
@@ -4067,13 +4078,24 @@ function AuthModal({ onClose, onSignUp, hasBackend, authError }) {
         {(mode === "signin" || mode === "signup") && <>
           <div className="mut" style={{ fontSize: 12, marginBottom: 14 }}>{hasBackend ? "Your account is secured with hashed credentials." : "Demo mode — accounts are stored locally in your browser. Connect the backend for real accounts."}</div>
           <input className="gs" style={{ width: "100%", marginBottom: 8 }} placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <input className="gs" type="password" style={{ width: "100%", marginBottom: 14 }} placeholder="Password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && email.includes("@") && pw.length >= 6) submit(); }} />
+          <div style={{ position: "relative", marginBottom: mode === "signup" ? 8 : 14 }}>
+            <input className="gs" type={showPw ? "text" : "password"} style={{ width: "100%", paddingRight: 34 }} placeholder="Password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && canSubmit) submit(); }} />
+            <EyeBtn />
+          </div>
+          {mode === "signup" && <>
+            <div style={{ position: "relative", marginBottom: 6 }}>
+              <input className="gs" type={showPw ? "text" : "password"} style={{ width: "100%", paddingRight: 34, borderColor: pwMismatch ? "var(--red)" : undefined }} placeholder="Confirm password" value={pw2} onChange={(e) => setPw2(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && canSubmit) submit(); }} />
+              <EyeBtn />
+            </div>
+            {pwMismatch && <div style={{ color: "var(--red)", fontSize: 11.5, marginBottom: 8 }}>Passwords don't match</div>}
+            {!pwMismatch && <div style={{ height: 6 }} />}
+          </>}
           {authError && <div style={{ color: "var(--red)", fontSize: 12, marginBottom: 10 }}>{authError}</div>}
-          <button className="btn btn-gold" style={{ width: "100%", padding: 10 }} disabled={busy || !email.includes("@") || pw.length < 6} onClick={submit}>{busy ? "…" : mode === "signup" ? "Create account" : "Sign in"}</button>
+          <button className="btn btn-gold" style={{ width: "100%", padding: 10 }} disabled={busy || !canSubmit} onClick={submit}>{busy ? "…" : mode === "signup" ? "Create account" : "Sign in"}</button>
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, gap: 8, flexWrap: "wrap" }}>
             {mode === "signin"
-              ? <button className="btn-link" style={{ background: "none", border: "none", color: "var(--gold)", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", padding: 0 }} onClick={() => setMode("signup")}>Need an account? Sign up</button>
-              : <button className="btn-link" style={{ background: "none", border: "none", color: "var(--gold)", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", padding: 0 }} onClick={() => setMode("signin")}>Have an account? Sign in</button>}
+              ? <button className="btn-link" style={{ background: "none", border: "none", color: "var(--gold)", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", padding: 0 }} onClick={() => { setMode("signup"); setPw(""); setPw2(""); }}>Need an account? Sign up</button>
+              : <button className="btn-link" style={{ background: "none", border: "none", color: "var(--gold)", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", padding: 0 }} onClick={() => { setMode("signin"); setPw2(""); }}>Have an account? Sign in</button>}
             {mode === "signin" && <span style={{ display: "flex", gap: 8 }}>
               <button className="btn-link" style={{ background: "none", border: "none", color: "var(--mut)", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", padding: 0 }} onClick={() => { setSent(false); setMode("forgotpw"); }}>Forgot password?</button>
               <button className="btn-link" style={{ background: "none", border: "none", color: "var(--mut)", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", padding: 0 }} onClick={() => { setSent(false); setMode("forgotuser"); }}>Forgot username?</button>
