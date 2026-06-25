@@ -5208,12 +5208,14 @@ function ConnectBox({ connect, onConnect, onClear }) {
   const pickSleeperLeague = async (lg) => {
     setError(null); setBusy(true);
     try {
-      const d = await api.sleeperDraft(lg.league_id);
+      const d = await api.sleeperDraft(lg.league_id, val.trim());
       onConnect({
-        platform: "sleeper", credential: val.trim(),
+        platform: "sleeper", credential: val.trim(), username: val.trim(),
         leagueId: lg.league_id, leagueName: lg.name,
         draftId: d.draft_id || lg.draft_id || null,
         cfg: d.cfg || null, picks: d.picks || [], status: d.status || lg.draft_status || null,
+        teams: d.teams || null, yourSlot: d.yourSlot || null, slotNames: d.slotNames || null,
+        draftType: d.draftType || "snake", tradedPicks: d.tradedPicks || [],
       });
       setOpen(false); setSel(null); setVal(""); setSleeperLeagues(null);
     } catch (e) { setError(e.data?.error || e.message || "Couldn't load that league's draft."); }
@@ -5459,10 +5461,29 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel }) {
                 patch.scoring = { ...f.scoring, rec, recTE: k.tePrem ? rec + (k.tePremMult || 1) : rec };
               }
             }
+            // Your draft slot
+            if (c.yourSlot) patch.slot = c.yourSlot;
+            // Draft order + team names: build arrays in slot order (1-based slots → 0-based arrays)
+            if (c.slotNames && c.teams) {
+              const names = [];
+              for (let s = 1; s <= c.teams; s++) names.push(c.slotNames[s] || `Team ${s}`);
+              patch.teamNames = names; patch.manual = true;
+              // Sleeper draft order is already slot order, so draftOrder = identity (slot i → team i)
+              patch.draftOrder = Array.from({ length: c.teams }, (_, i) => i);
+            }
+            if (c.draftType) patch.order = c.draftType === "linear" ? "linear" : "snake";
+            // Traded picks → our pickTrades shape (round/fromSlot/toSlot as team indices, 0-based)
+            if (Array.isArray(c.tradedPicks) && c.tradedPicks.length) {
+              patch.pickTrading = true;
+              patch.pickTrades = c.tradedPicks.map((t) => ({ round: t.round, from: t.fromSlot - 1, to: t.toSlot - 1 }));
+            }
             upd(patch);
           }} onClear={() => upd({ connect: null })} />
-          {f.connect && f.connect.platform === "sleeper" && (f.connect.picks || []).length > 0 && (
-            <div className="mut" style={{ fontSize: 11.5, marginBottom: 10, marginTop: -6 }}><i className="ti ti-check" style={{ fontSize: 12, marginRight: 4, color: "var(--green)" }} aria-hidden="true" />{f.connect.picks.length} pick{f.connect.picks.length === 1 ? "" : "s"} already in this draft will load when you create the league. New picks sync live.</div>
+          {f.connect && f.connect.platform === "sleeper" && (
+            <div className="panel" style={{ padding: "10px 12px", marginBottom: 12, marginTop: -6, background: "#0E1206", borderColor: "#3A4A1A" }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--green)", marginBottom: 3 }}><i className="ti ti-check" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Pulled from {f.connect.leagueName || "your Sleeper league"} — nothing below to fill in</div>
+              <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>Teams, scoring, roster spots, draft order, team names{(f.connect.tradedPicks || []).length ? ", and traded picks" : ""} are set automatically{f.connect.yourSlot ? `, and you're slot ${f.connect.yourSlot}` : ""}. {(f.connect.picks || []).length ? `${f.connect.picks.length} pick${f.connect.picks.length === 1 ? "" : "s"} already made will load.` : ""} Everything stays in sync with your league as the draft (and any trades) happen — you can review the settings below, but you don't need to change anything.</div>
+            </div>
           )}          {Row("League name", <input className="gs" style={{ width: "100%" }} value={f.name} onChange={(e) => upd({ name: e.target.value })} />)}
           {Row("League type",
             <select className="gs" style={{ width: "100%" }} value={f.type} onChange={(e) => upd({ type: e.target.value })}>
@@ -6309,7 +6330,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     let alive = true;
     const pull = async () => {
       try {
-        const d = await api.sleeperDraft(cfg.connect.leagueId);
+        const d = await api.sleeperDraft(cfg.connect.leagueId, cfg.connect.username);
         if (!alive) return;
         // Build the engine pick list from Sleeper's pick order, mapping names→ids and dropping any
         // we can't match (rare). We only grow the list; we never reorder existing picks.
@@ -6324,6 +6345,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
           if (mapped.length > prev.length) return mapped;
           return prev;
         });
+        // If a trade happened in the league (traded picks changed), update the league settings so the
+        // board's pick ownership stays correct. Compare against what we have stored.
+        if (onSettings && Array.isArray(d.tradedPicks)) {
+          const incoming = JSON.stringify(d.tradedPicks);
+          const have = JSON.stringify(cfg.connect.tradedPicks || []);
+          if (incoming !== have) {
+            const pickTrades = d.tradedPicks.map((t) => ({ round: t.round, from: t.fromSlot - 1, to: t.toSlot - 1 }));
+            onSettings({ ...cfg, pickTrading: true, pickTrades, connect: { ...cfg.connect, tradedPicks: d.tradedPicks } });
+          }
+        }
       } catch (e) {
         if (alive) setSyncState((s) => ({ ...s, error: "Sync paused — retrying…" }));
       }
