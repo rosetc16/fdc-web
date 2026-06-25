@@ -6474,6 +6474,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   // Persist column layout to the user so future drafts open the same way (until they change it again).
   useEffect(() => { if (onColPrefs) onColPrefs({ cols, boardMode, sectionOrder }); }, [cols, boardMode, sectionOrder]);
   const [colMenu, setColMenu] = useState(false);
+  const [dragSec, setDragSec] = useState(null); // section being dragged in the columns menu
   const [briefOpen, setBriefOpen] = useState(false);
   const [teamView, setTeamView] = useState(-1);
   const [railProj, setRailProj] = useState(true);
@@ -6897,32 +6898,48 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     const decided = aged.length >= DECIDE_AT && avgAge != null;
     let lane = "undecided", label = "Reading your build…";
     if (decided) {
-      // thresholds differ slightly by format; dynasty cares more about youth
       const youngCut = isDyn ? 24.5 : 25.0;
       const oldCut = isDyn ? 27.5 : 28.0;
       if (avgAge <= youngCut) { lane = "rebuild"; label = "Young / rebuild window"; }
       else if (avgAge >= oldCut) { lane = "winnow"; label = "Win-now window"; }
       else { lane = "balanced"; label = "Balanced window"; }
     }
-    // confidence grows with how many picks in you are past the decision point
     const confidence = decided ? Math.min(1, (aged.length - DECIDE_AT + 1) / 6) : 0;
-    // tilt multiplier for the Your-build lens. For a committed rebuild, an old player should clearly
-    // fall behind a younger one of similar value — a small haircut isn't enough, so the tilt is strong
-    // and scales with how far the player is from your window's ideal age. Win-now is the mirror image.
-    const tilt = (pos, age) => {
-      if (!decided || !age || !["QB", "RB", "WR", "TE"].includes(pos)) return 1;
-      if (lane === "balanced") return 1;
-      // center age by position (rough prime). youthScore > 0 = younger than center, < 0 = older.
-      const center = pos === "RB" ? 25 : pos === "WR" ? 26 : pos === "TE" ? 27 : 28;
-      const youthScore = (center - age) / 4; // steeper than before (÷4 not ÷6)
-      // strength scales with confidence; dynasty tilts hard, redraft only mildly.
-      const strength = (isDyn ? 0.42 : 0.10) * confidence;
-      const raw = lane === "rebuild" ? 1 + strength * youthScore : 1 - strength * youthScore;
-      // clamp so we lift/penalize meaningfully but never invert value entirely
-      return Math.max(0.35, Math.min(1.6, raw));
+
+    // POSITIONAL NEED: how many starters you still lack at each position vs your league's requirements.
+    // This makes "Your build" reflect team NEEDS, not just age — a stacked position gets pushed down,
+    // an empty starting slot gets pulled up. Need is meaningful from pick 1 (you always have needs).
+    const req = REQ_F(cfg.sf); // starters needed per position incl. flex share
+    const have = { QB: 0, RB: 0, WR: 0, TE: 0 };
+    myCurrent.forEach((p) => { if (have[p.pos] != null) have[p.pos]++; });
+    const needScore = (pos) => {
+      if (have[pos] == null) return 0;
+      const r = req[pos] || 0;
+      const deficit = r - have[pos];           // >0 = still need starters here
+      if (deficit > 0) return Math.min(1, deficit / Math.max(1, r));   // 0..1 need
+      // already filled — mild negative (over-stacked) that grows the deeper you are past the requirement
+      return Math.max(-0.6, -(have[pos] - r) * 0.18);
     };
-    return { lane, label, confidence, picksIn: aged.length, avgAge, decided, tilt };
-  }, [myCurrent, cfg.type]);
+
+    // tilt multiplier for the Your-build lens. Combines AGE (window) and NEED (roster construction).
+    const tilt = (pos, age) => {
+      if (!["QB", "RB", "WR", "TE"].includes(pos)) return 1;
+      let m = 1;
+      // age/window component (only once you've committed to a lane)
+      if (decided && lane !== "balanced" && age) {
+        const center = pos === "RB" ? 25 : pos === "WR" ? 26 : pos === "TE" ? 27 : 28;
+        const youthScore = (center - age) / 4;
+        const strength = (isDyn ? 0.42 : 0.10) * confidence;
+        m *= lane === "rebuild" ? 1 + strength * youthScore : 1 - strength * youthScore;
+      }
+      // need component (always on — your roster always has shape). A real starting hole lifts a
+      // position ~25%; a heavily stacked position is pushed down. Tuned to visibly reshape the board.
+      const ns = needScore(pos);
+      m *= 1 + ns * 0.28;
+      return Math.max(0.3, Math.min(1.7, m));
+    };
+    return { lane, label, confidence, picksIn: aged.length, avgAge, decided, tilt, have, req };
+  }, [myCurrent, cfg.type, cfg.sf]);
 
   const rows = useMemo(() => {
     let list = players.slice();
@@ -7445,17 +7462,30 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 <i className={`ti ${showDrafted ? "ti-eye" : "ti-eye-off"}`} style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />{showDrafted ? "All players" : "Available only"}
               </button>
               <button className="btn btn-mini" onClick={() => setRanksWarn(true)} title="Edit your personal rankings (leaves the draft — it'll auto-save)"><i className="ti ti-list-numbers" style={{ fontSize: 13 }} aria-hidden="true" /> My ranks</button>
-              <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — who traded which pick to whom. The board updates instantly." style={{ borderColor: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--line)", color: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--ink)" }}><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks{(cfg.pickTrades || []).length ? ` (${(cfg.pickTrades || []).length})` : ""}</button>
+              <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — who traded which pick to whom. The board updates instantly." style={{ borderColor: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--line)", color: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--ink)" }}><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks{(cfg.pickTrades || []).length ? ` · ${(cfg.pickTrades || []).length} moved` : ""}</button>
               <button className="btn btn-mini" onClick={() => setColMenu((m) => !m)}><i className="ti ti-columns" style={{ fontSize: 13 }} aria-hidden="true" /> Columns</button>
               {colMenu && (
                 <div className="panel" style={{ position: "absolute", right: 10, top: 46, zIndex: 30, padding: 12, width: 252, boxShadow: "0 10px 30px #000C" }}>
                   <div className="mut" style={{ fontSize: 10.5, marginBottom: 8, lineHeight: 1.4 }}>You're editing the <b style={{ color: "var(--gold)" }}>{boardMode === "stats" ? "Stats" : "Value"}</b> view. ADP stays pinned on the left. {boardMode === "stats" ? "Switch to Value (top of board) to edit valuation & demographics." : "Switch to Stats (top of board) to choose projected-stat columns."}</div>
                   {/* group order — market excluded (always first); only the groups visible in this mode */}
                   {orderedSections.filter((s) => s !== "market" && sectionVisible(s)).length > 1 && <>
-                    <div className="disp" style={{ fontSize: 9.5, letterSpacing: ".08em", color: "var(--gold)", marginBottom: 4, textTransform: "uppercase" }}>Group order</div>
+                    <div className="disp" style={{ fontSize: 9.5, letterSpacing: ".08em", color: "var(--gold)", marginBottom: 4, textTransform: "uppercase" }}>Group order <span className="mut" style={{ fontSize: 9 }}>· drag to reorder, saves automatically</span></div>
                     <div style={{ marginBottom: 10 }}>
                       {orderedSections.filter((s) => s !== "market" && sectionVisible(s)).map((sec, i, arr) => (
-                        <div key={sec} style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 0", fontSize: 11.5 }}>
+                        <div key={sec} draggable
+                          onDragStart={() => setDragSec(sec)}
+                          onDragOver={(e) => { e.preventDefault(); }}
+                          onDrop={() => {
+                            if (!dragSec || dragSec === sec) { setDragSec(null); return; }
+                            const full = sectionOrder.filter((s) => s !== "market");
+                            const from = full.indexOf(dragSec); const to = full.indexOf(sec);
+                            if (from < 0 || to < 0) { setDragSec(null); return; }
+                            full.splice(to, 0, full.splice(from, 1)[0]);
+                            setSectionOrder(full); setDragSec(null);
+                          }}
+                          onDragEnd={() => setDragSec(null)}
+                          style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 6px", fontSize: 11.5, cursor: "grab", borderRadius: 5, marginBottom: 2, background: dragSec === sec ? "rgba(214,170,75,0.18)" : "var(--panel2)", border: "1px solid var(--line)" }}>
+                          <i className="ti ti-grip-vertical" style={{ fontSize: 13, color: "var(--mut)" }} aria-hidden="true" />
                           <span style={{ flex: 1 }}>{SECTION_LABELS[sec]}</span>
                           <button className="btn btn-mini" style={{ padding: "1px 6px" }} disabled={i === 0} onClick={() => { const full = sectionOrder.filter((s) => s !== "market"); const a = full.indexOf(sec); const b = full.indexOf(arr[i - 1]); [full[a], full[b]] = [full[b], full[a]]; setSectionOrder(full); }}>▲</button>
                           <button className="btn btn-mini" style={{ padding: "1px 6px" }} disabled={i === arr.length - 1} onClick={() => { const full = sectionOrder.filter((s) => s !== "market"); const a = full.indexOf(sec); const b = full.indexOf(arr[i + 1]); [full[a], full[b]] = [full[b], full[a]]; setSectionOrder(full); }}>▼</button>
@@ -7690,7 +7720,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               <input type="checkbox" checked={showBoardVal} onChange={(e) => setShowBoardVal(e.target.checked)} style={{ accentColor: "var(--gold)", cursor: "pointer" }} />
               Show pick value
             </label>
-            <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — the board updates instantly to show picks in their new owners' columns." style={{ borderColor: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--line)", color: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--ink)" }}><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks{(cfg.pickTrades || []).length ? ` (${(cfg.pickTrades || []).length})` : ""}</button>
+            <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — the board updates instantly to show picks in their new owners' columns." style={{ borderColor: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--line)", color: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--ink)" }}><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks{(cfg.pickTrades || []).length ? ` · ${(cfg.pickTrades || []).length} moved` : ""}</button>
             <span className="mut" style={{ fontSize: 11.5, marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: "var(--gold)", marginRight: 4, verticalAlign: "middle" }} />Your picks</span>
               <span><i className="ti ti-arrows-exchange" style={{ fontSize: 11, color: "#4FD1A1", marginRight: 2 }} aria-hidden="true" />Traded</span>
@@ -7886,7 +7916,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                         <span className="posbadge" style={{ background: POS_COLOR[p.pos] }}>{p.pos}{p.posRank}</span>
                         <span style={{ minWidth: 0 }}><span className="pname" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>{p.name}</span><span className="mut" style={{ fontSize: 10.5 }}>{p.team} · Tier {p.tier}</span></span>
                       </div>
-                      <div className="num" style={{ textAlign: "center", fontWeight: 700, color: "var(--mut)" }}>{availSort === "adp" ? p.adp.toFixed(0) : `+${p.vbd.toFixed(0)}`}</div>
+                      <div className="num" style={{ textAlign: "center", fontWeight: 700, color: "var(--mut)" }}>{availSort === "adp" ? p.adp.toFixed(0) : (p.vbd > 0 ? `+${p.vbd.toFixed(0)}` : p.vbd.toFixed(0))}</div>
                       {sims && sims.nexts.map((_, i) => { const pct = sims.pct[i][p.id]; return (
                         <div key={i} className="availpct"><span className="fill" style={{ width: `${pct}%`, background: heatBar(pct) }} /><span className="txt" style={{ color: pct >= 70 ? "var(--green)" : pct >= 40 ? "var(--gold)" : "var(--red)" }}>{pct}%</span></div>
                       ); })}
@@ -8513,9 +8543,9 @@ function AdpIntel({ players, cfg, myRanks, compact, draftedSet }) {
 
         {/* breakdown by draft recency — same Sleeper harvest, sliced by time window */}
         <div className="panel" style={{ padding: 0, overflow: "hidden", marginBottom: 12 }}>
-          <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 10 }}>
             <span className="disp" style={{ fontSize: 13, fontWeight: 700 }}>How it's trending</span>
-            <span className="mut" style={{ fontSize: 11 }}>Sleeper drafts, by recency</span>
+            <span className="mut" style={{ fontSize: 11 }}>average pick by recency window — lower = drafted earlier</span>
           </div>
           {data.rows.map((r) => (
             <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 14px", borderTop: "1px solid var(--line)" }}>
@@ -8524,7 +8554,7 @@ function AdpIntel({ players, cfg, myRanks, compact, draftedSet }) {
                 <div className="mut" style={{ fontSize: 10 }}>{r.type}</div>
               </div>
               <div style={{ flex: 1, height: 8, background: "#23231C", borderRadius: 4, position: "relative", overflow: "hidden" }}>
-                <div style={{ position: "absolute", left: 0, top: 0, height: "100%", width: `${Math.min(100, (r.val / maxBar) * 100)}%`, background: POS_COLOR[sel.pos], borderRadius: 4 }} />
+                <div style={{ position: "absolute", left: 0, top: 0, height: "100%", width: `${Math.min(100, (r.val / maxBar) * 100)}%`, background: "#6E7681", borderRadius: 4 }} />
               </div>
               <div className="num" style={{ width: 42, textAlign: "right", fontSize: 12.5, fontWeight: 600 }}>{r.val}</div>
               <div className="mut num" style={{ width: 56, textAlign: "right", fontSize: 10.5 }} title="Drafts in this window">{r.n.toLocaleString()} drafts</div>
@@ -8979,38 +9009,49 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
             )}
           </div>
           {(() => {
-            // Build my tradeable chips: surplus players + (if enabled) draft-pick assets.
-            const surplusPos = POS.filter((p) => myCounts[p] > (req[p] || 0) + 1);
-            const myPlayerChips = (surplusPos.length ? myRoster.filter((p) => surplusPos.includes(p.pos)) : myRoster).slice();
+            // Build my tradeable chips: surplus players + (if enabled) draft-pick assets. "Surplus" =
+            // anything past your starting requirement at a position (not +1), so you have real chips to
+            // work with earlier. If that's still empty, fall back to your full roster minus your single
+            // best at each position (you won't trade your only stud, but everything else is on the table).
+            const surplusPos = POS.filter((p) => myCounts[p] > (req[p] || 0));
+            let myPlayerChips;
+            if (surplusPos.length) {
+              myPlayerChips = myRoster.filter((p) => surplusPos.includes(p.pos));
+            } else {
+              // keep each position's best, offer the rest
+              const bestByPos = {}; myRoster.forEach((p) => { if (!bestByPos[p.pos] || tradeValue(p, cfg) > tradeValue(bestByPos[p.pos], cfg)) bestByPos[p.pos] = p; });
+              myPlayerChips = myRoster.filter((p) => bestByPos[p.pos] !== p);
+            }
             const myChipPool = [...myPlayerChips, ...(cfg.pickTrading ? myPicks : [])];
-            // Find the cheapest combo of my chips whose adjusted value lands within a fair band of `tv`.
+            // Find a combo of my chips whose adjusted value lands within a fair band of `tv`.
             const matchChips = (tv) => {
               const pool = myChipPool.slice().sort((a, b) => assetVal(a, cfg) - assetVal(b, cfg));
-              // 1) single chip within band
-              const single = pool.find((c) => Math.abs(assetVal(c, cfg) - tv) <= Math.max(14, tv * 0.18));
+              // 1) single chip within a generous band
+              const single = pool.find((c) => Math.abs(assetVal(c, cfg) - tv) <= Math.max(20, tv * 0.28));
               if (single) return [single];
-              // 2) a player + a pick (or two chips) that together reach a fair band
+              // 2) any two chips that together land in a fair band
               for (let i = 0; i < pool.length; i++) {
                 for (let j = i + 1; j < pool.length; j++) {
                   const sum = assetVal(pool[i], cfg) + assetVal(pool[j], cfg);
-                  if (sum >= tv - 14 && sum <= tv + 22) return [pool[i], pool[j]];
+                  if (sum >= tv - 20 && sum <= tv + 30) return [pool[i], pool[j]];
                 }
               }
+              // 3) closest single chip as a last resort (so we usually surface SOMETHING to negotiate from)
+              if (pool.length) { const closest = pool.reduce((b, c) => Math.abs(assetVal(c, cfg) - tv) < Math.abs(assetVal(b, cfg) - tv) ? c : b); if (Math.abs(assetVal(closest, cfg) - tv) <= Math.max(30, tv * 0.4)) return [closest]; }
               return null;
             };
             const ideas = [];
             const consider = (t, target) => {
               if (!target || target.id == null || !wants(target.pos)) return;
               const ownerCount = teamRosters[t].filter((p) => p.pos === target.pos).length;
-              // a team will move a player once they have more than one playable body at that spot
-              // (their RB2/WR3/etc.), or any non-premium depth — they won't deal their only starter.
-              if (ownerCount <= 1) return;
+              if (ownerCount <= 1) return; // won't deal their only body at the spot
               const tv = tradeValue(target, cfg);
               const chips = matchChips(tv);
               if (!chips) return;
               const okForPartner = chips.every((c) => c.pickAsset || !(c.pos === "QB" && !superOnly && teamRosters[t].filter((p) => p.pos === "QB").length >= 1));
               const evv = evaluateTrade(chips, [target], cfg);
-              if (okForPartner && evv.giveAdj >= evv.getAdj - 6 && ideas.length < 10) ideas.push({ t, give: chips, get: [target] });
+              // fairness: you shouldn't massively overpay; allow a slightly wider band so ideas surface.
+              if (okForPartner && evv.giveAdj >= evv.getAdj - 12 && evv.giveAdj <= evv.getAdj + 45 && ideas.length < 12) ideas.push({ t, give: chips, get: [target] });
             };
             if (findMode === "player" && findPlayerId != null) {
               const target = players[findPlayerId];
