@@ -92,6 +92,7 @@ export const api = {
   async adminUsers(search) { return call(`/api/admin/users${search ? `?search=${encodeURIComponent(search)}` : ''}`); },
   async adminSetDisabled(email, disabled) { return call('/api/admin/set-disabled', { method: 'POST', body: { email, disabled } }); },
   async adminRevokeComp(email) { return call('/api/admin/revoke-comp', { method: 'POST', body: { email } }); },
+  async adminRunJob(job) { return call('/api/admin/run-job', { method: 'POST', body: { job } }); },
   // ---- admin: invites ----
   async adminInvite(email, scope) { return call('/api/admin/invite', { method: 'POST', body: { email, scope } }); },
   async adminInvites() { return call('/api/admin/invites'); },

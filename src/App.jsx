@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.25g";
+const BUILD_TAG = "2026.06.25i";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1664,8 +1664,11 @@ function buildPlayers(cfg) {
       if (!VBD_POS.includes(p.pos)) return;
       const m = ageMult(p.pos, p.age);
       p.ageMult = m;
-      // Apply to VBD. Shift so even discounted players keep a sensible relative order within position.
-      p.vbd = Math.round(p.vbd * m * 10) / 10;
+      // Apply the age multiplier ONLY to value ABOVE replacement (positive VBD). Multiplying a NEGATIVE
+      // VBD by a fractional multiplier would move it toward zero — i.e. make an old, below-replacement
+      // player look BETTER than a younger one (the bug where Adrian Peterson at 0 pts outranked James
+      // Conner at 54). Below-replacement players get no age "help"; aging only discounts real value.
+      if (p.vbd > 0) p.vbd = Math.round(p.vbd * m * 10) / 10;
     });
   }
   [...POS, "K", "DST", ...IDP_POS].forEach((pos) => { const s = ps.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts); s.forEach((p, i) => (p.posRank = i + 1)); });
@@ -6103,6 +6106,18 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
     catch (e) { note(e.data?.error || e.message); } finally { setBusy(false); }
   };
   const cancelInvite = async (email) => { setBusy(true); try { await api.adminCancelInvite(email); await loadInvites(); note(`Invite canceled for ${email}`); } catch (e) {} finally { setBusy(false); } };
+  const [jobResult, setJobResult] = useState(null);
+  const runJob = async (job) => {
+    setBusy(true); setJobResult(null);
+    note(job === "refresh" ? "Running full refresh — this can take a minute…" : "Pulling Sleeper ADP…");
+    try {
+      const r = await api.adminRunJob(job);
+      setJobResult(r);
+      const w = r?.detail?.publishedAdp?.observationsWritten ?? r?.detail?.observationsWritten;
+      note(r.ok ? `Done. ${w != null ? w.toLocaleString() + " ADP rows written." : "Check the result below."}` : "Job error — see result below.");
+    } catch (e) { setJobResult({ ok: false, error: e.data?.error || e.message }); note("Job failed — see result below."); }
+    finally { setBusy(false); }
+  };
   const setFbStatus = async (id, status) => { try { await api.adminFeedbackStatus(id, status); await loadFeedback(); } catch (e) {} };
 
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "—";
@@ -6239,6 +6254,21 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
               <div className="disp" style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Site analytics</div>
               <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 10 }}>Real visitor traffic, sources, and conversions live in Cloudflare Web Analytics (free, privacy-friendly, already part of your Cloudflare account). Turn it on for fantasydraftcompass.com and view the dashboard there.</div>
               <a className="btn btn-mini" href="https://dash.cloudflare.com/?to=/:account/web-analytics" target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>Open Cloudflare Analytics ↗</a>
+            </div>
+            <div className="panel" style={{ padding: 16, gridColumn: "1 / -1" }}>
+              <div className="disp" style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Data jobs — ADP & projections</div>
+              <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 10 }}>Pull the latest Sleeper ADP and projections into the board. <b style={{ color: "var(--ink)" }}>Update Sleeper ADP</b> is the fast one — it fetches Sleeper's published ADP for every player and recomputes the board in seconds (run this if ADP looks wrong). <b style={{ color: "var(--ink)" }}>Full refresh</b> also re-crawls real drafts and can take a minute.</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button className="btn btn-gold" disabled={busy} onClick={() => runJob("adp")}><i className="ti ti-refresh" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />Update Sleeper ADP</button>
+                <button className="btn" disabled={busy} onClick={() => runJob("refresh")}>Full refresh (slower)</button>
+              </div>
+              {jobResult && (
+                <div className="panel" style={{ padding: 12, marginTop: 12, background: jobResult.ok ? "#0E1606" : "#1A0E0E", borderColor: jobResult.ok ? "var(--green)" : "var(--red)" }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: jobResult.ok ? "var(--green)" : "var(--red)", marginBottom: 6 }}>{jobResult.ok ? "Job completed" : "Job error"}</div>
+                  <pre style={{ fontSize: 10.5, whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, color: "var(--mut)", maxHeight: 220, overflow: "auto" }}>{JSON.stringify(jobResult.detail || jobResult.error, null, 2)}</pre>
+                </div>
+              )}
+              <div className="mut" style={{ fontSize: 11, marginTop: 8 }}>After it finishes, hard-refresh the app and reconnect your league to see the updated board.</div>
             </div>
           </div>
         )}
