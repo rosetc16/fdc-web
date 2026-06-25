@@ -4908,6 +4908,33 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
   const firstVisible = Math.max(0, Math.floor(scrollTop / ROW_H) - BUFFER);
   const visibleCount = Math.ceil(VIEW_H / ROW_H) + BUFFER * 2;
   const lastVisible = Math.min(list.length, firstVisible + visibleCount);
+  // Auto-scroll the list while dragging near its top/bottom edge, so you can drag a player far up or
+  // down in one motion instead of dropping, scrolling, and re-grabbing.
+  const scrollBoxRef = useRef(null);
+  const autoScrollRef = useRef(0); // current scroll speed (px/frame); 0 = idle
+  const rafRef = useRef(null);
+  const runAutoScroll = () => {
+    const el = scrollBoxRef.current;
+    if (el && autoScrollRef.current !== 0) {
+      el.scrollTop += autoScrollRef.current;
+      rafRef.current = requestAnimationFrame(runAutoScroll);
+    } else {
+      rafRef.current = null;
+    }
+  };
+  const handleDragAutoScroll = (e) => {
+    const el = scrollBoxRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const y = e.clientY;
+    const EDGE = 48; // px from each edge that triggers scrolling
+    let speed = 0;
+    if (y < rect.top + EDGE) speed = -Math.ceil((rect.top + EDGE - y) / 4);      // near top → scroll up
+    else if (y > rect.bottom - EDGE) speed = Math.ceil((y - (rect.bottom - EDGE)) / 4); // near bottom → down
+    autoScrollRef.current = Math.max(-18, Math.min(18, speed));
+    if (autoScrollRef.current !== 0 && rafRef.current == null) rafRef.current = requestAnimationFrame(runAutoScroll);
+  };
+  const stopAutoScroll = () => { autoScrollRef.current = 0; if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; } };
   const prefillTop = (n) => setList(byAdp.slice(0, n).map((p) => p.id));
   const fillRest = () => setList((l) => { const have = new Set(l); return [...l, ...byAdp.filter((p) => !have.has(p.id)).map((p) => p.id)]; });
   const saveList = () => { onSaveList(list); flashMsg("Rankings saved"); };
@@ -5013,7 +5040,10 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
               )}
             </div>
             {list.length > 0 && (
-              <div onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)} style={{ height: VIEW_H, overflowY: "auto", marginBottom: 12 }}>
+              <div ref={scrollBoxRef} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+                onDragOver={(e) => { e.preventDefault(); handleDragAutoScroll(e); }}
+                onDrop={stopAutoScroll}
+                style={{ height: VIEW_H, overflowY: "auto", marginBottom: 12 }}>
                 {/* total-height spacer keeps the scrollbar correct; we only render the visible window */}
                 <div style={{ height: list.length * ROW_H, position: "relative" }}>
                   {list.slice(firstVisible, lastVisible).map((id, idx) => { const i = firstVisible + idx; const p = byId[id]; if (!p) return null; const a = adj[p.name];
@@ -5025,8 +5055,8 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
                       onDragStart={(e) => { setDragFrom(i); e.dataTransfer.effectAllowed = "move"; }}
                       onDragEnter={(e) => { e.preventDefault(); setDragOver(i); }}
                       onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
-                      onDrop={(e) => { e.preventDefault(); reorder(dragFrom, i); setDragFrom(null); setDragOver(null); }}
-                      onDragEnd={() => { setDragFrom(null); setDragOver(null); }}
+                      onDrop={(e) => { e.preventDefault(); reorder(dragFrom, i); setDragFrom(null); setDragOver(null); stopAutoScroll(); }}
+                      onDragEnd={() => { setDragFrom(null); setDragOver(null); stopAutoScroll(); }}
                       style={{
                         position: "absolute", top: i * ROW_H, left: 0, right: 0, height: ROW_H,
                         display: "flex", alignItems: "center", gap: 8, padding: "0 6px", fontSize: 13,
