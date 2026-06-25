@@ -4899,6 +4899,15 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
   });
   // O(1) lookup of a player's position in the list (avoids O(n²) indexOf in the board view).
   const listIndex = useMemo(() => { const m = {}; list.forEach((id, i) => (m[id] = i)); return m; }, [list]);
+  // Virtualized scrolling: only render the rows visible in the scroll viewport (+ a buffer). This is
+  // what keeps a 200+ player list fast — without it the browser chokes rendering every row at once.
+  const ROW_H = 38;          // fixed row height (px)
+  const VIEW_H = 380;        // scroll viewport height (px)
+  const BUFFER = 6;          // extra rows above/below for smooth scroll
+  const [scrollTop, setScrollTop] = useState(0);
+  const firstVisible = Math.max(0, Math.floor(scrollTop / ROW_H) - BUFFER);
+  const visibleCount = Math.ceil(VIEW_H / ROW_H) + BUFFER * 2;
+  const lastVisible = Math.min(list.length, firstVisible + visibleCount);
   const prefillTop = (n) => setList(byAdp.slice(0, n).map((p) => p.id));
   const fillRest = () => setList((l) => { const have = new Set(l); return [...l, ...byAdp.filter((p) => !have.has(p.id)).map((p) => p.id)]; });
   const saveList = () => { onSaveList(list); flashMsg("Rankings saved"); };
@@ -4983,12 +4992,10 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
           <div>
             {list.length === 0 && (
               <div className="panel" style={{ padding: 12, marginBottom: 12, background: "var(--panel2)" }}>
-                <div className="mut" style={{ fontSize: 12.5, marginBottom: 8 }}>Start from consensus, work the board top-down so you never skip anyone, or import another set.</div>
+                <div className="mut" style={{ fontSize: 12.5, marginBottom: 8 }}>Start from the full consensus board and reorder to taste, or build it up yourself.</div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  <button className="btn btn-mini" onClick={() => prefillTop(24)}>Prefill top 24</button>
-                  <button className="btn btn-mini" onClick={() => prefillTop(50)}>Prefill top 50</button>
-                  <button className="btn btn-mini btn-gold" onClick={() => prefillTop(byAdp.length)}>Prefill entire draft</button>
-                  <button className="btn btn-mini" onClick={() => setMode("board")}>Work the board →</button>
+                  <button className="btn btn-mini btn-gold" onClick={() => prefillTop(byAdp.length)}>Start from consensus board</button>
+                  {allSets && allSets.filter((s) => s.id !== set.id && (s.list || []).length).length > 0 && <button className="btn btn-mini" onClick={() => setShowImport(true)}>Start from a saved set</button>}
                 </div>
               </div>
             )}
@@ -5006,36 +5013,40 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
               )}
             </div>
             {list.length > 0 && (
-              <div style={{ maxHeight: 360, overflowY: "auto", marginBottom: 12 }}>
-                {list.map((id, i) => { const p = byId[id]; if (!p) return null; const a = adj[p.name];
-                  const isDragging = dragFrom === i;
-                  const isOver = dragOver === i && dragFrom !== i;
-                  return (
-                  <div key={id}
-                    draggable
-                    onDragStart={(e) => { setDragFrom(i); e.dataTransfer.effectAllowed = "move"; }}
-                    onDragEnter={(e) => { e.preventDefault(); setDragOver(i); }}
-                    onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
-                    onDrop={(e) => { e.preventDefault(); reorder(dragFrom, i); setDragFrom(null); setDragOver(null); }}
-                    onDragEnd={() => { setDragFrom(null); setDragOver(null); }}
-                    style={{
-                      display: "flex", alignItems: "center", gap: 8, padding: "7px 6px", fontSize: 13,
-                      borderRadius: 7, marginBottom: 2, userSelect: "none",
-                      background: isDragging ? "rgba(214,170,75,0.14)" : isOver ? "rgba(214,170,75,0.06)" : "transparent",
-                      borderTop: isOver ? "2px solid var(--gold)" : "2px solid transparent",
-                      opacity: isDragging ? 0.5 : 1, cursor: "grab", transition: "background .12s",
-                    }}>
-                    <i className="ti ti-grip-vertical" style={{ fontSize: 15, color: "var(--mut)", cursor: "grab" }} aria-hidden="true" title="Drag to reorder" />
-                    <span className="num mut" style={{ width: 24 }}>{i + 1}</span>
-                    <Dot pos={p.pos} /><span style={{ flex: 1 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank}</span>{a && <span className="chip" style={{ marginLeft: 6, fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>adjusted</span>}</span>
-                    <button className="btn btn-mini" onClick={() => move(i, -1)} disabled={i === 0} title="Move up" style={{ padding: "2px 6px" }}><i className="ti ti-chevron-up" style={{ fontSize: 12 }} aria-hidden="true" /></button>
-                    <button className="btn btn-mini" onClick={() => move(i, 1)} disabled={i === list.length - 1} title="Move down" style={{ padding: "2px 6px" }}><i className="ti ti-chevron-down" style={{ fontSize: 12 }} aria-hidden="true" /></button>
-                    <button className="btn btn-mini" onClick={() => remove(id)} title="Remove" style={{ padding: "2px 6px" }}><i className="ti ti-x" style={{ fontSize: 12 }} aria-hidden="true" /></button>
-                  </div>
-                ); })}
+              <div onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)} style={{ height: VIEW_H, overflowY: "auto", marginBottom: 12 }}>
+                {/* total-height spacer keeps the scrollbar correct; we only render the visible window */}
+                <div style={{ height: list.length * ROW_H, position: "relative" }}>
+                  {list.slice(firstVisible, lastVisible).map((id, idx) => { const i = firstVisible + idx; const p = byId[id]; if (!p) return null; const a = adj[p.name];
+                    const isDragging = dragFrom === i;
+                    const isOver = dragOver === i && dragFrom !== i;
+                    return (
+                    <div key={id}
+                      draggable
+                      onDragStart={(e) => { setDragFrom(i); e.dataTransfer.effectAllowed = "move"; }}
+                      onDragEnter={(e) => { e.preventDefault(); setDragOver(i); }}
+                      onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
+                      onDrop={(e) => { e.preventDefault(); reorder(dragFrom, i); setDragFrom(null); setDragOver(null); }}
+                      onDragEnd={() => { setDragFrom(null); setDragOver(null); }}
+                      style={{
+                        position: "absolute", top: i * ROW_H, left: 0, right: 0, height: ROW_H,
+                        display: "flex", alignItems: "center", gap: 8, padding: "0 6px", fontSize: 13,
+                        borderRadius: 7, userSelect: "none", boxSizing: "border-box",
+                        background: isDragging ? "rgba(214,170,75,0.18)" : isOver ? "rgba(214,170,75,0.08)" : "transparent",
+                        borderTop: isOver ? "2px solid var(--gold)" : "2px solid transparent",
+                        opacity: isDragging ? 0.5 : 1, cursor: "grab",
+                      }}>
+                      <i className="ti ti-grip-vertical" style={{ fontSize: 15, color: "var(--mut)", cursor: "grab" }} aria-hidden="true" title="Drag to reorder" />
+                      <span className="num mut" style={{ width: 24 }}>{i + 1}</span>
+                      <Dot pos={p.pos} /><span style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank}</span>{a && <span className="chip" style={{ marginLeft: 6, fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>adjusted</span>}</span>
+                      <button className="btn btn-mini" onClick={() => move(i, -1)} disabled={i === 0} title="Move up" style={{ padding: "2px 6px" }}><i className="ti ti-chevron-up" style={{ fontSize: 12 }} aria-hidden="true" /></button>
+                      <button className="btn btn-mini" onClick={() => move(i, 1)} disabled={i === list.length - 1} title="Move down" style={{ padding: "2px 6px" }}><i className="ti ti-chevron-down" style={{ fontSize: 12 }} aria-hidden="true" /></button>
+                      <button className="btn btn-mini" onClick={() => remove(id)} title="Remove" style={{ padding: "2px 6px" }}><i className="ti ti-x" style={{ fontSize: 12 }} aria-hidden="true" /></button>
+                    </div>
+                  ); })}
+                </div>
               </div>
             )}
-            <div className="mut" style={{ fontSize: 11, marginBottom: 10, marginTop: -4 }}><i className="ti ti-info-circle" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Drag the <i className="ti ti-grip-vertical" style={{ fontSize: 11 }} aria-hidden="true" /> handle to reorder, or use the arrows.</div>
+            <div className="mut" style={{ fontSize: 11, marginBottom: 10, marginTop: -4 }}><i className="ti ti-info-circle" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Drag the <i className="ti ti-grip-vertical" style={{ fontSize: 11 }} aria-hidden="true" /> handle to reorder, or use the arrows. {list.length > 0 && <b style={{ color: "var(--ink)" }}>{list.length} ranked.</b>}</div>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <button className="btn btn-gold" onClick={saveList}>Save ranks</button>
               {list.length > 0 && <button className="btn btn-mini" onClick={fillRest} title="Append the rest of the board (by consensus) below what you've already ranked">Fill rest of board</button>}
