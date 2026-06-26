@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.25o";
+const BUILD_TAG = "2026.06.25p";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -6758,6 +6758,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const [search, setSearch] = useState("");
   const [posFilter, setPosFilter] = useState("ALL");
   const [sortState, setSortState] = useState({ key: "adp", dir: 1 });
+  const [manualSort, setManualSort] = useState(false); // true once the user clicks a column header
   const [showDrafted, setShowDrafted] = useState(false); // default: show best AVAILABLE; toggle to include drafted
   const [rookieOnly, setRookieOnly] = useState(false);
   const DEFAULT_COLS = { adp: true, consensus: false, edge: true, proj: true, floor: false, ceil: false, vbd: true, rank: true, vbdTier: true, adpTier: false, mockAdp: false, myRank: false, blendAdp: false, role: true, age: false, bye: true, avail: true, nextpick: false, passYd: true, passTD: true, rushYd: true, rushTD: true, rec: true, recYd: true, recTD: true, tgt: false };
@@ -7196,7 +7197,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   };
   // default sort direction per column (asc for ADP/rank/age/bye/tiers; desc for value/odds)
   const defaultDir = (key) => (["adp", "consensus", "rank", "vbdTier", "adpTier", "age", "bye", "name"].includes(key) ? 1 : -1);
-  const setSort = (key) => setSortState((s) => (s.key === key ? { key, dir: -s.dir } : { key, dir: defaultDir(key) }));
+  const setSort = (key) => { setManualSort(true); setSortState((s) => (s.key === key ? { key, dir: -s.dir } : { key, dir: defaultDir(key) })); };
 
   const myCurrent = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => teamAt(x.o) === userIdx).map((x) => x.p);
 
@@ -7276,22 +7277,48 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     if (search) { const q = search.toLowerCase(); list = list.filter((p) => p.name.toLowerCase().includes(q)); }
     if (!showDrafted) list = list.filter((p) => !draftedSet.has(p.id));
     const { key, dir } = sortState;
-    // "Your build" lens = sorting by VBD. When you've committed to a contention window (round 4+),
-    // tilt the value by how well each player fits your window (younger for a rebuild, proven for
-    // win-now). Before you've picked a lane, this is a no-op, so early rounds rank on pure value.
-    const buildLens = key === "vbd";
-    list.sort((a, b) => {
-      if (buildLens && myWindow.decided) {
-        const va = (a.vbd ?? -50) * myWindow.tilt(a.pos, a.age, a.rookie);
-        const vb = (b.vbd ?? -50) * myWindow.tilt(b.pos, b.age, b.rookie);
-        return (va - vb) * dir;
+
+    // If the user clicked a column header, honor that exact sort. Otherwise the STRATEGY dropdown drives
+    // the board order — a single control that reshapes the board toward the chosen approach. "My build"
+    // applies your contention-window + need tilt; the others bias value/youth/upside/position; balanced
+    // and ADP follow the market.
+    if (manualSort) {
+      list.sort((a, b) => { const va = colVal(a, key), vb = colVal(b, key); if (typeof va === "string") return String(va).localeCompare(String(vb)) * dir; return (va - vb) * dir; });
+      return list.slice(0, 130);
+    }
+
+    // strategy-driven board score (higher = ranks earlier). We anchor on market ADP and adjust.
+    const adpScore = (p) => -(p.adp ?? 999); // baseline: market order
+    const scoreFor = (p) => {
+      const vbd = p.vbd ?? -50;
+      switch (strategy) {
+        case "adp": return adpScore(p);
+        case "value": return vbd;
+        case "build": {
+          // contention window + positional need tilt on value (your roster-aware board)
+          const t = myWindow.decided || myWindow.have ? myWindow.tilt(p.pos, p.age, p.rookie) : 1;
+          return vbd * t;
+        }
+        case "youth": {
+          const age = p.age || 27;
+          return vbd + (28 - age) * 6; // younger players rise
+        }
+        case "upside": {
+          const up = (p.ceil != null && p.pts != null) ? (p.ceil - p.pts) : 0;
+          return vbd + up * 0.6; // reward boom potential
+        }
+        case "wr": return vbd + (p.pos === "WR" ? 35 : 0);
+        case "rb": return vbd + (p.pos === "RB" ? 35 : 0);
+        case "balanced":
+        default: {
+          // balanced = market order, but nudged by value so clear values rise within ADP range
+          return adpScore(p) + Math.max(0, vbd) * 0.05;
+        }
       }
-      const va = colVal(a, key), vb = colVal(b, key);
-      if (typeof va === "string") return va.localeCompare(vb) * dir;
-      return (va - vb) * dir;
-    });
+    };
+    list.sort((a, b) => scoreFor(b) - scoreFor(a));
     return list.slice(0, 130);
-  }, [players, posFilter, search, showDrafted, sortState, draftedSet, sims, rookieOnly, myWindow]);
+  }, [players, posFilter, search, showDrafted, sortState, manualSort, strategy, draftedSet, sims, rookieOnly, myWindow]);
 
   // Column registry. group: "draft" (board intelligence) or "stat" (projection inputs).
   // section groups columns under labeled dividers in the table + columns menu.
@@ -7592,15 +7619,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
         <div className="chip" title="How often the engine's #1 projection was the exact pick, and how often it nailed the position.">
           Engine: <b className="num">{hits}</b> exact{preds.length > 0 && <span className="mut num"> ({Math.round((hits / preds.length) * 100)}%)</span>} · <b className="num">{posHits}</b> pos{preds.length > 0 && <span className="mut num"> ({Math.round((posHits / preds.length) * 100)}%)</span>}
         </div>
-        <select className="gs" value={strategy} onChange={(e) => setStrategy(e.target.value)} title="Strategy lens — changes your advice and your projected picks, never how opponents are predicted">
-          <option value="balanced">Strategy: Balanced</option>
-          <option value="value">Strategy: Max value</option>
-          <option value="upside">Strategy: Upside / breakout</option>
-          <option value="youth">Strategy: Youth (age)</option>
-          <option value="wr">Strategy: WR-heavy</option>
-          <option value="rb">Strategy: RB-heavy</option>
-          <option value="adp">Strategy: Strict ADP</option>
-        </select>
         <div style={{ flex: 1 }} />
         {!done && <>
           <button className="btn" onClick={() => setPaused((p) => !p)}>{paused ? "▶ Resume" : "❚❚ Pause"}</button>
@@ -7805,13 +7823,21 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 <button key={p} className="btn btn-mini" style={{ borderColor: posFilter === p ? "var(--gold)" : "var(--line)" }} onClick={() => setPosFilter(p)}>{p}</button>
               ))}
               <button className="btn btn-mini" style={{ borderColor: rookieOnly ? "var(--gold)" : "var(--line)", color: rookieOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => setRookieOnly((r) => !r)}>Rookies</button>
-              <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }} title="Market = order the league is likely to draft in (ADP). Your build = your demographic edge — tilts toward players that fit your contention window (young/rebuild vs win-now), once you've committed to a lane around round 4-6.">
-                <span className="mut" style={{ fontSize: 10.5, alignSelf: "center", padding: "0 7px" }}>View</span>
-                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", minWidth: 64, textAlign: "center", background: sortState.key === "adp" ? "var(--gold)" : "transparent", color: sortState.key === "adp" ? "#1A1505" : "var(--ink)", fontWeight: sortState.key === "adp" ? 700 : 400 }} onClick={() => setSortState({ key: "adp", dir: 1 })} title="How the league sees it — ADP order">Market</button>
-                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", minWidth: 76, textAlign: "center", background: sortState.key === "vbd" ? "var(--gold)" : "transparent", color: sortState.key === "vbd" ? "#1A1505" : "var(--ink)", fontWeight: sortState.key === "vbd" ? 700 : 400 }} onClick={() => setSortState({ key: "vbd", dir: -1 })} title="Your demographic edge — value tilted to your window">Your build</button>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }} title="Strategy lens — reshapes the board (and your advice) toward an approach. Balanced/ADP follow the market; the others tilt the board toward value, youth, upside, or a position.">
+                <span className="mut" style={{ fontSize: 10.5 }}>Strategy</span>
+                <select className="gs" style={{ fontSize: 12, padding: "3px 6px" }} value={strategy} onChange={(e) => { setStrategy(e.target.value); setManualSort(false); }}>
+                  <option value="balanced">Balanced (market)</option>
+                  <option value="value">Max value (VBD)</option>
+                  <option value="build">My build (need + window)</option>
+                  <option value="upside">Upside / breakout</option>
+                  <option value="youth">Youth (age)</option>
+                  <option value="wr">WR-heavy</option>
+                  <option value="rb">RB-heavy</option>
+                  <option value="adp">Strict ADP</option>
+                </select>
               </div>
-              {sortState.key === "vbd" && (
-                <span className="mut" style={{ fontSize: 10.5, alignSelf: "center", display: "inline-flex", alignItems: "center", gap: 4 }} title={myWindow.decided ? `Based on your roster's age lean (avg ~${myWindow.avgAge?.toFixed(1)}). Tilt strengthens as you draft.` : "You haven't committed to a contention window yet — ranking on pure value until ~round 4."}>
+              {strategy === "build" && (
+                <span className="mut" style={{ fontSize: 10.5, alignSelf: "center", display: "inline-flex", alignItems: "center", gap: 4 }} title={myWindow.decided ? `Based on your roster's age lean (avg ~${myWindow.avgAge?.toFixed(1)}) and positional needs. Strengthens as you draft.` : "You haven't committed to a contention window yet — using needs until ~round 4."}>
                   <i className={`ti ${myWindow.lane === "rebuild" ? "ti-seedling" : myWindow.lane === "winnow" ? "ti-flame" : myWindow.lane === "balanced" ? "ti-scale" : "ti-loader"}`} style={{ fontSize: 12, color: myWindow.decided ? "var(--gold)" : "var(--mut)" }} aria-hidden="true" />
                   {myWindow.label}
                 </span>
