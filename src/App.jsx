@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.25p";
+const BUILD_TAG = "2026.06.25s";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1867,35 +1867,45 @@ function buildPlayers(cfg) {
     });
   });
   // Role inference from projected usage (the stat line carries projected volume).
+  // Position rank by projected points (1 = the position's top player). Role is anchored on this rank so
+  // it works regardless of the data source's stat magnitudes (absolute target counts vary between our
+  // built-in set and live Sleeper projections — relying on them alone mislabeled real TEs as "blocking").
+  const posRankByPts = {};
+  ["QB", "RB", "WR", "TE"].forEach((pos) => {
+    const ranked = ps.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts);
+    ranked.forEach((p, i) => { posRankByPts[p.id] = i + 1; });
+  });
   ps.forEach((p) => {
     p.role = null;
     const s = p.stats || {};
+    const r = posRankByPts[p.id] || 99; // overall rank at the position (by projected points)
     if (p.pos === "RB") {
-      const att = s.rushAtt || 0, tgt = s.tgt || 0;
-      const touches = att + (s.rec || 0);
-      if (touches >= 250) p.role = tgt >= 55 ? "Bellcow (3-down)" : "Bellcow rusher";
-      else if (touches >= 150) p.role = tgt >= 50 ? "Lead, pass-catching" : "Lead, committee";
-      else if (tgt >= 45 && att < 120) p.role = "Pass-catching back";
-      else if (touches >= 80) p.role = "Committee / rotational";
+      const att = s.rushAtt || 0, tgt = s.tgt || 0, rec = s.rec || 0;
+      const touches = att + rec;
+      const passCatcher = (tgt >= 50 || rec >= 40) || (touches > 0 && rec / Math.max(1, touches) >= 0.32);
+      if (r <= 18) p.role = passCatcher ? "Bellcow (3-down)" : "Bellcow rusher";       // RB1/RB2 tier
+      else if (r <= 32) p.role = passCatcher ? "Lead, pass-catching" : "Lead back";     // low-end starter
+      else if (passCatcher && att < 120) p.role = "Pass-catching back";
+      else if (r <= 50) p.role = "Committee / rotational";
       else p.role = "Backup / handcuff";
     } else if (p.pos === "WR") {
       const tgt = s.tgt || 0;
-      if (tgt >= 140) p.role = "Alpha (high target share)";
-      else if (tgt >= 105) p.role = "Clear WR1/WR2";
-      else if (tgt >= 75) p.role = "Secondary target";
-      else if (tgt >= 45) p.role = "Rotational / depth";
+      if (r <= 8) p.role = "Alpha (high target share)";
+      else if (r <= 24) p.role = "Clear WR1/WR2";
+      else if (r <= 40) p.role = "Secondary target";
+      else if (r <= 60 || tgt >= 45) p.role = "Rotational / depth";
       else p.role = "Deep depth";
     } else if (p.pos === "TE") {
-      const tgt = s.tgt || 0;
-      if (tgt >= 100) p.role = "Featured (move TE)";
-      else if (tgt >= 65) p.role = "Every-down TE";
-      else if (tgt >= 40) p.role = "Secondary option";
+      // anchor on TE rank: the top ~5 are featured, top ~14 are every-down starters, etc.
+      if (r <= 5) p.role = "Featured (move TE)";
+      else if (r <= 14) p.role = "Every-down TE";
+      else if (r <= 26) p.role = "Secondary option";
       else p.role = "Blocking / depth";
     } else if (p.pos === "QB") {
-      const py = s.passYd || 0, ry = s.rushYd || 0;
-      if (ry >= 450) p.role = "Dual-threat starter";
-      else if (py >= 4000) p.role = "Volume passer";
-      else if (py >= 3000) p.role = "Starter";
+      const ry = s.rushYd || 0;
+      if (r <= 12 && ry >= 350) p.role = "Dual-threat starter";
+      else if (r <= 12) p.role = "Starter";
+      else if (r <= 24) p.role = "Low-end / streamer";
       else p.role = "Backup / committee";
     }
   });
@@ -1968,20 +1978,36 @@ function marginalVbd(c, counts, sf) {
   const eligible = c.pos !== "QB" || superOnly > 0 || sf;
   return surplus < G && eligible ? c.vbd : c.vbd * 0.25;
 }
-function userScore(c, counts, dem, strategy, sf, pickNum) {
+function userScore(c, counts, dem, strategy, sf, pickNum, build) {
   if (strategy === "adp") return -c.adp;
   const mv = marginalVbd(c, counts, sf);
   if (strategy === "value") return mv;
+  if (strategy === "build") {
+    // "My build" — roster-aware: weight your contention window (youth in a rebuild) and TRUE positional
+    // need, and penalize positions you've already filled. This is what makes it NOT recommend a 3rd TE
+    // when you're a young rebuild with two already. BUILD_LANE is set from myWindow before advice runs.
+    const lane = BUILD_LANE;
+    const need = dem[c.pos] - counts[c.pos]; // >0 = still need starters; <0 = over-stacked
+    let s = mv;
+    if (need > 0) s += 16 * Math.min(need, 2);
+    else s += need * 22; // over-stacked positions get heavily penalized
+    if (lane === "rebuild") { s += Math.max(0, 28 - (c.age || 27)) * 7; if (c.rookie) s += 25; }
+    else if (lane === "winnow") { s += Math.max(0, (c.age || 27) - 24) * 3; if (c.rookie) s -= 15; }
+    s -= reachPenalty(c, pickNum) * 0.4;
+    return s;
+  }
   if (strategy === "youth") {
     // prize young players, still gated by real value so it can't draft scrubs
     const ageScore = Math.max(0, 30 - c.age) * 6;
     return mv + ageScore + 5 * Math.max(0, dem[c.pos] - counts[c.pos]) - reachPenalty(c, pickNum) * 0.5;
   }
   if (strategy === "upside") {
-    // ceiling proxy: young + ascending + positions with breakout variance
-    const youngBonus = Math.max(0, 27 - c.age) * 5;
+    // BREAKOUT = ascending young player, not an aging vet. Penalize age so old high-floor vets don't win.
+    const youngBonus = Math.max(0, 28 - c.age) * 8;
+    const agePenalty = Math.max(0, (c.age || 27) - 27) * 12;
+    const rookieBonus = c.rookie ? 30 : 0;
     const posVar = c.pos === "WR" || c.pos === "RB" ? 14 : c.pos === "TE" ? 6 : 4;
-    return mv + youngBonus + posVar + 4 * Math.max(0, dem[c.pos] - counts[c.pos]) - reachPenalty(c, pickNum) * 0.5;
+    return mv * 0.7 + youngBonus + rookieBonus + posVar + 4 * Math.max(0, dem[c.pos] - counts[c.pos]) - agePenalty - reachPenalty(c, pickNum) * 0.5;
   }
   // BALANCED (and wr/rb-heavy tilts): value + need, anchored to the market so it won't
   // pass an obvious consensus pick. The reach penalty makes drafting far ahead of ADP
@@ -2011,6 +2037,8 @@ function candidatesOf(sortedAdp, drafted, limit) { const out = []; for (const p 
 // percentages shouldn't flicker between renders when nothing has changed. We reseed from the draft
 // state (pick count) at the start of each sim run, so results only change when picks actually change.
 let _rngState = 123456789;
+let BUILD_LANE = "balanced"; // set from myWindow before advice/sims so "My build" userScore can read it
+function setBuildLane(l) { BUILD_LANE = l || "balanced"; }
 function seedRng(seed) { _rngState = (seed >>> 0) || 1; }
 function rng() { _rngState |= 0; _rngState = (_rngState + 0x6D2B79F5) | 0; let t = Math.imul(_rngState ^ (_rngState >>> 15), 1 | _rngState); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
 function sample(cands, ws) { const sum = ws.reduce((a, b) => a + b, 0); let r = rng() * sum; for (let i = 0; i < cands.length; i++) { r -= ws[i]; if (r <= 0) return i; } return cands.length - 1; }
@@ -2433,6 +2461,9 @@ const css = `
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px}
 .hairline{border-bottom:1px solid var(--line)} .mut{color:var(--mut)} .gold{color:var(--gold)}
 .btn{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer;font-family:'Barlow';font-size:13px;transition:border-color .15s,background .15s,transform .1s,box-shadow .15s}
+.btn:hover,.btn-mini:hover{border-color:var(--gold);background:#211b0e}
+select.gs{cursor:pointer}
+select.gs:hover{border-color:var(--gold)}
 .btn:hover{border-color:var(--gold);background:#15140d;transform:translateY(-1px);box-shadow:0 2px 10px #0006}
 .btn:active{transform:translateY(0)}
 .btn:focus-visible{outline:2px solid var(--gold);outline-offset:1px}
@@ -5642,7 +5673,16 @@ function ConnectBox({ connect, onConnect, onClear }) {
   // When Sleeper is the only platform, skip the platform picker entirely and go straight to the
   // username step — one fewer click on the path everyone takes.
   const [sel, setSel] = useState(PLATFORMS.length === 1 ? PLATFORMS[0] : null);
-  const [val, setVal] = useState("");
+  // Remember previously-used Sleeper usernames so we can autofill the last one and offer a dropdown.
+  const remembered = (() => { try { const r = JSON.parse(localStorage.getItem("fdc-sleeper-users") || "[]"); return Array.isArray(r) ? r : []; } catch { return []; } })();
+  const [val, setVal] = useState(remembered[0] || "");
+  const rememberUser = (name) => {
+    try {
+      const n = String(name || "").trim(); if (!n) return;
+      const next = [n, ...remembered.filter((x) => x.toLowerCase() !== n.toLowerCase())].slice(0, 8);
+      localStorage.setItem("fdc-sleeper-users", JSON.stringify(next));
+    } catch {}
+  };
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [sleeperLeagues, setSleeperLeagues] = useState(null); // null=not fetched, []=none, [...]=list
@@ -5675,6 +5715,7 @@ function ConnectBox({ connect, onConnect, onClear }) {
     setError(null); setBusy(true);
     try {
       const d = await api.sleeperDraft(lg.league_id, val.trim());
+      rememberUser(val.trim());
       onConnect({
         platform: "sleeper", credential: val.trim(), username: val.trim(),
         leagueId: lg.league_id, leagueName: lg.name,
@@ -5739,9 +5780,18 @@ function ConnectBox({ connect, onConnect, onClear }) {
                     <div>
                       <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>Enter your Sleeper username to pull your leagues</div>
                       <div style={{ display: "flex", gap: 8 }}>
-                        <input className="gs" autoFocus style={{ flex: 1 }} placeholder="Sleeper username" value={val} onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && val.trim()) fetchSleeperLeagues(); }} />
+                        <input className="gs" autoFocus style={{ flex: 1 }} placeholder="Sleeper username" list="fdc-sleeper-users-list" value={val} onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && val.trim()) fetchSleeperLeagues(); }} />
+                        <datalist id="fdc-sleeper-users-list">{remembered.map((u) => <option key={u} value={u} />)}</datalist>
                         <button className="btn btn-gold" onClick={fetchSleeperLeagues} disabled={busy || !val.trim()}>{busy ? "Finding…" : "Find my leagues"}</button>
                       </div>
+                      {remembered.length > 0 && (
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 7, alignItems: "center" }}>
+                          <span className="mut" style={{ fontSize: 10.5 }}>Recent:</span>
+                          {remembered.slice(0, 5).map((u) => (
+                            <button key={u} className="btn btn-mini" style={{ borderColor: val === u ? "var(--gold)" : "var(--line)" }} onClick={() => setVal(u)}>{u}</button>
+                          ))}
+                        </div>
+                      )}
                       <div className="mut" style={{ fontSize: 11, marginTop: 6 }}>It's the @username on your Sleeper profile — not your email.</div>
                     </div>
                   ) : (
@@ -7269,6 +7319,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     };
     return { lane, label, confidence, picksIn: aged.length, avgAge, decided, tilt, have, req };
   }, [myCurrent, cfg.type, cfg.sf, userIdx]);
+  // Feed the detected contention lane to the advice engine's "My build" scorer (module global read by
+  // userScore). Set synchronously during render so the next advice/path computation uses the right lane.
+  setBuildLane(myWindow && myWindow.decided ? myWindow.lane : "balanced");
 
   const rows = useMemo(() => {
     let list = players.slice();
@@ -7289,26 +7342,39 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
 
     // strategy-driven board score (higher = ranks earlier). We anchor on market ADP and adjust.
     const adpScore = (p) => -(p.adp ?? 999); // baseline: market order
+    const isYoungPos = (p) => { // age below the position's typical prime → ascending
+      const prime = p.pos === "RB" ? 25 : p.pos === "WR" ? 26 : p.pos === "TE" ? 27 : 29;
+      return (p.age || prime) < prime;
+    };
     const scoreFor = (p) => {
       const vbd = p.vbd ?? -50;
+      const pts = p.pts || 0;
+      const ceilGap = (p.ceil != null && pts) ? Math.max(0, p.ceil - pts) : 0; // room above projection
+      const age = p.age || 27;
       switch (strategy) {
         case "adp": return adpScore(p);
         case "value": return vbd;
         case "build": {
-          // contention window + positional need tilt on value (your roster-aware board)
-          const t = myWindow.decided || myWindow.have ? myWindow.tilt(p.pos, p.age, p.rookie) : 1;
+          const t = myWindow.tilt ? myWindow.tilt(p.pos, p.age, p.rookie) : 1;
           return vbd * t;
         }
         case "youth": {
-          const age = p.age || 27;
-          return vbd + (28 - age) * 6; // younger players rise
+          // young AND productive — reward youth hard but keep it tied to real value so it's not just kids.
+          const youthBonus = Math.max(0, (29 - age)) * 7;
+          const rookieBonus = p.rookie ? 30 : 0;
+          return vbd + youthBonus + rookieBonus;
         }
         case "upside": {
-          const up = (p.ceil != null && p.pts != null) ? (p.ceil - p.pts) : 0;
-          return vbd + up * 0.6; // reward boom potential
+          // BREAKOUT = ascending player with room to grow, NOT an aging vet with a high floor. Heavily
+          // reward youth + ceiling room + rookies; penalize older players even if their projection is high.
+          const youthFactor = Math.max(0, (28 - age)); // 0 for 28+, grows for the young
+          const agePenalty = Math.max(0, age - 27) * 14; // push aging vets DOWN
+          const rookieBonus = p.rookie ? 45 : 0;
+          const ascend = isYoungPos(p) ? 25 : 0;
+          return vbd * 0.6 + ceilGap * 1.1 + youthFactor * 9 + rookieBonus + ascend - agePenalty;
         }
-        case "wr": return vbd + (p.pos === "WR" ? 35 : 0);
-        case "rb": return vbd + (p.pos === "RB" ? 35 : 0);
+        case "wr": return vbd + (p.pos === "WR" ? 45 : -15);
+        case "rb": return vbd + (p.pos === "RB" ? 45 : -15);
         case "balanced":
         default: {
           // balanced = market order, but nudged by value so clear values rise within ADP range
@@ -7816,16 +7882,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
         <div className="cols" style={{ display: "flex", gap: 14, padding: 14, alignItems: "flex-start" }}>
           <div className="panel" style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", gap: 8, padding: 10, flexWrap: "wrap", alignItems: "center", position: "relative" }} className="hairline">
-              <input className="gs" style={{ width: 200 }} placeholder="Type a name — Enter drafts top hit"
+              <input className="gs" style={{ width: 200 }} placeholder="Search for a player"
                 value={search} onChange={(e) => setSearch(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") { const hit = rows.find((p) => !draftedSet.has(p.id)); if (hit) draftPlayer(hit.id); } }} />
               {["ALL", ...POS].map((p) => (
                 <button key={p} className="btn btn-mini" style={{ borderColor: posFilter === p ? "var(--gold)" : "var(--line)" }} onClick={() => setPosFilter(p)}>{p}</button>
               ))}
               <button className="btn btn-mini" style={{ borderColor: rookieOnly ? "var(--gold)" : "var(--line)", color: rookieOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => setRookieOnly((r) => !r)}>Rookies</button>
-              <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }} title="Strategy lens — reshapes the board (and your advice) toward an approach. Balanced/ADP follow the market; the others tilt the board toward value, youth, upside, or a position.">
-                <span className="mut" style={{ fontSize: 10.5 }}>Strategy</span>
-                <select className="gs" style={{ fontSize: 12, padding: "3px 6px" }} value={strategy} onChange={(e) => { setStrategy(e.target.value); setManualSort(false); }}>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--gold)", borderRadius: 8, padding: "3px 8px 3px 10px", background: "#1A150A" }} title="Strategy lens — reshapes the board AND your advice toward an approach. Balanced/ADP follow the market; the others tilt toward value, upside, youth, your build, or a position.">
+                <i className="ti ti-adjustments" style={{ fontSize: 13, color: "var(--gold)" }} aria-hidden="true" />
+                <span className="gold" style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".03em" }}>STRATEGY</span>
+                <select className="gs" style={{ fontSize: 12.5, padding: "4px 6px", border: "none", background: "transparent", fontWeight: 600 }} value={strategy} onChange={(e) => { setStrategy(e.target.value); setManualSort(false); }}>
                   <option value="balanced">Balanced (market)</option>
                   <option value="value">Max value (VBD)</option>
                   <option value="build">My build (need + window)</option>
