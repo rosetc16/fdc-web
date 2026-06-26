@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.25s";
+const BUILD_TAG = "2026.06.25u";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1293,6 +1293,7 @@ export function applyLivePack(pack) {
       inj: p.inj || null,
       floor: p.floor != null ? p.floor : null,
       ceil: p.ceil != null ? p.ceil : null,
+      sid: p.id != null ? String(p.id) : null, // Sleeper player_id → used to fetch the player's photo
     };
   }
   if (raw.length < 50) return false; // sanity: don't swap in a too-small pool
@@ -1629,6 +1630,7 @@ function buildPlayers(cfg) {
       id: i, name: r[0], pos: r[1], team: r[2], age: r[3], bye: r[4], adp0: r[5], stats, pts,
       floor: Math.round(pts * floorR), ceil: Math.round(pts * ceilR),
       consensus0: meta.consensus != null ? meta.consensus : r[5], rookie: !!meta.rookie, inj: meta.inj || null,
+      sid: meta.sid || null,
     };
   });
   // In Superflex/2QB, QBs are far more valuable than their 1QB-anchored public ADP implies —
@@ -2328,6 +2330,9 @@ function makeOutlook(p, sims, drafted) {
   const surv = !drafted && sims && sims.pct[0] && sims.pct[0][p.id] != null ? sims.pct[0][p.id] : null;
   const iv = injuryView(p);
 
+  // 0) HEADER with the player's Sleeper photo (if we have his Sleeper id), name, team & position.
+  out.push({ kind: "photo", sid: p.sid || null, name: p.name, team: p.team, pos: p.pos, posRank: p.posRank });
+
   // 1) THE TAKE — one short verdict line your eye lands on first.
   let take, takeTone = "neutral";
   if (gap > 8 || edge > 5) { take = "Value here — you can likely wait and still get him."; takeTone = "good"; }
@@ -2378,6 +2383,26 @@ function OutlookCard({ content }) {
     <>
       {content.map((l, i) => {
         if (typeof l === "string") return <div key={i} style={{ fontSize: 12, marginBottom: i < content.length - 1 ? 6 : 0 }}>{l}</div>;
+        if (l.kind === "photo") {
+          return (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, paddingBottom: 10, borderBottom: "1px solid var(--line)" }}>
+              {l.sid ? (
+                <img src={`https://sleepercdn.com/content/nfl/players/${l.sid}.jpg`} alt=""
+                  width={48} height={48}
+                  style={{ width: 48, height: 48, borderRadius: 8, objectFit: "cover", objectPosition: "top center", background: "var(--panel2)", border: "1px solid var(--line)", flexShrink: 0 }}
+                  onError={(e) => { e.currentTarget.style.display = "none"; }} />
+              ) : (
+                <span style={{ width: 48, height: 48, borderRadius: 8, background: "var(--panel2)", border: "1px solid var(--line)", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  <Dot pos={l.pos} />
+                </span>
+              )}
+              <div style={{ minWidth: 0 }}>
+                <div className="disp" style={{ fontSize: 15, fontWeight: 700, lineHeight: 1.15 }}>{l.name}</div>
+                <div className="mut" style={{ fontSize: 11.5 }}><Dot pos={l.pos} />{l.pos}{l.posRank ? l.posRank : ""}{l.team ? ` · ${l.team}` : ""}</div>
+              </div>
+            </div>
+          );
+        }
         if (l.kind === "take") {
           const c = toneColor[l.tone] || "var(--ink)";
           return (
@@ -6840,6 +6865,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const [inRoomRanks, setInRoomRanks] = useState(null); // when set, an in-draft ranking editor (array of ids)
   const [needMode, setNeedMode] = useState("strength"); // strength | filled
   const [customPick, setCustomPick] = useState("");
+  // The pick (overall number) the hub "Avail" column reports survival for. Defaults to your NEXT pick;
+  // a dropdown lets you choose any remaining pick (e.g. one you traded for). null = your next pick.
+  const [targetPick, setTargetPick] = useState(null);
   const [availSort, setAvailSort] = useState("adp"); // "adp" | "vbd" — Availability tab sort
   // Pick lens: how ranked lists are ordered on the pick-decision views (Hub + Availability).
   //  "market"  = how the LEAGUE sees it — ADP order (what others will draft). Best for predicting.
@@ -6957,6 +6985,33 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     if (!n || n <= picks.length || done) return null;
     return survivalAtPick(players, sortedAdp, picks, n, cfg, 800);
   }, [customPick, players, sortedAdp, picks, cfg, done]);
+
+  // Remaining picks for the hub "Avail @" dropdown, flagged with whether YOU own them. Capped to keep
+  // the menu manageable (your picks + a window of upcoming picks).
+  const remainingPicks = useMemo(() => {
+    const TOTAL = totalOf(cfg);
+    const out = [];
+    for (let o = picks.length; o < TOTAL; o++) {
+      const mine = teamAt(o) === userIdx;
+      if (mine || out.length < 60) out.push({ o, overall: o + 1, mine, label: pickLabel(o) });
+    }
+    return out;
+  }, [picks.length, cfg, userIdx, liveSlots]);
+  // The user's NEXT pick overall (default target).
+  const myNextOverall = useMemo(() => { const r = remainingPicks.find((p) => p.mine); return r ? r.o : null; }, [remainingPicks]);
+  // Resolve the effective target overall pick number (1-based) the Avail column reports on.
+  const targetOverall = targetPick != null ? targetPick : (myNextOverall != null ? myNextOverall + 1 : null);
+  // Survival % map at the target pick. Reuse the main sims when the target is one of your next 3 picks
+  // (fast, already computed); otherwise run a focused sim to that exact pick.
+  const targetSurv = useMemo(() => {
+    if (!targetOverall || done) return null;
+    if (sims && sims.nexts) {
+      const idx = sims.nexts.indexOf(targetOverall - 1);
+      if (idx >= 0 && sims.pct[idx]) return sims.pct[idx];
+    }
+    if (targetOverall <= picks.length) return null;
+    return survivalAtPick(players, sortedAdp, picks, targetOverall, cfg, 600);
+  }, [targetOverall, sims, players, sortedAdp, picks, cfg, done]);
 
   const advice = useMemo(() => {
     if (!sims || done) return null;
@@ -7238,7 +7293,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
       case "age": return p.age || 99;
       case "role": return p.posDepth != null ? p.posDepth : 99; // sort by team depth (RB1 before RB2)
       case "bye": return p.bye || 99;
-      case "avail": return sims ? (sims.pct[0][p.id] ?? -1) : -1;
+      case "avail": return targetSurv ? (targetSurv[p.id] ?? -1) : -1;
       case "nextpick": return sims && sims.pct[1] ? (sims.pct[1][p.id] ?? -1) : -1;
       case "passYd": case "passTD": case "rushYd": case "rushTD": case "rec": case "recYd": case "recTD": case "tgt":
         return p.stats?.[key] || 0;
@@ -7410,7 +7465,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     { key: "age", label: "Age", group: "draft", section: "demo", num: true, sortable: true },
     { key: "bye", label: "Bye", group: "draft", section: "demo", num: true, sortable: true },
     // — Availability —
-    { key: "avail", label: "Avail @ next", group: "draft", section: "avail", num: true, sortable: true, tip: "Chance he survives to your next pick." },
+    { key: "avail", label: targetPick != null ? `Avail @ ${pickLabel(targetOverall - 1)}` : "Avail @ next", group: "draft", section: "avail", num: true, sortable: true, tip: "Chance this player survives to the selected pick (the dropdown above the board). Defaults to your next pick; pick any slot to plan ahead or check a pick you traded for." },
     { key: "nextpick", label: "@ pick after", group: "draft", section: "avail", num: true, sortable: true, tip: "Chance he survives to the pick after next." },
     // — Projected stats —
     { key: "passYd", label: "Pass yd", group: "stat", section: "stat", num: true, sortable: true },
@@ -7463,7 +7518,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   activeCols.forEach((c) => { if (c.section !== _prevSec) { sectionStart[c.key] = c.section; _prevSec = c.section; } });
   const arrow = (k) => (sortState.key === k ? (sortState.dir < 0 ? " ▾" : " ▴") : "");
   const cellFor = (p, key, gone) => {
-    const av = sims ? sims.pct[0][p.id] : null;
+    const av = targetSurv ? targetSurv[p.id] : null;
     const av2 = sims && sims.pct[1] ? sims.pct[1][p.id] : null;
     const _er = myRanks.map[p.id];
     const edge = (_er && _er.exact) ? Math.round(p.adp - _er.rank) : null;
@@ -7760,7 +7815,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
       )}
 
       <div className="hairline tabbar" style={{ display: "flex", padding: "0 10px", overflowX: "auto", background: "var(--bg)" }}>
-        {[["hub","Hub"],["board","Draft board"],["teams","Teams"],["avail","Availability"],["adp","ADP"],["depth","Depth charts"],["trade","Trade"],["summary","Summary"],["settings","Settings"]].map(([k, label]) => (
+        {[["hub","Hub"],["board","Draft board"],["teams","Teams"],["depth","Depth charts"],["trade","Trade"],["summary","Summary"],["settings","Settings"]].map(([k, label]) => (
           <button key={k} className={`tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>{label}</button>
         ))}
       </div>
@@ -7909,6 +7964,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                   {myWindow.label}
                 </span>
               )}
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--line)", borderRadius: 8, padding: "2px 6px 2px 9px" }} title="The 'Avail @' column shows each player's % chance of still being on the board at this pick. Defaults to your next pick; choose any pick to plan ahead — picks YOUR team owns are marked ★.">
+                <i className="ti ti-target" style={{ fontSize: 13, color: "var(--mut)" }} aria-hidden="true" />
+                <span className="mut" style={{ fontSize: 10.5 }}>Avail @</span>
+                <select className="gs" style={{ fontSize: 12, padding: "3px 6px", border: "none", background: "transparent" }}
+                  value={targetPick != null ? targetPick : (myNextOverall != null ? myNextOverall + 1 : "")}
+                  onChange={(e) => setTargetPick(e.target.value ? +e.target.value : null)}>
+                  {remainingPicks.map((p) => (
+                    <option key={p.o} value={p.overall}>{p.mine ? "★ " : ""}{p.label} (#{p.overall}){p.o === myNextOverall ? " — your next" : ""}</option>
+                  ))}
+                </select>
+              </div>
               <div style={{ flex: 1 }} />
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }} title="ADP always shows on the left. This switches the rest of the columns between value/info (rankings, projections, demographics, availability) and projected stats.">
                 <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: boardMode === "info" ? "var(--gold)" : "transparent", color: boardMode === "info" ? "#1A1505" : "var(--ink)", fontWeight: boardMode === "info" ? 700 : 400 }} onClick={() => setBoardMode("info")} title="Rankings, projections, value, demographics & availability">Value &amp; info</button>
@@ -8359,88 +8425,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               );
             })}
           </div>
-        </div>
-      )}
-
-      {tab === "avail" && (
-        <div style={{ padding: 14 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
-            <div>
-              <div className="disp" style={{ fontSize: 19, fontWeight: 700 }}>Availability odds</div>
-              <div className="mut" style={{ fontSize: 12 }}>Chance each player survives to your upcoming picks — from live simulations.</div>
-            </div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", marginLeft: "auto", flexWrap: "wrap" }}>
-              <div className="chip" style={{ display: "flex", alignItems: "center" }}>
-                Check pick #<input className="gs" style={{ width: 58, padding: "3px 6px", marginLeft: 6 }} type="number" min={picks.length + 1} placeholder="30" value={customPick} onChange={(e) => setCustomPick(e.target.value.replace(/\D/g, ""))} />
-                {customPick && <button className="btn btn-mini" style={{ marginLeft: 6 }} onClick={() => setCustomPick("")}>clear</button>}
-              </div>
-              <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }} title="Market = how the league will draft (ADP). Your build = your demographic edge (value, dynasty youth tilt).">
-                <span className="mut" style={{ fontSize: 11, alignSelf: "center", padding: "0 8px" }}>View</span>
-                {[["adp", "Market"], ["vbd", "Your build"]].map(([k, lbl]) => (
-                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", minWidth: 76, textAlign: "center", background: availSort === k ? "var(--gold)" : "transparent", color: availSort === k ? "#1A1505" : "var(--ink)", fontWeight: availSort === k ? 700 : 400 }} onClick={() => setAvailSort(k)}>{lbl}</button>
-                ))}
-              </div>
-            </div>
-            <div className="mut" style={{ fontSize: 11.5, marginTop: -4, marginBottom: 6 }}>
-              {availSort === "adp" ? "Market view — ordered by ADP, how your league is likely to draft these players." : myWindow.decided ? `Your-build view — value tilted to your ${myWindow.label.toLowerCase()} (avg age ~${myWindow.avgAge?.toFixed(1)}). Where you can out-draft the room for your window.` : "Your-build view — pure value for now. Once you commit to a window (~round 4), this tilts toward players that fit your build."}
-            </div>
-          </div>
-          {(() => {
-            const cols = sims ? sims.nexts.length : 0;
-            const extra = customSims ? 1 : 0;
-            const grid = `minmax(150px,1.6fr) 56px repeat(${cols + extra}, minmax(64px,1fr))`;
-            const heatBar = (pct) => pct >= 70 ? "var(--green)" : pct >= 40 ? "var(--gold)" : "var(--red)";
-            const rows = players.filter((p) => !draftedSet.has(p.id)).sort((a, b) => {
-              if (availSort === "adp") return a.adp - b.adp;
-              // Your-build view: VBD tilted by your contention window (once you've picked a lane).
-              const va = (a.vbd ?? -50) * (myWindow.decided ? myWindow.tilt(a.pos, a.age, a.rookie) : 1);
-              const vb = (b.vbd ?? -50) * (myWindow.decided ? myWindow.tilt(b.pos, b.age, b.rookie) : 1);
-              return vb - va;
-            }).slice(0, 30);
-            return (
-              <div style={{ maxWidth: 920 }}>
-                <div className="availhead" style={{ gridTemplateColumns: grid }}>
-                  <div>Best available</div>
-                  <div style={{ textAlign: "center" }}>{availSort === "adp" ? "ADP" : "VBD"}</div>
-                  {sims && sims.nexts.map((o, i) => <div key={i} style={{ textAlign: "center" }}>@ {pickLabel(o)}</div>)}
-                  {customSims && <div style={{ textAlign: "center", color: "var(--gold)" }}>@ {pickLabel(+customPick - 1)}</div>}
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {rows.map((p) => (
-                    <div key={p.id} className="availrow" style={{ gridTemplateColumns: grid, borderLeft: `3px solid ${POS_COLOR[p.pos]}` }}
-                      onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, false))} onMouseLeave={hideTip}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                        <span className="posbadge" style={{ background: POS_COLOR[p.pos] }}>{p.pos}{p.posRank}</span>
-                        <span style={{ minWidth: 0 }}><span className="pname" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>{p.name}</span><span className="mut" style={{ fontSize: 10.5 }}>{p.team} · Tier {p.tier}</span></span>
-                      </div>
-                      <div className="num" style={{ textAlign: "center", fontWeight: 700, color: "var(--mut)" }}>{availSort === "adp" ? p.adp.toFixed(0) : (p.vbd > 0 ? `+${p.vbd.toFixed(0)}` : p.vbd.toFixed(0))}</div>
-                      {sims && sims.nexts.map((_, i) => { const pct = sims.pct[i][p.id]; return (
-                        <div key={i} className="availpct"><span className="fill" style={{ width: `${pct}%`, background: heatBar(pct) }} /><span className="txt" style={{ color: pct >= 70 ? "var(--green)" : pct >= 40 ? "var(--gold)" : "var(--red)" }}>{pct}%</span></div>
-                      ); })}
-                      {customSims && (() => { const pct = customSims[p.id]; return (
-                        <div className="availpct" style={{ borderColor: "rgba(242,182,60,.4)" }}><span className="fill" style={{ width: `${pct}%`, background: heatBar(pct) }} /><span className="txt" style={{ color: pct >= 70 ? "var(--green)" : pct >= 40 ? "var(--gold)" : "var(--red)" }}>{pct}%</span></div>
-                      ); })()}
-                    </div>
-                  ))}
-                </div>
-                <div className="mut" style={{ fontSize: 11, marginTop: 10, display: "flex", gap: 14 }}>
-                  <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: "var(--green)", marginRight: 4 }} />Likely there (≥70%)</span>
-                  <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: "var(--gold)", marginRight: 4 }} />Coin-flip (40–70%)</span>
-                  <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: "var(--red)", marginRight: 4 }} />Likely gone (&lt;40%)</span>
-                </div>
-              </div>
-            );
-          })()}
-        </div>
-      )}
-
-      {tab === "adp" && (
-        <div style={{ padding: 14 }}>
-          <div className="panel" style={{ padding: "9px 12px", marginBottom: 12, background: "var(--panel2)", display: "flex", alignItems: "center", gap: 8 }}>
-            <i className="ti ti-chart-dots" style={{ fontSize: 16, color: "var(--gold)" }} aria-hidden="true" />
-            <span style={{ fontSize: 12.5 }} className="mut">ADP for this league's format, built from thousands of real Sleeper drafts — consensus, how it's trending, spread, sample size, and your blended number.</span>
-          </div>
-          <AdpIntel players={players} cfg={cfg} myRanks={myRanks} draftedSet={draftedSet} />
         </div>
       )}
 
@@ -9342,6 +9326,48 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
   const [chartSearch, setChartSearch] = useState("");
   const [chartExpanded, setChartExpanded] = useState(false);
 
+  // ---- PLAYER VALUES DATABASE: a browsable, format-aware values table (KTC-style) you can re-slice by
+  // league settings WITHOUT changing your actual league. We synthesize a cfg from the controls below and
+  // recompute tradeValue for every player — so you can see how a player's worth shifts in SF vs 1QB,
+  // TE-premium, PPR level, team count, and dynasty vs redraft. All values are computed by OUR engine.
+  const [vbScoring, setVbScoring] = useState(cfg.scoring && cfg.scoring.rec != null ? (cfg.scoring.rec >= 0.75 ? "ppr" : cfg.scoring.rec >= 0.25 ? "half" : "std") : "ppr");
+  const [vbQb, setVbQb] = useState(((cfg.start && cfg.start.SUPER > 0) || cfg.sf) ? "sf" : "1qb");
+  const [vbTep, setVbTep] = useState(cfg.tePremMult > 0 ? "tep" : "std");
+  const [vbType, setVbType] = useState(cfg.type === "dynasty" || cfg.type === "keeper" ? "dynasty" : "redraft");
+  const [vbTeams, setVbTeams] = useState(cfg.teams || 12);
+  const [vbPos, setVbPos] = useState("ALL");
+  const [vbSearch, setVbSearch] = useState("");
+  // Build a synthetic cfg from the controls. tradeValue reads start.SUPER, sf, tePremMult, type, scoring.
+  const valuesCfg = useMemo(() => ({
+    ...cfg,
+    type: vbType,
+    teams: vbTeams,
+    sf: vbQb === "sf",
+    start: { ...(cfg.start || {}), SUPER: vbQb === "sf" ? 1 : 0, QB: vbQb === "sf" ? 1 : (cfg.start?.QB || 1) },
+    tePremMult: vbTep === "tep" ? (cfg.tePremMult > 0 ? cfg.tePremMult : 0.5) : 0,
+    scoring: { ...(cfg.scoring || {}), rec: vbScoring === "ppr" ? 1 : vbScoring === "half" ? 0.5 : 0 },
+  }), [cfg, vbType, vbTeams, vbQb, vbTep, vbScoring]);
+  // Compute, sort, and rank values for the synthetic format. Team count scales replacement depth, so we
+  // also nudge by teams: more teams = scarcer starters = higher values at the top (a light adjustment).
+  const valuesRows = useMemo(() => {
+    const teamAdj = 1 + (vbTeams - 12) * 0.012; // ±1.2% per team away from 12
+    const list = players.filter((p) => POS.includes(p.pos)).map((p) => ({ p, v: Math.max(0, Math.round(tradeValue(p, valuesCfg) * teamAdj)) }));
+    list.sort((a, b) => b.v - a.v);
+    // KTC-style 0-9999 scale: normalize so the top asset ≈ 9999.
+    const top = list.length ? list[0].v : 1;
+    list.forEach((x, i) => { x.ktc = top > 0 ? Math.round((x.v / top) * 9999) : 0; x.overall = i + 1; });
+    // positional rank
+    const posCount = {};
+    list.forEach((x) => { posCount[x.p.pos] = (posCount[x.p.pos] || 0) + 1; x.posRank = posCount[x.p.pos]; });
+    return list;
+  }, [players, valuesCfg, vbTeams]);
+  const valuesFiltered = useMemo(() => {
+    let l = valuesRows;
+    if (vbPos !== "ALL") l = l.filter((x) => x.p.pos === vbPos);
+    if (vbSearch) { const q = vbSearch.toLowerCase(); l = l.filter((x) => x.p.name.toLowerCase().includes(q)); }
+    return l.slice(0, 240);
+  }, [valuesRows, vbPos, vbSearch]);
+
   const req = REQ_F(cfg.sf);
   const superOnly = (cfg.start && cfg.start.SUPER || 0) > 0;
   const myCounts = {}; POS.forEach((p) => (myCounts[p] = myRoster.filter((x) => x.pos === p).length));
@@ -9362,7 +9388,7 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
   return (
     <div style={{ padding: 14, maxWidth: 1100, margin: "0 auto" }}>
       <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-        {[["chart","Trade value chart"],["evaluate","Evaluate a trade"]].map(([k, l]) => (
+        {[["chart","Trade value chart"],["evaluate","Evaluate a trade"],["values","Player values database"]].map(([k, l]) => (
           <button key={k} className="btn" style={{ borderColor: mode === k ? "var(--gold)" : "var(--line)" }} onClick={() => setMode(k)}>{l}</button>
         ))}
       </div>
@@ -9534,6 +9560,92 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {mode === "values" && (
+        <div className="panel" style={{ padding: 16 }}>
+          <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Player values database</div>
+          <div className="mut" style={{ fontSize: 12.5, marginBottom: 12, lineHeight: 1.5 }}>
+            Browse format-aware player values on a 0–9999 scale, computed by Compass's own engine. Adjust the league settings below to see how a player's worth shifts — superflex lifts QBs, TE-premium lifts tight ends, dynasty weights youth, and so on. This is independent of your actual league, so you can explore any format.
+          </div>
+          {/* format controls */}
+          <div className="panel" style={{ padding: 12, marginBottom: 12, background: "var(--panel2)", display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div>
+              <div className="mut" style={{ fontSize: 10.5, marginBottom: 4 }}>QB format</div>
+              <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }}>
+                {[["1qb", "1QB"], ["sf", "Superflex"]].map(([k, l]) => (
+                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbQb === k ? "var(--gold)" : "transparent", color: vbQb === k ? "#1A1505" : "var(--ink)", fontWeight: vbQb === k ? 700 : 400 }} onClick={() => setVbQb(k)}>{l}</button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="mut" style={{ fontSize: 10.5, marginBottom: 4 }}>TE</div>
+              <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }}>
+                {[["std", "Standard"], ["tep", "TE premium"]].map(([k, l]) => (
+                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbTep === k ? "var(--gold)" : "transparent", color: vbTep === k ? "#1A1505" : "var(--ink)", fontWeight: vbTep === k ? 700 : 400 }} onClick={() => setVbTep(k)}>{l}</button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="mut" style={{ fontSize: 10.5, marginBottom: 4 }}>Scoring</div>
+              <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }}>
+                {[["std", "Std"], ["half", "0.5 PPR"], ["ppr", "PPR"]].map(([k, l]) => (
+                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbScoring === k ? "var(--gold)" : "transparent", color: vbScoring === k ? "#1A1505" : "var(--ink)", fontWeight: vbScoring === k ? 700 : 400 }} onClick={() => setVbScoring(k)}>{l}</button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="mut" style={{ fontSize: 10.5, marginBottom: 4 }}>League type</div>
+              <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }}>
+                {[["redraft", "Redraft"], ["dynasty", "Dynasty"]].map(([k, l]) => (
+                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbType === k ? "var(--gold)" : "transparent", color: vbType === k ? "#1A1505" : "var(--ink)", fontWeight: vbType === k ? 700 : 400 }} onClick={() => setVbType(k)}>{l}</button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="mut" style={{ fontSize: 10.5, marginBottom: 4 }}>Teams</div>
+              <select className="gs" style={{ fontSize: 12, padding: "4px 6px" }} value={vbTeams} onChange={(e) => setVbTeams(+e.target.value)}>
+                {[8, 10, 12, 14, 16].map((n) => <option key={n} value={n}>{n} teams</option>)}
+              </select>
+            </div>
+          </div>
+          {/* position filter + search */}
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+            {["ALL", ...POS].map((p) => (
+              <button key={p} className="btn btn-mini" style={{ borderColor: vbPos === p ? "var(--gold)" : "var(--line)", color: vbPos === p ? "var(--gold)" : "var(--ink)" }} onClick={() => setVbPos(p)}>{p}</button>
+            ))}
+            <input className="gs" style={{ width: 180, marginLeft: "auto" }} placeholder="Search for a player" value={vbSearch} onChange={(e) => setVbSearch(e.target.value)} />
+          </div>
+          {/* values table */}
+          <div style={{ overflowX: "auto" }}>
+            <table className="tbl" style={{ width: "100%", fontSize: 12.5 }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: "var(--mut)", fontSize: 11 }}>
+                  <th style={{ padding: "6px 8px" }}>#</th>
+                  <th style={{ padding: "6px 8px" }}>Player</th>
+                  <th style={{ padding: "6px 8px" }}>Pos</th>
+                  <th style={{ padding: "6px 8px", textAlign: "right" }}>Value</th>
+                  <th style={{ padding: "6px 8px", textAlign: "right" }}>Age</th>
+                </tr>
+              </thead>
+              <tbody>
+                {valuesFiltered.map((x) => (
+                  <tr key={x.p.id} className="hairline" style={{ cursor: showTip ? "help" : "default" }}
+                    onMouseEnter={showTip ? (e) => showTip(e, makeOutlook(x.p, null, false)) : undefined} onMouseLeave={hideTip}>
+                    <td className="mut num" style={{ padding: "6px 8px" }}>{x.overall}</td>
+                    <td style={{ padding: "6px 8px", fontWeight: 600 }}>{x.p.name}{x.p.rookie ? <span className="mut" style={{ fontSize: 10, marginLeft: 4 }}>R</span> : null}</td>
+                    <td style={{ padding: "6px 8px" }}><Dot pos={x.p.pos} /><span className="mut">{x.p.pos}{x.posRank}</span></td>
+                    <td className="num" style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "var(--gold)" }}>{x.ktc}</td>
+                    <td className="mut num" style={{ padding: "6px 8px", textAlign: "right" }}>{x.p.age || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="mut" style={{ fontSize: 10.5, marginTop: 10, lineHeight: 1.5 }}>
+            Values are Compass's own format-aware estimates (projection-based VBD with superflex / TE-premium / dynasty-age adjustments), scaled 0–9999 for easy comparison. They're not affiliated with or derived from any third-party value service.
+          </div>
         </div>
       )}
 
