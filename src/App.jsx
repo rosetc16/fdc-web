@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.25x";
+const BUILD_TAG = "2026.06.25y";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2205,7 +2205,10 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
   allKeeperAddIds().forEach((id) => { drafted[id] = 1; });
   let recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   const path = []; let passedUser = false, afterUser = 0;
-  for (let o = picks.length; o < TOTAL && path.length < 20; o++) {
+  // How far past YOUR next pick to keep projecting. We show a healthy look-ahead by default (the board
+  // scrolls horizontally), and `extend` widens it further for the "show more" action.
+  const aheadCap = extend ? 16 : 10;
+  for (let o = picks.length; o < TOTAL && path.length < 28; o++) {
     const t = teamAt(o), round = Math.floor(o / TEAMS) + 1, pickNum = o + 1;
     let entry;
     if (t === userIdx) {
@@ -2230,7 +2233,7 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
       drafted[c.id] = 1; if (counts[t][c.pos] != null) counts[t][c.pos]++; recent = [...recent.slice(-7), c.pos];
     }
     path.push(entry);
-    if (passedUser) { if (!extend || afterUser >= 5) break; if (!entry.user) afterUser++; }
+    if (passedUser) { if (afterUser >= aheadCap) break; if (!entry.user) afterUser++; }
   }
   return path;
 }
@@ -2375,7 +2378,7 @@ function makeOutlook(p, sims, drafted) {
   if (p.teamOutlook) out.push({ t: "Team", x: p.teamOutlook });
   if (p.adpOriginal != null && Math.abs(p.adpOriginal - p.adp) > 0.6) out.push({ t: "Keeper-adjusted ADP", x: `Effective ADP ${p.adp.toFixed(1)} (market ${p.adpOriginal.toFixed(1)}) — keepers ahead of him are off the board.` });
   out.push({ t: "Bye", x: `Week ${p.bye || "—"}` });
-  out.push({ t: "Note", x: `Sample outlook; production pulls a live read from player data, news, and injury feeds.` });
+  out.push({ t: "How to read this", x: `The take up top is the verdict for your seat right now. "Value/Reach" weighs his Sleeper ADP against his projected value; the survival % is his chance of lasting to your next pick. Use it to decide whether to take him now or wait.` });
   return out;
 }
 
@@ -2442,6 +2445,7 @@ function OutlookCard({ content }) {
 // `req` = that team's starting requirement by position (from REQ_F / cfg.start).
 function boardPickOutlook(p, o, cfg, ownerLabel, roster, req) {
   const out = [];
+  out.push({ kind: "photo", sid: p.sid || null, name: p.name, team: p.team, pos: p.pos, posRank: p.posRank });
   const v = pickValue(p, o, cfg); // + = steal (fell past ADP), - = reach (taken early)
   const slip = Math.round((o + 1) - p.adp); // picks past ADP (positive = later than ADP)
 
@@ -2523,14 +2527,15 @@ select.gs:hover{border-color:var(--gold)}
 .tickcard.you{border-color:var(--gold);background:#1A1505}
 .tickcard.clock{border-color:#33476B;background:#0F1B30}
 .meter{height:3px;background:var(--line);border-radius:2px;margin-top:6px;overflow:hidden}.meter>div{height:100%;background:var(--gold)}
-table.board{width:100%;border-collapse:separate;border-spacing:0;font-size:13px}
-table.board th{font-family:'Barlow Condensed';text-transform:uppercase;letter-spacing:.06em;font-size:12px;color:var(--mut);text-align:left;padding:8px 8px;border-bottom:2px solid var(--line);position:sticky;top:0;background:linear-gradient(180deg,var(--panel),var(--panel2));cursor:pointer;white-space:nowrap;z-index:2}
+table.board{width:auto;min-width:100%;border-collapse:separate;border-spacing:0;font-size:13px}
+table.board th{font-family:'Barlow Condensed';text-transform:uppercase;letter-spacing:.06em;font-size:12px;color:var(--mut);text-align:left;padding:8px 7px;border-bottom:2px solid var(--line);position:sticky;top:0;background:linear-gradient(180deg,var(--panel),var(--panel2));cursor:pointer;white-space:nowrap;z-index:2}
+table.board th.num,table.board td.num{text-align:right;width:1px}
 table.board th:hover{color:var(--ink)}
 table.board tr.sechead th{top:0;z-index:3;padding:2px 4px;border-bottom:1px solid var(--line);cursor:default}
 table.board tr.sechead th:hover{color:var(--gold)}
 table.board thead tr:nth-child(2) th{top:22px}
 table.board tr.sechead th.frz{z-index:5}
-table.board td{padding:6px 8px;border-bottom:1px solid #16203320}
+table.board td{padding:6px 7px;border-bottom:1px solid #16203320}
 table.board tbody tr:nth-child(even) td{background:#10141b66}
 table.board tbody tr:hover td{background:#1b2740aa}
 table.board th.frz,table.board td.frz{position:sticky;left:0;z-index:3;background:var(--panel)}
@@ -2556,13 +2561,13 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .bteam.you{background:linear-gradient(180deg,rgba(242,182,60,.18),rgba(242,182,60,.05));border-color:var(--gold)}
 .bteam .nm{font-size:11px;font-weight:700;line-height:1.1;letter-spacing:.02em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .bteam .sub{font-size:8.5px;letter-spacing:.08em;text-transform:uppercase}
-.bcell{position:relative;border-radius:9px;padding:6px 7px;background:var(--panel2);border:1px solid var(--line);min-height:48px;display:flex;flex-direction:column;gap:1px;cursor:default;transition:transform .1s,border-color .1s}
+.bcell{position:relative;border-radius:9px;padding:7px 8px;background:var(--panel2);border:1px solid var(--line);min-height:62px;display:flex;flex-direction:column;gap:2px;cursor:default;transition:transform .1s,border-color .1s}
 .bcell:hover{transform:translateY(-1px);border-color:#4a4a3c}
 .bcell.you{background:linear-gradient(180deg,rgba(242,182,60,.13),rgba(242,182,60,.03));border-color:rgba(242,182,60,.55)}
 .bcell.you.oncl{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold) inset}
 .bcell.upcoming{border-style:dashed;border-color:rgba(242,182,60,.6)}
 .bcell.empty{opacity:.4}
-.bcell .pl{font-size:10px;font-weight:600;line-height:1.12;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.bcell .pl{font-size:12px;font-weight:700;line-height:1.15;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .bcell .lbl{font-size:9px;display:flex;align-items:center;gap:3px;opacity:.85}
 .bcell .posdot{display:inline-block;width:14px;text-align:center;font-size:8px;font-weight:800;border-radius:3px;padding:0 2px;color:#0a0a0a}
 .bcell .val{font-size:9px;font-weight:700;margin-top:1px}
@@ -2575,7 +2580,7 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .availpct .txt{position:relative;z-index:1}
 .availhead{display:grid;gap:10px;padding:6px 12px;font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);font-weight:700}
 .posbadge{display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:20px;border-radius:5px;font-size:9.5px;font-weight:800;color:#0a0a0a}
-.tooltip{position:fixed;z-index:90;width:300px;max-width:300px;background:#0A0A0C;border:1px solid #3A3A30;border-radius:10px;padding:12px 13px;font-size:12.5px;line-height:1.5;pointer-events:none;box-shadow:0 12px 40px #000D}
+.tooltip{position:fixed;z-index:90;width:380px;max-width:380px;background:#0A0A0C;border:1px solid #3A3A30;border-radius:10px;padding:12px 14px;font-size:12.5px;line-height:1.5;pointer-events:none;box-shadow:0 12px 40px #000D}
 .needcell{text-align:center;border-radius:5px;padding:3px 0;font-size:12px}
 .info{cursor:help;border-bottom:1px dotted var(--mut)}
 .hero-h{font-size:58px;font-weight:700;line-height:1.0}
@@ -4227,7 +4232,7 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
     ["ti-arrows-exchange", "Trade Intelligence", "Format-aware pick values, generated trade packages, and acceptance odds — who to call and exactly what to offer."],
     ["ti-trophy", "Grades & Recap", "Live draft grades, biggest steals and reaches, projected standings, and a shareable recap with receipts."],
   ];
-  const showTip = (e, p) => { setHover(p.id); const x = Math.min(e.clientX + 14, window.innerWidth - 320); const y = Math.min(e.clientY + 10, window.innerHeight - 240); setTip({ x, y, content: makeOutlook(p, null, false) }); };
+  const showTip = (e, p) => { setHover(p.id); const x = Math.min(e.clientX + 14, window.innerWidth - 400); const y = Math.min(e.clientY + 10, window.innerHeight - 240); setTip({ x, y, content: makeOutlook(p, null, false) }); };
   const hideTip = () => { setHover(null); setTip(null); };
   const heading = hover != null ? (top.findIndex((p) => p.id === hover) / top.length) * 360 : null;
   const paid = !!(user && user.paid);
@@ -6855,7 +6860,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const [manualSort, setManualSort] = useState(false); // true once the user clicks a column header
   const [showDrafted, setShowDrafted] = useState(false); // default: show best AVAILABLE; toggle to include drafted
   const [rookieOnly, setRookieOnly] = useState(false);
-  const DEFAULT_COLS = { adp: true, consensus: false, edge: true, proj: true, floor: false, ceil: false, vbd: true, rank: true, vbdTier: true, adpTier: false, mockAdp: false, myRank: false, blendAdp: false, role: true, age: false, bye: true, avail: true, passYd: true, passTD: true, rushYd: true, rushTD: true, rec: true, recYd: true, recTD: true, tgt: false };
+  const DEFAULT_COLS = { adp: true, consensus: false, edge: true, proj: true, floor: false, ceil: false, vbd: true, rank: true, vbdTier: true, adpTier: false, mockAdp: false, myRank: false, blendAdp: false, role: true, roleDesc: true, age: true, bye: true, avail: true, passYd: true, passTD: true, rushYd: true, rushTD: true, rec: true, recYd: true, recTD: true, tgt: false };
   const DEFAULT_SECTION_ORDER = ["market", "mine", "value", "demo", "avail", "stat"];
   const savedPrefs = user?.colPrefs || null;
   const [cols, setCols] = useState({ ...DEFAULT_COLS, ...(savedPrefs?.cols || {}) });
@@ -7323,6 +7328,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
       case "blendAdp": return myRanks.map[p.id] ? myRanks.map[p.id].blend : 9999;
       case "age": return p.age || 99;
       case "role": return p.posDepth != null ? p.posDepth : 99; // sort by team depth (RB1 before RB2)
+      case "roleDesc": return p.role || "zzz";
       case "bye": return p.bye || 99;
       case "avail": return targetSurv ? (targetSurv[p.id] ?? -1) : -1;
       case "nextpick": return sims && sims.pct[1] ? (sims.pct[1][p.id] ?? -1) : -1;
@@ -7509,7 +7515,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     { key: "rank", label: "Rank", group: "draft", section: "value", num: true, sortable: true, tip: "Position rank by projected points." },
     { key: "vbdTier", label: "VBD tier", group: "draft", section: "value", num: true, sortable: true, tip: "Overall value tier from gaps in VBD." },
     // — Demographics —
-    { key: "role", label: "Role", group: "draft", section: "demo", num: false, sortable: true, tip: "The player's depth on his NFL team (RB1, WR2, etc.) and projected usage role — bellcow vs committee back, alpha vs depth receiver. The starter signal." },
+    { key: "role", label: "Team role", group: "draft", section: "demo", num: false, sortable: true, tip: "The player's depth on his NFL team — RB1, WR2, etc. The starter signal." },
+    { key: "roleDesc", label: "Usage", group: "draft", section: "demo", num: false, sortable: true, tip: "Projected usage role — bellcow vs committee back, alpha vs depth receiver, every-down vs blocking TE." },
     { key: "age", label: "Age", group: "draft", section: "demo", num: true, sortable: true },
     { key: "bye", label: "Bye", group: "draft", section: "demo", num: true, sortable: true },
     // — Availability —
@@ -7609,14 +7616,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
         const startThresh = p.pos === "WR" ? 3 : p.pos === "RB" ? 2 : 1;
         const isStarter = p.posDepth <= startThresh;
         const col = p.posDepth === 1 ? "var(--green)" : isStarter ? "var(--gold)" : "var(--mut)";
-        // slot + role description, but capped width so the column doesn't sprawl. Full role in tooltip.
-        return (
-          <span title={p.role ? `${p.posSlot} on ${p.team} — ${p.role}` : p.posSlot} style={{ display: "inline-block", maxWidth: 140, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", verticalAlign: "middle" }}>
-            <span style={{ color: col, fontWeight: 700 }}>{p.posSlot}</span>
-            {p.role ? <span className="mut" style={{ fontSize: 10.5, marginLeft: 4 }}>{p.role}</span> : null}
-          </span>
-        );
+        return <span title={`${p.posSlot} on ${p.team}`} style={{ color: col, fontWeight: 700, whiteSpace: "nowrap" }}>{p.posSlot}</span>;
       }
+      case "roleDesc": return p.role ? <span className="mut" style={{ whiteSpace: "nowrap", fontSize: 11.5 }}>{p.role}</span> : <span className="mut">—</span>;
       case "bye": return p.bye || "—";
       case "avail": return gone ? "—" : av != null ? <span style={{ color: av < 35 ? "var(--red)" : av > 75 ? "var(--green)" : "var(--ink)" }}>{av}%</span> : "…";
       case "nextpick": return gone ? "—" : av2 != null ? <span className="mut">{av2}%</span> : "—";
@@ -7768,7 +7770,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     };
   }, [proj, grades, graded, valByTeam, picks, players, userIdx]);
 
-  const showTip = (e, content) => { const x = Math.min(e.clientX + 14, window.innerWidth - 310); const y = Math.min(e.clientY + 10, window.innerHeight - 230); setTip({ x, y, content }); };
+  const showTip = (e, content) => { const x = Math.min(e.clientX + 14, window.innerWidth - 400); const y = Math.min(e.clientY + 10, window.innerHeight - 230); setTip({ x, y, content }); };
   const hideTip = () => setTip(null);
 
   const depth = useMemo(() => {
@@ -7876,7 +7878,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 <div className="mut num" style={{ fontSize: 10, marginTop: 2 }}>{step.prob}% likely</div>
               </div>
             ))}
-            <button className="btn btn-mini" style={{ alignSelf: "center", flexShrink: 0 }} onClick={() => setFutureBig((b) => !b)}>{futureBig ? "less ›" : "beyond your pick »"}</button>
+            <button className="btn btn-mini" style={{ alignSelf: "center", flexShrink: 0 }} onClick={() => setFutureBig((b) => !b)} title="The tracker scrolls horizontally — drag or scroll right to see picks further ahead.">{futureBig ? "« show fewer" : "see further ahead »"}</button>
           </div>
         </div>
       )}
@@ -8022,7 +8024,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 <button key={p} className="btn btn-mini" style={{ borderColor: posFilter === p ? "var(--gold)" : "var(--line)" }} onClick={() => setPosFilter(p)}>{p}</button>
               ))}
               <button className="btn btn-mini" style={{ borderColor: rookieOnly ? "var(--gold)" : "var(--line)", color: rookieOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => setRookieOnly((r) => !r)}>Rookies</button>
-              <button className="btn btn-mini" style={{ borderColor: queueOnly ? "var(--gold)" : "var(--line)", color: queueOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => setQueueOnly((q) => !q)} title="Show only the players you've starred for this league. Star players with the ☆ next to their name; your queue saves automatically."><i className={`ti ${queueOnly ? "ti-star-filled" : "ti-star"}`} style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Priority{queue.size ? ` (${queue.size})` : ""}</button>
+              <button className="btn btn-mini" style={{ borderColor: queueOnly ? "var(--gold)" : "var(--line)", color: queueOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => setQueueOnly((q) => !q)} title="Show only the players you've starred for this league. Star players with the star next to their name; your queue saves automatically."><i className="ti ti-star" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Priority{queue.size ? ` (${queue.size})` : ""}</button>
               <div style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--gold)", borderRadius: 8, padding: "3px 8px 3px 10px", background: "#1A150A" }} title="Strategy lens — reshapes the board AND your advice toward an approach. Balanced/ADP follow the market; the others tilt toward value, upside, youth, your build, or a position.">
                 <i className="ti ti-adjustments" style={{ fontSize: 13, color: "var(--gold)" }} aria-hidden="true" />
                 <span className="gold" style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".03em" }}>STRATEGY</span>
@@ -8122,12 +8124,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                       const reSecs = (sectionOrder && sectionOrder.length ? sectionOrder : DEFAULT_SECTION_ORDER).filter((s) => s !== "market");
                       const pos = reSecs.indexOf(g.sec);
                       return (
-                        <th key={g.sec + gi} colSpan={g.count} style={{ textAlign: "center", borderLeft: "2px solid var(--line)", borderBottom: "1px solid var(--line)", padding: "2px 4px", background: "var(--panel2)" }}
-                          title={movable ? "Section — use the arrows to move this whole group of columns left or right." : "ADP & market is pinned to the left."}>
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 9.5, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--gold)", fontWeight: 700 }}>
-                            {movable && <button onClick={() => moveSection(g.sec, -1)} disabled={pos <= 0} style={{ background: "none", border: "none", color: pos <= 0 ? "var(--line)" : "var(--mut)", cursor: pos <= 0 ? "default" : "pointer", padding: 0, fontSize: 11, lineHeight: 1 }} title="Move section left">◂</button>}
+                        <th key={g.sec + gi} colSpan={g.count} style={{ textAlign: "center", borderLeft: "2px solid var(--line)", borderBottom: "1px solid var(--line)", padding: "3px 4px", background: "var(--panel2)" }}
+                          title={movable ? "Use the ◂ ▸ buttons to move this whole section of columns left or right." : "ADP & market is pinned to the left."}>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 9.5, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--gold)", fontWeight: 700 }}>
+                            {movable && <button onClick={() => moveSection(g.sec, -1)} disabled={pos <= 0} style={{ background: pos <= 0 ? "transparent" : "var(--panel)", border: `1px solid ${pos <= 0 ? "var(--line)" : "var(--gold)"}`, borderRadius: 4, color: pos <= 0 ? "var(--line)" : "var(--gold)", cursor: pos <= 0 ? "default" : "pointer", padding: "0 4px", fontSize: 11, lineHeight: 1.4 }} title="Move section left">◂</button>}
                             {SECTION_LABELS[g.sec] || g.sec}
-                            {movable && <button onClick={() => moveSection(g.sec, 1)} disabled={pos >= reSecs.length - 1} style={{ background: "none", border: "none", color: pos >= reSecs.length - 1 ? "var(--line)" : "var(--mut)", cursor: pos >= reSecs.length - 1 ? "default" : "pointer", padding: 0, fontSize: 11, lineHeight: 1 }} title="Move section right">▸</button>}
+                            {movable && <button onClick={() => moveSection(g.sec, 1)} disabled={pos >= reSecs.length - 1} style={{ background: pos >= reSecs.length - 1 ? "transparent" : "var(--panel)", border: `1px solid ${pos >= reSecs.length - 1 ? "var(--line)" : "var(--gold)"}`, borderRadius: 4, color: pos >= reSecs.length - 1 ? "var(--line)" : "var(--gold)", cursor: pos >= reSecs.length - 1 ? "default" : "pointer", padding: "0 4px", fontSize: 11, lineHeight: 1.4 }} title="Move section right">▸</button>}
                           </span>
                         </th>
                       );
@@ -8179,8 +8181,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                         <td className="frz" style={{ borderLeft: `3px solid ${gone ? "transparent" : (POS_COLOR[p.pos] || "transparent")}` }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
                             <button onClick={() => toggleQueue(p.name)} title={queue.has(p.name) ? "Starred — in your priority queue. Click to remove." : "Star this player to add him to your priority queue."}
-                              style={{ background: "none", border: "none", cursor: "pointer", padding: 0, flexShrink: 0, lineHeight: 1, color: queue.has(p.name) ? "var(--gold)" : "var(--mut)" }}>
-                              <i className={`ti ${queue.has(p.name) ? "ti-star-filled" : "ti-star"}`} style={{ fontSize: 15 }} aria-hidden="true" />
+                              style={{ background: "none", border: "none", cursor: "pointer", padding: 0, flexShrink: 0, lineHeight: 1, color: queue.has(p.name) ? "var(--gold)" : "var(--mut)", opacity: queue.has(p.name) ? 1 : 0.5 }}>
+                              <i className="ti ti-star" style={{ fontSize: 15, fontWeight: queue.has(p.name) ? 700 : 400 }} aria-hidden="true" />
                             </button>
                             {!gone
                               ? <button className={`btn btn-mini${onClock === userIdx ? " btn-gold" : ""}`} style={{ flexShrink: 0, border: onClock === userIdx ? "none" : "1.5px solid #fff", fontWeight: 700 }} onClick={() => draftPlayer(p.id)}>{onClock === userIdx ? "Draft" : "Pick"}</button>
@@ -8379,7 +8381,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
           </div>
           <div className="boardwrap">
             {/* sticky team-name header */}
-            <div className="bhead" style={{ gridTemplateColumns: `40px repeat(${TEAMS}, minmax(92px,1fr))`, minWidth: 60 + TEAMS * 96 }}>
+            <div className="bhead" style={{ gridTemplateColumns: `40px repeat(${TEAMS}, minmax(112px,1fr))`, minWidth: 60 + TEAMS * 116 }}>
               <div className="bteam" style={{ background: "transparent", border: "none" }} />
               {TEAM_NAMES.map((n, i) => (
                 <div key={i} className={`bteam${i === userIdx ? " you" : ""}`} title={n}>
@@ -8389,7 +8391,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               ))}
             </div>
             {/* body grid: a round-number gutter + one cell per team */}
-            <div className="bgrid" style={{ gridTemplateColumns: `40px repeat(${TEAMS}, minmax(92px,1fr))`, minWidth: 60 + TEAMS * 96 }}>
+            <div className="bgrid" style={{ gridTemplateColumns: `40px repeat(${TEAMS}, minmax(112px,1fr))`, minWidth: 60 + TEAMS * 116 }}>
               {Array.from({ length: ROUNDS }, (_, r) => (
                 <React.Fragment key={r}>
                   <div className="mut num" style={{ display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>R{r + 1}</div>
@@ -8450,7 +8452,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                                 <span className="posdot" style={{ background: POS_COLOR[p.pos], flexShrink: 0 }}>{p.pos}</span>
                                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
                               </span>
-                              {p.sid && !isProjected ? <PlayerPhoto sid={p.sid} pos={p.pos} size={26} /> : null}
+                              {p.sid && !isProjected ? <PlayerPhoto sid={p.sid} pos={p.pos} size={34} /> : null}
                             </div>
                             {showBoardVal && !isProjected && !isKeeper && Math.abs(v) > 0 && (
                               <div className="val num" style={{ color: v > 0 ? "var(--green)" : "var(--red)" }}>{v > 0 ? `+${v}` : v}</div>
