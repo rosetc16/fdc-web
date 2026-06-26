@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.25l";
+const BUILD_TAG = "2026.06.25n";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1229,6 +1229,7 @@ let LIVE_PACK_FORMAT = null;     // the format key the backend actually served (
 let LIVE_PACK_PUB_FORMAT = null; // the PUBLISHED-ADP format bucket actually used (null if none matched)
 export function isLivePackLoaded() { return LIVE_LOADED; }
 
+
 // Build engine structures from the backend player-pack response. Keyed by player name (the engine's
 // key). We keep only players with a usable position and (ADP or projection), already filtered server-side.
 export function applyLivePack(pack) {
@@ -1300,6 +1301,36 @@ export function applyLivePack(pack) {
   LIVE_PACK_FORMAT = pack.format || null;
   LIVE_PACK_PUB_FORMAT = pack.publishedFormat || null;
   LIVE_ADP_SPARSE = !ADP_HEALTHY; // when sparse/rookie-contaminated, rank by VBD value instead
+  return true;
+}
+
+// SAFE, index-preserving ADP switch. To show a specific league's format ADP (e.g. SF dynasty) WITHOUT
+// the pool-swap bug that corrupts picks, we never rebuild RAW. Instead we overlay just the ADP numbers
+// (RAW[i][5]/[6] and META[name].consensus) by matching on player NAME. Array order and membership — and
+// therefore every player id (which is the array index) — are completely unchanged, so existing picks
+// stay valid. Returns true if it applied a healthy overlay.
+function applyAdpOverlay(pack) {
+  if (!pack || !Array.isArray(pack.players)) return false;
+  const byName = new Map();
+  let withAdp = 0;
+  for (const p of pack.players) {
+    if (!p.name || p.adp == null) continue;
+    byName.set(normName(p.name), p);
+    withAdp++;
+  }
+  // Only overlay when the format actually has broad real ADP coverage; otherwise keep the current board.
+  if (withAdp < 120) return false;
+  for (const row of RAW) {
+    const m = byName.get(normName(row[0]));
+    if (m && m.adp != null) {
+      row[5] = m.adp;
+      row[6] = m.adpHi != null ? m.adpHi : m.adp;
+      if (META[row[0]]) META[row[0]].consensus = m.adp;
+    }
+  }
+  LIVE_PACK_PUB_FORMAT = pack.publishedFormat || LIVE_PACK_PUB_FORMAT;
+  LIVE_PACK_FORMAT = pack.format || LIVE_PACK_FORMAT;
+  LIVE_ADP_SPARSE = false; // we now have real, format-correct ADP
   return true;
 }
 
@@ -1606,11 +1637,19 @@ function buildPlayers(cfg) {
     let a = raw;
     if (sf) {
       if (pos === "QB") {
+        // Superflex lifts QBs, but only MODESTLY. We blend a small fraction toward an SF target so elite
+        // QBs rise a little and mid/back QBs barely move — never overpowering the skill-position field.
+        // (A heavy push here was overweighting QBs: forcing every QB into a high slot regardless of market.)
         const r = qbRankOfRaw(raw);
-        const anchor = r <= 12 ? 2.4 + (r - 1) * 1.55 : 20 + (r - 12) * 2.6;
-        a = Math.max(1.5, Math.min(anchor, raw)); // never push a QB *below* its 1QB ADP
+        // SF target by QB rank: the top few QBs belong in round 1 (SF makes elite QBs premium), then the
+        // position fans out. Tuned so ~3-5 elite QBs reach the top 12, not 7-8 (overweight) or 0 (too soft).
+        const target = r <= 6 ? 4 + (r - 1) * 4 : 28 + (r - 6) * 7;
+        // blend ~55% toward the target so elite QBs clearly rise but mid/back QBs stay mid-board.
+        a = raw * 0.45 + target * 0.55;
+        a = Math.min(a, raw); // an SF lift can only move a QB UP (lower number), never down
+        a = Math.max(1.8, a);
       } else {
-        a = raw * 1.08; // skill players slide slightly to make room for QBs
+        a = raw * 1.02; // skill players slide only very slightly
       }
     }
     if (teMult > 0 && pos === "TE") {
@@ -6623,9 +6662,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const askOfficialMode = !mockLike && !connectedPlatform && !cfg.draftMode;
   const [mockTradingOn, setMockTradingOn] = useState(false); // in-mock trading with CPU teams (opt-in)
   const [tab, setTab] = useState(initialTab || "hub");
-  // NOTE: we deliberately do NOT re-fetch/swap the player pool inside the draft room. Player ids are
-  // array indices into the pool, and swapping the pool mid-session corrupts already-stored picks (they'd
-  // point at different players). The pool is loaded ONCE at app startup and stays stable for the session.
+  // The player pool and its ADP are loaded ONCE at app startup and never modified during a session.
+  // We previously experimented with re-fetching/overlaying per-league ADP here; that risked the board and
+  // is intentionally NOT done. Format differences (SF/dynasty/TE-premium) are reflected by the engine's
+  // own VBD/premium logic on the stable pool — the configuration that has always been reliable.
+  const adpVersion = 0;
   const [tradeModalOpen, setTradeModalOpen] = useState(false); // quick pick-trade popover over the hub
   const [strategy, setStrategy] = useState("balanced");
   const [search, setSearch] = useState("");
@@ -6674,7 +6715,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const connected = !!cfg.connect;
   const [clock, setClock] = useState(90);
 
-  const players = useMemo(() => buildPlayers(cfg), [cfg]);
+  const players = useMemo(() => buildPlayers(cfg), [cfg, adpVersion]);
   // Resolve keepers pulled from a connected league (Sleeper) — name+slot → engine id+team — and merge
   // them as no-cost roster adds, so each keeper shows on the right team and counts toward strength.
   useMemo(() => {
@@ -7871,7 +7912,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                         {s.p ? <span style={{ opacity: railProj && !curSet.has(s.p.id) ? 0.5 : 1, color: railProj && !curSet.has(s.p.id) ? "var(--gold)" : "var(--ink)" }}><Dot pos={s.p.pos} />{s.p.name}{railProj && !curSet.has(s.p.id) && <span className="mut"> (proj)</span>}</span> : <span className="mut">—</span>}
                       </div>
                     ))}
-                    {bench.length > 0 && <div className="mut" style={{ fontSize: 11.5, marginTop: 6 }}>Bench: {bench.map((b) => b.name).join(", ")}</div>}
+                    {bench.length > 0 && (
+                      <div style={{ marginTop: 7, paddingTop: 7, borderTop: "1px solid var(--line)" }}>
+                        <div className="mut" style={{ fontSize: 10, letterSpacing: ".06em", marginBottom: 3 }}>BENCH ({bench.length})</div>
+                        {bench.map((b, i) => (
+                          <div key={i} style={{ fontSize: 12, padding: "2px 0", opacity: railProj && !curSet.has(b.id) ? 0.5 : 0.92 }}>
+                            <Dot pos={b.pos} /><span style={{ color: railProj && !curSet.has(b.id) ? "var(--gold)" : "var(--ink)" }}>{b.name}{railProj && !curSet.has(b.id) && <span className="mut"> (proj)</span>}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </>
                 );
               })()}
@@ -8088,6 +8138,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                       </div>
                     );
                   })}
+                  {(() => {
+                    const bench = lineupSlots(roster, cfg.sf).bench;
+                    if (!bench.length) return null;
+                    return (
+                      <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid var(--line)" }}>
+                        <div className="mut" style={{ fontSize: 10, letterSpacing: ".06em", marginBottom: 3 }}>BENCH ({bench.length})</div>
+                        {bench.map((b, k) => {
+                          const isP = teamsProj && !curSet.has(b.id);
+                          return (
+                            <div key={k} style={{ fontSize: 11.5, padding: "1px 0", opacity: isP ? 0.55 : 0.92 }}>
+                              <Dot pos={b.pos} /><span style={{ color: isP ? "var(--gold)" : "var(--ink)" }}>{b.name}{isP && <span className="mut"> (proj)</span>}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })}
