@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.25v";
+const BUILD_TAG = "2026.06.25w";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1693,24 +1693,27 @@ function buildPlayers(cfg) {
   // market actually has them, while young ascending players hold or rise. Redraft is unaffected.
   const isDynasty = cfg.type === "dynasty" || cfg.type === "keeper";
   if (isDynasty) {
-    // peak age (full value at/below this) and yearly decline rate past peak, by position.
+    // peak age (full value at/below this) and yearly decline rate past peak, by position. Dynasty values
+    // future seasons of production, so age matters a LOT — an old star has far fewer years left than a
+    // young one. Curves are intentionally steep with low floors so the dynasty board reorders by age
+    // (a 40-yo QB or 30-yo RB should fall well behind ascending youth, not hover near them).
     const AGE = {
-      RB: { peak: 24, decline: 0.115, floor: 0.26 }, // steepest fall — RBs age worst in dynasty
-      WR: { peak: 25, decline: 0.052, floor: 0.40 },
-      TE: { peak: 26, decline: 0.045, floor: 0.45 },
-      QB: { peak: 28, decline: 0.028, floor: 0.55 }, // ages best
+      RB: { peak: 24, decline: 0.16, floor: 0.14 },  // steepest fall — RBs age worst in dynasty
+      WR: { peak: 25, decline: 0.09, floor: 0.24 },
+      TE: { peak: 25, decline: 0.085, floor: 0.26 },
+      QB: { peak: 27, decline: 0.07, floor: 0.22 },  // ages best, but 35+ still drops hard in dynasty
     };
     const youthBump = (pos, age) => {
-      // young players (below peak) get a modest dynasty bump for years of control ahead
+      // young players (below peak) get a dynasty bump for years of control ahead
       const cfgA = AGE[pos]; if (!cfgA) return 1;
       const yearsYoung = Math.max(0, cfgA.peak - age);
-      return 1 + Math.min(0.18, yearsYoung * (pos === "RB" ? 0.05 : 0.035));
+      return 1 + Math.min(0.28, yearsYoung * (pos === "RB" ? 0.07 : 0.05));
     };
     const ageMult = (pos, age) => {
       const a = AGE[pos]; if (!a || !age || age <= 0) return 1;
       if (age <= a.peak) return youthBump(pos, age);
       const yearsPast = age - a.peak;
-      // exponential-ish decline, clamped to a floor so a great old player isn't zeroed out
+      // exponential decline, clamped to a floor so a great old player isn't fully zeroed out
       return Math.max(a.floor, Math.pow(1 - a.decline, yearsPast));
     };
     ps.forEach((p) => {
@@ -2255,8 +2258,9 @@ function lineupSlots(roster, sf) {
   for (let i = 0; i < SPEC.TE; i++) take(SPEC.TE > 1 ? `TE${i + 1}` : "TE", "TE");
   for (let i = 0; i < (SPEC.FLEX || 0); i++) { let best = null; ["RB","WR","TE"].forEach((pos) => { const p = sorted[pos][used[pos]]; if (p && (!best || p.pts > best.pts)) best = p; }); slots.push({ slot: (SPEC.FLEX > 1 ? `FLEX${i + 1}` : "FLEX"), p: best }); if (best) used[best.pos]++; }
   for (let i = 0; i < (SPEC.SUPER || 0); i++) { let b2 = null; POS.forEach((pos) => { const p = sorted[pos][used[pos]]; if (p && (!b2 || p.pts > b2.pts)) b2 = p; }); slots.push({ slot: "SFLX", p: b2 }); if (b2) used[b2.pos]++; }
+  // Bench ordered by POSITION (QB → RB → WR → TE), and within each position by projected points.
+  // (sorted[pos] is already points-descending, and POS iterates in QB/RB/WR/TE order.)
   const bench = []; POS.forEach((pos) => { for (let i = used[pos]; i < sorted[pos].length; i++) bench.push(sorted[pos][i]); });
-  bench.sort((a, b) => b.pts - a.pts);
   return { slots, bench };
 }
 function needLevel(count, bestVbd, dem, pos) {
@@ -6847,7 +6851,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const [manualSort, setManualSort] = useState(false); // true once the user clicks a column header
   const [showDrafted, setShowDrafted] = useState(false); // default: show best AVAILABLE; toggle to include drafted
   const [rookieOnly, setRookieOnly] = useState(false);
-  const DEFAULT_COLS = { adp: true, consensus: false, edge: true, proj: true, floor: false, ceil: false, vbd: true, rank: true, vbdTier: true, adpTier: false, mockAdp: false, myRank: false, blendAdp: false, role: true, age: false, bye: true, avail: true, nextpick: false, passYd: true, passTD: true, rushYd: true, rushTD: true, rec: true, recYd: true, recTD: true, tgt: false };
+  const DEFAULT_COLS = { adp: true, consensus: false, edge: true, proj: true, floor: false, ceil: false, vbd: true, rank: true, vbdTier: true, adpTier: false, mockAdp: false, myRank: false, blendAdp: false, role: true, age: false, bye: true, avail: true, passYd: true, passTD: true, rushYd: true, rushTD: true, rec: true, recYd: true, recTD: true, tgt: false };
   const DEFAULT_SECTION_ORDER = ["market", "mine", "value", "demo", "avail", "stat"];
   const savedPrefs = user?.colPrefs || null;
   const [cols, setCols] = useState({ ...DEFAULT_COLS, ...(savedPrefs?.cols || {}) });
@@ -6879,6 +6883,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   // The pick (overall number) the hub "Avail" column reports survival for. Defaults to your NEXT pick;
   // a dropdown lets you choose any remaining pick (e.g. one you traded for). null = your next pick.
   const [targetPick, setTargetPick] = useState(null);
+  const [rowLimit, setRowLimit] = useState(130); // how many board rows to show; "Show more" raises it
   const [availSort, setAvailSort] = useState("adp"); // "adp" | "vbd" — Availability tab sort
   // Pick lens: how ranked lists are ordered on the pick-decision views (Hub + Availability).
   //  "market"  = how the LEAGUE sees it — ADP order (what others will draft). Best for predicting.
@@ -7403,7 +7408,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     // and ADP follow the market.
     if (manualSort) {
       list.sort((a, b) => { const va = colVal(a, key), vb = colVal(b, key); if (typeof va === "string") return String(va).localeCompare(String(vb)) * dir; return (va - vb) * dir; });
-      return list.slice(0, 130);
+      return list.slice(0, rowLimit);
     }
 
     // strategy-driven board score (higher = ranks earlier). We anchor on market ADP and adjust.
@@ -7421,14 +7426,30 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
         case "adp": return adpScore(p);
         case "value": return vbd;
         case "build": {
+          // Roster-aware board. In a rebuild we PENALIZE age hard (old vets shouldn't headline a rebuild),
+          // reward youth/rookies, and apply the positional-need tilt. Win-now inverts the age preference.
+          const lane = myWindow.lane;
           const t = myWindow.tilt ? myWindow.tilt(p.pos, p.age, p.rookie) : 1;
-          return vbd * t;
+          let s = vbd * t;
+          if (myWindow.decided && lane === "rebuild") {
+            s -= Math.max(0, age - 25) * 16;          // every year past 25 docks value hard
+            s += Math.max(0, (27 - age)) * 6;          // and reward the genuinely young
+            if (p.rookie) s += 35;
+            if (age >= 29) s -= 40;                    // explicit cliff for clearly-old players
+          } else if (myWindow.decided && lane === "winnow") {
+            s += Math.max(0, (age - 24)) * 3;          // win-now tolerates/var prefers proven vets
+            if (p.rookie) s -= 20;
+          }
+          return s;
         }
         case "youth": {
-          // young AND productive — reward youth hard but keep it tied to real value so it's not just kids.
-          const youthBonus = Math.max(0, (29 - age)) * 7;
-          const rookieBonus = p.rookie ? 30 : 0;
-          return vbd + youthBonus + rookieBonus;
+          // YOUTH = age is the primary driver. Reward the young, and PENALIZE the old even if productive,
+          // so high-VBD veterans (Kelce, Hunter Henry, Aaron Jones) don't headline a youth board.
+          const youthBonus = Math.max(0, (27 - age)) * 12;
+          const agePenalty = Math.max(0, age - 25) * 16; // old players pushed down hard
+          const rookieBonus = p.rookie ? 40 : 0;
+          if (age >= 30) return vbd * 0.3 + youthBonus + rookieBonus - agePenalty - 30; // hard floor for old
+          return vbd * 0.7 + youthBonus + rookieBonus - agePenalty;
         }
         case "upside": {
           // BREAKOUT = ascending player with room to grow, NOT an aging vet with a high floor. Heavily
@@ -7449,8 +7470,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
       }
     };
     list.sort((a, b) => scoreFor(b) - scoreFor(a));
-    return list.slice(0, 130);
-  }, [players, posFilter, search, showDrafted, sortState, manualSort, strategy, draftedSet, sims, rookieOnly, myWindow]);
+    return list.slice(0, rowLimit);
+  }, [players, posFilter, search, showDrafted, sortState, manualSort, strategy, draftedSet, sims, rookieOnly, myWindow, rowLimit, targetSurv]);
 
   // Column registry. group: "draft" (board intelligence) or "stat" (projection inputs).
   // section groups columns under labeled dividers in the table + columns menu.
@@ -7477,7 +7498,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     { key: "bye", label: "Bye", group: "draft", section: "demo", num: true, sortable: true },
     // — Availability —
     { key: "avail", label: "Avail @", group: "draft", section: "avail", num: true, sortable: true, tip: "Chance this player survives to the selected pick. Use the dropdown in this column's header to choose any pick — picks your team owns are marked ★." },
-    { key: "nextpick", label: "@ pick after", group: "draft", section: "avail", num: true, sortable: true, tip: "Chance he survives to the pick after next." },
     // — Projected stats —
     { key: "passYd", label: "Pass yd", group: "stat", section: "stat", num: true, sortable: true },
     { key: "passTD", label: "Pass TD", group: "stat", section: "stat", num: true, sortable: true },
@@ -7550,15 +7570,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
       case "age": return p.age || "—";
       case "role": {
         if (!p.posSlot) return <span className="mut">—</span>;
-        // color the depth chip: green = clear starter (1), gold = flex/borderline (2-3 by pos), grey = depth
         const startThresh = p.pos === "WR" ? 3 : p.pos === "RB" ? 2 : 1;
         const isStarter = p.posDepth <= startThresh;
         const col = p.posDepth === 1 ? "var(--green)" : isStarter ? "var(--gold)" : "var(--mut)";
+        // compact: just the team depth slot (RB1, WR2…), full role in the tooltip. Keeps the column narrow.
         return (
-          <span title={p.role ? `${p.posSlot} on ${p.team} — ${p.role}` : p.posSlot} style={{ whiteSpace: "nowrap" }}>
-            <span style={{ color: col, fontWeight: 700 }}>{p.posSlot}</span>
-            {p.role ? <span className="mut" style={{ fontSize: 10.5, marginLeft: 4 }}>{p.role.split(" ")[0]}</span> : null}
-          </span>
+          <span title={p.role ? `${p.posSlot} on ${p.team} — ${p.role}` : p.posSlot} style={{ whiteSpace: "nowrap", color: col, fontWeight: 700 }}>{p.posSlot}</span>
         );
       }
       case "bye": return p.bye || "—";
@@ -7984,7 +8001,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 <i className={`ti ${showDrafted ? "ti-eye" : "ti-eye-off"}`} style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />{showDrafted ? "All players" : "Available only"}
               </button>
               <button className="btn btn-mini" onClick={() => setRanksWarn(true)} title="Your rankings & platform ADP — build a board or pick a saved one to power Edge / My ADP / Blend"><i className="ti ti-list-numbers" style={{ fontSize: 13 }} aria-hidden="true" /> My ranks</button>
-              <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — who traded which pick to whom. The board updates instantly." style={{ borderColor: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--line)", color: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--ink)" }}><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks{(cfg.pickTrades || []).length ? ` · ${(cfg.pickTrades || []).length} moved` : ""}</button>
+              <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — who traded which pick to whom. The board updates instantly."><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks{(cfg.pickTrades || []).length ? ` · ${(cfg.pickTrades || []).length} moved` : ""}</button>
               <button className="btn btn-mini" onClick={() => setColMenu((m) => !m)}><i className="ti ti-columns" style={{ fontSize: 13 }} aria-hidden="true" /> Columns</button>
               {colMenu && (
                 <div className="panel" style={{ position: "absolute", right: 10, top: 46, zIndex: 30, padding: 12, width: 252, boxShadow: "0 10px 30px #000C" }}>
@@ -8063,7 +8080,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                       onDragOver={(e) => { e.preventDefault(); }}
                       onDrop={(e) => { e.preventDefault(); moveColumn(dragCol, c.key); setDragCol(null); }}
                       onDragEnd={() => setDragCol(null)}
-                      onClick={() => c.sortable && setSort(c.sortKey || c.key)} title={c.tip ? c.tip + " · drag to reorder" : "Drag to reorder"}
+                      onClick={() => c.sortable && setSort(c.sortKey || c.key)} title={`${SECTION_LABELS[c.section] ? SECTION_LABELS[c.section] + " · " : ""}${c.tip ? c.tip + " · " : ""}Click to sort. Drag to reorder (columns can only be reordered within their own section).`}
                       style={{ cursor: "grab", ...(sectionStart[c.key] ? { borderLeft: "2px solid var(--line)" } : {}), ...(dragCol === c.key ? { opacity: 0.4 } : {}) }}>
                       {c.key === "edge" || c.key === "vbd" ? (
                         <span className="info" onMouseEnter={(e) => showTip(e, c.key === "edge" ? [
@@ -8119,6 +8136,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                   })}
                 </tbody>
               </table>
+              {rows.length >= rowLimit && (
+                <div style={{ textAlign: "center", padding: "10px 0" }}>
+                  <button className="btn btn-mini" onClick={() => setRowLimit((n) => n + 150)}>Show more players ▾</button>
+                  <span className="mut" style={{ fontSize: 10.5, marginLeft: 8 }}>Showing {rows.length}</span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -8282,7 +8305,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               <input type="checkbox" checked={showBoardVal} onChange={(e) => setShowBoardVal(e.target.checked)} style={{ accentColor: "var(--gold)", cursor: "pointer" }} />
               Show pick value
             </label>
-            <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — the board updates instantly to show picks in their new owners' columns." style={{ borderColor: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--line)", color: (cfg.pickTrades || []).length ? "var(--gold)" : "var(--ink)" }}><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks{(cfg.pickTrades || []).length ? ` · ${(cfg.pickTrades || []).length} moved` : ""}</button>
+            <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — the board updates instantly to show picks in their new owners' columns."><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks{(cfg.pickTrades || []).length ? ` · ${(cfg.pickTrades || []).length} moved` : ""}</button>
             <span className="mut" style={{ fontSize: 11.5, marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: "var(--gold)", marginRight: 4, verticalAlign: "middle" }} />Your picks</span>
               <span><i className="ti ti-arrows-exchange" style={{ fontSize: 11, color: "#4FD1A1", marginRight: 2 }} aria-hidden="true" />Traded</span>
@@ -8357,8 +8380,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                         {traded && <div style={{ fontSize: 8.5, letterSpacing: ".04em", textTransform: "uppercase", color: ownedByYou ? "var(--gold)" : "var(--mut)", marginTop: -1, fontWeight: 700 }}>{ownedByYou ? "YOUR PICK" : `→ ${TEAM_NAMES[owner].split(" ")[0]}`}</div>}
                         {p ? (
                           <>
-                            <div className="pl" style={{ color: isKeeper ? "var(--green)" : isProjected ? "var(--gold)" : "var(--ink)", fontStyle: isProjected ? "italic" : "normal" }}>
-                              <span className="posdot" style={{ background: POS_COLOR[p.pos] }}>{p.pos}</span> {p.name}
+                            <div className="pl" style={{ color: isKeeper ? "var(--green)" : isProjected ? "var(--gold)" : "var(--ink)", fontStyle: isProjected ? "italic" : "normal", display: "flex", alignItems: "center", gap: 4 }}>
+                              {p.sid && !isProjected ? <PlayerPhoto sid={p.sid} pos={p.pos} size={16} /> : <span className="posdot" style={{ background: POS_COLOR[p.pos] }}>{p.pos}</span>}
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
                             </div>
                             {showBoardVal && !isProjected && !isKeeper && Math.abs(v) > 0 && (
                               <div className="val num" style={{ color: v > 0 ? "var(--green)" : "var(--red)" }}>{v > 0 ? `+${v}` : v}</div>
