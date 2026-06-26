@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.25z";
+const BUILD_TAG = "2026.06.26a";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2329,55 +2329,62 @@ const valBg = (v) => (v === 0 ? "transparent" : v > 0 ? `rgba(124,217,178,${Math
 
 function makeOutlook(p, sims, drafted) {
   const out = [];
-  const tierWord = p.tier <= 1 ? "elite" : p.tier === 2 ? "strong" : p.tier === 3 ? "solid" : p.tier <= 5 ? "depth/upside" : "late-round";
-  const posLabel = { QB: "quarterback", RB: "running back", WR: "receiver", TE: "tight end", DL: "defensive lineman", LB: "linebacker", DB: "defensive back", K: "kicker", DST: "defense" }[p.pos] || p.pos;
-  const range = p.ceil != null && p.floor != null ? (p.ceil - p.floor > p.pts * 0.42 ? "boom-or-bust" : "steady") : null;
+  const tierWord = p.tier <= 1 ? "elite" : p.tier === 2 ? "strong" : p.tier === 3 ? "solid" : p.tier <= 5 ? "upside/depth" : "late-round";
+  const posLabel = { QB: "QB", RB: "RB", WR: "WR", TE: "TE", DL: "DL", LB: "LB", DB: "DB", K: "K", DST: "DST" }[p.pos] || p.pos;
   const edge = Math.round(p.adp - p.consensus);
   const gap = p.valueRank != null ? Math.round(p.adp - p.valueRank) : 0;
   const surv = !drafted && sims && sims.pct[0] && sims.pct[0][p.id] != null ? sims.pct[0][p.id] : null;
   const iv = injuryView(p);
 
-  // 0) HEADER with the player's Sleeper photo (if we have his Sleeper id), name, team & position.
+  // 0) HEADER — photo, name, team, position rank.
   out.push({ kind: "photo", sid: p.sid || null, name: p.name, team: p.team, pos: p.pos, posRank: p.posRank });
 
-  // 1) THE TAKE — one short verdict line your eye lands on first.
+  // 1) THE TAKE — one plain verdict line.
   let take, takeTone = "neutral";
-  if (gap > 8 || edge > 5) { take = "Value here — you can likely wait and still get him."; takeTone = "good"; }
-  else if (gap < -8 || edge < -5) { take = "Priced above his value — let someone else reach."; takeTone = "bad"; }
-  else if (surv != null && surv <= 20) { take = "Going soon — if you want him, take him now."; takeTone = "warn"; }
-  else { take = "Fairly priced at the market here."; takeTone = "neutral"; }
+  if (gap > 8) { take = `Good value — worth more than his draft cost (around pick ${Math.round(p.adp)}).`; takeTone = "good"; }
+  else if (gap < -8) { take = `Pricey — he's going earlier than his projection justifies.`; takeTone = "bad"; }
+  else if (surv != null && surv <= 20) { take = `Going soon — if you want him, take him now.`; takeTone = "warn"; }
+  else { take = `Fairly priced — about where he should go.`; takeTone = "neutral"; }
   out.push({ kind: "take", tone: takeTone, x: take });
 
-  // 2) STAT STRIP — compact chips, the numbers at a glance.
-  const chips = [`${p.pos}${p.posRank}`, `Tier ${p.tier}`, `${p.pts} pts`, `${p.vbd > 0 ? "+" : ""}${p.vbd.toFixed(0)} VBD`, `ADP ${p.adp.toFixed(1)}`];
-  if (surv != null) chips.push(`${surv}% to you`);
+  // 2) STAT STRIP — the numbers at a glance.
+  const chips = [`${p.pos}${p.posRank}`, `Tier ${p.tier}`, `proj ${p.pts} pts`, `ADP ${p.adp.toFixed(1)}`];
+  if (surv != null) chips.push(`${surv}% still there at your pick`);
   out.push({ kind: "stats", chips });
 
-  // 3) WHO — one-line identity sentence.
-  const article = /^[aeiou]/i.test(tierWord) ? "An" : "A";
-  out.push({ t: "Who", x: `${article} ${tierWord} ${posLabel}${range ? `, ${range} profile` : ""}.` });
-  // ROLE — depth on his NFL team + projected usage (the starter signal).
-  if (p.posSlot && p.role) {
-    out.push({ t: "Role", x: `${p.team || ""} ${p.posSlot} — ${p.role}.`.trim() });
+  // 3) SUMMARY — a flowing plain-English read, not blocky labels. Combines who he is, his NFL role,
+  // his age/situation, and what makes him interesting from the data we have.
+  const bits = [];
+  bits.push(`${p.name} is a ${tierWord} ${posLabel}${p.team ? ` for ${p.team}` : ""}${p.age ? `, age ${p.age}` : ""}${p.rookie ? " (rookie)" : ""}.`);
+  if (p.posSlot && p.role) bits.push(`He projects as his team's ${p.posSlot} — ${p.role.toLowerCase()}.`);
+  // Opportunity signals built from real data:
+  const opp = [];
+  if (p.rookie && p.posDepth === 1) opp.push("a rookie already projected to lead his position group");
+  else if (p.posDepth === 1 && p.age && p.age <= 24) opp.push("a young player already atop his depth chart");
+  if (gap > 12) opp.push("the market is sleeping on his projection");
+  if (p.ceil != null && p.pts && p.ceil - p.pts > p.pts * 0.35) opp.push("a high ceiling if his situation breaks right");
+  if (iv) opp.push(`working back from ${iv.label.toLowerCase()}`);
+  if (opp.length) bits.push(`What stands out: ${opp.join("; ")}.`);
+  out.push({ t: "Outlook", x: bits.join(" ") });
+
+  // 4) VALUE — explain the value/market read in plain words (no jargon).
+  let why;
+  if (gap > 8) why = `His projected production is worth roughly a pick-${Math.round(p.valueRank)} player, but he's drafted around pick ${Math.round(p.adp)} — so you get more than you pay for.`;
+  else if (gap < -8) why = `He's drafted around pick ${Math.round(p.adp)}, earlier than his projection (closer to pick ${Math.round(p.valueRank)}) suggests — you'd be paying a premium.`;
+  else why = `His draft cost (around pick ${Math.round(p.adp)}) lines up with his projected value.`;
+  out.push({ t: "Value", x: why });
+
+  // 5) AVAILABILITY — only when meaningful, in plain words.
+  if (surv != null) {
+    const avail = surv <= 20 ? `He likely won't last — only about ${surv}% chance he's still on the board when you pick again.`
+      : surv <= 55 ? `Roughly a coin flip (${surv}%) whether he makes it back to your next pick.`
+      : `Good chance (${surv}%) he's still available at your next pick, so you can wait if you want.`;
+    out.push({ t: "Will he last?", x: avail });
   }
 
-  // 4) WHY — the situational read.
-  let why;
-  if (gap > 8) why = `Market underprices him ~${gap} picks for this scoring.`;
-  else if (gap < -8) why = `Market prices him ~${Math.abs(gap)} picks above his value for this scoring.`;
-  else if (edge > 5) why = `This platform drafts him ~${edge} picks later than the field — room to wait.`;
-  else if (edge < -5) why = `This platform over-drafts him ~${Math.abs(edge)} picks vs. the field.`;
-  else why = `His ADP (${p.adp.toFixed(1)}) lines up with both this platform and the field.`;
-  if (surv != null) why += surv <= 20 ? ` Only ~${surv}% to survive to your next pick.` : surv <= 55 ? ` ~${surv}% coin-flip to make it back.` : ` ~${surv}% he's still there next time.`;
-  out.push({ t: "Why", x: why });
-
-  // 5) SUPPORTING — secondary detail, clearly subordinate.
-  if (p.floor != null && p.ceil != null) out.push({ t: "Range", x: `Floor ${p.floor} · proj ${p.pts} · ceiling ${p.ceil}.` });
-  out.push({ t: "Profile", x: `Age ${p.age || "—"}${p.rookie ? " · rookie" : ""} · bye week ${p.bye || "—"}.` });
-  if (iv) out.push({ t: `Injury — ${iv.label}${iv.back ? ` · ${iv.back}` : ""}`, x: iv.note });
-  if (p.outlook) out.push({ t: "Player", x: p.outlook });
-  if (p.teamOutlook) out.push({ t: "Team", x: p.teamOutlook });
-  if (p.adpOriginal != null && Math.abs(p.adpOriginal - p.adp) > 0.6) out.push({ t: "Keeper-adjusted ADP", x: `Effective ADP ${p.adp.toFixed(1)} (market ${p.adpOriginal.toFixed(1)}) — keepers ahead of him are off the board.` });
+  // 6) SUPPORTING
+  if (p.outlook) out.push({ t: "Note", x: p.outlook });
+  if (p.adpOriginal != null && Math.abs(p.adpOriginal - p.adp) > 0.6) out.push({ t: "Keeper-adjusted", x: `Effective ADP ${p.adp.toFixed(1)} (raw market ${p.adpOriginal.toFixed(1)}) — keepers ahead of him are off the board.` });
   return out;
 }
 
@@ -2460,26 +2467,33 @@ function boardPickOutlook(p, o, cfg, ownerLabel, roster, req) {
 
   // 3) PICK / PLAYER
   out.push({ t: "Pick", x: `${pickLabel(o)} — ${ownerLabel}` });
-  out.push({ t: "Player", x: `${p.name} (${p.pos}${p.posRank}, overall Tier ${p.tier}).` });
 
-  // 4) NEED — does it fit what the team needed? (only for real positional needs)
+  // 4) PLAYER OUTLOOK — a short read on the player himself, like the hub hover.
+  const tierWord = p.tier <= 1 ? "elite" : p.tier === 2 ? "strong" : p.tier === 3 ? "solid" : p.tier <= 5 ? "upside/depth" : "late-round";
+  const bits = [`${p.name} is a ${tierWord} ${p.pos}${p.team ? ` for ${p.team}` : ""}${p.age ? `, age ${p.age}` : ""}${p.rookie ? " (rookie)" : ""}.`];
+  if (p.posSlot && p.role) bits.push(`Projects as his team's ${p.posSlot} — ${p.role.toLowerCase()}.`);
+  out.push({ t: "Player", x: bits.join(" ") });
+
+  // 5) NEED — only when it's NOT obvious. Early-round picks are always "needs", so skip the fit note
+  // there; only flag genuinely informative cases (a clear luxury/redundant pick, or a real hole filled
+  // outside the early rounds).
   if (roster && req) {
     const have = roster.filter((x) => x.pos === p.pos).length;
     const need = req[p.pos] || 0;
-    let fit;
-    if (p.pos === "QB" && !((cfg.start && cfg.start.SUPER) > 0) && have >= 1) fit = `Already set at QB — a backup/luxury more than a need.`;
-    else if (need > 0 && have < need) fit = `Fills a need — they had ${have} of ${need} starting ${p.pos} slots.`;
-    else if (have >= need && need > 0) fit = `Depth pick — starting ${p.pos} slots were already covered (${have}/${need}).`;
-    else fit = `Adds ${p.pos} depth for flex/bench.`;
-    out.push({ t: "Need", x: fit });
+    const round = Math.floor(o / TEAMS) + 1;
+    let fit = null;
+    if (p.pos === "QB" && !((cfg.start && cfg.start.SUPER) > 0) && have >= 1) fit = `Already set at QB — more luxury than need.`;
+    else if (have >= need + 2 && need > 0) fit = `Stacking ${p.pos} — well past his starting need (${have} already).`;
+    else if (round >= 5 && need > 0 && have < need) fit = `Late fill at a still-open starting ${p.pos} slot.`;
+    if (fit) out.push({ t: "Roster fit", x: fit });
   }
 
-  // 5) OUTLOOK — quick overall read combining value + need direction.
+  // 6) VALUE TAKEAWAY — focused on the pick's value, not obvious need statements.
   let overall;
-  if (v > 3) overall = `Good process: got a falling player below market.`;
-  else if (v < -3) overall = roster && req && (req[p.pos] || 0) > roster.filter((x) => x.pos === p.pos).length ? `Aggressive, but it did plug a real need.` : `Early for the board — paid above the going rate.`;
+  if (v > 3) overall = `Good process — a falling player grabbed below market value.`;
+  else if (v < -3) overall = `Paid up — taken earlier than the board suggested.`;
   else overall = `Solid, on-market selection.`;
-  out.push({ t: "Outlook", x: overall });
+  out.push({ t: "Verdict", x: overall });
   return out;
 }
 
@@ -6827,6 +6841,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
 
   const [picks, setPicks] = useState(league.picks || []);
   const [preds, setPreds] = useState(league.preds || []);
+  // ---- HYPOTHETICAL / SCENARIO MODE -----------------------------------------------------------
+  // Lets you "play out" picks on top of the live draft to see how decisions would cascade, without
+  // affecting the real draft. While active, the live Sleeper sync is paused so your what-ifs aren't
+  // clobbered. `hypoBase` is the real pick count at the moment you started; "revert" truncates back to
+  // it. If new REAL picks come in while you're exploring, we flag it so you can sync up.
+  const [hypoMode, setHypoMode] = useState(false);
+  const [hypoBase, setHypoBase] = useState(0);       // pick count when hypo mode began
+  const [livePending, setLivePending] = useState(null); // {picks} captured from a real update while in hypo mode
   const [paused, setPaused] = useState(false);
   const [fast, setFast] = useState(false);
   // Mocks wait for an explicit Start so you can watch them unfold. Official drafts run immediately.
@@ -7173,6 +7195,45 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const currentPred = !done ? (onClock === userIdx ? advice?.verdict ?? null : path[0]?.p ?? null) : null;
   const currentProb = !done && onClock !== userIdx ? path[0]?.prob : null;
 
+  // ---- ENGINE ACCURACY BACKFILL --------------------------------------------------------------
+  // When you join a draft that's already underway (e.g. it's round 17 when you connect), the engine
+  // never "saw" the earlier picks, so its hit-rate would start blank. This replays the draft from the
+  // start and fills `preds` for every already-made pick with what the engine WOULD have predicted at
+  // that moment — so you can look back and judge how well it would have done. Runs once when picks are
+  // present but preds is short; results persist via onSave like any other pred.
+  const backfilledRef = useRef(false);
+  useEffect(() => {
+    if (backfilledRef.current) return;
+    if (!players.length || picks.length === 0) return;
+    if (preds.length >= picks.length) { backfilledRef.current = true; return; }
+    // Replay: at each overall pick o, compute the engine's most-likely pick from the state BEFORE o,
+    // using the same weighting the live predictor uses. We keep existing preds where present.
+    const filled = preds.slice();
+    const drafted = new Set();
+    // seed keepers/roster as drafted so they aren't "predicted"
+    Object.values(noCostByTeam || {}).flat().forEach((id) => drafted.add(id));
+    for (let o = 0; o < picks.length; o++) {
+      const actual = picks[o];
+      if (filled[o] !== undefined && filled[o] !== null) { drafted.add(actual); continue; }
+      const team = teamAt(o);
+      if (team === userIdx) { filled[o] = filled[o] ?? null; drafted.add(actual); continue; } // your own picks aren't "engine predictions"
+      const counts = { QB: 0, RB: 0, WR: 0, TE: 0 };
+      for (let j = 0; j < o; j++) { const pl = players[picks[j]]; if (pl && teamAt(j) === team && counts[pl.pos] != null) counts[pl.pos]++; }
+      const recent = picks.slice(Math.max(0, o - 8), o).map((id) => players[id] && players[id].pos).filter(Boolean);
+      const pickNum = o + 1, rd = Math.floor(o / TEAMS) + 1;
+      const cands0 = []; for (const p of sortedAdp) { if (!drafted.has(p.id)) { cands0.push(p); if (cands0.length >= 34) break; } }
+      const cands = legalCands(cands0, counts, cfg);
+      if (cands.length) {
+        const ws = cands.map((c) => weightFor(c, pickNum, counts, rd, recent, dem, ROUNDS));
+        let bi = 0; for (let i = 1; i < ws.length; i++) if (ws[i] > ws[bi]) bi = i;
+        filled[o] = cands[bi] ? cands[bi].id : null;
+      } else filled[o] = null;
+      drafted.add(actual);
+    }
+    backfilledRef.current = true;
+    setPreds(filled);
+  }, [players, picks, preds, sortedAdp, cfg, userIdx, dem, ROUNDS, noCostByTeam]);
+
   useEffect(() => {
     if (!autoSim) return; // manual / platform-sync: every pick is entered by the user or the feed
     if (!started || paused || done || onClock === userIdx || gated) return;
@@ -7236,6 +7297,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
           setLiveClock(d.pickTimerSec ? { deadlineMs: null, timerSec: d.pickTimerSec, skewMs: 0 } : null);
         }
         setPicks((prev) => {
+          // In hypothetical mode, don't clobber the user's what-if picks. Instead, if Sleeper has moved
+          // ahead of the real base we started from, stash it so we can offer to sync up.
+          if (hypoMode) {
+            if (mapped.length > hypoBase) setLivePending({ picks: mapped });
+            return prev;
+          }
           // Only update if Sleeper is ahead of us (more picks) to avoid clobbering local state.
           if (mapped.length > prev.length) return mapped;
           return prev;
@@ -7258,7 +7325,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     pull(); // immediate
     const iv = setInterval(pull, 5000);
     return () => { alive = false; clearInterval(iv); };
-  }, [sleeperLive, done, cfg, nameToId]);
+  }, [sleeperLive, done, cfg, nameToId, hypoMode, hypoBase]);
 
   const draftPlayer = (id) => {
     if (done || draftedSet.has(id) || (gated && onClock === userIdx)) return;
@@ -7278,6 +7345,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     setSearch(""); setTip(null);
   };
   const undo = () => { setPaused(true); setTip(null); setPicks((p) => p.slice(0, -1)); setPreds((p) => p.slice(0, -1)); };
+  // Enter scenario mode: remember where the real draft is so we can revert later.
+  const startHypo = () => { setHypoBase(picks.length); setHypoMode(true); setLivePending(null); };
+  // Leave scenario mode and drop all what-if picks back to the real draft state.
+  const revertHypo = () => { setPicks((p) => p.slice(0, hypoBase)); setPreds((p) => p.slice(0, hypoBase)); setHypoMode(false); setLivePending(null); };
+  // Sync to the latest real picks that arrived while exploring (overwrites the scenario).
+  const syncLive = () => { if (livePending) { setPicks(livePending.picks); setPreds((p) => p.slice(0, livePending.picks.length)); } setHypoMode(false); setLivePending(null); backfilledRef.current = false; };
   // Pick clock. For a live Sleeper draft we compute remaining time from Sleeper's REAL deadline
   // (deadlineMs, corrected for server/client clock skew), so it matches the Sleeper app exactly and
   // stays correct across refreshes. For mock/simulated drafts we fall back to a local countdown.
@@ -7820,6 +7893,31 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
       </div>
 
       <div style={{ position: "sticky", top: 0, zIndex: 12, background: "var(--bg)" }}>
+      {!done && (hypoMode || sleeperLive) && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 16px", flexWrap: "wrap", background: hypoMode ? "#1A1505" : "var(--panel2)", borderBottom: `1px solid ${hypoMode ? "var(--gold)" : "var(--line)"}` }}>
+          {hypoMode ? (
+            <>
+              <i className="ti ti-flask" style={{ fontSize: 15, color: "var(--gold)" }} aria-hidden="true" />
+              <span style={{ fontSize: 12.5, color: "var(--gold)", fontWeight: 600 }}>Scenario mode — exploring what-if picks ({Math.max(0, picks.length - hypoBase)} added). The real draft isn't affected.</span>
+              {livePending && livePending.picks.length > hypoBase && (
+                <span className="chip" style={{ borderColor: "var(--red)", color: "var(--red)", background: "#1c0e0c" }} title="Real picks have been made in Sleeper since you started exploring.">the live draft moved on</span>
+              )}
+              <div style={{ flex: 1 }} />
+              {livePending && livePending.picks.length > hypoBase && (
+                <button className="btn btn-mini" style={{ borderColor: "var(--gold)", color: "var(--gold)" }} onClick={syncLive}>Update with live picks</button>
+              )}
+              <button className="btn btn-mini" onClick={revertHypo}><i className="ti ti-arrow-back-up" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Revert to live draft</button>
+            </>
+          ) : (
+            <>
+              <i className="ti ti-flask" style={{ fontSize: 14, color: "var(--mut)" }} aria-hidden="true" />
+              <span className="mut" style={{ fontSize: 12 }}>Want to test how picks would play out? Try a scenario without touching the real draft.</span>
+              <div style={{ flex: 1 }} />
+              <button className="btn btn-mini" onClick={startHypo}>Explore a scenario →</button>
+            </>
+          )}
+        </div>
+      )}
       {!done && (
         <div className="hairline" style={{ background: "var(--panel2)" }}>
           <div className="ticker">
