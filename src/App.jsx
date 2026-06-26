@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.25y";
+const BUILD_TAG = "2026.06.25z";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2207,7 +2207,7 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
   const path = []; let passedUser = false, afterUser = 0;
   // How far past YOUR next pick to keep projecting. We show a healthy look-ahead by default (the board
   // scrolls horizontally), and `extend` widens it further for the "show more" action.
-  const aheadCap = extend ? 16 : 10;
+  const aheadCap = extend ? 18 : 7;
   for (let o = picks.length; o < TOTAL && path.length < 28; o++) {
     const t = teamAt(o), round = Math.floor(o / TEAMS) + 1, pickNum = o + 1;
     let entry;
@@ -2373,12 +2373,11 @@ function makeOutlook(p, sims, drafted) {
 
   // 5) SUPPORTING — secondary detail, clearly subordinate.
   if (p.floor != null && p.ceil != null) out.push({ t: "Range", x: `Floor ${p.floor} · proj ${p.pts} · ceiling ${p.ceil}.` });
+  out.push({ t: "Profile", x: `Age ${p.age || "—"}${p.rookie ? " · rookie" : ""} · bye week ${p.bye || "—"}.` });
   if (iv) out.push({ t: `Injury — ${iv.label}${iv.back ? ` · ${iv.back}` : ""}`, x: iv.note });
   if (p.outlook) out.push({ t: "Player", x: p.outlook });
   if (p.teamOutlook) out.push({ t: "Team", x: p.teamOutlook });
   if (p.adpOriginal != null && Math.abs(p.adpOriginal - p.adp) > 0.6) out.push({ t: "Keeper-adjusted ADP", x: `Effective ADP ${p.adp.toFixed(1)} (market ${p.adpOriginal.toFixed(1)}) — keepers ahead of him are off the board.` });
-  out.push({ t: "Bye", x: `Week ${p.bye || "—"}` });
-  out.push({ t: "How to read this", x: `The take up top is the verdict for your seat right now. "Value/Reach" weighs his Sleeper ADP against his projected value; the survival % is his chance of lasting to your next pick. Use it to decide whether to take him now or wait.` });
   return out;
 }
 
@@ -2527,15 +2526,15 @@ select.gs:hover{border-color:var(--gold)}
 .tickcard.you{border-color:var(--gold);background:#1A1505}
 .tickcard.clock{border-color:#33476B;background:#0F1B30}
 .meter{height:3px;background:var(--line);border-radius:2px;margin-top:6px;overflow:hidden}.meter>div{height:100%;background:var(--gold)}
-table.board{width:auto;min-width:100%;border-collapse:separate;border-spacing:0;font-size:13px}
-table.board th{font-family:'Barlow Condensed';text-transform:uppercase;letter-spacing:.06em;font-size:12px;color:var(--mut);text-align:left;padding:8px 7px;border-bottom:2px solid var(--line);position:sticky;top:0;background:linear-gradient(180deg,var(--panel),var(--panel2));cursor:pointer;white-space:nowrap;z-index:2}
-table.board th.num,table.board td.num{text-align:right;width:1px}
+table.board{width:max-content;min-width:100%;border-collapse:separate;border-spacing:0;font-size:13px;table-layout:auto}
+table.board th{font-family:'Barlow Condensed';text-transform:uppercase;letter-spacing:.06em;font-size:12px;color:var(--mut);text-align:left;padding:8px 9px;border-bottom:2px solid var(--line);position:sticky;top:0;background:linear-gradient(180deg,var(--panel),var(--panel2));cursor:pointer;white-space:nowrap;z-index:2}
+table.board th.num,table.board td.num{text-align:left;white-space:nowrap}
 table.board th:hover{color:var(--ink)}
 table.board tr.sechead th{top:0;z-index:3;padding:2px 4px;border-bottom:1px solid var(--line);cursor:default}
 table.board tr.sechead th:hover{color:var(--gold)}
 table.board thead tr:nth-child(2) th{top:22px}
 table.board tr.sechead th.frz{z-index:5}
-table.board td{padding:6px 7px;border-bottom:1px solid #16203320}
+table.board td{padding:6px 9px;border-bottom:1px solid #16203320;white-space:nowrap}
 table.board tbody tr:nth-child(even) td{background:#10141b66}
 table.board tbody tr:hover td{background:#1b2740aa}
 table.board th.frz,table.board td.frz{position:sticky;left:0;z-index:3;background:var(--panel)}
@@ -7878,7 +7877,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 <div className="mut num" style={{ fontSize: 10, marginTop: 2 }}>{step.prob}% likely</div>
               </div>
             ))}
-            <button className="btn btn-mini" style={{ alignSelf: "center", flexShrink: 0 }} onClick={() => setFutureBig((b) => !b)} title="The tracker scrolls horizontally — drag or scroll right to see picks further ahead.">{futureBig ? "« show fewer" : "see further ahead »"}</button>
+            <button className="btn btn-mini" style={{ alignSelf: "center", flexShrink: 0, borderColor: "var(--gold)", color: "var(--gold)" }} onClick={() => setFutureBig((b) => !b)} title="Show more upcoming picks. The tracker scrolls horizontally — scroll right to see them all.">{futureBig ? "« show fewer" : "show more picks »"}</button>
           </div>
         </div>
       )}
@@ -8136,7 +8135,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                     })}
                   </tr>
                   <tr>
-                  <th className="frz" onClick={() => setSort("name")} style={{ minWidth: 150, width: 1, whiteSpace: "nowrap" }}>Player{arrow("name")}</th>
+                  <th className="frz" onClick={() => setSort("name")} style={{ whiteSpace: "nowrap" }}>Player{arrow("name")}</th>
                   {activeCols.map((c) => (
                     <th key={c.key} className="num" draggable
                       onDragStart={(e) => { setDragCol(c.key); e.dataTransfer.effectAllowed = "move"; }}
@@ -8159,12 +8158,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                         // it doesn't take up a separate controls row.
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }} onClick={(e) => e.stopPropagation()}>
                           <span style={{ fontSize: 10.5 }}>Avail @</span>
-                          <select className="gs" style={{ fontSize: 11, padding: "1px 3px", border: "none", background: "transparent", color: "var(--gold)", fontWeight: 700, cursor: "pointer" }}
+                          <select className="gs" style={{ fontSize: 11, padding: "1px 2px", border: "none", background: "transparent", color: "var(--gold)", fontWeight: 700, cursor: "pointer", maxWidth: 64 }}
                             value={targetPick != null ? targetPick : (myNextOverall != null ? myNextOverall + 1 : "")}
                             onChange={(e) => setTargetPick(e.target.value ? +e.target.value : null)}
                             onMouseDown={(e) => e.stopPropagation()} draggable={false}>
                             {remainingPicks.map((pp) => (
-                              <option key={pp.o} value={pp.overall}>{pp.mine ? "★ " : ""}{pp.label}{pp.o === myNextOverall ? " (next)" : ""}</option>
+                              <option key={pp.o} value={pp.overall}>{pp.mine ? "★" : ""}{pp.label}</option>
                             ))}
                           </select>
                         </span>
@@ -8187,9 +8186,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                             {!gone
                               ? <button className={`btn btn-mini${onClock === userIdx ? " btn-gold" : ""}`} style={{ flexShrink: 0, border: onClock === userIdx ? "none" : "1.5px solid #fff", fontWeight: 700 }} onClick={() => draftPlayer(p.id)}>{onClock === userIdx ? "Draft" : "Pick"}</button>
                               : <span style={{ width: 38, flexShrink: 0 }} />}
-                            <span onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone))} onMouseLeave={hideTip} style={{ cursor: "help", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 7 }}>
-                              <PlayerPhoto sid={p.sid} pos={p.pos} size={22} />
-                              <span><PosName p={p} /> <span className="mut">{p.team}</span></span>
+                            <span onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone))} onMouseLeave={hideTip} style={{ cursor: "help", whiteSpace: "nowrap" }}>
+                              <PosName p={p} /> <span className="mut">{p.team}</span>
                             </span>
                             {injInfo && <span onMouseEnter={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note }])} onMouseLeave={hideTip}
                               style={{ flexShrink: 0, height: 14, borderRadius: 3, background: injInfo.color, color: "#fff", fontSize: 8.5, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "help", padding: "0 4px", letterSpacing: ".02em" }} title="">{injInfo.abbr}</span>}
