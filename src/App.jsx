@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.25n";
+const BUILD_TAG = "2026.06.25o";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1515,6 +1515,14 @@ const rosterCountAt = (teamIdx, pos) => (ROSTER_ADDS[teamIdx] || []).reduce((n, 
 const seedRosterCounts = (teamIdx, counts) => { (ROSTER_ADDS[teamIdx] || []).forEach((r) => { if (counts[r.pos] != null) counts[r.pos]++; }); };
 const hasRosterAdds = () => Object.keys(ROSTER_ADDS).length > 0;
 const pickLabel = (o) => `${Math.floor(o / TEAMS) + 1}.${String((o % TEAMS) + 1).padStart(2, "0")}`;
+// Format a countdown in seconds. Shows H:MM:SS for long (slow-draft) timers, M:SS otherwise — so a
+// Sleeper draft with hours per pick reads "4:12:30" instead of a giant minute count like "252:30".
+const fmtClock = (secs) => {
+  const s = Math.max(0, Math.floor(secs));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  return `${m}:${String(sec).padStart(2, "0")}`;
+};
 const ordinal = (n) => { const s = ["th","st","nd","rd"], v = n % 100; return n + (s[(v-20)%10] || s[v] || s[0]); };
 const totalOf = (cfg) => TEAMS * cfg.rounds;
 // Clipboard with a textarea fallback (the artifact iframe often blocks the async API).
@@ -1633,30 +1641,30 @@ function buildPlayers(cfg) {
   // points-per-reception over the WR/RB rate (0.5 ≈ "TE premium", 1.0 ≈ "super TE premium").
   const teRawSorted = ps.filter((p) => p.pos === "TE").map((p) => p.adp0).sort((a, b) => a - b);
   const teRankOfRaw = (raw) => { const i = teRawSorted.indexOf(raw); return i < 0 ? teRawSorted.length : i + 1; };
+  // If the loaded pool's ADP is ALREADY for this format (e.g. we loaded the SF-dynasty board for an
+  // SF-dynasty league), the published ADP already reflects SF/TE-premium — so we must NOT re-apply the
+  // synthetic SF/TE transform on top (that double-counts and overweights QBs). We only transform when the
+  // loaded ADP format differs from this league's format (e.g. SF league on a 1QB-baseline pool).
+  const loadedFmt = (typeof LIVE_PACK_FORMAT !== "undefined" && LIVE_PACK_FORMAT) ? LIVE_PACK_FORMAT : "";
+  const loadedIsSF = /\|SF\|/.test(loadedFmt);
+  const loadedIsTEP = /\|TEP\|/.test(loadedFmt);
   const adpTransform = (raw, pos) => {
     let a = raw;
-    if (sf) {
+    if (sf && !loadedIsSF) {
       if (pos === "QB") {
-        // Superflex lifts QBs, but only MODESTLY. We blend a small fraction toward an SF target so elite
-        // QBs rise a little and mid/back QBs barely move — never overpowering the skill-position field.
-        // (A heavy push here was overweighting QBs: forcing every QB into a high slot regardless of market.)
+        // Superflex lifts QBs, but only MODESTLY (this runs only when the loaded ADP is a 1QB board).
         const r = qbRankOfRaw(raw);
-        // SF target by QB rank: the top few QBs belong in round 1 (SF makes elite QBs premium), then the
-        // position fans out. Tuned so ~3-5 elite QBs reach the top 12, not 7-8 (overweight) or 0 (too soft).
         const target = r <= 6 ? 4 + (r - 1) * 4 : 28 + (r - 6) * 7;
-        // blend ~55% toward the target so elite QBs clearly rise but mid/back QBs stay mid-board.
         a = raw * 0.45 + target * 0.55;
-        a = Math.min(a, raw); // an SF lift can only move a QB UP (lower number), never down
+        a = Math.min(a, raw);
         a = Math.max(1.8, a);
       } else {
-        a = raw * 1.02; // skill players slide only very slightly
+        a = raw * 1.02;
       }
     }
-    if (teMult > 0 && pos === "TE") {
-      // rank-weighted pull-up: top TEs get a strong multiplier that fades down the position.
+    if (teMult > 0 && pos === "TE" && !loadedIsTEP) {
       const r = teRankOfRaw(raw);
-      const strength = Math.min(1, teMult / 0.5); // 0.5 PPR-TE bump = full strength, scales up
-      // fraction of the gap to the front of the board we close, biggest for TE1/TE2
+      const strength = Math.min(1, teMult / 0.5);
       const pull = strength * Math.max(0.08, 0.46 - (r - 1) * 0.055);
       a = Math.max(1.4, raw * (1 - pull));
     }
@@ -1841,6 +1849,56 @@ function buildPlayers(cfg) {
     const avail = ps.filter((p) => !keptIds.has(p.id) && POS.includes(p.pos)).sort((a, b) => a.adpOriginal - b.adpOriginal);
     avail.forEach((p, i) => { p.adp = allAdpSlots[i] != null ? allAdpSlots[i] : p.adpOriginal; });
   }
+  // ---- TEAM DEPTH RANK + USAGE ROLE ----------------------------------------------------------
+  // For each NFL team, rank skill players within their position by projected points (RB1/RB2, WR1/WR2/WR3,
+  // etc.) — this is the "starter" signal: who's actually the team's top option at the spot. We also infer
+  // a usage ROLE from the projected stat line (bellcow vs committee RB; alpha/secondary/depth WR-TE).
+  const byTeamPos = {};
+  ps.forEach((p) => {
+    if (!POS.includes(p.pos) || !p.team || p.team === "FA") return;
+    const key = `${p.team}|${p.pos}`;
+    (byTeamPos[key] = byTeamPos[key] || []).push(p);
+  });
+  Object.values(byTeamPos).forEach((arr) => {
+    arr.sort((a, b) => b.pts - a.pts);
+    arr.forEach((p, i) => {
+      p.posDepth = i + 1; // 1 = team's top option at the position
+      p.posSlot = `${p.pos}${i + 1}`; // e.g. "RB1", "WR3"
+    });
+  });
+  // Role inference from projected usage (the stat line carries projected volume).
+  ps.forEach((p) => {
+    p.role = null;
+    const s = p.stats || {};
+    if (p.pos === "RB") {
+      const att = s.rushAtt || 0, tgt = s.tgt || 0;
+      const touches = att + (s.rec || 0);
+      if (touches >= 250) p.role = tgt >= 55 ? "Bellcow (3-down)" : "Bellcow rusher";
+      else if (touches >= 150) p.role = tgt >= 50 ? "Lead, pass-catching" : "Lead, committee";
+      else if (tgt >= 45 && att < 120) p.role = "Pass-catching back";
+      else if (touches >= 80) p.role = "Committee / rotational";
+      else p.role = "Backup / handcuff";
+    } else if (p.pos === "WR") {
+      const tgt = s.tgt || 0;
+      if (tgt >= 140) p.role = "Alpha (high target share)";
+      else if (tgt >= 105) p.role = "Clear WR1/WR2";
+      else if (tgt >= 75) p.role = "Secondary target";
+      else if (tgt >= 45) p.role = "Rotational / depth";
+      else p.role = "Deep depth";
+    } else if (p.pos === "TE") {
+      const tgt = s.tgt || 0;
+      if (tgt >= 100) p.role = "Featured (move TE)";
+      else if (tgt >= 65) p.role = "Every-down TE";
+      else if (tgt >= 40) p.role = "Secondary option";
+      else p.role = "Blocking / depth";
+    } else if (p.pos === "QB") {
+      const py = s.passYd || 0, ry = s.rushYd || 0;
+      if (ry >= 450) p.role = "Dual-threat starter";
+      else if (py >= 4000) p.role = "Volume passer";
+      else if (py >= 3000) p.role = "Starter";
+      else p.role = "Backup / committee";
+    }
+  });
   return ps;
 }
 
@@ -2258,6 +2316,10 @@ function makeOutlook(p, sims, drafted) {
   // 3) WHO — one-line identity sentence.
   const article = /^[aeiou]/i.test(tierWord) ? "An" : "A";
   out.push({ t: "Who", x: `${article} ${tierWord} ${posLabel}${range ? `, ${range} profile` : ""}.` });
+  // ROLE — depth on his NFL team + projected usage (the starter signal).
+  if (p.posSlot && p.role) {
+    out.push({ t: "Role", x: `${p.team || ""} ${p.posSlot} — ${p.role}.`.trim() });
+  }
 
   // 4) WHY — the situational read.
   let why;
@@ -2569,8 +2631,32 @@ export default function App() {
         // Backend mode: restore the real session from the token, and handle a Stripe return.
         if (hasBackend) {
           // Load the live player pack (real teams, projections, injuries, ADP) and feed the engine.
+          // We choose the ADP FORMAT from the user's saved leagues (their most common format) so the board
+          // mirrors the Sleeper trends they actually draft against — e.g. an SF-dynasty player gets the
+          // SF-dynasty board, not a 1QB-redraft baseline. This happens ONCE at startup, before any draft
+          // room exists, so there are no stored picks to disturb (the pool is stable for the session).
           try {
-            const pack = await api.playerPack("PPR|1QB|STD|REDRAFT|12", undefined);
+            let fmt = "PPR|1QB|STD|REDRAFT|12";
+            let opts = {};
+            try {
+              const stored = window.storage ? await window.storage.get("gs-state") : null;
+              const lgs = stored && stored.value ? (JSON.parse(stored.value).leagues || []) : [];
+              if (lgs.length) {
+                // tally formats; pick the most common (ties → most recent league)
+                const tally = {};
+                lgs.forEach((lg) => { if (lg && lg.cfg) { const k = backendFormatKey(lg.cfg); tally[k] = (tally[k] || 0) + 1; } });
+                let best = null, bestN = 0;
+                Object.entries(tally).forEach(([k, n]) => { if (n > bestN) { best = k; bestN = n; } });
+                if (best) fmt = best;
+                // K/DST/IDP options from that dominant league
+                const domLg = lgs.find((lg) => lg && lg.cfg && backendFormatKey(lg.cfg) === best);
+                if (domLg && domLg.cfg && domLg.cfg.start) {
+                  const st = domLg.cfg.start;
+                  opts = { k: !!(st.K > 0), dst: !!(st.DST > 0), idp: !!((st.DL || 0) + (st.LB || 0) + (st.DB || 0) + (st.IDPFLEX || 0) > 0) };
+                }
+              }
+            } catch (e) { /* fall back to default format */ }
+            const pack = await api.playerPack(fmt, undefined, opts);
             if (applyLivePack(pack)) setDataVersion((v) => v + 1);
           } catch (e) { /* fall back to built-in dataset if unavailable */ }
           try {
@@ -6674,7 +6760,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const [sortState, setSortState] = useState({ key: "adp", dir: 1 });
   const [showDrafted, setShowDrafted] = useState(false); // default: show best AVAILABLE; toggle to include drafted
   const [rookieOnly, setRookieOnly] = useState(false);
-  const DEFAULT_COLS = { adp: true, consensus: false, edge: true, proj: true, floor: false, ceil: false, vbd: true, rank: true, vbdTier: true, adpTier: false, mockAdp: false, myRank: false, blendAdp: false, age: false, bye: true, avail: true, nextpick: false, passYd: true, passTD: true, rushYd: true, rushTD: true, rec: true, recYd: true, recTD: true, tgt: false };
+  const DEFAULT_COLS = { adp: true, consensus: false, edge: true, proj: true, floor: false, ceil: false, vbd: true, rank: true, vbdTier: true, adpTier: false, mockAdp: false, myRank: false, blendAdp: false, role: true, age: false, bye: true, avail: true, nextpick: false, passYd: true, passTD: true, rushYd: true, rushTD: true, rec: true, recYd: true, recTD: true, tgt: false };
   const DEFAULT_SECTION_ORDER = ["market", "mine", "value", "demo", "avail", "stat"];
   const savedPrefs = user?.colPrefs || null;
   const [cols, setCols] = useState({ ...DEFAULT_COLS, ...(savedPrefs?.cols || {}) });
@@ -7099,6 +7185,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
       case "myRank": return myRanks.map[p.id] ? myRanks.map[p.id].rank : 9999;
       case "blendAdp": return myRanks.map[p.id] ? myRanks.map[p.id].blend : 9999;
       case "age": return p.age || 99;
+      case "role": return p.posDepth != null ? p.posDepth : 99; // sort by team depth (RB1 before RB2)
       case "bye": return p.bye || 99;
       case "avail": return sims ? (sims.pct[0][p.id] ?? -1) : -1;
       case "nextpick": return sims && sims.pct[1] ? (sims.pct[1][p.id] ?? -1) : -1;
@@ -7142,14 +7229,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     // POSITIONAL NEED: how many starters you still lack at each position vs your league's requirements.
     // This makes "Your build" reflect team NEEDS, not just age — a stacked position gets pushed down,
     // an empty starting slot gets pulled up. Need is meaningful from pick 1 (you always have needs).
+    // We count BOTH your draft picks AND your existing roster (dynasty/keeper holdings) so the need is real.
     const req = REQ_F(cfg.sf); // starters needed per position incl. flex share
     const have = { QB: 0, RB: 0, WR: 0, TE: 0 };
     myCurrent.forEach((p) => { if (have[p.pos] != null) have[p.pos]++; });
+    // add existing-roster position counts (from a connected dynasty/keeper league) so "need" reflects
+    // your true roster, not just what you've drafted in this session.
+    if (typeof rosterCountAt === "function" && hasRosterAdds && hasRosterAdds()) {
+      ["QB", "RB", "WR", "TE"].forEach((pos) => { have[pos] += rosterCountAt(userIdx, pos); });
+    }
     const needScore = (pos) => {
       if (have[pos] == null) return 0;
       const r = req[pos] || 0;
       const deficit = r - have[pos];           // >0 = still need starters here
-      if (deficit > 0) return Math.min(1, deficit / Math.max(1, r));   // 0..1 need
+      if (deficit > 0) return Math.min(1.2, deficit / Math.max(1, r) + 0.15); // 0..1.2 need (stronger)
       // already filled — mild negative (over-stacked) that grows the deeper you are past the requirement
       return Math.max(-0.6, -(have[pos] - r) * 0.18);
     };
@@ -7170,11 +7263,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
         if (rookie && isDyn) { if (lane === "rebuild") m *= 1.35; else if (lane === "winnow") m *= 0.78; }
       }
       const ns = needScore(pos);
-      m *= 1 + ns * 0.45;
-      return Math.max(0.2, Math.min(2.2, m));
+      m *= 1 + ns * 0.7; // need is a strong driver: a real starting hole clearly lifts the position
+      return Math.max(0.2, Math.min(2.4, m));
     };
     return { lane, label, confidence, picksIn: aged.length, avgAge, decided, tilt, have, req };
-  }, [myCurrent, cfg.type, cfg.sf]);
+  }, [myCurrent, cfg.type, cfg.sf, userIdx]);
 
   const rows = useMemo(() => {
     let list = players.slice();
@@ -7220,6 +7313,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     { key: "rank", label: "Rank", group: "draft", section: "value", num: true, sortable: true, tip: "Position rank by projected points." },
     { key: "vbdTier", label: "VBD tier", group: "draft", section: "value", num: true, sortable: true, tip: "Overall value tier from gaps in VBD." },
     // — Demographics —
+    { key: "role", label: "Role", group: "draft", section: "demo", num: false, sortable: true, tip: "The player's depth on his NFL team (RB1, WR2, etc.) and projected usage role — bellcow vs committee back, alpha vs depth receiver. The starter signal." },
     { key: "age", label: "Age", group: "draft", section: "demo", num: true, sortable: true },
     { key: "bye", label: "Bye", group: "draft", section: "demo", num: true, sortable: true },
     // — Availability —
@@ -7295,6 +7389,19 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
       case "myRank": { const r = myRanks.map[p.id]; if (!r) return <span className="mut">—</span>; return r.exact ? <span className="gold" style={{ fontWeight: 700 }} title="Your personal rank">{r.rank}</span> : <span className="mut" title="Consensus spot — you didn't personally rank this player">{r.rank}</span>; }
       case "blendAdp": { const r = myRanks.map[p.id]; if (!r) return <span className="mut">—</span>; return <span style={{ color: "var(--gold2)" }} title="Your rank blended with public consensus">{r.blend.toFixed(1)}</span>; }
       case "age": return p.age || "—";
+      case "role": {
+        if (!p.posSlot) return <span className="mut">—</span>;
+        // color the depth chip: green = clear starter (1), gold = flex/borderline (2-3 by pos), grey = depth
+        const startThresh = p.pos === "WR" ? 3 : p.pos === "RB" ? 2 : 1;
+        const isStarter = p.posDepth <= startThresh;
+        const col = p.posDepth === 1 ? "var(--green)" : isStarter ? "var(--gold)" : "var(--mut)";
+        return (
+          <span title={p.role ? `${p.posSlot} on ${p.team} — ${p.role}` : p.posSlot} style={{ whiteSpace: "nowrap" }}>
+            <span style={{ color: col, fontWeight: 700 }}>{p.posSlot}</span>
+            {p.role ? <span className="mut" style={{ fontSize: 10.5, marginLeft: 4 }}>{p.role.split(" ")[0]}</span> : null}
+          </span>
+        );
+      }
       case "bye": return p.bye || "—";
       case "avail": return gone ? "—" : av != null ? <span style={{ color: av < 35 ? "var(--red)" : av > 75 ? "var(--green)" : "var(--ink)" }}>{av}%</span> : "…";
       case "nextpick": return gone ? "—" : av2 != null ? <span className="mut">{av2}%</span> : "—";
@@ -7535,7 +7642,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                   ) : (
                     <>
                       <i className="ti ti-clock" style={{ fontSize: 12, color: clock <= 15 ? "var(--red)" : "var(--mut)" }} aria-hidden="true" />
-                      <span className="num" style={{ fontSize: 12, color: clock <= 15 ? "var(--red)" : "var(--mut)", fontWeight: clock <= 15 ? 700 : 400 }}>{Math.floor(clock / 60)}:{String(clock % 60).padStart(2, "0")} on the clock{liveClock && liveClock.deadlineMs ? " · live" : ""}</span>
+                      <span className="num" style={{ fontSize: 12, color: clock <= 15 ? "var(--red)" : "var(--mut)", fontWeight: clock <= 15 ? 700 : 400 }}>{fmtClock(clock)} on the clock{liveClock && liveClock.deadlineMs ? " · live" : ""}</span>
                     </>
                   )}
                 </div>
