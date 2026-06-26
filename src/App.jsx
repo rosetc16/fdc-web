@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.25u";
+const BUILD_TAG = "2026.06.25v";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2494,8 +2494,8 @@ select.gs:hover{border-color:var(--gold)}
 .btn:focus-visible{outline:2px solid var(--gold);outline-offset:1px}
 .btn-gold{background:var(--gold);color:#151002;border:none;font-weight:700}
 .btn-gold:hover{filter:brightness(1.08);border-color:transparent;background:var(--gold2);box-shadow:0 3px 16px rgba(242,182,60,.4)}
-.btn-mini{padding:2px 8px;font-size:11px;border-radius:6px}
-.btn-mini:hover{transform:none;box-shadow:none}
+.btn-mini{padding:3px 10px;font-size:11px;border-radius:6px;background:#1c1810}
+.btn-mini:hover{transform:none;box-shadow:none;background:#262017;border-color:var(--gold)}
 .tab{padding:8px 14px;cursor:pointer;border:none;background:none;color:var(--mut);font-family:'Barlow Condensed';font-size:16px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;border-bottom:2px solid transparent;transition:color .15s,border-color .15s}
 .tab:hover{color:var(--ink);border-bottom-color:#5a5a52}
 .tab.on{color:var(--ink);border-bottom-color:var(--gold)}
@@ -2537,6 +2537,7 @@ table.board tbody tr td.frz{border-left:3px solid transparent}
 .alert{border:1px solid var(--red);background:#2A1210;border-radius:8px;padding:8px 10px;color:#FFB4AC;font-size:13px}
 input.gs,select.gs{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:8px 10px;font-family:'Barlow';font-size:13px}
 input.gs:focus,select.gs:focus{outline:2px solid var(--gold);outline-offset:0}
+select.gs option{background:var(--panel2);color:var(--ink)}
 .gridboard{display:grid;grid-template-columns:repeat(12,minmax(88px,1fr));gap:3px;font-size:11px}
 .cell{border-radius:5px;padding:5px 6px;background:var(--panel2);border:1px solid var(--line);min-height:44px;cursor:default}
 /* --- Sleeper-style draft board --- */
@@ -2656,6 +2657,16 @@ function Wordmark({ size = 20 }) {
   );
 }
 const Dot = ({ pos }) => <span className="posdot" title={pos} style={{ background: POS_COLOR[pos] }} />;
+// Small round headshot from Sleeper's CDN. Hides itself if the image is missing (rookies/odd ids) so
+// the row never shows a broken-image icon. size in px.
+const PlayerPhoto = ({ sid, pos, size = 22 }) => {
+  if (!sid) return null;
+  return (
+    <img src={`https://sleepercdn.com/content/nfl/players/${sid}.jpg`} alt="" width={size} height={size}
+      onError={(e) => { e.currentTarget.style.display = "none"; }}
+      style={{ width: size, height: size, borderRadius: "50%", objectFit: "cover", objectPosition: "top center", flexShrink: 0, background: "#1c1810", border: `1.5px solid ${POS_COLOR[pos] || "var(--line)"}` }} />
+  );
+};
 const PosName = ({ p }) => <span><Dot pos={p.pos} /><span className="mut" style={{ fontSize: "0.92em" }}>{p.pos}</span> <b>{p.name}</b></span>;
 
 /* ============================================================ APP SHELL */
@@ -7465,7 +7476,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     { key: "age", label: "Age", group: "draft", section: "demo", num: true, sortable: true },
     { key: "bye", label: "Bye", group: "draft", section: "demo", num: true, sortable: true },
     // — Availability —
-    { key: "avail", label: targetPick != null ? `Avail @ ${pickLabel(targetOverall - 1)}` : "Avail @ next", group: "draft", section: "avail", num: true, sortable: true, tip: "Chance this player survives to the selected pick (the dropdown above the board). Defaults to your next pick; pick any slot to plan ahead or check a pick you traded for." },
+    { key: "avail", label: "Avail @", group: "draft", section: "avail", num: true, sortable: true, tip: "Chance this player survives to the selected pick. Use the dropdown in this column's header to choose any pick — picks your team owns are marked ★." },
     { key: "nextpick", label: "@ pick after", group: "draft", section: "avail", num: true, sortable: true, tip: "Chance he survives to the pick after next." },
     // — Projected stats —
     { key: "passYd", label: "Pass yd", group: "stat", section: "stat", num: true, sortable: true },
@@ -7964,17 +7975,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                   {myWindow.label}
                 </span>
               )}
-              <div style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--line)", borderRadius: 8, padding: "2px 6px 2px 9px" }} title="The 'Avail @' column shows each player's % chance of still being on the board at this pick. Defaults to your next pick; choose any pick to plan ahead — picks YOUR team owns are marked ★.">
-                <i className="ti ti-target" style={{ fontSize: 13, color: "var(--mut)" }} aria-hidden="true" />
-                <span className="mut" style={{ fontSize: 10.5 }}>Avail @</span>
-                <select className="gs" style={{ fontSize: 12, padding: "3px 6px", border: "none", background: "transparent" }}
-                  value={targetPick != null ? targetPick : (myNextOverall != null ? myNextOverall + 1 : "")}
-                  onChange={(e) => setTargetPick(e.target.value ? +e.target.value : null)}>
-                  {remainingPicks.map((p) => (
-                    <option key={p.o} value={p.overall}>{p.mine ? "★ " : ""}{p.label} (#{p.overall}){p.o === myNextOverall ? " — your next" : ""}</option>
-                  ))}
-                </select>
-              </div>
               <div style={{ flex: 1 }} />
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }} title="ADP always shows on the left. This switches the rest of the columns between value/info (rankings, projections, demographics, availability) and projected stats.">
                 <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: boardMode === "info" ? "var(--gold)" : "transparent", color: boardMode === "info" ? "#1A1505" : "var(--ink)", fontWeight: boardMode === "info" ? 700 : 400 }} onClick={() => setBoardMode("info")} title="Rankings, projections, value, demographics & availability">Value &amp; info</button>
@@ -8073,7 +8073,22 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                           { t: "VBD — value based drafting", x: "Projected points above a replacement-level starter at the position." },
                           { t: "Why it matters", x: "Makes positions comparable: a +60 RB beats a +40 WR even if the WR scores more raw points." },
                         ])} onMouseLeave={hideTip}>{c.label}</span>
-                      ) : c.label}{arrow(c.sortKey || c.key)}
+                      ) : c.key === "avail" ? (
+                        // The availability column header IS the pick selector — choose any remaining pick
+                        // (★ = your team owns it) to see survival odds at that pick. Lives in the header so
+                        // it doesn't take up a separate controls row.
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }} onClick={(e) => e.stopPropagation()}>
+                          <span style={{ fontSize: 10.5 }}>Avail @</span>
+                          <select className="gs" style={{ fontSize: 11, padding: "1px 3px", border: "none", background: "transparent", color: "var(--gold)", fontWeight: 700, cursor: "pointer" }}
+                            value={targetPick != null ? targetPick : (myNextOverall != null ? myNextOverall + 1 : "")}
+                            onChange={(e) => setTargetPick(e.target.value ? +e.target.value : null)}
+                            onMouseDown={(e) => e.stopPropagation()} draggable={false}>
+                            {remainingPicks.map((pp) => (
+                              <option key={pp.o} value={pp.overall}>{pp.mine ? "★ " : ""}{pp.label}{pp.o === myNextOverall ? " (next)" : ""}</option>
+                            ))}
+                          </select>
+                        </span>
+                      ) : c.label}{c.key === "avail" ? null : arrow(c.sortKey || c.key)}
                     </th>
                   ))}
                 </tr></thead>
@@ -8088,8 +8103,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                             {!gone
                               ? <button className={`btn btn-mini${onClock === userIdx ? " btn-gold" : ""}`} style={{ flexShrink: 0, border: onClock === userIdx ? "none" : "1.5px solid #fff", fontWeight: 700 }} onClick={() => draftPlayer(p.id)}>{onClock === userIdx ? "Draft" : "Pick"}</button>
                               : <span style={{ width: 38, flexShrink: 0 }} />}
-                            <span onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone))} onMouseLeave={hideTip} style={{ cursor: "help", whiteSpace: "nowrap" }}>
-                              <PosName p={p} /> <span className="mut">{p.team}</span>
+                            <span onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone))} onMouseLeave={hideTip} style={{ cursor: "help", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 7 }}>
+                              <PlayerPhoto sid={p.sid} pos={p.pos} size={22} />
+                              <span><PosName p={p} /> <span className="mut">{p.team}</span></span>
                             </span>
                             {injInfo && <span onMouseEnter={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note }])} onMouseLeave={hideTip}
                               style={{ flexShrink: 0, height: 14, borderRadius: 3, background: injInfo.color, color: "#fff", fontSize: 8.5, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "help", padding: "0 4px", letterSpacing: ".02em" }} title="">{injInfo.abbr}</span>}
@@ -9298,7 +9314,7 @@ function TradeToolsPage({ user, onBack, onHome, onSignOut }) {
 
 
 function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, showTip, hideTip, isMock, onExecuteTrade, tradingOn }) {
-  const [mode, setMode] = useState("chart"); // chart | evaluate | finder
+  const [mode, setMode] = useState("values"); // values | evaluate
   const myRoster = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => teamAt(x.o) === userIdx).map((x) => x.p);
   const teamRosters = useMemo(() => {
     const r = Array.from({ length: TEAMS }, () => []);
@@ -9347,11 +9363,15 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
     tePremMult: vbTep === "tep" ? (cfg.tePremMult > 0 ? cfg.tePremMult : 0.5) : 0,
     scoring: { ...(cfg.scoring || {}), rec: vbScoring === "ppr" ? 1 : vbScoring === "half" ? 0.5 : 0 },
   }), [cfg, vbType, vbTeams, vbQb, vbTep, vbScoring]);
-  // Compute, sort, and rank values for the synthetic format. Team count scales replacement depth, so we
-  // also nudge by teams: more teams = scarcer starters = higher values at the top (a light adjustment).
+  // Compute, sort, and rank values for the synthetic format. We REBUILD players from scratch for this
+  // format (buildPlayers recomputes projected points for the scoring AND the dynasty age-adjusted VBD) —
+  // otherwise switching dynasty/redraft or PPR wouldn't change anything, since tradeValue only re-reads
+  // already-baked pts/vbd. Team count scales replacement depth via a light top-end adjustment.
   const valuesRows = useMemo(() => {
+    let pool;
+    try { pool = buildPlayers(valuesCfg); } catch { pool = players; }
     const teamAdj = 1 + (vbTeams - 12) * 0.012; // ±1.2% per team away from 12
-    const list = players.filter((p) => POS.includes(p.pos)).map((p) => ({ p, v: Math.max(0, Math.round(tradeValue(p, valuesCfg) * teamAdj)) }));
+    const list = pool.filter((p) => POS.includes(p.pos)).map((p) => ({ p, v: Math.max(0, Math.round(tradeValue(p, valuesCfg) * teamAdj)) }));
     list.sort((a, b) => b.v - a.v);
     // KTC-style 0-9999 scale: normalize so the top asset ≈ 9999.
     const top = list.length ? list[0].v : 1;
@@ -9388,7 +9408,7 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
   return (
     <div style={{ padding: 14, maxWidth: 1100, margin: "0 auto" }}>
       <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-        {[["chart","Trade value chart"],["evaluate","Evaluate a trade"],["values","Player values database"]].map(([k, l]) => (
+        {[["values","Player values database"],["evaluate","Evaluate a trade"]].map(([k, l]) => (
           <button key={k} className="btn" style={{ borderColor: mode === k ? "var(--gold)" : "var(--line)" }} onClick={() => setMode(k)}>{l}</button>
         ))}
       </div>
