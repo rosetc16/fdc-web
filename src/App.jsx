@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.25w";
+const BUILD_TAG = "2026.06.25x";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2526,6 +2526,10 @@ select.gs:hover{border-color:var(--gold)}
 table.board{width:100%;border-collapse:separate;border-spacing:0;font-size:13px}
 table.board th{font-family:'Barlow Condensed';text-transform:uppercase;letter-spacing:.06em;font-size:12px;color:var(--mut);text-align:left;padding:8px 8px;border-bottom:2px solid var(--line);position:sticky;top:0;background:linear-gradient(180deg,var(--panel),var(--panel2));cursor:pointer;white-space:nowrap;z-index:2}
 table.board th:hover{color:var(--ink)}
+table.board tr.sechead th{top:0;z-index:3;padding:2px 4px;border-bottom:1px solid var(--line);cursor:default}
+table.board tr.sechead th:hover{color:var(--gold)}
+table.board thead tr:nth-child(2) th{top:22px}
+table.board tr.sechead th.frz{z-index:5}
 table.board td{padding:6px 8px;border-bottom:1px solid #16203320}
 table.board tbody tr:nth-child(even) td{background:#10141b66}
 table.board tbody tr:hover td{background:#1b2740aa}
@@ -6884,6 +6888,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   // a dropdown lets you choose any remaining pick (e.g. one you traded for). null = your next pick.
   const [targetPick, setTargetPick] = useState(null);
   const [rowLimit, setRowLimit] = useState(130); // how many board rows to show; "Show more" raises it
+  // PRIORITY QUEUE: players you've starred for this league. Persisted to localStorage keyed by league id
+  // so it survives refreshes and is separate per league. `queueOnly` filters the board to just these.
+  const queueKey = `fdc-queue-${league?.id || cfg.name || "default"}`;
+  const [queue, setQueue] = useState(() => { try { const r = JSON.parse(localStorage.getItem(queueKey) || "[]"); return new Set(Array.isArray(r) ? r : []); } catch { return new Set(); } });
+  const [queueOnly, setQueueOnly] = useState(false);
+  const toggleQueue = (name) => setQueue((prev) => {
+    const next = new Set(prev);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    try { localStorage.setItem(queueKey, JSON.stringify([...next])); } catch {}
+    return next;
+  });
   const [availSort, setAvailSort] = useState("adp"); // "adp" | "vbd" — Availability tab sort
   // Pick lens: how ranked lists are ordered on the pick-decision views (Hub + Availability).
   //  "market"  = how the LEAGUE sees it — ADP order (what others will draft). Best for predicting.
@@ -7398,6 +7413,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     let list = players.slice();
     if (posFilter !== "ALL") list = list.filter((p) => p.pos === posFilter);
     if (rookieOnly) list = list.filter((p) => p.rookie);
+    if (queueOnly) list = list.filter((p) => queue.has(p.name));
     if (search) { const q = search.toLowerCase(); list = list.filter((p) => p.name.toLowerCase().includes(q)); }
     if (!showDrafted) list = list.filter((p) => !draftedSet.has(p.id));
     const { key, dir } = sortState;
@@ -7471,7 +7487,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     };
     list.sort((a, b) => scoreFor(b) - scoreFor(a));
     return list.slice(0, rowLimit);
-  }, [players, posFilter, search, showDrafted, sortState, manualSort, strategy, draftedSet, sims, rookieOnly, myWindow, rowLimit, targetSurv]);
+  }, [players, posFilter, search, showDrafted, sortState, manualSort, strategy, draftedSet, sims, rookieOnly, myWindow, rowLimit, targetSurv, queue, queueOnly]);
 
   // Column registry. group: "draft" (board intelligence) or "stat" (projection inputs).
   // section groups columns under labeled dividers in the table + columns menu.
@@ -7547,6 +7563,26 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const sectionStart = {};
   let _prevSec = null;
   activeCols.forEach((c) => { if (c.section !== _prevSec) { sectionStart[c.key] = c.section; _prevSec = c.section; } });
+  // Group consecutive active columns by section, for the section-label header row. Each group spans its
+  // columns and can be moved left/right, which reorders the whole section relative to the others.
+  const sectionGroups = (() => {
+    const groups = []; let cur = null;
+    activeCols.forEach((c) => {
+      if (!cur || cur.sec !== c.section) { cur = { sec: c.section, count: 0 }; groups.push(cur); }
+      cur.count++;
+    });
+    return groups;
+  })();
+  // Move an entire section one step left/right among the (reorderable) sections.
+  const moveSection = (sec, dir) => {
+    setSectionOrder((prev) => {
+      const full = (prev && prev.length ? prev : DEFAULT_SECTION_ORDER).filter((s) => s !== "market");
+      const i = full.indexOf(sec); if (i < 0) return prev;
+      const j = i + dir; if (j < 0 || j >= full.length) return prev;
+      [full[i], full[j]] = [full[j], full[i]];
+      return full;
+    });
+  };
   const arrow = (k) => (sortState.key === k ? (sortState.dir < 0 ? " ▾" : " ▴") : "");
   const cellFor = (p, key, gone) => {
     const av = targetSurv ? targetSurv[p.id] : null;
@@ -7573,9 +7609,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
         const startThresh = p.pos === "WR" ? 3 : p.pos === "RB" ? 2 : 1;
         const isStarter = p.posDepth <= startThresh;
         const col = p.posDepth === 1 ? "var(--green)" : isStarter ? "var(--gold)" : "var(--mut)";
-        // compact: just the team depth slot (RB1, WR2…), full role in the tooltip. Keeps the column narrow.
+        // slot + role description, but capped width so the column doesn't sprawl. Full role in tooltip.
         return (
-          <span title={p.role ? `${p.posSlot} on ${p.team} — ${p.role}` : p.posSlot} style={{ whiteSpace: "nowrap", color: col, fontWeight: 700 }}>{p.posSlot}</span>
+          <span title={p.role ? `${p.posSlot} on ${p.team} — ${p.role}` : p.posSlot} style={{ display: "inline-block", maxWidth: 140, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", verticalAlign: "middle" }}>
+            <span style={{ color: col, fontWeight: 700 }}>{p.posSlot}</span>
+            {p.role ? <span className="mut" style={{ fontSize: 10.5, marginLeft: 4 }}>{p.role}</span> : null}
+          </span>
         );
       }
       case "bye": return p.bye || "—";
@@ -7968,10 +8007,22 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               <input className="gs" style={{ width: 200 }} placeholder="Search for a player"
                 value={search} onChange={(e) => setSearch(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") { const hit = rows.find((p) => !draftedSet.has(p.id)); if (hit) draftPlayer(hit.id); } }} />
+              <button className="btn btn-mini" style={{ borderColor: "var(--gold)", color: "var(--gold)" }}
+                onMouseEnter={(e) => showTip(e, [
+                  { kind: "take", tone: "good", x: "Tips & how to use this board" },
+                  { t: "Strategy", x: "The Strategy dropdown reshapes the whole board — Balanced follows the market, while My build, Upside, Youth, and the position lenses tilt toward your approach. Click a column header any time to sort by it instead." },
+                  { t: "Priority queue", x: "Star (☆) any player to add him to your priority queue, then hit Priority to see only your starred targets. It saves automatically per league." },
+                  { t: "Avail @", x: "The Avail column's header is a dropdown — pick any upcoming slot (★ = a pick you own) to see each player's chance of surviving to that pick." },
+                  { t: "Edge / My ADP / Blend", x: "Add your own rankings (or import your platform's) via 'My ranks' to unlock columns that compare your board to Sleeper ADP and surface values." },
+                  { t: "Columns", x: "Drag column headers to reorder within a section; use the ◂ ▸ arrows on a section label to move a whole group. Toggle columns with the Columns menu." },
+                  { t: "Roles & photos", x: "The Role column shows each player's depth on his NFL team (RB1, WR2…). Hover any player for his photo, projection, and full outlook." },
+                ])} onMouseLeave={hideTip}>
+                <i className="ti ti-bulb" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Tips</button>
               {["ALL", ...POS].map((p) => (
                 <button key={p} className="btn btn-mini" style={{ borderColor: posFilter === p ? "var(--gold)" : "var(--line)" }} onClick={() => setPosFilter(p)}>{p}</button>
               ))}
               <button className="btn btn-mini" style={{ borderColor: rookieOnly ? "var(--gold)" : "var(--line)", color: rookieOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => setRookieOnly((r) => !r)}>Rookies</button>
+              <button className="btn btn-mini" style={{ borderColor: queueOnly ? "var(--gold)" : "var(--line)", color: queueOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => setQueueOnly((q) => !q)} title="Show only the players you've starred for this league. Star players with the ☆ next to their name; your queue saves automatically."><i className={`ti ${queueOnly ? "ti-star-filled" : "ti-star"}`} style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Priority{queue.size ? ` (${queue.size})` : ""}</button>
               <div style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--gold)", borderRadius: 8, padding: "3px 8px 3px 10px", background: "#1A150A" }} title="Strategy lens — reshapes the board AND your advice toward an approach. Balanced/ADP follow the market; the others tilt toward value, upside, youth, your build, or a position.">
                 <i className="ti ti-adjustments" style={{ fontSize: 13, color: "var(--gold)" }} aria-hidden="true" />
                 <span className="gold" style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".03em" }}>STRATEGY</span>
@@ -8001,7 +8052,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 <i className={`ti ${showDrafted ? "ti-eye" : "ti-eye-off"}`} style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />{showDrafted ? "All players" : "Available only"}
               </button>
               <button className="btn btn-mini" onClick={() => setRanksWarn(true)} title="Your rankings & platform ADP — build a board or pick a saved one to power Edge / My ADP / Blend"><i className="ti ti-list-numbers" style={{ fontSize: 13 }} aria-hidden="true" /> My ranks</button>
-              <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — who traded which pick to whom. The board updates instantly."><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks{(cfg.pickTrades || []).length ? ` · ${(cfg.pickTrades || []).length} moved` : ""}</button>
+              <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — who traded which pick to whom. The board updates instantly."><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks</button>
               <button className="btn btn-mini" onClick={() => setColMenu((m) => !m)}><i className="ti ti-columns" style={{ fontSize: 13 }} aria-hidden="true" /> Columns</button>
               {colMenu && (
                 <div className="panel" style={{ position: "absolute", right: 10, top: 46, zIndex: 30, padding: 12, width: 252, boxShadow: "0 10px 30px #000C" }}>
@@ -8061,19 +8112,29 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 </div>
               )}
             </div>
-            {!myRanks.has && (
-              <div className="panel" style={{ padding: "9px 12px", margin: "0 0 8px", background: "var(--panel2)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <i className="ti ti-bulb" style={{ fontSize: 15, color: "var(--gold)" }} aria-hidden="true" />
-                <div className="mut" style={{ fontSize: 11.5, flex: 1, lineHeight: 1.45 }}>
-                  Want the <b style={{ color: "var(--ink)" }}>Edge</b>, <b style={{ color: "var(--ink)" }}>My ADP</b>, and <b style={{ color: "var(--ink)" }}>Blend</b> columns? They compare <b style={{ color: "var(--ink)" }}>your</b> rankings against Sleeper ADP to surface where you can out-draft the room. Add your rankings (or import your league platform's ranks) to unlock them.
-                </div>
-                <button className="btn btn-mini btn-gold" style={{ flexShrink: 0 }} onClick={() => setRanksWarn(true)}><i className="ti ti-list-numbers" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Set my rankings</button>
-              </div>
-            )}
             <div style={{ maxHeight: 540, overflow: "auto" }}>
               <table className="board">
-                <thead><tr>
-                  <th className="frz" onClick={() => setSort("name")} style={{ minWidth: 188 }}>Player{arrow("name")}</th>
+                <thead>
+                  <tr className="sechead">
+                    <th className="frz" style={{ background: "var(--panel)" }} />
+                    {sectionGroups.map((g, gi) => {
+                      const movable = g.sec !== "market";
+                      const reSecs = (sectionOrder && sectionOrder.length ? sectionOrder : DEFAULT_SECTION_ORDER).filter((s) => s !== "market");
+                      const pos = reSecs.indexOf(g.sec);
+                      return (
+                        <th key={g.sec + gi} colSpan={g.count} style={{ textAlign: "center", borderLeft: "2px solid var(--line)", borderBottom: "1px solid var(--line)", padding: "2px 4px", background: "var(--panel2)" }}
+                          title={movable ? "Section — use the arrows to move this whole group of columns left or right." : "ADP & market is pinned to the left."}>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 9.5, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--gold)", fontWeight: 700 }}>
+                            {movable && <button onClick={() => moveSection(g.sec, -1)} disabled={pos <= 0} style={{ background: "none", border: "none", color: pos <= 0 ? "var(--line)" : "var(--mut)", cursor: pos <= 0 ? "default" : "pointer", padding: 0, fontSize: 11, lineHeight: 1 }} title="Move section left">◂</button>}
+                            {SECTION_LABELS[g.sec] || g.sec}
+                            {movable && <button onClick={() => moveSection(g.sec, 1)} disabled={pos >= reSecs.length - 1} style={{ background: "none", border: "none", color: pos >= reSecs.length - 1 ? "var(--line)" : "var(--mut)", cursor: pos >= reSecs.length - 1 ? "default" : "pointer", padding: 0, fontSize: 11, lineHeight: 1 }} title="Move section right">▸</button>}
+                          </span>
+                        </th>
+                      );
+                    })}
+                  </tr>
+                  <tr>
+                  <th className="frz" onClick={() => setSort("name")} style={{ minWidth: 150, width: 1, whiteSpace: "nowrap" }}>Player{arrow("name")}</th>
                   {activeCols.map((c) => (
                     <th key={c.key} className="num" draggable
                       onDragStart={(e) => { setDragCol(c.key); e.dataTransfer.effectAllowed = "move"; }}
@@ -8117,6 +8178,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                       <tr key={p.id} className={gone ? "struck" : ""}>
                         <td className="frz" style={{ borderLeft: `3px solid ${gone ? "transparent" : (POS_COLOR[p.pos] || "transparent")}` }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                            <button onClick={() => toggleQueue(p.name)} title={queue.has(p.name) ? "Starred — in your priority queue. Click to remove." : "Star this player to add him to your priority queue."}
+                              style={{ background: "none", border: "none", cursor: "pointer", padding: 0, flexShrink: 0, lineHeight: 1, color: queue.has(p.name) ? "var(--gold)" : "var(--mut)" }}>
+                              <i className={`ti ${queue.has(p.name) ? "ti-star-filled" : "ti-star"}`} style={{ fontSize: 15 }} aria-hidden="true" />
+                            </button>
                             {!gone
                               ? <button className={`btn btn-mini${onClock === userIdx ? " btn-gold" : ""}`} style={{ flexShrink: 0, border: onClock === userIdx ? "none" : "1.5px solid #fff", fontWeight: 700 }} onClick={() => draftPlayer(p.id)}>{onClock === userIdx ? "Draft" : "Pick"}</button>
                               : <span style={{ width: 38, flexShrink: 0 }} />}
@@ -8305,7 +8370,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               <input type="checkbox" checked={showBoardVal} onChange={(e) => setShowBoardVal(e.target.checked)} style={{ accentColor: "var(--gold)", cursor: "pointer" }} />
               Show pick value
             </label>
-            <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — the board updates instantly to show picks in their new owners' columns."><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks{(cfg.pickTrades || []).length ? ` · ${(cfg.pickTrades || []).length} moved` : ""}</button>
+            <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — the board updates instantly to show picks in their new owners' columns."><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks</button>
             <span className="mut" style={{ fontSize: 11.5, marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: "var(--gold)", marginRight: 4, verticalAlign: "middle" }} />Your picks</span>
               <span><i className="ti ti-arrows-exchange" style={{ fontSize: 11, color: "#4FD1A1", marginRight: 2 }} aria-hidden="true" />Traded</span>
@@ -8380,9 +8445,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                         {traded && <div style={{ fontSize: 8.5, letterSpacing: ".04em", textTransform: "uppercase", color: ownedByYou ? "var(--gold)" : "var(--mut)", marginTop: -1, fontWeight: 700 }}>{ownedByYou ? "YOUR PICK" : `→ ${TEAM_NAMES[owner].split(" ")[0]}`}</div>}
                         {p ? (
                           <>
-                            <div className="pl" style={{ color: isKeeper ? "var(--green)" : isProjected ? "var(--gold)" : "var(--ink)", fontStyle: isProjected ? "italic" : "normal", display: "flex", alignItems: "center", gap: 4 }}>
-                              {p.sid && !isProjected ? <PlayerPhoto sid={p.sid} pos={p.pos} size={16} /> : <span className="posdot" style={{ background: POS_COLOR[p.pos] }}>{p.pos}</span>}
-                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+                            <div className="pl" style={{ color: isKeeper ? "var(--green)" : isProjected ? "var(--gold)" : "var(--ink)", fontStyle: isProjected ? "italic" : "normal", display: "flex", alignItems: "center", gap: 5, justifyContent: "space-between" }}>
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+                                <span className="posdot" style={{ background: POS_COLOR[p.pos], flexShrink: 0 }}>{p.pos}</span>
+                                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+                              </span>
+                              {p.sid && !isProjected ? <PlayerPhoto sid={p.sid} pos={p.pos} size={26} /> : null}
                             </div>
                             {showBoardVal && !isProjected && !isKeeper && Math.abs(v) > 0 && (
                               <div className="val num" style={{ color: v > 0 ? "var(--green)" : "var(--red)" }}>{v > 0 ? `+${v}` : v}</div>
