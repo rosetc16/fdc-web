@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26a";
+const BUILD_TAG = "2026.06.26b";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1294,6 +1294,8 @@ export function applyLivePack(pack) {
       floor: p.floor != null ? p.floor : null,
       ceil: p.ceil != null ? p.ceil : null,
       sid: p.id != null ? String(p.id) : null, // Sleeper player_id → used to fetch the player's photo
+      news: p.news || null,                     // {headline, body, type, source, at} from ESPN (best-effort)
+      newsUpdated: p.newsUpdated != null ? p.newsUpdated : null, // Sleeper news_updated epoch ms (recency)
     };
   }
   if (raw.length < 50) return false; // sanity: don't swap in a too-small pool
@@ -1631,6 +1633,7 @@ function buildPlayers(cfg) {
       floor: Math.round(pts * floorR), ceil: Math.round(pts * ceilR),
       consensus0: meta.consensus != null ? meta.consensus : r[5], rookie: !!meta.rookie, inj: meta.inj || null,
       sid: meta.sid || null,
+      news: meta.news || null, newsUpdated: meta.newsUpdated || null,
     };
   });
   // In Superflex/2QB, QBs are far more valuable than their 1QB-anchored public ADP implies —
@@ -2383,9 +2386,33 @@ function makeOutlook(p, sims, drafted) {
   }
 
   // 6) SUPPORTING
+  // 6) SUPPORTING
+  // Live news note from ESPN (matched via the player's espn id on the backend). Best-effort — only shows
+  // when we actually have a recent blurb. The recency cue uses Sleeper's news_updated timestamp.
+  if (p.news && (p.news.headline || p.news.body)) {
+    const recency = newsAge(p.newsUpdated);
+    out.push({ kind: "news", head: p.news.headline || "Latest news", body: p.news.body || "", recency, source: p.news.source });
+  } else if (p.newsUpdated) {
+    const recency = newsAge(p.newsUpdated);
+    if (recency && /h ago|just now|m ago/.test(recency)) out.push({ kind: "news", head: "Recent update", body: `News broke ${recency} — check his Sleeper player page for the latest.`, recency, source: "sleeper" });
+  }
   if (p.outlook) out.push({ t: "Note", x: p.outlook });
   if (p.adpOriginal != null && Math.abs(p.adpOriginal - p.adp) > 0.6) out.push({ t: "Keeper-adjusted", x: `Effective ADP ${p.adp.toFixed(1)} (raw market ${p.adpOriginal.toFixed(1)}) — keepers ahead of him are off the board.` });
   return out;
+}
+
+// Human-readable "how long ago" from an epoch-ms timestamp (Sleeper's news_updated). Returns null if
+// stale (> ~10 days) so we don't show misleading "recent" cues in the offseason.
+function newsAge(ms) {
+  if (!ms) return null;
+  const diff = Date.now() - Number(ms);
+  if (diff < 0) return null;
+  const mins = Math.floor(diff / 60000), hrs = Math.floor(mins / 60), days = Math.floor(hrs / 24);
+  if (days > 10) return null;
+  if (mins < 2) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${days}d ago`;
 }
 
 // Renders makeOutlook's blocks into a scannable card: a tinted verdict line, a chip stat-strip,
@@ -2431,6 +2458,18 @@ function OutlookCard({ content }) {
               {l.chips.map((ch, j) => (
                 <span key={j} className="num" style={{ fontSize: 11, fontWeight: 600, background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 5, padding: "2px 7px", whiteSpace: "nowrap" }}>{ch}</span>
               ))}
+            </div>
+          );
+        }
+        if (l.kind === "news") {
+          return (
+            <div key={i} style={{ marginTop: 8, marginBottom: i < content.length - 1 ? 8 : 0, padding: "7px 9px", background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 7, borderLeft: "2px solid var(--gold)" }}>
+              <div className="disp" style={{ fontSize: 10.5, fontWeight: 700, color: "var(--gold)", marginBottom: 3, display: "flex", justifyContent: "space-between", gap: 8 }}>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>📰 {l.head}</span>
+                {l.recency && <span className="mut" style={{ fontWeight: 600, flexShrink: 0 }}>{l.recency}</span>}
+              </div>
+              {l.body && <div style={{ fontSize: 11.5, color: "var(--ink)", lineHeight: 1.45 }}>{l.body}</div>}
+              {l.source && <div className="mut" style={{ fontSize: 9.5, marginTop: 3, textTransform: "uppercase", letterSpacing: ".05em" }}>via {l.source}</div>}
             </div>
           );
         }
@@ -7910,10 +7949,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
             </>
           ) : (
             <>
-              <i className="ti ti-flask" style={{ fontSize: 14, color: "var(--mut)" }} aria-hidden="true" />
-              <span className="mut" style={{ fontSize: 12 }}>Want to test how picks would play out? Try a scenario without touching the real draft.</span>
+              <i className="ti ti-flask" style={{ fontSize: 15, color: "var(--gold)" }} aria-hidden="true" />
+              <span style={{ fontSize: 12.5, fontWeight: 600 }}>Scenario mode</span>
+              <span className="mut" style={{ fontSize: 12 }}>— play out what-if picks without touching the real draft.</span>
               <div style={{ flex: 1 }} />
-              <button className="btn btn-mini" onClick={startHypo}>Explore a scenario →</button>
+              <button className="btn btn-mini btn-gold" onClick={startHypo}><i className="ti ti-flask" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Explore a scenario →</button>
             </>
           )}
         </div>
@@ -8115,6 +8155,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                   { t: "Edge / My ADP / Blend", x: "Add your own rankings (or import your platform's) via 'My ranks' to unlock columns that compare your board to Sleeper ADP and surface values." },
                   { t: "Columns", x: "Drag column headers to reorder within a section; use the ◂ ▸ arrows on a section label to move a whole group. Toggle columns with the Columns menu." },
                   { t: "Roles & photos", x: "The Role column shows each player's depth on his NFL team (RB1, WR2…). Hover any player for his photo, projection, and full outlook." },
+                  { t: "Player news", x: "Hover a player to see his latest news and outlook when available — injury updates, camp buzz, and situation notes pulled live from around the league." },
+                  { t: "Scenario mode", x: "Use “Explore a scenario” (top of the board) to play out hypothetical picks and see how they'd cascade — without touching your real draft. Hit “Revert to live draft” to undo it all." },
                 ])} onMouseLeave={hideTip}>
                 <i className="ti ti-bulb" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Tips</button>
               {["ALL", ...POS].map((p) => (
