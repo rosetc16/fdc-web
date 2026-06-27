@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26d";
+const BUILD_TAG = "2026.06.26e";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2327,6 +2327,7 @@ select.gs:hover{border-color:var(--gold)}
 .btn-gold{background:var(--gold);color:#151002;border:none;font-weight:700}
 .btn-gold:hover{filter:brightness(1.08);border-color:transparent;background:var(--gold2);box-shadow:0 3px 16px rgba(242,182,60,.4)}
 .btn-mini{padding:3px 10px;font-size:11px;border-radius:6px;background:#1c1810}
+.btn-gold,.btn-mini.btn-gold{background:var(--gold);color:#151002;border:none;font-weight:700}
 .btn-mini:hover{transform:none;box-shadow:none;background:#262017;border-color:var(--gold)}
 .tab{padding:8px 14px;cursor:pointer;border:none;background:none;color:var(--mut);font-family:'Barlow Condensed';font-size:16px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;border-bottom:2px solid transparent;transition:color .15s,border-color .15s}
 .tab:hover{color:var(--ink);border-bottom-color:#5a5a52}
@@ -7725,7 +7726,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               <span style={{ fontSize: 12.5, fontWeight: 600 }}>Scenario mode</span>
               <span className="mut" style={{ fontSize: 12 }}>— play out what-if picks without touching the real draft.</span>
               <div style={{ flex: 1 }} />
-              <button className="btn btn-mini btn-gold" onClick={startHypo}><i className="ti ti-flask" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Explore a scenario →</button>
+              <button onClick={startHypo}
+                onMouseEnter={(e) => showTip(e, [
+                  { kind: "take", tone: "good", x: "Explore a scenario" },
+                  { t: "What it does", x: "Lets you play out hypothetical picks on top of the live draft — draft a player for any team, then keep going — to see how the board and your recommendations would shift. Your real draft is never touched." },
+                  { t: "How to use it", x: "Click to start. Then draft players as if the next picks happened. The board, availability odds, and advice all update so you can test “what if I take X here?” scenarios." },
+                  { t: "Getting back", x: "Hit “Revert to live draft” to clear every what-if pick and snap back to the real draft. If real picks come in while you explore, you'll get a button to sync up to them." },
+                ])} onMouseLeave={hideTip}
+                style={{ background: "var(--gold)", color: "#151002", border: "none", fontWeight: 700, fontSize: 12.5, padding: "6px 14px", borderRadius: 7, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5, boxShadow: "0 1px 6px rgba(242,182,60,.35)" }}>
+                <i className="ti ti-flask" style={{ fontSize: 13 }} aria-hidden="true" />Explore a scenario →
+              </button>
             </>
           )}
         </div>
