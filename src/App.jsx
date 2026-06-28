@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26f";
+const BUILD_TAG = "2026.06.26i";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2078,71 +2078,80 @@ function lineupSlots(roster, sf) {
   return { slots, bench };
 }
 
-// Build the full "My Team" analysis from the user's drafted players. Returns starters, bench, projected
-// starting points, per-position breakdown (count/quality/need), age profile, and prose insights about
-// the draft so far + what to target next. Pure function of inputs so it's easy to reason about.
-function teamAnalysis(roster, cfg, window, advice, nextPath) {
+// Build the full "My Team" analysis. Beyond the user's own roster, it ranks each position against the
+// rest of the league and estimates a projected finish, so the page can answer "am I weak everywhere, or
+// just at X?" and "where do I stand?". `allPicks`/`players`/`teamAtFn`/`userIdx` let us reconstruct every
+// team's current roster for the league-relative comparisons.
+function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
   const sf = cfg.sf;
   const { slots, bench } = lineupSlots(roster, sf);
   const startersPts = slots.reduce((s, x) => s + (x.p ? x.p.pts || 0 : 0), 0);
   const req = REQ_F(sf);
-  // per-position breakdown
+  // per-position breakdown (own roster)
   const byPos = {};
   ["QB", "RB", "WR", "TE"].forEach((pos) => {
     const list = roster.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts);
     const need = Math.max(0, (req[pos] || 0) - list.length);
     const bestVbd = list.length ? Math.max(...list.map((p) => p.vbd || 0)) : null;
-    byPos[pos] = { count: list.length, list, need, bestVbd, starters: req[pos] || 0 };
+    byPos[pos] = { count: list.length, list, need, bestVbd, starters: req[pos] || 0, pts: list.reduce((s, p) => s + (p.pts || 0), 0) };
   });
+
+  // ---- LEAGUE-RELATIVE: reconstruct every team's roster, then rank ours per position + overall. ----
+  let posRankByPos = {}, overallRank = null, leagueSize = cfg.teams || TEAMS_FALLBACK, startingPtsRankPct = null, allTeamStartPts = [];
+  if (ctx && ctx.allPicks && ctx.players && ctx.teamAtFn) {
+    const n = cfg.teams || TEAMS_FALLBACK;
+    const rosters = Array.from({ length: n }, () => []);
+    ctx.allPicks.forEach((pk, o) => { const pl = ctx.players[pk]; if (pl) { const t = ctx.teamAtFn(o); if (t != null && rosters[t]) rosters[t].push(pl); } });
+    // position strength per team = sum of top-(starters+1) projected pts at that position
+    const posStrength = (rosterArr, pos) => {
+      const need = (req[pos] || 0) + 1;
+      return rosterArr.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts).slice(0, need).reduce((s, p) => s + (p.pts || 0), 0);
+    };
+    ["QB", "RB", "WR", "TE"].forEach((pos) => {
+      const mine = posStrength(rosters[userIdxOf(ctx)], pos);
+      const all = rosters.map((r, i) => ({ i, v: posStrength(r, pos) })).sort((a, b) => b.v - a.v);
+      const rank = all.findIndex((x) => x.i === userIdxOf(ctx)) + 1;
+      posRankByPos[pos] = { rank: rank || n, of: n, mine: Math.round(mine) };
+    });
+    // overall = rank by projected starting lineup points
+    allTeamStartPts = rosters.map((r, i) => ({ i, v: lineupSlots(r, sf).slots.reduce((s, x) => s + (x.p ? x.p.pts || 0 : 0), 0) }));
+    const sortedStart = allTeamStartPts.slice().sort((a, b) => b.v - a.v);
+    overallRank = sortedStart.findIndex((x) => x.i === userIdxOf(ctx)) + 1;
+    leagueSize = n;
+  }
+
   // age profile
   const aged = roster.filter((p) => p.age && ["QB", "RB", "WR", "TE"].includes(p.pos));
   const avgAge = aged.length ? aged.reduce((s, p) => s + p.age, 0) / aged.length : null;
   const youngCount = aged.filter((p) => p.age <= 24).length;
   const oldCount = aged.filter((p) => p.age >= 29).length;
   const rookieCount = roster.filter((p) => p.rookie).length;
-  // unfilled starting slots
   const emptyStarters = slots.filter((s) => !s.p).map((s) => s.slot);
-  // strongest / thinnest positions (by quality+quantity)
-  const posScore = (pos) => {
-    const b = byPos[pos]; if (!b.count) return -100;
-    return (b.bestVbd || 0) + (b.count - (req[pos] || 0)) * 6;
-  };
+  const posScore = (pos) => { const b = byPos[pos]; if (!b.count) return -100; return (b.bestVbd || 0) + (b.count - (req[pos] || 0)) * 6; };
   const ranked = ["QB", "RB", "WR", "TE"].slice().sort((a, b) => posScore(b) - posScore(a));
   const strongest = ranked[0], thinnest = ranked[ranked.length - 1];
 
-  // ---- INSIGHTS (prose) ----
+  // ---- INSIGHTS: now structured with a bold HEADER + body, not one long block. ----
   const insights = [];
   if (roster.length === 0) {
-    insights.push("You haven't made a pick yet. Once you're on the board, this page tracks your roster, your projected starting lineup, and what to target next.");
+    insights.push({ h: "Not started yet", b: "Once you're on the board, this page tracks your roster, projected lineup, league-relative position ranks, and what to target next." });
   } else {
-    // draft summary
-    const posCounts = ["QB", "RB", "WR", "TE"].map((pos) => `${byPos[pos].count} ${pos}`).join(", ");
-    insights.push(`You've drafted ${roster.length} player${roster.length > 1 ? "s" : ""} (${posCounts}). Your projected starters total about ${Math.round(startersPts)} points.`);
-    // window / strategy
+    insights.push({ h: "Draft so far", b: `${roster.length} player${roster.length > 1 ? "s" : ""} in (${["QB", "RB", "WR", "TE"].map((pos) => `${byPos[pos].count} ${pos}`).join(", ")}), projecting ~${Math.round(startersPts)} starting points.` });
+    if (overallRank) insights.push({ h: `Projected ${ordinalOf(overallRank)} of ${leagueSize}`, b: overallRank <= leagueSize / 3 ? "Front-runner on paper — protect the lead and draft for value." : overallRank <= (leagueSize * 2) / 3 ? "Middle of the pack — a couple of strong picks swing you up." : "Toward the back right now — chase upside and value to climb." });
     if (window && window.decided) {
-      const laneWord = window.lane === "rebuild" ? "a youth/rebuild" : window.lane === "winnow" ? "a win-now" : "a balanced";
-      insights.push(`Your roster leans toward ${laneWord} build${avgAge ? ` (average age ~${avgAge.toFixed(1)})` : ""}. ${window.lane === "rebuild" ? "Keep prioritizing young, ascending players and upside over proven veterans." : window.lane === "winnow" ? "Lean into proven production — you're built to compete now." : "You can flex either direction; take the best value and let your roster tell you which way to commit."}`);
+      const laneWord = window.lane === "rebuild" ? "youth / rebuild" : window.lane === "winnow" ? "win-now" : "balanced";
+      insights.push({ h: `Build: ${laneWord}`, b: window.lane === "rebuild" ? "Prioritize young, ascending players and upside over proven veterans." : window.lane === "winnow" ? "Lean into proven production — you're built to compete now." : "Flex either direction; take the best value and let the roster commit you." });
     }
-    // empty starters
-    if (emptyStarters.length) {
-      insights.push(`You still have unfilled starting spots: ${emptyStarters.join(", ")}. These are the most urgent holes — filling a starter is worth more than adding depth at a position you've already covered.`);
-    }
-    // thin/strong
-    if (thinnest && byPos[thinnest].count === 0) {
-      insights.push(`You have nothing at ${thinnest} yet. ${thinnest === "QB" && sf ? "In superflex that's a real hole — QB is premium here." : "Don't wait too long if the position gets thin."}`);
-    } else if (thinnest) {
-      insights.push(`${thinnest} is your thinnest spot (${byPos[thinnest].count} rostered). Worth addressing in the next couple of rounds before the tier dries up.`);
-    }
-    if (strongest && byPos[strongest].count > (req[strongest] || 0)) {
-      insights.push(`${strongest} is a strength (${byPos[strongest].count} rostered) — you can afford to wait there and even shop surplus in a trade.`);
-    }
-    // next pick rec
-    if (advice && advice.verdict) {
-      insights.push(`For your next pick, the engine likes ${advice.verdict.name} (${advice.verdict.pos}${advice.verdict.posRank}) as the highest-value fit for your build.`);
-    }
+    if (emptyStarters.length) insights.push({ h: "Fill your starters first", b: `Open starting spots: ${emptyStarters.join(", ")}. A starter is worth more than depth at a spot you've covered.` });
+    if (thinnest && byPos[thinnest].count === 0) insights.push({ h: `Nothing at ${thinnest} yet`, b: thinnest === "QB" && sf ? "In superflex that's a real hole — QB is premium here." : "Don't wait too long if the position thins out." });
+    else if (thinnest) insights.push({ h: `${thinnest} is thinnest`, b: `Only ${byPos[thinnest].count} rostered — address it before the tier dries up.` });
+    if (strongest && byPos[strongest].count > (req[strongest] || 0)) insights.push({ h: `${strongest} is a strength`, b: `${byPos[strongest].count} rostered — you can wait there and even shop surplus in a trade.` });
   }
-  return { slots, bench, startersPts, byPos, avgAge, youngCount, oldCount, rookieCount, emptyStarters, strongest, thinnest, insights };
+  return { slots, bench, startersPts, byPos, avgAge, youngCount, oldCount, rookieCount, emptyStarters, strongest, thinnest, insights, posRankByPos, overallRank, leagueSize };
 }
+const TEAMS_FALLBACK = 12;
+function userIdxOf(ctx) { return ctx && ctx.userIdx != null ? ctx.userIdx : 0; }
+function ordinalOf(n) { const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); }
 function needLevel(count, bestVbd, dem, pos) {
   const qty = dem[pos] - count;
   if (qty >= 1.5) return 2;
@@ -6817,6 +6826,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     } catch { setQueue(new Set()); }
   }, [queueKey, league?.id]);
   const [queueOnly, setQueueOnly] = useState(false);
+  const [myTeamView, setMyTeamView] = useState("current"); // Team analysis tab: "current" | "projected"
+  const [analysisTeam, setAnalysisTeam] = useState(null);   // which team the analysis tab shows; null = you
   const toggleQueue = (name) => setQueue((prev) => {
     const next = new Set(prev);
     if (next.has(name)) next.delete(name); else next.add(name);
@@ -7779,7 +7790,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     return Object.entries(byTeam).sort((a, b) => a[0].localeCompare(b[0]));
   }, [players]);
 
-  const pastPicks = picks.slice(-(pastBig ? 10 : 4)).map((pk, i) => ({ pk, o: picks.length - Math.min(pastBig ? 10 : 4, picks.length) + i }));
+  const pastPicks = picks.slice(-(pastBig ? 12 : 3)).map((pk, i) => ({ pk, o: picks.length - Math.min(pastBig ? 12 : 3, picks.length) + i }));
 
   return (
     <div>
@@ -7901,7 +7912,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
       )}
 
       <div className="hairline tabbar" style={{ display: "flex", padding: "0 10px", overflowX: "auto", background: "var(--bg)" }}>
-        {[["hub","Hub"],["myteam","My Team"],["board","Draft board"],["teams","Teams"],["depth","Depth charts"],["trade","Trade"],["summary","Summary"],["settings","Settings"]].map(([k, label]) => (
+        {[["hub","Hub"],["myteam","Team analysis"],["board","Draft board"],["depth","Depth charts"],["trade","Trade"],["summary","Summary"],["settings","Settings"]].map(([k, label]) => (
           <button key={k} className={`tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>{label}</button>
         ))}
       </div>
@@ -8379,101 +8390,212 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
       )}
 
       {tab === "myteam" && (() => {
-        const ta = teamAnalysis(myCurrent, cfg, myWindow, advice, path);
+        // Which team are we analyzing? Defaults to YOU; the dropdown can switch to any team to compare.
+        const selTeam = analysisTeam != null ? analysisTeam : userIdx;
+        const isMe = selTeam === userIdx;
+        // Build the selected team's drafted roster from picks.
+        const selRoster = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => x.p && teamAt(x.o) === selTeam).map((x) => x.p);
         const posColor = { QB: POS_COLOR.QB, RB: POS_COLOR.RB, WR: POS_COLOR.WR, TE: POS_COLOR.TE };
+        const ta = teamAnalysis(selRoster, cfg, isMe ? myWindow : null, isMe ? advice : null, path, { allPicks: picks, players, teamAtFn: teamAt, userIdx: selTeam });
+        const myProjView = myTeamView === "projected";
+        // Projected adds only apply to YOUR team (we don't project other teams' specific picks here).
+        const projectedAdds = (myProjView && isMe) ? path.filter((s) => s.user && s.p).map((s) => s.p) : [];
+        const shownRoster = projectedAdds.length ? [...selRoster, ...projectedAdds] : selRoster;
+        const taShown = teamAnalysis(shownRoster, cfg, isMe ? myWindow : null, isMe ? advice : null, path, { allPicks: picks, players, teamAtFn: teamAt, userIdx: selTeam });
+        // Next-pick targets (only meaningful for your own team).
+        const myNextOv = isMe ? (() => { for (let o = picks.length; o < totalOf(cfg); o++) if (teamAt(o) === userIdx) return o; return null; })() : null;
+        const targets = (isMe && advice) ? [advice.verdict, ...(advice.alts || [])].filter(Boolean).slice(0, 5) : [];
+        const windowExplain = { rebuild: "Building for the future — favor young, ascending players who'll be even better next year.", winnow: "Competing now — favor proven, established production over long-term upside.", balanced: "No strong lean yet — take the best value available and let your roster commit you one way or the other." };
+        const teamName = isMe ? (TEAM_NAMES[userIdx] || "Your team") : (TEAM_NAMES[selTeam] || `Team ${selTeam + 1}`);
         return (
           <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
-            {/* Header / outlook */}
+            {/* Header with team selector + projected finish + window */}
             <div className="panel" style={{ padding: 16 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
                 <div>
-                  <div className="disp" style={{ fontSize: 20, fontWeight: 700 }}>My Team</div>
-                  <div className="mut" style={{ fontSize: 12.5 }}>{cfg.name} · {TEAM_NAMES[userIdx] || "Your team"}</div>
+                  <div className="disp" style={{ fontSize: 20, fontWeight: 700, display: "flex", alignItems: "center", gap: 9 }}>
+                    Team analysis
+                    <select className="gs" style={{ fontSize: 13, padding: "4px 8px" }} value={selTeam} onChange={(e) => setAnalysisTeam(+e.target.value === userIdx ? null : +e.target.value)}>
+                      {Array.from({ length: cfg.teams || 12 }, (_, t) => t).map((t) => (
+                        <option key={t} value={t}>{t === userIdx ? "★ My team" : (TEAM_NAMES[t] || `Team ${t + 1}`)}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="mut" style={{ fontSize: 12.5 }}>{cfg.name} · {teamName}{isMe ? "" : " (comparing)"}</div>
                 </div>
-                <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
-                  <div style={{ textAlign: "center" }}><div className="disp" style={{ fontSize: 22, fontWeight: 800, color: "var(--gold)" }}>{myCurrent.length}</div><div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Drafted</div></div>
-                  <div style={{ textAlign: "center" }}><div className="disp" style={{ fontSize: 22, fontWeight: 800 }}>{Math.round(ta.startersPts)}</div><div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Starter pts</div></div>
-                  {ta.avgAge && <div style={{ textAlign: "center" }}><div className="disp" style={{ fontSize: 22, fontWeight: 800 }}>{ta.avgAge.toFixed(1)}</div><div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Avg age</div></div>}
-                  {myWindow && myWindow.decided && <div style={{ textAlign: "center" }}><div className="disp" style={{ fontSize: 15, fontWeight: 800, color: "var(--gold)", marginTop: 5 }}>{myWindow.lane === "rebuild" ? "Rebuild" : myWindow.lane === "winnow" ? "Win-now" : "Balanced"}</div><div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Window</div></div>}
+                <div style={{ display: "flex", gap: 18, flexWrap: "wrap", alignItems: "center" }}>
+                  {ta.overallRank && (
+                    <div style={{ textAlign: "center", padding: "4px 14px", borderRadius: 10, background: "rgba(242,182,60,.1)", border: "1px solid var(--gold)" }}>
+                      <div className="disp" style={{ fontSize: 24, fontWeight: 800, color: "var(--gold)" }}>{ordinalOf(ta.overallRank)}</div>
+                      <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em" }}>proj. finish of {ta.leagueSize}</div>
+                    </div>
+                  )}
+                  <div style={{ textAlign: "center" }}><div className="disp" style={{ fontSize: 22, fontWeight: 800 }}>{selRoster.length}</div><div className="mut" style={{ fontSize: 10, textTransform: "uppercase" }}>Drafted</div></div>
+                  <div style={{ textAlign: "center" }}><div className="disp" style={{ fontSize: 22, fontWeight: 800 }}>{Math.round(ta.startersPts)}</div><div className="mut" style={{ fontSize: 10, textTransform: "uppercase" }}>Starter pts</div></div>
+                  {ta.avgAge && <div style={{ textAlign: "center" }}><div className="disp" style={{ fontSize: 22, fontWeight: 800 }}>{ta.avgAge.toFixed(1)}</div><div className="mut" style={{ fontSize: 10, textTransform: "uppercase" }}>Avg age</div></div>}
                 </div>
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }} className="myteam-grid">
-              {/* Projected starting lineup */}
+            {/* Window explainer — only for YOUR team (roster-lean strategy read). */}
+            {isMe && myWindow && (
+              <div className="panel" style={{ padding: 14, borderLeft: "3px solid var(--gold)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <i className={`ti ${myWindow.lane === "rebuild" ? "ti-seedling" : myWindow.lane === "winnow" ? "ti-flame" : "ti-scale"}`} style={{ fontSize: 17, color: "var(--gold)" }} aria-hidden="true" />
+                  <span className="disp" style={{ fontSize: 15, fontWeight: 700 }}>Your window: {myWindow.lane === "rebuild" ? "Rebuild" : myWindow.lane === "winnow" ? "Win-now" : "Balanced"}{!myWindow.decided ? " (still forming)" : ""}</span>
+                </div>
+                <div style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 8 }}>{windowExplain[myWindow.lane] || windowExplain.balanced}</div>
+                {/* show all three lanes so the user can interpret where they sit */}
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {[["winnow", "Win-now", "proven production"], ["balanced", "Balanced", "best value"], ["rebuild", "Rebuild", "youth & upside"]].map(([k, label, sub]) => (
+                    <div key={k} style={{ flex: "1 1 140px", padding: "7px 10px", borderRadius: 8, background: myWindow.lane === k ? "rgba(242,182,60,.12)" : "var(--panel2)", border: myWindow.lane === k ? "1px solid var(--gold)" : "1px solid var(--line)" }}>
+                      <div style={{ fontSize: 11.5, fontWeight: 700, color: myWindow.lane === k ? "var(--gold)" : "var(--ink)" }}>{label}</div>
+                      <div className="mut" style={{ fontSize: 10.5 }}>{sub}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Position rank vs league */}
+            {ta.posRankByPos && Object.keys(ta.posRankByPos).length > 0 && (
               <div className="panel" style={{ padding: 14 }}>
-                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 10 }}>Projected starting lineup</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                  {ta.slots.map((s, i) => (
-                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 9, padding: "5px 8px", borderRadius: 7, background: s.p ? "var(--panel2)" : "rgba(255,90,90,.08)", border: s.p ? "1px solid var(--line)" : "1px dashed var(--red)" }}>
+                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 4 }}>Where you rank in the league</div>
+                <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>How each position stacks up against the other {ta.leagueSize - 1} teams — your quick read on what to shore up.</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {["QB", "RB", "WR", "TE"].map((pos) => {
+                    const r = ta.posRankByPos[pos]; if (!r) return null;
+                    const pctile = 1 - (r.rank - 1) / Math.max(1, r.of - 1); // 1 = best
+                    const tone = pctile >= 0.66 ? "var(--green)" : pctile >= 0.34 ? "var(--gold)" : "var(--red)";
+                    const word = pctile >= 0.66 ? "Strong" : pctile >= 0.34 ? "Middle" : "Weak";
+                    return (
+                      <div key={pos} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <span style={{ width: 28, fontWeight: 800, color: posColor[pos] }}>{pos}</span>
+                        <div style={{ flex: 1, height: 10, background: "var(--panel2)", borderRadius: 5, overflow: "hidden" }}>
+                          <div style={{ width: `${Math.max(6, pctile * 100)}%`, height: "100%", background: tone, opacity: 0.85 }} />
+                        </div>
+                        <span className="num" style={{ fontSize: 12, width: 92, textAlign: "right" }}>{ordinalOf(r.rank)} of {r.of}</span>
+                        <span style={{ fontSize: 10.5, fontWeight: 700, color: tone, width: 50, textAlign: "right" }}>{word}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Current vs Projected lineup toggle */}
+            <div className="panel" style={{ padding: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
+                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)" }}>{myProjView && isMe ? "Projected" : "Current"} starting lineup</div>
+                {isMe && (
+                <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }}>
+                  {[["current", "Current"], ["projected", "Projected"]].map(([k, l]) => (
+                    <button key={k} className="btn" style={{ border: "none", borderRadius: 0, padding: "5px 12px", fontSize: 12, background: (myTeamView === k) ? "var(--gold)" : "transparent", color: (myTeamView === k) ? "#151002" : "var(--ink)", fontWeight: (myTeamView === k) ? 700 : 400 }} onClick={() => setMyTeamView(k)}>{l}</button>
+                  ))}
+                </div>
+                )}
+              </div>
+              {myProjView && <div className="mut" style={{ fontSize: 11.5, marginBottom: 8 }}>Includes your {projectedAdds.length} most-likely future pick{projectedAdds.length !== 1 ? "s" : ""} (shown in gold) based on the engine's projection.</div>}
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                {taShown.slots.map((s, i) => {
+                  const isProj = myProjView && s.p && projectedAdds.includes(s.p);
+                  return (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 9, padding: "5px 8px", borderRadius: 7, background: s.p ? (isProj ? "rgba(242,182,60,.08)" : "var(--panel2)") : "rgba(255,90,90,.08)", border: s.p ? (isProj ? "1px dashed var(--gold)" : "1px solid var(--line)") : "1px dashed var(--red)" }}>
                       <span style={{ width: 42, fontSize: 11, fontWeight: 700, color: "var(--mut)" }}>{s.slot}</span>
                       {s.p ? <>
                         <PlayerPhoto sid={s.p.sid} pos={s.p.pos} size={24} />
                         <span style={{ fontWeight: 600, fontSize: 13 }}>{s.p.name}</span>
                         <span className="mut" style={{ fontSize: 11 }}>{s.p.team} · {s.p.pos}{s.p.posRank}</span>
+                        {isProj && <span className="gold" style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase" }}>proj pick</span>}
                         <span className="mut num" style={{ marginLeft: "auto", fontSize: 12 }}>{Math.round(s.p.pts)} pts</span>
                       </> : <span className="mut" style={{ fontSize: 12, fontStyle: "italic" }}>empty — needs a starter</span>}
                     </div>
-                  ))}
+                  );
+                })}
+              </div>
+              {taShown.bench.length > 0 && (
+                <>
+                  <div className="disp" style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", margin: "12px 0 6px" }}>Bench ({taShown.bench.length})</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {taShown.bench.map((p, i) => <span key={i} className="chip" style={{ fontSize: 11 }}><Dot pos={p.pos} />{p.name} <span className="mut">{p.pos}{p.posRank}</span></span>)}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Next picks — what to focus on + targets */}
+            {!done && (myNextOv != null) && (
+              <div className="panel" style={{ padding: 16, borderLeft: "3px solid var(--gold)" }}>
+                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", marginBottom: 4 }}>Your next pick — {pickLabel(myNextOv)} <span className="mut">(#{myNextOv + 1})</span></div>
+                <div style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 10 }}>
+                  {ta.emptyStarters.length ? <>Focus: lock in a starter at <b style={{ color: "var(--gold)" }}>{ta.emptyStarters[0].replace(/[0-9]/g, "")}</b> — it's your most pressing hole. </> : <>Focus: best value for your build; <b style={{ color: "var(--gold)" }}>{ta.thinnest}</b> is your thinnest spot. </>}
+                  {myWindow && myWindow.decided && (myWindow.lane === "rebuild" ? "Favor youth and upside." : myWindow.lane === "winnow" ? "Favor proven production." : "Take the best value.")}
                 </div>
-                {ta.bench.length > 0 && (
+                {targets.length > 0 && (
                   <>
-                    <div className="disp" style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", margin: "12px 0 6px" }}>Bench ({ta.bench.length})</div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                      {ta.bench.map((p, i) => (
-                        <span key={i} className="chip" style={{ fontSize: 11 }}><Dot pos={p.pos} />{p.name} <span className="mut">{p.pos}{p.posRank}</span></span>
+                    <div className="mut" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 6 }}>Top targets for you</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                      {targets.map((t, i) => t && (
+                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 9, padding: "5px 8px", borderRadius: 7, background: "var(--panel2)", cursor: "help" }}
+                          onMouseEnter={(e) => showTip(e, makeOutlook(t, sims, false))} onMouseLeave={hideTip}>
+                          <span className="num mut" style={{ width: 16, fontSize: 11 }}>{i + 1}</span>
+                          <PlayerPhoto sid={t.sid} pos={t.pos} size={22} />
+                          <span style={{ fontWeight: 600, fontSize: 12.5 }}>{t.name}</span>
+                          <span className="mut" style={{ fontSize: 11 }}>{t.team} · {t.pos}{t.posRank}</span>
+                          <span className="mut num" style={{ marginLeft: "auto", fontSize: 11 }}>ADP {t.adp.toFixed(0)}</span>
+                        </div>
                       ))}
                     </div>
                   </>
                 )}
               </div>
+            )}
 
-              {/* Position breakdown + age */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                <div className="panel" style={{ padding: 14 }}>
-                  <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 10 }}>Position breakdown</div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {["QB", "RB", "WR", "TE"].map((pos) => {
-                      const b = ta.byPos[pos];
-                      const status = b.need > 0 ? { t: "NEED", c: "var(--red)" } : b.count > b.starters ? { t: "DEPTH", c: "var(--green)" } : { t: "SET", c: "var(--gold)" };
-                      return (
-                        <div key={pos} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                          <span style={{ width: 28, fontWeight: 800, color: posColor[pos] }}>{pos}</span>
-                          <div style={{ flex: 1, height: 8, background: "var(--panel2)", borderRadius: 4, overflow: "hidden" }}>
-                            <div style={{ width: `${Math.min(100, (b.count / Math.max(1, (b.starters + 1.5))) * 100)}%`, height: "100%", background: posColor[pos], opacity: 0.8 }} />
-                          </div>
-                          <span className="mut num" style={{ fontSize: 11, width: 64 }}>{b.count} / {b.starters} start</span>
-                          <span style={{ fontSize: 10, fontWeight: 700, color: status.c, width: 46, textAlign: "right" }}>{status.t}</span>
+            {/* Position breakdown + roster profile */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }} className="myteam-grid">
+              <div className="panel" style={{ padding: 14 }}>
+                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 10 }}>Position depth</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {["QB", "RB", "WR", "TE"].map((pos) => {
+                    const b = ta.byPos[pos];
+                    const status = b.need > 0 ? { t: "NEED", c: "var(--red)" } : b.count > b.starters ? { t: "DEPTH", c: "var(--green)" } : { t: "SET", c: "var(--gold)" };
+                    return (
+                      <div key={pos} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <span style={{ width: 28, fontWeight: 800, color: posColor[pos] }}>{pos}</span>
+                        <div style={{ flex: 1, height: 8, background: "var(--panel2)", borderRadius: 4, overflow: "hidden" }}>
+                          <div style={{ width: `${Math.min(100, (b.count / Math.max(1, (b.starters + 1.5))) * 100)}%`, height: "100%", background: posColor[pos], opacity: 0.8 }} />
                         </div>
-                      );
-                    })}
-                  </div>
+                        <span className="mut num" style={{ fontSize: 11, width: 62 }}>{b.count} / {b.starters} start</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: status.c, width: 46, textAlign: "right" }}>{status.t}</span>
+                      </div>
+                    );
+                  })}
                 </div>
-                <div className="panel" style={{ padding: 14 }}>
-                  <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 10 }}>Roster profile</div>
-                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-                    <div><span className="disp" style={{ fontSize: 18, fontWeight: 800, color: "var(--green)" }}>{ta.youngCount}</span> <span className="mut" style={{ fontSize: 11.5 }}>young (≤24)</span></div>
-                    <div><span className="disp" style={{ fontSize: 18, fontWeight: 800 }}>{ta.rookieCount}</span> <span className="mut" style={{ fontSize: 11.5 }}>rookies</span></div>
-                    <div><span className="disp" style={{ fontSize: 18, fontWeight: 800, color: ta.oldCount > 2 ? "var(--red)" : "var(--ink)" }}>{ta.oldCount}</span> <span className="mut" style={{ fontSize: 11.5 }}>aging (≥29)</span></div>
-                  </div>
+              </div>
+              <div className="panel" style={{ padding: 14 }}>
+                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 10 }}>Roster profile</div>
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                  <div><span className="disp" style={{ fontSize: 18, fontWeight: 800, color: "var(--green)" }}>{ta.youngCount}</span> <span className="mut" style={{ fontSize: 11.5 }}>young (≤24)</span></div>
+                  <div><span className="disp" style={{ fontSize: 18, fontWeight: 800 }}>{ta.rookieCount}</span> <span className="mut" style={{ fontSize: 11.5 }}>rookies</span></div>
+                  <div><span className="disp" style={{ fontSize: 18, fontWeight: 800, color: ta.oldCount > 2 ? "var(--red)" : "var(--ink)" }}>{ta.oldCount}</span> <span className="mut" style={{ fontSize: 11.5 }}>aging (≥29)</span></div>
                 </div>
               </div>
             </div>
 
-            {/* Insights / what to focus on */}
+            {/* Structured insights — bold header + body */}
             <div className="panel" style={{ padding: 16 }}>
-              <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", marginBottom: 10 }}>Your outlook & what to focus on</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {ta.insights.map((line, i) => (
-                  <div key={i} style={{ display: "flex", gap: 9, alignItems: "flex-start" }}>
-                    <i className="ti ti-point-filled" style={{ fontSize: 14, color: "var(--gold)", marginTop: 2, flexShrink: 0 }} aria-hidden="true" />
-                    <span style={{ fontSize: 13, lineHeight: 1.5 }}>{line}</span>
+              <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", marginBottom: 12 }}>{isMe ? "Your outlook & what to focus on" : `${teamName} — outlook`}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+                {ta.insights.map((it, i) => (
+                  <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                    <i className="ti ti-point-filled" style={{ fontSize: 13, color: "var(--gold)", marginTop: 3, flexShrink: 0 }} aria-hidden="true" />
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 13 }}>{it.h}</div>
+                      <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.45 }}>{it.b}</div>
+                    </div>
                   </div>
                 ))}
               </div>
-              {!done && advice && advice.verdict && (
-                <button className="btn btn-gold" style={{ marginTop: 14 }} onClick={() => setTab("hub")}>Go to the board →</button>
-              )}
             </div>
           </div>
         );
