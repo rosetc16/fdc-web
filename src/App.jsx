@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26e";
+const BUILD_TAG = "2026.06.26f";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2077,6 +2077,72 @@ function lineupSlots(roster, sf) {
   const bench = []; POS.forEach((pos) => { for (let i = used[pos]; i < sorted[pos].length; i++) bench.push(sorted[pos][i]); });
   return { slots, bench };
 }
+
+// Build the full "My Team" analysis from the user's drafted players. Returns starters, bench, projected
+// starting points, per-position breakdown (count/quality/need), age profile, and prose insights about
+// the draft so far + what to target next. Pure function of inputs so it's easy to reason about.
+function teamAnalysis(roster, cfg, window, advice, nextPath) {
+  const sf = cfg.sf;
+  const { slots, bench } = lineupSlots(roster, sf);
+  const startersPts = slots.reduce((s, x) => s + (x.p ? x.p.pts || 0 : 0), 0);
+  const req = REQ_F(sf);
+  // per-position breakdown
+  const byPos = {};
+  ["QB", "RB", "WR", "TE"].forEach((pos) => {
+    const list = roster.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts);
+    const need = Math.max(0, (req[pos] || 0) - list.length);
+    const bestVbd = list.length ? Math.max(...list.map((p) => p.vbd || 0)) : null;
+    byPos[pos] = { count: list.length, list, need, bestVbd, starters: req[pos] || 0 };
+  });
+  // age profile
+  const aged = roster.filter((p) => p.age && ["QB", "RB", "WR", "TE"].includes(p.pos));
+  const avgAge = aged.length ? aged.reduce((s, p) => s + p.age, 0) / aged.length : null;
+  const youngCount = aged.filter((p) => p.age <= 24).length;
+  const oldCount = aged.filter((p) => p.age >= 29).length;
+  const rookieCount = roster.filter((p) => p.rookie).length;
+  // unfilled starting slots
+  const emptyStarters = slots.filter((s) => !s.p).map((s) => s.slot);
+  // strongest / thinnest positions (by quality+quantity)
+  const posScore = (pos) => {
+    const b = byPos[pos]; if (!b.count) return -100;
+    return (b.bestVbd || 0) + (b.count - (req[pos] || 0)) * 6;
+  };
+  const ranked = ["QB", "RB", "WR", "TE"].slice().sort((a, b) => posScore(b) - posScore(a));
+  const strongest = ranked[0], thinnest = ranked[ranked.length - 1];
+
+  // ---- INSIGHTS (prose) ----
+  const insights = [];
+  if (roster.length === 0) {
+    insights.push("You haven't made a pick yet. Once you're on the board, this page tracks your roster, your projected starting lineup, and what to target next.");
+  } else {
+    // draft summary
+    const posCounts = ["QB", "RB", "WR", "TE"].map((pos) => `${byPos[pos].count} ${pos}`).join(", ");
+    insights.push(`You've drafted ${roster.length} player${roster.length > 1 ? "s" : ""} (${posCounts}). Your projected starters total about ${Math.round(startersPts)} points.`);
+    // window / strategy
+    if (window && window.decided) {
+      const laneWord = window.lane === "rebuild" ? "a youth/rebuild" : window.lane === "winnow" ? "a win-now" : "a balanced";
+      insights.push(`Your roster leans toward ${laneWord} build${avgAge ? ` (average age ~${avgAge.toFixed(1)})` : ""}. ${window.lane === "rebuild" ? "Keep prioritizing young, ascending players and upside over proven veterans." : window.lane === "winnow" ? "Lean into proven production — you're built to compete now." : "You can flex either direction; take the best value and let your roster tell you which way to commit."}`);
+    }
+    // empty starters
+    if (emptyStarters.length) {
+      insights.push(`You still have unfilled starting spots: ${emptyStarters.join(", ")}. These are the most urgent holes — filling a starter is worth more than adding depth at a position you've already covered.`);
+    }
+    // thin/strong
+    if (thinnest && byPos[thinnest].count === 0) {
+      insights.push(`You have nothing at ${thinnest} yet. ${thinnest === "QB" && sf ? "In superflex that's a real hole — QB is premium here." : "Don't wait too long if the position gets thin."}`);
+    } else if (thinnest) {
+      insights.push(`${thinnest} is your thinnest spot (${byPos[thinnest].count} rostered). Worth addressing in the next couple of rounds before the tier dries up.`);
+    }
+    if (strongest && byPos[strongest].count > (req[strongest] || 0)) {
+      insights.push(`${strongest} is a strength (${byPos[strongest].count} rostered) — you can afford to wait there and even shop surplus in a trade.`);
+    }
+    // next pick rec
+    if (advice && advice.verdict) {
+      insights.push(`For your next pick, the engine likes ${advice.verdict.name} (${advice.verdict.pos}${advice.verdict.posRank}) as the highest-value fit for your build.`);
+    }
+  }
+  return { slots, bench, startersPts, byPos, avgAge, youngCount, oldCount, rookieCount, emptyStarters, strongest, thinnest, insights };
+}
 function needLevel(count, bestVbd, dem, pos) {
   const qty = dem[pos] - count;
   if (qty >= 1.5) return 2;
@@ -2386,13 +2452,13 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .bteam.you{background:linear-gradient(180deg,rgba(242,182,60,.18),rgba(242,182,60,.05));border-color:var(--gold)}
 .bteam .nm{font-size:11px;font-weight:700;line-height:1.1;letter-spacing:.02em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .bteam .sub{font-size:8.5px;letter-spacing:.08em;text-transform:uppercase}
-.bcell{position:relative;border-radius:9px;padding:7px 8px;background:var(--panel2);border:1px solid var(--line);min-height:62px;display:flex;flex-direction:column;gap:2px;cursor:default;transition:transform .1s,border-color .1s}
+.bcell{position:relative;border-radius:9px;padding:7px 8px;background:var(--panel2);border:1px solid var(--line);min-height:62px;height:auto;display:flex;flex-direction:column;gap:2px;cursor:default;transition:transform .1s,border-color .1s}
 .bcell:hover{transform:translateY(-1px);border-color:#4a4a3c}
 .bcell.you{background:linear-gradient(180deg,rgba(242,182,60,.13),rgba(242,182,60,.03));border-color:rgba(242,182,60,.55)}
 .bcell.you.oncl{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold) inset}
 .bcell.upcoming{border-style:dashed;border-color:rgba(242,182,60,.6)}
 .bcell.empty{opacity:.4}
-.bcell .pl{font-size:12px;font-weight:700;line-height:1.15;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.bcell .pl{font-size:11.5px;font-weight:700;line-height:1.15;word-break:break-word}
 .bcell .lbl{font-size:9px;display:flex;align-items:center;gap:3px;opacity:.85}
 .bcell .posdot{display:inline-block;width:14px;text-align:center;font-size:8px;font-weight:800;border-radius:3px;padding:0 2px;color:#0a0a0a}
 .bcell .val{font-size:9px;font-weight:700;margin-top:1px}
@@ -2423,7 +2489,7 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 @keyframes pulseGold{0%,100%{opacity:.5}50%{opacity:1}}
 .glowline{background:linear-gradient(90deg,transparent,var(--gold),transparent);height:1px;opacity:.5}
 .hover-row{transition:background .12s}.hover-row:hover{background:#16160F}
-@media(max-width:980px){.cols{flex-direction:column}.rail{width:100%!important}.hero-h{font-size:38px}}
+@media(max-width:980px){.cols{flex-direction:column}.rail{width:100%!important}.hero-h{font-size:38px}.myteam-grid{grid-template-columns:1fr!important}}
 @media(max-width:640px){
   .hero-h{font-size:30px!important}
   .statline{font-size:30px}
@@ -6728,8 +6794,28 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const [rowLimit, setRowLimit] = useState(130); // how many board rows to show; "Show more" raises it
   // PRIORITY QUEUE: players you've starred for this league. Persisted to localStorage keyed by league id
   // so it survives refreshes and is separate per league. `queueOnly` filters the board to just these.
-  const queueKey = `fdc-queue-${league?.id || cfg.name || "default"}`;
-  const [queue, setQueue] = useState(() => { try { const r = JSON.parse(localStorage.getItem(queueKey) || "[]"); return new Set(Array.isArray(r) ? r : []); } catch { return new Set(); } });
+  // Priority queue persists to localStorage. Key it by the most STABLE id available so it survives sign-out
+  // and page reloads: the connected Sleeper league id first, then a slug of the league name, then the
+  // internal id. (Keying only by the internal league.id was fragile — it can change when leagues reload
+  // from the backend, orphaning the saved queue.)
+  const queueKey = useMemo(() => {
+    const stable = (cfg.connect && cfg.connect.leagueId) ? `sl-${cfg.connect.leagueId}`
+      : (cfg.name ? `nm-${String(cfg.name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}` : null);
+    return `fdc-queue-${stable || league?.id || "default"}`;
+  }, [cfg.connect, cfg.name, league?.id]);
+  const [queue, setQueue] = useState(() => new Set());
+  // Load (and one-time migrate from the old league.id-based key) whenever the stable key resolves.
+  useEffect(() => {
+    try {
+      let raw = JSON.parse(localStorage.getItem(queueKey) || "[]");
+      if ((!Array.isArray(raw) || raw.length === 0) && league?.id) {
+        // migrate any queue saved under the legacy key
+        const legacy = JSON.parse(localStorage.getItem(`fdc-queue-${league.id}`) || "[]");
+        if (Array.isArray(legacy) && legacy.length) { raw = legacy; localStorage.setItem(queueKey, JSON.stringify(legacy)); }
+      }
+      setQueue(new Set(Array.isArray(raw) ? raw : []));
+    } catch { setQueue(new Set()); }
+  }, [queueKey, league?.id]);
   const [queueOnly, setQueueOnly] = useState(false);
   const toggleQueue = (name) => setQueue((prev) => {
     const next = new Set(prev);
@@ -7002,7 +7088,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     for (let o = picks.length; o < TOTAL && n < 3; o++) { if (teamAt(o) === userIdx) { set.add(o); n++; } }
     return set;
   }, [picks.length, TOTAL, userIdx, cfg, liveSlots]);
-  const path = useMemo(() => (!done ? projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, advice?.verdict?.id ?? null, futureBig) : []), [players, sortedAdp, picks, userIdx, cfg, strategy, advice, done, futureBig, liveSlots]);
+  const path = useMemo(() => (!done ? projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, advice?.verdict?.id ?? null, true) : []), [players, sortedAdp, picks, userIdx, cfg, strategy, advice, done, liveSlots]);
+  // What the draft tracker actually shows. Collapsed (default): the next 4 upcoming picks, then YOUR next
+  // pick as a 5th highlighted card (with its real pick number — it won't always be the literal 5th). If
+  // your next pick falls within those first 4, we just show the natural sequence (no appended 5th). When
+  // "expand" is on, we instead show the next 15 picks straight through.
+  const displayPath = useMemo(() => {
+    const base = onClock === userIdx ? path : path.slice(1); // drop the on-clock pick when it isn't yours
+    if (futureBig) return base.slice(0, 15);
+    const firstFour = base.slice(0, 4);
+    const yourInFour = firstFour.some((s) => s.user);
+    if (yourInFour) return firstFour;
+    const yourNext = base.find((s) => s.user);
+    return yourNext ? [...firstFour, yourNext] : firstFour;
+  }, [path, onClock, userIdx, futureBig]);
 
   const currentPred = !done ? (onClock === userIdx ? advice?.verdict ?? null : path[0]?.p ?? null) : null;
   const currentProb = !done && onClock !== userIdx ? path[0]?.prob : null;
@@ -7724,7 +7823,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
             <>
               <i className="ti ti-flask" style={{ fontSize: 15, color: "var(--gold)" }} aria-hidden="true" />
               <span style={{ fontSize: 12.5, fontWeight: 600 }}>Scenario mode</span>
-              <span className="mut" style={{ fontSize: 12 }}>— play out what-if picks without touching the real draft.</span>
               <div style={{ flex: 1 }} />
               <button onClick={startHypo}
                 onMouseEnter={(e) => showTip(e, [
@@ -7783,9 +7881,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 <button className="btn btn-gold btn-mini" style={{ marginTop: 6, width: "100%" }} onClick={() => draftPlayer(currentPred.id)}>Draft {currentPred.name.split(" ").slice(-1)}</button>
               )}
             </div>
-            {(onClock === userIdx ? path : path.slice(1)).map((step) => step.user ? (
-              <div key={step.o} className="tickcard you">
-                <div style={{ fontSize: 11, color: "var(--gold)", textTransform: "uppercase", letterSpacing: ".07em" }}>Your pick {pickLabel(step.o)} <span style={{ opacity: 0.75 }}>({step.o + 1})</span></div>
+            {displayPath.map((step, di) => step.user ? (
+              <div key={step.o} className="tickcard you" style={!futureBig && di === displayPath.length - 1 && di >= 4 ? { borderColor: "var(--gold)", borderWidth: 2, boxShadow: "0 0 0 2px rgba(242,182,60,.25)", background: "linear-gradient(180deg,rgba(242,182,60,.16),rgba(242,182,60,.04))" } : undefined}>
+                <div style={{ fontSize: 11, color: "var(--gold)", textTransform: "uppercase", letterSpacing: ".07em", fontWeight: 700 }}>{!futureBig && di >= 4 ? "↩ Your next pick" : "Your pick"} {pickLabel(step.o)} <span style={{ opacity: 0.75 }}>({step.o + 1})</span></div>
                 {step.p && <div style={{ fontWeight: 600, fontSize: 13, marginTop: 2 }}><Dot pos={step.p.pos} />{step.p.name}</div>}
                 <button className="btn btn-gold btn-mini" style={{ marginTop: 5 }} onClick={() => setBriefOpen(true)}>AI briefing</button>
               </div>
@@ -7797,13 +7895,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 <div className="mut num" style={{ fontSize: 10, marginTop: 2 }}>{step.prob}% likely</div>
               </div>
             ))}
-            <button className="btn btn-mini" style={{ alignSelf: "center", flexShrink: 0, borderColor: "var(--gold)", color: "var(--gold)" }} onClick={() => setFutureBig((b) => !b)} title="Show more upcoming picks. The tracker scrolls horizontally — scroll right to see them all.">{futureBig ? "« show fewer" : "show more picks »"}</button>
+            <button className="btn btn-mini" style={{ alignSelf: "center", flexShrink: 0, borderColor: "var(--gold)", color: "var(--gold)" }} onClick={() => setFutureBig((b) => !b)} title="Collapsed view shows the next 4 picks plus your next pick. Expand to see the next 15 upcoming picks instead.">{futureBig ? "« show fewer" : "expand picks »"}</button>
           </div>
         </div>
       )}
 
       <div className="hairline tabbar" style={{ display: "flex", padding: "0 10px", overflowX: "auto", background: "var(--bg)" }}>
-        {[["hub","Hub"],["board","Draft board"],["teams","Teams"],["depth","Depth charts"],["trade","Trade"],["summary","Summary"],["settings","Settings"]].map(([k, label]) => (
+        {[["hub","Hub"],["myteam","My Team"],["board","Draft board"],["teams","Teams"],["depth","Depth charts"],["trade","Trade"],["summary","Summary"],["settings","Settings"]].map(([k, label]) => (
           <button key={k} className={`tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>{label}</button>
         ))}
       </div>
@@ -8280,6 +8378,107 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
         </>
       )}
 
+      {tab === "myteam" && (() => {
+        const ta = teamAnalysis(myCurrent, cfg, myWindow, advice, path);
+        const posColor = { QB: POS_COLOR.QB, RB: POS_COLOR.RB, WR: POS_COLOR.WR, TE: POS_COLOR.TE };
+        return (
+          <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
+            {/* Header / outlook */}
+            <div className="panel" style={{ padding: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+                <div>
+                  <div className="disp" style={{ fontSize: 20, fontWeight: 700 }}>My Team</div>
+                  <div className="mut" style={{ fontSize: 12.5 }}>{cfg.name} · {TEAM_NAMES[userIdx] || "Your team"}</div>
+                </div>
+                <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+                  <div style={{ textAlign: "center" }}><div className="disp" style={{ fontSize: 22, fontWeight: 800, color: "var(--gold)" }}>{myCurrent.length}</div><div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Drafted</div></div>
+                  <div style={{ textAlign: "center" }}><div className="disp" style={{ fontSize: 22, fontWeight: 800 }}>{Math.round(ta.startersPts)}</div><div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Starter pts</div></div>
+                  {ta.avgAge && <div style={{ textAlign: "center" }}><div className="disp" style={{ fontSize: 22, fontWeight: 800 }}>{ta.avgAge.toFixed(1)}</div><div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Avg age</div></div>}
+                  {myWindow && myWindow.decided && <div style={{ textAlign: "center" }}><div className="disp" style={{ fontSize: 15, fontWeight: 800, color: "var(--gold)", marginTop: 5 }}>{myWindow.lane === "rebuild" ? "Rebuild" : myWindow.lane === "winnow" ? "Win-now" : "Balanced"}</div><div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Window</div></div>}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }} className="myteam-grid">
+              {/* Projected starting lineup */}
+              <div className="panel" style={{ padding: 14 }}>
+                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 10 }}>Projected starting lineup</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  {ta.slots.map((s, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 9, padding: "5px 8px", borderRadius: 7, background: s.p ? "var(--panel2)" : "rgba(255,90,90,.08)", border: s.p ? "1px solid var(--line)" : "1px dashed var(--red)" }}>
+                      <span style={{ width: 42, fontSize: 11, fontWeight: 700, color: "var(--mut)" }}>{s.slot}</span>
+                      {s.p ? <>
+                        <PlayerPhoto sid={s.p.sid} pos={s.p.pos} size={24} />
+                        <span style={{ fontWeight: 600, fontSize: 13 }}>{s.p.name}</span>
+                        <span className="mut" style={{ fontSize: 11 }}>{s.p.team} · {s.p.pos}{s.p.posRank}</span>
+                        <span className="mut num" style={{ marginLeft: "auto", fontSize: 12 }}>{Math.round(s.p.pts)} pts</span>
+                      </> : <span className="mut" style={{ fontSize: 12, fontStyle: "italic" }}>empty — needs a starter</span>}
+                    </div>
+                  ))}
+                </div>
+                {ta.bench.length > 0 && (
+                  <>
+                    <div className="disp" style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", margin: "12px 0 6px" }}>Bench ({ta.bench.length})</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {ta.bench.map((p, i) => (
+                        <span key={i} className="chip" style={{ fontSize: 11 }}><Dot pos={p.pos} />{p.name} <span className="mut">{p.pos}{p.posRank}</span></span>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Position breakdown + age */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                <div className="panel" style={{ padding: 14 }}>
+                  <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 10 }}>Position breakdown</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {["QB", "RB", "WR", "TE"].map((pos) => {
+                      const b = ta.byPos[pos];
+                      const status = b.need > 0 ? { t: "NEED", c: "var(--red)" } : b.count > b.starters ? { t: "DEPTH", c: "var(--green)" } : { t: "SET", c: "var(--gold)" };
+                      return (
+                        <div key={pos} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <span style={{ width: 28, fontWeight: 800, color: posColor[pos] }}>{pos}</span>
+                          <div style={{ flex: 1, height: 8, background: "var(--panel2)", borderRadius: 4, overflow: "hidden" }}>
+                            <div style={{ width: `${Math.min(100, (b.count / Math.max(1, (b.starters + 1.5))) * 100)}%`, height: "100%", background: posColor[pos], opacity: 0.8 }} />
+                          </div>
+                          <span className="mut num" style={{ fontSize: 11, width: 64 }}>{b.count} / {b.starters} start</span>
+                          <span style={{ fontSize: 10, fontWeight: 700, color: status.c, width: 46, textAlign: "right" }}>{status.t}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="panel" style={{ padding: 14 }}>
+                  <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 10 }}>Roster profile</div>
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                    <div><span className="disp" style={{ fontSize: 18, fontWeight: 800, color: "var(--green)" }}>{ta.youngCount}</span> <span className="mut" style={{ fontSize: 11.5 }}>young (≤24)</span></div>
+                    <div><span className="disp" style={{ fontSize: 18, fontWeight: 800 }}>{ta.rookieCount}</span> <span className="mut" style={{ fontSize: 11.5 }}>rookies</span></div>
+                    <div><span className="disp" style={{ fontSize: 18, fontWeight: 800, color: ta.oldCount > 2 ? "var(--red)" : "var(--ink)" }}>{ta.oldCount}</span> <span className="mut" style={{ fontSize: 11.5 }}>aging (≥29)</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Insights / what to focus on */}
+            <div className="panel" style={{ padding: 16 }}>
+              <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", marginBottom: 10 }}>Your outlook & what to focus on</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {ta.insights.map((line, i) => (
+                  <div key={i} style={{ display: "flex", gap: 9, alignItems: "flex-start" }}>
+                    <i className="ti ti-point-filled" style={{ fontSize: 14, color: "var(--gold)", marginTop: 2, flexShrink: 0 }} aria-hidden="true" />
+                    <span style={{ fontSize: 13, lineHeight: 1.5 }}>{line}</span>
+                  </div>
+                ))}
+              </div>
+              {!done && advice && advice.verdict && (
+                <button className="btn btn-gold" style={{ marginTop: 14 }} onClick={() => setTab("hub")}>Go to the board →</button>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {tab === "board" && (
         <div style={{ padding: 14 }}>
           <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
@@ -8366,12 +8565,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                         {traded && <div style={{ fontSize: 8.5, letterSpacing: ".04em", textTransform: "uppercase", color: ownedByYou ? "var(--gold)" : "var(--mut)", marginTop: -1, fontWeight: 700 }}>{ownedByYou ? "YOUR PICK" : `→ ${TEAM_NAMES[owner].split(" ")[0]}`}</div>}
                         {p ? (
                           <>
-                            <div className="pl" style={{ color: isKeeper ? "var(--green)" : isProjected ? "var(--gold)" : "var(--ink)", fontStyle: isProjected ? "italic" : "normal", display: "flex", alignItems: "center", gap: 5, justifyContent: "space-between" }}>
-                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+                            <div className="pl" style={{ color: isKeeper ? "var(--green)" : isProjected ? "var(--gold)" : "var(--ink)", fontStyle: isProjected ? "italic" : "normal" }}>
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
                                 <span className="posdot" style={{ background: POS_COLOR[p.pos], flexShrink: 0 }}>{p.pos}</span>
-                                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+                                {p.sid && !isProjected ? <PlayerPhoto sid={p.sid} pos={p.pos} size={20} /> : null}
                               </span>
-                              {p.sid && !isProjected ? <PlayerPhoto sid={p.sid} pos={p.pos} size={34} /> : null}
+                              <span style={{ display: "block", marginTop: 2, whiteSpace: "normal", overflowWrap: "anywhere", lineHeight: 1.12 }}>{p.name}</span>
                             </div>
                             {showBoardVal && !isProjected && !isKeeper && Math.abs(v) > 0 && (
                               <div className="val num" style={{ color: v > 0 ? "var(--green)" : "var(--red)" }}>{v > 0 ? `+${v}` : v}</div>
