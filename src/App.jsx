@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26j";
+const BUILD_TAG = "2026.06.26k";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1150,7 +1150,7 @@ const TEAM_NAMES_POOL = ["Gridiron Gurus","Waiver Wolves","Bye Week Blues","The 
 // Active team names for the current league (may be overridden by manual/Sleeper entry).
 let TEAM_NAMES = TEAM_NAMES_POOL.slice(0, 12);
 const setTeamNames = (names) => { TEAM_NAMES = names; };
-const POS_COLOR = { QB:"#EF6A6A", RB:"#4FD1A1", WR:"#5BA8F5", TE:"#F2A35C", DL:"#b07cc6", LB:"#7e9b59", DB:"#5fb0b0", K:"#9aa7b3", DST:"#9aa7b3" };
+const POS_COLOR = { QB:"#EF6A6A", RB:"#4FD1A1", WR:"#5BA8F5", TE:"#F2A35C", DL:"#b07cc6", LB:"#7e9b59", DB:"#5fb0b0", K:"var(--mut)", DST:"var(--mut)" };
 // ---- Recent trends feed --------------------------------------------------------------
 // PLUGGABLE DATA LAYER. In production, getTrendsFeed() reads a nightly-synced blend of
 // public sources — ADP movement (Sleeper/FantasyPros/ESPN), transactions & signings,
@@ -2130,7 +2130,8 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
   // a couple more profile signals: total projected points across the whole roster, and best/most-valuable
   const totalPts = roster.reduce((s, p) => s + (p.pts || 0), 0);
   const topPlayer = roster.slice().sort((a, b) => (b.pts || 0) - (a.pts || 0))[0] || null;
-  const upsideCount = roster.filter((p) => p.ceil != null && p.pts && p.ceil - p.pts > p.pts * 0.35).length;
+  const upsideList = roster.filter((p) => p.ceil != null && p.pts && p.ceil - p.pts > p.pts * 0.35);
+  const upsideCount = upsideList.length;
   const emptyStarters = slots.filter((s) => !s.p).map((s) => s.slot);
   const posScore = (pos) => { const b = byPos[pos]; if (!b.count) return -100; return (b.bestVbd || 0) + (b.count - (req[pos] || 0)) * 6; };
   const ranked = ["QB", "RB", "WR", "TE"].slice().sort((a, b) => posScore(b) - posScore(a));
@@ -2168,7 +2169,7 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
       if (thinnest && byPos[thinnest].count === 0) insights.push({ h: `Nothing at ${thinnest} yet`, b: thinnest === "QB" && sf ? "In superflex that's a real hole — QB is premium here." : "Don't wait too long if the position thins out." });
     }
   }
-  return { slots, bench, startersPts, byPos, avgAge, youngCount, oldCount, rookieCount, youngList, oldList, rookieList, totalPts, topPlayer, upsideCount, emptyStarters, strongest, thinnest, insights, posRankByPos, overallRank, leagueSize };
+  return { slots, bench, startersPts, byPos, avgAge, youngCount, oldCount, rookieCount, youngList, oldList, rookieList, upsideList, totalPts, topPlayer, upsideCount, emptyStarters, strongest, thinnest, insights, posRankByPos, overallRank, leagueSize };
 }
 const TEAMS_FALLBACK = 12;
 function userIdxOf(ctx) { return ctx && ctx.userIdx != null ? ctx.userIdx : 0; }
@@ -2407,14 +2408,14 @@ function boardPickOutlook(p, o, cfg, ownerLabel, roster, req) {
 /* ---------------- styles ---------------- */
 const css = `
 @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&display=swap');
-.gs-root{--bg:#000000;--panel:#0C0C0E;--panel2:#070708;--line:#23231F;--ink:#F3F1E9;--mut:#8C8B82;--gold:#F2B63C;--gold2:#FFD071;--red:#F2655C;--green:#7CD9B2;--mono:'DM Mono','SF Mono',ui-monospace,monospace;
-  background:var(--bg);color:var(--ink);font-family:'Barlow',system-ui,sans-serif;min-height:100vh;font-size:14px;}
+.gs-root{--bg:#0E1217;--panel:#181F28;--panel2:#10151B;--panel3:#222C38;--line:#2E3A48;--line2:#3A4757;--ink:#EEF2F6;--mut:#9AA7B5;--gold:#F2B63C;--gold2:#FFD071;--red:#F2655C;--green:#5FD0A8;--blue:#6BA8E5;--mono:'DM Mono','SF Mono',ui-monospace,monospace;
+  background:radial-gradient(1200px 600px at 50% -10%, #141C26 0%, var(--bg) 60%);color:var(--ink);font-family:'Barlow',system-ui,sans-serif;min-height:100vh;font-size:14px;}
 .gs-root *{box-sizing:border-box}
 .disp{font-family:'Barlow Condensed','Barlow',sans-serif;letter-spacing:.02em}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.25)}
 .hairline{border-bottom:1px solid var(--line)} .mut{color:var(--mut)} .gold{color:var(--gold)}
-.btn{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer;font-family:'Barlow';font-size:13px;transition:border-color .15s,background .15s,transform .1s,box-shadow .15s}
-.btn:hover,.btn-mini:hover{border-color:var(--gold);background:#211b0e}
+.btn{background:var(--panel3);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer;font-family:'Barlow';font-size:13px;transition:border-color .15s,background .15s,transform .1s,box-shadow .15s}
+.btn:hover,.btn-mini:hover{border-color:var(--gold);background:#2B3340}
 select.gs{cursor:pointer}
 select.gs:hover{border-color:var(--gold)}
 .btn:hover{border-color:var(--gold);background:#15140d;transform:translateY(-1px);box-shadow:0 2px 10px #0006}
@@ -2422,11 +2423,11 @@ select.gs:hover{border-color:var(--gold)}
 .btn:focus-visible{outline:2px solid var(--gold);outline-offset:1px}
 .btn-gold{background:var(--gold);color:#151002;border:none;font-weight:700}
 .btn-gold:hover{filter:brightness(1.08);border-color:transparent;background:var(--gold2);box-shadow:0 3px 16px rgba(242,182,60,.4)}
-.btn-mini{padding:3px 10px;font-size:11px;border-radius:6px;background:#1c1810}
+.btn-mini{padding:3px 10px;font-size:11px;border-radius:6px;background:var(--panel3)}
 .btn-gold,.btn-mini.btn-gold{background:var(--gold);color:#151002;border:none;font-weight:700}
 .btn-mini:hover{transform:none;box-shadow:none;background:#262017;border-color:var(--gold)}
 .tab{padding:8px 14px;cursor:pointer;border:none;background:none;color:var(--mut);font-family:'Barlow Condensed';font-size:16px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;border-bottom:2px solid transparent;transition:color .15s,border-color .15s}
-.tab:hover{color:var(--ink);border-bottom-color:#5a5a52}
+.tab:hover{color:var(--ink);border-bottom-color:var(--line2)}
 .tab.on{color:var(--ink);border-bottom-color:var(--gold)}
 .hubtile:hover{transform:translateY(-2px);border-color:var(--gold)!important;box-shadow:0 6px 20px #0008}
 .flipcard{perspective:1000px;border:none;background:none;padding:0;cursor:pointer;font-family:inherit;color:var(--ink);height:148px}
@@ -2445,8 +2446,8 @@ select.gs:hover{border-color:var(--gold)}
 .chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;white-space:nowrap}
 .ticker{display:flex;gap:8px;overflow-x:auto;padding:10px 12px;scrollbar-width:thin;align-items:stretch}
 .tickcard{min-width:118px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-shrink:0}
-.tickcard.you{border-color:var(--gold);background:#1A1505}
-.tickcard.clock{border-color:#33476B;background:#0F1B30}
+.tickcard.you{border-color:var(--gold);background:rgba(242,182,60,.10)}
+.tickcard.clock{border-color:var(--blue);background:#16243A}
 .meter{height:3px;background:var(--line);border-radius:2px;margin-top:6px;overflow:hidden}.meter>div{height:100%;background:var(--gold)}
 table.board{width:max-content;min-width:100%;border-collapse:separate;border-spacing:0;font-size:13px;table-layout:auto}
 table.board th{font-family:'Barlow Condensed';text-transform:uppercase;letter-spacing:.06em;font-size:12px;color:var(--mut);text-align:left;padding:8px 9px;border-bottom:2px solid var(--line);position:sticky;top:0;background:linear-gradient(180deg,var(--panel),var(--panel2));cursor:pointer;white-space:nowrap;z-index:2}
@@ -2457,11 +2458,11 @@ table.board tr.sechead th:hover{color:var(--gold)}
 table.board thead tr:nth-child(2) th{top:22px}
 table.board tr.sechead th.frz{z-index:5}
 table.board td{padding:6px 9px;border-bottom:1px solid #16203320;white-space:nowrap}
-table.board tbody tr:nth-child(even) td{background:#10141b66}
-table.board tbody tr:hover td{background:#1b2740aa}
+table.board tbody tr:nth-child(even) td{background:rgba(255,255,255,.022)}
+table.board tbody tr:hover td{background:rgba(107,168,229,.10)}
 table.board th.frz,table.board td.frz{position:sticky;left:0;z-index:3;background:var(--panel)}
-table.board tbody tr:nth-child(even) td.frz{background:#0f131a}
-table.board tbody tr:hover td.frz{background:#11161f}
+table.board tbody tr:nth-child(even) td.frz{background:#141A22}
+table.board tbody tr:hover td.frz{background:#1A2230}
 table.board th.frz{z-index:4;box-shadow:1px 0 0 var(--line)}
 table.board td.frz{box-shadow:1px 0 0 var(--line)}
 table.board tbody tr td.frz{border-left:3px solid transparent}
@@ -2501,7 +2502,7 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .availpct .txt{position:relative;z-index:1}
 .availhead{display:grid;gap:10px;padding:6px 12px;font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);font-weight:700}
 .posbadge{display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:20px;border-radius:5px;font-size:9.5px;font-weight:800;color:#0a0a0a}
-.tooltip{position:fixed;z-index:90;width:460px;max-width:460px;background:#0A0A0C;border:1px solid #3A3A30;border-radius:10px;padding:13px 16px;font-size:12.5px;line-height:1.5;pointer-events:none;box-shadow:0 12px 40px #000D}
+.tooltip{position:fixed;z-index:90;width:460px;max-width:460px;background:#10151B;border:1px solid var(--line2);border-radius:10px;padding:13px 16px;font-size:12.5px;line-height:1.5;pointer-events:none;box-shadow:0 12px 40px #000D}
 .needcell{text-align:center;border-radius:5px;padding:3px 0;font-size:12px}
 .info{cursor:help;border-bottom:1px dotted var(--mut)}
 .hero-h{font-size:58px;font-weight:700;line-height:1.0}
@@ -2509,7 +2510,7 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .feature:hover{border-color:var(--gold);transform:translateY(-3px);background:#121210}
 .showcase{background:linear-gradient(165deg,#13130D,#0B0B08);border:1px solid #2A2A20;border-radius:14px;padding:18px;transition:border-color .2s,transform .2s,box-shadow .2s;cursor:default}
 .showcase:hover{border-color:var(--gold);transform:translateY(-4px);box-shadow:0 14px 40px rgba(242,182,60,.10)}
-.showcase-badge{display:inline-flex;align-items:center;gap:6px;font-family:'Barlow Condensed';text-transform:uppercase;letter-spacing:.1em;font-size:10.5px;font-weight:700;color:var(--gold);background:#1A1505;border:1px solid #4A3A12;border-radius:99px;padding:4px 11px}
+.showcase-badge{display:inline-flex;align-items:center;gap:6px;font-family:'Barlow Condensed';text-transform:uppercase;letter-spacing:.1em;font-size:10.5px;font-weight:700;color:var(--gold);background:rgba(242,182,60,.10);border:1px solid #4A3A12;border-radius:99px;padding:4px 11px}
 .showcase-badge i{font-size:13px}
 .modalbg{position:fixed;inset:0;background:#000C;display:flex;align-items:center;justify-content:center;z-index:60;padding:16px}
 .statline{font-family:'Barlow Condensed';font-size:38px;font-weight:700;color:var(--gold)}
@@ -2598,7 +2599,7 @@ const PlayerPhoto = ({ sid, pos, size = 22 }) => {
   return (
     <img src={`https://sleepercdn.com/content/nfl/players/${sid}.jpg`} alt="" width={size} height={size}
       onError={(e) => { e.currentTarget.style.display = "none"; }}
-      style={{ width: size, height: size, borderRadius: "50%", objectFit: "cover", objectPosition: "top center", flexShrink: 0, background: "#1c1810", border: `1.5px solid ${POS_COLOR[pos] || "var(--line)"}` }} />
+      style={{ width: size, height: size, borderRadius: "50%", objectFit: "cover", objectPosition: "top center", flexShrink: 0, background: "var(--panel3)", border: `1.5px solid ${POS_COLOR[pos] || "var(--line)"}` }} />
   );
 };
 const PosName = ({ p }) => <span><Dot pos={p.pos} /><span className="mut" style={{ fontSize: "0.92em" }}>{p.pos}</span> <b>{p.name}</b></span>;
@@ -2951,14 +2952,14 @@ function GuideGraphic({ kind }) {
   const box = { width: "100%", height: 96, display: "block" };
   if (kind === "rankings") return (
     <svg viewBox="0 0 240 96" style={box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-      {[0, 1, 2, 3].map((i) => (<g key={i}><rect x="20" y={12 + i * 19} width="16" height="14" rx="3" fill={g} opacity={1 - i * 0.18} /><text x="28" y={23 + i * 19} fontSize="9" fontWeight="700" fill="#1A1505" textAnchor="middle" fontFamily="var(--mono)">{i + 1}</text><rect x="44" y={12 + i * 19} width={150 - i * 26} height="14" rx="4" fill="var(--panel2)" /><i /><rect x={200} y={14 + i * 19} width="20" height="10" rx="3" fill="none" stroke={g} strokeWidth="1" opacity="0.55" /></g>))}
+      {[0, 1, 2, 3].map((i) => (<g key={i}><rect x="20" y={12 + i * 19} width="16" height="14" rx="3" fill={g} opacity={1 - i * 0.18} /><text x="28" y={23 + i * 19} fontSize="9" fontWeight="700" fill="rgba(242,182,60,.10)" textAnchor="middle" fontFamily="var(--mono)">{i + 1}</text><rect x="44" y={12 + i * 19} width={150 - i * 26} height="14" rx="4" fill="var(--panel2)" /><i /><rect x={200} y={14 + i * 19} width="20" height="10" rx="3" fill="none" stroke={g} strokeWidth="1" opacity="0.55" /></g>))}
     </svg>
   );
   if (kind === "create") return (
     <svg viewBox="0 0 240 96" style={box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
       {["ESPN", "Sleeper", "Yahoo"].map((t, i) => (<g key={i}><rect x={18 + i * 52} y="20" width="46" height="24" rx="6" fill="var(--panel2)" stroke="var(--line)" strokeWidth="1" /><text x={41 + i * 52} y="35" fontSize="8.5" fill="var(--mut)" textAnchor="middle" fontFamily="var(--mono)">{t}</text></g>))}
       <path d="M120 52 v10 M120 62 h-44 M120 62 h44 M76 62 v8 M164 62 v8 M120 62 v8" stroke={g} strokeWidth="1.5" fill="none" opacity="0.6" />
-      <rect x="86" y="70" width="68" height="20" rx="6" fill={g} /><text x="120" y="83" fontSize="9" fontWeight="700" fill="#1A1505" textAnchor="middle">Your league</text>
+      <rect x="86" y="70" width="68" height="20" rx="6" fill={g} /><text x="120" y="83" fontSize="9" fontWeight="700" fill="rgba(242,182,60,.10)" textAnchor="middle">Your league</text>
     </svg>
   );
   if (kind === "open") return (
@@ -3003,7 +3004,7 @@ function WhyGraphic({ kind }) {
   );
   if (kind === "decide") return ( // who now + wait cost
     <svg viewBox="0 0 220 84" style={box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-      <rect x="16" y="30" width="96" height="24" rx="6" fill={g} /><text x="64" y="46" fontSize="11" fontWeight="700" fill="#1A1505" textAnchor="middle">Take now</text>
+      <rect x="16" y="30" width="96" height="24" rx="6" fill={g} /><text x="64" y="46" fontSize="11" fontWeight="700" fill="rgba(242,182,60,.10)" textAnchor="middle">Take now</text>
       <rect x="124" y="30" width="80" height="24" rx="6" fill="var(--panel2)" stroke="var(--line)" strokeWidth="1" /><text x="164" y="42" fontSize="9" fill="var(--mut)" textAnchor="middle">wait costs</text><text x="164" y="51" fontSize="9" fontWeight="700" fill="var(--red)" textAnchor="middle">−12 pts</text>
       <polygon points="64,20 60,28 68,28" fill={g} />
     </svg>
@@ -3086,7 +3087,7 @@ function HelpPage({ user, biz, onBack, onHome, onSignOut, onSubmit, initialTab }
               <div key={i} className="panel" style={{ padding: 0, marginBottom: 12, overflow: "hidden" }}>
                 <div style={{ display: "flex", gap: 0, flexWrap: "wrap" }}>
                   <div style={{ flex: "1 1 320px", padding: 16, display: "flex", gap: 14, alignItems: "flex-start" }}>
-                    <div style={{ flexShrink: 0, width: 38, height: 38, borderRadius: 9, background: "#1A1505", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <div style={{ flexShrink: 0, width: 38, height: 38, borderRadius: 9, background: "rgba(242,182,60,.10)", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                       <span className="disp gold" style={{ fontSize: 18, fontWeight: 700 }}>{i + 1}</span>
                     </div>
                     <div>
@@ -3262,7 +3263,7 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
         {(() => {
           const cs = league.cfg.connect && league.cfg.connect.status;
           if (cs === "drafting") return (
-            <div className="panel" style={{ padding: "12px 14px", marginTop: 10, background: "#16140c", borderColor: "var(--gold)", display: "flex", alignItems: "center", gap: 10 }}>
+            <div className="panel" style={{ padding: "12px 14px", marginTop: 10, background: "rgba(242,182,60,.07)", borderColor: "var(--gold)", display: "flex", alignItems: "center", gap: 10 }}>
               <span style={{ display: "inline-flex", width: 9, height: 9, borderRadius: "50%", background: "#4FD1A1", boxShadow: "0 0 0 3px rgba(79,209,161,.2)" }} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--gold)" }}>Your draft is LIVE right now on Sleeper</div>
@@ -3288,7 +3289,7 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
 
         {/* THREE CHOICES INSIDE THE UMBRELLA */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(230px,1fr))", gap: 12, marginTop: 18 }}>
-          <button className="hubtile" onClick={() => onOfficial(league.id)} style={{ textAlign: "left", background: "#16140c", border: "1px solid var(--gold)", borderRadius: 12, padding: 18, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)" }}>
+          <button className="hubtile" onClick={() => onOfficial(league.id)} style={{ textAlign: "left", background: "rgba(242,182,60,.07)", border: "1px solid var(--gold)", borderRadius: 12, padding: 18, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)" }}>
             <i className="ti ti-flag-3" style={{ fontSize: 24, color: "var(--gold)" }} aria-hidden="true" />
             <div className="disp" style={{ fontSize: 17, fontWeight: 700, margin: "9px 0 3px" }}>{st === "complete" ? "View Official Results" : st === "progress" ? "Resume Official Draft" : "Start Official Draft"}</div>
             <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>{st === "complete" ? "Draft complete — review the board, teams, and recap." : st === "progress" ? `${league.picks.length}/${total} picks made.` : "The real one. Live recommendations, projections, and grades."}</div>
@@ -3549,7 +3550,7 @@ function HeroShowcase() {
         why: "Our #1 overall in this format — the rare every-week WR1 with target volume that doesn't dip.", surv: 2 },
       { name: "Bijan Robinson", pos: "RB", adp: "2.1", vbd: 88, posRank: 1, tier: 1, pts: 305, tag: "RB run — act now", tc: "#EF6A6A",
         why: "Two RBs went in the last three picks — the position is thinning fast. Best back on the board.", surv: 4 },
-      { name: "Justin Jefferson", pos: "WR", adp: "3.8", vbd: 80, posRank: 2, tier: 1, pts: 298, tag: "Best WR available", tc: "#9aa7b3",
+      { name: "Justin Jefferson", pos: "WR", adp: "3.8", vbd: 80, posRank: 2, tier: 1, pts: 298, tag: "Best WR available", tc: "var(--mut)",
         why: "Elite separation and a locked-in target share; safest floor among the remaining wideouts.", surv: 9 },
       { name: "Saquon Barkley", pos: "RB", adp: "4.6", vbd: 78, posRank: 2, tier: 1, pts: 291, tag: "Fills your RB need", tc: "#4FD1A1",
         why: "You have zero RBs and the tier ends soon — he plugs your biggest hole with a workhorse role.", surv: 14 },
@@ -3656,7 +3657,7 @@ function QuickMockSetup({ onStart, onCancel }) {
   const Seg = ({ value, set, options }) => (
     <div style={{ display: "inline-flex", background: "var(--panel2)", borderRadius: 9, padding: 3, gap: 2, flexWrap: "wrap" }}>
       {options.map(([k, l]) => (
-        <button key={k} onClick={() => set(k)} className="bigact" style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, padding: "6px 12px", borderRadius: 7, border: "none", background: value === k ? "var(--gold)" : "transparent", color: value === k ? "#1A1505" : "var(--ink)" }}>{l}</button>
+        <button key={k} onClick={() => set(k)} className="bigact" style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, padding: "6px 12px", borderRadius: 7, border: "none", background: value === k ? "var(--gold)" : "transparent", color: value === k ? "rgba(242,182,60,.10)" : "var(--ink)" }}>{l}</button>
       ))}
     </div>
   );
@@ -3890,7 +3891,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         {/* RESUME */}
         {inProgress.length > 0 && (
           <button className="bigact" onClick={() => onOfficial(inProgress[0].id)} style={{ width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1.5px solid var(--gold)", background: "linear-gradient(90deg, #1b1708, #141206)", borderRadius: 14, padding: "15px 18px", display: "flex", alignItems: "center", gap: 14 }}>
-            <div style={{ width: 40, height: 40, borderRadius: 20, background: "var(--gold)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className="ti ti-player-play-filled" style={{ fontSize: 19, color: "#1A1505" }} aria-hidden="true" /></div>
+            <div style={{ width: 40, height: 40, borderRadius: 20, background: "var(--gold)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className="ti ti-player-play-filled" style={{ fontSize: 19, color: "rgba(242,182,60,.10)" }} aria-hidden="true" /></div>
             <div style={{ flex: 1 }}>
               <div className="disp" style={{ fontSize: 16, fontWeight: 700 }}>Resume your draft</div>
               <div className="mut" style={{ fontSize: 12.5 }}>{inProgress[0].name} — {inProgress[0].picks.length}/{(inProgress[0].cfg.teams || 12) * inProgress[0].cfg.rounds} picks made</div>
@@ -3914,7 +3915,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                 <div key={s.n} className="flipcard" role="button" tabIndex={0} onClick={s.action} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && s.action()} style={{ height: 124 }}>
                   <div className="flipinner">
                     {/* FRONT — number + icon + title */}
-                    <div className="flipface" style={{ background: isNext ? "#16140c" : "var(--panel2)", border: `1px solid ${isNext ? "var(--gold)" : "var(--line)"}`, padding: 13, justifyContent: "space-between" }}>
+                    <div className="flipface" style={{ background: isNext ? "rgba(242,182,60,.07)" : "var(--panel2)", border: `1px solid ${isNext ? "var(--gold)" : "var(--line)"}`, padding: 13, justifyContent: "space-between" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                         <span className="disp" style={{ fontSize: 34, fontWeight: 700, lineHeight: 1, color: accent, opacity: s.done ? 0.5 : 1 }}>{s.n}</span>
                         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
@@ -4326,7 +4327,7 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
             <div key={i} className="panel" style={{ padding: 0, marginBottom: 12, overflow: "hidden" }}>
               <div style={{ display: "flex", gap: 0, flexWrap: "wrap" }}>
                 <div style={{ flex: "1 1 320px", padding: 18, display: "flex", gap: 14, alignItems: "flex-start" }}>
-                  <div style={{ flexShrink: 0, width: 38, height: 38, borderRadius: 9, background: "#1A1505", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <div style={{ flexShrink: 0, width: 38, height: 38, borderRadius: 9, background: "rgba(242,182,60,.10)", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                     <span className="disp gold" style={{ fontSize: 18, fontWeight: 700 }}>{i + 1}</span>
                   </div>
                   <div>
@@ -4776,7 +4777,7 @@ function TrendsOverTimePage({ user, leagues, funMocks, onBack, onHome, onSignOut
       <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="My Mock Insights" />
       <div style={{ maxWidth: 820, margin: "0 auto", padding: "24px 20px 50px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14, flexWrap: "wrap" }}>
-          <div style={{ flexShrink: 0, width: 44, height: 44, borderRadius: 10, background: "#1A1505", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ flexShrink: 0, width: 44, height: 44, borderRadius: 10, background: "rgba(242,182,60,.10)", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
             <i className="ti ti-chart-line" style={{ fontSize: 22, color: "var(--gold)" }} aria-hidden="true" />
           </div>
           <div style={{ flex: 1 }}>
@@ -5838,7 +5839,7 @@ function DraftOrderTab({ f, upd, ensureNames }) {
             {ord.map((teamIdx, pos) => {
               const mine = yourPos === pos;
               return (
-              <div key={pos} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", borderRadius: 7, marginBottom: 5, border: `1px solid ${mine ? "var(--gold)" : "var(--line)"}`, background: mine ? "#16140c" : "transparent" }}>
+              <div key={pos} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", borderRadius: 7, marginBottom: 5, border: `1px solid ${mine ? "var(--gold)" : "var(--line)"}`, background: mine ? "rgba(242,182,60,.07)" : "transparent" }}>
                 <span className="gold num disp" style={{ width: 28, fontSize: 15, fontWeight: 700 }}>{pos + 1}</span>
                 <button onClick={() => setMine(pos)} className="bigact" style={{ flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
                   <i className={`ti ${mine ? "ti-user-check" : "ti-user"}`} style={{ fontSize: 14, color: mine ? "var(--gold)" : "var(--mut)" }} aria-hidden="true" />
@@ -6302,7 +6303,7 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
         ))}
       </div>
 
-      {msg && <div style={{ maxWidth: 980, margin: "10px auto 0", padding: "0 18px" }}><div className="panel" style={{ padding: "8px 12px", fontSize: 12.5, borderColor: "var(--gold)", background: "#16140c" }}>{msg}</div></div>}
+      {msg && <div style={{ maxWidth: 980, margin: "10px auto 0", padding: "0 18px" }}><div className="panel" style={{ padding: "8px 12px", fontSize: 12.5, borderColor: "var(--gold)", background: "rgba(242,182,60,.07)" }}>{msg}</div></div>}
 
       <div style={{ maxWidth: 980, margin: "0 auto", padding: 18 }}>
         {/* USERS */}
@@ -6568,7 +6569,7 @@ function TradePickModal({ teams, rounds, teamNames, userIdx, ownerOf, naturalOwn
         </button>
 
         {movedCount > 0 && (
-          <div className="panel" style={{ padding: "8px 10px", marginBottom: 12, background: "#16140c", borderColor: "var(--gold)" }}>
+          <div className="panel" style={{ padding: "8px 10px", marginBottom: 12, background: "rgba(242,182,60,.07)", borderColor: "var(--gold)" }}>
             <div className="gold" style={{ fontSize: 11.5, fontWeight: 600 }}>{movedCount} pick{movedCount === 1 ? "" : "s"} moved from their original owner.</div>
             <div className="mut" style={{ fontSize: 10.5, marginTop: 2 }}>Apply to save these into the draft. Anything you swap by mistake can be swapped back before applying.</div>
           </div>
@@ -6641,7 +6642,7 @@ function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
           const cur = ownerOf(o);
           const moved = cur !== natural;
           return (
-            <div key={o} style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 8px", borderRadius: 6, marginBottom: 3, background: moved ? "#16140c" : "transparent", border: `1px solid ${moved ? "var(--gold)" : "transparent"}` }}>
+            <div key={o} style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 8px", borderRadius: 6, marginBottom: 3, background: moved ? "rgba(242,182,60,.07)" : "transparent", border: `1px solid ${moved ? "var(--gold)" : "transparent"}` }}>
               <span className="num disp" style={{ width: 42, fontSize: 13, fontWeight: 700 }}>{pickLabel(o)}</span>
               <span className="mut" style={{ width: 96, fontSize: 11.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{names[natural]}</span>
               <span className="mut" style={{ fontSize: 12 }}>→</span>
@@ -7824,7 +7825,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
       <div className="hairline" style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", flexWrap: "wrap" }}>
         <button className="btn btn-mini" onClick={exit}>← {user ? (user.paid ? "Home" : "Library") : "Home"}</button>
         <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{league.name}</div>
-        {isMock && <div className="chip" style={{ borderColor: "var(--gold)", background: "#1A1505", color: "var(--gold)" }} title="This is a practice draft — it saves to this league's mock history and never changes your real draft."><i className="ti ti-dice" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />MOCK</div>}
+        {isMock && <div className="chip" style={{ borderColor: "var(--gold)", background: "rgba(242,182,60,.10)", color: "var(--gold)" }} title="This is a practice draft — it saves to this league's mock history and never changes your real draft."><i className="ti ti-dice" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />MOCK</div>}
         <div className="chip" style={{ borderColor: "var(--gold)" }}><b className="disp gold" style={{ fontSize: 15 }}>ROUND {Math.min(round, ROUNDS)} of {ROUNDS}</b></div>
         <div className="chip">{cfg.teams} teams · {cfg.sf ? "SF" : "1QB"}{cfg.tePremMult > 0 ? ` · TE+${cfg.tePremMult}` : ""} · {DRAFT_ORDERS.find((o) => o[0] === (cfg.order || "snake"))?.[1].split(" ")[0]}</div>
         <div className="chip" title="How often the engine's #1 projection was the exact pick, and how often it nailed the position.">
@@ -7843,7 +7844,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
 
       <div style={{ position: "sticky", top: 0, zIndex: 12, background: "var(--bg)" }}>
       {!done && (hypoMode || sleeperLive) && (
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 16px", flexWrap: "wrap", background: hypoMode ? "#1A1505" : "var(--panel2)", borderBottom: `1px solid ${hypoMode ? "var(--gold)" : "var(--line)"}` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 16px", flexWrap: "wrap", background: hypoMode ? "rgba(242,182,60,.10)" : "var(--panel2)", borderBottom: `1px solid ${hypoMode ? "var(--gold)" : "var(--line)"}` }}>
           {hypoMode ? (
             <>
               <i className="ti ti-flask" style={{ fontSize: 15, color: "var(--gold)" }} aria-hidden="true" />
@@ -7958,7 +7959,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
         <>
         {mockLike && !started && (
           <div style={{ padding: "12px 14px 0" }}>
-            <div className="panel" style={{ padding: 16, borderColor: "var(--gold)", background: "#16140c", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+            <div className="panel" style={{ padding: 16, borderColor: "var(--gold)", background: "rgba(242,182,60,.07)", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
               <i className="ti ti-player-play" style={{ fontSize: 26, color: "var(--gold)" }} aria-hidden="true" />
               <div style={{ flex: "1 1 260px" }}>
                 <div className="disp" style={{ fontSize: 16, fontWeight: 700 }}>{isDemo ? "Ready to start the demo?" : "Ready to run this mock?"}</div>
@@ -7984,7 +7985,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
         )}
         {askOfficialMode && picks.length === 0 && (
           <div style={{ padding: "12px 14px 0" }}>
-            <div className="panel" style={{ padding: 16, borderColor: "var(--gold)", background: "#16140c" }}>
+            <div className="panel" style={{ padding: 16, borderColor: "var(--gold)", background: "rgba(242,182,60,.07)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
                 <i className="ti ti-broadcast" style={{ fontSize: 22, color: "var(--gold)" }} aria-hidden="true" />
                 <div>
@@ -8103,8 +8104,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               )}
               <div style={{ flex: 1 }} />
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }} title="ADP always shows on the left. This switches the rest of the columns between value/info (rankings, projections, demographics, availability) and projected stats.">
-                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: boardMode === "info" ? "var(--gold)" : "transparent", color: boardMode === "info" ? "#1A1505" : "var(--ink)", fontWeight: boardMode === "info" ? 700 : 400 }} onClick={() => setBoardMode("info")} title="Rankings, projections, value, demographics & availability">Value &amp; info</button>
-                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: boardMode === "stats" ? "var(--gold)" : "transparent", color: boardMode === "stats" ? "#1A1505" : "var(--ink)", fontWeight: boardMode === "stats" ? 700 : 400 }} onClick={() => setBoardMode("stats")} title="Projected passing / rushing / receiving stat lines">Projected stats</button>
+                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: boardMode === "info" ? "var(--gold)" : "transparent", color: boardMode === "info" ? "rgba(242,182,60,.10)" : "var(--ink)", fontWeight: boardMode === "info" ? 700 : 400 }} onClick={() => setBoardMode("info")} title="Rankings, projections, value, demographics & availability">Value &amp; info</button>
+                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: boardMode === "stats" ? "var(--gold)" : "transparent", color: boardMode === "stats" ? "rgba(242,182,60,.10)" : "var(--ink)", fontWeight: boardMode === "stats" ? 700 : 400 }} onClick={() => setBoardMode("stats")} title="Projected passing / rushing / receiving stat lines">Projected stats</button>
               </div>
               <button className="btn btn-mini" onClick={() => setShowDrafted((s) => !s)} title={showDrafted ? "Currently showing every player — drafted ones are crossed out. Click to hide them." : "Currently hiding drafted players — only those still available show. Click to show everyone."}>
                 <i className={`ti ${showDrafted ? "ti-eye" : "ti-eye-off"}`} style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />{showDrafted ? "All players" : "Available only"}
@@ -8503,7 +8504,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               </div>
             )}
 
-            {/* Current vs Projected lineup toggle */}
+            {/* Lineup + next pick side by side to save vertical space */}
+            <div style={{ display: "grid", gridTemplateColumns: (!done && myNextOv != null) ? "1fr 1fr" : "1fr", gap: 14, alignItems: "start" }} className="myteam-grid">
             <div className="panel" style={{ padding: 14 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
                 <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)" }}>{myProjView && isMe ? "Projected" : "Current"} starting lineup</div>
@@ -8516,7 +8518,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 )}
               </div>
               {myProjView && <div className="mut" style={{ fontSize: 11.5, marginBottom: 8 }}>Includes your {projectedAdds.length} most-likely future pick{projectedAdds.length !== 1 ? "s" : ""} (shown in gold) based on the engine's projection.</div>}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }} className="myteam-grid">
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                 {taShown.slots.map((s, i) => {
                   const isProj = myProjView && s.p && projectedAdds.includes(s.p);
                   return (
@@ -8571,6 +8573,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 )}
               </div>
             )}
+            </div>
 
             {/* Position breakdown + roster profile */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }} className="myteam-grid">
@@ -8580,9 +8583,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                   {["QB", "RB", "WR", "TE"].map((pos) => {
                     const b = ta.byPos[pos];
                     const status = b.need > 0 ? { t: "NEED", c: "var(--red)" } : b.count > b.starters ? { t: "DEPTH", c: "var(--green)" } : { t: "SET", c: "var(--gold)" };
+                    const tip = b.list.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `Your ${pos}s (${b.count})` }, ...b.list.map((p) => ({ t: `${p.pos}${p.posRank}`, x: `${p.name} — ${p.team || "FA"}${p.age ? `, age ${p.age}` : ""} · ${Math.round(p.pts)} pts` }))]) : undefined;
                     return (
-                      <div key={pos} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <span style={{ width: 28, fontWeight: 800, color: posColor[pos] }}>{pos}</span>
+                      <div key={pos} style={{ display: "flex", alignItems: "center", gap: 10, cursor: tip ? "help" : "default", padding: "2px 0" }}
+                        onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
+                        <span style={{ width: 28, fontWeight: 800, color: posColor[pos] }}>{pos}{tip && <span className="mut" style={{ fontSize: 9, fontWeight: 400 }}> ⓘ</span>}</span>
                         <div style={{ flex: 1, height: 8, background: "var(--panel2)", borderRadius: 4, overflow: "hidden" }}>
                           <div style={{ width: `${Math.min(100, (b.count / Math.max(1, (b.starters + 1.5))) * 100)}%`, height: "100%", background: posColor[pos], opacity: 0.8 }} />
                         </div>
@@ -8609,7 +8614,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                       {cell(ta.youngCount, "young (≤24)", "var(--green)", profTip("Young players (≤24)", ta.youngList))}
                       {cell(ta.rookieCount, "rookies", "var(--ink)", profTip("Rookies", ta.rookieList))}
                       {cell(ta.oldCount, "aging (≥29)", ta.oldCount > 2 ? "var(--red)" : "var(--ink)", profTip("Aging players (≥29)", ta.oldList))}
-                      {cell(ta.upsideCount, "high-upside", "var(--gold)", undefined)}
+                      {cell(ta.upsideCount, "high-ceiling", "var(--gold)", ta.upsideList.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: "High-ceiling / high-variance players" }, { t: "What this means", x: "Players whose ceiling is 35%+ above their projection — big boom potential, but also more week-to-week variance. A roster full of these has a high ceiling and a wide range of outcomes." }, ...ta.upsideList.map((p) => ({ t: `${p.pos}${p.posRank}`, x: `${p.name} — proj ${Math.round(p.pts)}, ceiling ${Math.round(p.ceil)}` }))]) : undefined)}
                       {cell(ta.avgAge ? ta.avgAge.toFixed(1) : "—", "avg age", "var(--ink)", undefined)}
                       {cell(Math.round(ta.totalPts), "total proj pts", "var(--ink)", undefined)}
                     </div>
@@ -8864,8 +8869,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{done ? "Final grades" : "Live grades"} <span className="mut" style={{ fontSize: 12 }}>value drafted + projected finish</span></div>
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }}>
                 <span className="mut" style={{ fontSize: 11, alignSelf: "center", padding: "0 8px" }}>Sort by</span>
-                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "z" ? "var(--gold)" : "transparent", color: sumSort.key === "z" ? "#1A1505" : "var(--ink)", fontWeight: sumSort.key === "z" ? 700 : 400 }} onClick={() => setSumSort({ key: "z", dir: -1 })}>Grade</button>
-                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "val" ? "var(--gold)" : "transparent", color: sumSort.key === "val" ? "#1A1505" : "var(--ink)", fontWeight: sumSort.key === "val" ? 700 : 400 }} onClick={() => setSumSort({ key: "val", dir: -1 })}>Value</button>
+                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "z" ? "var(--gold)" : "transparent", color: sumSort.key === "z" ? "rgba(242,182,60,.10)" : "var(--ink)", fontWeight: sumSort.key === "z" ? 700 : 400 }} onClick={() => setSumSort({ key: "z", dir: -1 })}>Grade</button>
+                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "val" ? "var(--gold)" : "transparent", color: sumSort.key === "val" ? "rgba(242,182,60,.10)" : "var(--ink)", fontWeight: sumSort.key === "val" ? 700 : 400 }} onClick={() => setSumSort({ key: "val", dir: -1 })}>Value</button>
               </div>
             </div>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -9020,7 +9025,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                   const isActive = active && active.id === set.id;
                   return (
                     <div key={set.id} title={`Format: ${rankSetLabel(setSettingsKey(set))}${set.leagueId != null ? " · attached to a league" : ""}`}
-                      style={{ border: `1px solid ${isActive ? "var(--gold)" : "var(--line)"}`, borderRadius: 9, padding: "10px 12px", marginBottom: 8, background: isActive ? "#16140c" : "transparent" }}>
+                      style={{ border: `1px solid ${isActive ? "var(--gold)" : "var(--line)"}`, borderRadius: 9, padding: "10px 12px", marginBottom: 8, background: isActive ? "rgba(242,182,60,.07)" : "transparent" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontWeight: 700, fontSize: 13.5 }}>{set.name} {rel.exact ? <span className="chip" style={{ marginLeft: 4, borderColor: "var(--green)", color: "var(--green)", fontSize: 9 }}>EXACT MATCH</span> : null}{isActive ? <span className="chip" style={{ marginLeft: 4, borderColor: "var(--gold)", color: "var(--gold)", fontSize: 9 }}>IN USE</span> : null}</div>
@@ -9516,7 +9521,7 @@ function AdpIntelPage({ user, onBack, onHome, onSignOut }) {
       <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="ADP Intelligence" />
       <div style={{ maxWidth: 940, margin: "0 auto", padding: "24px 20px 50px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14, flexWrap: "wrap" }}>
-          <div style={{ flexShrink: 0, width: 44, height: 44, borderRadius: 10, background: "#1A1505", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ flexShrink: 0, width: 44, height: 44, borderRadius: 10, background: "rgba(242,182,60,.10)", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
             <i className="ti ti-chart-dots" style={{ fontSize: 22, color: "var(--gold)" }} aria-hidden="true" />
           </div>
           <div style={{ flex: 1 }}>
@@ -9582,7 +9587,7 @@ function TradeToolsPage({ user, onBack, onHome, onSignOut }) {
       <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="Trade Tools" />
       <div style={{ maxWidth: 900, margin: "0 auto", padding: "24px 20px 50px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14, flexWrap: "wrap" }}>
-          <div style={{ flexShrink: 0, width: 44, height: 44, borderRadius: 10, background: "#1A1505", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ flexShrink: 0, width: 44, height: 44, borderRadius: 10, background: "rgba(242,182,60,.10)", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
             <i className="ti ti-arrows-exchange" style={{ fontSize: 22, color: "var(--gold)" }} aria-hidden="true" />
           </div>
           <div style={{ flex: 1 }}>
@@ -9973,7 +9978,7 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
               <div className="mut" style={{ fontSize: 10.5, marginBottom: 4 }}>QB format</div>
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }}>
                 {[["1qb", "1QB"], ["sf", "Superflex"]].map(([k, l]) => (
-                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbQb === k ? "var(--gold)" : "transparent", color: vbQb === k ? "#1A1505" : "var(--ink)", fontWeight: vbQb === k ? 700 : 400 }} onClick={() => setVbQb(k)}>{l}</button>
+                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbQb === k ? "var(--gold)" : "transparent", color: vbQb === k ? "rgba(242,182,60,.10)" : "var(--ink)", fontWeight: vbQb === k ? 700 : 400 }} onClick={() => setVbQb(k)}>{l}</button>
                 ))}
               </div>
             </div>
@@ -9981,7 +9986,7 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
               <div className="mut" style={{ fontSize: 10.5, marginBottom: 4 }}>TE</div>
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }}>
                 {[["std", "Standard"], ["tep", "TE premium"]].map(([k, l]) => (
-                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbTep === k ? "var(--gold)" : "transparent", color: vbTep === k ? "#1A1505" : "var(--ink)", fontWeight: vbTep === k ? 700 : 400 }} onClick={() => setVbTep(k)}>{l}</button>
+                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbTep === k ? "var(--gold)" : "transparent", color: vbTep === k ? "rgba(242,182,60,.10)" : "var(--ink)", fontWeight: vbTep === k ? 700 : 400 }} onClick={() => setVbTep(k)}>{l}</button>
                 ))}
               </div>
             </div>
@@ -9989,7 +9994,7 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
               <div className="mut" style={{ fontSize: 10.5, marginBottom: 4 }}>Scoring</div>
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }}>
                 {[["std", "Std"], ["half", "0.5 PPR"], ["ppr", "PPR"]].map(([k, l]) => (
-                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbScoring === k ? "var(--gold)" : "transparent", color: vbScoring === k ? "#1A1505" : "var(--ink)", fontWeight: vbScoring === k ? 700 : 400 }} onClick={() => setVbScoring(k)}>{l}</button>
+                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbScoring === k ? "var(--gold)" : "transparent", color: vbScoring === k ? "rgba(242,182,60,.10)" : "var(--ink)", fontWeight: vbScoring === k ? 700 : 400 }} onClick={() => setVbScoring(k)}>{l}</button>
                 ))}
               </div>
             </div>
@@ -9997,7 +10002,7 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
               <div className="mut" style={{ fontSize: 10.5, marginBottom: 4 }}>League type</div>
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }}>
                 {[["redraft", "Redraft"], ["dynasty", "Dynasty"]].map(([k, l]) => (
-                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbType === k ? "var(--gold)" : "transparent", color: vbType === k ? "#1A1505" : "var(--ink)", fontWeight: vbType === k ? 700 : 400 }} onClick={() => setVbType(k)}>{l}</button>
+                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbType === k ? "var(--gold)" : "transparent", color: vbType === k ? "rgba(242,182,60,.10)" : "var(--ink)", fontWeight: vbType === k ? 700 : 400 }} onClick={() => setVbType(k)}>{l}</button>
                 ))}
               </div>
             </div>
