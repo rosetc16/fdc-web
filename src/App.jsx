@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26m";
+const BUILD_TAG = "2026.06.26n";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2106,7 +2106,7 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
   });
 
   // ---- LEAGUE-RELATIVE: reconstruct every team's roster, then rank ours per position + overall. ----
-  let posRankByPos = {}, overallRank = null, leagueSize = cfg.teams || TEAMS_FALLBACK, startingPtsRankPct = null, allTeamStartPts = [];
+  let posRankByPos = {}, overallRank = null, leagueSize = cfg.teams || TEAMS_FALLBACK, startingPtsRankPct = null, allTeamStartPts = [], profileRanks = null;
   if (ctx && ctx.allPicks && ctx.players && ctx.teamAtFn) {
     const n = cfg.teams || TEAMS_FALLBACK;
     const rosters = Array.from({ length: n }, () => []);
@@ -2127,6 +2127,25 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
     const sortedStart = allTeamStartPts.slice().sort((a, b) => b.v - a.v);
     overallRank = sortedStart.findIndex((x) => x.i === userIdxOf(ctx)) + 1;
     leagueSize = n;
+    // Rank our roster-profile categories vs the league (1 = most). higherBetter flips for "aging".
+    const me = userIdxOf(ctx);
+    const rankBy = (fn, higherBetter = true) => {
+      const vals = rosters.map((r, i) => ({ i, v: fn(r) }));
+      vals.sort((a, b) => higherBetter ? b.v - a.v : a.v - b.v);
+      return vals.findIndex((x) => x.i === me) + 1;
+    };
+    const youngOf = (r) => r.filter((p) => p.age && p.age <= 24 && ["QB", "RB", "WR", "TE"].includes(p.pos)).length;
+    const rookieOf = (r) => r.filter((p) => p.rookie).length;
+    const oldOf = (r) => r.filter((p) => p.age && p.age >= 29 && ["QB", "RB", "WR", "TE"].includes(p.pos)).length;
+    const ptsOf = (r) => r.reduce((s, p) => s + (p.pts || 0), 0);
+    const ageOf = (r) => { const a = r.filter((p) => p.age && ["QB", "RB", "WR", "TE"].includes(p.pos)); return a.length ? a.reduce((s, p) => s + p.age, 0) / a.length : 99; };
+    profileRanks = {
+      young: { rank: rankBy(youngOf, true), of: n },
+      rookies: { rank: rankBy(rookieOf, true), of: n },
+      aging: { rank: rankBy(oldOf, false), of: n },        // fewer agers ranks better
+      totalPts: { rank: rankBy(ptsOf, true), of: n },
+      avgAge: { rank: rankBy(ageOf, false), of: n },       // younger ranks better
+    };
   }
 
   // age profile
@@ -2178,11 +2197,22 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
       if (thinnest && byPos[thinnest].count === 0) insights.push({ h: `Nothing at ${thinnest} yet`, b: thinnest === "QB" && sf ? "In superflex that's a real hole — QB is premium here." : "Don't wait too long if the position thins out." });
     }
   }
-  return { slots, bench, startersPts, byPos, avgAge, youngCount, oldCount, rookieCount, youngList, oldList, rookieList, upsideList, totalPts, topPlayer, upsideCount, emptyStarters, strongest, thinnest, insights, posRankByPos, overallRank, leagueSize };
+  return { slots, bench, startersPts, byPos, avgAge, youngCount, oldCount, rookieCount, youngList, oldList, rookieList, upsideList, totalPts, topPlayer, upsideCount, emptyStarters, strongest, thinnest, insights, posRankByPos, overallRank, leagueSize, profileRanks };
 }
 const TEAMS_FALLBACK = 12;
 function userIdxOf(ctx) { return ctx && ctx.userIdx != null ? ctx.userIdx : 0; }
 function ordinalOf(n) { const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); }
+// Color a player's positional rank red/yellow/green. Thresholds scale with position scarcity: QB/TE go
+// deeper before "red" since fewer start; RB/WR are tighter. Green = clear starter, yellow = streamer/depth,
+// red = deep bench.
+function rankTierColor(pos, posRank) {
+  if (!posRank) return "var(--mut)";
+  const g = pos === "QB" || pos === "TE" ? 12 : 20;   // green cutoff (clear starter range)
+  const y = pos === "QB" || pos === "TE" ? 24 : 40;   // yellow cutoff (still rosterable)
+  if (posRank <= g) return "var(--green)";
+  if (posRank <= y) return "var(--gold)";
+  return "var(--red)";
+}
 
 // Build a whole-league snapshot for the "League Overview" panel: every team's roster reconstructed from
 // picks, with per-position counts, whether starting slots are filled, a quality+quantity strength score
@@ -2202,11 +2232,17 @@ function leagueOverview(allPicks, players, teamAtFn, cfg) {
       const starters = req[pos] || 0;
       const bestVbd = list.length ? Math.max(...list.map((p) => p.vbd || 0)) : null;
       const filled = list.length >= starters;
-      const topPts = list.slice(0, starters + 1).reduce((s, p) => s + (p.pts || 0), 0);
-      byPos[pos] = { count: list.length, starters, filled, bestVbd, topPts, list };
+      // QUALITY-DOMINANT strength score. The starters' points carry full weight (quality is what wins
+      // matchups); depth beyond the starting requirement adds only a small diminishing bonus so a team
+      // can't rank highly on sheer quantity of mediocre players. Once starters are filled, additional
+      // bodies barely move the score — talent at the top is what matters.
+      const starterPts = list.slice(0, Math.max(1, starters)).reduce((s, p) => s + (p.pts || 0), 0);
+      const benchPts = list.slice(Math.max(1, starters)).reduce((s, p, i) => s + (p.pts || 0) * (0.18 / (i + 1)), 0); // steep decay
+      const topPts = starterPts + benchPts;
+      byPos[pos] = { count: list.length, starters, filled, bestVbd, topPts, starterPts, list };
     });
     const startPts = lineupSlots(r, sf).slots.reduce((s, x) => s + (x.p ? x.p.pts || 0 : 0), 0);
-    return { idx, byPos, startPts, size: r.length };
+    return { idx, byPos, startPts, size: r.length, roster: r };
   });
   // rank each position across the league to derive a 0/1/2 strength tier (top third / mid / bottom third)
   const posTiers = {};
@@ -2390,7 +2426,7 @@ function OutlookCard({ content }) {
         const isNote = l.t === "Note";
         return (
           <div key={i} style={{ display: "flex", gap: 8, marginBottom: i < content.length - 1 ? 6 : 0 }}>
-            <div className="disp" style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".07em", color: isNote ? "var(--mut)" : "var(--gold)", width: 64, flexShrink: 0, textAlign: "right", paddingTop: 1, lineHeight: 1.3 }}>{l.t}</div>
+            <div className="disp" style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".07em", color: l.tc ? l.tc : (isNote ? "var(--mut)" : "var(--gold)"), width: 64, flexShrink: 0, textAlign: "right", paddingTop: 1, lineHeight: 1.3 }}>{l.t}</div>
             <div style={{ fontSize: isNote ? 10.5 : 12, color: isNote ? "var(--mut)" : "var(--ink)", lineHeight: 1.4, flex: 1 }}>{l.x}</div>
           </div>
         );
@@ -8319,7 +8355,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
 
           <div className="rail" style={{ width: 348, flexShrink: 0, display: "flex", flexDirection: "column", gap: 12 }}>
             <div className="panel" style={{ padding: 12 }}>
-              <div className="disp" style={{ fontSize: 14, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--mut)" }}>Recommendation {onClock === userIdx && <span className="gold">— you're up</span>}</div>
+              <div className="disp" style={{ fontSize: 14, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--mut)" }}>Recommendation</div>
+              <div style={{ fontSize: 11, marginTop: 2, marginBottom: 2, fontWeight: 600, color: onClock === userIdx ? "var(--gold)" : "var(--blue)" }}>
+                {onClock === userIdx
+                  ? "★ For your pick — you're on the clock"
+                  : `For the pick on the clock — ${TEAM_NAMES[onClock] ? (TEAM_NAMES[onClock].split(" ").slice(0, 2).join(" ")) : "another team"}`}
+              </div>
               {advice?.verdict ? (
                 <>
                   <div style={{ display: "flex", alignItems: "baseline", gap: 8, margin: "7px 0 2px" }}>
@@ -8542,17 +8583,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 const tierColor = (tier) => tier === 0 ? "var(--green)" : tier === 1 ? "var(--gold)" : "var(--red)";
                 const posClr = { QB: POS_COLOR.QB, RB: POS_COLOR.RB, WR: POS_COLOR.WR, TE: POS_COLOR.TE };
                 return (
-                  <div style={{ padding: "4px 16px 16px", display: "flex", flexDirection: "column", gap: 18 }}>
+                  <div style={{ padding: "4px 16px 16px", display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 18, alignItems: "start" }} className="myteam-grid">
                     {/* Combined board: count per position, colored by league strength tier. One row per team. */}
                     <div>
                       <div className="disp" style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 6 }}>Positions drafted & strength</div>
-                      <div className="mut" style={{ fontSize: 11, marginBottom: 8 }}>Number = players rostered at that position. Color = league strength (quality + quantity): <span style={{ color: "var(--green)", fontWeight: 700 }}>strong</span> / <span style={{ color: "var(--gold)", fontWeight: 700 }}>middle</span> / <span style={{ color: "var(--red)", fontWeight: 700 }}>weak</span>. A <b>✓</b> means the starting slots are filled. Hover a cell for the players.</div>
+                      <div className="mut" style={{ fontSize: 11, marginBottom: 8 }}>Number = players rostered. Color = league strength (quality-weighted): <span style={{ color: "var(--green)", fontWeight: 700 }}>strong</span> / <span style={{ color: "var(--gold)", fontWeight: 700 }}>middle</span> / <span style={{ color: "var(--red)", fontWeight: 700 }}>weak</span>. <b>✓</b> = starters filled. Hover a cell for players.</div>
                       <div style={{ overflowX: "auto" }}>
-                        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12, minWidth: 380 }}>
+                        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12, minWidth: 340 }}>
                           <thead><tr>
                             <th style={{ textAlign: "left", padding: "6px 8px", color: "var(--mut)", fontWeight: 600, position: "sticky", left: 0, background: "var(--panel)" }}>Team</th>
-                            {lo.positions.map((pos) => <th key={pos} style={{ padding: "6px 4px", color: posClr[pos], fontWeight: 800, textAlign: "center", width: 56 }}>{pos}</th>)}
-                            <th style={{ padding: "6px 8px", color: "var(--mut)", fontWeight: 600, textAlign: "right", width: 48 }}>Proj</th>
+                            {lo.positions.map((pos) => <th key={pos} style={{ padding: "6px 4px", color: posClr[pos], fontWeight: 800, textAlign: "center", width: 52 }}>{pos}</th>)}
+                            <th style={{ padding: "6px 8px", color: "var(--mut)", fontWeight: 600, textAlign: "right", width: 44 }}>Proj</th>
                           </tr></thead>
                           <tbody>
                             {lo.teams.map((t, ri) => {
@@ -8565,10 +8606,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                                     const b = t.byPos[pos];
                                     const tr = lo.posTiers[t.idx][pos];
                                     const tc = tierColor(tr.tier);
-                                    const tip = b.list.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `${(TEAM_NAMES[t.idx] || `Team ${t.idx + 1}`)} — ${pos} (${tr.tier === 0 ? "strong" : tr.tier === 1 ? "middle" : "weak"}, ${ordinalOf(tr.rank)} of ${lo.n})` }, ...b.list.map((p) => ({ t: `${p.pos}${p.posRank}`, x: `${p.name} — ${p.team || "FA"} · ${Math.round(p.pts)} pts` }))]) : undefined;
+                                    const tip = b.list.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `${(TEAM_NAMES[t.idx] || `Team ${t.idx + 1}`)} — ${pos} (${tr.tier === 0 ? "strong" : tr.tier === 1 ? "middle" : "weak"}, ${ordinalOf(tr.rank)} of ${lo.n})` }, ...b.list.map((p) => ({ t: `${p.pos}${p.posRank}`, tc: rankTierColor(p.pos, p.posRank), x: `${p.name} — ${p.team || "FA"} · ${Math.round(p.pts)} pts` }))]) : undefined;
                                     return (
                                       <td key={pos} style={{ padding: "4px 4px", textAlign: "center", cursor: tip ? "help" : "default" }} onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
-                                        <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 2, minWidth: 34, padding: "3px 6px", borderRadius: 6, fontWeight: 800, fontSize: 12, background: b.count === 0 ? "transparent" : `color-mix(in srgb, ${tc} 18%, transparent)`, color: b.count === 0 ? "var(--mut)" : tc, border: b.count === 0 ? "1px solid var(--line)" : `1px solid color-mix(in srgb, ${tc} 45%, transparent)` }}>{b.count}{b.filled && b.count > 0 ? <span style={{ fontSize: 9 }}>✓</span> : ""}</span>
+                                        <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 2, minWidth: 32, padding: "3px 5px", borderRadius: 6, fontWeight: 800, fontSize: 12, background: b.count === 0 ? "transparent" : `color-mix(in srgb, ${tc} 18%, transparent)`, color: b.count === 0 ? "var(--mut)" : tc, border: b.count === 0 ? "1px solid var(--line)" : `1px solid color-mix(in srgb, ${tc} 45%, transparent)` }}>{b.count}{b.filled && b.count > 0 ? <span style={{ fontSize: 9 }}>✓</span> : ""}</span>
                                       </td>
                                     );
                                   })}
@@ -8581,21 +8622,24 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                       </div>
                     </div>
 
-                    {/* Power ranking */}
+                    {/* Power ranking — hover a row for that team's projected starting lineup */}
                     <div>
                       <div className="disp" style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 8 }}>Projected power ranking</div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                         {lo.power.map((p) => {
                           const isYou = p.idx === userIdx;
                           const max = lo.power[0].pts || 1;
+                          const teamRoster = lo.teams[p.idx];
+                          const lineupTip = (e) => showTip(e, [{ kind: "take", tone: isYou ? "good" : "neutral", x: `${TEAM_NAMES[p.idx] || `Team ${p.idx + 1}`} — projected lineup (${Math.round(p.pts)} pts)` }, ...lineupSlots(teamRoster.roster || [], cfg.sf).slots.map((s) => ({ t: s.slot, tc: s.p ? rankTierColor(s.p.pos, s.p.posRank) : "var(--mut)", x: s.p ? `${s.p.name} — ${s.p.pos}${s.p.posRank} · ${Math.round(s.p.pts)} pts` : "—" }))]);
                           return (
-                            <div key={p.idx} style={{ display: "flex", alignItems: "center", gap: 9, padding: "3px 8px", borderRadius: 6, background: isYou ? "rgba(242,182,60,.10)" : "transparent" }}>
+                            <div key={p.idx} style={{ display: "flex", alignItems: "center", gap: 9, padding: "3px 8px", borderRadius: 6, background: isYou ? "rgba(242,182,60,.10)" : "transparent", cursor: "help" }}
+                              onMouseEnter={lineupTip} onMouseLeave={hideTip}>
                               <span className="num" style={{ width: 22, color: "var(--mut)", fontSize: 11 }}>{p.rank}.</span>
-                              <span style={{ width: 150, fontWeight: isYou ? 700 : 500, color: isYou ? "var(--gold)" : "var(--ink)", fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{isYou ? "★ " : ""}{TEAM_NAMES[p.idx] || `Team ${p.idx + 1}`}</span>
+                              <span style={{ width: 120, fontWeight: isYou ? 700 : 500, color: isYou ? "var(--gold)" : "var(--ink)", fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{isYou ? "★ " : ""}{TEAM_NAMES[p.idx] || `Team ${p.idx + 1}`}</span>
                               <div style={{ flex: 1, height: 7, background: "var(--panel2)", borderRadius: 4, overflow: "hidden" }}>
                                 <div style={{ width: `${(p.pts / max) * 100}%`, height: "100%", background: isYou ? "var(--gold)" : "var(--blue)", opacity: 0.8 }} />
                               </div>
-                              <span className="num mut" style={{ width: 44, textAlign: "right", fontSize: 11 }}>{Math.round(p.pts)}</span>
+                              <span className="num mut" style={{ width: 40, textAlign: "right", fontSize: 11 }}>{Math.round(p.pts)}</span>
                             </div>
                           );
                         })}
@@ -8618,7 +8662,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                       const tone = pctile >= 0.66 ? "var(--green)" : pctile >= 0.34 ? "var(--gold)" : "var(--red)";
                       const word = pctile >= 0.66 ? "Strong" : pctile >= 0.34 ? "Middle" : "Weak";
                       const plist = (ta.byPos[pos] && ta.byPos[pos].list) || [];
-                      const tip = plist.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `Your ${pos}s — ${ordinalOf(r.rank)} of ${r.of} in the league` }, ...plist.map((p) => ({ t: `${p.pos}${p.posRank}`, x: `${p.name} — ${p.team || "FA"} · ${Math.round(p.pts)} pts` }))]) : undefined;
+                      const tip = plist.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `Your ${pos}s — ${ordinalOf(r.rank)} of ${r.of} in the league` }, ...plist.map((p) => ({ t: `${p.pos}${p.posRank}`, tc: rankTierColor(p.pos, p.posRank), x: `${p.name} — ${p.team || "FA"} · ${Math.round(p.pts)} pts` }))]) : undefined;
                       return (
                         <div key={pos} style={{ display: "flex", alignItems: "center", gap: 9, cursor: tip ? "help" : "default" }}
                           onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
@@ -8640,7 +8684,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                   {["QB", "RB", "WR", "TE"].map((pos) => {
                     const b = ta.byPos[pos];
                     const status = b.need > 0 ? { t: "NEED", c: "var(--red)" } : b.count > b.starters ? { t: "DEPTH", c: "var(--green)" } : { t: "SET", c: "var(--gold)" };
-                    const tip = b.list.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `Your ${pos}s (${b.count})` }, ...b.list.map((p) => ({ t: `${p.pos}${p.posRank}`, x: `${p.name} — ${p.team || "FA"}${p.age ? `, age ${p.age}` : ""} · ${Math.round(p.pts)} pts` }))]) : undefined;
+                    const tip = b.list.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `Your ${pos}s (${b.count})` }, ...b.list.map((p) => ({ t: `${p.pos}${p.posRank}`, tc: rankTierColor(p.pos, p.posRank), x: `${p.name} — ${p.team || "FA"}${p.age ? `, age ${p.age}` : ""} · ${Math.round(p.pts)} pts` }))]) : undefined;
                     return (
                       <div key={pos} style={{ display: "flex", alignItems: "center", gap: 9, cursor: tip ? "help" : "default", padding: "2px 0" }}
                         onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
@@ -8730,21 +8774,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               <div className="panel" style={{ padding: 14 }}>
                 <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 10 }}>Roster profile</div>
                 {(() => {
-                  const profTip = (label, list) => list.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: label }, ...list.map((p) => ({ t: `${p.pos}${p.posRank}`, x: `${p.name} — ${p.team || "FA"}${p.age ? `, age ${p.age}` : ""}${p.rookie ? " (rookie)" : ""}` }))]) : undefined;
-                  const cell = (val, label, color, tip) => (
+                  const profTip = (label, list) => list.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: label }, ...list.map((p) => ({ t: `${p.pos}${p.posRank}`, tc: rankTierColor(p.pos, p.posRank), x: `${p.name} — ${p.team || "FA"}${p.age ? `, age ${p.age}` : ""}${p.rookie ? " (rookie)" : ""}` }))]) : undefined;
+                  const cell = (val, label, color, tip, rk) => (
                     <div style={{ flex: "1 1 88px", padding: "8px 10px", borderRadius: 8, background: "var(--panel2)", border: "1px solid var(--line)", cursor: tip ? "help" : "default" }}
                       onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
                       <div className="disp" style={{ fontSize: 19, fontWeight: 800, color }}>{val}{tip && <span className="mut" style={{ fontSize: 10, marginLeft: 3 }}>ⓘ</span>}</div>
                       <div className="mut" style={{ fontSize: 10.5 }}>{label}</div>
+                      {rk && <div style={{ fontSize: 9.5, fontWeight: 700, color: rk.rank <= rk.of / 3 ? "var(--green)" : rk.rank <= (rk.of * 2) / 3 ? "var(--gold)" : "var(--red)", marginTop: 2 }}>{ordinalOf(rk.rank)} of {rk.of}</div>}
                     </div>
                   );
+                  const pr = isMe ? ta.profileRanks : null;
                   return (
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      {cell(ta.youngCount, "young (≤24)", "var(--green)", profTip("Young players (≤24)", ta.youngList))}
-                      {cell(ta.rookieCount, "rookies", "var(--ink)", profTip("Rookies", ta.rookieList))}
-                      {cell(ta.oldCount, "aging (≥29)", ta.oldCount > 2 ? "var(--red)" : "var(--ink)", profTip("Aging players (≥29)", ta.oldList))}
-                      {cell(ta.avgAge ? ta.avgAge.toFixed(1) : "—", "avg age", "var(--ink)", undefined)}
-                      {cell(Math.round(ta.totalPts), "total proj pts", "var(--ink)", undefined)}
+                      {cell(ta.youngCount, "young (≤24)", "var(--green)", profTip("Young players (≤24)", ta.youngList), pr && pr.young)}
+                      {cell(ta.rookieCount, "rookies", "var(--ink)", profTip("Rookies", ta.rookieList), pr && pr.rookies)}
+                      {cell(ta.oldCount, "aging (≥29)", ta.oldCount > 2 ? "var(--red)" : "var(--ink)", profTip("Aging players (≥29)", ta.oldList), pr && pr.aging)}
+                      {cell(ta.avgAge ? ta.avgAge.toFixed(1) : "—", "avg age", "var(--ink)", undefined, pr && pr.avgAge)}
+                      {cell(Math.round(ta.totalPts), "total proj pts", "var(--ink)", undefined, pr && pr.totalPts)}
                     </div>
                   );
                 })()}
