@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26n";
+const BUILD_TAG = "2026.06.26p";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2138,12 +2138,14 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
     const rookieOf = (r) => r.filter((p) => p.rookie).length;
     const oldOf = (r) => r.filter((p) => p.age && p.age >= 29 && ["QB", "RB", "WR", "TE"].includes(p.pos)).length;
     const ptsOf = (r) => r.reduce((s, p) => s + (p.pts || 0), 0);
+    const starterPtsOf = (r) => lineupSlots(r, sf).slots.reduce((s, x) => s + (x.p ? x.p.pts || 0 : 0), 0);
     const ageOf = (r) => { const a = r.filter((p) => p.age && ["QB", "RB", "WR", "TE"].includes(p.pos)); return a.length ? a.reduce((s, p) => s + p.age, 0) / a.length : 99; };
     profileRanks = {
       young: { rank: rankBy(youngOf, true), of: n },
       rookies: { rank: rankBy(rookieOf, true), of: n },
       aging: { rank: rankBy(oldOf, false), of: n },        // fewer agers ranks better
       totalPts: { rank: rankBy(ptsOf, true), of: n },
+      starterPts: { rank: rankBy(starterPtsOf, true), of: n },
       avgAge: { rank: rankBy(ageOf, false), of: n },       // younger ranks better
     };
   }
@@ -2202,6 +2204,25 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
 const TEAMS_FALLBACK = 12;
 function userIdxOf(ctx) { return ctx && ctx.userIdx != null ? ctx.userIdx : 0; }
 function ordinalOf(n) { const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); }
+// Position a hover tooltip so it's ALWAYS fully on-screen without needing to scroll. The tooltip is up to
+// 460px wide and can be tall; we estimate its height from the content, place it beside the cursor, and
+// clamp/flip so it never runs off the top or bottom. Returns {x, y, content} consumed by the .tooltip div.
+function positionTip(cx, cy, content) {
+  const W = typeof window !== "undefined" ? window.innerWidth : 1200;
+  const H = typeof window !== "undefined" ? window.innerHeight : 800;
+  const TW = 472; // tooltip width + margin
+  // estimate height: header + chip strip + ~22px per labeled row, capped to viewport.
+  const rows = Array.isArray(content) ? content.length : 6;
+  const estH = Math.min(H * 0.92, 70 + rows * 26);
+  // x: prefer right of cursor; if it would overflow, go left of cursor.
+  let x = cx + 16;
+  if (x + TW > W) x = Math.max(8, cx - TW);
+  // y: center the tooltip vertically on the cursor when possible, then clamp into [8, H-estH-8] so the
+  // whole thing stays visible regardless of how far down the page the cursor is.
+  let y = cy - estH / 2;
+  y = Math.max(8, Math.min(y, H - estH - 8));
+  return { x, y, content };
+}
 // Color a player's positional rank red/yellow/green. Thresholds scale with position scarcity: QB/TE go
 // deeper before "red" since fewer start; RB/WR are tighter. Green = clear starter, yellow = streamer/depth,
 // red = deep bench.
@@ -2583,7 +2604,7 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .availpct .txt{position:relative;z-index:1}
 .availhead{display:grid;gap:10px;padding:6px 12px;font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);font-weight:700}
 .posbadge{display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:20px;border-radius:5px;font-size:9.5px;font-weight:800;color:#0a0a0a}
-.tooltip{position:fixed;z-index:90;width:460px;max-width:460px;background:#10151B;border:1px solid var(--line2);border-radius:10px;padding:13px 16px;font-size:12.5px;line-height:1.5;pointer-events:none;box-shadow:0 12px 40px #000D}
+.tooltip{position:fixed;z-index:90;width:460px;max-width:460px;max-height:92vh;overflow-y:auto;background:#10151B;border:1px solid var(--line2);border-radius:10px;padding:13px 16px;font-size:12.5px;line-height:1.5;pointer-events:none;box-shadow:0 12px 40px #000D}
 .needcell{text-align:center;border-radius:5px;padding:3px 0;font-size:12px}
 .info{cursor:help;border-bottom:1px dotted var(--mut)}
 .hero-h{font-size:58px;font-weight:700;line-height:1.0}
@@ -2991,6 +3012,15 @@ export default function App() {
             if (active.id === "demo") setDemoLeague((d) => ({ ...d, picks, preds }));
             else if (mockLeague && active.id === mockLeague.id) { setMockLeague((m) => ({ ...m, picks, preds })); saveMock(picks, preds); }
             else saveLeague(active.id, picks, preds);
+          }}
+          onSaveQueue={(queueArr) => {
+            // Persist the priority queue into the league object so it survives sign-out / new sessions.
+            if (active.id === "demo") setDemoLeague((d) => ({ ...d, priorityQueue: queueArr }));
+            else if (mockLeague && active.id === mockLeague.id) setMockLeague((m) => ({ ...m, priorityQueue: queueArr }));
+            else {
+              const next = leagues.map((l) => (l.id === active.id ? { ...l, priorityQueue: queueArr } : l));
+              setLeagues(next); persist({ leagues: next });
+            }
           }}
           onExit={() => { if (mockLeague && active.id === mockLeague.id) setMockLeague(null); setDraftTab(null); setRoute(user ? (user.paid ? "home" : "library") : "home"); }}
           onSettings={(cfg) => { if (active.id === "demo") setDemoLeague((d) => ({ ...d, cfg })); else if (mockLeague && active.id === mockLeague.id) setMockLeague((m) => ({ ...m, cfg })); else updateLeagueCfg(active.id, cfg); }}
@@ -4235,7 +4265,7 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
     ["ti-arrows-exchange", "Trade Intelligence", "Format-aware pick values, generated trade packages, and acceptance odds — who to call and exactly what to offer."],
     ["ti-trophy", "Grades & Recap", "Live draft grades, biggest steals and reaches, projected standings, and a shareable recap with receipts."],
   ];
-  const showTip = (e, p) => { setHover(p.id); const x = Math.min(e.clientX + 14, window.innerWidth - 480); const y = Math.min(e.clientY + 10, window.innerHeight - 240); setTip({ x, y, content: makeOutlook(p, null, false) }); };
+  const showTip = (e, p) => { setHover(p.id); setTip(positionTip(e.clientX, e.clientY, makeOutlook(p, null, false))); };
   const hideTip = () => { setHover(null); setTip(null); };
   const heading = hover != null ? (top.findIndex((p) => p.id === hover) / top.length) * 360 : null;
   const paid = !!(user && user.paid);
@@ -6797,7 +6827,7 @@ function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
 }
 
 
-function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, onBuy, onSettings, onEditRanks, onUseRankSet, onColPrefs, onSaveInRoomRanks }) {
+function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQueue, onExit, onBuy, onSettings, onEditRanks, onUseRankSet, onColPrefs, onSaveInRoomRanks }) {
   const cfg = league.cfg;
   // Live per-pick ownership from a connected platform (Sleeper draft_slot). Declared here so it can
   // be applied to the engine's team-assignment BEFORE any roster/sim computation in this render.
@@ -6916,26 +6946,38 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     return `fdc-queue-${stable || league?.id || "default"}`;
   }, [cfg.connect, cfg.name, league?.id]);
   const [queue, setQueue] = useState(() => new Set());
-  // Load (and one-time migrate from the old league.id-based key) whenever the stable key resolves.
+  // Load order of preference: (1) the queue saved INTO the league object — survives sign-out and rides
+  // with the league's own persistence; (2) localStorage under the stable key; (3) the legacy league.id
+  // key (one-time migration). Whichever we find, we mirror into both stores so they stay in sync.
   useEffect(() => {
     try {
-      let raw = JSON.parse(localStorage.getItem(queueKey) || "[]");
-      if ((!Array.isArray(raw) || raw.length === 0) && league?.id) {
-        // migrate any queue saved under the legacy key
-        const legacy = JSON.parse(localStorage.getItem(`fdc-queue-${league.id}`) || "[]");
-        if (Array.isArray(legacy) && legacy.length) { raw = legacy; localStorage.setItem(queueKey, JSON.stringify(legacy)); }
+      let raw = Array.isArray(league?.priorityQueue) ? league.priorityQueue : null;
+      if (!raw || raw.length === 0) {
+        const ls = JSON.parse(localStorage.getItem(queueKey) || "[]");
+        if (Array.isArray(ls) && ls.length) raw = ls;
       }
-      setQueue(new Set(Array.isArray(raw) ? raw : []));
+      if ((!raw || raw.length === 0) && league?.id) {
+        const legacy = JSON.parse(localStorage.getItem(`fdc-queue-${league.id}`) || "[]");
+        if (Array.isArray(legacy) && legacy.length) raw = legacy;
+      }
+      const arr = Array.isArray(raw) ? raw : [];
+      setQueue(new Set(arr));
+      try { localStorage.setItem(queueKey, JSON.stringify(arr)); } catch {}
     } catch { setQueue(new Set()); }
   }, [queueKey, league?.id]);
   const [queueOnly, setQueueOnly] = useState(false);
   const [myTeamView, setMyTeamView] = useState("current"); // Team analysis tab: "current" | "projected"
   const [analysisTeam, setAnalysisTeam] = useState(null);   // which team the analysis tab shows; null = you
   const [leagueOpen, setLeagueOpen] = useState(false);      // Team analysis: League Overview dropdown open?
+  const [recPick, setRecPick] = useState("current");        // Hub recommendation: "current" pick vs "mine" (your next)
   const toggleQueue = (name) => setQueue((prev) => {
     const next = new Set(prev);
     if (next.has(name)) next.delete(name); else next.add(name);
-    try { localStorage.setItem(queueKey, JSON.stringify([...next])); } catch {}
+    const arr = [...next];
+    // Write to BOTH localStorage (fast, local) and the saved league object (survives sign-out) so a
+    // logout / different session keeps your starred players until they're drafted or un-starred.
+    try { localStorage.setItem(queueKey, JSON.stringify(arr)); } catch {}
+    try { if (typeof onSaveQueue === "function") onSaveQueue(arr); } catch {}
     return next;
   });
   const [availSort, setAvailSort] = useState("adp"); // "adp" | "vbd" — Availability tab sort
@@ -7083,20 +7125,27 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     return survivalAtPick(players, sortedAdp, picks, targetOverall, cfg, 600);
   }, [targetOverall, sims, players, sortedAdp, picks, cfg, done]);
 
-  const advice = useMemo(() => {
-    if (!sims || done) return null;
-    const pickNum = picks.length + 1;
+  // Advice for a hypothetical pick at overall index `atOverall` (0-based) made by `forTeam`, given the
+  // picks already made. Lets us show a recommendation for the CURRENT pick on the clock and, separately,
+  // for YOUR upcoming pick (projecting the picks in between as already gone).
+  const adviceFor = (atOverall, forTeam, simState) => {
+    if (!simState || done || atOverall == null) return null;
+    const pickNum = atOverall + 1;
+    // players assumed off the board by the time of this pick = everything drafted so far, PLUS the engine's
+    // projected picks between now and atOverall (so "your next pick" reflects who'll likely be gone).
+    const goneSet = new Set(draftedSet);
+    if (atOverall > picks.length) {
+      const proj = projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, null, true);
+      for (const step of proj) { if (step.o < atOverall && step.p) goneSet.add(step.p.id); }
+    }
     const myCounts = { QB: 0, RB: 0, WR: 0, TE: 0 };
-    picks.forEach((pk, o) => { const pl = players[pk]; if (teamAt(o) === userIdx && pl && myCounts[pl.pos] != null) myCounts[pl.pos]++; });
+    picks.forEach((pk, o) => { const pl = players[pk]; if (teamAt(o) === forTeam && pl && myCounts[pl.pos] != null) myCounts[pl.pos]++; });
     const bestNow = { QB: null, RB: null, WR: null, TE: null };
-    for (const p of sortedAdp) if (!draftedSet.has(p.id) && (!bestNow[p.pos] || p.vbd > bestNow[p.pos].vbd)) bestNow[p.pos] = p;
+    for (const p of sortedAdp) if (!goneSet.has(p.id) && (!bestNow[p.pos] || p.vbd > bestNow[p.pos].vbd)) bestNow[p.pos] = p;
     const waitCost = {};
-    POS.forEach((pos) => { waitCost[pos] = bestNow[pos] ? Math.round((bestNow[pos].vbd - sims.expBest1[pos]) * 10) / 10 : 0; });
-    const pool0 = sortedAdp.filter((p) => !draftedSet.has(p.id) && p.adp <= pickNum + 16).slice(0, 40);
+    POS.forEach((pos) => { waitCost[pos] = bestNow[pos] ? Math.round((bestNow[pos].vbd - simState.expBest1[pos]) * 10) / 10 : 0; });
+    const pool0 = sortedAdp.filter((p) => !goneSet.has(p.id) && p.adp <= pickNum + 16).slice(0, 40);
     const pool = legalCands(pool0, myCounts, cfg);
-    // Use the SAME scoring as the projection so the rail verdict and the projected
-    // path agree. Waiting cost nudges within that, but reach penalty (inside userScore)
-    // keeps early picks anchored to consensus.
     const scoreOf = (p) => userScore(p, myCounts, dem, strategy, cfg.sf, pickNum) + 0.6 * Math.max(0, waitCost[p.pos]);
     const ranked = pool.slice().sort((a, b) => scoreOf(b) - scoreOf(a));
     const verdict = ranked[0]; const alts = ranked.slice(1, 4);
@@ -7106,7 +7155,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     let run = null;
     POS.forEach((pos) => { const c = recent.filter((x) => x === pos).length; if (c >= 3 && (!run || c > run.count)) run = { pos, count: c }; });
     return { bestNow, waitCost, verdict, alts, impacts, run, myCounts };
-  }, [sims, picks, players, sortedAdp, draftedSet, userIdx, cfg, strategy, done, dem]);
+  };
+  // Recommendation for the CURRENT pick on the clock (whoever it is).
+  const advice = useMemo(() => adviceFor(picks.length, onClock, sims), [sims, picks, players, sortedAdp, draftedSet, onClock, cfg, strategy, done, dem]);
+  // Recommendation specifically for YOUR next pick (may be the same as current if you're on the clock).
+  const myAdvice = useMemo(() => (onClock === userIdx ? null : adviceFor(myNextOverall, userIdx, sims)), [sims, picks, players, sortedAdp, draftedSet, onClock, userIdx, myNextOverall, cfg, strategy, done, dem]);
 
   // SELECTIVE insight tags. The whole point is to pull your eye to the few players you should
   // actually be locked into right now — not to label half the board. We build a small, capped set
@@ -7874,7 +7927,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
     };
   }, [proj, grades, graded, valByTeam, picks, players, userIdx]);
 
-  const showTip = (e, content) => { const x = Math.min(e.clientX + 14, window.innerWidth - 480); const y = Math.min(e.clientY + 10, window.innerHeight - 230); setTip({ x, y, content }); };
+  const showTip = (e, content) => { setTip(positionTip(e.clientX, e.clientY, content)); };
   const hideTip = () => setTip(null);
 
   const depth = useMemo(() => {
@@ -8356,6 +8409,70 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
           <div className="rail" style={{ width: 348, flexShrink: 0, display: "flex", flexDirection: "column", gap: 12 }}>
             <div className="panel" style={{ padding: 12 }}>
               <div className="disp" style={{ fontSize: 14, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--mut)" }}>Recommendation</div>
+              {/* Toggle: current pick (on the clock) vs YOUR next pick. Only meaningful when you're not on the clock. */}
+              {onClock !== userIdx && myAdvice && myNextOverall != null && (
+                <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden", margin: "6px 0 2px" }}>
+                  {[["current", `Pick #${picks.length + 1}`], ["mine", `Your pick #${myNextOverall + 1}`]].map(([k, l]) => (
+                    <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", fontSize: 10.5, background: recPick === k ? "var(--gold)" : "transparent", color: recPick === k ? "#151002" : "var(--ink)", fontWeight: recPick === k ? 700 : 400 }} onClick={() => setRecPick(k)}>{l}</button>
+                  ))}
+                </div>
+              )}
+              {(() => {
+                const showMine = onClock !== userIdx && recPick === "mine" && myAdvice;
+                const A = showMine ? myAdvice : advice;
+                const forLabel = showMine
+                  ? `For your pick — #${myNextOverall + 1}`
+                  : (onClock === userIdx ? "★ For your pick — you're on the clock" : `For the pick on the clock — ${TEAM_NAMES[onClock] ? TEAM_NAMES[onClock].split(" ").slice(0, 2).join(" ") : "another team"}`);
+                return (<>
+                  <div style={{ fontSize: 11, marginTop: 4, marginBottom: 2, fontWeight: 600, color: (showMine || onClock === userIdx) ? "var(--gold)" : "var(--blue)" }}>{forLabel}</div>
+                  {A?.verdict ? (
+                    <>
+                      <div style={{ display: "flex", alignItems: "baseline", gap: 8, margin: "7px 0 2px" }}>
+                        <div className="disp" style={{ fontSize: 24, fontWeight: 700, color: "var(--gold)" }}>{A.verdict.name}</div>
+                        <div className="mut"><Dot pos={A.verdict.pos} />{A.verdict.pos}{A.verdict.posRank}</div>
+                      </div>
+                      <div className="mut" style={{ fontSize: 12.5 }}>
+                        +{A.verdict.vbd.toFixed(0)} VBD • waiting costs {Math.max(0, A.waitCost[A.verdict.pos]).toFixed(0)} pts
+                        {A.impacts[A.verdict.id] && <> • projects you <b style={{ color: "var(--ink)" }}>{ordinal(A.impacts[A.verdict.id].rank)}</b> ({A.impacts[A.verdict.id].pts} pts)</>}
+                      </div>
+                      {!showMine && (
+                        <button className="btn btn-gold" style={{ width: "100%", marginTop: 9 }} onClick={() => draftPlayer(A.verdict.id)}>
+                          Draft {A.verdict.name.split(" ").slice(-1)}{onClock !== userIdx ? ` (to ${TEAM_NAMES[onClock].split(" ")[0]})` : ""}
+                        </button>
+                      )}
+                      {showMine && <div className="mut" style={{ fontSize: 11, marginTop: 9, fontStyle: "italic" }}>Projected target for when your pick comes up — others between now and then are assumed gone.</div>}
+                      <div className="mut" style={{ fontSize: 11.5, margin: "10px 0 4px", textTransform: "uppercase", letterSpacing: ".07em" }}>Alternatives</div>
+                      {A.alts.map((a) => (
+                        <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, padding: "3px 0", borderBottom: "1px solid #16203340", fontSize: 12.5 }}>
+                          <span onMouseEnter={(e) => showTip(e, makeOutlook(a, sims, false))} onMouseLeave={hideTip} style={{ cursor: "help", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={a.pos} />{a.name}</span>
+                          <span style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+                            <span className="mut num">{sims ? `${sims.pct[0][a.id]}%` : ""}{A.impacts[a.id] ? ` • ${ordinal(A.impacts[a.id].rank)}` : ""}</span>
+                            {!showMine && <button className="btn btn-mini" onClick={() => draftPlayer(a.id)}>Draft</button>}
+                          </span>
+                        </div>
+                      ))}
+                      <div className="mut" style={{ fontSize: 11.5, margin: "10px 0 4px", textTransform: "uppercase", letterSpacing: ".07em" }}>
+                        <span className="info" onMouseEnter={(e) => showTip(e, [
+                          { t: "Take now vs. wait", x: "For each position: the best player on the board RIGHT NOW versus the best the simulations expect to survive to YOUR NEXT PICK." },
+                          { t: "Reading it", x: "\u201C+72 \u2192 ~+58 (\u221214)\u201D means waiting costs 14 points of value. \u201CSafe to wait\u201D means the pool holds its value until your turn." },
+                        ])} onMouseLeave={hideTip}>Take now vs. wait ⓘ</span>
+                      </div>
+                      {POS.map((pos) => A.bestNow[pos] && (
+                        <div key={pos} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "2.5px 0" }}>
+                          <span><Dot pos={pos} />{A.bestNow[pos].name}</span>
+                          <span className="num" style={{ color: A.waitCost[pos] > 14 ? "var(--red)" : A.waitCost[pos] < 4 ? "var(--green)" : "var(--ink)" }}>
+                            {A.waitCost[pos] >= 4 ? `+${A.bestNow[pos].vbd.toFixed(0)} → ~+${(A.bestNow[pos].vbd - A.waitCost[pos]).toFixed(0)} (−${A.waitCost[pos].toFixed(0)})` : "✓ safe to wait"}
+                          </span>
+                        </div>
+                      ))}
+                    </>
+                  ) : <div className="mut" style={{ fontSize: 12.5, marginTop: 8 }}>No recommendation available yet.</div>}
+                </>);
+              })()}
+            </div>
+            {false && (
+            <div className="panel" style={{ padding: 12 }}>
+              <div className="disp" style={{ fontSize: 14, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--mut)" }}>Recommendation</div>
               <div style={{ fontSize: 11, marginTop: 2, marginBottom: 2, fontWeight: 600, color: onClock === userIdx ? "var(--gold)" : "var(--blue)" }}>
                 {onClock === userIdx
                   ? "★ For your pick — you're on the clock"
@@ -8401,6 +8518,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 </>
               ) : <div className="mut" style={{ padding: "8px 0" }}>Computing…</div>}
             </div>
+            )}
 
             {advice?.run && <div className="alert"><b>{advice.run.pos} run underway</b> — {advice.run.count} of the last 8 picks. Waiting costs at {advice.run.pos} are climbing.</div>}
 
@@ -8684,19 +8802,46 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                   {["QB", "RB", "WR", "TE"].map((pos) => {
                     const b = ta.byPos[pos];
                     const status = b.need > 0 ? { t: "NEED", c: "var(--red)" } : b.count > b.starters ? { t: "DEPTH", c: "var(--green)" } : { t: "SET", c: "var(--gold)" };
+                    // Bar fills fully once the dedicated starting requirement is met (e.g. 2/2 RB = 100%);
+                    // proportional below that. Extra depth beyond starters keeps it full (capped at 100%).
+                    const fillPct = b.starters > 0 ? Math.min(100, (b.count / b.starters) * 100) : (b.count > 0 ? 100 : 0);
                     const tip = b.list.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `Your ${pos}s (${b.count})` }, ...b.list.map((p) => ({ t: `${p.pos}${p.posRank}`, tc: rankTierColor(p.pos, p.posRank), x: `${p.name} — ${p.team || "FA"}${p.age ? `, age ${p.age}` : ""} · ${Math.round(p.pts)} pts` }))]) : undefined;
                     return (
                       <div key={pos} style={{ display: "flex", alignItems: "center", gap: 9, cursor: tip ? "help" : "default", padding: "2px 0" }}
                         onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
                         <span style={{ width: 26, fontWeight: 800, color: posColor[pos] }}>{pos}</span>
                         <div style={{ flex: 1, height: 8, background: "var(--panel2)", borderRadius: 4, overflow: "hidden" }}>
-                          <div style={{ width: `${Math.min(100, (b.count / Math.max(1, (b.starters + 1.5))) * 100)}%`, height: "100%", background: posColor[pos], opacity: 0.8 }} />
+                          <div style={{ width: `${fillPct}%`, height: "100%", background: posColor[pos], opacity: 0.8 }} />
                         </div>
                         <span className="mut num" style={{ fontSize: 11, width: 58 }}>{b.count}/{b.starters} st</span>
                         <span style={{ fontSize: 10, fontWeight: 700, color: status.c, width: 44, textAlign: "right" }}>{status.t}</span>
                       </div>
                     );
                   })}
+                  {/* FLEX / SUPERFLEX fill status — no strength tier, just whether the slot is filled in your
+                      projected lineup. We read it off the computed starting slots. */}
+                  {(() => {
+                    const flexRows = ta.slots.filter((s) => /FLEX|SUPER|SF|OP/i.test(s.slot));
+                    if (!flexRows.length) return null;
+                    return (
+                      <div style={{ marginTop: 4, paddingTop: 8, borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 8 }}>
+                        {flexRows.map((s, i) => {
+                          const filled = !!s.p;
+                          const tip = filled ? (e) => showTip(e, [{ kind: "take", tone: "good", x: `${s.slot} — filled` }, { t: s.p.pos + s.p.posRank, tc: rankTierColor(s.p.pos, s.p.posRank), x: `${s.p.name} — ${s.p.team || "FA"} · ${Math.round(s.p.pts)} pts` }]) : undefined;
+                          return (
+                            <div key={i} style={{ display: "flex", alignItems: "center", gap: 9, cursor: tip ? "help" : "default", padding: "2px 0" }}
+                              onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
+                              <span style={{ width: 56, fontWeight: 700, fontSize: 11, color: "var(--mut)" }}>{s.slot}</span>
+                              <div style={{ flex: 1, height: 8, background: "var(--panel2)", borderRadius: 4, overflow: "hidden" }}>
+                                <div style={{ width: filled ? "100%" : "0%", height: "100%", background: "var(--blue)", opacity: 0.7 }} />
+                              </div>
+                              <span style={{ fontSize: 10, fontWeight: 700, color: filled ? "var(--green)" : "var(--red)", width: 102, textAlign: "right" }}>{filled ? `✓ ${s.p.name.split(" ").slice(-1)}` : "empty"}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             </div>
@@ -8791,6 +8936,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                       {cell(ta.oldCount, "aging (≥29)", ta.oldCount > 2 ? "var(--red)" : "var(--ink)", profTip("Aging players (≥29)", ta.oldList), pr && pr.aging)}
                       {cell(ta.avgAge ? ta.avgAge.toFixed(1) : "—", "avg age", "var(--ink)", undefined, pr && pr.avgAge)}
                       {cell(Math.round(ta.totalPts), "total proj pts", "var(--ink)", undefined, pr && pr.totalPts)}
+                      {cell(Math.round(ta.startersPts), "starter pts", "var(--gold)", undefined, pr && pr.starterPts)}
                     </div>
                   );
                 })()}
