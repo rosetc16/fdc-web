@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from "react";
 import { api, hasBackend, setToken } from "./api.js";
 
 
@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26p";
+const BUILD_TAG = "2026.06.26q";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2204,24 +2204,33 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
 const TEAMS_FALLBACK = 12;
 function userIdxOf(ctx) { return ctx && ctx.userIdx != null ? ctx.userIdx : 0; }
 function ordinalOf(n) { const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); }
-// Position a hover tooltip so it's ALWAYS fully on-screen without needing to scroll. The tooltip is up to
-// 460px wide and can be tall; we estimate its height from the content, place it beside the cursor, and
-// clamp/flip so it never runs off the top or bottom. Returns {x, y, content} consumed by the .tooltip div.
+// Store the cursor anchor; the <Tooltip> component measures its own real height after render and clamps
+// itself fully on-screen (estimating height was unreliable for tall hovers, which leaked off the bottom).
 function positionTip(cx, cy, content) {
   const W = typeof window !== "undefined" ? window.innerWidth : 1200;
-  const H = typeof window !== "undefined" ? window.innerHeight : 800;
   const TW = 472; // tooltip width + margin
-  // estimate height: header + chip strip + ~22px per labeled row, capped to viewport.
-  const rows = Array.isArray(content) ? content.length : 6;
-  const estH = Math.min(H * 0.92, 70 + rows * 26);
-  // x: prefer right of cursor; if it would overflow, go left of cursor.
   let x = cx + 16;
   if (x + TW > W) x = Math.max(8, cx - TW);
-  // y: center the tooltip vertically on the cursor when possible, then clamp into [8, H-estH-8] so the
-  // whole thing stays visible regardless of how far down the page the cursor is.
-  let y = cy - estH / 2;
-  y = Math.max(8, Math.min(y, H - estH - 8));
-  return { x, y, content };
+  return { x, y: cy, anchorY: cy, content };
+}
+// Self-correcting tooltip: renders at the anchor, then on layout measures its actual box and nudges its
+// top so the whole thing stays within the viewport (flipping above the cursor when there isn't room below).
+function Tooltip({ tip, children }) {
+  const ref = useRef(null);
+  const [pos, setPos] = useState({ left: tip.x, top: tip.y });
+  useLayoutEffect(() => {
+    const el = ref.current; if (!el) return;
+    const h = el.offsetHeight, w = el.offsetWidth;
+    const H = window.innerHeight, W = window.innerWidth, M = 8;
+    let top = (tip.anchorY != null ? tip.anchorY : tip.y) - h / 2; // center on cursor
+    if (top + h > H - M) top = H - h - M;     // would overflow bottom → pull up
+    if (top < M) top = M;                      // would overflow top → pin to top
+    let left = tip.x;
+    if (left + w > W - M) left = Math.max(M, W - w - M);
+    if (left < M) left = M;
+    setPos({ left, top });
+  }, [tip]);
+  return <div ref={ref} className="tooltip" style={{ left: pos.left, top: pos.top }}>{children}</div>;
 }
 // Color a player's positional rank red/yellow/green. Thresholds scale with position scarcity: QB/TE go
 // deeper before "red" since fewer start; RB/WR are tighter. Green = clear starter, yellow = streamer/depth,
@@ -4546,9 +4555,9 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
       <SiteFooter biz={biz} onDemo={onDemo} onBuy={onBuy} onSignIn={onSignIn} onHelp={onHelp} onTab={setHtab} />
 
       {tip && (
-        <div className="tooltip" style={{ left: tip.x, top: tip.y }}>
+        <Tooltip tip={tip}>
           <OutlookCard content={tip.content} />
-        </div>
+          </Tooltip>
       )}
     </div>
   );
@@ -8649,13 +8658,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <div className="panel" style={{ padding: 16 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
                 <div>
-                  <div className="disp" style={{ fontSize: 20, fontWeight: 700, display: "flex", alignItems: "center", gap: 9 }}>
+                  <div className="disp" style={{ fontSize: 20, fontWeight: 700, display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
                     Team analysis
                     <select className="gs" style={{ fontSize: 13, padding: "4px 8px" }} value={selTeam} onChange={(e) => setAnalysisTeam(+e.target.value === userIdx ? null : +e.target.value)}>
                       {Array.from({ length: cfg.teams || 12 }, (_, t) => t).map((t) => (
                         <option key={t} value={t}>{t === userIdx ? "★ My team" : (TEAM_NAMES[t] || `Team ${t + 1}`)}</option>
                       ))}
                     </select>
+                    <button className="btn btn-mini" onClick={() => setLeagueOpen((o) => !o)} style={{ fontSize: 11.5, display: "inline-flex", alignItems: "center", gap: 5, background: leagueOpen ? "var(--gold)" : "var(--panel3)", color: leagueOpen ? "#151002" : "var(--ink)", fontWeight: 700, border: leagueOpen ? "1px solid var(--gold)" : "1px solid var(--line2)" }}>
+                      <i className="ti ti-binoculars" style={{ fontSize: 14 }} aria-hidden="true" />{leagueOpen ? "Back to team" : "League overview"}
+                    </button>
                   </div>
                   <div className="mut" style={{ fontSize: 12.5 }}>{cfg.name} · {teamName}{isMe ? "" : " (comparing)"}</div>
                 </div>
@@ -8686,17 +8698,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               </div>
             </div>
 
-            {/* League Overview — collapsible whole-league snapshot */}
+            {/* League Overview — shown when toggled on via the header button (replaces team analysis body) */}
+            {leagueOpen && (
             <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
-              <button onClick={() => setLeagueOpen((o) => !o)} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", background: "transparent", border: "none", cursor: "pointer", color: "var(--ink)" }}>
-                <span style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                  <i className="ti ti-binoculars" style={{ fontSize: 17, color: "var(--gold)" }} aria-hidden="true" />
-                  <span className="disp" style={{ fontSize: 16, fontWeight: 700, letterSpacing: ".03em" }}>League Overview</span>
-                  <span className="mut" style={{ fontSize: 11.5 }}>— positions drafted & position strength across all {cfg.teams || 12} teams</span>
-                </span>
-                <i className={`ti ti-chevron-${leagueOpen ? "up" : "down"}`} style={{ fontSize: 18, color: "var(--mut)" }} aria-hidden="true" />
-              </button>
-              {leagueOpen && (() => {
+              <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
+                <i className="ti ti-binoculars" style={{ fontSize: 17, color: "var(--gold)" }} aria-hidden="true" />
+                <span className="disp" style={{ fontSize: 16, fontWeight: 700, letterSpacing: ".03em" }}>League Overview</span>
+                <span className="mut" style={{ fontSize: 11.5 }}>— positions drafted & position strength across all {cfg.teams || 12} teams</span>
+              </div>
+              {(() => {
                 const lo = leagueOverview(picks, players, teamAt, cfg);
                 const tierColor = (tier) => tier === 0 ? "var(--green)" : tier === 1 ? "var(--gold)" : "var(--red)";
                 const posClr = { QB: POS_COLOR.QB, RB: POS_COLOR.RB, WR: POS_COLOR.WR, TE: POS_COLOR.TE };
@@ -8767,7 +8777,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 );
               })()}
             </div>
+            )}
 
+            {!leagueOpen && (<>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, alignItems: "start" }} className="myteam-grid">
               {ta.posRankByPos && Object.keys(ta.posRankByPos).length > 0 ? (
                 <div className="panel" style={{ padding: 14 }}>
@@ -8801,7 +8813,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {["QB", "RB", "WR", "TE"].map((pos) => {
                     const b = ta.byPos[pos];
-                    const status = b.need > 0 ? { t: "NEED", c: "var(--red)" } : b.count > b.starters ? { t: "DEPTH", c: "var(--green)" } : { t: "SET", c: "var(--gold)" };
                     // Bar fills fully once the dedicated starting requirement is met (e.g. 2/2 RB = 100%);
                     // proportional below that. Extra depth beyond starters keeps it full (capped at 100%).
                     const fillPct = b.starters > 0 ? Math.min(100, (b.count / b.starters) * 100) : (b.count > 0 ? 100 : 0);
@@ -8813,30 +8824,24 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         <div style={{ flex: 1, height: 8, background: "var(--panel2)", borderRadius: 4, overflow: "hidden" }}>
                           <div style={{ width: `${fillPct}%`, height: "100%", background: posColor[pos], opacity: 0.8 }} />
                         </div>
-                        <span className="mut num" style={{ fontSize: 11, width: 58 }}>{b.count}/{b.starters} st</span>
-                        <span style={{ fontSize: 10, fontWeight: 700, color: status.c, width: 44, textAlign: "right" }}>{status.t}</span>
+                        <span className="mut num" style={{ fontSize: 11, width: 50, textAlign: "right" }}>{b.count}/{b.starters}</span>
                       </div>
                     );
                   })}
-                  {/* FLEX / SUPERFLEX fill status — no strength tier, just whether the slot is filled in your
-                      projected lineup. We read it off the computed starting slots. */}
+                  {/* FLEX / SUPERFLEX — all on one row, just filled/empty pills (no player name). */}
                   {(() => {
                     const flexRows = ta.slots.filter((s) => /FLEX|SUPER|SF|OP/i.test(s.slot));
                     if (!flexRows.length) return null;
                     return (
-                      <div style={{ marginTop: 4, paddingTop: 8, borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 8 }}>
+                      <div style={{ marginTop: 4, paddingTop: 8, borderTop: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                         {flexRows.map((s, i) => {
                           const filled = !!s.p;
                           const tip = filled ? (e) => showTip(e, [{ kind: "take", tone: "good", x: `${s.slot} — filled` }, { t: s.p.pos + s.p.posRank, tc: rankTierColor(s.p.pos, s.p.posRank), x: `${s.p.name} — ${s.p.team || "FA"} · ${Math.round(s.p.pts)} pts` }]) : undefined;
                           return (
-                            <div key={i} style={{ display: "flex", alignItems: "center", gap: 9, cursor: tip ? "help" : "default", padding: "2px 0" }}
+                            <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 9px", borderRadius: 7, fontSize: 11, fontWeight: 700, cursor: tip ? "help" : "default", background: filled ? "rgba(95,208,168,.12)" : "rgba(242,101,92,.10)", border: `1px solid ${filled ? "rgba(95,208,168,.4)" : "rgba(242,101,92,.35)"}`, color: filled ? "var(--green)" : "var(--red)" }}
                               onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
-                              <span style={{ width: 56, fontWeight: 700, fontSize: 11, color: "var(--mut)" }}>{s.slot}</span>
-                              <div style={{ flex: 1, height: 8, background: "var(--panel2)", borderRadius: 4, overflow: "hidden" }}>
-                                <div style={{ width: filled ? "100%" : "0%", height: "100%", background: "var(--blue)", opacity: 0.7 }} />
-                              </div>
-                              <span style={{ fontSize: 10, fontWeight: 700, color: filled ? "var(--green)" : "var(--red)", width: 102, textAlign: "right" }}>{filled ? `✓ ${s.p.name.split(" ").slice(-1)}` : "empty"}</span>
-                            </div>
+                              <span style={{ color: "var(--mut)" }}>{s.slot}</span>{filled ? "✓" : "empty"}
+                            </span>
                           );
                         })}
                       </div>
@@ -8967,6 +8972,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               </div>
             </div>
             </div>
+            </>)}
           </div>
         );
       })()}
@@ -9482,9 +9488,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       )}
 
       {tip && (
-        <div className="tooltip" style={{ left: tip.x, top: tip.y }}>
+        <Tooltip tip={tip}>
           <OutlookCard content={tip.content} />
-        </div>
+          </Tooltip>
       )}
     </div>
   );
