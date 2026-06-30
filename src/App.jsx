@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26r";
+const BUILD_TAG = "2026.06.26t";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1486,9 +1486,13 @@ function buildPlayers(cfg) {
       }
     }
     if (teMult > 0 && pos === "TE" && !loadedIsTEP) {
+      // TE-premium nudge. Sleeper's own draft board does NOT publish a separate TE-premium ADP — owners
+      // in a TEP league still see the standard (SF-)dynasty ADP — so a big lift here makes our board
+      // diverge from what people actually see in the room (TEs flooding the top). Keep it a GENTLE nudge:
+      // only the few elite TEs move up a little, and the effect fades fast down the position.
       const r = teRankOfRaw(raw);
       const strength = Math.min(1, teMult / 0.5);
-      const pull = strength * Math.max(0.08, 0.46 - (r - 1) * 0.055);
+      const pull = strength * Math.max(0.0, 0.16 - (r - 1) * 0.03); // was up to .46; now elite-only & small
       a = Math.max(1.4, raw * (1 - pull));
     }
     return a;
@@ -2738,82 +2742,80 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
+      // ---- PHASE 1: instant local hydration. Read the cached blob and render the app IMMEDIATELY off
+      // the built-in dataset + any local leagues. We do NOT wait on the (possibly cold-starting) backend
+      // before showing the UI — that was the multi-second white screen. Live data swaps in below.
+      let localBlob = {};
       try {
         if (window.storage) {
-          try { const r = await window.storage.get("gs-state"); if (r && r.value) { const d = JSON.parse(r.value); if (d.leagues) setLeagues(d.leagues); if (d.biz) setBiz(d.biz); if (d.user) { const comped = !!compFor(d.biz, d.user.email); setUser(migrateRankSets({ ...d.user, admin: isAdminEmail(d.user.email), paid: d.user.paid || comped, comp: comped })); } if (d.funMocks) setFunMocks(d.funMocks); if (d.feedback) setFeedback(d.feedback); } } catch (e) {}
-        }
-        // Backend mode: restore the real session from the token, and handle a Stripe return.
-        if (hasBackend) {
-          // Load the live player pack (real teams, projections, injuries, ADP) and feed the engine.
-          // We choose the ADP FORMAT from the user's saved leagues (their most common format) so the board
-          // mirrors the Sleeper trends they actually draft against — e.g. an SF-dynasty player gets the
-          // SF-dynasty board, not a 1QB-redraft baseline. This happens ONCE at startup, before any draft
-          // room exists, so there are no stored picks to disturb (the pool is stable for the session).
-          try {
-            let fmt = "PPR|1QB|STD|REDRAFT|12";
-            let opts = {};
-            try {
-              const stored = window.storage ? await window.storage.get("gs-state") : null;
-              const lgs = stored && stored.value ? (JSON.parse(stored.value).leagues || []) : [];
-              if (lgs.length) {
-                // tally formats; pick the most common (ties → most recent league)
-                const tally = {};
-                lgs.forEach((lg) => { if (lg && lg.cfg) { const k = backendFormatKey(lg.cfg); tally[k] = (tally[k] || 0) + 1; } });
-                let best = null, bestN = 0;
-                Object.entries(tally).forEach(([k, n]) => { if (n > bestN) { best = k; bestN = n; } });
-                if (best) fmt = best;
-                // K/DST/IDP options from that dominant league
-                const domLg = lgs.find((lg) => lg && lg.cfg && backendFormatKey(lg.cfg) === best);
-                if (domLg && domLg.cfg && domLg.cfg.start) {
-                  const st = domLg.cfg.start;
-                  opts = { k: !!(st.K > 0), dst: !!(st.DST > 0), idp: !!((st.DL || 0) + (st.LB || 0) + (st.DB || 0) + (st.IDPFLEX || 0) > 0) };
-                }
-              }
-            } catch (e) { /* fall back to default format */ }
-            const pack = await api.playerPack(fmt, undefined, opts);
-            if (applyLivePack(pack)) setDataVersion((v) => v + 1);
-          } catch (e) { /* fall back to built-in dataset if unavailable */ }
-          try {
-            const me = await api.me();
-            if (me) { const admin = isAdminEmail(me.email); const merged = migrateRankSets({ ...me, rankSets: me.rankSets || [], admin, paid: me.paid || admin }); setUser(merged); /* don't persist here: initial load shouldn't write back (race could clobber leagues). state setters handle saving on real changes. */ }
-            // CROSS-DEVICE: pull this user's server-saved blob (leagues, picks/preds, priority queues,
-            // mocks). On a fresh device the local store is empty, so the server copy is what restores the
-            // user's drafts. When both exist we take whichever has more leagues (the server is updated on
-            // every change, so it's normally the authoritative, most-complete copy), guarding against a
-            // momentary empty-local read clobbering good server data.
-            if (me) {
-              try {
-                const sr = await api.getState();
-                const srv = sr && sr.state ? sr.state : null;
-                if (srv && (Array.isArray(srv.leagues) || Array.isArray(srv.funMocks))) {
-                  let localLeagues = [];
-                  try { const r = window.storage ? await window.storage.get("gs-state") : null; if (r && r.value) localLeagues = JSON.parse(r.value).leagues || []; } catch (e) {}
-                  const srvLeagues = Array.isArray(srv.leagues) ? srv.leagues : [];
-                  // Prefer the server copy when the local store has fewer (or zero) leagues — i.e. a new
-                  // device or cleared cache. Otherwise keep local (this session's freshest edits).
-                  if (srvLeagues.length >= localLeagues.length) {
-                    if (srvLeagues.length) setLeagues(srvLeagues);
-                    if (Array.isArray(srv.funMocks)) setFunMocks(srv.funMocks);
-                    if (Array.isArray(srv.feedback)) setFeedback(srv.feedback);
-                    // write the restored blob into local storage so the rest of the app reads it consistently
-                    try { if (window.storage) { const r = await window.storage.get("gs-state"); const cur = (r && r.value) ? JSON.parse(r.value) : {}; await window.storage.set("gs-state", JSON.stringify({ ...cur, leagues: srvLeagues.length ? srvLeagues : cur.leagues, funMocks: Array.isArray(srv.funMocks) ? srv.funMocks : cur.funMocks, feedback: Array.isArray(srv.feedback) ? srv.feedback : cur.feedback })); } } catch (e) {}
-                  }
-                }
-              } catch (e) { /* server state unavailable — local copy stands */ }
-            }
-          } catch (e) {}
-          try {
-            const params = new URLSearchParams(window.location.search);
-            if (params.get("paid") === "1") {
-              const me = await api.me();
-              if (me) { const admin = isAdminEmail(me.email); setUser(migrateRankSets({ ...me, rankSets: me.rankSets || [], admin, paid: me.paid || admin })); }
-              window.history.replaceState({}, "", window.location.pathname); // clean the URL
-              setRoute("home");
-            }
-          } catch (e) {}
+          const r = await window.storage.get("gs-state");
+          if (r && r.value) { localBlob = JSON.parse(r.value) || {}; }
         }
       } catch (e) {}
-      setLoaded(true);
+      try {
+        const d = localBlob;
+        if (d.leagues) setLeagues(d.leagues);
+        if (d.biz) setBiz(d.biz);
+        if (d.user) { const comped = !!compFor(d.biz, d.user.email); setUser(migrateRankSets({ ...d.user, admin: isAdminEmail(d.user.email), paid: d.user.paid || comped, comp: comped })); }
+        if (d.funMocks) setFunMocks(d.funMocks);
+        if (d.feedback) setFeedback(d.feedback);
+      } catch (e) {}
+      setLoaded(true); // <-- show the app now; everything below is background work
+
+      // ---- PHASE 2: background backend work (does not block the UI). Player pack, session, and saved
+      // state are fetched in PARALLEL so a cold backend costs one round-trip, not three stacked ones.
+      if (hasBackend) {
+        // choose ADP format from saved leagues (most common), same as before
+        let fmt = "PPR|1QB|STD|REDRAFT|12", opts = {};
+        try {
+          const lgs = localBlob.leagues || [];
+          if (lgs.length) {
+            const tally = {};
+            lgs.forEach((lg) => { if (lg && lg.cfg) { const k = backendFormatKey(lg.cfg); tally[k] = (tally[k] || 0) + 1; } });
+            let best = null, bestN = 0;
+            Object.entries(tally).forEach(([k, n]) => { if (n > bestN) { best = k; bestN = n; } });
+            if (best) fmt = best;
+            const domLg = lgs.find((lg) => lg && lg.cfg && backendFormatKey(lg.cfg) === best);
+            if (domLg && domLg.cfg && domLg.cfg.start) {
+              const st = domLg.cfg.start;
+              opts = { k: !!(st.K > 0), dst: !!(st.DST > 0), idp: !!((st.DL || 0) + (st.LB || 0) + (st.DB || 0) + (st.IDPFLEX || 0) > 0) };
+            }
+          }
+        } catch (e) {}
+        // fire all three at once
+        const packP = api.playerPack(fmt, undefined, opts).catch(() => null);
+        const meP = api.me().catch(() => null);
+        packP.then((pack) => { try { if (pack && applyLivePack(pack)) setDataVersion((v) => v + 1); } catch (e) {} });
+        meP.then(async (me) => {
+          if (!me) return;
+          try { const admin = isAdminEmail(me.email); setUser(migrateRankSets({ ...me, rankSets: me.rankSets || [], admin, paid: me.paid || admin })); } catch (e) {}
+          // restore the server-saved blob (cross-device) once we know who we are
+          try {
+            const sr = await api.getState();
+            const srv = sr && sr.state ? sr.state : null;
+            if (srv && (Array.isArray(srv.leagues) || Array.isArray(srv.funMocks))) {
+              const localLeagues = localBlob.leagues || [];
+              const srvLeagues = Array.isArray(srv.leagues) ? srv.leagues : [];
+              if (srvLeagues.length >= localLeagues.length) {
+                if (srvLeagues.length) setLeagues(srvLeagues);
+                if (Array.isArray(srv.funMocks)) setFunMocks(srv.funMocks);
+                if (Array.isArray(srv.feedback)) setFeedback(srv.feedback);
+                try { if (window.storage) { const r = await window.storage.get("gs-state"); const cur = (r && r.value) ? JSON.parse(r.value) : {}; await window.storage.set("gs-state", JSON.stringify({ ...cur, leagues: srvLeagues.length ? srvLeagues : cur.leagues, funMocks: Array.isArray(srv.funMocks) ? srv.funMocks : cur.funMocks, feedback: Array.isArray(srv.feedback) ? srv.feedback : cur.feedback })); } } catch (e) {}
+              }
+            }
+          } catch (e) {}
+        });
+        // Stripe return handling (independent of the above)
+        try {
+          const params = new URLSearchParams(window.location.search);
+          if (params.get("paid") === "1") {
+            const me2 = await meP;
+            if (me2) { const admin = isAdminEmail(me2.email); setUser(migrateRankSets({ ...me2, rankSets: me2.rankSets || [], admin, paid: me2.paid || admin })); }
+            window.history.replaceState({}, "", window.location.pathname);
+            setRoute("home");
+          }
+        } catch (e) {}
+      }
     })();
   }, []);
 
@@ -3037,7 +3039,25 @@ export default function App() {
 
   const active = activeId === "demo" ? demoLeague : (mockLeague && activeId === mockLeague.id) ? mockLeague : leagues.find((l) => l.id === activeId);
 
-  if (!loaded) return <div className="gs-root" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}><style>{css}</style><div className="mut">Loading…</div></div>;
+  if (!loaded) return (
+    <div className="gs-root" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+      <style>{css}</style>
+      <style>{`@keyframes fdcspin{to{transform:rotate(360deg)}}@keyframes fdcpulse{0%,100%{opacity:.35}50%{opacity:1}}@keyframes fdcbar{0%{transform:scaleX(.1)}50%{transform:scaleX(.75)}100%{transform:scaleX(.1)}}`}</style>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 22 }}>
+        <div style={{ position: "relative", width: 64, height: 64 }}>
+          <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "3px solid var(--line)", borderTopColor: "var(--gold)", animation: "fdcspin 0.9s linear infinite" }} />
+          <i className="ti ti-compass" style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, color: "var(--gold)", animation: "fdcpulse 1.6s ease-in-out infinite" }} aria-hidden="true" />
+        </div>
+        <div style={{ textAlign: "center" }}>
+          <div className="disp" style={{ fontSize: 22, fontWeight: 800, letterSpacing: ".04em", color: "var(--ink)" }}>Fantasy Draft Compass</div>
+          <div className="mut" style={{ fontSize: 12.5, marginTop: 4, animation: "fdcpulse 1.6s ease-in-out infinite" }}>Charting your board…</div>
+        </div>
+        <div style={{ width: 180, height: 4, borderRadius: 4, background: "var(--panel2)", overflow: "hidden" }}>
+          <div style={{ height: "100%", background: "var(--gold)", transformOrigin: "left", animation: "fdcbar 1.4s ease-in-out infinite" }} />
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="gs-root">
@@ -7031,6 +7051,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [analysisTeam, setAnalysisTeam] = useState(null);   // which team the analysis tab shows; null = you
   const [leagueOpen, setLeagueOpen] = useState(false);      // Team analysis: League Overview dropdown open?
   const [recPick, setRecPick] = useState("current");        // Hub recommendation: "current" pick vs "mine" (your next)
+  const [recView, setRecView] = useState("rec");            // Hub recommendation lens: "rec" (best for you) vs "expect" (engine's predicted market pick)
   const toggleQueue = (name) => setQueue((prev) => {
     const next = new Set(prev);
     if (next.has(name)) next.delete(name); else next.add(name);
@@ -8469,10 +8490,25 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
           <div className="rail" style={{ width: 348, flexShrink: 0, display: "flex", flexDirection: "column", gap: 12 }}>
             <div className="panel" style={{ padding: 12 }}>
-              <div className="disp" style={{ fontSize: 14, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--mut)" }}>Recommendation</div>
-              {/* Toggle: current pick (on the clock) vs YOUR next pick. Only meaningful when you're not on the clock. */}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                <div className="disp" style={{ fontSize: 14, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--mut)" }}>{recView === "expect" ? "Engine expects" : "Recommendation"}</div>
+                <span className="info" style={{ cursor: "help", color: "var(--mut)", fontSize: 12 }}
+                  onMouseEnter={(e) => showTip(e, [
+                    { kind: "take", tone: "neutral", x: "Two ways to read the pick" },
+                    { t: "Recommended", tc: "var(--gold)", x: "What's the smartest pick for YOUR roster — best value for your build, factoring need, your window, and what's likely to fall to you. This is advice." },
+                    { t: "Engine expects", tc: "var(--blue)", x: "What the market is most likely to actually do here — the pick the engine predicts based on real draft behavior (ADP, runs, position scarcity). This is a forecast, not advice." },
+                    { t: "Why both", x: "When they AGREE, it's a clean pick. When they DIFFER, there's a value gap — the market may let a better-for-you player slide, or reach for someone you'd pass on." },
+                  ])} onMouseLeave={hideTip}>ⓘ</span>
+              </div>
+              {/* Lens toggle: value recommendation vs the engine's market prediction. */}
+              <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden", margin: "7px 0 2px" }}>
+                {[["rec", "Recommended"], ["expect", "Engine expects"]].map(([k, l]) => (
+                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", fontSize: 10.5, background: recView === k ? (k === "expect" ? "var(--blue)" : "var(--gold)") : "transparent", color: recView === k ? (k === "expect" ? "#06121F" : "#151002") : "var(--ink)", fontWeight: recView === k ? 700 : 400 }} onClick={() => setRecView(k)}>{l}</button>
+                ))}
+              </div>
+              {/* Sub-toggle: which pick — the current one on the clock, or YOUR next pick. */}
               {onClock !== userIdx && myAdvice && myNextOverall != null && (
-                <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden", margin: "6px 0 2px" }}>
+                <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden", margin: "4px 0 2px", marginLeft: 8 }}>
                   {[["current", `Pick #${picks.length + 1}`], ["mine", `Your pick #${myNextOverall + 1}`]].map(([k, l]) => (
                     <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", fontSize: 10.5, background: recPick === k ? "var(--gold)" : "transparent", color: recPick === k ? "#151002" : "var(--ink)", fontWeight: recPick === k ? 700 : 400 }} onClick={() => setRecPick(k)}>{l}</button>
                   ))}
@@ -8480,28 +8516,56 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               )}
               {(() => {
                 const showMine = onClock !== userIdx && recPick === "mine" && myAdvice;
+                // The lens toggle decides the story: "rec" = value advice for you; "expect" = the engine's
+                // market prediction of who actually gets taken. (For "your next pick" we predict who'll
+                // most likely fall to you.)
+                const predicting = recView === "expect";
                 const A = showMine ? myAdvice : advice;
-                const forLabel = showMine
-                  ? `For your pick — #${myNextOverall + 1}`
-                  : (onClock === userIdx ? "★ For your pick — you're on the clock" : `For the pick on the clock — ${TEAM_NAMES[onClock] ? TEAM_NAMES[onClock].split(" ").slice(0, 2).join(" ") : "another team"}`);
+                // engine's expected pick: head of the projected path for the current pick; for "your next",
+                // the projected player at your upcoming slot.
+                let predP = null, predProb = null;
+                if (showMine) {
+                  const mineStep = (path || []).find((s) => s.user);
+                  predP = mineStep ? mineStep.p : null; predProb = mineStep ? mineStep.prob : null;
+                } else {
+                  predP = (path && path[0] && path[0].p) ? path[0].p : null; predProb = currentProb;
+                }
+                const headP = predicting ? predP : (A && A.verdict);
+                const whose = showMine ? "your pick" : (onClock === userIdx ? "your pick" : `${TEAM_NAMES[onClock] ? TEAM_NAMES[onClock].split(" ").slice(0, 2).join(" ") : "this team"}'s pick`);
+                const forLabel = predicting
+                  ? `Most likely at ${showMine ? `your pick #${myNextOverall + 1}` : (onClock === userIdx ? "your pick" : `pick #${picks.length + 1}`)}`
+                  : (showMine ? `Best for you — pick #${myNextOverall + 1}` : (onClock === userIdx ? "★ Best for you — you're on the clock" : `Best for ${whose}`));
                 return (<>
-                  <div style={{ fontSize: 11, marginTop: 4, marginBottom: 2, fontWeight: 600, color: (showMine || onClock === userIdx) ? "var(--gold)" : "var(--blue)" }}>{forLabel}</div>
-                  {A?.verdict ? (
+                  <div style={{ fontSize: 11, marginTop: 4, marginBottom: 2, fontWeight: 600, color: predicting ? "var(--blue)" : "var(--gold)" }}>{forLabel}</div>
+                  {headP ? (
                     <>
                       <div style={{ display: "flex", alignItems: "baseline", gap: 8, margin: "7px 0 2px" }}>
-                        <div className="disp" style={{ fontSize: 24, fontWeight: 700, color: "var(--gold)" }}>{A.verdict.name}</div>
-                        <div className="mut"><Dot pos={A.verdict.pos} />{A.verdict.pos}{A.verdict.posRank}</div>
+                        <div className="disp" style={{ fontSize: 24, fontWeight: 700, color: predicting ? "var(--blue)" : "var(--gold)" }}>{headP.name}</div>
+                        <div className="mut"><Dot pos={headP.pos} />{headP.pos}{headP.posRank}</div>
                       </div>
-                      <div className="mut" style={{ fontSize: 12.5 }}>
-                        +{A.verdict.vbd.toFixed(0)} VBD • waiting costs {Math.max(0, A.waitCost[A.verdict.pos]).toFixed(0)} pts
-                        {A.impacts[A.verdict.id] && <> • projects you <b style={{ color: "var(--ink)" }}>{ordinal(A.impacts[A.verdict.id].rank)}</b> ({A.impacts[A.verdict.id].pts} pts)</>}
-                      </div>
-                      {!showMine && (
-                        <button className="btn btn-gold" style={{ width: "100%", marginTop: 9 }} onClick={() => draftPlayer(A.verdict.id)}>
-                          Draft {A.verdict.name.split(" ").slice(-1)}{onClock !== userIdx ? ` (to ${TEAM_NAMES[onClock].split(" ")[0]})` : ""}
+                      {predicting ? (
+                        <div className="mut" style={{ fontSize: 12.5 }}>
+                          Most likely pick{predProb != null && <> • <b style={{ color: "var(--ink)" }}>{predProb}%</b> likely</>} • ADP {headP.adp != null ? headP.adp.toFixed(0) : "—"}
+                        </div>
+                      ) : (
+                        <div className="mut" style={{ fontSize: 12.5 }}>
+                          +{headP.vbd.toFixed(0)} VBD • waiting costs {Math.max(0, A.waitCost[headP.pos]).toFixed(0)} pts
+                          {A.impacts[headP.id] && <> • projects you <b style={{ color: "var(--ink)" }}>{ordinal(A.impacts[headP.id].rank)}</b> ({A.impacts[headP.id].pts} pts)</>}
+                        </div>
+                      )}
+                      {/* draft button: only when actionable (current pick, not a future-pick projection) */}
+                      {!showMine && onClock === userIdx && (
+                        <button className="btn btn-gold" style={{ width: "100%", marginTop: 9 }} onClick={() => draftPlayer(headP.id)}>
+                          Draft {headP.name.split(" ").slice(-1)}
                         </button>
                       )}
-                      {showMine && <div className="mut" style={{ fontSize: 11, marginTop: 9, fontStyle: "italic" }}>Projected target for when your pick comes up — others between now and then are assumed gone.</div>}
+                      {!showMine && onClock !== userIdx && (
+                        <button className="btn" style={{ width: "100%", marginTop: 9 }} onClick={() => draftPlayer(headP.id)}>
+                          Pick {headP.name.split(" ").slice(-1)} (to {TEAM_NAMES[onClock].split(" ")[0]})
+                        </button>
+                      )}
+                      {showMine && <div className="mut" style={{ fontSize: 11, marginTop: 9, fontStyle: "italic" }}>{predicting ? "Who the engine expects to fall to you — others between now and then are assumed gone." : "Best value for when your pick comes up — others between now and then are assumed gone."}</div>}
+                      {!predicting && A && (<>
                       <div className="mut" style={{ fontSize: 11.5, margin: "10px 0 4px", textTransform: "uppercase", letterSpacing: ".07em" }}>Alternatives</div>
                       {A.alts.map((a) => (
                         <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, padding: "3px 0", borderBottom: "1px solid #16203340", fontSize: 12.5 }}>
@@ -8526,8 +8590,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           </span>
                         </div>
                       ))}
+                      </>)}
+                      {/* When predicting, show a compact "what's recommended instead" hint if they differ. */}
+                      {predicting && advice && advice.verdict && headP && advice.verdict.id !== headP.id && !showMine && (
+                        <div style={{ marginTop: 10, padding: "7px 9px", borderRadius: 7, background: "rgba(242,182,60,.08)", border: "1px solid var(--gold)", fontSize: 11.5 }}>
+                          <span className="mut">Recommended for you instead: </span><b style={{ color: "var(--gold)" }}>{advice.verdict.name}</b> <span className="mut">({advice.verdict.pos}{advice.verdict.posRank})</span>
+                          <span className="mut"> — switch to </span><b style={{ color: "var(--gold)" }}>Recommended</b><span className="mut"> to see why.</span>
+                        </div>
+                      )}
                     </>
-                  ) : <div className="mut" style={{ fontSize: 12.5, marginTop: 8 }}>No recommendation available yet.</div>}
+                  ) : <div className="mut" style={{ fontSize: 12.5, marginTop: 8 }}>No {predicting ? "prediction" : "recommendation"} available yet.</div>}
                 </>);
               })()}
             </div>
