@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26v";
+const BUILD_TAG = "2026.06.26w";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2636,7 +2636,7 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 @keyframes pulseGold{0%,100%{opacity:.5}50%{opacity:1}}
 .glowline{background:linear-gradient(90deg,transparent,var(--gold),transparent);height:1px;opacity:.5}
 .hover-row{transition:background .12s}.hover-row:hover{background:#16160F}
-@media(max-width:980px){.cols{flex-direction:column}.rail{width:100%!important}.hero-h{font-size:38px}.myteam-grid{grid-template-columns:1fr!important}}
+@media(max-width:980px){.cols{flex-direction:column}.rail{width:100%!important}.hero-h{font-size:38px}.myteam-grid{grid-template-columns:1fr!important}.needteam-row{grid-template-columns:1fr!important}.recap-row{grid-template-columns:1fr!important}}
 @media(max-width:640px){
   .hero-h{font-size:30px!important}
   .statline{font-size:30px}
@@ -8099,18 +8099,18 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         {isMock && <div className="chip" style={{ borderColor: "var(--gold)", background: "rgba(242,182,60,.10)", color: "var(--gold)" }} title="This is a practice draft — it saves to this league's mock history and never changes your real draft."><i className="ti ti-dice" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />MOCK</div>}
         <div className="chip" style={{ borderColor: "var(--gold)" }}><b className="disp gold" style={{ fontSize: 15 }}>ROUND {Math.min(round, ROUNDS)} of {ROUNDS}</b></div>
         <div className="chip">{cfg.teams} teams · {cfg.sf ? "SF" : "1QB"}{cfg.tePremMult > 0 ? ` · TE+${cfg.tePremMult}` : ""} · {DRAFT_ORDERS.find((o) => o[0] === (cfg.order || "snake"))?.[1].split(" ")[0]}</div>
-        <div className="chip" title="How often the engine's #1 projection was the exact pick, and how often it nailed the position.">
-          Engine: <b className="num">{hits}</b> exact{preds.length > 0 && <span className="mut num"> ({Math.round((hits / preds.length) * 100)}%)</span>} · <b className="num">{posHits}</b> pos{preds.length > 0 && <span className="mut num"> ({Math.round((posHits / preds.length) * 100)}%)</span>}
-        </div>
         <div style={{ flex: 1 }} />
-        {!done && <>
+        {/* For a CONNECTED live draft, Sleeper drives the picks — pausing, sim speed, manual end, undo, and
+            manual save don't apply (picks sync automatically). Those controls stay for mocks/manual drafts. */}
+        {!isConnectedLive && !done && <>
           <button className="btn" onClick={() => setPaused((p) => !p)}>{paused ? "▶ Resume" : "❚❚ Pause"}</button>
           <button className="btn" onClick={() => setFast((f) => !f)}>{fast ? "Fast" : "Normal"}</button>
           {isMock && <button className="btn" style={{ borderColor: mockTradingOn ? "var(--gold)" : "var(--line)", color: mockTradingOn ? "var(--gold)" : "var(--ink)" }} onClick={() => setMockTradingOn((t) => !t)} title="Propose trades to CPU teams mid-mock — they only accept fair, format-aware deals">{mockTradingOn ? "Trading on" : "Trading off"}</button>}
           <button className="btn" onClick={() => setEndConfirm(true)} title="Stop here and jump to the summary & grades for the picks so far" disabled={picks.length < 6}>End draft</button>
         </>}
-        <button className="btn" onClick={undo} disabled={!picks.length} title="Undo last pick — test what-if scenarios">Undo</button>
-        {user && <button className="btn" onClick={() => { onSave(picks, preds); setCopied(true); setTimeout(() => setCopied(false), 1200); }}>{copied ? "Saved ✓" : "Save"}</button>}
+        {!isConnectedLive && <button className="btn" onClick={undo} disabled={!picks.length} title="Undo last pick — test what-if scenarios">Undo</button>}
+        {!isConnectedLive && user && <button className="btn" onClick={() => { onSave(picks, preds); setCopied(true); setTimeout(() => setCopied(false), 1200); }}>{copied ? "Saved ✓" : "Save"}</button>}
+        {isConnectedLive && <div className="chip" style={{ borderColor: "var(--green)", color: "var(--green)" }} title="Picks sync automatically from your Sleeper draft. There's nothing to save or pause."><i className="ti ti-bolt" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Live · auto-syncing</div>}
       </div>
 
       <div style={{ position: "sticky", top: 0, zIndex: 12, background: "var(--bg)" }}>
@@ -8711,7 +8711,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           </div>
         </div>
 
-        <div className="needteam-row" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, padding: "0 14px 14px", alignItems: "start" }}>
+        <div className="needteam-row" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, padding: "0 14px 14px", alignItems: "start" }}>
             <div className="panel" style={{ padding: 12 }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
                 <select className="gs" style={{ flex: 1 }} value={teamView} onChange={(e) => setTeamView(+e.target.value)}>
@@ -8810,6 +8810,62 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               </table>
               <div className="mut" style={{ fontSize: 10.5, marginTop: 6 }}>{needMode === "strength" ? "Color = quality × quantity. A full but weak position still shows amber/red." : "Color = whether starting slots are filled, regardless of quality."}</div>
         </div>
+
+            {/* Position scarcity — how many quality (top-tier) players are still on the board at each spot.
+                A fast way to see which positions are drying up so you don't get caught reaching late. */}
+            <div className="panel" style={{ padding: 12 }}>
+              <div className="disp" style={{ fontSize: 14, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--mut)", marginBottom: 8 }}>
+                <span className="info" onMouseEnter={(e) => showTip(e, [
+                  { t: "Position scarcity", x: "How many quality players are still available at each position, split by tier." },
+                  { t: "Elite / Strong", x: "Elite = tier 1 (true difference-makers). Strong = tiers 2–3 (clear starters)." },
+                  { t: "Why it matters", x: "When a position's elite/strong counts hit zero, the drop-off is real — that's your cue to prioritize it before the tier empties." },
+                ])} onMouseLeave={hideTip}>Position scarcity ⓘ</span>
+              </div>
+              {(() => {
+                const avail = players.filter((p) => !draftedSet.has(p.id));
+                const rows = POS.map((pos) => {
+                  const pool = avail.filter((p) => p.pos === pos);
+                  const elite = pool.filter((p) => p.tier <= 1).length;
+                  const strong = pool.filter((p) => p.tier === 2 || p.tier === 3).length;
+                  const startable = pool.filter((p) => p.tier <= 5).length;
+                  return { pos, elite, strong, startable, total: pool.length };
+                });
+                const maxStartable = Math.max(1, ...rows.map((r) => r.startable));
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                    {rows.map((r) => {
+                      const tip = (e) => showTip(e, [
+                        { kind: "take", tone: r.elite > 0 ? "good" : r.strong > 0 ? "neutral" : "bad", x: `${r.pos} — ${r.elite} elite, ${r.strong} strong left` },
+                        { t: "Startable (tiers 1–5)", x: `${r.startable} remain` },
+                        { t: "Total on board", x: `${r.total}` },
+                        ...(r.elite === 0 && r.strong === 0 ? [{ t: "Heads up", x: "The quality tier here is gone — expect a real drop-off in production from here." }] : []),
+                      ]);
+                      return (
+                        <div key={r.pos} style={{ cursor: "help" }} onMouseEnter={tip} onMouseLeave={hideTip}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 3 }}>
+                            <span style={{ fontWeight: 800, color: POS_COLOR[r.pos], fontSize: 13 }}>{r.pos}</span>
+                            <span className="num" style={{ fontSize: 11.5 }}>
+                              <b style={{ color: r.elite > 0 ? "var(--gold)" : "var(--mut)" }}>{r.elite}</b><span className="mut"> elite · </span>
+                              <b style={{ color: r.strong > 0 ? "var(--ink)" : "var(--mut)" }}>{r.strong}</b><span className="mut"> strong</span>
+                            </span>
+                          </div>
+                          <div style={{ display: "flex", height: 8, borderRadius: 4, overflow: "hidden", background: "var(--panel2)" }}>
+                            <div style={{ width: `${(r.elite / maxStartable) * 100}%`, background: "var(--gold)" }} />
+                            <div style={{ width: `${(r.strong / maxStartable) * 100}%`, background: POS_COLOR[r.pos], opacity: 0.7 }} />
+                            <div style={{ width: `${(Math.max(0, r.startable - r.elite - r.strong) / maxStartable) * 100}%`, background: POS_COLOR[r.pos], opacity: 0.28 }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <div style={{ display: "flex", gap: 12, marginTop: 2, fontSize: 10.5 }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 8, borderRadius: 2, background: "var(--gold)" }} /><span className="mut">Elite</span></span>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 8, borderRadius: 2, background: "var(--mut)", opacity: 0.7 }} /><span className="mut">Strong</span></span>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 8, borderRadius: 2, background: "var(--mut)", opacity: 0.3 }} /><span className="mut">Depth</span></span>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
         </div>
         </>
       )}
@@ -9438,6 +9494,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             })()}
           </div>
 
+          {/* Recap on the left; "how the draft flowed" + superlatives stacked on the right. */}
+          <div style={{ gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "minmax(0,1.1fr) minmax(0,1fr)", gap: 12, alignItems: "start" }} className="recap-row">
           {recap && recapHead && (
             <div className="panel" style={{ padding: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -9484,32 +9542,49 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             </div>
           )}
 
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
           {/* ===== Position run timeline: how the board flowed, round by round ===== */}
           {picks.length >= TEAMS && (
-            <div className="panel" style={{ padding: 14, gridColumn: "1 / -1" }}>
+            <div className="panel" style={{ padding: 14 }}>
               <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>How the draft flowed <span className="mut" style={{ fontSize: 12 }}>position mix by round</span></div>
-              <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Each bar is one round; segments show how many of each position came off the board. Spot the runs — when one color dominates a round, that position was flying.</div>
+              <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Each row is a round. Hover any colored block to see exactly who went and which team took them — your picks are gold.</div>
               {(() => {
                 const rounds = Math.ceil(picks.length / TEAMS);
                 const rows = [];
                 for (let r = 0; r < rounds; r++) {
-                  const slice = picks.slice(r * TEAMS, (r + 1) * TEAMS);
+                  const start = r * TEAMS;
+                  const slice = picks.slice(start, start + TEAMS);
                   const counts = { QB: 0, RB: 0, WR: 0, TE: 0 };
-                  slice.forEach((pk) => { const p = players[pk]; if (p && counts[p.pos] != null) counts[p.pos]++; });
-                  rows.push({ r: r + 1, counts, total: slice.length });
+                  const byPos = { QB: [], RB: [], WR: [], TE: [] };
+                  slice.forEach((pk, j) => { const p = players[pk]; if (p && counts[p.pos] != null) { counts[p.pos]++; byPos[p.pos].push({ p, overall: start + j }); } });
+                  rows.push({ r: r + 1, counts, byPos, total: slice.length });
                 }
+                const segTip = (pos, list) => (e) => showTip(e, [
+                  { kind: "take", tone: "neutral", x: `${pos} taken this round (${list.length})` },
+                  ...list.map(({ p, overall }) => {
+                    const t = teamAt(overall);
+                    const mine = t === userIdx;
+                    return { t: `${p.pos}${p.posRank}`, tc: mine ? "var(--gold)" : POS_COLOR[pos], x: `#${overall + 1} — ${p.name} → ${mine ? "YOUR TEAM" : (TEAM_NAMES[t] || `Team ${t + 1}`)}` };
+                  }),
+                ]);
                 return (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                    {rows.map((row) => (
-                      <div key={row.r} style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                        <span className="mut num" style={{ width: 46, fontSize: 11, textAlign: "right" }}>Rd {row.r}</span>
-                        <div style={{ flex: 1, display: "flex", height: 16, borderRadius: 5, overflow: "hidden", background: "var(--panel2)" }}>
-                          {["QB", "RB", "WR", "TE"].map((pos) => row.counts[pos] > 0 && (
-                            <div key={pos} title={`${row.counts[pos]} ${pos}`} style={{ width: `${(row.counts[pos] / row.total) * 100}%`, background: POS_COLOR[pos], display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9.5, fontWeight: 800, color: "#0b0f14" }}>{row.counts[pos]}</div>
-                          ))}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {rows.map((row) => {
+                      const mineThisRound = ["QB", "RB", "WR", "TE"].some((pos) => row.byPos[pos].some((x) => teamAt(x.overall) === userIdx));
+                      return (
+                        <div key={row.r} style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                          <span className="num" style={{ width: 42, fontSize: 11, textAlign: "right", color: mineThisRound ? "var(--gold)" : "var(--mut)", fontWeight: mineThisRound ? 700 : 400 }}>R{row.r}</span>
+                          <div style={{ flex: 1, display: "flex", height: 22, borderRadius: 5, overflow: "hidden", background: "var(--panel2)", border: "1px solid var(--line)" }}>
+                            {["QB", "RB", "WR", "TE"].map((pos) => row.counts[pos] > 0 && (
+                              <div key={pos} onMouseEnter={segTip(pos, row.byPos[pos])} onMouseLeave={hideTip}
+                                style={{ width: `${(row.counts[pos] / row.total) * 100}%`, background: POS_COLOR[pos], display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10.5, fontWeight: 800, color: "#0b0f14", cursor: "help", borderRight: "1px solid rgba(0,0,0,.25)" }}>
+                                {row.counts[pos]} {pos}
+                              </div>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                     <div style={{ display: "flex", gap: 12, marginTop: 4 }}>
                       {["QB", "RB", "WR", "TE"].map((pos) => (
                         <span key={pos} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11 }}>
@@ -9525,7 +9600,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
           {/* ===== Superlatives: fun awards drawn from the live engine numbers ===== */}
           {graded.length >= 4 && (
-            <div className="panel" style={{ padding: 14, gridColumn: "1 / -1" }}>
+            <div className="panel" style={{ padding: 14 }}>
               <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 10 }}>Draft superlatives <span className="mut" style={{ fontSize: 12 }}>awards so far</span></div>
               {(() => {
                 const byVal = graded.slice().sort((a, b) => b.val - a.val);
@@ -9568,6 +9643,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               })()}
             </div>
           )}
+          </div>
+          </div>
           </div>
       )}
 
