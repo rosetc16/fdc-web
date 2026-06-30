@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26w";
+const BUILD_TAG = "2026.06.26x";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -7052,6 +7052,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [leagueOpen, setLeagueOpen] = useState(false);      // Team analysis: League Overview dropdown open?
   const [recPick, setRecPick] = useState("current");        // Hub recommendation: "current" pick vs "mine" (your next)
   const [recView, setRecView] = useState("rec");            // Hub recommendation lens: "rec" (best for you) vs "expect" (engine's predicted market pick)
+  // First-time "how to use this" guide. Shows once per account on entering a draft room, unless the user
+  // ticked "don't show again" (stored per-account in localStorage so it survives without a backend call).
+  const introKey = "fdc-hide-intro-" + ((user && user.email) ? user.email.toLowerCase() : "guest");
+  const [showIntro, setShowIntro] = useState(() => { try { return window.localStorage ? window.localStorage.getItem(introKey) !== "1" : true; } catch (e) { return true; } });
+  const [introDont, setIntroDont] = useState(false);
+  const closeIntro = () => { try { if (introDont && window.localStorage) window.localStorage.setItem(introKey, "1"); } catch (e) {} setShowIntro(false); };
   const toggleQueue = (name) => setQueue((prev) => {
     const next = new Set(prev);
     if (next.has(name)) next.delete(name); else next.add(name);
@@ -8779,29 +8785,37 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   {TEAM_NAMES.map((n, i) => {
                     const counts = { QB: 0, RB: 0, WR: 0, TE: 0 };
                     const best = { QB: null, RB: null, WR: null, TE: null };
+                    const posPlayersRow = { QB: [], RB: [], WR: [], TE: [] };
                     const drafted = picks.filter((pk, o) => teamAt(o) === i).length;
-                    picks.forEach((pk, o) => { if (teamAt(o) === i) { const p = players[pk]; if (counts[p.pos] != null) { counts[p.pos]++; if (best[p.pos] == null || p.vbd > best[p.pos]) best[p.pos] = p.vbd; } } });
+                    picks.forEach((pk, o) => { if (teamAt(o) === i) { const p = players[pk]; if (counts[p.pos] != null) { counts[p.pos]++; if (best[p.pos] == null || p.vbd > best[p.pos]) best[p.pos] = p.vbd; posPlayersRow[p.pos].push(p); } } });
+                    POS.forEach((pos) => posPlayersRow[pos].sort((a, b) => (b.pts || 0) - (a.pts || 0)));
                     const remaining = ROUNDS - drafted;
                     return (
                       <tr key={i}>
                         <td style={{ padding: "2px 4px 2px 0", color: i === userIdx ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 110 }}>{i === userIdx ? (n || "Your team") : n}</td>
                         {POS.map((pos) => {
-                          let lvl, tip;
+                          let lvl, tipTxt;
                           if (needMode === "strength") {
                             // League-RELATIVE strength (same as the Teams tab): top third green, middle
                             // amber, bottom third red — so the hub and Teams tab always agree.
                             lvl = posRel[i] ? posRel[i][pos] : 1;
-                            tip = lvl === 0 ? `${pos}: top third of the league` : lvl === 1 ? `${pos}: middle of the league` : `${pos}: bottom third of the league`;
+                            tipTxt = lvl === 0 ? `top third of the league` : lvl === 1 ? `middle of the league` : `bottom third of the league`;
                           } else {
                             const req = REQ_F(cfg.sf)[pos] || 0;
                             const short = req - counts[pos];
-                            if (short <= 0) { lvl = 0; tip = "Starting slots filled"; }
-                            else if (short <= remaining - 1 && remaining > short + 1) { lvl = 1; tip = `${short} short — time remaining`; }
-                            else { lvl = 2; tip = `${short} short — running out of picks`; }
+                            if (short <= 0) { lvl = 0; tipTxt = "Starting slots filled"; }
+                            else if (short <= remaining - 1 && remaining > short + 1) { lvl = 1; tipTxt = `${short} short — time remaining`; }
+                            else { lvl = 2; tipTxt = `${short} short — running out of picks`; }
                           }
                           const bg = lvl === 0 ? "rgba(124,217,178,0.18)" : lvl === 1 ? "rgba(242,182,60,0.18)" : "rgba(242,101,92,0.22)";
                           const col = lvl === 0 ? "var(--green)" : lvl === 1 ? "var(--gold)" : "var(--red)";
-                          return <td key={pos} style={{ padding: 2 }}><div className="needcell num" title={tip} style={{ background: bg, color: col }}>{counts[pos]}</div></td>;
+                          // Rich hover: who this team has at this position (sorted best-first), with tier colors.
+                          const plist = posPlayersRow[pos] || [];
+                          const cellTip = (e) => showTip(e, [
+                            { kind: "take", tone: lvl === 0 ? "good" : lvl === 1 ? "neutral" : "bad", x: `${i === userIdx ? "Your team" : (n || `Team ${i + 1}`)} — ${pos} (${tipTxt})` },
+                            ...(plist.length ? plist.map((p) => ({ t: `${p.pos}${p.posRank}`, tc: rankTierColor(p.pos, p.posRank), x: `${p.name} — ${p.team || "FA"}${p.age ? `, age ${p.age}` : ""} · ${Math.round(p.pts)} pts` })) : [{ t: "—", x: "None drafted yet" }]),
+                          ]);
+                          return <td key={pos} style={{ padding: 2 }}><div className="needcell num" style={{ background: bg, color: col, cursor: "help" }} onMouseEnter={cellTip} onMouseLeave={hideTip}>{counts[pos]}</div></td>;
                         })}
                       </tr>
                     );
@@ -8879,9 +8893,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         const posColor = { QB: POS_COLOR.QB, RB: POS_COLOR.RB, WR: POS_COLOR.WR, TE: POS_COLOR.TE };
         const ta = teamAnalysis(selRoster, cfg, isMe ? myWindow : null, isMe ? advice : null, path, { allPicks: picks, players, teamAtFn: teamAt, userIdx: selTeam });
         const myProjView = myTeamView === "projected";
-        // Projected adds only apply to YOUR team (we don't project other teams' specific picks here).
-        const projectedAdds = (myProjView && isMe) ? path.filter((s) => s.user && s.p).map((s) => s.p) : [];
-        const shownRoster = projectedAdds.length ? [...selRoster, ...projectedAdds] : selRoster;
+        // Projected view = the SAME full-roster projection the hub uses (proj.rosters), which simulates
+        // every remaining round — not just the next pick or two. Previously this only appended the short
+        // near-term `path`, so the projected team was missing most of its future bench. We now take the
+        // full projected roster for the selected team (your team projects your future picks; other teams
+        // use their simulated picks too) so the projected view matches the hub's projected roster exactly.
+        const projRosterFull = (myProjView && proj && proj.rosters[selTeam]) ? proj.rosters[selTeam] : null;
+        const shownRoster = projRosterFull ? projRosterFull : selRoster;
+        // The set of players that are projected (not yet actually drafted) — used to mark them in the UI.
+        const draftedIdSet = new Set(selRoster.map((p) => p.id));
+        const projectedAdds = projRosterFull ? projRosterFull.filter((p) => !draftedIdSet.has(p.id)) : [];
         const taShown = teamAnalysis(shownRoster, cfg, isMe ? myWindow : null, isMe ? advice : null, path, { allPicks: picks, players, teamAtFn: teamAt, userIdx: selTeam });
         // Next-pick targets (only meaningful for your own team).
         const myNextOv = isMe ? (() => { for (let o = picks.length; o < totalOf(cfg); o++) if (teamAt(o) === userIdx) return o; return null; })() : null;
@@ -9025,8 +9046,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     {["QB", "RB", "WR", "TE"].map((pos) => {
                       const r = ta.posRankByPos[pos]; if (!r) return null;
                       const pctile = 1 - (r.rank - 1) / Math.max(1, r.of - 1);
-                      const tone = pctile >= 0.66 ? "var(--green)" : pctile >= 0.34 ? "var(--gold)" : "var(--red)";
-                      const word = pctile >= 0.66 ? "Strong" : pctile >= 0.34 ? "Middle" : "Weak";
+                      // Color tier comes from the SAME league-relative tercile the hub's "League needs"
+                      // strength table uses (quality × quantity), so the two always agree. The rank number
+                      // still comes from posRankByPos; only the green/amber/red tier is unified here.
+                      const lvl = posRel[userIdx] ? posRel[userIdx][pos] : 1;
+                      const tone = lvl === 0 ? "var(--green)" : lvl === 1 ? "var(--gold)" : "var(--red)";
+                      const word = lvl === 0 ? "Strong" : lvl === 1 ? "Middle" : "Weak";
                       const plist = (ta.byPos[pos] && ta.byPos[pos].list) || [];
                       const tip = plist.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `Your ${pos}s — ${ordinalOf(r.rank)} of ${r.of} in the league` }, ...plist.map((p) => ({ t: `${p.pos}${p.posRank}`, tc: rankTierColor(p.pos, p.posRank), x: `${p.name} — ${p.team || "FA"} · ${Math.round(p.pts)} pts` }))]) : undefined;
                       return (
@@ -9479,16 +9504,40 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               const curSet = new Set(teamCurrent.map((p) => p.id));
               const roster = done ? teamCurrent : proj.rosters[ti];
               const { slots, bench } = lineupSlots(roster, cfg.sf);
+              // Map a player id → where they were drafted (overall pick) for the hover.
+              const pickedAt = {}; picks.forEach((pk, o) => { pickedAt[pk] = o; });
+              // Hover: where drafted, value in the draft (ADP vs slot), and value to the team (VBD / pts).
+              const playerTip = (p) => {
+                if (!p) return undefined;
+                const drafted = curSet.has(p.id);
+                const o = pickedAt[p.id];
+                const items = [{ kind: "take", tone: "neutral", x: `${p.name} — ${p.pos}${p.posRank}${p.team ? ` · ${p.team}` : ""}${p.age ? ` · age ${p.age}` : ""}` }];
+                if (drafted && o != null) {
+                  const rd = Math.floor(o / TEAMS) + 1, pickInRd = (o % TEAMS) + 1;
+                  const v = pickValue(p, o, cfg);
+                  items.push({ t: "Drafted", x: `Round ${rd}, pick ${pickInRd} (#${o + 1} overall)` });
+                  items.push({ t: "ADP", x: `${p.adp != null ? p.adp.toFixed(1) : "—"} — ${v > 4 ? `steal, ${v.toFixed(0)} spots of value` : v < -4 ? `reach by ${Math.abs(v).toFixed(0)} spots` : "right around value"}`, tc: v > 4 ? "var(--green)" : v < -4 ? "var(--red)" : "var(--mut)" });
+                } else {
+                  items.push({ t: "Projected", x: `Engine expects him to be available for this team`, tc: "var(--gold)" });
+                  items.push({ t: "ADP", x: `${p.adp != null ? p.adp.toFixed(1) : "—"}` });
+                }
+                items.push({ t: "Value to team", x: `${p.pts} proj pts · ${p.vbd > 0 ? "+" : ""}${p.vbd.toFixed(0)} VBD (${p.vbd > 25 ? "core starter" : p.vbd > 8 ? "solid starter" : p.vbd > -8 ? "depth/flex" : "bench"})`, tc: rankTierColor(p.pos, p.posRank) });
+                return (e) => showTip(e, items);
+              };
               return (
                 <>
-                  <div className="mut" style={{ fontSize: 12.5, marginBottom: 8 }}>Optimal lineup <b style={{ color: "var(--ink)" }}>{lineupPts(roster, cfg.sf)} pts</b> • projected <b style={{ color: "var(--gold)" }}>{ordinal(proj.rank[ti])}</b></div>
+                  <div className="mut" style={{ fontSize: 12.5, marginBottom: 8 }}>Optimal lineup <b style={{ color: "var(--ink)" }}>{lineupPts(roster, cfg.sf)} pts</b> • projected <b style={{ color: "var(--gold)" }}>{ordinal(proj.rank[ti])}</b> <span style={{ fontSize: 11 }}>· hover a player for draft & team value</span></div>
                   {slots.map((s, i) => (
                     <div key={i} style={{ fontSize: 12.5, padding: "2.5px 0", display: "flex", justifyContent: "space-between" }}>
-                      <span><span className="slotlbl">{s.slot}</span>{s.p ? <span style={{ opacity: !done && !curSet.has(s.p.id) ? 0.55 : 1, color: !done && !curSet.has(s.p.id) ? "var(--gold)" : "var(--ink)" }}><Dot pos={s.p.pos} />{s.p.name}{!done && !curSet.has(s.p.id) && " (proj)"}</span> : <span className="mut">—</span>}</span>
+                      <span><span className="slotlbl">{s.slot}</span>{s.p ? <span style={{ cursor: "help", opacity: !done && !curSet.has(s.p.id) ? 0.62 : 1, color: !done && !curSet.has(s.p.id) ? "var(--gold)" : "var(--ink)" }} onMouseEnter={playerTip(s.p)} onMouseLeave={hideTip}><Dot pos={s.p.pos} />{s.p.name}{!done && !curSet.has(s.p.id) && " (proj)"}</span> : <span className="mut">—</span>}</span>
                       {s.p && <span className="mut num">{s.p.pts}</span>}
                     </div>
                   ))}
-                  {bench.length > 0 && <div className="mut" style={{ fontSize: 11.5, marginTop: 6 }}>Bench: {bench.map((b) => b.name).join(", ")}</div>}
+                  {bench.length > 0 && (
+                    <div className="mut" style={{ fontSize: 11.5, marginTop: 6 }}>Bench: {bench.map((b, k) => (
+                      <span key={b.id} style={{ cursor: "help", color: !done && !curSet.has(b.id) ? "var(--gold)" : "var(--mut)" }} onMouseEnter={playerTip(b)} onMouseLeave={hideTip}>{b.name}{!done && !curSet.has(b.id) ? " (proj)" : ""}{k < bench.length - 1 ? ", " : ""}</span>
+                    ))}</div>
+                  )}
                 </>
               );
             })()}
@@ -9597,10 +9646,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               })()}
             </div>
           )}
+          </div>
+          </div>
 
-          {/* ===== Superlatives: fun awards drawn from the live engine numbers ===== */}
+          {/* ===== Superlatives: fun awards drawn from the live engine numbers — full width bottom row ===== */}
           {graded.length >= 4 && (
-            <div className="panel" style={{ padding: 14 }}>
+            <div className="panel" style={{ padding: 14, gridColumn: "1 / -1" }}>
               <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 10 }}>Draft superlatives <span className="mut" style={{ fontSize: 12 }}>awards so far</span></div>
               {(() => {
                 const byVal = graded.slice().sort((a, b) => b.val - a.val);
@@ -9622,7 +9673,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   if (tot >= 4) { const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]; const share = top[1] / tot; if (!zealot || share > zealot.share) zealot = { i, pos: top[0], share, n: top[1] }; }
                 }
                 const award = (icon, label, who, detail, color) => (
-                  <div style={{ flex: "1 1 200px", display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", borderRadius: 9, background: "var(--panel2)", border: "1px solid var(--line)" }}>
+                  <div style={{ flex: "1 1 200px", minWidth: 190, display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", borderRadius: 9, background: "var(--panel2)", border: "1px solid var(--line)" }}>
                     <i className={`ti ${icon}`} style={{ fontSize: 20, color, marginTop: 1 }} aria-hidden="true" />
                     <div style={{ minWidth: 0 }}>
                       <div className="disp" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)" }}>{label}</div>
@@ -9631,20 +9682,53 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     </div>
                   </div>
                 );
+                // ---- additional awards computed across all teams ----
+                const nm = (i) => i === userIdx ? "Your team" : (TEAM_NAMES[i] || `Team ${i + 1}`);
+                // total draft value (sum of pickValue) per team
+                const teamVal = Array.from({ length: TEAMS }, (_, i) => ({ i, v: graded.filter((g) => g.t === i).reduce((s, g) => s + g.val, 0) }));
+                const valKing = teamVal.slice().sort((a, b) => b.v - a.v)[0];
+                // best projected starting lineup (uses proj rosters)
+                let lineupKing = null;
+                if (proj && proj.pts) { const order = proj.pts.map((v, i) => ({ i, v })).sort((a, b) => b.v - a.v); lineupKing = order[0]; }
+                // highest-ceiling single pick (by ceil)
+                let ceilPick = null;
+                picks.forEach((pk, o) => { const p = players[pk]; if (p && p.ceil != null && (!ceilPick || p.ceil > ceilPick.p.ceil)) ceilPick = { p, o, t: teamAt(o) }; });
+                // most rookies drafted
+                const rookieCounts = Array.from({ length: TEAMS }, (_, i) => ({ i, n: picks.filter((pk, o) => teamAt(o) === i && players[pk] && players[pk].rookie).length }));
+                const rookieKing = rookieCounts.slice().sort((a, b) => b.n - a.n)[0];
+                // most balanced roster (lowest max single-position share, min 5 picks)
+                let balanced = null;
+                for (let i = 0; i < TEAMS; i++) {
+                  const counts = { QB: 0, RB: 0, WR: 0, TE: 0 }; let tot = 0;
+                  picks.forEach((pk, o) => { if (teamAt(o) === i) { const p = players[pk]; if (p && counts[p.pos] != null) { counts[p.pos]++; tot++; } } });
+                  if (tot >= 5) { const share = Math.max(...Object.values(counts)) / tot; if (!balanced || share < balanced.share) balanced = { i, share }; }
+                }
+                // best single WR / RB / QB corps (by summed top-2 vbd) — "position powerhouse"
+                let powerhouse = null;
+                for (let i = 0; i < TEAMS; i++) {
+                  POS.forEach((pos) => {
+                    const arr = picks.map((pk, o) => teamAt(o) === i ? players[pk] : null).filter((p) => p && p.pos === pos).sort((a, b) => b.vbd - a.vbd);
+                    if (arr.length >= 2) { const sc = arr[0].vbd + arr[1].vbd; if (!powerhouse || sc > powerhouse.sc) powerhouse = { i, pos, sc, names: `${arr[0].name.split(" ").slice(-1)} & ${arr[1].name.split(" ").slice(-1)}` }; }
+                  });
+                }
                 return (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
                     {steal && steal.val > 0 && award("ti-diamond", "Best value", steal.p.name, `${steal.p.pos}${steal.p.posRank} to ${steal.t === userIdx ? "you" : TEAM_NAMES[steal.t]} — ${steal.val.toFixed(0)} spots past ADP`, "var(--green)")}
                     {reach && reach.val < 0 && award("ti-flame", "Biggest reach", reach.p.name, `${reach.p.pos}${reach.p.posRank} by ${reach.t === userIdx ? "you" : TEAM_NAMES[reach.t]} — ${Math.abs(reach.val).toFixed(0)} spots early`, "var(--red)")}
-                    {youngest && award("ti-seedling", "Youth movement", youngest.i === userIdx ? "Your team" : TEAM_NAMES[youngest.i], `Youngest core — ${youngest.avg.toFixed(1)} avg age`, "var(--green)")}
-                    {oldest && award("ti-trophy", "Win-now mode", oldest.i === userIdx ? "Your team" : TEAM_NAMES[oldest.i], `Oldest core — ${oldest.avg.toFixed(1)} avg age`, "var(--gold)")}
-                    {zealot && zealot.share >= 0.45 && award("ti-target", "One-track mind", zealot.i === userIdx ? "Your team" : TEAM_NAMES[zealot.i], `${Math.round(zealot.share * 100)}% ${zealot.pos} — ${zealot.n} of them`, "var(--blue)")}
+                    {valKing && valKing.v > 0 && award("ti-coins", "Value champ", nm(valKing.i), `Most total draft value — +${valKing.v.toFixed(0)} spots across the board`, "var(--green)")}
+                    {lineupKing && award("ti-crown", "Best on paper", nm(lineupKing.i), `Top projected starting lineup — ${Math.round(lineupKing.v)} pts`, "var(--gold)")}
+                    {powerhouse && award("ti-bolt", `${powerhouse.pos} powerhouse`, nm(powerhouse.i), `Loaded at ${powerhouse.pos} — ${powerhouse.names}`, POS_COLOR[powerhouse.pos])}
+                    {ceilPick && award("ti-rocket", "Highest ceiling", ceilPick.p.name, `${ceilPick.p.pos}${ceilPick.p.posRank} to ${nm(ceilPick.t)} — biggest boom potential`, "var(--blue)")}
+                    {youngest && award("ti-seedling", "Youth movement", nm(youngest.i), `Youngest core — ${youngest.avg.toFixed(1)} avg age`, "var(--green)")}
+                    {oldest && award("ti-trophy", "Win-now mode", nm(oldest.i), `Oldest core — ${oldest.avg.toFixed(1)} avg age`, "var(--gold)")}
+                    {rookieKing && rookieKing.n >= 2 && award("ti-baby-carriage", "Rookie hauler", nm(rookieKing.i), `Most rookies — ${rookieKing.n} first-years`, "var(--green)")}
+                    {balanced && balanced.share <= 0.4 && award("ti-scale", "Best balance", nm(balanced.i), `Most even roster build across positions`, "var(--ink)")}
+                    {zealot && zealot.share >= 0.45 && award("ti-target", "One-track mind", nm(zealot.i), `${Math.round(zealot.share * 100)}% ${zealot.pos} — ${zealot.n} of them`, "var(--blue)")}
                   </div>
                 );
               })()}
             </div>
           )}
-          </div>
-          </div>
           </div>
       )}
 
@@ -9771,6 +9855,50 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         </div>
         );
       })()}
+
+      {showIntro && (
+        <div className="modalbg" onClick={closeIntro}>
+          <div className="panel" style={{ maxWidth: 560, width: "100%", padding: 24, borderColor: "var(--gold)", maxHeight: "88vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+              <i className="ti ti-compass" style={{ fontSize: 24, color: "var(--gold)" }} aria-hidden="true" />
+              <div className="disp" style={{ fontSize: 22, fontWeight: 800 }}>Welcome to your draft room</div>
+            </div>
+            <div className="mut" style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 16 }}>Here's the quick tour — everything you need to draft with confidence. It takes 30 seconds.</div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {[
+                ["ti-list-numbers", "The board (center)", "Every available player, ranked for YOUR league. Green ADP means he's a value at the current pick. Click a player to draft him; hover any row for a full scouting take."],
+                ["ti-target-arrow", "The recommendation (right)", "Your pick, decided. Toggle “Recommended” (best value for your roster) vs “Engine expects” (who the market will actually take). Hover the ⓘ to learn the difference."],
+                ["ti-layout-grid", "League needs · Your team · Scarcity (below the board)", "See where every team is strong or thin, your own roster filling in, and which positions are drying up. Hover any number to see the exact players."],
+                ["ti-user-search", "Team analysis tab", "Deep-dive any team. Flip “Current” vs “Projected” to see your roster now or how it finishes if you follow the engine. “League overview” compares all teams at once."],
+                ["ti-trophy", "Summary tab", "Grades, steals & reaches, how the draft flowed round-by-round, and fun superlatives — updates live as you draft."],
+              ].map(([icon, h, b]) => (
+                <div key={h} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                  <i className={`ti ${icon}`} style={{ fontSize: 20, color: "var(--gold)", marginTop: 2, flexShrink: 0 }} aria-hidden="true" />
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 13.5 }}>{h}</div>
+                    <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.45 }}>{b}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {isConnectedLive && (
+              <div style={{ marginTop: 14, padding: "10px 12px", borderRadius: 8, background: "rgba(95,208,168,.10)", border: "1px solid var(--green)", fontSize: 12.5, lineHeight: 1.45 }}>
+                <b style={{ color: "var(--green)" }}><i className="ti ti-bolt" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />You're connected live to Sleeper.</b> Picks sync automatically as they happen in your real draft — there's nothing to start, pause, or save. Just watch the recommendation and draft your best player.
+              </div>
+            )}
+
+            <label style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 18, cursor: "pointer", fontSize: 12.5, color: "var(--mut)" }}>
+              <input type="checkbox" checked={introDont} onChange={(e) => setIntroDont(e.target.checked)} style={{ width: 16, height: 16, accentColor: "var(--gold)" }} />
+              Don't show this again on this account
+            </label>
+            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+              <button className="btn btn-gold" style={{ flex: 1 }} onClick={closeIntro}>Got it — let's draft</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {endConfirm && (
         <div className="modalbg" onClick={() => setEndConfirm(false)}>
