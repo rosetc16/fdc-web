@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26t";
+const BUILD_TAG = "2026.06.26u";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3088,7 +3088,7 @@ export default function App() {
       {route === "rankings" && user && <RankingsHub user={user} leagues={leagues} onUpdate={updateUser} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} onNewLeague={() => { setSetupReturn("rankings"); setRoute("setup"); }} />}
       {route === "setup" && <Setup onCreate={createLeague} onBack={() => { const r = setupReturn || (user?.paid ? "home" : "library"); setSetupReturn(null); setRoute(r); }} backLabel={setupReturn === "rankings" ? "Rankings" : user?.paid ? "Home" : "Library"} />}
       {route === "draft" && active && (
-        <DraftRoom key={active.id} league={active} user={user} isMock={!!(mockLeague && active.id === mockLeague.id)} isDemo={!!active.demo} initialTab={draftTab}
+        <DraftRoom key={active.id} league={active} user={user} isMock={!!(mockLeague && active.id === mockLeague.id)} isDemo={!!active.demo} initialTab={draftTab} dataVersion={dataVersion}
           onSave={(picks, preds) => {
             if (active.id === "demo") setDemoLeague((d) => ({ ...d, picks, preds }));
             else if (mockLeague && active.id === mockLeague.id) { setMockLeague((m) => ({ ...m, picks, preds })); saveMock(picks, preds); }
@@ -6908,7 +6908,7 @@ function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
 }
 
 
-function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQueue, onExit, onBuy, onSettings, onEditRanks, onUseRankSet, onColPrefs, onSaveInRoomRanks }) {
+function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQueue, onExit, onBuy, onSettings, onEditRanks, onUseRankSet, onColPrefs, onSaveInRoomRanks, dataVersion = 0 }) {
   const cfg = league.cfg;
   // Live per-pick ownership from a connected platform (Sleeper draft_slot). Declared here so it can
   // be applied to the engine's team-assignment BEFORE any roster/sim computation in this render.
@@ -7074,7 +7074,33 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const connected = !!cfg.connect;
   const [clock, setClock] = useState(90);
 
-  const players = useMemo(() => buildPlayers(cfg), [cfg, adpVersion]);
+  // Pool rebuilds when cfg changes, ADP version changes, OR live data finishes loading (dataVersion).
+  // The live-data dependency matters because the app now renders instantly off built-in fallback data
+  // and the real player pack streams in a beat later; without this, a draft room opened in that first
+  // moment would stay stuck on the sparse fallback pool (the "only 5 QBs left" bug). For connected
+  // Sleeper drafts the live sync re-maps picks by NAME every poll, so a rebuilt pool stays correct; for
+  // manual drafts we remap any existing picks by name in the effect just below.
+  const players = useMemo(() => buildPlayers(cfg), [cfg, adpVersion, dataVersion]);
+  // When the pool identity changes (e.g. fallback → live data), re-map any locally-stored picks/preds by
+  // NAME so their ids still point to the right players in the new pool. Connected drafts also self-heal
+  // via the sync, but this keeps manual drafts correct across the one-time fallback→live swap.
+  const lastPoolRef = useRef(null);
+  useEffect(() => {
+    if (!players.length) return;
+    const sig = players.length + ":" + (players[0] && players[0].name) + ":" + (players[10] && players[10].name);
+    const byName = {}; players.forEach((p) => { byName[p.id] = p.name; });
+    if (lastPoolRef.current == null) { lastPoolRef.current = { sig, byName }; return; } // first pool: just record it
+    if (lastPoolRef.current.sig === sig) return; // unchanged
+    // Pool changed (e.g. fallback → live data). Remap picks/preds from the PREVIOUS pool's names → new ids.
+    const prevNames = lastPoolRef.current.byName;
+    const newIdByName = {}; players.forEach((p) => { newIdByName[normName(p.name)] = p.id; });
+    if (prevNames) {
+      const remapId = (id) => { if (id == null) return id; const nm = prevNames[id]; if (nm == null) return id; const nid = newIdByName[normName(nm)]; return nid != null ? nid : id; };
+      setPicks((pp) => pp.map(remapId));
+      setPreds((pp) => pp.map((id) => id == null ? null : remapId(id)));
+    }
+    lastPoolRef.current = { sig, byName };
+  }, [players]);
   // Resolve keepers pulled from a connected league (Sleeper) — name+slot → engine id+team — and merge
   // them as no-cost roster adds, so each keeper shows on the right team and counts toward strength.
   useMemo(() => {
@@ -7836,7 +7862,25 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const _er = myRanks.map[p.id];
     const edge = (_er && _er.exact) ? Math.round(p.adp - _er.rank) : null;
     switch (key) {
-      case "adp": return p.adp.toFixed(1);
+      case "adp": {
+        // Value highlight: when a player's ADP is EARLIER than the current pick, he's lasted past where
+        // the market usually takes him — i.e. he's available at a discount. Shade green by how big the
+        // gap is: the further his ADP is ahead of the current pick, the better the value (darker green).
+        const curPick = picks.length + 1;
+        const gap = curPick - p.adp; // positive = he's fallen past his ADP (value)
+        if (!gone && gap > 0 && p.adp != null) {
+          // Map the gap to a shade. Scale by round-ish size so a few picks of value is light, a full
+          // round+ is deep green. We tint both text and a soft background pill.
+          const t = Math.min(1, gap / 24); // 24+ picks of value = max shade
+          // interpolate from a light mint to a deep green
+          const light = [149, 213, 178], deep = [22, 120, 80];
+          const mix = (a, b) => Math.round(a + (b - a) * t);
+          const r = mix(light[0], deep[0]), g = mix(light[1], deep[1]), b = mix(light[2], deep[2]);
+          const txt = t > 0.45 ? "#eafff5" : `rgb(${mix(120, 230)},${mix(210, 255)},${mix(170, 235)})`;
+          return <span title={`Value: ADP ${p.adp.toFixed(1)} is ${gap.toFixed(0)} pick${gap >= 2 ? "s" : ""} ahead of the current pick (#${curPick})`} style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, fontWeight: 700, background: `rgba(${r},${g},${b},0.20)`, color: txt, border: `1px solid rgba(${r},${g},${b},0.5)` }}>{p.adp.toFixed(1)}</span>;
+        }
+        return p.adp != null ? p.adp.toFixed(1) : "—";
+      }
       case "consensus": return <span className="mut">{p.consensus.toFixed(1)}</span>;
       case "edge": return edge == null ? <span className="mut" title="Set your personal rankings to see your edge vs the market">—</span> : <span style={{ color: edge > 3 ? "var(--green)" : edge < -3 ? "var(--red)" : "var(--mut)" }}>{edge > 0 ? `+${edge}` : edge}</span>;
       case "proj": return p.pts;
@@ -8654,7 +8698,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             )}
 
             {advice?.run && <div className="alert"><b>{advice.run.pos} run underway</b> — {advice.run.count} of the last 8 picks. Waiting costs at {advice.run.pos} are climbing.</div>}
+          </div>
+        </div>
 
+        <div className="needteam-row" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, padding: "0 14px 14px", alignItems: "start" }}>
             <div className="panel" style={{ padding: 12 }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
                 <select className="gs" style={{ flex: 1 }} value={teamView} onChange={(e) => setTeamView(+e.target.value)}>
@@ -8752,8 +8799,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 </tbody>
               </table>
               <div className="mut" style={{ fontSize: 10.5, marginTop: 6 }}>{needMode === "strength" ? "Color = quality × quantity. A full but weak position still shows amber/red." : "Color = whether starting slots are filled, regardless of quality."}</div>
-            </div>
-          </div>
+        </div>
         </div>
         </>
       )}
@@ -9427,7 +9473,92 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <div className="mut" style={{ fontSize: 11.5, marginTop: 4 }}>The headline stats above always reflect the live draft; the commentary is template-generated in this demo. The full version writes the prose with AI over the same engine data — plus what-if rewind and shareable grade cards.</div>
             </div>
           )}
-        </div>
+
+          {/* ===== Position run timeline: how the board flowed, round by round ===== */}
+          {picks.length >= TEAMS && (
+            <div className="panel" style={{ padding: 14, gridColumn: "1 / -1" }}>
+              <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>How the draft flowed <span className="mut" style={{ fontSize: 12 }}>position mix by round</span></div>
+              <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Each bar is one round; segments show how many of each position came off the board. Spot the runs — when one color dominates a round, that position was flying.</div>
+              {(() => {
+                const rounds = Math.ceil(picks.length / TEAMS);
+                const rows = [];
+                for (let r = 0; r < rounds; r++) {
+                  const slice = picks.slice(r * TEAMS, (r + 1) * TEAMS);
+                  const counts = { QB: 0, RB: 0, WR: 0, TE: 0 };
+                  slice.forEach((pk) => { const p = players[pk]; if (p && counts[p.pos] != null) counts[p.pos]++; });
+                  rows.push({ r: r + 1, counts, total: slice.length });
+                }
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    {rows.map((row) => (
+                      <div key={row.r} style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                        <span className="mut num" style={{ width: 46, fontSize: 11, textAlign: "right" }}>Rd {row.r}</span>
+                        <div style={{ flex: 1, display: "flex", height: 16, borderRadius: 5, overflow: "hidden", background: "var(--panel2)" }}>
+                          {["QB", "RB", "WR", "TE"].map((pos) => row.counts[pos] > 0 && (
+                            <div key={pos} title={`${row.counts[pos]} ${pos}`} style={{ width: `${(row.counts[pos] / row.total) * 100}%`, background: POS_COLOR[pos], display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9.5, fontWeight: 800, color: "#0b0f14" }}>{row.counts[pos]}</div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    <div style={{ display: "flex", gap: 12, marginTop: 4 }}>
+                      {["QB", "RB", "WR", "TE"].map((pos) => (
+                        <span key={pos} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11 }}>
+                          <span style={{ width: 10, height: 10, borderRadius: 2, background: POS_COLOR[pos] }} /> <span className="mut">{pos}</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
+          {/* ===== Superlatives: fun awards drawn from the live engine numbers ===== */}
+          {graded.length >= 4 && (
+            <div className="panel" style={{ padding: 14, gridColumn: "1 / -1" }}>
+              <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 10 }}>Draft superlatives <span className="mut" style={{ fontSize: 12 }}>awards so far</span></div>
+              {(() => {
+                const byVal = graded.slice().sort((a, b) => b.val - a.val);
+                const steal = byVal[0];
+                const reach = byVal[byVal.length - 1];
+                // youngest & oldest team by avg age of drafted skill players
+                const ages = Array.from({ length: TEAMS }, (_, i) => {
+                  const r = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => x.p && teamAt(x.o) === i && x.p.age);
+                  const avg = r.length ? r.reduce((s, x) => s + x.p.age, 0) / r.length : null;
+                  return { i, avg, n: r.length };
+                }).filter((x) => x.avg != null && x.n >= 2);
+                const youngest = ages.slice().sort((a, b) => a.avg - b.avg)[0];
+                const oldest = ages.slice().sort((a, b) => b.avg - a.avg)[0];
+                // most one-sided roster (highest share at a single position)
+                let zealot = null;
+                for (let i = 0; i < TEAMS; i++) {
+                  const counts = { QB: 0, RB: 0, WR: 0, TE: 0 }; let tot = 0;
+                  picks.forEach((pk, o) => { if (teamAt(o) === i) { const p = players[pk]; if (p && counts[p.pos] != null) { counts[p.pos]++; tot++; } } });
+                  if (tot >= 4) { const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]; const share = top[1] / tot; if (!zealot || share > zealot.share) zealot = { i, pos: top[0], share, n: top[1] }; }
+                }
+                const award = (icon, label, who, detail, color) => (
+                  <div style={{ flex: "1 1 200px", display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", borderRadius: 9, background: "var(--panel2)", border: "1px solid var(--line)" }}>
+                    <i className={`ti ${icon}`} style={{ fontSize: 20, color, marginTop: 1 }} aria-hidden="true" />
+                    <div style={{ minWidth: 0 }}>
+                      <div className="disp" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)" }}>{label}</div>
+                      <div style={{ fontWeight: 700, fontSize: 13.5 }}>{who}</div>
+                      <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.4 }}>{detail}</div>
+                    </div>
+                  </div>
+                );
+                return (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+                    {steal && steal.val > 0 && award("ti-diamond", "Best value", steal.p.name, `${steal.p.pos}${steal.p.posRank} to ${steal.t === userIdx ? "you" : TEAM_NAMES[steal.t]} — ${steal.val.toFixed(0)} spots past ADP`, "var(--green)")}
+                    {reach && reach.val < 0 && award("ti-flame", "Biggest reach", reach.p.name, `${reach.p.pos}${reach.p.posRank} by ${reach.t === userIdx ? "you" : TEAM_NAMES[reach.t]} — ${Math.abs(reach.val).toFixed(0)} spots early`, "var(--red)")}
+                    {youngest && award("ti-seedling", "Youth movement", youngest.i === userIdx ? "Your team" : TEAM_NAMES[youngest.i], `Youngest core — ${youngest.avg.toFixed(1)} avg age`, "var(--green)")}
+                    {oldest && award("ti-trophy", "Win-now mode", oldest.i === userIdx ? "Your team" : TEAM_NAMES[oldest.i], `Oldest core — ${oldest.avg.toFixed(1)} avg age`, "var(--gold)")}
+                    {zealot && zealot.share >= 0.45 && award("ti-target", "One-track mind", zealot.i === userIdx ? "Your team" : TEAM_NAMES[zealot.i], `${Math.round(zealot.share * 100)}% ${zealot.pos} — ${zealot.n} of them`, "var(--blue)")}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+          </div>
       )}
 
       {tab === "trade" && (
