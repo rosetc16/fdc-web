@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26l";
+const BUILD_TAG = "2026.06.26m";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -8543,64 +8543,36 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 const posClr = { QB: POS_COLOR.QB, RB: POS_COLOR.RB, WR: POS_COLOR.WR, TE: POS_COLOR.TE };
                 return (
                   <div style={{ padding: "4px 16px 16px", display: "flex", flexDirection: "column", gap: 18 }}>
-                    {/* Board: positions drafted by each team — color-coded when a starting requirement is filled */}
+                    {/* Combined board: count per position, colored by league strength tier. One row per team. */}
                     <div>
-                      <div className="disp" style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 8 }}>Positions drafted by team</div>
-                      <div className="mut" style={{ fontSize: 11, marginBottom: 8 }}>Count per position. A <span style={{ color: "var(--green)", fontWeight: 700 }}>green</span> cell means that team has filled its starting requirement there; <span style={{ color: "var(--mut)", fontWeight: 700 }}>grey</span> means still short.</div>
+                      <div className="disp" style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 6 }}>Positions drafted & strength</div>
+                      <div className="mut" style={{ fontSize: 11, marginBottom: 8 }}>Number = players rostered at that position. Color = league strength (quality + quantity): <span style={{ color: "var(--green)", fontWeight: 700 }}>strong</span> / <span style={{ color: "var(--gold)", fontWeight: 700 }}>middle</span> / <span style={{ color: "var(--red)", fontWeight: 700 }}>weak</span>. A <b>✓</b> means the starting slots are filled. Hover a cell for the players.</div>
                       <div style={{ overflowX: "auto" }}>
-                        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+                        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12, minWidth: 380 }}>
                           <thead><tr>
-                            <th style={{ textAlign: "left", padding: "5px 8px", color: "var(--mut)", fontWeight: 600, position: "sticky", left: 0, background: "var(--panel)" }}>Team</th>
-                            {lo.positions.map((pos) => <th key={pos} style={{ padding: "5px 10px", color: posClr[pos], fontWeight: 800 }}>{pos}</th>)}
-                            <th style={{ padding: "5px 8px", color: "var(--mut)", fontWeight: 600, textAlign: "right" }}>Proj</th>
+                            <th style={{ textAlign: "left", padding: "6px 8px", color: "var(--mut)", fontWeight: 600, position: "sticky", left: 0, background: "var(--panel)" }}>Team</th>
+                            {lo.positions.map((pos) => <th key={pos} style={{ padding: "6px 4px", color: posClr[pos], fontWeight: 800, textAlign: "center", width: 56 }}>{pos}</th>)}
+                            <th style={{ padding: "6px 8px", color: "var(--mut)", fontWeight: 600, textAlign: "right", width: 48 }}>Proj</th>
                           </tr></thead>
                           <tbody>
-                            {lo.teams.map((t) => {
+                            {lo.teams.map((t, ri) => {
                               const isYou = t.idx === userIdx;
+                              const rowBg = isYou ? "rgba(242,182,60,.10)" : ri % 2 ? "rgba(255,255,255,.022)" : "transparent";
                               return (
-                                <tr key={t.idx} style={{ background: isYou ? "rgba(242,182,60,.08)" : "transparent", borderTop: "1px solid var(--line)" }}>
-                                  <td style={{ padding: "5px 8px", fontWeight: isYou ? 700 : 500, color: isYou ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", position: "sticky", left: 0, background: isYou ? "#1c2230" : "var(--panel)" }}>{isYou ? "★ " : ""}{(TEAM_NAMES[t.idx] || `Team ${t.idx + 1}`).split(" ").slice(0, 2).join(" ")}</td>
+                                <tr key={t.idx} style={{ background: rowBg, borderTop: "1px solid var(--line)" }}>
+                                  <td style={{ padding: "5px 8px", fontWeight: isYou ? 700 : 500, color: isYou ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", position: "sticky", left: 0, background: isYou ? "#231f10" : (ri % 2 ? "#141a22" : "var(--panel)") }}>{isYou ? "★ " : ""}{(TEAM_NAMES[t.idx] || `Team ${t.idx + 1}`).split(" ").slice(0, 2).join(" ")}</td>
                                   {lo.positions.map((pos) => {
                                     const b = t.byPos[pos];
+                                    const tr = lo.posTiers[t.idx][pos];
+                                    const tc = tierColor(tr.tier);
+                                    const tip = b.list.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `${(TEAM_NAMES[t.idx] || `Team ${t.idx + 1}`)} — ${pos} (${tr.tier === 0 ? "strong" : tr.tier === 1 ? "middle" : "weak"}, ${ordinalOf(tr.rank)} of ${lo.n})` }, ...b.list.map((p) => ({ t: `${p.pos}${p.posRank}`, x: `${p.name} — ${p.team || "FA"} · ${Math.round(p.pts)} pts` }))]) : undefined;
                                     return (
-                                      <td key={pos} style={{ padding: "4px 10px", textAlign: "center" }}>
-                                        <span style={{ display: "inline-block", minWidth: 22, padding: "2px 6px", borderRadius: 5, fontWeight: 700, fontSize: 11.5, background: b.count === 0 ? "transparent" : b.filled ? "rgba(95,208,168,.16)" : "var(--panel2)", color: b.count === 0 ? "var(--mut)" : b.filled ? "var(--green)" : "var(--ink)", border: b.filled ? "1px solid rgba(95,208,168,.4)" : "1px solid var(--line)" }}>{b.count}</span>
+                                      <td key={pos} style={{ padding: "4px 4px", textAlign: "center", cursor: tip ? "help" : "default" }} onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
+                                        <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 2, minWidth: 34, padding: "3px 6px", borderRadius: 6, fontWeight: 800, fontSize: 12, background: b.count === 0 ? "transparent" : `color-mix(in srgb, ${tc} 18%, transparent)`, color: b.count === 0 ? "var(--mut)" : tc, border: b.count === 0 ? "1px solid var(--line)" : `1px solid color-mix(in srgb, ${tc} 45%, transparent)` }}>{b.count}{b.filled && b.count > 0 ? <span style={{ fontSize: 9 }}>✓</span> : ""}</span>
                                       </td>
                                     );
                                   })}
                                   <td style={{ padding: "5px 8px", textAlign: "right", color: "var(--mut)" }} className="num">{Math.round(t.startPts)}</td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-
-                    {/* Position strength grid: quality+quantity tier per team per position */}
-                    <div>
-                      <div className="disp" style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 8 }}>Position strength (quality + quantity)</div>
-                      <div className="mut" style={{ fontSize: 11, marginBottom: 8 }}><span style={{ color: "var(--green)", fontWeight: 700 }}>Strong</span> = top third of the league at that spot, <span style={{ color: "var(--gold)", fontWeight: 700 }}>Middle</span> = middle third, <span style={{ color: "var(--red)", fontWeight: 700 }}>Weak</span> = bottom third.</div>
-                      <div style={{ overflowX: "auto" }}>
-                        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
-                          <thead><tr>
-                            <th style={{ textAlign: "left", padding: "5px 8px", color: "var(--mut)", fontWeight: 600, position: "sticky", left: 0, background: "var(--panel)" }}>Team</th>
-                            {lo.positions.map((pos) => <th key={pos} style={{ padding: "5px 10px", color: posClr[pos], fontWeight: 800 }}>{pos}</th>)}
-                          </tr></thead>
-                          <tbody>
-                            {lo.teams.map((t) => {
-                              const isYou = t.idx === userIdx;
-                              return (
-                                <tr key={t.idx} style={{ background: isYou ? "rgba(242,182,60,.08)" : "transparent", borderTop: "1px solid var(--line)" }}>
-                                  <td style={{ padding: "5px 8px", fontWeight: isYou ? 700 : 500, color: isYou ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", position: "sticky", left: 0, background: isYou ? "#1c2230" : "var(--panel)" }}>{isYou ? "★ " : ""}{(TEAM_NAMES[t.idx] || `Team ${t.idx + 1}`).split(" ").slice(0, 2).join(" ")}</td>
-                                  {lo.positions.map((pos) => {
-                                    const tr = lo.posTiers[t.idx][pos];
-                                    return (
-                                      <td key={pos} style={{ padding: "4px 10px", textAlign: "center" }}>
-                                        <span style={{ display: "inline-block", width: 12, height: 12, borderRadius: 3, background: tierColor(tr.tier), opacity: 0.85 }} title={tr.tier === 0 ? "Strong" : tr.tier === 1 ? "Middle" : "Weak"} />
-                                      </td>
-                                    );
-                                  })}
                                 </tr>
                               );
                             })}
@@ -8645,8 +8617,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                       const pctile = 1 - (r.rank - 1) / Math.max(1, r.of - 1);
                       const tone = pctile >= 0.66 ? "var(--green)" : pctile >= 0.34 ? "var(--gold)" : "var(--red)";
                       const word = pctile >= 0.66 ? "Strong" : pctile >= 0.34 ? "Middle" : "Weak";
+                      const plist = (ta.byPos[pos] && ta.byPos[pos].list) || [];
+                      const tip = plist.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `Your ${pos}s — ${ordinalOf(r.rank)} of ${r.of} in the league` }, ...plist.map((p) => ({ t: `${p.pos}${p.posRank}`, x: `${p.name} — ${p.team || "FA"} · ${Math.round(p.pts)} pts` }))]) : undefined;
                       return (
-                        <div key={pos} style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                        <div key={pos} style={{ display: "flex", alignItems: "center", gap: 9, cursor: tip ? "help" : "default" }}
+                          onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
                           <span style={{ width: 26, fontWeight: 800, color: posColor[pos] }}>{pos}</span>
                           <div style={{ flex: 1, height: 9, background: "var(--panel2)", borderRadius: 5, overflow: "hidden" }}>
                             <div style={{ width: `${Math.max(6, pctile * 100)}%`, height: "100%", background: tone, opacity: 0.85 }} />
@@ -8669,7 +8644,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                     return (
                       <div key={pos} style={{ display: "flex", alignItems: "center", gap: 9, cursor: tip ? "help" : "default", padding: "2px 0" }}
                         onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
-                        <span style={{ width: 26, fontWeight: 800, color: posColor[pos] }}>{pos}{tip && <span className="mut" style={{ fontSize: 9, fontWeight: 400 }}> ⓘ</span>}</span>
+                        <span style={{ width: 26, fontWeight: 800, color: posColor[pos] }}>{pos}</span>
                         <div style={{ flex: 1, height: 8, background: "var(--panel2)", borderRadius: 4, overflow: "hidden" }}>
                           <div style={{ width: `${Math.min(100, (b.count / Math.max(1, (b.starters + 1.5))) * 100)}%`, height: "100%", background: posColor[pos], opacity: 0.8 }} />
                         </div>
@@ -8718,7 +8693,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                 <>
                   <div className="disp" style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", margin: "12px 0 6px" }}>Bench ({taShown.bench.length})</div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {taShown.bench.map((p, i) => <span key={i} className="chip" style={{ fontSize: 11 }}><Dot pos={p.pos} />{p.name} <span className="mut">{p.pos}{p.posRank}</span></span>)}
+                    {taShown.bench.map((p, i) => <span key={i} className="chip" style={{ fontSize: 11, cursor: "help" }} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, true))} onMouseLeave={hideTip}><Dot pos={p.pos} />{p.name} <span className="mut">{p.pos}{p.posRank}</span></span>)}
                   </div>
                 </>
               )}
@@ -8768,7 +8743,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                       {cell(ta.youngCount, "young (≤24)", "var(--green)", profTip("Young players (≤24)", ta.youngList))}
                       {cell(ta.rookieCount, "rookies", "var(--ink)", profTip("Rookies", ta.rookieList))}
                       {cell(ta.oldCount, "aging (≥29)", ta.oldCount > 2 ? "var(--red)" : "var(--ink)", profTip("Aging players (≥29)", ta.oldList))}
-                      {cell(ta.upsideCount, "high-ceiling", "var(--gold)", ta.upsideList.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: "High-ceiling / high-variance players" }, { t: "What this means", x: "Players whose ceiling is 30%+ above their projection — big boom weeks, but more variance. A roster full of these has a high ceiling and a wide range of outcomes." }, ...ta.upsideList.map((p) => ({ t: `${p.pos}${p.posRank}`, x: `${p.name} — proj ${Math.round(p.pts)}, ceiling ${Math.round(p.ceil)}` }))]) : undefined)}
                       {cell(ta.avgAge ? ta.avgAge.toFixed(1) : "—", "avg age", "var(--ink)", undefined)}
                       {cell(Math.round(ta.totalPts), "total proj pts", "var(--ink)", undefined)}
                     </div>
@@ -8783,23 +8757,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                   </div>
                 )}
               </div>
-            </div>
-            </div>
 
-            {/* Structured insights — bold header + body */}
-            <div className="panel" style={{ padding: 16 }}>
-              <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", marginBottom: 12 }}>{isMe ? "Your outlook & what to focus on" : `${teamName} — outlook`}</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
-                {ta.insights.map((it, i) => (
-                  <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-                    <i className="ti ti-point-filled" style={{ fontSize: 13, color: "var(--gold)", marginTop: 3, flexShrink: 0 }} aria-hidden="true" />
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: 13 }}>{it.h}</div>
-                      <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.45 }}>{it.b}</div>
+              {/* Outlook — sits under roster profile, to the right of the lineup */}
+              <div className="panel" style={{ padding: 16 }}>
+                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", marginBottom: 12 }}>{isMe ? "Your outlook & what to focus on" : `${teamName} — outlook`}</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+                  {ta.insights.map((it, i) => (
+                    <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                      <i className="ti ti-point-filled" style={{ fontSize: 13, color: "var(--gold)", marginTop: 3, flexShrink: 0 }} aria-hidden="true" />
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: 13 }}>{it.h}</div>
+                        <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.45 }}>{it.b}</div>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
+            </div>
             </div>
           </div>
         );
