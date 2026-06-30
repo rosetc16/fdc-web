@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26u";
+const BUILD_TAG = "2026.06.26v";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -7075,32 +7075,37 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [clock, setClock] = useState(90);
 
   // Pool rebuilds when cfg changes, ADP version changes, OR live data finishes loading (dataVersion).
-  // The live-data dependency matters because the app now renders instantly off built-in fallback data
-  // and the real player pack streams in a beat later; without this, a draft room opened in that first
-  // moment would stay stuck on the sparse fallback pool (the "only 5 QBs left" bug). For connected
-  // Sleeper drafts the live sync re-maps picks by NAME every poll, so a rebuilt pool stays correct; for
-  // manual drafts we remap any existing picks by name in the effect just below.
+  // The live-data dependency matters because the app renders instantly off built-in fallback data and the
+  // real player pack streams in a beat later; without it, a draft room opened in that first moment stays
+  // stuck on the sparse fallback pool (the "only 5 QBs left" bug).
   const players = useMemo(() => buildPlayers(cfg), [cfg, adpVersion, dataVersion]);
-  // When the pool identity changes (e.g. fallback → live data), re-map any locally-stored picks/preds by
-  // NAME so their ids still point to the right players in the new pool. Connected drafts also self-heal
-  // via the sync, but this keeps manual drafts correct across the one-time fallback→live swap.
+  // When the pool identity changes (fallback → live data), picks/preds stored as ids must be re-pointed.
+  // CRITICAL: for CONNECTED Sleeper drafts the live sync is the source of truth and re-derives picks from
+  // Sleeper BY NAME on every poll, so we must NOT touch picks here — doing so races the sync and makes the
+  // board jump between stale and live pick sets. We ONLY remap for MANUAL drafts (no live connection), and
+  // only when the pool's player ORDERING actually changed (a robust signature over many ids, not just two).
+  const isConnectedLive = connectedPlatform === "sleeper" && draftMode === "sleeper" && !!(cfg.connect && cfg.connect.leagueId);
   const lastPoolRef = useRef(null);
   useEffect(() => {
     if (!players.length) return;
-    const sig = players.length + ":" + (players[0] && players[0].name) + ":" + (players[10] && players[10].name);
+    // robust signature: sample names across the whole pool, not just index 0/10, so a mid-board reorder
+    // is detected (and an identical pool is correctly treated as unchanged).
+    const idxs = [0, 5, 15, 30, 60, 100, 150, 200];
+    const sig = players.length + "|" + idxs.map((i) => players[i] ? players[i].name : "").join("·");
     const byName = {}; players.forEach((p) => { byName[p.id] = p.name; });
-    if (lastPoolRef.current == null) { lastPoolRef.current = { sig, byName }; return; } // first pool: just record it
-    if (lastPoolRef.current.sig === sig) return; // unchanged
-    // Pool changed (e.g. fallback → live data). Remap picks/preds from the PREVIOUS pool's names → new ids.
+    if (lastPoolRef.current == null) { lastPoolRef.current = { sig, byName }; return; }
+    if (lastPoolRef.current.sig === sig) return; // truly unchanged → nothing to do
     const prevNames = lastPoolRef.current.byName;
-    const newIdByName = {}; players.forEach((p) => { newIdByName[normName(p.name)] = p.id; });
-    if (prevNames) {
-      const remapId = (id) => { if (id == null) return id; const nm = prevNames[id]; if (nm == null) return id; const nid = newIdByName[normName(nm)]; return nid != null ? nid : id; };
-      setPicks((pp) => pp.map(remapId));
-      setPreds((pp) => pp.map((id) => id == null ? null : remapId(id)));
-    }
     lastPoolRef.current = { sig, byName };
-  }, [players]);
+    // Connected drafts: never remap here. The next sync poll (which runs immediately on data change) will
+    // rebuild picks from Sleeper by name against the new pool. Touching picks now would corrupt them.
+    if (isConnectedLive) return;
+    // Manual drafts: safely re-point existing picks/preds by name.
+    const newIdByName = {}; players.forEach((p) => { newIdByName[normName(p.name)] = p.id; });
+    const remapId = (id) => { if (id == null) return id; const nm = prevNames[id]; if (nm == null) return id; const nid = newIdByName[normName(nm)]; return nid != null ? nid : id; };
+    setPicks((pp) => pp.map(remapId));
+    setPreds((pp) => pp.map((id) => id == null ? null : remapId(id)));
+  }, [players, isConnectedLive]);
   // Resolve keepers pulled from a connected league (Sleeper) — name+slot → engine id+team — and merge
   // them as no-cost roster adds, so each keeper shows on the right team and counts toward strength.
   useMemo(() => {
@@ -7496,9 +7501,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             if (mapped.length > hypoBase) setLivePending({ picks: mapped });
             return prev;
           }
-          // Only update if Sleeper is ahead of us (more picks) to avoid clobbering local state.
-          if (mapped.length > prev.length) return mapped;
-          return prev;
+          // Sleeper is the source of truth for a connected live draft. Adopt its mapped picks whenever they
+          // DIFFER from what we hold — not only when longer. (Length-only checks left stale, wrong-id picks
+          // in place after a pool rebuild, since the count matched even though the ids pointed at the wrong
+          // players — that was the "historical picks all wrong / jumping around" bug.) We still never shrink
+          // below what Sleeper reports, and an identical list returns prev to avoid needless re-renders.
+          if (mapped.length < prev.length) return prev;
+          const same = mapped.length === prev.length && mapped.every((id, i) => id === prev[i]);
+          return same ? prev : mapped;
         });
         // If a trade happened in the league (traded picks changed), update the league settings so the
         // board's pick ownership stays correct. Compare against what we have stored.
