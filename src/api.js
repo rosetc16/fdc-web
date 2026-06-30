@@ -81,6 +81,10 @@ export const api = {
   async deleteLeague(id) { return call(`/api/leagues/${id}`, { method: 'DELETE' }); },
   async saveDraft(leagueId, draft) { return (await call(`/api/leagues/${leagueId}/drafts`, { method: 'POST', body: draft })).draft; },
 
+  // ---- per-user app state (cross-device persistence of the local gs-state blob) ----
+  async getState() { return call('/api/state'); },                                  // -> { state, updatedAt }
+  async putState(state) { return call('/api/state', { method: 'PUT', body: { state } }); }, // -> { ok, updatedAt }
+
   // ---- Sleeper connect / live sync ----
   async sleeperLeagues(username) { return call(`/api/connect/sleeper/leagues?username=${encodeURIComponent(username)}`); },
   async sleeperDraft(leagueId, username) { return call(`/api/connect/sleeper/draft?league_id=${encodeURIComponent(leagueId)}${username ? `&username=${encodeURIComponent(username)}` : ''}`); },

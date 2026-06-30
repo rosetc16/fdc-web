@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26q";
+const BUILD_TAG = "2026.06.26r";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1105,6 +1105,7 @@ export function applyLivePack(pack) {
       floor: p.floor != null ? p.floor : null,
       ceil: p.ceil != null ? p.ceil : null,
       sid: p.id != null ? String(p.id) : null, // Sleeper player_id → used to fetch the player's photo
+      pubFmt: p.pubFmt || null,                 // which published-ADP format supplied this player's number
     };
   }
   if (raw.length < 50) return false; // sanity: don't swap in a too-small pool
@@ -2775,6 +2776,31 @@ export default function App() {
           try {
             const me = await api.me();
             if (me) { const admin = isAdminEmail(me.email); const merged = migrateRankSets({ ...me, rankSets: me.rankSets || [], admin, paid: me.paid || admin }); setUser(merged); /* don't persist here: initial load shouldn't write back (race could clobber leagues). state setters handle saving on real changes. */ }
+            // CROSS-DEVICE: pull this user's server-saved blob (leagues, picks/preds, priority queues,
+            // mocks). On a fresh device the local store is empty, so the server copy is what restores the
+            // user's drafts. When both exist we take whichever has more leagues (the server is updated on
+            // every change, so it's normally the authoritative, most-complete copy), guarding against a
+            // momentary empty-local read clobbering good server data.
+            if (me) {
+              try {
+                const sr = await api.getState();
+                const srv = sr && sr.state ? sr.state : null;
+                if (srv && (Array.isArray(srv.leagues) || Array.isArray(srv.funMocks))) {
+                  let localLeagues = [];
+                  try { const r = window.storage ? await window.storage.get("gs-state") : null; if (r && r.value) localLeagues = JSON.parse(r.value).leagues || []; } catch (e) {}
+                  const srvLeagues = Array.isArray(srv.leagues) ? srv.leagues : [];
+                  // Prefer the server copy when the local store has fewer (or zero) leagues — i.e. a new
+                  // device or cleared cache. Otherwise keep local (this session's freshest edits).
+                  if (srvLeagues.length >= localLeagues.length) {
+                    if (srvLeagues.length) setLeagues(srvLeagues);
+                    if (Array.isArray(srv.funMocks)) setFunMocks(srv.funMocks);
+                    if (Array.isArray(srv.feedback)) setFeedback(srv.feedback);
+                    // write the restored blob into local storage so the rest of the app reads it consistently
+                    try { if (window.storage) { const r = await window.storage.get("gs-state"); const cur = (r && r.value) ? JSON.parse(r.value) : {}; await window.storage.set("gs-state", JSON.stringify({ ...cur, leagues: srvLeagues.length ? srvLeagues : cur.leagues, funMocks: Array.isArray(srv.funMocks) ? srv.funMocks : cur.funMocks, feedback: Array.isArray(srv.feedback) ? srv.feedback : cur.feedback })); } } catch (e) {}
+                  }
+                }
+              } catch (e) { /* server state unavailable — local copy stands */ }
+            }
           } catch (e) {}
           try {
             const params = new URLSearchParams(window.location.search);
@@ -2818,6 +2844,7 @@ export default function App() {
     // (e.g. still [] before setLeagues has committed), so writing `next.leagues ?? leagues` could wipe
     // saved leagues. Reading the current stored blob first and only overwriting the keys explicitly
     // provided in `next` guarantees we never clobber data we didn't intend to touch.
+    let mergedBlob = null;
     try {
       if (window.storage) {
         let cur = {};
@@ -2829,6 +2856,7 @@ export default function App() {
           funMocks: next.funMocks ?? (funMocks.length ? funMocks : (cur.funMocks || [])),
           feedback: next.feedback ?? (feedback.length ? feedback : (cur.feedback || [])),
         };
+        mergedBlob = merged;
         await window.storage.set("gs-state", JSON.stringify(merged));
       }
     } catch (e) {}
@@ -2839,6 +2867,17 @@ export default function App() {
         await api.saveRankSets(next.user.rankSets);
       }
     } catch (e) { /* keep local copy; will retry on next change */ }
+    // CROSS-DEVICE: when signed in to a backend account, mirror the whole local blob to the server so
+    // leagues, picks/preds, priority queues, and mocks follow the user to any device and survive a
+    // sign-out. We store the user's leagues/mocks/feedback (not the auth/user record, which the server
+    // owns). Fire-and-forget: the local copy is the source of truth for this session; a failed sync
+    // just means it'll re-send on the next change.
+    try {
+      if (hasBackend && user && user.email && mergedBlob) {
+        const { user: _u, ...serverBlob } = mergedBlob; // don't round-trip the user/auth record
+        await api.putState(serverBlob);
+      }
+    } catch (e) { /* offline or transient — local copy stands; retries on next change */ }
   };
 
   const signUp = async (email, password, mode = "signup") => {
@@ -2849,7 +2888,20 @@ export default function App() {
         setAuthError(null);
         const admin = isAdminEmail(u.email || email);
         const merged = migrateRankSets({ ...u, rankSets: u.rankSets || [], admin, paid: u.paid || admin });
-        setUser(merged); persist({ user: merged });
+        setUser(merged);
+        // Restore this account's server-saved blob (leagues, picks/preds, queues, mocks) so signing in
+        // on any device brings the user's drafts with them. Falls back silently to whatever's local.
+        try {
+          const sr = await api.getState();
+          const srv = sr && sr.state ? sr.state : null;
+          if (srv && Array.isArray(srv.leagues)) {
+            if (srv.leagues.length) setLeagues(srv.leagues);
+            if (Array.isArray(srv.funMocks)) setFunMocks(srv.funMocks);
+            if (Array.isArray(srv.feedback)) setFeedback(srv.feedback);
+            try { if (window.storage) { const r = await window.storage.get("gs-state"); const cur = (r && r.value) ? JSON.parse(r.value) : {}; await window.storage.set("gs-state", JSON.stringify({ ...cur, leagues: srv.leagues.length ? srv.leagues : cur.leagues, funMocks: Array.isArray(srv.funMocks) ? srv.funMocks : cur.funMocks, feedback: Array.isArray(srv.feedback) ? srv.feedback : cur.feedback, user: merged })); } } catch (e) {}
+          }
+        } catch (e) { /* server state unavailable — local copy stands */ }
+        persist({ user: merged });
         return merged;
       } catch (e) {
         setAuthError(e.message === "NO_BACKEND" ? "Backend not reachable" : (e.data?.error || e.message || "Sign-in failed"));
