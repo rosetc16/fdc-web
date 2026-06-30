@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26k";
+const BUILD_TAG = "2026.06.26l";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1433,10 +1433,19 @@ function buildPlayers(cfg) {
     // points from this league's scoring applied to raw projected stats.
     // TE premium is already handled inside scoreFromStats (recTE), so no extra add here.
     let pts = Math.round(scoreFromStats(r[1], stats, sc));
-    // floor / ceiling scale with the variance baked into META (ratio off default pts)
+    // floor / ceiling scale with the variance baked into META (ratio off default pts). When we have no
+    // META variance (live players), derive a sensible default: younger players, rookies, and lower-volume
+    // role players carry MORE upside variance than established veterans, so their ceiling ratio is higher.
     const dPts = META[r[0]] ? Math.max(1, scoreFromStats(r[1], stats, DEFAULT_SCORING)) : pts;
-    const floorR = meta.floor != null ? meta.floor / dPts : 0.82;
-    const ceilR = meta.ceil != null ? meta.ceil / dPts : 1.2;
+    const floorR = meta.floor != null ? meta.floor / dPts : 0.8;
+    let ceilR;
+    if (meta.ceil != null) ceilR = meta.ceil / dPts;
+    else {
+      // base 1.28; rookies +0.18, age<=23 +0.12, age<=25 +0.06; older/established a touch lower.
+      const age = r[3] || 26;
+      ceilR = 1.28 + (meta.rookie ? 0.18 : 0) + (age <= 23 ? 0.12 : age <= 25 ? 0.06 : age >= 30 ? -0.06 : 0);
+      if (r[1] === "QB") ceilR -= 0.04; // QBs are a bit more stable
+    }
     return {
       id: i, name: r[0], pos: r[1], team: r[2], age: r[3], bye: r[4], adp0: r[5], stats, pts,
       floor: Math.round(pts * floorR), ceil: Math.round(pts * ceilR),
@@ -2130,7 +2139,7 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
   // a couple more profile signals: total projected points across the whole roster, and best/most-valuable
   const totalPts = roster.reduce((s, p) => s + (p.pts || 0), 0);
   const topPlayer = roster.slice().sort((a, b) => (b.pts || 0) - (a.pts || 0))[0] || null;
-  const upsideList = roster.filter((p) => p.ceil != null && p.pts && p.ceil - p.pts > p.pts * 0.35);
+  const upsideList = roster.filter((p) => p.ceil != null && p.pts && p.ceil - p.pts > p.pts * 0.30);
   const upsideCount = upsideList.length;
   const emptyStarters = slots.filter((s) => !s.p).map((s) => s.slot);
   const posScore = (pos) => { const b = byPos[pos]; if (!b.count) return -100; return (b.bestVbd || 0) + (b.count - (req[pos] || 0)) * 6; };
@@ -2174,6 +2183,42 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
 const TEAMS_FALLBACK = 12;
 function userIdxOf(ctx) { return ctx && ctx.userIdx != null ? ctx.userIdx : 0; }
 function ordinalOf(n) { const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); }
+
+// Build a whole-league snapshot for the "League Overview" panel: every team's roster reconstructed from
+// picks, with per-position counts, whether starting slots are filled, a quality+quantity strength score
+// per position, and a projected starting-lineup total (for an at-a-glance power ranking). Pure function.
+function leagueOverview(allPicks, players, teamAtFn, cfg) {
+  const n = cfg.teams || TEAMS_FALLBACK;
+  const sf = cfg.sf;
+  const req = REQ_F(sf);
+  const rosters = Array.from({ length: n }, () => []);
+  allPicks.forEach((pk, o) => { const pl = players[pk]; if (pl) { const t = teamAtFn(o); if (t != null && rosters[t]) rosters[t].push(pl); } });
+  const positions = ["QB", "RB", "WR", "TE"];
+  // per-team, per-position: count + best vbd + strength tier (0 strong / 1 middle / 2 weak), plus filled?
+  const teams = rosters.map((r, idx) => {
+    const byPos = {};
+    positions.forEach((pos) => {
+      const list = r.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts);
+      const starters = req[pos] || 0;
+      const bestVbd = list.length ? Math.max(...list.map((p) => p.vbd || 0)) : null;
+      const filled = list.length >= starters;
+      const topPts = list.slice(0, starters + 1).reduce((s, p) => s + (p.pts || 0), 0);
+      byPos[pos] = { count: list.length, starters, filled, bestVbd, topPts, list };
+    });
+    const startPts = lineupSlots(r, sf).slots.reduce((s, x) => s + (x.p ? x.p.pts || 0 : 0), 0);
+    return { idx, byPos, startPts, size: r.length };
+  });
+  // rank each position across the league to derive a 0/1/2 strength tier (top third / mid / bottom third)
+  const posTiers = {};
+  positions.forEach((pos) => {
+    const order = teams.map((t) => ({ idx: t.idx, v: t.byPos[pos].topPts })).sort((a, b) => b.v - a.v);
+    order.forEach((o, rank) => { (posTiers[o.idx] = posTiers[o.idx] || {})[pos] = { rank: rank + 1, tier: rank < n / 3 ? 0 : rank < (2 * n) / 3 ? 1 : 2 }; });
+  });
+  // overall power ranking by projected starting points
+  const power = teams.map((t) => ({ idx: t.idx, v: t.startPts })).sort((a, b) => b.v - a.v).map((o, i) => ({ idx: o.idx, rank: i + 1, pts: o.v }));
+  const powerByIdx = {}; power.forEach((p) => { powerByIdx[p.idx] = p; });
+  return { teams, posTiers, power, powerByIdx, positions, n };
+}
 function needLevel(count, bestVbd, dem, pos) {
   const qty = dem[pos] - count;
   if (qty >= 1.5) return 2;
@@ -2270,7 +2315,7 @@ function makeOutlook(p, sims, drafted) {
   if (p.rookie && p.posDepth === 1) opp.push("a rookie already projected to lead his position group");
   else if (p.posDepth === 1 && p.age && p.age <= 24) opp.push("a young player already atop his depth chart");
   if (gap > 12) opp.push("the market is sleeping on his projection");
-  if (p.ceil != null && p.pts && p.ceil - p.pts > p.pts * 0.35) opp.push("a high ceiling if his situation breaks right");
+  if (p.ceil != null && p.pts && p.ceil - p.pts > p.pts * 0.30) opp.push("a high ceiling if his situation breaks right");
   if (iv) opp.push(`working back from ${iv.label.toLowerCase()}`);
   if (opp.length) bits.push(`What stands out: ${opp.join("; ")}.`);
   out.push({ t: "Outlook", x: bits.join(" ") });
@@ -3657,7 +3702,7 @@ function QuickMockSetup({ onStart, onCancel }) {
   const Seg = ({ value, set, options }) => (
     <div style={{ display: "inline-flex", background: "var(--panel2)", borderRadius: 9, padding: 3, gap: 2, flexWrap: "wrap" }}>
       {options.map(([k, l]) => (
-        <button key={k} onClick={() => set(k)} className="bigact" style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, padding: "6px 12px", borderRadius: 7, border: "none", background: value === k ? "var(--gold)" : "transparent", color: value === k ? "rgba(242,182,60,.10)" : "var(--ink)" }}>{l}</button>
+        <button key={k} onClick={() => set(k)} className="bigact" style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, padding: "6px 12px", borderRadius: 7, border: "none", background: value === k ? "var(--gold)" : "transparent", color: value === k ? "#151002" : "var(--ink)" }}>{l}</button>
       ))}
     </div>
   );
@@ -3891,7 +3936,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         {/* RESUME */}
         {inProgress.length > 0 && (
           <button className="bigact" onClick={() => onOfficial(inProgress[0].id)} style={{ width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1.5px solid var(--gold)", background: "linear-gradient(90deg, #1b1708, #141206)", borderRadius: 14, padding: "15px 18px", display: "flex", alignItems: "center", gap: 14 }}>
-            <div style={{ width: 40, height: 40, borderRadius: 20, background: "var(--gold)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className="ti ti-player-play-filled" style={{ fontSize: 19, color: "rgba(242,182,60,.10)" }} aria-hidden="true" /></div>
+            <div style={{ width: 40, height: 40, borderRadius: 20, background: "var(--gold)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className="ti ti-player-play-filled" style={{ fontSize: 19, color: "#151002" }} aria-hidden="true" /></div>
             <div style={{ flex: 1 }}>
               <div className="disp" style={{ fontSize: 16, fontWeight: 700 }}>Resume your draft</div>
               <div className="mut" style={{ fontSize: 12.5 }}>{inProgress[0].name} — {inProgress[0].picks.length}/{(inProgress[0].cfg.teams || 12) * inProgress[0].cfg.rounds} picks made</div>
@@ -6850,6 +6895,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const [queueOnly, setQueueOnly] = useState(false);
   const [myTeamView, setMyTeamView] = useState("current"); // Team analysis tab: "current" | "projected"
   const [analysisTeam, setAnalysisTeam] = useState(null);   // which team the analysis tab shows; null = you
+  const [leagueOpen, setLeagueOpen] = useState(false);      // Team analysis: League Overview dropdown open?
   const toggleQueue = (name) => setQueue((prev) => {
     const next = new Set(prev);
     if (next.has(name)) next.delete(name); else next.add(name);
@@ -7129,11 +7175,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
   const displayPath = useMemo(() => {
     const base = onClock === userIdx ? path : path.slice(1); // drop the on-clock pick when it isn't yours
     if (futureBig) return base.slice(0, 15);
-    const firstFour = base.slice(0, 4);
-    const yourInFour = firstFour.some((s) => s.user);
-    if (yourInFour) return firstFour;
+    const firstThree = base.slice(0, 3);
+    const yourInThree = firstThree.some((s) => s.user);
+    if (yourInThree) return firstThree;
     const yourNext = base.find((s) => s.user);
-    return yourNext ? [...firstFour, yourNext] : firstFour;
+    return yourNext ? [...firstThree, yourNext] : firstThree;
   }, [path, onClock, userIdx, futureBig]);
 
   const currentPred = !done ? (onClock === userIdx ? advice?.verdict ?? null : path[0]?.p ?? null) : null;
@@ -7921,8 +7967,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               )}
             </div>
             {displayPath.map((step, di) => step.user ? (
-              <div key={step.o} className="tickcard you" style={!futureBig && di === displayPath.length - 1 && di >= 4 ? { borderColor: "var(--gold)", borderWidth: 2, boxShadow: "0 0 0 2px rgba(242,182,60,.25)", background: "linear-gradient(180deg,rgba(242,182,60,.16),rgba(242,182,60,.04))" } : undefined}>
-                <div style={{ fontSize: 11, color: "var(--gold)", textTransform: "uppercase", letterSpacing: ".07em", fontWeight: 700 }}>{!futureBig && di >= 4 ? "↩ Your next pick" : "Your pick"} {pickLabel(step.o)} <span style={{ opacity: 0.75 }}>({step.o + 1})</span></div>
+              <div key={step.o} className="tickcard you" style={!futureBig && di === displayPath.length - 1 && di >= 3 ? { borderColor: "var(--gold)", borderWidth: 2, boxShadow: "0 0 0 2px rgba(242,182,60,.25)", background: "linear-gradient(180deg,rgba(242,182,60,.16),rgba(242,182,60,.04))" } : undefined}>
+                <div style={{ fontSize: 11, color: "var(--gold)", textTransform: "uppercase", letterSpacing: ".07em", fontWeight: 700, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <span>{!futureBig && di >= 3 ? "↩ Your next pick" : "Your pick"} {pickLabel(step.o)} <span style={{ opacity: 0.75 }}>({step.o + 1})</span></span>
+                  {(() => { const away = step.o - picks.length; return away > 0 ? <span style={{ background: "var(--gold)", color: "#151002", borderRadius: 5, padding: "1px 6px", fontSize: 10, fontWeight: 800 }}>{away === 1 ? "next up!" : `${away} picks away`}</span> : null; })()}
+                </div>
                 {step.p && <div style={{ fontWeight: 600, fontSize: 13, marginTop: 2 }}><Dot pos={step.p.pos} />{step.p.name}</div>}
                 <button className="btn btn-gold btn-mini" style={{ marginTop: 5 }} onClick={() => setBriefOpen(true)}>AI briefing</button>
               </div>
@@ -8104,8 +8153,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               )}
               <div style={{ flex: 1 }} />
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }} title="ADP always shows on the left. This switches the rest of the columns between value/info (rankings, projections, demographics, availability) and projected stats.">
-                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: boardMode === "info" ? "var(--gold)" : "transparent", color: boardMode === "info" ? "rgba(242,182,60,.10)" : "var(--ink)", fontWeight: boardMode === "info" ? 700 : 400 }} onClick={() => setBoardMode("info")} title="Rankings, projections, value, demographics & availability">Value &amp; info</button>
-                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: boardMode === "stats" ? "var(--gold)" : "transparent", color: boardMode === "stats" ? "rgba(242,182,60,.10)" : "var(--ink)", fontWeight: boardMode === "stats" ? 700 : 400 }} onClick={() => setBoardMode("stats")} title="Projected passing / rushing / receiving stat lines">Projected stats</button>
+                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: boardMode === "info" ? "var(--gold)" : "transparent", color: boardMode === "info" ? "#151002" : "var(--ink)", fontWeight: boardMode === "info" ? 700 : 400 }} onClick={() => setBoardMode("info")} title="Rankings, projections, value, demographics & availability">Value &amp; info</button>
+                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: boardMode === "stats" ? "var(--gold)" : "transparent", color: boardMode === "stats" ? "#151002" : "var(--ink)", fontWeight: boardMode === "stats" ? 700 : 400 }} onClick={() => setBoardMode("stats")} title="Projected passing / rushing / receiving stat lines">Projected stats</button>
               </div>
               <button className="btn btn-mini" onClick={() => setShowDrafted((s) => !s)} title={showDrafted ? "Currently showing every player — drafted ones are crossed out. Click to hide them." : "Currently hiding drafted players — only those still available show. Click to show everyone."}>
                 <i className={`ti ${showDrafted ? "ti-eye" : "ti-eye-off"}`} style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />{showDrafted ? "All players" : "Available only"}
@@ -8478,34 +8527,163 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               </div>
             </div>
 
-            {/* Position rank vs league */}
-            {ta.posRankByPos && Object.keys(ta.posRankByPos).length > 0 && (
+            {/* League Overview — collapsible whole-league snapshot */}
+            <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
+              <button onClick={() => setLeagueOpen((o) => !o)} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", background: "transparent", border: "none", cursor: "pointer", color: "var(--ink)" }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                  <i className="ti ti-binoculars" style={{ fontSize: 17, color: "var(--gold)" }} aria-hidden="true" />
+                  <span className="disp" style={{ fontSize: 16, fontWeight: 700, letterSpacing: ".03em" }}>League Overview</span>
+                  <span className="mut" style={{ fontSize: 11.5 }}>— positions drafted & position strength across all {cfg.teams || 12} teams</span>
+                </span>
+                <i className={`ti ti-chevron-${leagueOpen ? "up" : "down"}`} style={{ fontSize: 18, color: "var(--mut)" }} aria-hidden="true" />
+              </button>
+              {leagueOpen && (() => {
+                const lo = leagueOverview(picks, players, teamAt, cfg);
+                const tierColor = (tier) => tier === 0 ? "var(--green)" : tier === 1 ? "var(--gold)" : "var(--red)";
+                const posClr = { QB: POS_COLOR.QB, RB: POS_COLOR.RB, WR: POS_COLOR.WR, TE: POS_COLOR.TE };
+                return (
+                  <div style={{ padding: "4px 16px 16px", display: "flex", flexDirection: "column", gap: 18 }}>
+                    {/* Board: positions drafted by each team — color-coded when a starting requirement is filled */}
+                    <div>
+                      <div className="disp" style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 8 }}>Positions drafted by team</div>
+                      <div className="mut" style={{ fontSize: 11, marginBottom: 8 }}>Count per position. A <span style={{ color: "var(--green)", fontWeight: 700 }}>green</span> cell means that team has filled its starting requirement there; <span style={{ color: "var(--mut)", fontWeight: 700 }}>grey</span> means still short.</div>
+                      <div style={{ overflowX: "auto" }}>
+                        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+                          <thead><tr>
+                            <th style={{ textAlign: "left", padding: "5px 8px", color: "var(--mut)", fontWeight: 600, position: "sticky", left: 0, background: "var(--panel)" }}>Team</th>
+                            {lo.positions.map((pos) => <th key={pos} style={{ padding: "5px 10px", color: posClr[pos], fontWeight: 800 }}>{pos}</th>)}
+                            <th style={{ padding: "5px 8px", color: "var(--mut)", fontWeight: 600, textAlign: "right" }}>Proj</th>
+                          </tr></thead>
+                          <tbody>
+                            {lo.teams.map((t) => {
+                              const isYou = t.idx === userIdx;
+                              return (
+                                <tr key={t.idx} style={{ background: isYou ? "rgba(242,182,60,.08)" : "transparent", borderTop: "1px solid var(--line)" }}>
+                                  <td style={{ padding: "5px 8px", fontWeight: isYou ? 700 : 500, color: isYou ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", position: "sticky", left: 0, background: isYou ? "#1c2230" : "var(--panel)" }}>{isYou ? "★ " : ""}{(TEAM_NAMES[t.idx] || `Team ${t.idx + 1}`).split(" ").slice(0, 2).join(" ")}</td>
+                                  {lo.positions.map((pos) => {
+                                    const b = t.byPos[pos];
+                                    return (
+                                      <td key={pos} style={{ padding: "4px 10px", textAlign: "center" }}>
+                                        <span style={{ display: "inline-block", minWidth: 22, padding: "2px 6px", borderRadius: 5, fontWeight: 700, fontSize: 11.5, background: b.count === 0 ? "transparent" : b.filled ? "rgba(95,208,168,.16)" : "var(--panel2)", color: b.count === 0 ? "var(--mut)" : b.filled ? "var(--green)" : "var(--ink)", border: b.filled ? "1px solid rgba(95,208,168,.4)" : "1px solid var(--line)" }}>{b.count}</span>
+                                      </td>
+                                    );
+                                  })}
+                                  <td style={{ padding: "5px 8px", textAlign: "right", color: "var(--mut)" }} className="num">{Math.round(t.startPts)}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    {/* Position strength grid: quality+quantity tier per team per position */}
+                    <div>
+                      <div className="disp" style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 8 }}>Position strength (quality + quantity)</div>
+                      <div className="mut" style={{ fontSize: 11, marginBottom: 8 }}><span style={{ color: "var(--green)", fontWeight: 700 }}>Strong</span> = top third of the league at that spot, <span style={{ color: "var(--gold)", fontWeight: 700 }}>Middle</span> = middle third, <span style={{ color: "var(--red)", fontWeight: 700 }}>Weak</span> = bottom third.</div>
+                      <div style={{ overflowX: "auto" }}>
+                        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+                          <thead><tr>
+                            <th style={{ textAlign: "left", padding: "5px 8px", color: "var(--mut)", fontWeight: 600, position: "sticky", left: 0, background: "var(--panel)" }}>Team</th>
+                            {lo.positions.map((pos) => <th key={pos} style={{ padding: "5px 10px", color: posClr[pos], fontWeight: 800 }}>{pos}</th>)}
+                          </tr></thead>
+                          <tbody>
+                            {lo.teams.map((t) => {
+                              const isYou = t.idx === userIdx;
+                              return (
+                                <tr key={t.idx} style={{ background: isYou ? "rgba(242,182,60,.08)" : "transparent", borderTop: "1px solid var(--line)" }}>
+                                  <td style={{ padding: "5px 8px", fontWeight: isYou ? 700 : 500, color: isYou ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", position: "sticky", left: 0, background: isYou ? "#1c2230" : "var(--panel)" }}>{isYou ? "★ " : ""}{(TEAM_NAMES[t.idx] || `Team ${t.idx + 1}`).split(" ").slice(0, 2).join(" ")}</td>
+                                  {lo.positions.map((pos) => {
+                                    const tr = lo.posTiers[t.idx][pos];
+                                    return (
+                                      <td key={pos} style={{ padding: "4px 10px", textAlign: "center" }}>
+                                        <span style={{ display: "inline-block", width: 12, height: 12, borderRadius: 3, background: tierColor(tr.tier), opacity: 0.85 }} title={tr.tier === 0 ? "Strong" : tr.tier === 1 ? "Middle" : "Weak"} />
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    {/* Power ranking */}
+                    <div>
+                      <div className="disp" style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 8 }}>Projected power ranking</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                        {lo.power.map((p) => {
+                          const isYou = p.idx === userIdx;
+                          const max = lo.power[0].pts || 1;
+                          return (
+                            <div key={p.idx} style={{ display: "flex", alignItems: "center", gap: 9, padding: "3px 8px", borderRadius: 6, background: isYou ? "rgba(242,182,60,.10)" : "transparent" }}>
+                              <span className="num" style={{ width: 22, color: "var(--mut)", fontSize: 11 }}>{p.rank}.</span>
+                              <span style={{ width: 150, fontWeight: isYou ? 700 : 500, color: isYou ? "var(--gold)" : "var(--ink)", fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{isYou ? "★ " : ""}{TEAM_NAMES[p.idx] || `Team ${p.idx + 1}`}</span>
+                              <div style={{ flex: 1, height: 7, background: "var(--panel2)", borderRadius: 4, overflow: "hidden" }}>
+                                <div style={{ width: `${(p.pts / max) * 100}%`, height: "100%", background: isYou ? "var(--gold)" : "var(--blue)", opacity: 0.8 }} />
+                              </div>
+                              <span className="num mut" style={{ width: 44, textAlign: "right", fontSize: 11 }}>{Math.round(p.pts)}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, alignItems: "start" }} className="myteam-grid">
+              {ta.posRankByPos && Object.keys(ta.posRankByPos).length > 0 ? (
+                <div className="panel" style={{ padding: 14 }}>
+                  <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 4 }}>Where you rank in the league</div>
+                  <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Each position vs the other {ta.leagueSize - 1} teams.</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {["QB", "RB", "WR", "TE"].map((pos) => {
+                      const r = ta.posRankByPos[pos]; if (!r) return null;
+                      const pctile = 1 - (r.rank - 1) / Math.max(1, r.of - 1);
+                      const tone = pctile >= 0.66 ? "var(--green)" : pctile >= 0.34 ? "var(--gold)" : "var(--red)";
+                      const word = pctile >= 0.66 ? "Strong" : pctile >= 0.34 ? "Middle" : "Weak";
+                      return (
+                        <div key={pos} style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                          <span style={{ width: 26, fontWeight: 800, color: posColor[pos] }}>{pos}</span>
+                          <div style={{ flex: 1, height: 9, background: "var(--panel2)", borderRadius: 5, overflow: "hidden" }}>
+                            <div style={{ width: `${Math.max(6, pctile * 100)}%`, height: "100%", background: tone, opacity: 0.85 }} />
+                          </div>
+                          <span className="num" style={{ fontSize: 11.5, width: 74, textAlign: "right" }}>{ordinalOf(r.rank)} of {r.of}</span>
+                          <span style={{ fontSize: 10, fontWeight: 700, color: tone, width: 44, textAlign: "right" }}>{word}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : <div />}
               <div className="panel" style={{ padding: 14 }}>
-                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 4 }}>Where you rank in the league</div>
-                <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>How each position stacks up against the other {ta.leagueSize - 1} teams — your quick read on what to shore up.</div>
+                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 10 }}>Position depth</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {["QB", "RB", "WR", "TE"].map((pos) => {
-                    const r = ta.posRankByPos[pos]; if (!r) return null;
-                    const pctile = 1 - (r.rank - 1) / Math.max(1, r.of - 1); // 1 = best
-                    const tone = pctile >= 0.66 ? "var(--green)" : pctile >= 0.34 ? "var(--gold)" : "var(--red)";
-                    const word = pctile >= 0.66 ? "Strong" : pctile >= 0.34 ? "Middle" : "Weak";
+                    const b = ta.byPos[pos];
+                    const status = b.need > 0 ? { t: "NEED", c: "var(--red)" } : b.count > b.starters ? { t: "DEPTH", c: "var(--green)" } : { t: "SET", c: "var(--gold)" };
+                    const tip = b.list.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `Your ${pos}s (${b.count})` }, ...b.list.map((p) => ({ t: `${p.pos}${p.posRank}`, x: `${p.name} — ${p.team || "FA"}${p.age ? `, age ${p.age}` : ""} · ${Math.round(p.pts)} pts` }))]) : undefined;
                     return (
-                      <div key={pos} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <span style={{ width: 28, fontWeight: 800, color: posColor[pos] }}>{pos}</span>
-                        <div style={{ flex: 1, height: 10, background: "var(--panel2)", borderRadius: 5, overflow: "hidden" }}>
-                          <div style={{ width: `${Math.max(6, pctile * 100)}%`, height: "100%", background: tone, opacity: 0.85 }} />
+                      <div key={pos} style={{ display: "flex", alignItems: "center", gap: 9, cursor: tip ? "help" : "default", padding: "2px 0" }}
+                        onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
+                        <span style={{ width: 26, fontWeight: 800, color: posColor[pos] }}>{pos}{tip && <span className="mut" style={{ fontSize: 9, fontWeight: 400 }}> ⓘ</span>}</span>
+                        <div style={{ flex: 1, height: 8, background: "var(--panel2)", borderRadius: 4, overflow: "hidden" }}>
+                          <div style={{ width: `${Math.min(100, (b.count / Math.max(1, (b.starters + 1.5))) * 100)}%`, height: "100%", background: posColor[pos], opacity: 0.8 }} />
                         </div>
-                        <span className="num" style={{ fontSize: 12, width: 92, textAlign: "right" }}>{ordinalOf(r.rank)} of {r.of}</span>
-                        <span style={{ fontSize: 10.5, fontWeight: 700, color: tone, width: 50, textAlign: "right" }}>{word}</span>
+                        <span className="mut num" style={{ fontSize: 11, width: 58 }}>{b.count}/{b.starters} st</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: status.c, width: 44, textAlign: "right" }}>{status.t}</span>
                       </div>
                     );
                   })}
                 </div>
               </div>
-            )}
+            </div>
 
-            {/* Lineup + next pick side by side to save vertical space */}
-            <div style={{ display: "grid", gridTemplateColumns: (!done && myNextOv != null) ? "1fr 1fr" : "1fr", gap: 14, alignItems: "start" }} className="myteam-grid">
+            {/* Row B: starting lineup (left) + [your next pick over roster profile] (right) */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, alignItems: "start" }} className="myteam-grid">
             <div className="panel" style={{ padding: 14 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
                 <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)" }}>{myProjView && isMe ? "Projected" : "Current"} starting lineup</div>
@@ -8546,64 +8724,40 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               )}
             </div>
 
-            {/* Next picks — what to focus on + targets */}
-            {!done && (myNextOv != null) && (
-              <div className="panel" style={{ padding: 16, borderLeft: "3px solid var(--gold)" }}>
-                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", marginBottom: 4 }}>Your next pick — {pickLabel(myNextOv)} <span className="mut">(#{myNextOv + 1})</span></div>
-                <div style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 10 }}>
-                  {ta.emptyStarters.length ? <>Focus: lock in a starter at <b style={{ color: "var(--gold)" }}>{ta.emptyStarters[0].replace(/[0-9]/g, "")}</b> — it's your most pressing hole. </> : <>Focus: best value for your build; <b style={{ color: "var(--gold)" }}>{ta.thinnest}</b> is your thinnest spot. </>}
-                  {myWindow && myWindow.decided && (myWindow.lane === "rebuild" ? "Favor youth and upside." : myWindow.lane === "winnow" ? "Favor proven production." : "Take the best value.")}
-                </div>
-                {targets.length > 0 && (
-                  <>
-                    <div className="mut" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 6 }}>Top targets for you</div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                      {targets.map((t, i) => t && (
-                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 9, padding: "5px 8px", borderRadius: 7, background: "var(--panel2)", cursor: "help" }}
-                          onMouseEnter={(e) => showTip(e, makeOutlook(t, sims, false))} onMouseLeave={hideTip}>
-                          <span className="num mut" style={{ width: 16, fontSize: 11 }}>{i + 1}</span>
-                          <PlayerPhoto sid={t.sid} pos={t.pos} size={22} />
-                          <span style={{ fontWeight: 600, fontSize: 12.5 }}>{t.name}</span>
-                          <span className="mut" style={{ fontSize: 11 }}>{t.team} · {t.pos}{t.posRank}</span>
-                          <span className="mut num" style={{ marginLeft: "auto", fontSize: 11 }}>ADP {t.adp.toFixed(0)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-            </div>
-
-            {/* Position breakdown + roster profile */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }} className="myteam-grid">
-              <div className="panel" style={{ padding: 14 }}>
-                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 10 }}>Position depth</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {["QB", "RB", "WR", "TE"].map((pos) => {
-                    const b = ta.byPos[pos];
-                    const status = b.need > 0 ? { t: "NEED", c: "var(--red)" } : b.count > b.starters ? { t: "DEPTH", c: "var(--green)" } : { t: "SET", c: "var(--gold)" };
-                    const tip = b.list.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `Your ${pos}s (${b.count})` }, ...b.list.map((p) => ({ t: `${p.pos}${p.posRank}`, x: `${p.name} — ${p.team || "FA"}${p.age ? `, age ${p.age}` : ""} · ${Math.round(p.pts)} pts` }))]) : undefined;
-                    return (
-                      <div key={pos} style={{ display: "flex", alignItems: "center", gap: 10, cursor: tip ? "help" : "default", padding: "2px 0" }}
-                        onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
-                        <span style={{ width: 28, fontWeight: 800, color: posColor[pos] }}>{pos}{tip && <span className="mut" style={{ fontSize: 9, fontWeight: 400 }}> ⓘ</span>}</span>
-                        <div style={{ flex: 1, height: 8, background: "var(--panel2)", borderRadius: 4, overflow: "hidden" }}>
-                          <div style={{ width: `${Math.min(100, (b.count / Math.max(1, (b.starters + 1.5))) * 100)}%`, height: "100%", background: posColor[pos], opacity: 0.8 }} />
-                        </div>
-                        <span className="mut num" style={{ fontSize: 11, width: 62 }}>{b.count} / {b.starters} start</span>
-                        <span style={{ fontSize: 10, fontWeight: 700, color: status.c, width: 46, textAlign: "right" }}>{status.t}</span>
+            {/* Right column: next pick (top) + roster profile (bottom) */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {!done && (myNextOv != null) && (
+                <div className="panel" style={{ padding: 16, borderLeft: "3px solid var(--gold)" }}>
+                  <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", marginBottom: 4 }}>Your next pick — {pickLabel(myNextOv)} <span className="mut">(#{myNextOv + 1})</span></div>
+                  <div style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 10 }}>
+                    {ta.emptyStarters.length ? <>Focus: lock in a starter at <b style={{ color: "var(--gold)" }}>{ta.emptyStarters[0].replace(/[0-9]/g, "")}</b> — it's your most pressing hole. </> : <>Focus: best value for your build; <b style={{ color: "var(--gold)" }}>{ta.thinnest}</b> is your thinnest spot. </>}
+                    {myWindow && myWindow.decided && (myWindow.lane === "rebuild" ? "Favor youth and upside." : myWindow.lane === "winnow" ? "Favor proven production." : "Take the best value.")}
+                  </div>
+                  {targets.length > 0 && (
+                    <>
+                      <div className="mut" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 6 }}>Top targets for you</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                        {targets.map((t, i) => t && (
+                          <div key={i} style={{ display: "flex", alignItems: "center", gap: 9, padding: "5px 8px", borderRadius: 7, background: "var(--panel2)", cursor: "help" }}
+                            onMouseEnter={(e) => showTip(e, makeOutlook(t, sims, false))} onMouseLeave={hideTip}>
+                            <span className="num mut" style={{ width: 16, fontSize: 11 }}>{i + 1}</span>
+                            <PlayerPhoto sid={t.sid} pos={t.pos} size={22} />
+                            <span style={{ fontWeight: 600, fontSize: 12.5 }}>{t.name}</span>
+                            <span className="mut" style={{ fontSize: 11 }}>{t.team} · {t.pos}{t.posRank}</span>
+                            <span className="mut num" style={{ marginLeft: "auto", fontSize: 11 }}>ADP {t.adp.toFixed(0)}</span>
+                          </div>
+                        ))}
                       </div>
-                    );
-                  })}
+                    </>
+                  )}
                 </div>
-              </div>
+              )}
               <div className="panel" style={{ padding: 14 }}>
                 <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 10 }}>Roster profile</div>
                 {(() => {
                   const profTip = (label, list) => list.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: label }, ...list.map((p) => ({ t: `${p.pos}${p.posRank}`, x: `${p.name} — ${p.team || "FA"}${p.age ? `, age ${p.age}` : ""}${p.rookie ? " (rookie)" : ""}` }))]) : undefined;
                   const cell = (val, label, color, tip) => (
-                    <div style={{ flex: "1 1 92px", padding: "8px 10px", borderRadius: 8, background: "var(--panel2)", border: "1px solid var(--line)", cursor: tip ? "help" : "default" }}
+                    <div style={{ flex: "1 1 88px", padding: "8px 10px", borderRadius: 8, background: "var(--panel2)", border: "1px solid var(--line)", cursor: tip ? "help" : "default" }}
                       onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
                       <div className="disp" style={{ fontSize: 19, fontWeight: 800, color }}>{val}{tip && <span className="mut" style={{ fontSize: 10, marginLeft: 3 }}>ⓘ</span>}</div>
                       <div className="mut" style={{ fontSize: 10.5 }}>{label}</div>
@@ -8614,7 +8768,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                       {cell(ta.youngCount, "young (≤24)", "var(--green)", profTip("Young players (≤24)", ta.youngList))}
                       {cell(ta.rookieCount, "rookies", "var(--ink)", profTip("Rookies", ta.rookieList))}
                       {cell(ta.oldCount, "aging (≥29)", ta.oldCount > 2 ? "var(--red)" : "var(--ink)", profTip("Aging players (≥29)", ta.oldList))}
-                      {cell(ta.upsideCount, "high-ceiling", "var(--gold)", ta.upsideList.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: "High-ceiling / high-variance players" }, { t: "What this means", x: "Players whose ceiling is 35%+ above their projection — big boom potential, but also more week-to-week variance. A roster full of these has a high ceiling and a wide range of outcomes." }, ...ta.upsideList.map((p) => ({ t: `${p.pos}${p.posRank}`, x: `${p.name} — proj ${Math.round(p.pts)}, ceiling ${Math.round(p.ceil)}` }))]) : undefined)}
+                      {cell(ta.upsideCount, "high-ceiling", "var(--gold)", ta.upsideList.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: "High-ceiling / high-variance players" }, { t: "What this means", x: "Players whose ceiling is 30%+ above their projection — big boom weeks, but more variance. A roster full of these has a high ceiling and a wide range of outcomes." }, ...ta.upsideList.map((p) => ({ t: `${p.pos}${p.posRank}`, x: `${p.name} — proj ${Math.round(p.pts)}, ceiling ${Math.round(p.ceil)}` }))]) : undefined)}
                       {cell(ta.avgAge ? ta.avgAge.toFixed(1) : "—", "avg age", "var(--ink)", undefined)}
                       {cell(Math.round(ta.totalPts), "total proj pts", "var(--ink)", undefined)}
                     </div>
@@ -8629,6 +8783,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
                   </div>
                 )}
               </div>
+            </div>
             </div>
 
             {/* Structured insights — bold header + body */}
@@ -8869,8 +9024,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onExit, o
               <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{done ? "Final grades" : "Live grades"} <span className="mut" style={{ fontSize: 12 }}>value drafted + projected finish</span></div>
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }}>
                 <span className="mut" style={{ fontSize: 11, alignSelf: "center", padding: "0 8px" }}>Sort by</span>
-                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "z" ? "var(--gold)" : "transparent", color: sumSort.key === "z" ? "rgba(242,182,60,.10)" : "var(--ink)", fontWeight: sumSort.key === "z" ? 700 : 400 }} onClick={() => setSumSort({ key: "z", dir: -1 })}>Grade</button>
-                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "val" ? "var(--gold)" : "transparent", color: sumSort.key === "val" ? "rgba(242,182,60,.10)" : "var(--ink)", fontWeight: sumSort.key === "val" ? 700 : 400 }} onClick={() => setSumSort({ key: "val", dir: -1 })}>Value</button>
+                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "z" ? "var(--gold)" : "transparent", color: sumSort.key === "z" ? "#151002" : "var(--ink)", fontWeight: sumSort.key === "z" ? 700 : 400 }} onClick={() => setSumSort({ key: "z", dir: -1 })}>Grade</button>
+                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "val" ? "var(--gold)" : "transparent", color: sumSort.key === "val" ? "#151002" : "var(--ink)", fontWeight: sumSort.key === "val" ? 700 : 400 }} onClick={() => setSumSort({ key: "val", dir: -1 })}>Value</button>
               </div>
             </div>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -9978,7 +10133,7 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
               <div className="mut" style={{ fontSize: 10.5, marginBottom: 4 }}>QB format</div>
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }}>
                 {[["1qb", "1QB"], ["sf", "Superflex"]].map(([k, l]) => (
-                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbQb === k ? "var(--gold)" : "transparent", color: vbQb === k ? "rgba(242,182,60,.10)" : "var(--ink)", fontWeight: vbQb === k ? 700 : 400 }} onClick={() => setVbQb(k)}>{l}</button>
+                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbQb === k ? "var(--gold)" : "transparent", color: vbQb === k ? "#151002" : "var(--ink)", fontWeight: vbQb === k ? 700 : 400 }} onClick={() => setVbQb(k)}>{l}</button>
                 ))}
               </div>
             </div>
@@ -9986,7 +10141,7 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
               <div className="mut" style={{ fontSize: 10.5, marginBottom: 4 }}>TE</div>
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }}>
                 {[["std", "Standard"], ["tep", "TE premium"]].map(([k, l]) => (
-                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbTep === k ? "var(--gold)" : "transparent", color: vbTep === k ? "rgba(242,182,60,.10)" : "var(--ink)", fontWeight: vbTep === k ? 700 : 400 }} onClick={() => setVbTep(k)}>{l}</button>
+                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbTep === k ? "var(--gold)" : "transparent", color: vbTep === k ? "#151002" : "var(--ink)", fontWeight: vbTep === k ? 700 : 400 }} onClick={() => setVbTep(k)}>{l}</button>
                 ))}
               </div>
             </div>
@@ -9994,7 +10149,7 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
               <div className="mut" style={{ fontSize: 10.5, marginBottom: 4 }}>Scoring</div>
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }}>
                 {[["std", "Std"], ["half", "0.5 PPR"], ["ppr", "PPR"]].map(([k, l]) => (
-                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbScoring === k ? "var(--gold)" : "transparent", color: vbScoring === k ? "rgba(242,182,60,.10)" : "var(--ink)", fontWeight: vbScoring === k ? 700 : 400 }} onClick={() => setVbScoring(k)}>{l}</button>
+                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbScoring === k ? "var(--gold)" : "transparent", color: vbScoring === k ? "#151002" : "var(--ink)", fontWeight: vbScoring === k ? 700 : 400 }} onClick={() => setVbScoring(k)}>{l}</button>
                 ))}
               </div>
             </div>
@@ -10002,7 +10157,7 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
               <div className="mut" style={{ fontSize: 10.5, marginBottom: 4 }}>League type</div>
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }}>
                 {[["redraft", "Redraft"], ["dynasty", "Dynasty"]].map(([k, l]) => (
-                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbType === k ? "var(--gold)" : "transparent", color: vbType === k ? "rgba(242,182,60,.10)" : "var(--ink)", fontWeight: vbType === k ? 700 : 400 }} onClick={() => setVbType(k)}>{l}</button>
+                  <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: vbType === k ? "var(--gold)" : "transparent", color: vbType === k ? "#151002" : "var(--ink)", fontWeight: vbType === k ? 700 : 400 }} onClick={() => setVbType(k)}>{l}</button>
                 ))}
               </div>
             </div>
