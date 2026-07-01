@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27r";
+const BUILD_TAG = "2026.06.27s";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2593,6 +2593,14 @@ function OutlookCard({ content }) {
             </div>
           );
         }
+        if (l.kind === "altheader") {
+          // Underlined header introducing the list of alternative players.
+          return (
+            <div key={i} style={{ marginTop: 9, marginBottom: 5 }}>
+              <span className="disp" style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", borderBottom: "1px solid var(--line2)", paddingBottom: 2 }}>{l.x}</span>
+            </div>
+          );
+        }
         const isNote = l.t === "Note";
         return (
           <div key={i} style={{ display: "flex", gap: 8, marginBottom: i < content.length - 1 ? 6 : 0 }}>
@@ -4140,50 +4148,49 @@ function useSleeperLink(user, onUpdate) {
 // The Sleeper link control — a compact pill that sits NEXT TO the teams dropdown. When not linked it shows
 // an inline username field; when linked it shows who's connected with a Relink and Unlink option. All
 // linking happens right here (no trip to the Account page).
+// The Sleeper link control — a compact pill that sits NEXT TO the teams dropdown. When not linked it shows
+// an inline username field; when linked it shows who's connected with a single Unlink button. Unlinking
+// reveals the username field again so you can link a different account. All linking happens right here.
 function SleeperLinkControl({ link, unlink, linked, username }) {
-  const [editing, setEditing] = useState(false);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
   const doLink = async () => {
     setBusy(true); setErr("");
-    try { await link(input); setInput(""); setEditing(false); }
+    try { await link(input); setInput(""); }
     catch (e) { setErr(e && e.message ? e.message : "Could not link"); }
     finally { setBusy(false); }
   };
 
-  // Linked, not editing: show status + relink/unlink.
-  if (linked && !editing) {
+  // Linked: show status + a single Unlink button. Unlinking clears the link, which drops through to the
+  // input below so you can type a new username whenever you want.
+  if (linked) {
     return (
       <div style={{ display: "flex", alignItems: "center", gap: 8, border: "1px solid var(--line)", background: "var(--panel)", borderRadius: 12, padding: "9px 13px", minHeight: 56 }}>
         <div style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(95,208,168,.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
           <i className="ti ti-plug-connected" style={{ fontSize: 16, color: "var(--green)" }} aria-hidden="true" />
         </div>
-        <div style={{ minWidth: 0 }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
           <div style={{ fontSize: 11, color: "var(--green)", fontWeight: 700 }}>Sleeper linked</div>
-          <div style={{ fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 130 }}>{username}</div>
+          <div style={{ fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{username}</div>
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 3, marginLeft: 2 }}>
-          <button className="btn btn-mini" style={{ fontSize: 10, padding: "2px 7px" }} onClick={() => { setEditing(true); setInput(""); }}>Relink</button>
-          <button className="btn btn-mini" style={{ fontSize: 10, padding: "2px 7px" }} onClick={unlink}>Unlink</button>
-        </div>
+        <button className="btn btn-mini" style={{ flexShrink: 0 }} onClick={unlink}>Unlink</button>
       </div>
     );
   }
-  // Not linked (or relinking): inline username field.
+  // Not linked: inline username field to link (or link a different account after unlinking).
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 7, border: `1px solid ${editing ? "var(--gold)" : "var(--line)"}`, background: "var(--panel)", borderRadius: 12, padding: "9px 12px", minHeight: 56 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 7, border: "1px solid var(--line)", background: "var(--panel)", borderRadius: 12, padding: "9px 12px", minHeight: 56 }}>
       <div style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(107,168,229,.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
         <i className="ti ti-ghost-2" style={{ fontSize: 16, color: "var(--blue)" }} aria-hidden="true" />
       </div>
       <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={{ fontSize: 11, color: "var(--mut)", fontWeight: 600, marginBottom: 2 }}>{editing ? "Link a different Sleeper account" : "Link your Sleeper account"}</div>
+        <div style={{ fontSize: 11, color: "var(--mut)", fontWeight: 600, marginBottom: 2 }}>Link your Sleeper account</div>
         <div style={{ display: "flex", gap: 6 }}>
           <input className="gs" style={{ flex: 1, minWidth: 0, fontSize: 12.5, padding: "5px 8px" }} placeholder="Sleeper username" value={input}
-            onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") doLink(); }} autoFocus={editing} />
+            onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") doLink(); }} />
           <button className="btn btn-gold btn-mini" onClick={doLink} disabled={busy || !input.trim()}>{busy ? "…" : "Link"}</button>
-          {editing && <button className="btn btn-mini" onClick={() => { setEditing(false); setErr(""); }}>Cancel</button>}
         </div>
         {err && <div style={{ color: "var(--red)", fontSize: 11, marginTop: 3 }}>{err}</div>}
       </div>
@@ -7753,24 +7760,54 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     return survivalAtPick(players, sortedAdp, picks, targetOverall, cfg, 600);
   }, [targetOverall, sims, players, sortedAdp, picks, cfg, done]);
 
-  // "Why this pick" — a single plain-English reason for a recommended player, assembled from the live
-  // inputs the engine used (value vs market, positional need/wait-cost, scarcity, build fit). Shared by the
-  // recommendation rail AND the upcoming-pick hovers so the reasoning shows everywhere the pick is surfaced.
-  const whyPick = (p, waitCostMap, atUserPick) => {
+  // "Why this pick" — a plain-English reason focused on WHO THE PLAYER IS (role, quality, ceiling, our
+  // scouting take) and HOW HE FITS YOUR ROSTER (fills a starting hole, adds depth, position of need). This
+  // is meant to read like a scout's quick note, not a generic value blurb. `myCounts` (your current count
+  // by position) lets us speak to fit; it's optional.
+  const whyPick = (p, waitCostMap, atUserPick, myCounts) => {
     if (!p) return "";
-    const reasons = [];
-    const gap = p.valueRank != null && p.adp != null ? Math.round(p.adp - p.valueRank) : 0;
-    if (gap > 10) reasons.push("clear value here — worth more than his draft cost");
-    else if (gap > 4) reasons.push("solid value at this spot");
+    // 1) WHO HE IS — lead with the player. Prefer a hand-written scouting take if we have one; otherwise
+    //    build from role / depth-chart / tier / ceiling.
+    let who = "";
+    if (p.outlook) {
+      // Use the first sentence of the scouting blurb — it's the crux of who he is.
+      who = String(p.outlook).split(/(?<=[.!?])\s/)[0];
+    } else {
+      const bits = [];
+      const tierWord = p.tier <= 1 ? "an elite" : p.tier === 2 ? "a strong" : p.tier === 3 ? "a solid" : p.tier <= 5 ? "a useful" : "a depth";
+      const roleTxt = p.role ? p.role.toLowerCase() : null;
+      if (p.posDepth === 1 && roleTxt) bits.push(`${tierWord} ${p.pos} and his team's ${roleTxt}`);
+      else if (roleTxt) bits.push(`${tierWord} ${p.pos} — ${roleTxt}`);
+      else bits.push(`${tierWord} ${p.pos}`);
+      if (p.age && p.age <= 24 && cfg.type !== "redraft") bits.push(`still just ${p.age}, with room to grow`);
+      else if (p.ceil != null && p.pts && p.ceil - p.pts > p.pts * 0.28) bits.push("carries real weekly upside");
+      who = bits.join(", ");
+    }
+    // 2) HOW HE FITS — speak to your roster. Empty starting slot at his position → fills a hole; already
+    //    have starters → adds depth/insurance; otherwise a need signal from wait-cost.
+    const req = REQ_F(cfg.sf);
+    const have = myCounts && myCounts[p.pos] != null ? myCounts[p.pos] : null;
     const need = waitCostMap && waitCostMap[p.pos] != null ? waitCostMap[p.pos] : 0;
-    if (need > 12) reasons.push(`fills a real need at ${p.pos} that gets costly if you wait`);
-    else if (need > 5) reasons.push(`addresses your ${p.pos} depth`);
+    let fit = "";
+    if (have != null && (req[p.pos] || 0) > 0) {
+      const short = (req[p.pos] || 0) - have;
+      if (short >= 1) fit = `fills an open ${p.pos} starting spot for you`;
+      else if (short === 0) fit = `gives you a real ${p.pos} you'd start or flex`;
+      else fit = `adds quality depth behind your ${p.pos}s`;
+    } else if (need > 12) {
+      fit = `a spot you can't afford to punt much longer`;
+    } else if (need > 5) {
+      fit = `rounds out your ${p.pos} group`;
+    }
+    // 3) survival nudge, if he likely won't be back.
     const surv = sims && sims.pct && sims.pct[0] && sims.pct[0][p.id] != null ? sims.pct[0][p.id] : null;
-    if (surv != null && surv <= 25 && atUserPick) reasons.push("unlikely to make it back to your next pick");
-    if (p.rookie && cfg.type !== "redraft") reasons.push("a young piece for the long haul");
-    if (!reasons.length) reasons.push("the best overall value on the board for you right now");
-    let why = reasons.slice(0, 2).join(", and ");
-    return why.charAt(0).toUpperCase() + why.slice(1) + ".";
+    if (surv != null && surv <= 25 && atUserPick) fit = fit ? `${fit}, and he likely won't last to your next pick` : "he likely won't last to your next pick";
+
+    let out = who;
+    if (fit) out += ` — ${fit}`;
+    out = out.trim();
+    if (!out) out = `a strong value on the board for you here`;
+    return out.charAt(0).toUpperCase() + out.slice(1) + (/[.!?]$/.test(out) ? "" : ".");
   };
 
   // Advice for a hypothetical pick at overall index `atOverall` (0-based) made by `forTeam`, given the
@@ -8735,9 +8772,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   return (e) => showTip(e, [
                     { kind: "take", tone: "good", x: `${label} pick — ${v.name}` },
                     { kind: "stats", chips: [`${v.pos}${v.posRank}`, `+${v.vbd.toFixed(0)} VBD`, `${Math.round(v.pts)} pts`, `wait costs ${Math.max(0, adv.waitCost[v.pos]).toFixed(0)}`, ...(adv.impacts[v.id] ? [`projects you ${ordinal(adv.impacts[v.id].rank)}`] : [])] },
+                    { kind: "why", x: whyPick(v, adv.waitCost, true, adv.myCounts) },
+                    ...(cands.length > 1 ? [{ kind: "altheader", x: "Potential alternatives" }] : []),
                     ...cands.slice(1).map((c) => ({ tc: POS_COLOR[c.p.pos], t: `${c.p.pos}${c.p.posRank}`, x: `${c.p.name} · ${Math.round(c.p.pts)} pts` })),
-                    { t: "", x: "The top pick for this approach, then your next-best alternatives." },
-                    { kind: "why", x: whyPick(v, adv.waitCost, true) },
                   ]);
                 };
                 // Non-user pick: keep the simple "engine expects" line with its market-candidate hover.
@@ -8812,6 +8849,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   const primaryLabel = stratLabel[strategy] || "Recommended";
                   // Always show the "My build" line (constant), unless "My build" is the selected strategy.
                   const showBuild = strategy !== "build" && bldPick;
+                  const myCountsForWhy = (mySelAdvice && mySelAdvice.myCounts) || (advice && advice.myCounts) || null;
                   // Hover builder for a given pick + its candidate list.
                   const recTip = (label, pick, cands, color) => {
                     if (!pick) return undefined;
@@ -8819,9 +8857,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     return (e) => showTip(e, [
                       { kind: "take", tone: "good", x: `${label} — ${pick.name}` },
                       { kind: "stats", chips: [`${pick.pos}${pick.posRank}`, `+${pick.vbd != null ? pick.vbd.toFixed(0) : "0"} VBD`, `${Math.round(pick.pts || 0)} pts`, `ADP ${pick.adp != null ? pick.adp.toFixed(0) : "—"}`] },
+                      { kind: "why", x: whyPick(pick, advice && advice.waitCost, true, myCountsForWhy) },
+                      ...(alts.length ? [{ kind: "altheader", x: "Potential alternatives" }] : []),
                       ...alts.map((c) => ({ tc: POS_COLOR[c.p.pos], t: `${c.p.pos}${c.p.posRank}`, x: `${c.p.name} · ${Math.round(c.p.pts || 0)} pts` })),
-                      { t: "", x: "The top pick for this approach, then your next-best alternatives if he's gone." },
-                      { kind: "why", x: whyPick(pick, advice && advice.waitCost, true) },
                     ]);
                   };
                   const balTip = recTip(primaryLabel, balPick, selCands, "var(--gold)");
@@ -9328,7 +9366,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   {(() => {
                     // "Why this pick" — one plain-English line from the shared helper (value, need,
                     // scarcity, build fit), so the rail and the upcoming-pick hovers always match.
-                    const why = whyPick(advice.verdict, advice.waitCost, onClock === userIdx);
+                    const why = whyPick(advice.verdict, advice.waitCost, onClock === userIdx, advice.myCounts);
                     return (
                       <div style={{ fontSize: 12.5, lineHeight: 1.45, marginTop: 8, padding: "8px 10px", background: "rgba(242,182,60,.08)", borderLeft: "2px solid var(--gold)", borderRadius: "0 6px 6px 0" }}>
                         <span style={{ color: "var(--gold)", fontWeight: 700 }}>Why: </span><span style={{ color: "var(--ink)" }}>{why}</span>
