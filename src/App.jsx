@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27t";
+const BUILD_TAG = "2026.06.27u";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2894,6 +2894,7 @@ export default function App() {
   const [authError, setAuthError] = useState(null);
   const [leagues, setLeagues] = useState([]);
   const [activeId, setActiveId] = useState(null);
+  const [hubLeagueId, setHubLeagueId] = useState(null); // Sleeper league_id for the in-season team hub
   const [draftTab, setDraftTab] = useState(null); // optional tab to open the draft room on
   const [helpTab, setHelpTab] = useState(null); // optional tab to open Help on
   const [setupReturn, setSetupReturn] = useState(null); // where the New League flow should return to
@@ -3259,11 +3260,12 @@ export default function App() {
         onLibrary={() => setRoute("library")} onNewLeague={() => { setSetupReturn(null); setRoute("setup"); }} onDatabase={() => setRoute("database")}
         onOfficial={(id) => { setActiveId(id); setRoute("draft"); }} onMock={startMock} onQuickMock={() => setQuickMockOpen(true)}
         onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} onGuide={() => { setHelpTab("guide"); setRoute("help"); }} onAccount={() => setRoute("account")} onAdmin={() => setRoute("admin")} onSignOut={signOut}
-        onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} />}
+        onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }} />}
       {route === "leagueHub" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? <LeagueUmbrella user={user} league={lg} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")}
         onOfficial={(id) => { setDraftTab(null); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
         onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [] }); setActiveId(m.id); setRoute("draft"); }}
         onDeleteMock={deleteMock} onDelete={(id) => { deleteLeague(id); setRoute(user.paid ? "home" : "library"); }} /> : null; })()}
+      {route === "teamHub" && user && hubLeagueId && <TeamHub user={user} leagues={leagues} leagueId={hubLeagueId} onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} onUpdate={updateUser} />}
       {route === "home" && !user?.paid && <HomePage biz={biz} user={user} onSignIn={() => setAuthOpen(true)} onDemo={startDemo} onBuy={() => (user ? setRoute("checkout") : setAuthOpen(true))} onApp={() => setRoute("library")} onHelp={(t) => { setHelpTab(t || null); setRoute("help"); }} />}
       {route === "learn" && <HomePage biz={biz} user={user} onSignIn={() => setAuthOpen(true)} onDemo={startDemo} onBuy={() => (user ? setRoute("checkout") : setAuthOpen(true))} onApp={() => setRoute(user?.paid ? "home" : "library")} onHelp={(t) => { setHelpTab(t || null); setRoute("help"); }} initialTab="how" />}
       {route === "trends" && user && <TrendsPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user?.paid ? "home" : "library")} />}
@@ -4199,7 +4201,7 @@ function SleeperLinkControl({ link, unlink, linked, username }) {
 }
 
 // The teams dropdown — PURELY for viewing your teams. Linking lives in SleeperLinkControl next to it.
-function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, linked, sleeperName }) {
+function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, onOpenHub, linked, sleeperName }) {
   const [open, setOpen] = useState(false);
   const [sleeperLeagues, setSleeperLeagues] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -4305,7 +4307,8 @@ function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, link
                       <div className="mut" style={{ fontSize: 11 }}>{sl.total_rosters}-team{sl.made_picks != null ? ` · ${sl.made_picks} picks in` : ""}</div>
                     </div>
                     <StatusPill {...st} />
-                    {onNewFromSleeper && <button className="btn btn-mini btn-gold" onClick={() => onNewFromSleeper(sl)} style={{ flexShrink: 0 }}>Set up</button>}
+                    {onOpenHub && <button className="btn btn-mini btn-gold" onClick={() => onOpenHub(sl)} style={{ flexShrink: 0 }}>Open hub</button>}
+                    {onNewFromSleeper && <button className="btn btn-mini" onClick={() => onNewFromSleeper(sl)} style={{ flexShrink: 0 }}>Set up draft</button>}
                   </div>
                 );
               })}
@@ -4319,7 +4322,358 @@ function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, link
   );
 }
 
-function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate }) {
+// ============================ IN-SEASON TEAM HUB (Phase 3) ============================
+// The post-draft manager for a linked Sleeper league. It joins the live Sleeper roster/matchup/standings
+// data (from /sleeper/team-hub) against the SAME enriched, projection-scored player pool the draft board
+// uses (buildPlayers(cfg)), so every lineup/free-agent/roster call is grounded in real projected points.
+//
+// Strategy awareness: redraft leagues are always "win now". Dynasty/keeper leagues expose a posture —
+// Win now / Balanced / Rebuild — auto-suggested from the roster's age profile, because the right free-agent
+// and roster moves differ a lot depending on whether you're contending or building for the future.
+
+// Detect a dynasty roster's contention posture from the age of its projected starters (younger = rebuild).
+function detectPosture(starters) {
+  const ages = starters.map((p) => p && p.age).filter((a) => a != null);
+  if (ages.length < 3) return { posture: "balanced", avgAge: null, auto: true };
+  const avg = ages.reduce((a, b) => a + b, 0) / ages.length;
+  let posture = "balanced";
+  if (avg <= 24.5) posture = "rebuild";
+  else if (avg >= 27.5) posture = "winnow";
+  return { posture, avgAge: Math.round(avg * 10) / 10, auto: true };
+}
+
+// A player's "posture value" — how much this hub should like adding/holding him given the team's plan.
+// Win-now weights this-year points; rebuild weights youth/upside; balanced splits the difference.
+function postureValue(p, posture, isDynasty) {
+  const pts = p.pts || 0;
+  if (!isDynasty || posture === "winnow") return pts; // win-now: just points
+  const age = p.age || 27;
+  const youth = Math.max(0, 28 - age); // 0..~10
+  const upside = p.ceil != null && pts ? Math.max(0, p.ceil - pts) : 0;
+  if (posture === "rebuild") return pts * 0.55 + youth * 6 + upside * 0.5 + (p.rookie ? 15 : 0);
+  return pts * 0.8 + youth * 2.5 + upside * 0.2; // balanced
+}
+
+function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate }) {
+  const [data, setData] = useState(null);      // response from /sleeper/team-hub
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [posture, setPosture] = useState(null); // null until we auto-detect; user can override
+  const [tab, setTab] = useState("lineup");     // lineup | freeagents | roster | notes
+
+  // Build the enriched, projection-scored player pool for THIS league's cfg, keyed by Sleeper id.
+  const cfg = data && data.cfg ? normalizeHubCfg(data.cfg) : null;
+  const poolBySid = React.useMemo(() => {
+    if (!cfg) return null;
+    try {
+      setSpec(cfg.start);
+      const pool = buildPlayers(cfg);
+      const bySid = new Map();
+      pool.forEach((p) => { if (p.sid != null) bySid.set(String(p.sid), p); });
+      return { bySid, pool };
+    } catch (e) { return null; }
+  }, [cfg && JSON.stringify(cfg.start), cfg && cfg.sf, cfg && cfg.tePremMult, data && data.week]);
+
+  React.useEffect(() => {
+    let alive = true;
+    setLoading(true); setErr("");
+    api.sleeperTeamHub(leagueId).then((r) => {
+      if (!alive) return;
+      setData(r); setLoading(false);
+    }).catch((e) => { if (alive) { setErr(e && e.message ? e.message : "Could not load this league"); setLoading(false); } });
+    return () => { alive = false; };
+  }, [leagueId]);
+
+  // Resolve a list of Sleeper ids to enriched players (dropping any we can't match).
+  const resolve = (ids) => {
+    if (!poolBySid || !ids) return [];
+    return ids.map((id) => poolBySid.bySid.get(String(id))).filter(Boolean);
+  };
+
+  const isDynasty = cfg && (cfg.type === "dynasty" || cfg.type === "keeper");
+  const myTeam = data && data.teams ? data.teams.find((t) => t.rosterId === data.myRosterId) : null;
+  const myRoster = myTeam ? resolve(myTeam.players) : [];
+  const autoPosture = React.useMemo(() => {
+    if (!isDynasty) return { posture: "winnow", avgAge: null };
+    // detect from my best projected starters
+    const opt = myRoster.length ? lineupSlots(myRoster, cfg.sf) : { slots: [] };
+    const starters = opt.slots.map((s) => s.p).filter(Boolean);
+    return detectPosture(starters);
+  }, [myRoster.length, isDynasty, cfg && cfg.sf]);
+  const activePosture = posture || (autoPosture && autoPosture.posture) || "winnow";
+
+  if (loading) return <HubShell title="Team hub" onBack={onBack} onHome={onHome} onSignOut={onSignOut} user={user}><div className="mut" style={{ padding: 40, textAlign: "center" }}>Loading your league from Sleeper…</div></HubShell>;
+  if (err) return <HubShell title="Team hub" onBack={onBack} onHome={onHome} onSignOut={onSignOut} user={user}><div className="panel" style={{ padding: 20, margin: 20 }}><div style={{ color: "var(--red)", marginBottom: 10 }}>{err}</div><button className="btn" onClick={onBack}>← Back</button></div></HubShell>;
+  if (!data || !cfg) return <HubShell title="Team hub" onBack={onBack} onHome={onHome} onSignOut={onSignOut} user={user}><div className="mut" style={{ padding: 40, textAlign: "center" }}>No data for this league.</div></HubShell>;
+
+  if (data.myRosterId == null) {
+    return <HubShell title={data.leagueName || "Team hub"} onBack={onBack} onHome={onHome} onSignOut={onSignOut} user={user}>
+      <div className="panel" style={{ padding: 20, margin: 20 }}>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>We couldn't find your team in this league.</div>
+        <div className="mut" style={{ fontSize: 13 }}>Make sure the Sleeper account you linked is the one that owns a team in <b>{data.leagueName}</b>. You can re-link a different account from your home hub.</div>
+      </div>
+    </HubShell>;
+  }
+
+  // -------- Lineup optimizer: current starters vs the best possible lineup --------
+  const opt = lineupSlots(myRoster, cfg.sf);
+  const optimalPts = lineupPts(myRoster, cfg.sf);
+  // Current starters as reported by Sleeper (may be suboptimal). Resolve + score them.
+  const currentStarters = resolve((myTeam.starters || []).filter(Boolean));
+  const currentPts = Math.round(currentStarters.reduce((s, p) => s + (p.pts || 0), 0));
+  const leftOnBench = Math.max(0, optimalPts - currentPts);
+  // Which optimal starters are NOT in the current lineup? Those are the suggested swaps.
+  const currentSet = new Set(currentStarters.map((p) => p.sid));
+  const optimalStarters = opt.slots.map((s) => s.p).filter(Boolean);
+  const swapsIn = optimalStarters.filter((p) => !currentSet.has(p.sid));
+  const optimalSet = new Set(optimalStarters.map((p) => p.sid));
+  const swapsOut = currentStarters.filter((p) => !optimalSet.has(p.sid));
+
+  // -------- Free agents: best available, weighted by posture + your positional need --------
+  const rosteredSet = new Set((data.rostered || []).map(String));
+  const freeAgents = poolBySid ? poolBySid.pool.filter((p) => p.sid != null && !rosteredSet.has(String(p.sid))) : [];
+  // Your positional need: compare your starters' quality to a replacement baseline.
+  const req = REQ_F(cfg.sf);
+  const myByPos = { QB: [], RB: [], WR: [], TE: [] };
+  myRoster.forEach((p) => { if (myByPos[p.pos]) myByPos[p.pos].push(p); });
+  POS.forEach((k) => myByPos[k].sort((a, b) => b.pts - a.pts));
+  const needByPos = {};
+  POS.forEach((pos) => {
+    const need = req[pos] || 0;
+    const haveStarters = myByPos[pos].slice(0, need);
+    const worstStarter = haveStarters.length ? haveStarters[haveStarters.length - 1].pts : 0;
+    // "need" is higher when your worst starter at the position is weak or a slot is empty
+    needByPos[pos] = haveStarters.length < need ? 999 : Math.max(0, 1) * (200 - worstStarter);
+  });
+  const faScored = freeAgents.map((p) => {
+    const base = postureValue(p, activePosture, isDynasty);
+    const myWorstAtPos = (myByPos[p.pos] && myByPos[p.pos][ (req[p.pos]||1) - 1 ]) ? myByPos[p.pos][(req[p.pos]||1)-1].pts : 0;
+    const upgrade = Math.max(0, (p.pts || 0) - myWorstAtPos); // how much better than your current worst starter there
+    const needBoost = (needByPos[p.pos] === 999 ? 60 : 0);
+    return { p, score: base + upgrade * 1.4 + needBoost, upgrade };
+  }).sort((a, b) => b.score - a.score);
+  const topFA = faScored.slice(0, 12);
+
+  // -------- Weekly notes --------
+  const notes = [];
+  if (leftOnBench >= 3) notes.push({ tone: "warn", icon: "ti-alert-triangle", text: `You're projected to leave ${leftOnBench} points on your bench this week — check the Lineup tab for the swaps.` });
+  const byeThisWeek = myRoster.filter((p) => p.bye === data.week);
+  if (byeThisWeek.length) notes.push({ tone: "warn", icon: "ti-calendar-off", text: `${byeThisWeek.length} of your players are on bye in Week ${data.week}: ${byeThisWeek.map((p) => p.name).join(", ")}.` });
+  const injured = myRoster.filter((p) => p.inj);
+  if (injured.length) notes.push({ tone: "warn", icon: "ti-ambulance", text: `Injury flags: ${injured.map((p) => `${p.name} (${p.inj})`).join(", ")}.` });
+  if (topFA.length && topFA[0].upgrade > 8) notes.push({ tone: "good", icon: "ti-arrow-up-right", text: `${topFA[0].p.name} is available and projects ${Math.round(topFA[0].upgrade)} pts better than your weakest ${topFA[0].p.pos} starter.` });
+  POS.forEach((pos) => { if (needByPos[pos] === 999) notes.push({ tone: "warn", icon: "ti-user-question", text: `You don't have enough starters at ${pos} — see free agents.` }); });
+  if (isDynasty) {
+    if (activePosture === "rebuild") notes.push({ tone: "info", icon: "ti-seedling", text: "Rebuild mode: the free-agent list favors younger, ascending players with upside over aging veterans." });
+    else if (activePosture === "winnow") notes.push({ tone: "info", icon: "ti-trophy", text: "Win-now mode: the free-agent list is ranked purely on this season's projected points." });
+    else notes.push({ tone: "info", icon: "ti-scale", text: "Balanced mode: the free-agent list blends this-year production with youth and upside." });
+  }
+  if (!notes.length) notes.push({ tone: "good", icon: "ti-circle-check", text: "Your lineup is optimized and you have no urgent roster holes. Nicely set." });
+
+  const postureLabel = { winnow: "Win now", balanced: "Balanced", rebuild: "Rebuild" };
+  const myStanding = (data.standings || []).find((s) => s.isMe);
+
+  return (
+    <HubShell title={data.leagueName || "Team hub"} onBack={onBack} onHome={onHome} onSignOut={onSignOut} user={user}>
+      <div style={{ maxWidth: 980, margin: "0 auto", padding: "16px 20px 40px" }}>
+        {/* Header row: league identity + this week + posture */}
+        <div className="panel" style={{ padding: 16, marginBottom: 14 }}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 14, flexWrap: "wrap" }}>
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <div className="disp" style={{ fontSize: 20, fontWeight: 800 }}>{myTeam.teamName}</div>
+              <div className="mut" style={{ fontSize: 12.5, marginTop: 2 }}>
+                {data.leagueName} · Week {data.week} · {cfg.teams}-team {isDynasty ? "dynasty" : "redraft"}{cfg.sf ? " · SF" : ""}
+                {myStanding ? <> · {ordinal(myStanding.rank)} place ({myStanding.record.wins}-{myStanding.record.losses}{myStanding.record.ties ? `-${myStanding.record.ties}` : ""})</> : null}
+              </div>
+            </div>
+            {/* Posture control */}
+            <div>
+              <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4, textAlign: "right" }}>
+                {isDynasty ? "Team plan" : "Goal"}{autoPosture && autoPosture.avgAge ? ` · starters avg ${autoPosture.avgAge}y` : ""}
+              </div>
+              {isDynasty ? (
+                <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }}>
+                  {["winnow", "balanced", "rebuild"].map((k) => (
+                    <button key={k} className="btn btn-mini" style={{ borderRadius: 0, border: "none", borderLeft: k !== "winnow" ? "1px solid var(--line)" : "none", background: activePosture === k ? "var(--gold)" : "transparent", color: activePosture === k ? "#151002" : "var(--ink)", fontWeight: activePosture === k ? 700 : 400 }} onClick={() => setPosture(k)}>{postureLabel[k]}</button>
+                  ))}
+                </div>
+              ) : (
+                <div className="chip" style={{ color: "var(--gold)" }}>Win now</div>
+              )}
+              {isDynasty && posture == null && autoPosture && <div className="mut" style={{ fontSize: 10, marginTop: 3, textAlign: "right" }}>auto-set from roster age — tap to change</div>}
+            </div>
+          </div>
+        </div>
+
+        {/* This week's matchup */}
+        {data.matchup && data.matchup.opp && (
+          <div className="panel" style={{ padding: 14, marginBottom: 14 }}>
+            <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 8 }}>Week {data.week} matchup</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700 }}>{data.matchup.me.teamName}</div>
+                <div className="num" style={{ fontSize: 22, fontWeight: 800, color: "var(--gold)" }}>{data.matchup.me.weekPoints != null ? data.matchup.me.weekPoints.toFixed(1) : "—"}</div>
+              </div>
+              <div className="mut" style={{ fontSize: 12, fontWeight: 700 }}>vs</div>
+              <div style={{ flex: 1, textAlign: "right" }}>
+                <div style={{ fontWeight: 700 }}>{data.matchup.opp.teamName}</div>
+                <div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{data.matchup.opp.weekPoints != null ? data.matchup.opp.weekPoints.toFixed(1) : "—"}</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Tabs */}
+        <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+          {[["lineup", "Lineup", "ti-clipboard-check"], ["freeagents", "Free agents", "ti-user-plus"], ["roster", "My roster", "ti-users"], ["notes", "This week", "ti-notes"]].map(([k, label, icon]) => (
+            <button key={k} className="btn btn-mini" style={{ background: tab === k ? "var(--gold)" : "transparent", color: tab === k ? "#151002" : "var(--ink)", fontWeight: tab === k ? 700 : 400 }} onClick={() => setTab(k)}>
+              <i className={`ti ${icon}`} style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />{label}
+            </button>
+          ))}
+        </div>
+
+        {/* ---- LINEUP TAB ---- */}
+        {tab === "lineup" && (
+          <div className="panel" style={{ padding: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+              <div className="disp" style={{ fontSize: 17, fontWeight: 700 }}>Lineup optimizer</div>
+              <div style={{ fontSize: 13 }}>
+                <span className="mut">Optimal </span><b style={{ color: "var(--gold)" }}>{optimalPts}</b>
+                <span className="mut"> · Current </span><b>{currentPts}</b>
+                {leftOnBench > 0 ? <span style={{ color: "var(--red)", fontWeight: 700 }}> · {leftOnBench} left on bench</span> : <span style={{ color: "var(--green)", fontWeight: 700 }}> · optimized ✓</span>}
+              </div>
+            </div>
+            {leftOnBench > 0 && (swapsIn.length > 0) && (
+              <div style={{ background: "rgba(242,101,92,.08)", border: "1px solid var(--red)", borderRadius: 8, padding: "10px 12px", marginBottom: 12 }}>
+                <div style={{ fontWeight: 700, color: "var(--red)", fontSize: 13, marginBottom: 5 }}>Suggested changes</div>
+                {swapsIn.map((pin, i) => {
+                  const pout = swapsOut[i];
+                  return <div key={pin.sid} style={{ fontSize: 12.5, padding: "2px 0" }}>
+                    <span style={{ color: "var(--green)" }}><i className="ti ti-arrow-up" style={{ fontSize: 12 }} aria-hidden="true" /> Start <b><Dot pos={pin.pos} />{pin.name}</b> ({Math.round(pin.pts)})</span>
+                    {pout && <span className="mut"> over <Dot pos={pout.pos} />{pout.name} ({Math.round(pout.pts)})</span>}
+                  </div>;
+                })}
+              </div>
+            )}
+            <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>Optimal starting lineup</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              {opt.slots.map((s, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 10px", background: "var(--panel2)", borderRadius: 7 }}>
+                  <span className="disp" style={{ fontSize: 11, fontWeight: 700, color: "var(--mut)", width: 42 }}>{s.slot}</span>
+                  {s.p ? <>
+                    <Dot pos={s.p.pos} /><span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>{s.p.name} <span className="mut" style={{ fontSize: 11 }}>{s.p.pos}{s.p.posRank} · {s.p.team}</span></span>
+                    <span className="num" style={{ fontWeight: 700 }}>{Math.round(s.p.pts)}</span>
+                    {!currentSet.has(s.p.sid) && <span className="chip" style={{ fontSize: 9, borderColor: "var(--green)", color: "var(--green)" }}>swap in</span>}
+                  </> : <span className="mut" style={{ flex: 1 }}>— empty —</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ---- FREE AGENTS TAB ---- */}
+        {tab === "freeagents" && (
+          <div className="panel" style={{ padding: 16 }}>
+            <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 3 }}>Best available</div>
+            <div className="mut" style={{ fontSize: 12, marginBottom: 12 }}>
+              Ranked for your team{isDynasty ? ` in ${postureLabel[activePosture].toLowerCase()} mode` : ""} — factoring your positional needs and how much each upgrades your current starters.
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {topFA.map(({ p, upgrade }) => (
+                <div key={p.sid} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 11px", background: "var(--panel2)", borderRadius: 8 }}>
+                  <Dot pos={p.pos} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · {p.team}{p.age ? ` · ${p.age}y` : ""}{p.rookie ? " · rookie" : ""}</span></div>
+                    {p.inj && <div style={{ fontSize: 10.5, color: "var(--red)" }}>{p.inj}</div>}
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div className="num" style={{ fontWeight: 700 }}>{Math.round(p.pts)} pts</div>
+                    {upgrade > 3 && <div style={{ fontSize: 10.5, color: "var(--green)" }}>+{Math.round(upgrade)} vs your {p.pos}</div>}
+                  </div>
+                </div>
+              ))}
+              {!topFA.length && <div className="mut">No available players found — your league pool may be fully rostered.</div>}
+            </div>
+          </div>
+        )}
+
+        {/* ---- ROSTER TAB ---- */}
+        {tab === "roster" && (
+          <div className="panel" style={{ padding: 16 }}>
+            <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 10 }}>My roster <span className="mut" style={{ fontSize: 12, fontWeight: 400 }}>({myRoster.length} players)</span></div>
+            {POS.map((pos) => {
+              const at = myRoster.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts);
+              if (!at.length) return null;
+              return <div key={pos} style={{ marginBottom: 12 }}>
+                <div className="disp" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: POS_COLOR[pos], marginBottom: 4 }}>{pos} <span className="mut">({at.length})</span></div>
+                {at.map((p, i) => (
+                  <div key={p.sid} style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 8px", fontSize: 12.5, borderBottom: "1px solid var(--line)" }}>
+                    <span style={{ fontWeight: 600, flex: 1 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · {p.team}{p.age ? ` · ${p.age}y` : ""}{i < (req[pos] || 0) ? "" : " · bench"}</span></span>
+                    {p.bye === data.week && <span className="chip" style={{ fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>BYE</span>}
+                    <span className="num" style={{ fontWeight: 700 }}>{Math.round(p.pts)}</span>
+                  </div>
+                ))}
+              </div>;
+            })}
+          </div>
+        )}
+
+        {/* ---- NOTES TAB ---- */}
+        {tab === "notes" && (
+          <div className="panel" style={{ padding: 16 }}>
+            <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 12 }}>What to consider this week</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {notes.map((n, i) => {
+                const c = n.tone === "warn" ? "var(--red)" : n.tone === "good" ? "var(--green)" : "var(--blue)";
+                return <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", background: "var(--panel2)", borderRadius: 8, borderLeft: `2px solid ${c}` }}>
+                  <i className={`ti ${n.icon}`} style={{ fontSize: 16, color: c, marginTop: 1 }} aria-hidden="true" />
+                  <span style={{ fontSize: 13, lineHeight: 1.45 }}>{n.text}</span>
+                </div>;
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    </HubShell>
+  );
+}
+
+// Normalize the cfg the backend derived from Sleeper into the shape the engine expects (start slots, flags).
+function normalizeHubCfg(c) {
+  const start = c.start || { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0, DST: 0, K: 0 };
+  return {
+    name: "Sleeper league",
+    teams: c.teams || 12,
+    rounds: c.rounds || 15,
+    type: c.type || "redraft",
+    sf: !!c.sf || (start.SUPER || 0) > 0,
+    tePremMult: c.tePremMult || 0,
+    scoringType: c.scoringType || "ppr",
+    start,
+    scoring: {},
+    caps: {},
+    pickTrades: [],
+  };
+}
+
+// Shared header/frame for hub pages.
+function HubShell({ title, onBack, onHome, onSignOut, user, children }) {
+  return (
+    <div>
+      <div className="hairline" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 20px" }}>
+        <button className="btn btn-mini" onClick={onBack}>← Back</button>
+        <Wordmark size={18} />
+        <div style={{ flex: 1 }} />
+        <span className="chip" style={{ color: "var(--blue)" }}><i className="ti ti-plug-connected" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />In-season hub</span>
+        <button className="btn btn-mini" onClick={onHome}>Home</button>
+        <button className="btn btn-mini" onClick={onSignOut}>Sign out</button>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub }) {
   const totalMocks = leagues.reduce((s, l) => s + (l.mocks || []).length, 0) + funMocks.length;
   const inProgress = leagues.filter((l) => l.picks.length > 0 && l.picks.length < (l.cfg.teams || 12) * l.cfg.rounds);
   const [q, setQ] = useState("");
@@ -4409,7 +4763,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
       {/* Your teams (dropdown, view-only) with the Sleeper link control right beside it */}
       <div style={{ maxWidth: 940, margin: "0 auto", padding: "0 20px 8px" }}>
         <div style={{ display: "flex", gap: 10, alignItems: "flex-start", flexWrap: "wrap" }}>
-          <YourTeamsDropdown user={user} leagues={leagues} onOpenLeague={(id) => onUmbrella(id)} onNewFromSleeper={() => onNewLeague()} linked={sleeperLink.linked} sleeperName={sleeperLink.username} />
+          <YourTeamsDropdown user={user} leagues={leagues} onOpenLeague={(id) => onUmbrella(id)} onNewFromSleeper={() => onNewLeague()} onOpenHub={onOpenHub} linked={sleeperLink.linked} sleeperName={sleeperLink.username} />
           <div style={{ width: 260, maxWidth: "100%" }}>
             <SleeperLinkControl link={sleeperLink.link} unlink={sleeperLink.unlink} linked={sleeperLink.linked} username={sleeperLink.username} />
           </div>
