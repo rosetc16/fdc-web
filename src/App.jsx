@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27a";
+const BUILD_TAG = "2026.06.27c";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2258,29 +2258,67 @@ function BootSplash({ css }) {
         @keyframes fdcfloatin{0%{opacity:0;transform:translateY(6px)}100%{opacity:1;transform:translateY(0)}}
         @keyframes fdcbar{0%{width:8%}70%{width:88%}100%{width:96%}}
         @keyframes fdcglow{0%,100%{filter:drop-shadow(0 0 4px rgba(242,182,60,.4))}50%{filter:drop-shadow(0 0 16px rgba(242,182,60,.8))}}
+        @keyframes fdcneedle{0%{transform:rotate(-140deg)}30%{transform:rotate(25deg)}45%{transform:rotate(-12deg)}60%{transform:rotate(6deg)}72%{transform:rotate(0deg)}88%{transform:rotate(0deg)}100%{transform:rotate(220deg)}}
       `}</style>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 26 }}>
-        {/* Compass + radar rig */}
-        <div style={{ position: "relative", width: 132, height: 132 }}>
+        {/* Football-compass rig: a football that doubles as a compass housing, with a spinning needle,
+            cardinal ticks, a radar sweep, and orbiting position dots. */}
+        <div style={{ position: "relative", width: 148, height: 148 }}>
           {/* outer ring */}
           <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "2px solid var(--line)", opacity: 0.7 }} />
-          {/* rotating tick ring */}
+          {/* rotating dashed tick ring */}
           <div style={{ position: "absolute", inset: 6, borderRadius: "50%", border: "2px dashed var(--line2)", animation: "fdcspin 14s linear infinite" }} />
           {/* radar sweep */}
           <div style={{ position: "absolute", inset: 6, borderRadius: "50%", overflow: "hidden", animation: "fdcsweep 2.4s linear infinite" }}>
-            <div style={{ position: "absolute", left: "50%", top: "50%", width: "50%", height: "50%", transformOrigin: "top left", background: "conic-gradient(from 0deg, rgba(242,182,60,.35), rgba(242,182,60,0) 70%)" }} />
+            <div style={{ position: "absolute", left: "50%", top: "50%", width: "50%", height: "50%", transformOrigin: "top left", background: "conic-gradient(from 0deg, rgba(242,182,60,.32), rgba(242,182,60,0) 70%)" }} />
           </div>
-          {/* orbiting position dots */}
+          {/* orbiting position dots (QB/RB/WR/TE colors) */}
           <div style={{ position: "absolute", inset: 0, animation: "fdcorbit 3.6s linear infinite" }}>
             {posDots.map((d, i) => (
               <div key={i} style={{ position: "absolute", left: "50%", top: "50%", width: 0, height: 0, transform: `rotate(${d.a}deg)` }}>
-                <span style={{ position: "absolute", left: -4, top: -60, width: 8, height: 8, borderRadius: "50%", background: d.c, boxShadow: `0 0 8px ${d.c}` }} />
+                <span style={{ position: "absolute", left: -4, top: -68, width: 8, height: 8, borderRadius: "50%", background: d.c, boxShadow: `0 0 8px ${d.c}` }} />
               </div>
             ))}
           </div>
-          {/* compass core */}
-          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", animation: "fdcglow 2s ease-in-out infinite" }}>
-            <i className="ti ti-compass" style={{ fontSize: 46, color: "var(--gold)", animation: "fdcspin 6s ease-in-out infinite" }} aria-hidden="true" />
+          {/* Football-compass core */}
+          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", animation: "fdcglow 2.2s ease-in-out infinite" }}>
+            <svg width="104" height="104" viewBox="0 0 100 100" aria-hidden="true">
+              <defs>
+                <radialGradient id="fdcLeather" cx="42%" cy="38%" r="72%">
+                  <stop offset="0%" stopColor="#A9612E" />
+                  <stop offset="55%" stopColor="#8A4A22" />
+                  <stop offset="100%" stopColor="#5E3115" />
+                </radialGradient>
+                <linearGradient id="fdcNeedleN" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--red)" />
+                  <stop offset="100%" stopColor="#B33" />
+                </linearGradient>
+              </defs>
+              {/* football body: an ellipse tilted so it reads as a football but frames the compass */}
+              <g transform="rotate(-32 50 50)">
+                <ellipse cx="50" cy="50" rx="46" ry="30" fill="url(#fdcLeather)" stroke="#3A1E0C" strokeWidth="2.5" />
+                {/* end caps */}
+                <path d="M6 50 q4 -6 4 -0 q0 6 -4 0Z" fill="#F0E4CC" opacity="0.9" />
+                <path d="M94 50 q-4 -6 -4 -0 q0 6 4 0Z" fill="#F0E4CC" opacity="0.9" />
+                {/* long seam / laces belt (subtle, since the compass sits on top) */}
+                <line x1="16" y1="50" x2="84" y2="50" stroke="#F0E4CC" strokeWidth="2" opacity="0.5" strokeDasharray="1 3" />
+              </g>
+              {/* compass tick ring on the leather */}
+              <circle cx="50" cy="50" r="27" fill="#2A1608" stroke="#C8873C" strokeWidth="1.5" opacity="0.95" />
+              {[0, 45, 90, 135, 180, 225, 270, 315].map((a) => (
+                <line key={a} x1="50" y1="26" x2="50" y2={a % 90 === 0 ? 30 : 28} stroke="var(--gold2)" strokeWidth={a % 90 === 0 ? 2 : 1} opacity={a % 90 === 0 ? 0.95 : 0.55} transform={`rotate(${a} 50 50)`} />
+              ))}
+              {/* cardinal N marker */}
+              <text x="50" y="20" textAnchor="middle" fontSize="8" fontWeight="800" fill="var(--gold2)" fontFamily="inherit">N</text>
+              {/* spinning compass needle */}
+              <g style={{ transformOrigin: "50px 50px", animation: "fdcneedle 3s cubic-bezier(.5,0,.5,1) infinite" }}>
+                <polygon points="50,27 44,50 50,50" fill="url(#fdcNeedleN)" />
+                <polygon points="50,27 56,50 50,50" fill="#D9463E" />
+                <polygon points="50,73 44,50 50,50" fill="#E7EEF5" />
+                <polygon points="50,73 56,50 50,50" fill="#B9C6D3" />
+                <circle cx="50" cy="50" r="4.5" fill="#2A1608" stroke="var(--gold2)" strokeWidth="1.5" />
+              </g>
+            </svg>
           </div>
         </div>
 
@@ -2738,40 +2776,41 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 @media(prefers-reduced-motion:reduce){.gs-root *{transition:none!important;animation:none!important}}
 `;
 
-// Compass mark — the brand. Spins slowly; the needle can point to a heading (degrees).
+// Compass mark — the brand: a football that doubles as a compass housing (matches the loading screen).
+// Used everywhere via <Wordmark> and directly. `spin` gently rotates the whole mark; `heading` points the
+// needle to a fixed bearing (else it rests pointing north).
 function Compass({ size = 40, heading = null, spin = false }) {
-  // "The Instrument" — premium engraved navigational mark.
-  // Engraved double ring, finely graduated rim (the thousands of drafts/data points the
-  // engine reads), a center rose built from football laces, and a sharp dual needle.
-  const ticks = [];
-  for (let i = 0; i < 36; i++) {
-    const a = (i * 10 * Math.PI) / 180;
-    const cardinal = i % 9 === 0;
-    const r1 = cardinal ? 40 : 41, r2 = cardinal ? 33 : 36;
-    ticks.push(
-      <line key={i}
-        x1={50 + r1 * Math.sin(a)} y1={50 - r1 * Math.cos(a)}
-        x2={50 + r2 * Math.sin(a)} y2={50 - r2 * Math.cos(a)}
-        stroke={cardinal ? "var(--gold)" : "#4a4a44"} strokeWidth={cardinal ? 1.4 : 0.6} />
-    );
-  }
+  const uid = React.useMemo(() => "cmp" + Math.random().toString(36).slice(2, 8), []);
   return (
-    <svg width={size} height={size} viewBox="0 0 100 100" style={{ display: "block" }}>
-      <circle cx="50" cy="50" r="46" fill="none" stroke="#9a9488" strokeWidth="1" opacity="0.85" />
-      <circle cx="50" cy="50" r="42" fill="none" stroke="var(--gold)" strokeWidth="0.9" opacity="0.85" />
-      <g className={spin ? "spin-slow" : ""}>{ticks}</g>
-      {/* football-lace rose at center */}
-      <g stroke="var(--gold)" strokeWidth="1.1" fill="none" opacity="0.92">
-        <line x1="50" y1="30" x2="50" y2="70" />
-        <line x1="46" y1="37" x2="54" y2="37" /><line x1="45" y1="45" x2="55" y2="45" />
-        <line x1="45" y1="55" x2="55" y2="55" /><line x1="46" y1="63" x2="54" y2="63" />
+    <svg width={size} height={size} viewBox="0 0 100 100" style={{ display: "block" }} className={spin ? "spin-slow" : ""}>
+      <defs>
+        <radialGradient id={uid + "L"} cx="42%" cy="38%" r="72%">
+          <stop offset="0%" stopColor="#A9612E" /><stop offset="55%" stopColor="#8A4A22" /><stop offset="100%" stopColor="#5E3115" />
+        </radialGradient>
+        <linearGradient id={uid + "N"} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="var(--red,#F2655C)" /><stop offset="100%" stopColor="#B33" />
+        </linearGradient>
+      </defs>
+      {/* football body (tilted ellipse) with white end-caps + lace seam */}
+      <g transform="rotate(-32 50 50)">
+        <ellipse cx="50" cy="50" rx="46" ry="30" fill={`url(#${uid}L)`} stroke="#3A1E0C" strokeWidth="2.5" />
+        <path d="M6 50 q4 -6 4 -0 q0 6 -4 0Z" fill="#F0E4CC" opacity="0.9" />
+        <path d="M94 50 q-4 -6 -4 -0 q0 6 4 0Z" fill="#F0E4CC" opacity="0.9" />
+        <line x1="16" y1="50" x2="84" y2="50" stroke="#F0E4CC" strokeWidth="2" opacity="0.5" strokeDasharray="1 3" />
       </g>
-      {/* sharp dual needle (points to heading when provided) */}
-      <g className={heading == null ? "spin-needle" : ""} style={{ transform: heading != null ? `rotate(${heading}deg)` : undefined, transformOrigin: "50px 50px" }}>
-        <polygon points="50,23 53,50 47,50" fill="var(--gold2,#f0c560)" />
-        <polygon points="50,77 53,50 47,50" fill="#46463f" />
+      {/* compass dial on the leather */}
+      <circle cx="50" cy="50" r="27" fill="#2A1608" stroke="#C8873C" strokeWidth="1.5" opacity="0.95" />
+      {[0, 45, 90, 135, 180, 225, 270, 315].map((a) => (
+        <line key={a} x1="50" y1="26" x2="50" y2={a % 90 === 0 ? 30 : 28} stroke="var(--gold2,#FFD071)" strokeWidth={a % 90 === 0 ? 2 : 1} opacity={a % 90 === 0 ? 0.95 : 0.55} transform={`rotate(${a} 50 50)`} />
+      ))}
+      {/* needle (points to heading when provided, else north) */}
+      <g style={{ transform: heading != null ? `rotate(${heading}deg)` : undefined, transformOrigin: "50px 50px" }}>
+        <polygon points="50,27 44,50 50,50" fill={`url(#${uid}N)`} />
+        <polygon points="50,27 56,50 50,50" fill="#D9463E" />
+        <polygon points="50,73 44,50 50,50" fill="#E7EEF5" />
+        <polygon points="50,73 56,50 50,50" fill="#B9C6D3" />
+        <circle cx="50" cy="50" r="4.5" fill="#2A1608" stroke="var(--gold2,#FFD071)" strokeWidth="1.5" />
       </g>
-      <circle cx="50" cy="50" r="3.6" fill="#000" stroke="var(--gold)" strokeWidth="1.2" />
     </svg>
   );
 }
@@ -7009,6 +7048,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // Real Sleeper clock: { deadlineMs, timerSec, skewMs } from the live draft. skewMs aligns the
   // server's clock to the browser's so the countdown matches Sleeper exactly and survives refreshes.
   const [liveClock, setLiveClock] = useState(null);
+  const [nameVersion, setNameVersion] = useState(0);       // bumps when live Sleeper team names refresh, to re-render
+  const [liveTeamNames, setLiveTeamNames] = useState(null); // real names pulled live from Sleeper (win over cfg)
   // set active team count + names for this league before any engine call
   setTeams(cfg.teams || 12);
   setSpec(cfg.start);
@@ -7027,7 +7068,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     else if (k.team != null) (noCostByTeam[k.team] = noCostByTeam[k.team] || []).push(k.playerId);
   });
   setKeeperAdds(noCostByTeam);
-  setTeamNames(cfg.teamNames && cfg.teamNames.length === (cfg.teams || 12) ? cfg.teamNames : TEAM_NAMES_POOL.slice(0, cfg.teams || 12));
+  // Team names: live Sleeper names (pulled during the draft) win over the saved cfg names, which win over
+  // stock names. The live set can arrive/improve after connect (e.g. once a pre-draft league sets its order),
+  // so once we have it we keep using it across re-renders instead of resetting to the stored cfg names.
+  setTeamNames(
+    (liveTeamNames && liveTeamNames.length === (cfg.teams || 12)) ? liveTeamNames
+    : (cfg.teamNames && cfg.teamNames.length === (cfg.teams || 12)) ? cfg.teamNames
+    : TEAM_NAMES_POOL.slice(0, cfg.teams || 12)
+  );
   const ROUNDS = cfg.rounds;
   const TOTAL = totalOf(cfg);
   const hasSlot = cfg.slot != null && cfg.slot >= 1;
@@ -7154,7 +7202,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // Whether the guide is auto-showing on room entry (true) vs opened via the Hub "Tips" button (false).
   // The "don't show again" checkbox only appears in the auto case.
   const [introAuto, setIntroAuto] = useState(true);
-  const [nameVersion, setNameVersion] = useState(0); // bumps when live Sleeper team names refresh, to re-render
   const closeIntro = () => { try { if (introAuto && introDont && window.localStorage) window.localStorage.setItem(introKey, "1"); } catch (e) {} setShowIntro(false); };
   // Open the guide on demand (from the hub's "Tips" button), optionally to a specific tab.
   const openGuide = (tab) => { setIntroTab(tab || "how"); setIntroAuto(false); setShowIntro(true); };
@@ -7585,12 +7632,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           let realCount = 0;
           for (let s = 1; s <= cfg.teams; s++) {
             const nm = d.slotNames[s];
-            if (nm && !/^Team\s+\d+$/.test(nm)) { realCount++; fresh.push(nm); } else fresh.push(TEAM_NAMES[s - 1] || `Team ${s}`);
+            if (nm && !/^Team\s+\d+$/.test(nm)) { realCount++; fresh.push(nm); } else fresh.push((liveTeamNames && liveTeamNames[s - 1]) || (cfg.teamNames && cfg.teamNames[s - 1]) || `Team ${s}`);
           }
-          // Only override if Sleeper gave us real names for most teams and they actually changed.
-          if (realCount >= Math.ceil(cfg.teams / 2) && JSON.stringify(fresh) !== JSON.stringify(TEAM_NAMES.slice(0, cfg.teams))) {
-            setTeamNames(fresh);
-            setNameVersion((v) => v + 1);
+          // Only adopt Sleeper's names when it gave us real ones for most teams, and only when they changed.
+          if (realCount >= Math.ceil(cfg.teams / 2)) {
+            const prev = liveTeamNames || [];
+            if (JSON.stringify(fresh) !== JSON.stringify(prev)) {
+              setLiveTeamNames(fresh);
+              setTeamNames(fresh);
+              setNameVersion((v) => v + 1);
+            }
           }
         }
         // Build the engine pick list from Sleeper's pick order, mapping names→ids and dropping any
@@ -8305,11 +8356,33 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   )}
                 </div>
               )}
-              {currentPred && (
-                <div style={{ fontSize: 11, marginTop: 3 }} className="mut">
-                  {onClock === userIdx ? <>rec: <b style={{ color: "var(--gold)" }}>{currentPred.name}</b></> : <>engine expects: <b style={{ color: "var(--ink)" }}>{currentPred.name}</b>{currentProb != null && ` (${currentProb}%)`}</>}
-                </div>
-              )}
+              {currentPred && (() => {
+                const isYou = onClock === userIdx;
+                // For YOUR current pick, use the recommendation rail's own verdict + alternatives so the
+                // tracker and the rail agree. For another team, use the projected path's market candidates.
+                let cands5 = null;
+                if (isYou && advice && advice.verdict) {
+                  cands5 = [{ p: advice.verdict }, ...(advice.alts || []).map((p) => ({ p }))].slice(0, 5);
+                } else {
+                  const cur = path && path[0] ? path[0] : null;
+                  cands5 = cur && cur.cands5 && cur.cands5.length > 1 ? cur.cands5 : null;
+                }
+                const tip = (cands5 && cands5.length > 1) ? (e) => showTip(e, [
+                  { kind: "take", tone: isYou ? "good" : "neutral", x: isYou ? `Your pick ${pickLabel(picks.length)} — best options for you` : `${pickLabel(picks.length)} · ${TEAM_NAMES[onClock]} — engine's top candidates` },
+                  ...cands5.map((c, ci) => ({
+                    tc: ci === 0 ? "var(--gold)" : POS_COLOR[c.p.pos],
+                    t: isYou ? `${c.p.pos}${c.p.posRank}` : `${c.prob != null ? c.prob + "%" : ""}`,
+                    x: `${ci === 0 ? "★ " : ""}${c.p.name} — ${c.p.pos}${c.p.posRank}${ci === 0 ? (isYou ? " (top target)" : " (expected)") : ""}${isYou ? ` · ${Math.round(c.p.pts)} pts` : ""}`,
+                  })),
+                  { t: "", x: isYou ? "★ = the engine's top recommendation for you. The rest are your next-best value options." : "★ = who the engine expects here. Others are the next-most-likely picks if the board breaks differently." },
+                ]) : undefined;
+                return (
+                  <div style={{ fontSize: 11, marginTop: 3, cursor: tip ? "help" : "default" }} className="mut" onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
+                    {isYou ? <>rec: <b style={{ color: "var(--gold)" }}>{currentPred.name}</b></> : <>engine expects: <b style={{ color: "var(--ink)" }}>{currentPred.name}</b>{currentProb != null && ` (${currentProb}%)`}</>}
+                    {tip && <span style={{ marginLeft: 5, opacity: 0.7 }}>· hover for {isYou ? "options" : "alternatives"}</span>}
+                  </div>
+                );
+              })()}
               {currentPred && onClock === userIdx && !gated && (
                 <button className="btn btn-gold btn-mini" style={{ marginTop: 6, width: "100%" }} onClick={() => draftPlayer(currentPred.id)}>Draft {currentPred.name.split(" ").slice(-1)}</button>
               )}
