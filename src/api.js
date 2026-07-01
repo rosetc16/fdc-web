@@ -115,6 +115,7 @@ export const api = {
   async sleeperLink(username) { return call('/api/connect/sleeper/link', { method: 'POST', body: { username } }); },
   async sleeperUnlink() { return call('/api/connect/sleeper/unlink', { method: 'POST' }); },
   async sleeperMyLeagues(season) { return call(`/api/connect/sleeper/my-leagues${season ? `?season=${season}` : ''}`); },
+  async sleeperTeamHub(leagueId, week) { return call(`/api/connect/sleeper/team-hub?league_id=${encodeURIComponent(leagueId)}${week ? `&week=${week}` : ''}`); },
 
   // ---- feedback (public submit) ----
   async submitFeedback(payload) { return call('/api/feedback', { method: 'POST', auth: false, body: payload }); },
