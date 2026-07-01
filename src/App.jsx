@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27d";
+const BUILD_TAG = "2026.06.27e";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1848,24 +1848,24 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build) {
     s -= reachPenalty(c, pickNum) * 0.4;
     return s;
   }
-  if (strategy === "youth") {
-    // prize young players, still gated by real value so it can't draft scrubs
-    const ageScore = Math.max(0, 30 - c.age) * 6;
-    return mv + ageScore + 5 * Math.max(0, dem[c.pos] - counts[c.pos]) - reachPenalty(c, pickNum) * 0.5;
-  }
   if (strategy === "upside") {
-    // BREAKOUT = ascending young player, not an aging vet. Penalize age so old high-floor vets don't win.
-    const youngBonus = Math.max(0, 28 - c.age) * 8;
-    const agePenalty = Math.max(0, (c.age || 27) - 27) * 12;
-    const rookieBonus = c.rookie ? 30 : 0;
-    const posVar = c.pos === "WR" || c.pos === "RB" ? 14 : c.pos === "TE" ? 6 : 4;
-    return mv * 0.7 + youngBonus + rookieBonus + posVar + 4 * Math.max(0, dem[c.pos] - counts[c.pos]) - agePenalty - reachPenalty(c, pickNum) * 0.5;
+    // UPSIDE / BREAKOUT — still anchored to the market (ADP) so it won't wildly reach, but it pushes
+    // younger, ascending, higher-variance players UP the board. The base is value + a softened reach
+    // penalty (so ADP trends still matter), then we add a breakout bonus for youth / rookies / boom
+    // positions and lightly penalize aging vets. Net effect: among similarly-valued players near the
+    // current pick, the younger/breakout guy wins — without drafting someone 40 picks early.
+    const youngBonus = Math.max(0, 27 - (c.age || 27)) * 6;   // ramps up under age 27
+    const agePenalty = Math.max(0, (c.age || 27) - 28) * 9;    // fades in over age 28
+    const rookieBonus = c.rookie ? 22 : 0;
+    const ceilBonus = c.ceil != null && c.pts != null && c.pts > 0 ? Math.max(0, (c.ceil - c.pts)) * 0.25 : 0; // wide ceiling = boom potential
+    const posVar = c.pos === "WR" || c.pos === "RB" ? 10 : c.pos === "TE" ? 5 : 3;
+    return mv + youngBonus + rookieBonus + ceilBonus + posVar
+      + 5 * Math.max(0, dem[c.pos] - counts[c.pos]) - agePenalty - reachPenalty(c, pickNum) * 0.7;
   }
-  // BALANCED (and wr/rb-heavy tilts): value + need, anchored to the market so it won't
-  // pass an obvious consensus pick. The reach penalty makes drafting far ahead of ADP
-  // costly, which is why at pick 5 it takes the best available top-of-board player.
+  // BALANCED: value + need, anchored to the market so it won't pass an obvious consensus pick. The reach
+  // penalty makes drafting far ahead of ADP costly, which is why at pick 5 it takes the best available
+  // top-of-board player.
   let s = mv + 7 * Math.max(0, dem[c.pos] - counts[c.pos]) - reachPenalty(c, pickNum);
-  if ((strategy === "wr" && c.pos === "WR") || (strategy === "rb" && c.pos === "RB")) s += 18;
   return s;
 }
 // cost of drafting a player well before the market would — grows the earlier you are
@@ -2265,86 +2265,40 @@ function BootSplash({ css }) {
   ];
   const [li, setLi] = useState(0);
   useEffect(() => { const iv = setInterval(() => setLi((i) => (i + 1) % LINES.length), 1100); return () => clearInterval(iv); }, []);
-  const posDots = [
-    { c: "var(--blue)", a: 0 }, { c: "var(--green)", a: 90 }, { c: "var(--gold)", a: 180 }, { c: "var(--red)", a: 270 },
-  ];
   return (
     <div className="gs-root" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
       <style>{css}</style>
       <style>{`
-        @keyframes fdcspin{to{transform:rotate(360deg)}}
-        @keyframes fdcspin-r{to{transform:rotate(-360deg)}}
-        @keyframes fdcpulse{0%,100%{opacity:.4}50%{opacity:1}}
-        @keyframes fdcsweep{to{transform:rotate(360deg)}}
-        @keyframes fdcorbit{to{transform:rotate(360deg)}}
         @keyframes fdcfloatin{0%{opacity:0;transform:translateY(6px)}100%{opacity:1;transform:translateY(0)}}
         @keyframes fdcbar{0%{width:8%}70%{width:88%}100%{width:96%}}
-        @keyframes fdcglow{0%,100%{filter:drop-shadow(0 0 4px rgba(242,182,60,.4))}50%{filter:drop-shadow(0 0 16px rgba(242,182,60,.8))}}
-        @keyframes fdcneedle{0%{transform:rotate(-18deg)}25%{transform:rotate(14deg)}50%{transform:rotate(-8deg)}70%{transform:rotate(4deg)}85%{transform:rotate(-2deg)}100%{transform:rotate(0deg)}}
         @keyframes fdcbob{0%,100%{transform:translateY(-3px)}50%{transform:translateY(3px)}}
       `}</style>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 26 }}>
-        {/* A realistic football sitting in front of a slowly-turning compass. Calm, premium motion:
-            the compass ring rotates slowly behind, a soft radar sweep passes, the football gently bobs. */}
-        <div style={{ position: "relative", width: 156, height: 156 }}>
-          {/* compass BEHIND the football: faint ring + slow rotating ticks + a subtle radar sweep */}
-          <div style={{ position: "absolute", inset: 8, borderRadius: "50%", border: "1.5px solid var(--line2)", opacity: 0.5 }} />
-          <div style={{ position: "absolute", inset: 8, borderRadius: "50%", overflow: "hidden", animation: "fdcspin 26s linear infinite", opacity: 0.85 }}>
-            <svg width="140" height="140" viewBox="0 0 100 100" style={{ display: "block" }} aria-hidden="true">
-              {[...Array(24)].map((_, i) => { const a = i * 15; const card = i % 6 === 0; return (
-                <line key={i} x1="50" y1="3" x2="50" y2={card ? 9 : 6} stroke={card ? "var(--gold2)" : "var(--line2)"} strokeWidth={card ? 1.6 : 0.8} opacity={card ? 0.9 : 0.6} transform={`rotate(${a} 50 50)`} />
-              ); })}
-              <text x="50" y="16" textAnchor="middle" fontSize="7" fontWeight="800" fill="var(--gold2)" opacity="0.9" fontFamily="inherit">N</text>
-            </svg>
-          </div>
-          <div style={{ position: "absolute", inset: 8, borderRadius: "50%", overflow: "hidden", animation: "fdcsweep 4s linear infinite" }}>
-            <div style={{ position: "absolute", left: "50%", top: "50%", width: "50%", height: "50%", transformOrigin: "top left", background: "conic-gradient(from 0deg, rgba(242,182,60,.22), rgba(242,182,60,0) 65%)" }} />
-          </div>
-          {/* compass needle peeking above/below the football, pointing north (slow settle) */}
-          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <svg width="150" height="150" viewBox="0 0 100 100" style={{ display: "block", animation: "fdcneedle 6s cubic-bezier(.45,0,.3,1) infinite", transformOrigin: "50px 50px" }} aria-hidden="true">
-              <polygon points="50,10 46,50 54,50" fill="url(#fdcNeedleN)" opacity="0.95" />
-              <polygon points="50,90 46,50 54,50" fill="#8CA0B4" opacity="0.9" />
-            </svg>
-          </div>
-          {/* orbiting position dots (QB/RB/WR/TE) — slower */}
-          <div style={{ position: "absolute", inset: 0, animation: "fdcorbit 6s linear infinite" }}>
-            {posDots.map((d, i) => (
-              <div key={i} style={{ position: "absolute", left: "50%", top: "50%", width: 0, height: 0, transform: `rotate(${d.a}deg)` }}>
-                <span style={{ position: "absolute", left: -3.5, top: -72, width: 7, height: 7, borderRadius: "50%", background: d.c, boxShadow: `0 0 7px ${d.c}` }} />
-              </div>
+        {/* A slim football with a quiet compass ring behind it. Minimal motion — just a slow, gentle bob. */}
+        <div style={{ position: "relative", width: 132, height: 132 }}>
+          {/* quiet compass ring behind (static) */}
+          <svg width="132" height="132" viewBox="0 0 100 100" style={{ position: "absolute", inset: 0, display: "block" }} aria-hidden="true">
+            <circle cx="50" cy="50" r="46" fill="none" stroke="var(--line2)" strokeWidth="1" opacity="0.4" />
+            {[0, 90, 180, 270].map((a) => (
+              <line key={a} x1="50" y1="6" x2="50" y2="11" stroke="var(--gold)" strokeWidth="1.4" opacity="0.6" transform={`rotate(${a} 50 50)`} />
             ))}
-          </div>
-          {/* THE FOOTBALL — realistic, front and center, gentle bob */}
-          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", animation: "fdcbob 3.4s ease-in-out infinite" }}>
-            <svg width="112" height="112" viewBox="0 0 100 100" aria-hidden="true" style={{ filter: "drop-shadow(0 3px 6px rgba(0,0,0,.45))" }}>
+            <text x="50" y="15" textAnchor="middle" fontSize="6.5" fontWeight="800" fill="var(--gold)" opacity="0.65" fontFamily="inherit">N</text>
+          </svg>
+          {/* slim football, gentle bob */}
+          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", animation: "fdcbob 3.6s ease-in-out infinite" }}>
+            <svg width="92" height="92" viewBox="0 0 100 100" aria-hidden="true" style={{ filter: "drop-shadow(0 2px 5px rgba(0,0,0,.4))" }}>
               <defs>
-                <radialGradient id="fdcLeather" cx="38%" cy="32%" r="80%">
-                  <stop offset="0%" stopColor="#B06A34" />
-                  <stop offset="45%" stopColor="#8A4A22" />
-                  <stop offset="100%" stopColor="#4E2811" />
-                </radialGradient>
-                <linearGradient id="fdcNeedleN" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--red)" />
-                  <stop offset="100%" stopColor="#B33" />
+                <linearGradient id="fdcLeather" x1="0" y1="0" x2="0.4" y2="1">
+                  <stop offset="0%" stopColor="#95582C" /><stop offset="55%" stopColor="#7A4420" /><stop offset="100%" stopColor="#5A3015" />
                 </linearGradient>
               </defs>
-              {/* football body: a true pointed-end shape (two mirrored arcs), tilted slightly */}
-              <g transform="rotate(-22 50 50)">
-                <path d="M50 24 C68 24 84 36 84 50 C84 64 68 76 50 76 C32 76 16 64 16 50 C16 36 32 24 50 24 Z" fill="url(#fdcLeather)" stroke="#341B0A" strokeWidth="2" />
-                {/* pointed ends (nose caps) */}
-                <path d="M16 50 C10 47 10 53 16 50 Z" fill="#341B0A" />
-                <path d="M84 50 C90 47 90 53 84 50 Z" fill="#341B0A" />
-                {/* top highlight for a leather sheen */}
-                <path d="M32 36 C42 31 58 31 68 36" fill="none" stroke="#C98A54" strokeWidth="2.5" strokeLinecap="round" opacity="0.5" />
-                {/* white stripes near the ends */}
-                <path d="M26 42 C24 47 24 53 26 58" fill="none" stroke="#F2E9D8" strokeWidth="2.4" opacity="0.85" />
-                <path d="M74 42 C76 47 76 53 74 58" fill="none" stroke="#F2E9D8" strokeWidth="2.4" opacity="0.85" />
-                {/* central lace band */}
-                <line x1="38" y1="50" x2="62" y2="50" stroke="#F2E9D8" strokeWidth="2.4" opacity="0.95" />
-                {/* cross laces */}
-                {[-9, -4.5, 0, 4.5, 9].map((dx, i) => (
-                  <line key={i} x1={50 + dx} y1="45.5" x2={50 + dx} y2="54.5" stroke="#F2E9D8" strokeWidth="2" strokeLinecap="round" opacity="0.95" />
+              <g transform="rotate(-38 50 50)">
+                <path d="M50 30 C63 30 76 39 76 50 C76 61 63 70 50 70 C37 70 24 61 24 50 C24 39 37 30 50 30 Z" fill="url(#fdcLeather)" stroke="#33190A" strokeWidth="1.6" />
+                <path d="M24 50 C18 47.5 18 52.5 24 50 Z" fill="#33190A" />
+                <path d="M76 50 C82 47.5 82 52.5 76 50 Z" fill="#33190A" />
+                <line x1="41" y1="50" x2="59" y2="50" stroke="#EFE4D2" strokeWidth="1.6" opacity="0.8" />
+                {[-6, -2, 2, 6].map((dx, i) => (
+                  <line key={i} x1={50 + dx} y1="47" x2={50 + dx} y2="53" stroke="#EFE4D2" strokeWidth="1.5" strokeLinecap="round" opacity="0.8" />
                 ))}
               </g>
             </svg>
@@ -2810,38 +2764,31 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 // `heading` points the needle to a fixed bearing (else it rests pointing north).
 function Compass({ size = 40, heading = null, spin = false }) {
   const uid = React.useMemo(() => "cmp" + Math.random().toString(36).slice(2, 8), []);
+  // A slim, subtle football with a quiet compass ring behind it. The logo is intentionally STATIC — no
+  // motion — so it reads as a clean mark everywhere it appears. (`spin`/`heading` kept for call-site compat.)
   return (
     <svg width={size} height={size} viewBox="0 0 100 100" style={{ display: "block", overflow: "visible" }}>
       <defs>
-        <radialGradient id={uid + "L"} cx="38%" cy="32%" r="80%">
-          <stop offset="0%" stopColor="#B06A34" /><stop offset="45%" stopColor="#8A4A22" /><stop offset="100%" stopColor="#4E2811" />
-        </radialGradient>
-        <linearGradient id={uid + "N"} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="var(--red,#F2655C)" /><stop offset="100%" stopColor="#B33" />
+        <linearGradient id={uid + "L"} x1="0" y1="0" x2="0.4" y2="1">
+          <stop offset="0%" stopColor="#95582C" /><stop offset="55%" stopColor="#7A4420" /><stop offset="100%" stopColor="#5A3015" />
         </linearGradient>
       </defs>
-      {/* compass BEHIND the ball: faint ring + cardinal ticks + needle (points north or to heading) */}
-      <g className={spin ? "spin-slow" : ""} style={{ transformOrigin: "50px 50px" }}>
-        <circle cx="50" cy="50" r="44" fill="none" stroke="var(--line2,#3A4757)" strokeWidth="1.5" opacity="0.55" />
-        {[0, 90, 180, 270].map((a) => (
-          <line key={a} x1="50" y1="8" x2="50" y2="13" stroke="var(--gold2,#FFD071)" strokeWidth="1.6" opacity="0.8" transform={`rotate(${a} 50 50)`} />
-        ))}
-      </g>
-      <g style={{ transform: heading != null ? `rotate(${heading}deg)` : undefined, transformOrigin: "50px 50px" }}>
-        <polygon points="50,9 46,50 54,50" fill={`url(#${uid}N)`} opacity="0.9" />
-        <polygon points="50,91 46,50 54,50" fill="#8CA0B4" opacity="0.85" />
-      </g>
-      {/* the football, front and center */}
-      <g transform="rotate(-22 50 50)">
-        <path d="M50 26 C67 26 82 37 82 50 C82 63 67 74 50 74 C33 74 18 63 18 50 C18 37 33 26 50 26 Z" fill={`url(#${uid}L)`} stroke="#341B0A" strokeWidth="2" />
-        <path d="M18 50 C12 47 12 53 18 50 Z" fill="#341B0A" />
-        <path d="M82 50 C88 47 88 53 82 50 Z" fill="#341B0A" />
-        <path d="M33 37 C42 32 58 32 67 37" fill="none" stroke="#C98A54" strokeWidth="2.5" strokeLinecap="round" opacity="0.5" />
-        <path d="M27 43 C25 47 25 53 27 57" fill="none" stroke="#F2E9D8" strokeWidth="2.2" opacity="0.85" />
-        <path d="M73 43 C75 47 75 53 73 57" fill="none" stroke="#F2E9D8" strokeWidth="2.2" opacity="0.85" />
-        <line x1="39" y1="50" x2="61" y2="50" stroke="#F2E9D8" strokeWidth="2.2" opacity="0.95" />
-        {[-9, -4.5, 0, 4.5, 9].map((dx, i) => (
-          <line key={i} x1={50 + dx} y1="46" x2={50 + dx} y2="54" stroke="#F2E9D8" strokeWidth="1.9" strokeLinecap="round" opacity="0.95" />
+      {/* compass ring behind — quiet, thin, just enough to read as a compass */}
+      <circle cx="50" cy="50" r="43" fill="none" stroke="var(--line2,#3A4757)" strokeWidth="1.2" opacity="0.45" />
+      {[0, 90, 180, 270].map((a) => (
+        <line key={a} x1="50" y1="9" x2="50" y2="14" stroke="var(--gold,#F2B63C)" strokeWidth="1.4" opacity="0.7" transform={`rotate(${a} 50 50)`} />
+      ))}
+      {/* slim football, gently tilted, pointing NE/SW like a compass needle */}
+      <g transform="rotate(-38 50 50)">
+        {/* body: narrower than before (pointier, less "fat") */}
+        <path d="M50 30 C63 30 76 39 76 50 C76 61 63 70 50 70 C37 70 24 61 24 50 C24 39 37 30 50 30 Z" fill={`url(#${uid}L)`} stroke="#33190A" strokeWidth="1.6" />
+        {/* pointed tips */}
+        <path d="M24 50 C18 47.5 18 52.5 24 50 Z" fill="#33190A" />
+        <path d="M76 50 C82 47.5 82 52.5 76 50 Z" fill="#33190A" />
+        {/* central seam + a few short laces (subtle) */}
+        <line x1="41" y1="50" x2="59" y2="50" stroke="#EFE4D2" strokeWidth="1.6" opacity="0.8" />
+        {[-6, -2, 2, 6].map((dx, i) => (
+          <line key={i} x1={50 + dx} y1="47" x2={50 + dx} y2="53" stroke="#EFE4D2" strokeWidth="1.5" strokeLinecap="round" opacity="0.8" />
         ))}
       </g>
     </svg>
@@ -7439,13 +7386,52 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     }
     const myCounts = { QB: 0, RB: 0, WR: 0, TE: 0 };
     picks.forEach((pk, o) => { const pl = players[pk]; if (teamAt(o) === forTeam && pl && myCounts[pl.pos] != null) myCounts[pl.pos]++; });
+    // Detect this team's contention window LOCALLY (age-weighted, earlier picks matter more), so the
+    // recommendation can fit the build without depending on state computed later in the render. This mirrors
+    // the myWindow logic: a young roster → "rebuild", an old roster → "winnow".
+    const myAged = [];
+    picks.forEach((pk, o) => { const pl = players[pk]; if (teamAt(o) === forTeam && pl && pl.age && ["QB","RB","WR","TE"].includes(pl.pos)) myAged.push(pl); });
+    let laneLocal = null, laneConf = 0;
+    if (myAged.length >= 4) {
+      let wsum = 0, asum = 0;
+      myAged.forEach((p, i) => { const w = 1 / (1 + i * 0.25); wsum += w; asum += w * p.age; });
+      const avgAge = wsum ? asum / wsum : null;
+      const isDyn = cfg.type === "dynasty" || cfg.type === "keeper";
+      if (avgAge != null) {
+        const youngCut = isDyn ? 24.5 : 25.0, oldCut = isDyn ? 27.5 : 28.0;
+        if (avgAge <= youngCut) laneLocal = "rebuild";
+        else if (avgAge >= oldCut) laneLocal = "winnow";
+        laneConf = Math.min(1, (myAged.length - 3) / 6);
+      }
+    }
     const bestNow = { QB: null, RB: null, WR: null, TE: null };
     for (const p of sortedAdp) if (!goneSet.has(p.id) && (!bestNow[p.pos] || p.vbd > bestNow[p.pos].vbd)) bestNow[p.pos] = p;
     const waitCost = {};
     POS.forEach((pos) => { waitCost[pos] = bestNow[pos] ? Math.round((bestNow[pos].vbd - simState.expBest1[pos]) * 10) / 10 : 0; });
     const pool0 = sortedAdp.filter((p) => !goneSet.has(p.id) && p.adp <= pickNum + 16).slice(0, 40);
     const pool = legalCands(pool0, myCounts, cfg);
-    const scoreOf = (p) => userScore(p, myCounts, dem, strategy, cfg.sf, pickNum) + 0.6 * Math.max(0, waitCost[p.pos]);
+    // Build-lane adjustment: independent of the selected strategy, the recommendation should fit how YOUR
+    // team is actually constructed. Once your window is clear (a few rounds in), a rebuild leans toward
+    // younger/ascending players and a win-now team toward proven vets — so a clearly young rebuild is
+    // steered to, e.g., a younger TE over an aging one of similar value. Scales up in later rounds and is
+    // gentle early. "My build" already bakes this in and "Strict ADP" is pure market, so skip those.
+    const lane = laneLocal;
+    const laneAdj = (p) => {
+      if (!lane || strategy === "build" || strategy === "adp") return 0;
+      const age = p.age || 27;
+      if (lane === "rebuild") {
+        let a = Math.max(0, 27 - age) * 5 - Math.max(0, age - 28) * 9;
+        if (p.rookie) a += 18;
+        return a * laneConf;
+      }
+      if (lane === "winnow") {
+        let a = Math.max(0, age - 24) * 3;
+        if (p.rookie) a -= 12;
+        return a * laneConf;
+      }
+      return 0;
+    };
+    const scoreOf = (p) => userScore(p, myCounts, dem, strategy, cfg.sf, pickNum) + 0.6 * Math.max(0, waitCost[p.pos]) + laneAdj(p);
     const ranked = pool.slice().sort((a, b) => scoreOf(b) - scoreOf(a));
     const verdict = ranked[0]; const alts = ranked.slice(1, 4);
     const impacts = {};
@@ -7946,26 +7932,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           }
           return s;
         }
-        case "youth": {
-          // YOUTH = age is the primary driver. Reward the young, and PENALIZE the old even if productive,
-          // so high-VBD veterans (Kelce, Hunter Henry, Aaron Jones) don't headline a youth board.
-          const youthBonus = Math.max(0, (27 - age)) * 12;
-          const agePenalty = Math.max(0, age - 25) * 16; // old players pushed down hard
-          const rookieBonus = p.rookie ? 40 : 0;
-          if (age >= 30) return vbd * 0.3 + youthBonus + rookieBonus - agePenalty - 30; // hard floor for old
-          return vbd * 0.7 + youthBonus + rookieBonus - agePenalty;
-        }
         case "upside": {
-          // BREAKOUT = ascending player with room to grow, NOT an aging vet with a high floor. Heavily
-          // reward youth + ceiling room + rookies; penalize older players even if their projection is high.
+          // UPSIDE / BREAKOUT board sort — anchored to ADP (adpScore) so the board still respects the
+          // market, then lifted for youth, ceiling room, and rookies so ascending players rise toward the
+          // top. It won't float a deep-ADP flyer above clear studs, but among nearby players the younger /
+          // higher-upside one ranks first.
           const youthFactor = Math.max(0, (28 - age)); // 0 for 28+, grows for the young
-          const agePenalty = Math.max(0, age - 27) * 14; // push aging vets DOWN
-          const rookieBonus = p.rookie ? 45 : 0;
-          const ascend = isYoungPos(p) ? 25 : 0;
-          return vbd * 0.6 + ceilGap * 1.1 + youthFactor * 9 + rookieBonus + ascend - agePenalty;
+          const agePenalty = Math.max(0, age - 28) * 8; // gently push aging vets down
+          const rookieBonus = p.rookie ? 30 : 0;
+          const ascend = isYoungPos(p) ? 18 : 0;
+          return adpScore(p) + Math.max(0, vbd) * 0.04 + ceilGap * 0.8 + youthFactor * 7 + rookieBonus + ascend - agePenalty;
         }
-        case "wr": return vbd + (p.pos === "WR" ? 45 : -15);
-        case "rb": return vbd + (p.pos === "RB" ? 45 : -15);
         case "balanced":
         default: {
           // balanced = market order, but nudged by value so clear values rise within ADP range
@@ -8599,12 +8576,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 <span className="gold" style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".03em" }}>STRATEGY</span>
                 <select className="gs" style={{ fontSize: 12.5, padding: "4px 6px", border: "none", background: "transparent", fontWeight: 600 }} value={strategy} onChange={(e) => { setStrategy(e.target.value); setManualSort(false); }}>
                   <option value="balanced">Balanced (market)</option>
-                  <option value="value">Max value (VBD)</option>
+                  <option value="value">Max VBD</option>
                   <option value="build">My build (need + window)</option>
                   <option value="upside">Upside / breakout</option>
-                  <option value="youth">Youth (age)</option>
-                  <option value="wr">WR-heavy</option>
-                  <option value="rb">RB-heavy</option>
                   <option value="adp">Strict ADP</option>
                 </select>
               </div>
