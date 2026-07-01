@@ -110,6 +110,11 @@ export const api = {
   // ---- Sleeper connect / live sync ----
   async sleeperLeagues(username) { return call(`/api/connect/sleeper/leagues?username=${encodeURIComponent(username)}`); },
   async sleeperDraft(leagueId, username) { return call(`/api/connect/sleeper/draft?league_id=${encodeURIComponent(leagueId)}${username ? `&username=${encodeURIComponent(username)}` : ''}`); },
+  // ---- persistent Sleeper account link ----
+  async sleeperAccount() { return call('/api/connect/sleeper/account'); },                          // -> { linked, sleeperUserId, sleeperUsername }
+  async sleeperLink(username) { return call('/api/connect/sleeper/link', { method: 'POST', body: { username } }); },
+  async sleeperUnlink() { return call('/api/connect/sleeper/unlink', { method: 'POST' }); },
+  async sleeperMyLeagues(season) { return call(`/api/connect/sleeper/my-leagues${season ? `?season=${season}` : ''}`); },
 
   // ---- feedback (public submit) ----
   async submitFeedback(payload) { return call('/api/feedback', { method: 'POST', auth: false, body: payload }); },

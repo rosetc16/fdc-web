@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27n";
+const BUILD_TAG = "2026.06.27o";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5433,6 +5433,91 @@ function Library({ user, leagues, onNew, onUmbrella, onDelete, onAdmin, onSignOu
   );
 }
 
+// A persistent Sleeper-account link, shown on the Account page. Linking stores the Sleeper id on the
+// user's account (server-side) so it stays connected across sessions/devices until they unlink. This is
+// the foundation for the in-season team hub, which needs a durable link to pull live league data.
+function SleeperLinkPanel({ user, onUpdate }) {
+  const [linked, setLinked] = useState(!!(user && user.sleeperUsername));
+  const [username, setUsername] = useState((user && user.sleeperUsername) || "");
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+
+  // On mount, confirm the real link state from the backend (source of truth), if we have one.
+  React.useEffect(() => {
+    let alive = true;
+    if (!hasBackend) return;
+    api.sleeperAccount().then((r) => {
+      if (!alive || !r) return;
+      setLinked(!!r.linked);
+      if (r.sleeperUsername) setUsername(r.sleeperUsername);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
+  const doLink = async () => {
+    const u = input.trim();
+    if (!u) return;
+    setBusy(true); setErr(""); setMsg("");
+    try {
+      if (hasBackend) {
+        const r = await api.sleeperLink(u);
+        setLinked(true); setUsername(r.sleeperUsername || u); setInput("");
+        if (onUpdate) onUpdate({ sleeperUsername: r.sleeperUsername || u, sleeperUserId: r.sleeperUserId || null });
+        setMsg("Sleeper account linked");
+      } else {
+        // No backend (local/demo mode): remember locally so the flow is testable.
+        setLinked(true); setUsername(u); setInput("");
+        setMsg("Sleeper account linked (demo)");
+      }
+    } catch (e) {
+      setErr(e && e.message ? e.message : "Could not link that account");
+    } finally { setBusy(false); setTimeout(() => setMsg(""), 2000); }
+  };
+
+  const doUnlink = async () => {
+    setBusy(true); setErr(""); setMsg("");
+    try {
+      if (hasBackend) await api.sleeperUnlink();
+      setLinked(false); setUsername("");
+      if (onUpdate) onUpdate({ sleeperUsername: null, sleeperUserId: null });
+      setMsg("Unlinked");
+    } catch (e) {
+      setErr(e && e.message ? e.message : "Could not unlink");
+    } finally { setBusy(false); setTimeout(() => setMsg(""), 2000); }
+  };
+
+  return (
+    <div className="panel" style={{ padding: 18, marginTop: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+        <i className="ti ti-plug-connected" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
+        <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>Sleeper account</div>
+      </div>
+      <div className="mut" style={{ fontSize: 12.5, marginBottom: 12, lineHeight: 1.5 }}>
+        Link your Sleeper account once and it stays connected — no need to re-enter it every draft. This also unlocks the in-season team hub, which reads your live rosters, matchups, and available players. Read-only; we never post or make changes on your behalf.
+      </div>
+      {linked ? (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "10px 12px", background: "var(--panel2)", borderRadius: 8, border: "1px solid var(--line)" }}>
+          <div style={{ fontSize: 13.5 }}>
+            <span style={{ color: "var(--green)", fontWeight: 700 }}>● Linked</span>
+            <span className="mut"> as </span><b>{username}</b>
+          </div>
+          <button className="btn btn-mini" onClick={doUnlink} disabled={busy}>{busy ? "..." : "Unlink"}</button>
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 8 }}>
+          <input className="gs" style={{ flex: 1 }} placeholder="Your Sleeper username" value={input}
+            onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") doLink(); }} />
+          <button className="btn btn-gold" onClick={doLink} disabled={busy || !input.trim()}>{busy ? "Linking…" : "Link account"}</button>
+        </div>
+      )}
+      {msg && <div style={{ color: "var(--green)", fontSize: 12.5, marginTop: 10 }}>{msg} ✓</div>}
+      {err && <div style={{ color: "var(--red)", fontSize: 12.5, marginTop: 10 }}>{err}</div>}
+    </div>
+  );
+}
+
 function Account({ user, onUpdate, onBack, onHome, onSignOut, onRankings }) {
   const [email, setEmail] = useState(user.email);
   const [fav, setFav] = useState(user.fav || "");
@@ -5478,6 +5563,8 @@ function Account({ user, onUpdate, onBack, onHome, onSignOut, onRankings }) {
           </div>
           {saved && <div style={{ color: "var(--green)", fontSize: 12.5, marginTop: 10 }}>{saved} ✓</div>}
         </div>
+
+        <SleeperLinkPanel user={user} onUpdate={onUpdate} />
 
         <div className="panel" style={{ padding: 18, marginTop: 14 }}>
           <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Your player rankings</div>
