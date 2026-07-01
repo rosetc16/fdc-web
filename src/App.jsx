@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27c";
+const BUILD_TAG = "2026.06.27d";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1078,13 +1078,35 @@ export function applyLivePack(pack) {
   const ADP_HEALTHY = adpCount >= 120 && rookieShareOfAdp < 0.5; // broad coverage, not rookie-dominated
 
   const projValueAll = (p) => projValue(p.stats, normPos(p.pos));
-  // Provisional ADP for players lacking real ADP: rank by projection, placed after real-ADP players.
-  const withAdp = ADP_HEALTHY ? withRealAdp.length : 0;
-  const noAdpSorted = (ADP_HEALTHY ? draftable.filter((p) => p.adp == null) : draftable.slice())
-    .map((p) => ({ p, v: projValueAll(p) }))
-    .sort((a, b) => b.v - a.v);
+  // Provisional ADP for players lacking a real ADP number. Rather than dumping them all AFTER the last
+  // real-ADP player (which sent, e.g., a startable QB whose published number briefly went missing down to
+  // an absurd ADP ~700), we INTERLEAVE them by projection value: each no-ADP player is slotted to the ADP
+  // where his value fits among the players who DO have real ADP. This keeps the board sensible and mirrors
+  // how the market would actually price him, even when a single player's published number drops out.
   const provisionalAdp = new Map();
-  noAdpSorted.forEach((x, i) => provisionalAdp.set(x.p.id, withAdp + i + 1));
+  if (ADP_HEALTHY) {
+    // Build a value→adp ladder from the real-ADP players (sorted by value, descending), then binary-search
+    // each no-ADP player's value into it to find where he belongs, and read the ADP of the neighbor there.
+    const ladder = withRealAdp
+      .map((p) => ({ adp: p.adp, v: projValueAll(p) }))
+      .sort((a, b) => b.v - a.v); // best value first
+    const vals = ladder.map((x) => x.v); // descending
+    const worstAdp = ladder.length ? Math.max(...ladder.map((x) => x.adp)) : 200;
+    const noAdp = draftable.filter((p) => p.adp == null);
+    for (const p of noAdp) {
+      const v = projValueAll(p);
+      // binary search: first index where ladder value < v (i.e. how many project better than him)
+      let lo = 0, hi = vals.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (vals[mid] > v) lo = mid + 1; else hi = mid; }
+      const anchor = ladder[Math.min(lo, ladder.length - 1)];
+      const est = anchor ? anchor.adp + 0.5 : (worstAdp + 1);
+      provisionalAdp.set(p.id, est);
+    }
+  } else {
+    // No broad ADP coverage yet — rank the whole board by projection value.
+    draftable.slice().map((p) => ({ p, v: projValueAll(p) })).sort((a, b) => b.v - a.v)
+      .forEach((x, i) => provisionalAdp.set(x.p.id, i + 1));
+  }
 
   for (const p of pack.players) {
     if (!p.name || !p.pos) continue;
@@ -2258,65 +2280,72 @@ function BootSplash({ css }) {
         @keyframes fdcfloatin{0%{opacity:0;transform:translateY(6px)}100%{opacity:1;transform:translateY(0)}}
         @keyframes fdcbar{0%{width:8%}70%{width:88%}100%{width:96%}}
         @keyframes fdcglow{0%,100%{filter:drop-shadow(0 0 4px rgba(242,182,60,.4))}50%{filter:drop-shadow(0 0 16px rgba(242,182,60,.8))}}
-        @keyframes fdcneedle{0%{transform:rotate(-140deg)}30%{transform:rotate(25deg)}45%{transform:rotate(-12deg)}60%{transform:rotate(6deg)}72%{transform:rotate(0deg)}88%{transform:rotate(0deg)}100%{transform:rotate(220deg)}}
+        @keyframes fdcneedle{0%{transform:rotate(-18deg)}25%{transform:rotate(14deg)}50%{transform:rotate(-8deg)}70%{transform:rotate(4deg)}85%{transform:rotate(-2deg)}100%{transform:rotate(0deg)}}
+        @keyframes fdcbob{0%,100%{transform:translateY(-3px)}50%{transform:translateY(3px)}}
       `}</style>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 26 }}>
-        {/* Football-compass rig: a football that doubles as a compass housing, with a spinning needle,
-            cardinal ticks, a radar sweep, and orbiting position dots. */}
-        <div style={{ position: "relative", width: 148, height: 148 }}>
-          {/* outer ring */}
-          <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "2px solid var(--line)", opacity: 0.7 }} />
-          {/* rotating dashed tick ring */}
-          <div style={{ position: "absolute", inset: 6, borderRadius: "50%", border: "2px dashed var(--line2)", animation: "fdcspin 14s linear infinite" }} />
-          {/* radar sweep */}
-          <div style={{ position: "absolute", inset: 6, borderRadius: "50%", overflow: "hidden", animation: "fdcsweep 2.4s linear infinite" }}>
-            <div style={{ position: "absolute", left: "50%", top: "50%", width: "50%", height: "50%", transformOrigin: "top left", background: "conic-gradient(from 0deg, rgba(242,182,60,.32), rgba(242,182,60,0) 70%)" }} />
+        {/* A realistic football sitting in front of a slowly-turning compass. Calm, premium motion:
+            the compass ring rotates slowly behind, a soft radar sweep passes, the football gently bobs. */}
+        <div style={{ position: "relative", width: 156, height: 156 }}>
+          {/* compass BEHIND the football: faint ring + slow rotating ticks + a subtle radar sweep */}
+          <div style={{ position: "absolute", inset: 8, borderRadius: "50%", border: "1.5px solid var(--line2)", opacity: 0.5 }} />
+          <div style={{ position: "absolute", inset: 8, borderRadius: "50%", overflow: "hidden", animation: "fdcspin 26s linear infinite", opacity: 0.85 }}>
+            <svg width="140" height="140" viewBox="0 0 100 100" style={{ display: "block" }} aria-hidden="true">
+              {[...Array(24)].map((_, i) => { const a = i * 15; const card = i % 6 === 0; return (
+                <line key={i} x1="50" y1="3" x2="50" y2={card ? 9 : 6} stroke={card ? "var(--gold2)" : "var(--line2)"} strokeWidth={card ? 1.6 : 0.8} opacity={card ? 0.9 : 0.6} transform={`rotate(${a} 50 50)`} />
+              ); })}
+              <text x="50" y="16" textAnchor="middle" fontSize="7" fontWeight="800" fill="var(--gold2)" opacity="0.9" fontFamily="inherit">N</text>
+            </svg>
           </div>
-          {/* orbiting position dots (QB/RB/WR/TE colors) */}
-          <div style={{ position: "absolute", inset: 0, animation: "fdcorbit 3.6s linear infinite" }}>
+          <div style={{ position: "absolute", inset: 8, borderRadius: "50%", overflow: "hidden", animation: "fdcsweep 4s linear infinite" }}>
+            <div style={{ position: "absolute", left: "50%", top: "50%", width: "50%", height: "50%", transformOrigin: "top left", background: "conic-gradient(from 0deg, rgba(242,182,60,.22), rgba(242,182,60,0) 65%)" }} />
+          </div>
+          {/* compass needle peeking above/below the football, pointing north (slow settle) */}
+          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <svg width="150" height="150" viewBox="0 0 100 100" style={{ display: "block", animation: "fdcneedle 6s cubic-bezier(.45,0,.3,1) infinite", transformOrigin: "50px 50px" }} aria-hidden="true">
+              <polygon points="50,10 46,50 54,50" fill="url(#fdcNeedleN)" opacity="0.95" />
+              <polygon points="50,90 46,50 54,50" fill="#8CA0B4" opacity="0.9" />
+            </svg>
+          </div>
+          {/* orbiting position dots (QB/RB/WR/TE) — slower */}
+          <div style={{ position: "absolute", inset: 0, animation: "fdcorbit 6s linear infinite" }}>
             {posDots.map((d, i) => (
               <div key={i} style={{ position: "absolute", left: "50%", top: "50%", width: 0, height: 0, transform: `rotate(${d.a}deg)` }}>
-                <span style={{ position: "absolute", left: -4, top: -68, width: 8, height: 8, borderRadius: "50%", background: d.c, boxShadow: `0 0 8px ${d.c}` }} />
+                <span style={{ position: "absolute", left: -3.5, top: -72, width: 7, height: 7, borderRadius: "50%", background: d.c, boxShadow: `0 0 7px ${d.c}` }} />
               </div>
             ))}
           </div>
-          {/* Football-compass core */}
-          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", animation: "fdcglow 2.2s ease-in-out infinite" }}>
-            <svg width="104" height="104" viewBox="0 0 100 100" aria-hidden="true">
+          {/* THE FOOTBALL — realistic, front and center, gentle bob */}
+          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", animation: "fdcbob 3.4s ease-in-out infinite" }}>
+            <svg width="112" height="112" viewBox="0 0 100 100" aria-hidden="true" style={{ filter: "drop-shadow(0 3px 6px rgba(0,0,0,.45))" }}>
               <defs>
-                <radialGradient id="fdcLeather" cx="42%" cy="38%" r="72%">
-                  <stop offset="0%" stopColor="#A9612E" />
-                  <stop offset="55%" stopColor="#8A4A22" />
-                  <stop offset="100%" stopColor="#5E3115" />
+                <radialGradient id="fdcLeather" cx="38%" cy="32%" r="80%">
+                  <stop offset="0%" stopColor="#B06A34" />
+                  <stop offset="45%" stopColor="#8A4A22" />
+                  <stop offset="100%" stopColor="#4E2811" />
                 </radialGradient>
                 <linearGradient id="fdcNeedleN" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor="var(--red)" />
                   <stop offset="100%" stopColor="#B33" />
                 </linearGradient>
               </defs>
-              {/* football body: an ellipse tilted so it reads as a football but frames the compass */}
-              <g transform="rotate(-32 50 50)">
-                <ellipse cx="50" cy="50" rx="46" ry="30" fill="url(#fdcLeather)" stroke="#3A1E0C" strokeWidth="2.5" />
-                {/* end caps */}
-                <path d="M6 50 q4 -6 4 -0 q0 6 -4 0Z" fill="#F0E4CC" opacity="0.9" />
-                <path d="M94 50 q-4 -6 -4 -0 q0 6 4 0Z" fill="#F0E4CC" opacity="0.9" />
-                {/* long seam / laces belt (subtle, since the compass sits on top) */}
-                <line x1="16" y1="50" x2="84" y2="50" stroke="#F0E4CC" strokeWidth="2" opacity="0.5" strokeDasharray="1 3" />
-              </g>
-              {/* compass tick ring on the leather */}
-              <circle cx="50" cy="50" r="27" fill="#2A1608" stroke="#C8873C" strokeWidth="1.5" opacity="0.95" />
-              {[0, 45, 90, 135, 180, 225, 270, 315].map((a) => (
-                <line key={a} x1="50" y1="26" x2="50" y2={a % 90 === 0 ? 30 : 28} stroke="var(--gold2)" strokeWidth={a % 90 === 0 ? 2 : 1} opacity={a % 90 === 0 ? 0.95 : 0.55} transform={`rotate(${a} 50 50)`} />
-              ))}
-              {/* cardinal N marker */}
-              <text x="50" y="20" textAnchor="middle" fontSize="8" fontWeight="800" fill="var(--gold2)" fontFamily="inherit">N</text>
-              {/* spinning compass needle */}
-              <g style={{ transformOrigin: "50px 50px", animation: "fdcneedle 3s cubic-bezier(.5,0,.5,1) infinite" }}>
-                <polygon points="50,27 44,50 50,50" fill="url(#fdcNeedleN)" />
-                <polygon points="50,27 56,50 50,50" fill="#D9463E" />
-                <polygon points="50,73 44,50 50,50" fill="#E7EEF5" />
-                <polygon points="50,73 56,50 50,50" fill="#B9C6D3" />
-                <circle cx="50" cy="50" r="4.5" fill="#2A1608" stroke="var(--gold2)" strokeWidth="1.5" />
+              {/* football body: a true pointed-end shape (two mirrored arcs), tilted slightly */}
+              <g transform="rotate(-22 50 50)">
+                <path d="M50 24 C68 24 84 36 84 50 C84 64 68 76 50 76 C32 76 16 64 16 50 C16 36 32 24 50 24 Z" fill="url(#fdcLeather)" stroke="#341B0A" strokeWidth="2" />
+                {/* pointed ends (nose caps) */}
+                <path d="M16 50 C10 47 10 53 16 50 Z" fill="#341B0A" />
+                <path d="M84 50 C90 47 90 53 84 50 Z" fill="#341B0A" />
+                {/* top highlight for a leather sheen */}
+                <path d="M32 36 C42 31 58 31 68 36" fill="none" stroke="#C98A54" strokeWidth="2.5" strokeLinecap="round" opacity="0.5" />
+                {/* white stripes near the ends */}
+                <path d="M26 42 C24 47 24 53 26 58" fill="none" stroke="#F2E9D8" strokeWidth="2.4" opacity="0.85" />
+                <path d="M74 42 C76 47 76 53 74 58" fill="none" stroke="#F2E9D8" strokeWidth="2.4" opacity="0.85" />
+                {/* central lace band */}
+                <line x1="38" y1="50" x2="62" y2="50" stroke="#F2E9D8" strokeWidth="2.4" opacity="0.95" />
+                {/* cross laces */}
+                {[-9, -4.5, 0, 4.5, 9].map((dx, i) => (
+                  <line key={i} x1={50 + dx} y1="45.5" x2={50 + dx} y2="54.5" stroke="#F2E9D8" strokeWidth="2" strokeLinecap="round" opacity="0.95" />
+                ))}
               </g>
             </svg>
           </div>
@@ -2776,40 +2805,44 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 @media(prefers-reduced-motion:reduce){.gs-root *{transition:none!important;animation:none!important}}
 `;
 
-// Compass mark — the brand: a football that doubles as a compass housing (matches the loading screen).
-// Used everywhere via <Wordmark> and directly. `spin` gently rotates the whole mark; `heading` points the
-// needle to a fixed bearing (else it rests pointing north).
+// Compass mark — the brand: a realistic football in front of a compass (matches the loading screen).
+// Used everywhere via <Wordmark> and directly. `spin` slowly rotates the compass ring behind the ball;
+// `heading` points the needle to a fixed bearing (else it rests pointing north).
 function Compass({ size = 40, heading = null, spin = false }) {
   const uid = React.useMemo(() => "cmp" + Math.random().toString(36).slice(2, 8), []);
   return (
-    <svg width={size} height={size} viewBox="0 0 100 100" style={{ display: "block" }} className={spin ? "spin-slow" : ""}>
+    <svg width={size} height={size} viewBox="0 0 100 100" style={{ display: "block", overflow: "visible" }}>
       <defs>
-        <radialGradient id={uid + "L"} cx="42%" cy="38%" r="72%">
-          <stop offset="0%" stopColor="#A9612E" /><stop offset="55%" stopColor="#8A4A22" /><stop offset="100%" stopColor="#5E3115" />
+        <radialGradient id={uid + "L"} cx="38%" cy="32%" r="80%">
+          <stop offset="0%" stopColor="#B06A34" /><stop offset="45%" stopColor="#8A4A22" /><stop offset="100%" stopColor="#4E2811" />
         </radialGradient>
         <linearGradient id={uid + "N"} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="var(--red,#F2655C)" /><stop offset="100%" stopColor="#B33" />
         </linearGradient>
       </defs>
-      {/* football body (tilted ellipse) with white end-caps + lace seam */}
-      <g transform="rotate(-32 50 50)">
-        <ellipse cx="50" cy="50" rx="46" ry="30" fill={`url(#${uid}L)`} stroke="#3A1E0C" strokeWidth="2.5" />
-        <path d="M6 50 q4 -6 4 -0 q0 6 -4 0Z" fill="#F0E4CC" opacity="0.9" />
-        <path d="M94 50 q-4 -6 -4 -0 q0 6 4 0Z" fill="#F0E4CC" opacity="0.9" />
-        <line x1="16" y1="50" x2="84" y2="50" stroke="#F0E4CC" strokeWidth="2" opacity="0.5" strokeDasharray="1 3" />
+      {/* compass BEHIND the ball: faint ring + cardinal ticks + needle (points north or to heading) */}
+      <g className={spin ? "spin-slow" : ""} style={{ transformOrigin: "50px 50px" }}>
+        <circle cx="50" cy="50" r="44" fill="none" stroke="var(--line2,#3A4757)" strokeWidth="1.5" opacity="0.55" />
+        {[0, 90, 180, 270].map((a) => (
+          <line key={a} x1="50" y1="8" x2="50" y2="13" stroke="var(--gold2,#FFD071)" strokeWidth="1.6" opacity="0.8" transform={`rotate(${a} 50 50)`} />
+        ))}
       </g>
-      {/* compass dial on the leather */}
-      <circle cx="50" cy="50" r="27" fill="#2A1608" stroke="#C8873C" strokeWidth="1.5" opacity="0.95" />
-      {[0, 45, 90, 135, 180, 225, 270, 315].map((a) => (
-        <line key={a} x1="50" y1="26" x2="50" y2={a % 90 === 0 ? 30 : 28} stroke="var(--gold2,#FFD071)" strokeWidth={a % 90 === 0 ? 2 : 1} opacity={a % 90 === 0 ? 0.95 : 0.55} transform={`rotate(${a} 50 50)`} />
-      ))}
-      {/* needle (points to heading when provided, else north) */}
       <g style={{ transform: heading != null ? `rotate(${heading}deg)` : undefined, transformOrigin: "50px 50px" }}>
-        <polygon points="50,27 44,50 50,50" fill={`url(#${uid}N)`} />
-        <polygon points="50,27 56,50 50,50" fill="#D9463E" />
-        <polygon points="50,73 44,50 50,50" fill="#E7EEF5" />
-        <polygon points="50,73 56,50 50,50" fill="#B9C6D3" />
-        <circle cx="50" cy="50" r="4.5" fill="#2A1608" stroke="var(--gold2,#FFD071)" strokeWidth="1.5" />
+        <polygon points="50,9 46,50 54,50" fill={`url(#${uid}N)`} opacity="0.9" />
+        <polygon points="50,91 46,50 54,50" fill="#8CA0B4" opacity="0.85" />
+      </g>
+      {/* the football, front and center */}
+      <g transform="rotate(-22 50 50)">
+        <path d="M50 26 C67 26 82 37 82 50 C82 63 67 74 50 74 C33 74 18 63 18 50 C18 37 33 26 50 26 Z" fill={`url(#${uid}L)`} stroke="#341B0A" strokeWidth="2" />
+        <path d="M18 50 C12 47 12 53 18 50 Z" fill="#341B0A" />
+        <path d="M82 50 C88 47 88 53 82 50 Z" fill="#341B0A" />
+        <path d="M33 37 C42 32 58 32 67 37" fill="none" stroke="#C98A54" strokeWidth="2.5" strokeLinecap="round" opacity="0.5" />
+        <path d="M27 43 C25 47 25 53 27 57" fill="none" stroke="#F2E9D8" strokeWidth="2.2" opacity="0.85" />
+        <path d="M73 43 C75 47 75 53 73 57" fill="none" stroke="#F2E9D8" strokeWidth="2.2" opacity="0.85" />
+        <line x1="39" y1="50" x2="61" y2="50" stroke="#F2E9D8" strokeWidth="2.2" opacity="0.95" />
+        {[-9, -4.5, 0, 4.5, 9].map((dx, i) => (
+          <line key={i} x1={50 + dx} y1="46" x2={50 + dx} y2="54" stroke="#F2E9D8" strokeWidth="1.9" strokeLinecap="round" opacity="0.95" />
+        ))}
       </g>
     </svg>
   );

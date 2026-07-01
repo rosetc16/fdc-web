@@ -1,34 +1,36 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <!-- Fantasy Draft Compass mark: a football that doubles as a compass housing (matches the app + loading screen). -->
+  <!-- Fantasy Draft Compass mark: a realistic football in front of a compass (matches app + loading screen). -->
   <defs>
-    <radialGradient id="L" cx="42%" cy="38%" r="72%">
-      <stop offset="0%" stop-color="#A9612E"/><stop offset="55%" stop-color="#8A4A22"/><stop offset="100%" stop-color="#5E3115"/>
+    <radialGradient id="L" cx="38%" cy="32%" r="80%">
+      <stop offset="0%" stop-color="#B06A34"/><stop offset="45%" stop-color="#8A4A22"/><stop offset="100%" stop-color="#4E2811"/>
     </radialGradient>
     <linearGradient id="N" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#F2655C"/><stop offset="100%" stop-color="#B33"/>
     </linearGradient>
   </defs>
-  <!-- dark rounded background -->
   <rect x="0" y="0" width="64" height="64" rx="14" fill="#14120B"/>
-  <g transform="translate(32,32) scale(0.56) translate(-50,-50)">
-    <!-- football body -->
-    <g transform="rotate(-32 50 50)">
-      <ellipse cx="50" cy="50" rx="46" ry="30" fill="url(#L)" stroke="#3A1E0C" stroke-width="2.5"/>
-      <path d="M6 50 q4 -6 4 -0 q0 6 -4 0Z" fill="#F0E4CC" opacity="0.9"/>
-      <path d="M94 50 q-4 -6 -4 -0 q0 6 4 0Z" fill="#F0E4CC" opacity="0.9"/>
-      <line x1="16" y1="50" x2="84" y2="50" stroke="#F0E4CC" stroke-width="2" opacity="0.5" stroke-dasharray="1 3"/>
+  <g transform="translate(32,32) scale(0.52) translate(-50,-50)">
+    <!-- compass behind -->
+    <circle cx="50" cy="50" r="44" fill="none" stroke="#3A4757" stroke-width="1.5" opacity="0.6"/>
+    <line x1="50" y1="8" x2="50" y2="13" stroke="#FFD071" stroke-width="1.6" transform="rotate(0 50 50)"/>
+    <line x1="50" y1="8" x2="50" y2="13" stroke="#FFD071" stroke-width="1.6" transform="rotate(90 50 50)"/>
+    <line x1="50" y1="8" x2="50" y2="13" stroke="#FFD071" stroke-width="1.6" transform="rotate(180 50 50)"/>
+    <line x1="50" y1="8" x2="50" y2="13" stroke="#FFD071" stroke-width="1.6" transform="rotate(270 50 50)"/>
+    <polygon points="50,9 46,50 54,50" fill="url(#N)" opacity="0.9"/>
+    <polygon points="50,91 46,50 54,50" fill="#8CA0B4" opacity="0.85"/>
+    <!-- football -->
+    <g transform="rotate(-22 50 50)">
+      <path d="M50 26 C67 26 82 37 82 50 C82 63 67 74 50 74 C33 74 18 63 18 50 C18 37 33 26 50 26 Z" fill="url(#L)" stroke="#341B0A" stroke-width="2"/>
+      <path d="M18 50 C12 47 12 53 18 50 Z" fill="#341B0A"/>
+      <path d="M82 50 C88 47 88 53 82 50 Z" fill="#341B0A"/>
+      <path d="M27 43 C25 47 25 53 27 57" fill="none" stroke="#F2E9D8" stroke-width="2.2" opacity="0.85"/>
+      <path d="M73 43 C75 47 75 53 73 57" fill="none" stroke="#F2E9D8" stroke-width="2.2" opacity="0.85"/>
+      <line x1="39" y1="50" x2="61" y2="50" stroke="#F2E9D8" stroke-width="2.2" opacity="0.95"/>
+      <line x1="41" y1="46" x2="41" y2="54" stroke="#F2E9D8" stroke-width="1.9" stroke-linecap="round"/>
+      <line x1="45.5" y1="46" x2="45.5" y2="54" stroke="#F2E9D8" stroke-width="1.9" stroke-linecap="round"/>
+      <line x1="50" y1="46" x2="50" y2="54" stroke="#F2E9D8" stroke-width="1.9" stroke-linecap="round"/>
+      <line x1="54.5" y1="46" x2="54.5" y2="54" stroke="#F2E9D8" stroke-width="1.9" stroke-linecap="round"/>
+      <line x1="59" y1="46" x2="59" y2="54" stroke="#F2E9D8" stroke-width="1.9" stroke-linecap="round"/>
     </g>
-    <!-- compass dial -->
-    <circle cx="50" cy="50" r="27" fill="#2A1608" stroke="#C8873C" stroke-width="1.5"/>
-    <line x1="50" y1="26" x2="50" y2="30" stroke="#FFD071" stroke-width="2" transform="rotate(0 50 50)"/>
-    <line x1="50" y1="26" x2="50" y2="30" stroke="#FFD071" stroke-width="2" transform="rotate(90 50 50)"/>
-    <line x1="50" y1="26" x2="50" y2="30" stroke="#FFD071" stroke-width="2" transform="rotate(180 50 50)"/>
-    <line x1="50" y1="26" x2="50" y2="30" stroke="#FFD071" stroke-width="2" transform="rotate(270 50 50)"/>
-    <!-- needle -->
-    <polygon points="50,27 44,50 50,50" fill="url(#N)"/>
-    <polygon points="50,27 56,50 50,50" fill="#D9463E"/>
-    <polygon points="50,73 44,50 50,50" fill="#E7EEF5"/>
-    <polygon points="50,73 56,50 50,50" fill="#B9C6D3"/>
-    <circle cx="50" cy="50" r="4.5" fill="#2A1608" stroke="#FFD071" stroke-width="1.5"/>
   </g>
 </svg>
