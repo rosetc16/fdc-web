@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27m";
+const BUILD_TAG = "2026.06.27n";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2060,33 +2060,8 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
     let entry;
     if (t === userIdx) {
       let choice = null;
-      // Detect the user's build lane from picks so far (same idea as the recommendation): a young roster
-      // leans rebuild, an old one leans win-now. We apply it on top of userScore so the projected user
-      // picks in the tracker match the recommendation (which also respects the lane) — e.g. a rebuild
-      // surfaces a younger TE over an aging one of similar value.
-      const myAged = [];
-      for (let oo = 0; oo < o; oo++) { if (teamAt(oo) === userIdx) { const pl = players[picks[oo]]; if (pl && pl.age && POS.includes(pl.pos)) myAged.push(pl); } }
-      let lane = null, laneConf = 0;
-      if (myAged.length >= 4) {
-        let wsum = 0, asum = 0;
-        myAged.forEach((p, idx) => { const w = 1 / (1 + idx * 0.25); wsum += w; asum += w * p.age; });
-        const avgAge = wsum ? asum / wsum : null;
-        const isDyn = cfg.type === "dynasty" || cfg.type === "keeper";
-        if (avgAge != null) {
-          const youngCut = isDyn ? 24.5 : 25.0, oldCut = isDyn ? 27.5 : 28.0;
-          if (avgAge <= youngCut) lane = "rebuild"; else if (avgAge >= oldCut) lane = "winnow";
-          laneConf = Math.min(1, (myAged.length - 3) / 6);
-        }
-      }
-      const laneAdj = (p) => {
-        if (!lane || strategy === "build" || strategy === "adp") return 0;
-        const age = p.age || 27;
-        if (lane === "rebuild") { let a = Math.max(0, 27 - age) * 5 - Math.max(0, age - 28) * 9; if (p.rookie) a += 18; return a * laneConf; }
-        if (lane === "winnow") { let a = Math.max(0, age - 24) * 3; if (p.rookie) a -= 12; return a * laneConf; }
-        return 0;
-      };
       const scored = legalCands(candidatesOf(sortedAdp, drafted, 30), counts[t], cfg)
-        .map((c) => ({ p: c, s: userScore(c, counts[t], dem, strategy, sf, pickNum) + laneAdj(c) }))
+        .map((c) => ({ p: c, s: userScore(c, counts[t], dem, strategy, sf, pickNum) }))
         .sort((a, b) => b.s - a.s);
       if (!passedUser && forcedId != null && !drafted[forcedId]) choice = players[forcedId];
       else { choice = scored.length ? scored[0].p : null; }
@@ -7192,7 +7167,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // own VBD/premium logic on the stable pool — the configuration that has always been reliable.
   const adpVersion = 0;
   const [tradeModalOpen, setTradeModalOpen] = useState(false); // quick pick-trade popover over the hub
-  const [strategy, setStrategy] = useState("balanced");
+  const [strategy, setStrategy] = useState("build");
   const [search, setSearch] = useState("");
   const [posFilter, setPosFilter] = useState("ALL");
   const [sortState, setSortState] = useState({ key: "adp", dir: 1 });
@@ -7502,52 +7477,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     }
     const myCounts = { QB: 0, RB: 0, WR: 0, TE: 0 };
     picks.forEach((pk, o) => { const pl = players[pk]; if (teamAt(o) === forTeam && pl && myCounts[pl.pos] != null) myCounts[pl.pos]++; });
-    // Detect this team's contention window LOCALLY (age-weighted, earlier picks matter more), so the
-    // recommendation can fit the build without depending on state computed later in the render. This mirrors
-    // the myWindow logic: a young roster → "rebuild", an old roster → "winnow".
-    const myAged = [];
-    picks.forEach((pk, o) => { const pl = players[pk]; if (teamAt(o) === forTeam && pl && pl.age && ["QB","RB","WR","TE"].includes(pl.pos)) myAged.push(pl); });
-    let laneLocal = null, laneConf = 0;
-    if (myAged.length >= 4) {
-      let wsum = 0, asum = 0;
-      myAged.forEach((p, i) => { const w = 1 / (1 + i * 0.25); wsum += w; asum += w * p.age; });
-      const avgAge = wsum ? asum / wsum : null;
-      const isDyn = cfg.type === "dynasty" || cfg.type === "keeper";
-      if (avgAge != null) {
-        const youngCut = isDyn ? 24.5 : 25.0, oldCut = isDyn ? 27.5 : 28.0;
-        if (avgAge <= youngCut) laneLocal = "rebuild";
-        else if (avgAge >= oldCut) laneLocal = "winnow";
-        laneConf = Math.min(1, (myAged.length - 3) / 6);
-      }
-    }
     const bestNow = { QB: null, RB: null, WR: null, TE: null };
     for (const p of sortedAdp) if (!goneSet.has(p.id) && (!bestNow[p.pos] || p.vbd > bestNow[p.pos].vbd)) bestNow[p.pos] = p;
     const waitCost = {};
     POS.forEach((pos) => { waitCost[pos] = bestNow[pos] ? Math.round((bestNow[pos].vbd - simState.expBest1[pos]) * 10) / 10 : 0; });
     const pool0 = sortedAdp.filter((p) => !goneSet.has(p.id) && p.adp <= pickNum + 16).slice(0, 40);
     const pool = legalCands(pool0, myCounts, cfg);
-    // Build-lane adjustment: independent of the selected strategy, the recommendation should fit how YOUR
-    // team is actually constructed. Once your window is clear (a few rounds in), a rebuild leans toward
-    // younger/ascending players and a win-now team toward proven vets — so a clearly young rebuild is
-    // steered to, e.g., a younger TE over an aging one of similar value. Scales up in later rounds and is
-    // gentle early. "My build" already bakes this in and "Strict ADP" is pure market, so skip those.
-    const lane = laneLocal;
-    const laneAdj = (p) => {
-      if (!lane || strategy === "build" || strategy === "adp") return 0;
-      const age = p.age || 27;
-      if (lane === "rebuild") {
-        let a = Math.max(0, 27 - age) * 5 - Math.max(0, age - 28) * 9;
-        if (p.rookie) a += 18;
-        return a * laneConf;
-      }
-      if (lane === "winnow") {
-        let a = Math.max(0, age - 24) * 3;
-        if (p.rookie) a -= 12;
-        return a * laneConf;
-      }
-      return 0;
-    };
-    const scoreOf = (p) => userScore(p, myCounts, dem, strategy, cfg.sf, pickNum) + 0.6 * Math.max(0, waitCost[p.pos]) + laneAdj(p);
+    // The recommendation follows the SELECTED strategy so switching the strategy visibly changes the pick.
+    // (The default strategy is "My build", which already factors your roster's build window — youth for a
+    // rebuild, proven vets for win-now — so out of the box the rec fits how your team is constructed.)
+    const scoreOf = (p) => userScore(p, myCounts, dem, strategy, cfg.sf, pickNum) + 0.6 * Math.max(0, waitCost[p.pos]);
     const ranked = pool.slice().sort((a, b) => scoreOf(b) - scoreOf(a));
     const verdict = ranked[0]; const alts = ranked.slice(1, 4);
     const impacts = {};
