@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27p";
+const BUILD_TAG = "2026.06.27q";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2060,7 +2060,8 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
     let entry;
     if (t === userIdx) {
       let choice = null;
-      const scored = legalCands(candidatesOf(sortedAdp, drafted, 30), counts[t], cfg)
+      const legal = legalCands(candidatesOf(sortedAdp, drafted, 30), counts[t], cfg);
+      const scored = legal
         .map((c) => ({ p: c, s: userScore(c, counts[t], dem, strategy, sf, pickNum) }))
         .sort((a, b) => b.s - a.s);
       if (!passedUser && forcedId != null && !drafted[forcedId]) choice = players[forcedId];
@@ -2069,7 +2070,14 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
       // recommendation), surface it first so the expected pick and the alternatives stay consistent.
       let cands5 = scored.slice(0, 5).map((x) => ({ p: x.p }));
       if (choice) { cands5 = [{ p: choice }, ...cands5.filter((x) => x.p.id !== choice.id)].slice(0, 5); }
-      entry = { o, t, user: true, p: choice, cands5 };
+      // Also compute a "My build" ranking of the same pool so the tracker can show the selected-strategy
+      // pick AND the build-fit pick side by side for every one of your upcoming picks.
+      const scoredBuild = legal
+        .map((c) => ({ p: c, s: userScore(c, counts[t], dem, "build", sf, pickNum) }))
+        .sort((a, b) => b.s - a.s);
+      const cands5Build = scoredBuild.slice(0, 5).map((x) => ({ p: x.p }));
+      const buildPick = cands5Build.length ? cands5Build[0].p : null;
+      entry = { o, t, user: true, p: choice, cands5, cands5Build, buildPick };
       passedUser = true;
       if (!choice) break;
       drafted[choice.id] = 1; counts[t][choice.pos]++; recent = [...recent.slice(-7), choice.pos];
@@ -2763,6 +2771,10 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 @keyframes pulseGold{0%,100%{opacity:.5}50%{opacity:1}}
 .glowline{background:linear-gradient(90deg,transparent,var(--gold),transparent);height:1px;opacity:.5}
 .hover-row{transition:background .12s}.hover-row:hover{background:#16160F}
+.team-row{transition:border-color .15s, background .15s, transform .1s, box-shadow .15s}
+.team-row:hover{border-color:var(--gold)!important;background:var(--panel3)!important;transform:translateX(2px);box-shadow:-3px 0 0 0 var(--gold)}
+.team-row:hover .team-arrow{opacity:1;transform:translateX(0)}
+.team-arrow{opacity:0;transform:translateX(-4px);transition:opacity .15s, transform .15s}
 @media(max-width:980px){.cols{flex-direction:column}.rail{width:100%!important}.hero-h{font-size:38px}.myteam-grid{grid-template-columns:1fr!important}.needteam-row{grid-template-columns:1fr!important}.recap-row{grid-template-columns:1fr!important}.superlative-grid{grid-template-columns:repeat(2,1fr)!important}}
 @media(max-width:640px){
   .hero-h{font-size:30px!important}
@@ -3239,7 +3251,7 @@ export default function App() {
         onLibrary={() => setRoute("library")} onNewLeague={() => { setSetupReturn(null); setRoute("setup"); }} onDatabase={() => setRoute("database")}
         onOfficial={(id) => { setActiveId(id); setRoute("draft"); }} onMock={startMock} onQuickMock={() => setQuickMockOpen(true)}
         onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} onGuide={() => { setHelpTab("guide"); setRoute("help"); }} onAccount={() => setRoute("account")} onAdmin={() => setRoute("admin")} onSignOut={signOut}
-        onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} />}
+        onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} />}
       {route === "leagueHub" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? <LeagueUmbrella user={user} league={lg} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")}
         onOfficial={(id) => { setDraftTab(null); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
         onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [] }); setActiveId(m.id); setRoute("draft"); }}
@@ -4101,12 +4113,14 @@ function QuickMockSetup({ onStart, onCancel }) {
 
 // A single dropdown that gathers everything the user can jump into: the drafts they've created in FDC,
 // PLUS the leagues on their linked Sleeper account (fetched live). Gives one place to see all their teams.
-function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper }) {
+function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, onUpdate }) {
   const [open, setOpen] = useState(false);
   const [sleeperLeagues, setSleeperLeagues] = useState(null); // null = not loaded, [] = loaded empty
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
-  const linked = !!(user && user.sleeperUsername);
+  const [linkedState, setLinkedState] = useState(!!(user && user.sleeperUsername));
+  const linked = linkedState;
+  const sleeperName = user && user.sleeperUsername;
 
   const loadSleeper = async () => {
     if (!hasBackend || !linked) return;
@@ -4125,62 +4139,117 @@ function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper }) {
     if (next && linked && sleeperLeagues === null) loadSleeper();
   };
 
+  const unlink = async () => {
+    try { if (hasBackend) await api.sleeperUnlink(); } catch (e) {}
+    setLinkedState(false); setSleeperLeagues(null);
+    if (onUpdate) onUpdate({ sleeperUsername: null, sleeperUserId: null });
+  };
+
   // Which FDC leagues are already linked to a Sleeper league (so we don't double-list)?
   const linkedLeagueIds = new Set(leagues.map((l) => l.connect && l.connect.leagueId).filter(Boolean));
   const unimportedSleeper = (sleeperLeagues || []).filter((sl) => !linkedLeagueIds.has(sl.league_id));
 
+  // Human-readable draft status for a Sleeper league.
+  const sleeperStatus = (sl) => {
+    const s = sl.draft_status;
+    if (!s || s === 'pre_draft') return { label: "Pre-draft", color: "var(--blue)", dot: "var(--blue)" };
+    if (s === 'complete') return { label: "Draft complete", color: "var(--green)", dot: "var(--green)" };
+    if (s === 'drafting' || s === 'paused') {
+      const rd = sl.round ? `Round ${sl.round}${sl.total_rounds ? `/${sl.total_rounds}` : ""}` : "Drafting";
+      return { label: s === 'paused' ? `Paused · ${rd}` : `Drafting · ${rd}`, color: "var(--gold)", dot: "var(--gold)" };
+    }
+    return { label: "—", color: "var(--mut)", dot: "var(--mut)" };
+  };
+
+  const StatusPill = ({ dot, color, label }) => (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, color, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 99, padding: "2px 9px", flexShrink: 0 }}>
+      <span style={{ width: 6, height: 6, borderRadius: "50%", background: dot }} />{label}
+    </span>
+  );
+
   return (
     <div style={{ maxWidth: 940, margin: "0 auto", padding: "0 20px 8px" }}>
-      <button onClick={toggle} className="menuitem" style={{ width: "100%", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1px solid var(--line)", background: "var(--panel)", borderRadius: 10, padding: "11px 16px", display: "flex", alignItems: "center", gap: 10 }}>
-        <i className="ti ti-users-group" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
-        <span className="disp" style={{ fontSize: 14.5, fontWeight: 700 }}>Your teams</span>
-        <span className="mut" style={{ fontSize: 12 }}>{leagues.length} in FDC{linked ? " · Sleeper linked" : ""}</span>
-        <div style={{ flex: 1 }} />
-        <i className={`ti ti-chevron-${open ? "up" : "down"}`} style={{ fontSize: 15, color: "var(--mut)" }} aria-hidden="true" />
+      <button onClick={toggle} className="team-row" style={{ width: "100%", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1px solid var(--line)", background: "var(--panel)", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", gap: 11 }}>
+        <div style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(242,182,60,.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          <i className="ti ti-users-group" style={{ fontSize: 17, color: "var(--gold)" }} aria-hidden="true" />
+        </div>
+        <div style={{ textAlign: "left", flex: 1, minWidth: 0 }}>
+          <div className="disp" style={{ fontSize: 14.5, fontWeight: 700 }}>Your teams</div>
+          <div className="mut" style={{ fontSize: 11.5 }}>{leagues.length} draft{leagues.length === 1 ? "" : "s"} in FDC{linked ? ` · Sleeper linked as ${sleeperName}` : " · Sleeper not linked"}</div>
+        </div>
+        <i className={`ti ti-chevron-${open ? "up" : "down"}`} style={{ fontSize: 16, color: "var(--mut)" }} aria-hidden="true" />
       </button>
 
       {open && (
-        <div className="panel" style={{ padding: 12, marginTop: 8 }}>
+        <div className="panel" style={{ padding: 14, marginTop: 8, borderRadius: 12 }}>
           {/* FDC drafts */}
-          <div className="disp" style={{ fontSize: 11, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--mut)", marginBottom: 6 }}>Your drafts in Fantasy Draft Compass</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 9 }}>
+            <i className="ti ti-clipboard-list" style={{ fontSize: 14, color: "var(--gold)" }} aria-hidden="true" />
+            <div className="disp" style={{ fontSize: 11.5, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--mut)" }}>Your drafts in Fantasy Draft Compass</div>
+          </div>
           {leagues.length ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 12 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 18 }}>
               {leagues.map((l) => {
                 const total = (l.cfg.teams || 12) * l.cfg.rounds;
-                const status = l.picks.length >= total ? "complete" : l.picks.length > 0 ? "drafting" : "ready";
-                const color = status === "complete" ? "var(--green)" : status === "drafting" ? "var(--gold)" : "var(--mut)";
+                const made = l.picks.length;
+                const st = made >= total
+                  ? { label: "Draft complete", color: "var(--green)", dot: "var(--green)" }
+                  : made > 0
+                    ? { label: `Drafting · Round ${Math.floor(made / (l.cfg.teams || 12)) + 1}/${l.cfg.rounds}`, color: "var(--gold)", dot: "var(--gold)" }
+                    : { label: "Ready to draft", color: "var(--mut)", dot: "var(--mut)" };
                 return (
-                  <button key={l.id} onClick={() => onOpenLeague(l.id)} className="hover-row" style={{ textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1px solid var(--line)", background: "var(--panel2)", borderRadius: 8, padding: "9px 12px", display: "flex", alignItems: "center", gap: 10 }}>
-                    <i className="ti ti-clipboard-list" style={{ fontSize: 15, color: "var(--gold)" }} aria-hidden="true" />
-                    <span style={{ fontWeight: 600, fontSize: 13.5, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.name}</span>
-                    {l.connect && l.connect.platform === "sleeper" && <span className="chip" style={{ fontSize: 9.5 }}>Sleeper</span>}
-                    <span style={{ fontSize: 11, color }}>{status === "complete" ? "Complete" : status === "drafting" ? `${l.picks.length}/${total}` : "Ready"}</span>
+                  <button key={l.id} onClick={() => onOpenLeague(l.id)} className="team-row" style={{ textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1px solid var(--line)", background: "var(--panel2)", borderRadius: 10, padding: "11px 13px", display: "flex", alignItems: "center", gap: 11 }}>
+                    <div style={{ width: 28, height: 28, borderRadius: 7, background: "rgba(242,182,60,.10)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                      <i className="ti ti-clipboard-list" style={{ fontSize: 15, color: "var(--gold)" }} aria-hidden="true" />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.name}</div>
+                      <div className="mut" style={{ fontSize: 11 }}>{l.cfg.teams || 12}-team · {(l.cfg.type || "redraft")}{l.cfg.sf ? " · SF" : ""}{l.connect && l.connect.platform === "sleeper" ? " · Sleeper" : ""}</div>
+                    </div>
+                    <StatusPill {...st} />
+                    <i className="ti ti-chevron-right team-arrow" style={{ fontSize: 15, color: "var(--gold)", flexShrink: 0 }} aria-hidden="true" />
                   </button>
                 );
               })}
             </div>
-          ) : <div className="mut" style={{ fontSize: 12.5, marginBottom: 12 }}>No drafts yet — create a league to get started.</div>}
+          ) : <div className="mut" style={{ fontSize: 12.5, marginBottom: 18 }}>No drafts yet — create a league to get started.</div>}
 
-          {/* Sleeper leagues */}
-          <div className="disp" style={{ fontSize: 11, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--mut)", marginBottom: 6 }}>
-            On your linked Sleeper account{user && user.sleeperUsername ? ` (${user.sleeperUsername})` : ""}
+          {/* Sleeper section header with unlink */}
+          <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 9 }}>
+            <i className="ti ti-plug-connected" style={{ fontSize: 14, color: linked ? "var(--blue)" : "var(--mut)" }} aria-hidden="true" />
+            <div className="disp" style={{ fontSize: 11.5, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--mut)", flex: 1 }}>
+              Your Sleeper leagues{linked ? ` — ${sleeperName}` : ""}
+            </div>
+            {linked && (
+              <button className="btn btn-mini" onClick={unlink} title="Sign out of Sleeper" style={{ fontSize: 11 }}>
+                <i className="ti ti-logout" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Unlink
+              </button>
+            )}
           </div>
           {!linked ? (
-            <div className="mut" style={{ fontSize: 12.5 }}>No Sleeper account linked. Link one on your Account page to see all your Sleeper leagues here.</div>
+            <div className="mut" style={{ fontSize: 12.5 }}>No Sleeper account linked. Link one on your Account page to see all your Sleeper leagues and their draft status here. It stays linked until you unlink.</div>
           ) : loading ? (
             <div className="mut" style={{ fontSize: 12.5 }}>Loading your Sleeper leagues…</div>
           ) : err ? (
             <div style={{ color: "var(--red)", fontSize: 12.5 }}>{err} <button className="btn btn-mini" onClick={loadSleeper} style={{ marginLeft: 6 }}>Retry</button></div>
           ) : unimportedSleeper.length ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {unimportedSleeper.map((sl) => (
-                <div key={sl.league_id} className="hover-row" style={{ border: "1px solid var(--line)", background: "var(--panel2)", borderRadius: 8, padding: "9px 12px", display: "flex", alignItems: "center", gap: 10 }}>
-                  <i className="ti ti-brand-sleeper" style={{ fontSize: 15, color: "var(--blue)" }} aria-hidden="true" />
-                  <span style={{ fontWeight: 600, fontSize: 13.5, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sl.name}</span>
-                  <span className="mut" style={{ fontSize: 11 }}>{sl.total_rosters}-team</span>
-                  {onNewFromSleeper && <button className="btn btn-mini" onClick={() => onNewFromSleeper(sl)}>Set up</button>}
-                </div>
-              ))}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {unimportedSleeper.map((sl) => {
+                const st = sleeperStatus(sl);
+                return (
+                  <div key={sl.league_id} className="team-row" style={{ border: "1px solid var(--line)", background: "var(--panel2)", borderRadius: 10, padding: "11px 13px", display: "flex", alignItems: "center", gap: 11 }}>
+                    <div style={{ width: 28, height: 28, borderRadius: 7, background: "rgba(107,168,229,.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                      <i className="ti ti-ghost-2" style={{ fontSize: 15, color: "var(--blue)" }} aria-hidden="true" />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sl.name}</div>
+                      <div className="mut" style={{ fontSize: 11 }}>{sl.total_rosters}-team{sl.made_picks != null ? ` · ${sl.made_picks} picks in` : ""}</div>
+                    </div>
+                    <StatusPill {...st} />
+                    {onNewFromSleeper && <button className="btn btn-mini btn-gold" onClick={() => onNewFromSleeper(sl)} style={{ flexShrink: 0 }}>Set up</button>}
+                  </div>
+                );
+              })}
             </div>
           ) : (
             <div className="mut" style={{ fontSize: 12.5 }}>{sleeperLeagues === null ? "…" : "All your Sleeper leagues are already set up in FDC."}</div>
@@ -4191,7 +4260,7 @@ function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper }) {
   );
 }
 
-function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete }) {
+function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate }) {
   const totalMocks = leagues.reduce((s, l) => s + (l.mocks || []).length, 0) + funMocks.length;
   const inProgress = leagues.filter((l) => l.picks.length > 0 && l.picks.length < (l.cfg.teams || 12) * l.cfg.rounds);
   const [q, setQ] = useState("");
@@ -4278,7 +4347,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
       </div>
 
       {/* Your teams — a single dropdown of FDC drafts + linked Sleeper leagues */}
-      <YourTeamsDropdown user={user} leagues={leagues} onOpenLeague={(id) => onUmbrella(id)} onNewFromSleeper={() => onNewLeague()} />
+      <YourTeamsDropdown user={user} leagues={leagues} onOpenLeague={(id) => onUmbrella(id)} onNewFromSleeper={() => onNewLeague()} onUpdate={onUpdate} />
 
       {/* the existing-league picker can open straight from the quick action above */}
       {openPick && leagues.length > 0 && (
@@ -8649,22 +8718,58 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               )}
             </div>
             {displayPath.map((step, di) => step.user ? (
-              <div key={step.o} className="tickcard you" style={{ ...(!futureBig && di === displayPath.length - 1 && di >= 3 ? { borderColor: "var(--gold)", borderWidth: 2, boxShadow: "0 0 0 2px rgba(242,182,60,.25)", background: "linear-gradient(180deg,rgba(242,182,60,.16),rgba(242,182,60,.04))" } : {}), cursor: step.cands5 && step.cands5.length > 1 ? "help" : "default" }}
-                onMouseEnter={step.cands5 && step.cands5.length > 1 ? (e) => showTip(e, [
-                  { kind: "take", tone: "good", x: `Your pick ${pickLabel(step.o)} — best options for you` },
-                  ...step.cands5.map((c, ci) => ({
-                    tc: ci === 0 ? "var(--gold)" : POS_COLOR[c.p.pos],
-                    t: `${c.p.pos}${c.p.posRank}`,
-                    x: `${ci === 0 ? "★ " : ""}${c.p.name}${ci === 0 ? " (top target)" : ""} — ${Math.round(c.p.pts)} pts`,
-                  })),
-                  { t: "", x: "★ = the engine's top recommendation for you here. The rest are your next-best value options if he's gone." },
-                  ...(step.cands5[0] ? [{ kind: "why", x: whyPick(step.cands5[0].p, advice && advice.waitCost, true) }] : []),
-                ]) : undefined} onMouseLeave={hideTip}>
-                <div style={{ fontSize: 11, color: "var(--gold)", textTransform: "uppercase", letterSpacing: ".07em", fontWeight: 700, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                  <span>{!futureBig && di >= 3 ? "↩ Your next pick" : "Your pick"} {pickLabel(step.o)} <span style={{ opacity: 0.75 }}>({step.o + 1})</span></span>
-                  {(() => { const away = step.o - picks.length; return away > 0 ? <span style={{ background: "var(--gold)", color: "#151002", borderRadius: 5, padding: "1px 6px", fontSize: 10, fontWeight: 800 }}>{away === 1 ? "next up!" : `${away} picks away`}</span> : null; })()}
-                </div>
-                {step.p && <div style={{ fontWeight: 600, fontSize: 13, marginTop: 2 }}><Dot pos={step.p.pos} />{step.p.name}{step.cands5 && step.cands5.length > 1 ? <span className="mut" style={{ fontSize: 10, marginLeft: 4 }}>· hover for options</span> : null}</div>}
+              <div key={step.o} className="tickcard you" style={{ ...(!futureBig && di === displayPath.length - 1 && di >= 3 ? { borderColor: "var(--gold)", borderWidth: 2, boxShadow: "0 0 0 2px rgba(242,182,60,.25)", background: "linear-gradient(180deg,rgba(242,182,60,.16),rgba(242,182,60,.04))" } : {}) }}>
+                {(() => {
+                  // Two-section plaque for one of YOUR upcoming picks:
+                  //   top  = where/when the pick is (label, overall, picks away)
+                  //   below = the selected-strategy pick AND the "My build" pick, each hoverable for a
+                  //           summary + alternatives. Shows for every future pick of yours.
+                  const stratLabel = { balanced: "Balanced", value: "Max VBD", build: "My build", upside: "Upside", adp: "Strict ADP" };
+                  const away = step.o - picks.length;
+                  const balPick = step.cands5 && step.cands5[0] ? step.cands5[0].p : step.p;
+                  const bldPick = step.buildPick || (step.cands5Build && step.cands5Build[0] ? step.cands5Build[0].p : null);
+                  const primaryLabel = stratLabel[strategy] || "Recommended";
+                  const showBuild = bldPick && (!balPick || bldPick.id !== balPick.id);
+                  // Hover builder for a given pick + its candidate list.
+                  const recTip = (label, pick, cands, color) => {
+                    if (!pick) return undefined;
+                    const alts = (cands || []).filter((c) => c.p.id !== pick.id).slice(0, 4);
+                    return (e) => showTip(e, [
+                      { kind: "take", tone: "good", x: `${label} — ${pick.name}` },
+                      { kind: "stats", chips: [`${pick.pos}${pick.posRank}`, `+${pick.vbd != null ? pick.vbd.toFixed(0) : "0"} VBD`, `${Math.round(pick.pts || 0)} pts`, `ADP ${pick.adp != null ? pick.adp.toFixed(0) : "—"}`] },
+                      ...alts.map((c) => ({ tc: POS_COLOR[c.p.pos], t: `${c.p.pos}${c.p.posRank}`, x: `${c.p.name} · ${Math.round(c.p.pts || 0)} pts` })),
+                      { t: "", x: "The top pick for this approach, then your next-best alternatives if he's gone." },
+                      { kind: "why", x: whyPick(pick, advice && advice.waitCost, true) },
+                    ]);
+                  };
+                  const balTip = recTip(primaryLabel, balPick, step.cands5, "var(--gold)");
+                  const bldTip = recTip("My build", bldPick, step.cands5Build, "var(--blue)");
+                  const recLine = (label, pick, tip, color) => pick ? (
+                    <div onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined} style={{ display: "flex", alignItems: "baseline", gap: 5, cursor: tip ? "help" : "default", padding: "1px 0" }}>
+                      <span className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".04em", minWidth: 54, flexShrink: 0 }}>{label}</span>
+                      <Dot pos={pick.pos} />
+                      <b style={{ color, fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pick.name}</b>
+                      <span className="mut" style={{ fontSize: 10 }}>{pick.pos}{pick.posRank}</span>
+                    </div>
+                  ) : null;
+                  return (
+                    <>
+                      {/* top section — pick location + timing */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", paddingBottom: 5, marginBottom: 5, borderBottom: "1px solid rgba(242,182,60,.25)" }}>
+                        <span style={{ fontSize: 11, color: "var(--gold)", textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700 }}>
+                          {!futureBig && di >= 3 ? "↩ Your next pick" : "Your pick"} {pickLabel(step.o)} <span style={{ opacity: 0.75 }}>({step.o + 1})</span>
+                        </span>
+                        {away > 0 && <span style={{ background: "var(--gold)", color: "#151002", borderRadius: 5, padding: "1px 6px", fontSize: 10, fontWeight: 800 }}>{away === 1 ? "next up!" : `${away} picks away`}</span>}
+                      </div>
+                      {/* bottom section — both recommendations */}
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        {recLine(primaryLabel, balPick, balTip, "var(--gold)")}
+                        {showBuild && recLine("My build", bldPick, bldTip, "var(--blue)")}
+                        <div className="mut" style={{ fontSize: 9.5, marginTop: 1, opacity: 0.7 }}>hover a pick for details + alternatives</div>
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             ) : (
               <div key={step.o} className="tickcard" style={{ cursor: step.cands5 && step.cands5.length ? "help" : "default" }}
