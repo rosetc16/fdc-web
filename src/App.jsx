@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27i";
+const BUILD_TAG = "2026.06.27j";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2384,37 +2384,6 @@ function leagueOverview(allPicks, players, teamAtFn, cfg) {
   const power = teams.map((t) => ({ idx: t.idx, v: t.startPts })).sort((a, b) => b.v - a.v).map((o, i) => ({ idx: o.idx, rank: i + 1, pts: o.v }));
   const powerByIdx = {}; power.forEach((p) => { powerByIdx[p.idx] = p; });
   return { teams, posTiers, power, powerByIdx, positions, n };
-}
-function needLevel(count, bestVbd, dem, pos) {
-  const qty = dem[pos] - count;
-  if (qty >= 1.5) return 2;
-  if (qty > 0.05) return 1;
-  if (bestVbd != null && bestVbd < 0) return 1;
-  return 0;
-}
-// Position strength for a team: quality × quantity, returning 0 (green/strong), 1 (amber/middle),
-// 2 (red/weak). Mirrors the "League needs — strength" table so chips and that table always agree.
-//  - count: how many at this position the team rosters
-//  - bestVbd: best VBD among them (null = none) — the QUALITY signal
-//  - req: starting slots required at this position in this format
-//  - remaining: picks the team still has left (so we can weight urgency of unfilled starters)
-// Logic: full starters + real talent = strong; full starters w/ weak talent OR partial w/ strong
-// talent = middle; otherwise weak. A team with the WR1 but only 1 of 3 WR slots filled and lots of
-// draft left still reads weak/amber, because the unfilled slots will drag the lineup down.
-function posStrength(count, bestVbd, req, remaining) {
-  const haveStarters = count >= req;
-  const short = Math.max(0, req - count);
-  const quality = bestVbd; // best VBD at position (null = none)
-  if (req === 0 && count === 0) return 0; // not a starting position here
-  // Strong: starters filled AND at least one genuinely useful (above-replacement) player. Filling
-  // your slots when others haven't is real strength, so the quality bar here is modest.
-  if (haveStarters && quality != null && quality >= 8) return 0;
-  // Middle: starters filled but only replacement-level talent, OR not yet filled but holding a
-  // strong piece with the picks left to round it out.
-  if (haveStarters && quality != null && quality >= -8) return 1;
-  if (!haveStarters && quality != null && quality >= 40 && remaining != null && remaining > short) return 1;
-  // Otherwise weak: thin headcount, below-replacement talent, or running out of picks to fix it.
-  return 2;
 }
 // SHARED position-strength score (quality × quantity) used everywhere we color or rank a team's position:
 // the hub's "League needs" table, the League Overview chips, AND the Team-analysis "Where you rank" bars.
