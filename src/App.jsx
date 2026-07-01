@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26y";
+const BUILD_TAG = "2026.06.26z";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2222,8 +2222,75 @@ function positionTip(cx, cy, content) {
   if (x + TW > W) x = Math.max(8, cx - TW);
   return { x, y: cy, anchorY: cy, content };
 }
-// Self-correcting tooltip: renders at the anchor, then on layout measures its actual box and nudges its
-// top so the whole thing stays within the viewport (flipping above the cursor when there isn't room below).
+// Animated boot splash — a rotating compass with a radar sweep, orbiting position dots, a filling progress
+// bar, and rotating hype lines. Shown for a few seconds on load (see bootReady) both to feel intentional
+// and to give the live player pack time to arrive before the user can enter a draft.
+function BootSplash({ css }) {
+  const LINES = [
+    "Charting your board…",
+    "Reading the room — live ADP & runs…",
+    "Ranking every player for your league…",
+    "Modeling how the draft will unfold…",
+    "Finding the values before anyone else…",
+    "Setting your true north…",
+  ];
+  const [li, setLi] = useState(0);
+  useEffect(() => { const iv = setInterval(() => setLi((i) => (i + 1) % LINES.length), 1100); return () => clearInterval(iv); }, []);
+  const posDots = [
+    { c: "var(--blue)", a: 0 }, { c: "var(--green)", a: 90 }, { c: "var(--gold)", a: 180 }, { c: "var(--red)", a: 270 },
+  ];
+  return (
+    <div className="gs-root" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+      <style>{css}</style>
+      <style>{`
+        @keyframes fdcspin{to{transform:rotate(360deg)}}
+        @keyframes fdcspin-r{to{transform:rotate(-360deg)}}
+        @keyframes fdcpulse{0%,100%{opacity:.4}50%{opacity:1}}
+        @keyframes fdcsweep{to{transform:rotate(360deg)}}
+        @keyframes fdcorbit{to{transform:rotate(360deg)}}
+        @keyframes fdcfloatin{0%{opacity:0;transform:translateY(6px)}100%{opacity:1;transform:translateY(0)}}
+        @keyframes fdcbar{0%{width:8%}70%{width:88%}100%{width:96%}}
+        @keyframes fdcglow{0%,100%{filter:drop-shadow(0 0 4px rgba(242,182,60,.4))}50%{filter:drop-shadow(0 0 16px rgba(242,182,60,.8))}}
+      `}</style>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 26 }}>
+        {/* Compass + radar rig */}
+        <div style={{ position: "relative", width: 132, height: 132 }}>
+          {/* outer ring */}
+          <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "2px solid var(--line)", opacity: 0.7 }} />
+          {/* rotating tick ring */}
+          <div style={{ position: "absolute", inset: 6, borderRadius: "50%", border: "2px dashed var(--line2)", animation: "fdcspin 14s linear infinite" }} />
+          {/* radar sweep */}
+          <div style={{ position: "absolute", inset: 6, borderRadius: "50%", overflow: "hidden", animation: "fdcsweep 2.4s linear infinite" }}>
+            <div style={{ position: "absolute", left: "50%", top: "50%", width: "50%", height: "50%", transformOrigin: "top left", background: "conic-gradient(from 0deg, rgba(242,182,60,.35), rgba(242,182,60,0) 70%)" }} />
+          </div>
+          {/* orbiting position dots */}
+          <div style={{ position: "absolute", inset: 0, animation: "fdcorbit 3.6s linear infinite" }}>
+            {posDots.map((d, i) => (
+              <div key={i} style={{ position: "absolute", left: "50%", top: "50%", width: 0, height: 0, transform: `rotate(${d.a}deg)` }}>
+                <span style={{ position: "absolute", left: -4, top: -60, width: 8, height: 8, borderRadius: "50%", background: d.c, boxShadow: `0 0 8px ${d.c}` }} />
+              </div>
+            ))}
+          </div>
+          {/* compass core */}
+          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", animation: "fdcglow 2s ease-in-out infinite" }}>
+            <i className="ti ti-compass" style={{ fontSize: 46, color: "var(--gold)", animation: "fdcspin 6s ease-in-out infinite" }} aria-hidden="true" />
+          </div>
+        </div>
+
+        <div style={{ textAlign: "center" }}>
+          <div className="disp" style={{ fontSize: 24, fontWeight: 800, letterSpacing: ".06em", color: "var(--ink)" }}>FANTASY DRAFT COMPASS</div>
+          <div key={li} className="mut" style={{ fontSize: 13, marginTop: 6, minHeight: 18, animation: "fdcfloatin .4s ease-out" }}>{LINES[li]}</div>
+        </div>
+
+        {/* progress bar */}
+        <div style={{ width: 220, height: 5, borderRadius: 5, background: "var(--panel2)", overflow: "hidden", border: "1px solid var(--line)" }}>
+          <div style={{ height: "100%", background: "linear-gradient(90deg,var(--gold),var(--gold2))", borderRadius: 5, animation: "fdcbar 6.5s cubic-bezier(.25,.8,.3,1) forwards" }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Tooltip({ tip, children }) {
   const ref = useRef(null);
   const [pos, setPos] = useState({ left: tip.x, top: tip.y });
@@ -2737,6 +2804,14 @@ export default function App() {
   const [setupReturn, setSetupReturn] = useState(null); // where the New League flow should return to
   const [biz, setBiz] = useState({ price: 19.99, promos: [] });
   const [loaded, setLoaded] = useState(false);
+  // The animated boot splash shows until BOTH a minimum time has elapsed (so it never just flickers) AND
+  // the live player pack has arrived (so entering a draft never lands on an un-built/black board) — with a
+  // hard cap so a cold backend can't trap the user. `loaded` = local hydration done; `bootReady` = safe to
+  // show the app AND navigate into a draft.
+  const [bootReady, setBootReady] = useState(false);
+  const bootStartRef = useRef(Date.now());
+  const packDoneRef = useRef(false);
+  const MIN_SPLASH_MS = 2600, MAX_SPLASH_MS = 7000;
   const [dataVersion, setDataVersion] = useState(0); // bumps when live player data loads, to refresh boards
   const [demoLeague, setDemoLeague] = useState(null); // unsaved demo draft from homepage
   const [mockLeague, setMockLeague] = useState(null); // transient mock draft running against a saved league
@@ -2789,7 +2864,7 @@ export default function App() {
         // fire all three at once
         const packP = api.playerPack(fmt, undefined, opts).catch(() => null);
         const meP = api.me().catch(() => null);
-        packP.then((pack) => { try { if (pack && applyLivePack(pack)) setDataVersion((v) => v + 1); } catch (e) {} });
+        packP.then((pack) => { try { if (pack && applyLivePack(pack)) setDataVersion((v) => v + 1); } catch (e) {} finally { packDoneRef.current = true; } });
         meP.then(async (me) => {
           if (!me) return;
           try { const admin = isAdminEmail(me.email); setUser(migrateRankSets({ ...me, rankSets: me.rankSets || [], admin, paid: me.paid || admin })); } catch (e) {}
@@ -2822,6 +2897,21 @@ export default function App() {
       }
     })();
   }, []);
+
+  // Boot-splash coordinator: flip bootReady once the minimum splash time has passed AND the live pack has
+  // loaded (packDoneRef) — or once the hard cap is hit, so a slow/cold backend can't strand the user. When
+  // there's no backend we simply wait out the minimum. Polls a few times a second; cheap and self-clearing.
+  useEffect(() => {
+    if (bootReady) return;
+    if (!hasBackend) { const t = setTimeout(() => setBootReady(true), MIN_SPLASH_MS); return () => clearTimeout(t); }
+    const iv = setInterval(() => {
+      const elapsed = Date.now() - bootStartRef.current;
+      if ((packDoneRef.current && elapsed >= MIN_SPLASH_MS) || elapsed >= MAX_SPLASH_MS) {
+        setBootReady(true);
+      }
+    }, 120);
+    return () => clearInterval(iv);
+  }, [bootReady]);
 
   // Ensure a mobile viewport meta exists (so the app scales correctly on phones in any host,
   // including a standalone deploy). Harmless if one is already present.
@@ -3043,25 +3133,7 @@ export default function App() {
 
   const active = activeId === "demo" ? demoLeague : (mockLeague && activeId === mockLeague.id) ? mockLeague : leagues.find((l) => l.id === activeId);
 
-  if (!loaded) return (
-    <div className="gs-root" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
-      <style>{css}</style>
-      <style>{`@keyframes fdcspin{to{transform:rotate(360deg)}}@keyframes fdcpulse{0%,100%{opacity:.35}50%{opacity:1}}@keyframes fdcbar{0%{transform:scaleX(.1)}50%{transform:scaleX(.75)}100%{transform:scaleX(.1)}}`}</style>
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 22 }}>
-        <div style={{ position: "relative", width: 64, height: 64 }}>
-          <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "3px solid var(--line)", borderTopColor: "var(--gold)", animation: "fdcspin 0.9s linear infinite" }} />
-          <i className="ti ti-compass" style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, color: "var(--gold)", animation: "fdcpulse 1.6s ease-in-out infinite" }} aria-hidden="true" />
-        </div>
-        <div style={{ textAlign: "center" }}>
-          <div className="disp" style={{ fontSize: 22, fontWeight: 800, letterSpacing: ".04em", color: "var(--ink)" }}>Fantasy Draft Compass</div>
-          <div className="mut" style={{ fontSize: 12.5, marginTop: 4, animation: "fdcpulse 1.6s ease-in-out infinite" }}>Charting your board…</div>
-        </div>
-        <div style={{ width: 180, height: 4, borderRadius: 4, background: "var(--panel2)", overflow: "hidden" }}>
-          <div style={{ height: "100%", background: "var(--gold)", transformOrigin: "left", animation: "fdcbar 1.4s ease-in-out infinite" }} />
-        </div>
-      </div>
-    </div>
-  );
+  if (!bootReady) return <BootSplash css={css} />;
 
   return (
     <div className="gs-root">
