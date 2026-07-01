@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27k";
+const BUILD_TAG = "2026.06.27l";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -7431,6 +7431,26 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     return survivalAtPick(players, sortedAdp, picks, targetOverall, cfg, 600);
   }, [targetOverall, sims, players, sortedAdp, picks, cfg, done]);
 
+  // "Why this pick" — a single plain-English reason for a recommended player, assembled from the live
+  // inputs the engine used (value vs market, positional need/wait-cost, scarcity, build fit). Shared by the
+  // recommendation rail AND the upcoming-pick hovers so the reasoning shows everywhere the pick is surfaced.
+  const whyPick = (p, waitCostMap, atUserPick) => {
+    if (!p) return "";
+    const reasons = [];
+    const gap = p.valueRank != null && p.adp != null ? Math.round(p.adp - p.valueRank) : 0;
+    if (gap > 10) reasons.push("clear value here — worth more than his draft cost");
+    else if (gap > 4) reasons.push("solid value at this spot");
+    const need = waitCostMap && waitCostMap[p.pos] != null ? waitCostMap[p.pos] : 0;
+    if (need > 12) reasons.push(`fills a real need at ${p.pos} that gets costly if you wait`);
+    else if (need > 5) reasons.push(`addresses your ${p.pos} depth`);
+    const surv = sims && sims.pct && sims.pct[0] && sims.pct[0][p.id] != null ? sims.pct[0][p.id] : null;
+    if (surv != null && surv <= 25 && atUserPick) reasons.push("unlikely to make it back to your next pick");
+    if (p.rookie && cfg.type !== "redraft") reasons.push("a young piece for the long haul");
+    if (!reasons.length) reasons.push("the best overall value on the board for you right now");
+    let why = reasons.slice(0, 2).join(", and ");
+    return why.charAt(0).toUpperCase() + why.slice(1) + ".";
+  };
+
   // Advice for a hypothetical pick at overall index `atOverall` (0-based) made by `forTeam`, given the
   // picks already made. Lets us show a recommendation for the CURRENT pick on the clock and, separately,
   // for YOUR upcoming pick (projecting the picks in between as already gone).
@@ -8421,6 +8441,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 }
                 const tip = (cands5 && cands5.length > 1) ? (e) => showTip(e, [
                   { kind: "take", tone: isYou ? "good" : "neutral", x: isYou ? `Your pick ${pickLabel(picks.length)} — best options for you` : `${pickLabel(picks.length)} · ${TEAM_NAMES[onClock]} — engine's top candidates` },
+                  ...(isYou && cands5[0] ? [{ t: "Why", x: whyPick(cands5[0].p, advice && advice.waitCost, true), tc: "var(--gold)" }] : []),
                   ...cands5.map((c, ci) => ({
                     tc: ci === 0 ? "var(--gold)" : POS_COLOR[c.p.pos],
                     t: isYou ? `${c.p.pos}${c.p.posRank}` : `${c.prob != null ? c.prob + "%" : ""}`,
@@ -8443,6 +8464,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <div key={step.o} className="tickcard you" style={{ ...(!futureBig && di === displayPath.length - 1 && di >= 3 ? { borderColor: "var(--gold)", borderWidth: 2, boxShadow: "0 0 0 2px rgba(242,182,60,.25)", background: "linear-gradient(180deg,rgba(242,182,60,.16),rgba(242,182,60,.04))" } : {}), cursor: step.cands5 && step.cands5.length > 1 ? "help" : "default" }}
                 onMouseEnter={step.cands5 && step.cands5.length > 1 ? (e) => showTip(e, [
                   { kind: "take", tone: "good", x: `Your pick ${pickLabel(step.o)} — best options for you` },
+                  ...(step.cands5[0] ? [{ t: "Why", x: whyPick(step.cands5[0].p, advice && advice.waitCost, true), tc: "var(--gold)" }] : []),
                   ...step.cands5.map((c, ci) => ({
                     tc: ci === 0 ? "var(--gold)" : POS_COLOR[c.p.pos],
                     t: `${c.p.pos}${c.p.posRank}`,
@@ -8930,24 +8952,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     {advice.impacts[advice.verdict.id] && <> • projects you <b style={{ color: "var(--ink)" }}>{ordinal(advice.impacts[advice.verdict.id].rank)}</b> ({advice.impacts[advice.verdict.id].pts} pts)</>}
                   </div>
                   {(() => {
-                    // "Why this pick" — one plain-English line assembled from the live inputs the engine
-                    // actually used: value vs the market, whether it fills a positional need, how fast the
-                    // position is drying up, and whether it fits your build lane. Reads like a human take.
-                    const v = advice.verdict;
-                    const reasons = [];
-                    const gap = v.valueRank != null && v.adp != null ? Math.round(v.adp - v.valueRank) : 0;
-                    if (gap > 10) reasons.push("clear value here — he's worth more than his draft cost");
-                    else if (gap > 4) reasons.push("solid value at this spot");
-                    const need = advice.waitCost && advice.waitCost[v.pos] != null ? advice.waitCost[v.pos] : 0;
-                    if (need > 12) reasons.push(`fills a real need at ${v.pos} that gets costly if you wait`);
-                    else if (need > 5) reasons.push(`addresses your ${v.pos} depth`);
-                    const surv = sims && sims.pct && sims.pct[0] && sims.pct[0][v.id] != null ? sims.pct[0][v.id] : null;
-                    if (surv != null && surv <= 25 && onClock === userIdx) reasons.push("unlikely to make it back to your next pick");
-                    if (v.rookie && cfg.type !== "redraft") reasons.push("a young piece for the long haul");
-                    if (!reasons.length) reasons.push(`the best overall value on the board for you right now`);
-                    // Capitalize first, join into one flowing sentence.
-                    let why = reasons.slice(0, 2).join(", and ");
-                    why = why.charAt(0).toUpperCase() + why.slice(1) + ".";
+                    // "Why this pick" — one plain-English line from the shared helper (value, need,
+                    // scarcity, build fit), so the rail and the upcoming-pick hovers always match.
+                    const why = whyPick(advice.verdict, advice.waitCost, onClock === userIdx);
                     return (
                       <div style={{ fontSize: 12.5, lineHeight: 1.45, marginTop: 8, padding: "8px 10px", background: "rgba(242,182,60,.08)", borderLeft: "2px solid var(--gold)", borderRadius: "0 6px 6px 0" }}>
                         <span style={{ color: "var(--gold)", fontWeight: 700 }}>Why: </span><span style={{ color: "var(--ink)" }}>{why}</span>
@@ -9729,41 +9736,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             </select>
             <span className="mut" style={{ fontSize: 11.5 }}>{summaryTeam == null ? "Steals & reaches show the whole league; your roster is highlighted." : `Showing ${summaryTeam === userIdx ? "your" : TEAM_NAMES[summaryTeam] + "'s"} picks, steals & reaches.`}</span>
           </div>
-          <div className="panel" style={{ padding: 14 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
-              <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{done ? "Final grades" : "Live grades"} <span className="mut" style={{ fontSize: 12 }}>value drafted + projected finish</span></div>
-              <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }}>
-                <span className="mut" style={{ fontSize: 11, alignSelf: "center", padding: "0 8px" }}>Sort by</span>
-                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "z" ? "var(--gold)" : "transparent", color: sumSort.key === "z" ? "#151002" : "var(--ink)", fontWeight: sumSort.key === "z" ? 700 : 400 }} onClick={() => setSumSort({ key: "z", dir: -1 })}>Grade</button>
-                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "val" ? "var(--gold)" : "transparent", color: sumSort.key === "val" ? "#151002" : "var(--ink)", fontWeight: sumSort.key === "val" ? 700 : 400 }} onClick={() => setSumSort({ key: "val", dir: -1 })}>Value</button>
-              </div>
-            </div>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-              <thead><tr className="mut" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", cursor: "pointer" }}>
-                <th style={{ textAlign: "left", paddingBottom: 5 }}>Team</th>
-                <th className="num" onClick={() => setSumSort((s) => ({ key: "val", dir: s.key === "val" ? -s.dir : -1 }))}>Value{sumSort.key === "val" ? (sumSort.dir < 0 ? " ▾" : " ▴") : ""}</th>
-                <th className="num" onClick={() => setSumSort((s) => ({ key: "pts", dir: s.key === "pts" ? -s.dir : -1 }))}>Proj pts{sumSort.key === "pts" ? (sumSort.dir < 0 ? " ▾" : " ▴") : ""}</th>
-                <th className="num" onClick={() => setSumSort((s) => ({ key: "rank", dir: s.key === "rank" ? -s.dir : 1 }))}>Proj{sumSort.key === "rank" ? (sumSort.dir < 0 ? " ▾" : " ▴") : ""}</th>
-                <th onClick={() => setSumSort((s) => ({ key: "z", dir: s.key === "z" ? -s.dir : -1 }))}>Grade{sumSort.key === "z" ? (sumSort.dir < 0 ? " ▾" : " ▴") : ""}</th>
-              </tr></thead>
-              <tbody>
-                {Array.from({ length: TEAMS }, (_, i) => i).sort((a, b) => {
-                  const k = sumSort.key;
-                  const va = k === "val" ? valByTeam[a] : k === "pts" ? proj.pts[a] : k === "rank" ? proj.rank[a] : grades[a].z;
-                  const vb = k === "val" ? valByTeam[b] : k === "pts" ? proj.pts[b] : k === "rank" ? proj.rank[b] : grades[b].z;
-                  return (va - vb) * sumSort.dir;
-                }).map((i) => (
-                  <tr key={i} style={{ color: i === userIdx ? "var(--gold)" : "var(--ink)" }}>
-                    <td style={{ padding: "3px 0" }}>{i === userIdx ? `${TEAM_NAMES[i] || "Your team"}` : TEAM_NAMES[i]}{i === userIdx && <span className="mut" style={{ fontSize: 9, marginLeft: 5 }}>YOU</span>}</td>
-                    <td className="num" style={{ textAlign: "right", background: valBg(valByTeam[i]) }}>{valByTeam[i] > 0 ? `+${valByTeam[i]}` : valByTeam[i]}</td>
-                    <td className="num" style={{ textAlign: "right" }}>{proj.pts[i]}</td>
-                    <td className="num" style={{ textAlign: "right" }}>{ordinal(proj.rank[i])}</td>
-                    <td style={{ textAlign: "center", fontWeight: 700 }}>{grades[i].g}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
 
           <div className="panel" style={{ padding: 14 }}>
             <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Biggest steals <span className="mut" style={{ fontSize: 12 }}>{summaryTeam == null ? "(league-wide, curve-weighted)" : `(${summaryTeam === userIdx ? "your team" : TEAM_NAMES[summaryTeam]})`}</span></div>
@@ -9820,46 +9792,54 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             })()}
           </div>
 
-          {/* Recap on the left; "how the draft flowed" + superlatives stacked on the right. */}
-          <div style={{ gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "minmax(0,1.1fr) minmax(0,1fr)", gap: 12, alignItems: "start" }} className="recap-row">
+          {/* ===== Draft card — facts only, per selected team. Sits up top next to steals/reaches. ===== */}
           {recap && recapHead && (
             <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
               {(() => {
-                // The shareable Draft Card: your headline result up top (the brag), the league's key
-                // storylines below it, then the AI-style recap prose. Built entirely from live engine data.
-                const myGrade = grades[userIdx] ? grades[userIdx].g : "—";
-                const myRank = proj ? proj.rank[userIdx] : null;
-                const myPts = proj ? proj.pts[userIdx] : null;
+                const ti = summaryTeam == null ? userIdx : summaryTeam;
+                const isYou = ti === userIdx;
+                const teamName = isYou ? (TEAM_NAMES[ti] || "Your team") : TEAM_NAMES[ti];
+                const myGrade = grades[ti] ? grades[ti].g : "—";
+                const myRank = proj ? proj.rank[ti] : null;
+                const myPts = proj ? proj.pts[ti] : null;
                 const rankColor = myRank && myRank <= Math.ceil(TEAMS / 3) ? "var(--green)" : myRank && myRank <= Math.ceil((2 * TEAMS) / 3) ? "var(--gold)" : "var(--red)";
-                const mySteal = graded.slice().filter((g) => g.t === userIdx).sort((a, b) => b.val - a.val)[0];
+                const myPicks = graded.filter((g) => g.t === ti);
+                const bestPicks = myPicks.slice().sort((a, b) => b.val - a.val).slice(0, 3);
+                const worstPicks = myPicks.slice().sort((a, b) => a.val - b.val).filter((g) => g.val < 0).slice(0, 2);
+                const myVal = valByTeam[ti];
+                const valRank = Array.from({ length: TEAMS }, (_, i) => i).sort((a, b) => valByTeam[b] - valByTeam[a]).indexOf(ti) + 1;
+                const label = (o) => `R${Math.floor(o / TEAMS) + 1}.${(o % TEAMS) + 1}`;
                 const shareText = [
-                  `${cfg.name} — my draft (Fantasy Draft Compass)`,
+                  `${cfg.name} — ${isYou ? "my" : teamName + "'s"} draft card (Fantasy Draft Compass)`,
                   `Grade ${myGrade} · projected ${myRank ? ordinal(myRank) : "—"} of ${TEAMS}${myPts ? ` · ${myPts} pts` : ""}`,
-                  mySteal ? `Best value: ${mySteal.p.name} (${mySteal.val > 0 ? "+" : ""}${mySteal.val.toFixed(0)} spots)` : "",
+                  `Draft value: ${myVal > 0 ? "+" : ""}${myVal} (${ordinal(valRank)} in league)`,
                   ``,
-                  `League storylines:`,
-                  `• Projected winner: ${recapHead.winner}`,
-                  `• Biggest steal: ${recapHead.steal}`,
-                  `• Biggest reach: ${recapHead.reach}`,
-                  ``,
-                  recap.join("\n\n"),
+                  `Best picks:`,
+                  ...bestPicks.map((g) => `• ${g.p.name} ${g.p.pos}${g.p.posRank} — ${label(g.o)} (${g.val > 0 ? "+" : ""}${g.val.toFixed(0)})`),
+                  ...(worstPicks.length ? [``, `Reaches:`, ...worstPicks.map((g) => `• ${g.p.name} ${g.p.pos}${g.p.posRank} — ${label(g.o)} (${g.val.toFixed(0)})`)] : []),
                   ``,
                   `→ fantasydraftcompass.com`,
-                ].filter((l) => l !== undefined).join("\n");
+                ].join("\n");
+                const line = (g, tone) => (
+                  <div key={g.o} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, fontSize: 13, padding: "2px 0" }}>
+                    <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={g.p.pos} /><b>{g.p.name}</b> <span className="mut" style={{ fontSize: 11.5 }}>{g.p.pos}{g.p.posRank} · {label(g.o)}</span></span>
+                    <b style={{ color: tone, flexShrink: 0 }}>{g.val > 0 ? "+" : ""}{g.val.toFixed(0)}</b>
+                  </div>
+                );
                 return (
                   <>
-                    {/* HERO — your result, the shareable brag */}
-                    <div style={{ position: "relative", padding: "18px 18px 16px", background: "linear-gradient(135deg, rgba(242,182,60,.14), rgba(242,182,60,.03))", borderBottom: "1px solid var(--line)" }}>
+                    {/* HERO — the selected team's headline result */}
+                    <div style={{ padding: "16px 16px 14px", background: "linear-gradient(135deg, rgba(242,182,60,.14), rgba(242,182,60,.03))", borderBottom: "1px solid var(--line)" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
                         <div style={{ minWidth: 0 }}>
-                          <div className="disp" style={{ fontSize: 12, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--gold)", display: "flex", alignItems: "center", gap: 7 }}>
-                            <Compass size={16} /> Your draft card
+                          <div className="disp" style={{ fontSize: 11.5, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--gold)", display: "flex", alignItems: "center", gap: 7 }}>
+                            <Compass size={15} /> {isYou ? "Your draft card" : `${teamName} — draft card`}
                           </div>
-                          <div className="disp" style={{ fontSize: 26, fontWeight: 800, marginTop: 6, lineHeight: 1.05 }}>
-                            Grade {myGrade} · <span style={{ color: rankColor }}>{myRank ? ordinal(myRank) : "—"}</span> <span className="mut" style={{ fontSize: 15, fontWeight: 600 }}>of {TEAMS}</span>
+                          <div className="disp" style={{ fontSize: 25, fontWeight: 800, marginTop: 5, lineHeight: 1.05 }}>
+                            Grade <b>{myGrade}</b> · <span style={{ color: rankColor }}>{myRank ? ordinal(myRank) : "—"}</span> <span className="mut" style={{ fontSize: 14, fontWeight: 600 }}>of {TEAMS}</span>
                           </div>
-                          <div className="mut" style={{ fontSize: 12.5, marginTop: 5 }}>
-                            {myPts ? `${myPts} projected pts` : ""}{mySteal ? ` · best value ${mySteal.p.name.split(" ").slice(-1)} (${mySteal.val > 0 ? "+" : ""}${mySteal.val.toFixed(0)})` : ""}{recapHead.trend && recapHead.trend.includes("leaning") ? ` · leaning ${recapHead.trend.split("leaning ")[1].split(" ")[0]}` : ""}
+                          <div className="mut" style={{ fontSize: 12.5, marginTop: 4 }}>
+                            {myPts ? <><b style={{ color: "var(--ink)" }}>{myPts}</b> proj pts · </> : ""}<b style={{ color: myVal > 0 ? "var(--green)" : myVal < 0 ? "var(--red)" : "var(--ink)" }}>{myVal > 0 ? "+" : ""}{myVal}</b> value <span style={{ opacity: .8 }}>({ordinal(valRank)} in league)</span>
                           </div>
                         </div>
                         <button className="btn btn-gold btn-mini" style={{ flexShrink: 0 }} onClick={() => {
@@ -9868,33 +9848,59 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         }}>{copied ? "Copied ✓" : "Share"}</button>
                       </div>
                     </div>
-
-                    {/* League storylines — compact, four tiles */}
-                    <div style={{ padding: "12px 14px" }}>
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: "10px 16px" }}>
-                        {[
-                          ["Projected winner", recapHead.winner, "var(--green)"],
-                          ["Cellar-bound", recapHead.loser, "var(--red)"],
-                          ["Biggest steal", recapHead.steal, "var(--green)"],
-                          ["Biggest reach", recapHead.reach, "var(--red)"],
-                        ].map(([label, val, color]) => (
-                          <div key={label}>
-                            <div className="disp" style={{ fontSize: 10.5, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--mut)" }}>{label}</div>
-                            <div style={{ fontSize: 12.5, fontWeight: 700, color, lineHeight: 1.35, marginTop: 1 }}>{val}</div>
-                          </div>
-                        ))}
-                      </div>
-
-                      {/* AI-style prose — kept, but tighter */}
-                      <div style={{ borderTop: "1px solid var(--line)", marginTop: 12, paddingTop: 11 }}>
-                        {recap.map((s, i) => <p key={i} style={{ fontSize: 13, lineHeight: 1.5, margin: "0 0 8px", color: "var(--ink)" }}>{s}</p>)}
-                      </div>
+                    {/* FACTS — best picks / reaches */}
+                    <div style={{ padding: "12px 16px 14px" }}>
+                      <div className="disp" style={{ fontSize: 11, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--green)", marginBottom: 3 }}>Best picks</div>
+                      {bestPicks.length ? bestPicks.map((g) => line(g, "var(--green)")) : <div className="mut" style={{ fontSize: 12.5 }}>—</div>}
+                      {worstPicks.length > 0 && <>
+                        <div className="disp" style={{ fontSize: 11, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--red)", margin: "10px 0 3px" }}>Reaches</div>
+                        {worstPicks.map((g) => line(g, "var(--red)"))}
+                      </>}
                     </div>
                   </>
                 );
               })()}
             </div>
           )}
+
+          {/* Live grades table + "how the draft flowed", side by side. */}
+          <div style={{ gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1.1fr)", gap: 12, alignItems: "start" }} className="recap-row">
+          {/* ===== Live/final grades table (moved down here, next to the flow) ===== */}
+          <div className="panel" style={{ padding: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
+              <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{done ? "Final grades" : "Live grades"} <span className="mut" style={{ fontSize: 12 }}>value + projected finish</span></div>
+              <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }}>
+                <span className="mut" style={{ fontSize: 11, alignSelf: "center", padding: "0 8px" }}>Sort</span>
+                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "z" ? "var(--gold)" : "transparent", color: sumSort.key === "z" ? "#151002" : "var(--ink)", fontWeight: sumSort.key === "z" ? 700 : 400 }} onClick={() => setSumSort({ key: "z", dir: -1 })}>Grade</button>
+                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "val" ? "var(--gold)" : "transparent", color: sumSort.key === "val" ? "#151002" : "var(--ink)", fontWeight: sumSort.key === "val" ? 700 : 400 }} onClick={() => setSumSort({ key: "val", dir: -1 })}>Value</button>
+              </div>
+            </div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead><tr className="mut" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", cursor: "pointer" }}>
+                <th style={{ textAlign: "left", paddingBottom: 5 }}>Team</th>
+                <th className="num" onClick={() => setSumSort((s) => ({ key: "val", dir: s.key === "val" ? -s.dir : -1 }))}>Value{sumSort.key === "val" ? (sumSort.dir < 0 ? " ▾" : " ▴") : ""}</th>
+                <th className="num" onClick={() => setSumSort((s) => ({ key: "pts", dir: s.key === "pts" ? -s.dir : -1 }))}>Proj pts{sumSort.key === "pts" ? (sumSort.dir < 0 ? " ▾" : " ▴") : ""}</th>
+                <th className="num" onClick={() => setSumSort((s) => ({ key: "rank", dir: s.key === "rank" ? -s.dir : 1 }))}>Proj{sumSort.key === "rank" ? (sumSort.dir < 0 ? " ▾" : " ▴") : ""}</th>
+                <th onClick={() => setSumSort((s) => ({ key: "z", dir: s.key === "z" ? -s.dir : -1 }))}>Grade{sumSort.key === "z" ? (sumSort.dir < 0 ? " ▾" : " ▴") : ""}</th>
+              </tr></thead>
+              <tbody>
+                {Array.from({ length: TEAMS }, (_, i) => i).sort((a, b) => {
+                  const k = sumSort.key;
+                  const va = k === "val" ? valByTeam[a] : k === "pts" ? proj.pts[a] : k === "rank" ? proj.rank[a] : grades[a].z;
+                  const vb = k === "val" ? valByTeam[b] : k === "pts" ? proj.pts[b] : k === "rank" ? proj.rank[b] : grades[b].z;
+                  return (va - vb) * sumSort.dir;
+                }).map((i) => (
+                  <tr key={i} style={{ color: i === userIdx ? "var(--gold)" : "var(--ink)" }}>
+                    <td style={{ padding: "3px 0" }}>{i === userIdx ? `${TEAM_NAMES[i] || "Your team"}` : TEAM_NAMES[i]}{i === userIdx && <span className="mut" style={{ fontSize: 9, marginLeft: 5 }}>YOU</span>}</td>
+                    <td className="num" style={{ textAlign: "right", background: valBg(valByTeam[i]) }}>{valByTeam[i] > 0 ? `+${valByTeam[i]}` : valByTeam[i]}</td>
+                    <td className="num" style={{ textAlign: "right" }}>{proj.pts[i]}</td>
+                    <td className="num" style={{ textAlign: "right" }}>{ordinal(proj.rank[i])}</td>
+                    <td style={{ textAlign: "center", fontWeight: 700 }}>{grades[i].g}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
           {/* ===== Position run timeline: how the board flowed, round by round ===== */}
