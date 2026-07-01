@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27h";
+const BUILD_TAG = "2026.06.27i";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2273,29 +2273,31 @@ function BootSplash({ css }) {
         @keyframes fdcspin{to{transform:rotate(360deg)}}
       `}</style>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 26 }}>
-        {/* A prominent compass rose that slowly rotates, with a small subdued football tucked into its
-            center. The compass is the emphasis; the football is part of the hub. */}
+        {/* A bold compass rose is the star and spins IN PLACE; a faint football hint sits behind it. */}
         <div style={{ position: "relative", width: 132, height: 132 }}>
-          {/* spinning compass rose (the star) */}
-          <svg width="132" height="132" viewBox="0 0 100 100" style={{ position: "absolute", inset: 0, display: "block", animation: "fdcspin 16s linear infinite", transformOrigin: "50px 50px" }} aria-hidden="true">
-            <circle cx="50" cy="50" r="47" fill="none" stroke="var(--gold)" strokeWidth="2" opacity="0.9" />
+          {/* faint football hint (still, behind) */}
+          <svg width="132" height="132" viewBox="0 0 100 100" style={{ position: "absolute", inset: 0, display: "block" }} aria-hidden="true">
+            <g transform="rotate(-38 50 50)" opacity="0.16">
+              <path d="M50 33 C61 33 71 40 71 50 C71 60 61 67 50 67 C39 67 29 60 29 50 C29 40 39 33 50 33 Z" fill="none" stroke="var(--gold)" strokeWidth="1.6" strokeLinejoin="round" />
+              <line x1="42" y1="50" x2="58" y2="50" stroke="var(--gold)" strokeWidth="1.2" />
+              {[-4.5, -1.5, 1.5, 4.5].map((dx, i) => (<line key={i} x1={50 + dx} y1="47.5" x2={50 + dx} y2="52.5" stroke="var(--gold)" strokeWidth="1" strokeLinecap="round" />))}
+            </g>
+          </svg>
+          {/* compass rose (the star) — spins in place around the element center */}
+          <svg width="132" height="132" viewBox="0 0 100 100" style={{ position: "absolute", inset: 0, display: "block", animation: "fdcspin 16s linear infinite", transformOrigin: "center" }} aria-hidden="true">
+            <circle cx="50" cy="50" r="47" fill="none" stroke="var(--gold)" strokeWidth="2.2" opacity="0.95" />
             <circle cx="50" cy="50" r="42" fill="none" stroke="var(--line2)" strokeWidth="0.9" opacity="0.5" />
             {[...Array(36)].map((_, i) => { const a = i * 10; const card = i % 9 === 0; const major = i % 3 === 0; return (
               <line key={i} x1="50" y1="4" x2="50" y2={card ? 13 : major ? 10 : 8} stroke={card ? "var(--gold)" : "var(--line2)"} strokeWidth={card ? 2 : major ? 1 : 0.7} opacity={card ? 1 : major ? 0.65 : 0.45} transform={`rotate(${a} 50 50)`} strokeLinecap="round" />
             ); })}
-            {/* compass rose star */}
-            {[0, 90, 180, 270].map((a) => (<polygon key={a} points="50,13 53,50 50,50" fill="var(--gold)" transform={`rotate(${a} 50 50)`} />))}
-            {[0, 90, 180, 270].map((a) => (<polygon key={"b" + a} points="50,13 47,50 50,50" fill="var(--gold2)" opacity="0.75" transform={`rotate(${a} 50 50)`} />))}
-            {[45, 135, 225, 315].map((a) => (<polygon key={"d" + a} points="50,30 51.5,50 48.5,50" fill="var(--line2)" opacity="0.7" transform={`rotate(${a} 50 50)`} />))}
+            {[0, 90, 180, 270].map((a) => (<polygon key={a} points="50,15 53,50 50,50" fill="var(--gold)" transform={`rotate(${a} 50 50)`} />))}
+            {[0, 90, 180, 270].map((a) => (<polygon key={"b" + a} points="50,15 47,50 50,50" fill="var(--gold2)" opacity="0.8" transform={`rotate(${a} 50 50)`} />))}
+            {[45, 135, 225, 315].map((a) => (<polygon key={"d" + a} points="50,32 51.4,50 48.6,50" fill="var(--line2)" opacity="0.7" transform={`rotate(${a} 50 50)`} />))}
           </svg>
-          {/* small, subdued football at the center — still */}
+          {/* center hub cap (still, on top) */}
           <svg width="132" height="132" viewBox="0 0 100 100" style={{ position: "absolute", inset: 0, display: "block" }} aria-hidden="true">
-            <g transform="rotate(-38 50 50)" opacity="0.5">
-              <ellipse cx="50" cy="50" rx="11" ry="6.5" fill="var(--bg)" stroke="var(--gold)" strokeWidth="1.1" />
-              <line x1="44" y1="50" x2="56" y2="50" stroke="var(--gold)" strokeWidth="0.9" opacity="0.9" />
-              {[-3, 0, 3].map((dx, i) => (<line key={i} x1={50 + dx} y1="48" x2={50 + dx} y2="52" stroke="var(--gold)" strokeWidth="0.8" strokeLinecap="round" opacity="0.9" />))}
-            </g>
-            <circle cx="50" cy="50" r="2.4" fill="var(--gold)" />
+            <circle cx="50" cy="50" r="3" fill="var(--gold)" />
+            <circle cx="50" cy="50" r="1.3" fill="var(--bg)" />
           </svg>
         </div>
 
@@ -2775,7 +2777,7 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .showcase-badge i{font-size:13px}
 .modalbg{position:fixed;inset:0;background:#000C;display:flex;align-items:center;justify-content:center;z-index:60;padding:16px}
 .statline{font-family:'Barlow Condensed';font-size:38px;font-weight:700;color:var(--gold)}
-.spin-slow{animation:spin 22s linear infinite;transform-origin:50% 50%}
+.spin-slow{animation:spin 22s linear infinite;transform-origin:center;transform-box:fill-box}
 .spin-needle{transform-origin:50% 50%;transition:transform 1.1s cubic-bezier(.34,1.56,.64,1)}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes pulseGold{0%,100%{opacity:.5}50%{opacity:1}}
@@ -2810,8 +2812,10 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 // `heading` points the needle to a fixed bearing (else it rests pointing north).
 function Compass({ size = 40, heading = null, spin = false }) {
   const uid = React.useMemo(() => "cmp" + Math.random().toString(36).slice(2, 8), []);
-  // Compass-FORWARD brand mark: a prominent compass rose (the emphasis) that slowly rotates as one piece,
-  // with a small, subdued football tucked into its very center — part of the compass, not competing with it.
+  // Compass-FORWARD brand mark: a bold compass rose is the star and slowly spins IN PLACE (via the
+  // .spin-slow class, which uses transform-box:fill-box so the rotation is centered, not drifting). The
+  // football is only a faint hint behind the dial — you can make out the leather shape + laces, but it
+  // never competes with the compass.
   const ticks = [];
   for (let i = 0; i < 36; i++) {
     const a = i * 10;
@@ -2826,35 +2830,36 @@ function Compass({ size = 40, heading = null, spin = false }) {
   }
   return (
     <svg width={size} height={size} viewBox="0 0 100 100" style={{ display: "block", overflow: "visible" }}>
-      {/* THE COMPASS — the prominent element. Rotates as one piece when spin is set. */}
-      <g className={spin ? "spin-slow" : ""} style={{ transformOrigin: "50px 50px" }}>
-        <circle cx="50" cy="50" r="47" fill="none" stroke="var(--gold,#F2B63C)" strokeWidth="2" opacity="0.9" />
+      {/* FAINT FOOTBALL HINT — sits behind the dial, very low opacity. Just enough to make out the leather
+          shape and laces; the compass is what the eye lands on. Does not rotate. */}
+      <g transform="rotate(-38 50 50)" opacity="0.16">
+        <path d="M50 33 C61 33 71 40 71 50 C71 60 61 67 50 67 C39 67 29 60 29 50 C29 40 39 33 50 33 Z"
+          fill="none" stroke="var(--gold,#F2B63C)" strokeWidth="1.6" strokeLinejoin="round" />
+        <line x1="42" y1="50" x2="58" y2="50" stroke="var(--gold,#F2B63C)" strokeWidth="1.2" />
+        {[-4.5, -1.5, 1.5, 4.5].map((dx, i) => (
+          <line key={i} x1={50 + dx} y1="47.5" x2={50 + dx} y2="52.5" stroke="var(--gold,#F2B63C)" strokeWidth="1" strokeLinecap="round" />
+        ))}
+      </g>
+
+      {/* THE COMPASS — the star. Bold, prominent, spins in place. */}
+      <g className={spin ? "spin-slow" : ""}>
+        <circle cx="50" cy="50" r="47" fill="none" stroke="var(--gold,#F2B63C)" strokeWidth="2.2" opacity="0.95" />
         <circle cx="50" cy="50" r="42" fill="none" stroke="var(--line2,#3A4757)" strokeWidth="1" opacity="0.5" />
         {ticks}
         {/* four-point compass rose star — the dominant motif */}
-        <g opacity="0.95">
-          {[0, 90, 180, 270].map((a) => (
-            <polygon key={a} points="50,14 53,50 50,50" fill="var(--gold,#F2B63C)" transform={`rotate(${a} 50 50)`} />
-          ))}
-          {[0, 90, 180, 270].map((a) => (
-            <polygon key={"b" + a} points="50,14 47,50 50,50" fill="var(--gold2,#FFD071)" opacity="0.75" transform={`rotate(${a} 50 50)`} />
-          ))}
-          {/* short diagonal points */}
-          {[45, 135, 225, 315].map((a) => (
-            <polygon key={"d" + a} points="50,30 51.5,50 48.5,50" fill="var(--line2,#3A4757)" opacity="0.7" transform={`rotate(${a} 50 50)`} />
-          ))}
-        </g>
-      </g>
-      {/* small, SUBDUED football tucked into the center — part of the compass hub, dim and quiet */}
-      <g transform="rotate(-38 50 50)" opacity="0.5">
-        <ellipse cx="50" cy="50" rx="11" ry="6.5" fill="var(--bg,#0E1217)" stroke="var(--gold,#F2B63C)" strokeWidth="1.1" />
-        <line x1="44" y1="50" x2="56" y2="50" stroke="var(--gold,#F2B63C)" strokeWidth="0.9" opacity="0.9" />
-        {[-3, 0, 3].map((dx, i) => (
-          <line key={i} x1={50 + dx} y1="48" x2={50 + dx} y2="52" stroke="var(--gold,#F2B63C)" strokeWidth="0.8" strokeLinecap="round" opacity="0.9" />
+        {[0, 90, 180, 270].map((a) => (
+          <polygon key={a} points="50,15 53,50 50,50" fill="var(--gold,#F2B63C)" transform={`rotate(${a} 50 50)`} />
+        ))}
+        {[0, 90, 180, 270].map((a) => (
+          <polygon key={"b" + a} points="50,15 47,50 50,50" fill="var(--gold2,#FFD071)" opacity="0.8" transform={`rotate(${a} 50 50)`} />
+        ))}
+        {[45, 135, 225, 315].map((a) => (
+          <polygon key={"d" + a} points="50,32 51.4,50 48.6,50" fill="var(--line2,#3A4757)" opacity="0.7" transform={`rotate(${a} 50 50)`} />
         ))}
       </g>
-      {/* center hub cap */}
-      <circle cx="50" cy="50" r="2.4" fill="var(--gold,#F2B63C)" />
+      {/* center hub cap (still) */}
+      <circle cx="50" cy="50" r="3" fill="var(--gold,#F2B63C)" />
+      <circle cx="50" cy="50" r="1.3" fill="var(--bg,#0E1217)" />
     </svg>
   );
 }
