@@ -9,6 +9,8 @@ const API = import.meta.env.VITE_API_URL || '';
 export const hasBackend = !!API;
 
 const TOKEN_KEY = 'fdc:token';
+// Remembers the server's most-recent state updated_at, used for optimistic-concurrency on writes.
+let _lastStateUpdatedAt = null;
 export const getToken = () => { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } };
 export const setToken = (t) => { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch {} };
 
@@ -82,8 +84,28 @@ export const api = {
   async saveDraft(leagueId, draft) { return (await call(`/api/leagues/${leagueId}/drafts`, { method: 'POST', body: draft })).draft; },
 
   // ---- per-user app state (cross-device persistence of the local gs-state blob) ----
-  async getState() { return call('/api/state'); },                                  // -> { state, updatedAt }
-  async putState(state) { return call('/api/state', { method: 'PUT', body: { state } }); }, // -> { ok, updatedAt }
+  // We remember the updated_at we last saw from the server and send it as baseUpdatedAt on write, so the
+  // server can reject a stale overwrite (409) instead of silently clobbering newer data from another device.
+  async getState() {
+    const r = await call('/api/state');
+    if (r && r.updatedAt) _lastStateUpdatedAt = r.updatedAt;
+    return r;
+  },
+  async putState(state) {
+    try {
+      const r = await call('/api/state', { method: 'PUT', body: { state, baseUpdatedAt: _lastStateUpdatedAt } });
+      if (r && r.updatedAt) _lastStateUpdatedAt = r.updatedAt;
+      return r;
+    } catch (e) {
+      // 409 = the server has newer data (another device saved). Return the server's state + updatedAt so the
+      // caller can merge and re-save, rather than losing the newer copy.
+      if (e && e.status === 409 && e.data) {
+        if (e.data.serverUpdatedAt) _lastStateUpdatedAt = e.data.serverUpdatedAt;
+        return { ok: false, conflict: true, state: e.data.state || {}, updatedAt: e.data.serverUpdatedAt || null };
+      }
+      throw e;
+    }
+  },
 
   // ---- Sleeper connect / live sync ----
   async sleeperLeagues(username) { return call(`/api/connect/sleeper/leagues?username=${encodeURIComponent(username)}`); },

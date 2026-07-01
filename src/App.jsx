@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27g";
+const BUILD_TAG = "2026.06.27h";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2273,27 +2273,29 @@ function BootSplash({ css }) {
         @keyframes fdcspin{to{transform:rotate(360deg)}}
       `}</style>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 26 }}>
-        {/* A compass rose that slowly rotates around a football outline set into its center. The football
-            stays still; only the compass turns — one clean, calm motion. */}
+        {/* A prominent compass rose that slowly rotates, with a small subdued football tucked into its
+            center. The compass is the emphasis; the football is part of the hub. */}
         <div style={{ position: "relative", width: 132, height: 132 }}>
-          {/* spinning compass rose */}
-          <svg width="132" height="132" viewBox="0 0 100 100" style={{ position: "absolute", inset: 0, display: "block", animation: "fdcspin 18s linear infinite", transformOrigin: "50px 50px" }} aria-hidden="true">
-            <circle cx="50" cy="50" r="47" fill="none" stroke="var(--gold)" strokeWidth="1.3" opacity="0.7" />
+          {/* spinning compass rose (the star) */}
+          <svg width="132" height="132" viewBox="0 0 100 100" style={{ position: "absolute", inset: 0, display: "block", animation: "fdcspin 16s linear infinite", transformOrigin: "50px 50px" }} aria-hidden="true">
+            <circle cx="50" cy="50" r="47" fill="none" stroke="var(--gold)" strokeWidth="2" opacity="0.9" />
             <circle cx="50" cy="50" r="42" fill="none" stroke="var(--line2)" strokeWidth="0.9" opacity="0.5" />
-            {[...Array(24)].map((_, i) => { const a = i * 15; const card = i % 6 === 0; return (
-              <line key={i} x1="50" y1="5" x2="50" y2={card ? 13 : 9} stroke={card ? "var(--gold)" : "var(--line2)"} strokeWidth={card ? 1.7 : 0.9} opacity={card ? 0.95 : 0.6} transform={`rotate(${a} 50 50)`} strokeLinecap="round" />
+            {[...Array(36)].map((_, i) => { const a = i * 10; const card = i % 9 === 0; const major = i % 3 === 0; return (
+              <line key={i} x1="50" y1="4" x2="50" y2={card ? 13 : major ? 10 : 8} stroke={card ? "var(--gold)" : "var(--line2)"} strokeWidth={card ? 2 : major ? 1 : 0.7} opacity={card ? 1 : major ? 0.65 : 0.45} transform={`rotate(${a} 50 50)`} strokeLinecap="round" />
             ); })}
+            {/* compass rose star */}
+            {[0, 90, 180, 270].map((a) => (<polygon key={a} points="50,13 53,50 50,50" fill="var(--gold)" transform={`rotate(${a} 50 50)`} />))}
+            {[0, 90, 180, 270].map((a) => (<polygon key={"b" + a} points="50,13 47,50 50,50" fill="var(--gold2)" opacity="0.75" transform={`rotate(${a} 50 50)`} />))}
+            {[45, 135, 225, 315].map((a) => (<polygon key={"d" + a} points="50,30 51.5,50 48.5,50" fill="var(--line2)" opacity="0.7" transform={`rotate(${a} 50 50)`} />))}
           </svg>
-          {/* football OUTLINE engrained into the dial — still */}
+          {/* small, subdued football at the center — still */}
           <svg width="132" height="132" viewBox="0 0 100 100" style={{ position: "absolute", inset: 0, display: "block" }} aria-hidden="true">
-            <g transform="rotate(-38 50 50)">
-              <path d="M50 28 C64 28 78 38 78 50 C78 62 64 72 50 72 C36 72 22 62 22 50 C22 38 36 28 50 28 Z" fill="none" stroke="var(--gold)" strokeWidth="2.2" strokeLinejoin="round" />
-              <path d="M22 50 L15 50 M78 50 L85 50" stroke="var(--gold)" strokeWidth="2.2" strokeLinecap="round" />
-              <line x1="40" y1="50" x2="60" y2="50" stroke="var(--gold)" strokeWidth="1.4" opacity="0.85" />
-              {[-5.5, -1.8, 1.8, 5.5].map((dx, i) => (
-                <line key={i} x1={50 + dx} y1="47" x2={50 + dx} y2="53" stroke="var(--gold)" strokeWidth="1.3" strokeLinecap="round" opacity="0.85" />
-              ))}
+            <g transform="rotate(-38 50 50)" opacity="0.5">
+              <ellipse cx="50" cy="50" rx="11" ry="6.5" fill="var(--bg)" stroke="var(--gold)" strokeWidth="1.1" />
+              <line x1="44" y1="50" x2="56" y2="50" stroke="var(--gold)" strokeWidth="0.9" opacity="0.9" />
+              {[-3, 0, 3].map((dx, i) => (<line key={i} x1={50 + dx} y1="48" x2={50 + dx} y2="52" stroke="var(--gold)" strokeWidth="0.8" strokeLinecap="round" opacity="0.9" />))}
             </g>
+            <circle cx="50" cy="50" r="2.4" fill="var(--gold)" />
           </svg>
         </div>
 
@@ -2808,40 +2810,51 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 // `heading` points the needle to a fixed bearing (else it rests pointing north).
 function Compass({ size = 40, heading = null, spin = false }) {
   const uid = React.useMemo(() => "cmp" + Math.random().toString(36).slice(2, 8), []);
-  // The brand mark: a compass rose that slowly rotates around a football outline set into its center.
-  // The football is a clean OUTLINE (engrained into the dial), not a heavy filled ball, so it reads as a
-  // single integrated emblem. Only the outer compass ring spins (when `spin`); the football stays still.
+  // Compass-FORWARD brand mark: a prominent compass rose (the emphasis) that slowly rotates as one piece,
+  // with a small, subdued football tucked into its very center — part of the compass, not competing with it.
   const ticks = [];
-  for (let i = 0; i < 24; i++) {
-    const a = i * 15;
-    const cardinal = i % 6 === 0;
+  for (let i = 0; i < 36; i++) {
+    const a = i * 10;
+    const cardinal = i % 9 === 0;   // N/E/S/W
+    const major = i % 3 === 0;
     ticks.push(
-      <line key={i} x1="50" y1="7" x2="50" y2={cardinal ? 14 : 11}
+      <line key={i} x1="50" y1="4" x2="50" y2={cardinal ? 13 : major ? 10 : 8}
         stroke={cardinal ? "var(--gold,#F2B63C)" : "var(--line2,#3A4757)"}
-        strokeWidth={cardinal ? 1.8 : 0.9} opacity={cardinal ? 0.95 : 0.6}
+        strokeWidth={cardinal ? 2 : major ? 1 : 0.7} opacity={cardinal ? 1 : major ? 0.65 : 0.45}
         transform={`rotate(${a} 50 50)`} strokeLinecap="round" />
     );
   }
   return (
     <svg width={size} height={size} viewBox="0 0 100 100" style={{ display: "block", overflow: "visible" }}>
-      {/* the compass rose (rings + graduated ticks). Slowly rotates as one piece when spin is set. */}
+      {/* THE COMPASS — the prominent element. Rotates as one piece when spin is set. */}
       <g className={spin ? "spin-slow" : ""} style={{ transformOrigin: "50px 50px" }}>
-        <circle cx="50" cy="50" r="46" fill="none" stroke="var(--gold,#F2B63C)" strokeWidth="1.4" opacity="0.7" />
-        <circle cx="50" cy="50" r="41" fill="none" stroke="var(--line2,#3A4757)" strokeWidth="1" opacity="0.55" />
+        <circle cx="50" cy="50" r="47" fill="none" stroke="var(--gold,#F2B63C)" strokeWidth="2" opacity="0.9" />
+        <circle cx="50" cy="50" r="42" fill="none" stroke="var(--line2,#3A4757)" strokeWidth="1" opacity="0.5" />
         {ticks}
+        {/* four-point compass rose star — the dominant motif */}
+        <g opacity="0.95">
+          {[0, 90, 180, 270].map((a) => (
+            <polygon key={a} points="50,14 53,50 50,50" fill="var(--gold,#F2B63C)" transform={`rotate(${a} 50 50)`} />
+          ))}
+          {[0, 90, 180, 270].map((a) => (
+            <polygon key={"b" + a} points="50,14 47,50 50,50" fill="var(--gold2,#FFD071)" opacity="0.75" transform={`rotate(${a} 50 50)`} />
+          ))}
+          {/* short diagonal points */}
+          {[45, 135, 225, 315].map((a) => (
+            <polygon key={"d" + a} points="50,30 51.5,50 48.5,50" fill="var(--line2,#3A4757)" opacity="0.7" transform={`rotate(${a} 50 50)`} />
+          ))}
+        </g>
       </g>
-      {/* football OUTLINE engrained into the dial — tilted like a compass needle, stays still */}
-      <g transform="rotate(-38 50 50)">
-        <path d="M50 28 C64 28 78 38 78 50 C78 62 64 72 50 72 C36 72 22 62 22 50 C22 38 36 28 50 28 Z"
-          fill="none" stroke="var(--gold,#F2B63C)" strokeWidth="2.2" strokeLinejoin="round" />
-        {/* pointed tips (the needle-like ends) */}
-        <path d="M22 50 L15 50 M78 50 L85 50" stroke="var(--gold,#F2B63C)" strokeWidth="2.2" strokeLinecap="round" />
-        {/* seam + a few laces, as thin outline strokes */}
-        <line x1="40" y1="50" x2="60" y2="50" stroke="var(--gold,#F2B63C)" strokeWidth="1.4" opacity="0.85" />
-        {[-5.5, -1.8, 1.8, 5.5].map((dx, i) => (
-          <line key={i} x1={50 + dx} y1="47" x2={50 + dx} y2="53" stroke="var(--gold,#F2B63C)" strokeWidth="1.3" strokeLinecap="round" opacity="0.85" />
+      {/* small, SUBDUED football tucked into the center — part of the compass hub, dim and quiet */}
+      <g transform="rotate(-38 50 50)" opacity="0.5">
+        <ellipse cx="50" cy="50" rx="11" ry="6.5" fill="var(--bg,#0E1217)" stroke="var(--gold,#F2B63C)" strokeWidth="1.1" />
+        <line x1="44" y1="50" x2="56" y2="50" stroke="var(--gold,#F2B63C)" strokeWidth="0.9" opacity="0.9" />
+        {[-3, 0, 3].map((dx, i) => (
+          <line key={i} x1={50 + dx} y1="48" x2={50 + dx} y2="52" stroke="var(--gold,#F2B63C)" strokeWidth="0.8" strokeLinecap="round" opacity="0.9" />
         ))}
       </g>
+      {/* center hub cap */}
+      <circle cx="50" cy="50" r="2.4" fill="var(--gold,#F2B63C)" />
     </svg>
   );
 }
@@ -3048,7 +3061,29 @@ export default function App() {
     try {
       if (hasBackend && user && user.email && mergedBlob) {
         const { user: _u, ...serverBlob } = mergedBlob; // don't round-trip the user/auth record
-        await api.putState(serverBlob);
+        const r = await api.putState(serverBlob);
+        // If the server had newer data from another device (conflict), adopt the richer copy locally so we
+        // don't lose it. We take whichever side has MORE leagues, then persist that back — this converges
+        // both devices instead of one silently overwriting the other.
+        if (r && r.conflict && r.state) {
+          const srvLeagues = Array.isArray(r.state.leagues) ? r.state.leagues : [];
+          const locLeagues = Array.isArray(serverBlob.leagues) ? serverBlob.leagues : [];
+          if (srvLeagues.length > locLeagues.length) {
+            try {
+              if (window.storage) {
+                const cur = (await window.storage.get("gs-state").catch(() => null));
+                const curObj = cur && cur.value ? JSON.parse(cur.value) : {};
+                await window.storage.set("gs-state", JSON.stringify({ ...curObj, ...r.state }));
+              }
+              if (Array.isArray(r.state.leagues)) setLeagues(r.state.leagues);
+              if (Array.isArray(r.state.funMocks)) setFunMocks(r.state.funMocks);
+              if (Array.isArray(r.state.feedback)) setFeedback(r.state.feedback);
+            } catch (e) {}
+          } else {
+            // our copy is richer — re-save it now that we hold the server's latest updatedAt token.
+            try { await api.putState(serverBlob); } catch (e) {}
+          }
+        }
       }
     } catch (e) { /* offline or transient — local copy stands; retries on next change */ }
   };
