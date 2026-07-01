@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26z";
+const BUILD_TAG = "2026.06.27a";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2038,9 +2038,16 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
     let entry;
     if (t === userIdx) {
       let choice = null;
+      const scored = legalCands(candidatesOf(sortedAdp, drafted, 30), counts[t], cfg)
+        .map((c) => ({ p: c, s: userScore(c, counts[t], dem, strategy, sf, pickNum) }))
+        .sort((a, b) => b.s - a.s);
       if (!passedUser && forcedId != null && !drafted[forcedId]) choice = players[forcedId];
-      else { const cands = legalCands(candidatesOf(sortedAdp, drafted, 30), counts[t], cfg); let bs = -1e9; for (const c of cands) { const sc = userScore(c, counts[t], dem, strategy, sf, pickNum); if (sc > bs) { bs = sc; choice = c; } } }
-      entry = { o, t, user: true, p: choice };
+      else { choice = scored.length ? scored[0].p : null; }
+      // Top-5 candidates for YOUR pick, by your value score. If a specific pick is forced (the current
+      // recommendation), surface it first so the expected pick and the alternatives stay consistent.
+      let cands5 = scored.slice(0, 5).map((x) => ({ p: x.p }));
+      if (choice) { cands5 = [{ p: choice }, ...cands5.filter((x) => x.p.id !== choice.id)].slice(0, 5); }
+      entry = { o, t, user: true, p: choice, cands5 };
       passedUser = true;
       if (!choice) break;
       drafted[choice.id] = 1; counts[t][choice.pos]++; recent = [...recent.slice(-7), choice.pos];
@@ -6223,6 +6230,16 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
         ))}
       </div>
       <div style={{ padding: 22 }}>
+      {(() => {
+        const SEG_INTRO = {
+          basics: "The essentials: league name, format (redraft/keeper/dynasty), number of teams, and rounds. Connect Sleeper here to auto-fill everything.",
+          roster: "How many of each position start each week, plus any bench or position caps. This drives who the engine values.",
+          scoring: "Points per stat. The big levers are PPR (points per catch) and any TE-premium bonus — the rest rarely needs touching.",
+          order: "Team names, the draft type (snake / linear / 3rd-round reversal), and — most importantly — which slot is yours.",
+          trades: "Record any draft-pick trades so the board attributes each pick to the team that actually owns it.",
+        };
+        return SEG_INTRO[seg] ? <div className="mut" style={{ fontSize: 12, lineHeight: 1.5, marginBottom: 16, paddingBottom: 12, borderBottom: "1px solid var(--line)" }}>{SEG_INTRO[seg]}</div> : null;
+      })()}
 
       {seg === "basics" && (
         <>
@@ -7134,9 +7151,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [showIntro, setShowIntro] = useState(() => { try { return window.localStorage ? window.localStorage.getItem(introKey) !== "1" : true; } catch (e) { return true; } });
   const [introDont, setIntroDont] = useState(false);
   const [introTab, setIntroTab] = useState("how"); // "how" (how to use) | "tips" (deeper dive)
-  const closeIntro = () => { try { if (introDont && window.localStorage) window.localStorage.setItem(introKey, "1"); } catch (e) {} setShowIntro(false); };
+  // Whether the guide is auto-showing on room entry (true) vs opened via the Hub "Tips" button (false).
+  // The "don't show again" checkbox only appears in the auto case.
+  const [introAuto, setIntroAuto] = useState(true);
+  const [nameVersion, setNameVersion] = useState(0); // bumps when live Sleeper team names refresh, to re-render
+  const closeIntro = () => { try { if (introAuto && introDont && window.localStorage) window.localStorage.setItem(introKey, "1"); } catch (e) {} setShowIntro(false); };
   // Open the guide on demand (from the hub's "Tips" button), optionally to a specific tab.
-  const openGuide = (tab) => { setIntroTab(tab || "how"); setShowIntro(true); };
+  const openGuide = (tab) => { setIntroTab(tab || "how"); setIntroAuto(false); setShowIntro(true); };
   const toggleQueue = (name) => setQueue((prev) => {
     const next = new Set(prev);
     if (next.has(name)) next.delete(name); else next.add(name);
@@ -7555,6 +7576,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       try {
         const d = await api.sleeperDraft(cfg.connect.leagueId, cfg.connect.username);
         if (!alive) return;
+        // Refresh the REAL team names from Sleeper. Names can arrive/improve after the initial connect —
+        // e.g. a league connected pre-draft (before Sleeper set the draft order) resolves proper manager/
+        // team names once drafting starts. We only adopt names that look real (not the "Team N" fallback)
+        // and only when they differ, then bump nameVersion so the UI re-renders with them.
+        if (d.slotNames && cfg.teams) {
+          const fresh = [];
+          let realCount = 0;
+          for (let s = 1; s <= cfg.teams; s++) {
+            const nm = d.slotNames[s];
+            if (nm && !/^Team\s+\d+$/.test(nm)) { realCount++; fresh.push(nm); } else fresh.push(TEAM_NAMES[s - 1] || `Team ${s}`);
+          }
+          // Only override if Sleeper gave us real names for most teams and they actually changed.
+          if (realCount >= Math.ceil(cfg.teams / 2) && JSON.stringify(fresh) !== JSON.stringify(TEAM_NAMES.slice(0, cfg.teams))) {
+            setTeamNames(fresh);
+            setNameVersion((v) => v + 1);
+          }
+        }
         // Build the engine pick list from Sleeper's pick order, mapping names→ids and dropping any
         // we can't match (rare). We only grow the list; we never reorder existing picks. We also
         // capture each pick's REAL team (draft_slot-1) so rosters match the actual draft exactly.
@@ -8277,12 +8315,21 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               )}
             </div>
             {displayPath.map((step, di) => step.user ? (
-              <div key={step.o} className="tickcard you" style={!futureBig && di === displayPath.length - 1 && di >= 3 ? { borderColor: "var(--gold)", borderWidth: 2, boxShadow: "0 0 0 2px rgba(242,182,60,.25)", background: "linear-gradient(180deg,rgba(242,182,60,.16),rgba(242,182,60,.04))" } : undefined}>
+              <div key={step.o} className="tickcard you" style={{ ...(!futureBig && di === displayPath.length - 1 && di >= 3 ? { borderColor: "var(--gold)", borderWidth: 2, boxShadow: "0 0 0 2px rgba(242,182,60,.25)", background: "linear-gradient(180deg,rgba(242,182,60,.16),rgba(242,182,60,.04))" } : {}), cursor: step.cands5 && step.cands5.length > 1 ? "help" : "default" }}
+                onMouseEnter={step.cands5 && step.cands5.length > 1 ? (e) => showTip(e, [
+                  { kind: "take", tone: "good", x: `Your pick ${pickLabel(step.o)} — best options for you` },
+                  ...step.cands5.map((c, ci) => ({
+                    tc: ci === 0 ? "var(--gold)" : POS_COLOR[c.p.pos],
+                    t: `${c.p.pos}${c.p.posRank}`,
+                    x: `${ci === 0 ? "★ " : ""}${c.p.name}${ci === 0 ? " (top target)" : ""} — ${Math.round(c.p.pts)} pts`,
+                  })),
+                  { t: "", x: "★ = the engine's top recommendation for you here. The rest are your next-best value options if he's gone." },
+                ]) : undefined} onMouseLeave={hideTip}>
                 <div style={{ fontSize: 11, color: "var(--gold)", textTransform: "uppercase", letterSpacing: ".07em", fontWeight: 700, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                   <span>{!futureBig && di >= 3 ? "↩ Your next pick" : "Your pick"} {pickLabel(step.o)} <span style={{ opacity: 0.75 }}>({step.o + 1})</span></span>
                   {(() => { const away = step.o - picks.length; return away > 0 ? <span style={{ background: "var(--gold)", color: "#151002", borderRadius: 5, padding: "1px 6px", fontSize: 10, fontWeight: 800 }}>{away === 1 ? "next up!" : `${away} picks away`}</span> : null; })()}
                 </div>
-                {step.p && <div style={{ fontWeight: 600, fontSize: 13, marginTop: 2 }}><Dot pos={step.p.pos} />{step.p.name}</div>}
+                {step.p && <div style={{ fontWeight: 600, fontSize: 13, marginTop: 2 }}><Dot pos={step.p.pos} />{step.p.name}{step.cands5 && step.cands5.length > 1 ? <span className="mut" style={{ fontSize: 10, marginLeft: 4 }}>· hover for options</span> : null}</div>}
                 <button className="btn btn-gold btn-mini" style={{ marginTop: 5 }} onClick={() => setBriefOpen(true)}>AI briefing</button>
               </div>
             ) : (
@@ -9829,9 +9876,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
       {tab === "settings" && (
         <div style={{ maxWidth: 640, margin: "0 auto", padding: "20px 16px" }}>
-          <div className="mut" style={{ fontSize: 12.5, marginBottom: 12 }}>
-            Edit any league setting — roster, scoring, draft order, keepers, pick trades, caps, teams. Use the tabs below. Saving recomputes projections and re-grades the board against your picks so far. {hasSlot ? "" : "You haven't set your draft slot yet — set it on the Draft order tab."}
+          <div className="disp" style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>League settings</div>
+          <div className="mut" style={{ fontSize: 12.5, marginBottom: 4, lineHeight: 1.5 }}>
+            Pick a section below to edit it. Everything's already set from your league{cfg.connect ? " (pulled from Sleeper)" : ""} — you only need to change something if it's wrong. Saving re-grades your board.
           </div>
+          {!hasSlot && <div style={{ fontSize: 12, marginBottom: 12, color: "var(--gold)", display: "flex", alignItems: "center", gap: 6 }}><i className="ti ti-alert-triangle" style={{ fontSize: 14 }} aria-hidden="true" />Set your draft slot on the “Teams & order” section so recommendations know when you pick.</div>}
+          <div style={{ marginBottom: 8 }} />
           <ConfigForm initial={{ ...cfg, slot: cfg.slot == null ? "" : cfg.slot, scoring: { ...DEFAULT_SCORING, ...(cfg.scoring || {}) } }} submitLabel="Save settings" onSubmit={(newCfg) => { onSettings(newCfg); setTab("hub"); }} onCancel={() => setTab("hub")} />
         </div>
       )}
@@ -9998,10 +10048,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               </div>
             </>)}
 
-            <label style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 18, cursor: "pointer", fontSize: 12.5, color: "var(--mut)" }}>
-              <input type="checkbox" checked={introDont} onChange={(e) => setIntroDont(e.target.checked)} style={{ width: 16, height: 16, accentColor: "var(--gold)" }} />
-              Don't show this automatically again on this account <span style={{ opacity: .8 }}>— you can always reopen it with the “Tips” button on the Hub.</span>
-            </label>
+            {introAuto && (
+              <label style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 18, cursor: "pointer", fontSize: 12.5, color: "var(--mut)" }}>
+                <input type="checkbox" checked={introDont} onChange={(e) => setIntroDont(e.target.checked)} style={{ width: 16, height: 16, accentColor: "var(--gold)" }} />
+                Don't show this automatically again <span style={{ opacity: .8 }}>— you can always reopen it with the “Tips” button on the Hub.</span>
+              </label>
+            )}
             <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
               <button className="btn btn-gold" style={{ flex: 1 }} onClick={closeIntro}>{introTab === "how" ? "Got it — let's draft" : "Close"}</button>
             </div>
