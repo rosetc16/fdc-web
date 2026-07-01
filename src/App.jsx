@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27l";
+const BUILD_TAG = "2026.06.27m";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2060,8 +2060,33 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
     let entry;
     if (t === userIdx) {
       let choice = null;
+      // Detect the user's build lane from picks so far (same idea as the recommendation): a young roster
+      // leans rebuild, an old one leans win-now. We apply it on top of userScore so the projected user
+      // picks in the tracker match the recommendation (which also respects the lane) — e.g. a rebuild
+      // surfaces a younger TE over an aging one of similar value.
+      const myAged = [];
+      for (let oo = 0; oo < o; oo++) { if (teamAt(oo) === userIdx) { const pl = players[picks[oo]]; if (pl && pl.age && POS.includes(pl.pos)) myAged.push(pl); } }
+      let lane = null, laneConf = 0;
+      if (myAged.length >= 4) {
+        let wsum = 0, asum = 0;
+        myAged.forEach((p, idx) => { const w = 1 / (1 + idx * 0.25); wsum += w; asum += w * p.age; });
+        const avgAge = wsum ? asum / wsum : null;
+        const isDyn = cfg.type === "dynasty" || cfg.type === "keeper";
+        if (avgAge != null) {
+          const youngCut = isDyn ? 24.5 : 25.0, oldCut = isDyn ? 27.5 : 28.0;
+          if (avgAge <= youngCut) lane = "rebuild"; else if (avgAge >= oldCut) lane = "winnow";
+          laneConf = Math.min(1, (myAged.length - 3) / 6);
+        }
+      }
+      const laneAdj = (p) => {
+        if (!lane || strategy === "build" || strategy === "adp") return 0;
+        const age = p.age || 27;
+        if (lane === "rebuild") { let a = Math.max(0, 27 - age) * 5 - Math.max(0, age - 28) * 9; if (p.rookie) a += 18; return a * laneConf; }
+        if (lane === "winnow") { let a = Math.max(0, age - 24) * 3; if (p.rookie) a -= 12; return a * laneConf; }
+        return 0;
+      };
       const scored = legalCands(candidatesOf(sortedAdp, drafted, 30), counts[t], cfg)
-        .map((c) => ({ p: c, s: userScore(c, counts[t], dem, strategy, sf, pickNum) }))
+        .map((c) => ({ p: c, s: userScore(c, counts[t], dem, strategy, sf, pickNum) + laneAdj(c) }))
         .sort((a, b) => b.s - a.s);
       if (!passedUser && forcedId != null && !drafted[forcedId]) choice = players[forcedId];
       else { choice = scored.length ? scored[0].p : null; }
@@ -2571,6 +2596,17 @@ function OutlookCard({ content }) {
               {l.chips.map((ch, j) => (
                 <span key={j} className="num" style={{ fontSize: 11, fontWeight: 600, background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 5, padding: "2px 7px", whiteSpace: "nowrap" }}>{ch}</span>
               ))}
+            </div>
+          );
+        }
+        if (l.kind === "why") {
+          // "Why this pick" — set apart at the bottom with its own separator + gold accent, distinct from
+          // the player list above it.
+          return (
+            <div key={i} style={{ marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--line)" }}>
+              <div style={{ fontSize: 12, lineHeight: 1.45, padding: "7px 9px", background: "rgba(242,182,60,.08)", borderLeft: "2px solid var(--gold)", borderRadius: "0 6px 6px 0" }}>
+                <span style={{ color: "var(--gold)", fontWeight: 700 }}>Why: </span><span style={{ color: "var(--ink)" }}>{l.x}</span>
+              </div>
             </div>
           );
         }
@@ -8441,13 +8477,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 }
                 const tip = (cands5 && cands5.length > 1) ? (e) => showTip(e, [
                   { kind: "take", tone: isYou ? "good" : "neutral", x: isYou ? `Your pick ${pickLabel(picks.length)} — best options for you` : `${pickLabel(picks.length)} · ${TEAM_NAMES[onClock]} — engine's top candidates` },
-                  ...(isYou && cands5[0] ? [{ t: "Why", x: whyPick(cands5[0].p, advice && advice.waitCost, true), tc: "var(--gold)" }] : []),
                   ...cands5.map((c, ci) => ({
                     tc: ci === 0 ? "var(--gold)" : POS_COLOR[c.p.pos],
                     t: isYou ? `${c.p.pos}${c.p.posRank}` : `${c.prob != null ? c.prob + "%" : ""}`,
                     x: `${ci === 0 ? "★ " : ""}${c.p.name} — ${c.p.pos}${c.p.posRank}${ci === 0 ? (isYou ? " (top target)" : " (expected)") : ""}${isYou ? ` · ${Math.round(c.p.pts)} pts` : ""}`,
                   })),
                   { t: "", x: isYou ? "★ = the engine's top recommendation for you. The rest are your next-best value options." : "★ = who the engine expects here. Others are the next-most-likely picks if the board breaks differently." },
+                  ...(isYou && cands5[0] ? [{ kind: "why", x: whyPick(cands5[0].p, advice && advice.waitCost, true) }] : []),
                 ]) : undefined;
                 return (
                   <div style={{ fontSize: 11, marginTop: 3, cursor: tip ? "help" : "default" }} className="mut" onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
@@ -8464,13 +8500,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <div key={step.o} className="tickcard you" style={{ ...(!futureBig && di === displayPath.length - 1 && di >= 3 ? { borderColor: "var(--gold)", borderWidth: 2, boxShadow: "0 0 0 2px rgba(242,182,60,.25)", background: "linear-gradient(180deg,rgba(242,182,60,.16),rgba(242,182,60,.04))" } : {}), cursor: step.cands5 && step.cands5.length > 1 ? "help" : "default" }}
                 onMouseEnter={step.cands5 && step.cands5.length > 1 ? (e) => showTip(e, [
                   { kind: "take", tone: "good", x: `Your pick ${pickLabel(step.o)} — best options for you` },
-                  ...(step.cands5[0] ? [{ t: "Why", x: whyPick(step.cands5[0].p, advice && advice.waitCost, true), tc: "var(--gold)" }] : []),
                   ...step.cands5.map((c, ci) => ({
                     tc: ci === 0 ? "var(--gold)" : POS_COLOR[c.p.pos],
                     t: `${c.p.pos}${c.p.posRank}`,
                     x: `${ci === 0 ? "★ " : ""}${c.p.name}${ci === 0 ? " (top target)" : ""} — ${Math.round(c.p.pts)} pts`,
                   })),
                   { t: "", x: "★ = the engine's top recommendation for you here. The rest are your next-best value options if he's gone." },
+                  ...(step.cands5[0] ? [{ kind: "why", x: whyPick(step.cands5[0].p, advice && advice.waitCost, true) }] : []),
                 ]) : undefined} onMouseLeave={hideTip}>
                 <div style={{ fontSize: 11, color: "var(--gold)", textTransform: "uppercase", letterSpacing: ".07em", fontWeight: 700, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                   <span>{!futureBig && di >= 3 ? "↩ Your next pick" : "Your pick"} {pickLabel(step.o)} <span style={{ opacity: 0.75 }}>({step.o + 1})</span></span>
@@ -9737,6 +9773,117 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <span className="mut" style={{ fontSize: 11.5 }}>{summaryTeam == null ? "Steals & reaches show the whole league; your roster is highlighted." : `Showing ${summaryTeam === userIdx ? "your" : TEAM_NAMES[summaryTeam] + "'s"} picks, steals & reaches.`}</span>
           </div>
 
+          {/* ===== DRAFT CARD — the full shareable summary. First thing the eye hits (top-left). ===== */}
+          {recap && recapHead && (
+            <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
+              {(() => {
+                const ti = summaryTeam == null ? userIdx : summaryTeam;
+                const isYou = ti === userIdx;
+                const teamName = isYou ? (TEAM_NAMES[ti] || "Your team") : TEAM_NAMES[ti];
+                const myGrade = grades[ti] ? grades[ti].g : "—";
+                const myRank = proj ? proj.rank[ti] : null;
+                const myPts = proj ? proj.pts[ti] : null;
+                const rankColor = myRank && myRank <= Math.ceil(TEAMS / 3) ? "var(--green)" : myRank && myRank <= Math.ceil((2 * TEAMS) / 3) ? "var(--gold)" : "var(--red)";
+                const myPicks = graded.filter((g) => g.t === ti);
+                const myVal = valByTeam[ti];
+                const valRank = Array.from({ length: TEAMS }, (_, i) => i).sort((a, b) => valByTeam[b] - valByTeam[a]).indexOf(ti) + 1;
+                const label = (o) => `R${Math.floor(o / TEAMS) + 1}.${(o % TEAMS) + 1}`;
+                // League-wide top-5 steals & reaches (this is a full draft recap, not just your team).
+                const best5 = graded.slice().sort((a, b) => b.val - a.val).filter((g) => g.val > 0).slice(0, 5);
+                const worst5 = graded.slice().sort((a, b) => a.val - b.val).filter((g) => g.val < 0).slice(0, 5);
+                const gradeOrder = Array.from({ length: TEAMS }, (_, i) => i).sort((a, b) => grades[b].z - grades[a].z);
+                const nm = (i) => (i === userIdx ? (TEAM_NAMES[i] || "You") : TEAM_NAMES[i]);
+                // Bottom summary line — one plain sentence of what happened.
+                const leader = proj.rank.indexOf(1);
+                const bottomSummary = `${nm(leader)} projects best on paper. ${isYou ? "You" : teamName} landed ${myVal > 0 ? `strong value (+${myVal}, ${ordinal(valRank)} in the league)` : myVal < 0 ? `below-market value (${myVal})` : "near-market value"} for a ${myGrade} and a projected ${myRank ? ordinal(myRank) : "—"} finish.`;
+
+                // Full copy/paste text for league chat.
+                const shareText = [
+                  `${cfg.name} — Draft Recap (Fantasy Draft Compass)`,
+                  ``,
+                  `${isYou ? "MY TEAM" : teamName.toUpperCase()}: Grade ${myGrade} · projected ${myRank ? ordinal(myRank) : "—"} of ${TEAMS}${myPts ? ` · ${myPts} pts` : ""} · value ${myVal > 0 ? "+" : ""}${myVal} (${ordinal(valRank)})`,
+                  ``,
+                  `TOP 5 STEALS:`,
+                  ...best5.map((g, i) => `${i + 1}. ${g.p.name} ${g.p.pos}${g.p.posRank} → ${nm(g.t)} ${label(g.o)} (+${g.val.toFixed(0)})`),
+                  ``,
+                  `TOP 5 REACHES:`,
+                  ...worst5.map((g, i) => `${i + 1}. ${g.p.name} ${g.p.pos}${g.p.posRank} → ${nm(g.t)} ${label(g.o)} (${g.val.toFixed(0)})`),
+                  ``,
+                  `DRAFT GRADES:`,
+                  ...gradeOrder.map((i) => `${grades[i].g} — ${nm(i)} (${ordinal(proj.rank[i])}, ${valByTeam[i] > 0 ? "+" : ""}${valByTeam[i]})`),
+                  ``,
+                  bottomSummary,
+                  ``,
+                  `→ fantasydraftcompass.com`,
+                ].join("\n");
+
+                const pickLine = (g, i, tone) => (
+                  <div key={g.o} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, fontSize: 12.5, padding: "1.5px 0" }}>
+                    <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><span className="mut" style={{ fontSize: 10.5, marginRight: 4 }}>{i + 1}.</span><Dot pos={g.p.pos} /><b>{g.p.name}</b> <span className="mut" style={{ fontSize: 11 }}>{g.p.pos}{g.p.posRank} · {nm(g.t) === "You" || g.t === userIdx ? "you" : nm(g.t).split(" ")[0]} {label(g.o)}</span></span>
+                    <b style={{ color: tone, flexShrink: 0 }}>{g.val > 0 ? "+" : ""}{g.val.toFixed(0)}</b>
+                  </div>
+                );
+
+                return (
+                  <>
+                    {/* HERO */}
+                    <div style={{ padding: "16px 16px 14px", background: "linear-gradient(135deg, rgba(242,182,60,.14), rgba(242,182,60,.03))", borderBottom: "1px solid var(--line)" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div className="disp" style={{ fontSize: 11.5, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--gold)", display: "flex", alignItems: "center", gap: 7 }}>
+                            <Compass size={15} /> {isYou ? "Your draft card" : `${teamName} — draft card`}
+                          </div>
+                          <div className="disp" style={{ fontSize: 25, fontWeight: 800, marginTop: 5, lineHeight: 1.05 }}>
+                            Grade <b>{myGrade}</b> · <span style={{ color: rankColor }}>{myRank ? ordinal(myRank) : "—"}</span> <span className="mut" style={{ fontSize: 14, fontWeight: 600 }}>of {TEAMS}</span>
+                          </div>
+                          <div className="mut" style={{ fontSize: 12.5, marginTop: 4 }}>
+                            {myPts ? <><b style={{ color: "var(--ink)" }}>{myPts}</b> proj pts · </> : ""}<b style={{ color: myVal > 0 ? "var(--green)" : myVal < 0 ? "var(--red)" : "var(--ink)" }}>{myVal > 0 ? "+" : ""}{myVal}</b> draft value <span style={{ opacity: .8 }}>({ordinal(valRank)} in league)</span>
+                          </div>
+                        </div>
+                        <button className="btn btn-gold btn-mini" style={{ flexShrink: 0 }} onClick={() => {
+                          const ok = copyText(shareText);
+                          if (ok !== false) { setCopied(true); setTimeout(() => setCopied(false), 1600); }
+                        }}>{copied ? "Copied ✓" : "Copy card"}</button>
+                      </div>
+                    </div>
+
+                    <div style={{ padding: "12px 16px 14px" }}>
+                      {/* TOP 5 STEALS / REACHES side by side */}
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12 }}>
+                        <div>
+                          <div className="disp" style={{ fontSize: 11, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--green)", marginBottom: 3 }}>Top 5 steals</div>
+                          {best5.length ? best5.map((g, i) => pickLine(g, i, "var(--green)")) : <div className="mut" style={{ fontSize: 12.5 }}>—</div>}
+                        </div>
+                        <div>
+                          <div className="disp" style={{ fontSize: 11, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--red)", margin: "4px 0 3px" }}>Top 5 reaches</div>
+                          {worst5.length ? worst5.map((g, i) => pickLine(g, i, "var(--red)")) : <div className="mut" style={{ fontSize: 12.5 }}>—</div>}
+                        </div>
+                      </div>
+
+                      {/* EVERYONE'S GRADES */}
+                      <div style={{ borderTop: "1px solid var(--line)", marginTop: 12, paddingTop: 10 }}>
+                        <div className="disp" style={{ fontSize: 11, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--mut)", marginBottom: 5 }}>Draft grades</div>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: "3px 12px" }}>
+                          {gradeOrder.map((i) => (
+                            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 12, padding: "1px 0", color: i === userIdx ? "var(--gold)" : "var(--ink)" }}>
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{nm(i)}{i === userIdx ? " ★" : ""}</span>
+                              <b style={{ flexShrink: 0, marginLeft: 6 }}>{grades[i].g}</b>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* BOTTOM SUMMARY — separated */}
+                      <div style={{ borderTop: "1px solid var(--line)", marginTop: 11, paddingTop: 10, fontSize: 12.5, lineHeight: 1.5, color: "var(--ink)" }}>
+                        {bottomSummary}
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          )}
+
           <div className="panel" style={{ padding: 14 }}>
             <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Biggest steals <span className="mut" style={{ fontSize: 12 }}>{summaryTeam == null ? "(league-wide, curve-weighted)" : `(${summaryTeam === userIdx ? "your team" : TEAM_NAMES[summaryTeam]})`}</span></div>
             <SummaryTable rows={graded.filter((g) => summaryTeam == null || g.t === summaryTeam).slice().sort((a, b) => b.val - a.val).filter((g) => g.val > 0).slice(0, summaryExpand ? 40 : 8)} userIdx={summaryTeam == null ? userIdx : summaryTeam} />
@@ -9791,77 +9938,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               );
             })()}
           </div>
-
-          {/* ===== Draft card — facts only, per selected team. Sits up top next to steals/reaches. ===== */}
-          {recap && recapHead && (
-            <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
-              {(() => {
-                const ti = summaryTeam == null ? userIdx : summaryTeam;
-                const isYou = ti === userIdx;
-                const teamName = isYou ? (TEAM_NAMES[ti] || "Your team") : TEAM_NAMES[ti];
-                const myGrade = grades[ti] ? grades[ti].g : "—";
-                const myRank = proj ? proj.rank[ti] : null;
-                const myPts = proj ? proj.pts[ti] : null;
-                const rankColor = myRank && myRank <= Math.ceil(TEAMS / 3) ? "var(--green)" : myRank && myRank <= Math.ceil((2 * TEAMS) / 3) ? "var(--gold)" : "var(--red)";
-                const myPicks = graded.filter((g) => g.t === ti);
-                const bestPicks = myPicks.slice().sort((a, b) => b.val - a.val).slice(0, 3);
-                const worstPicks = myPicks.slice().sort((a, b) => a.val - b.val).filter((g) => g.val < 0).slice(0, 2);
-                const myVal = valByTeam[ti];
-                const valRank = Array.from({ length: TEAMS }, (_, i) => i).sort((a, b) => valByTeam[b] - valByTeam[a]).indexOf(ti) + 1;
-                const label = (o) => `R${Math.floor(o / TEAMS) + 1}.${(o % TEAMS) + 1}`;
-                const shareText = [
-                  `${cfg.name} — ${isYou ? "my" : teamName + "'s"} draft card (Fantasy Draft Compass)`,
-                  `Grade ${myGrade} · projected ${myRank ? ordinal(myRank) : "—"} of ${TEAMS}${myPts ? ` · ${myPts} pts` : ""}`,
-                  `Draft value: ${myVal > 0 ? "+" : ""}${myVal} (${ordinal(valRank)} in league)`,
-                  ``,
-                  `Best picks:`,
-                  ...bestPicks.map((g) => `• ${g.p.name} ${g.p.pos}${g.p.posRank} — ${label(g.o)} (${g.val > 0 ? "+" : ""}${g.val.toFixed(0)})`),
-                  ...(worstPicks.length ? [``, `Reaches:`, ...worstPicks.map((g) => `• ${g.p.name} ${g.p.pos}${g.p.posRank} — ${label(g.o)} (${g.val.toFixed(0)})`)] : []),
-                  ``,
-                  `→ fantasydraftcompass.com`,
-                ].join("\n");
-                const line = (g, tone) => (
-                  <div key={g.o} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, fontSize: 13, padding: "2px 0" }}>
-                    <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={g.p.pos} /><b>{g.p.name}</b> <span className="mut" style={{ fontSize: 11.5 }}>{g.p.pos}{g.p.posRank} · {label(g.o)}</span></span>
-                    <b style={{ color: tone, flexShrink: 0 }}>{g.val > 0 ? "+" : ""}{g.val.toFixed(0)}</b>
-                  </div>
-                );
-                return (
-                  <>
-                    {/* HERO — the selected team's headline result */}
-                    <div style={{ padding: "16px 16px 14px", background: "linear-gradient(135deg, rgba(242,182,60,.14), rgba(242,182,60,.03))", borderBottom: "1px solid var(--line)" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-                        <div style={{ minWidth: 0 }}>
-                          <div className="disp" style={{ fontSize: 11.5, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--gold)", display: "flex", alignItems: "center", gap: 7 }}>
-                            <Compass size={15} /> {isYou ? "Your draft card" : `${teamName} — draft card`}
-                          </div>
-                          <div className="disp" style={{ fontSize: 25, fontWeight: 800, marginTop: 5, lineHeight: 1.05 }}>
-                            Grade <b>{myGrade}</b> · <span style={{ color: rankColor }}>{myRank ? ordinal(myRank) : "—"}</span> <span className="mut" style={{ fontSize: 14, fontWeight: 600 }}>of {TEAMS}</span>
-                          </div>
-                          <div className="mut" style={{ fontSize: 12.5, marginTop: 4 }}>
-                            {myPts ? <><b style={{ color: "var(--ink)" }}>{myPts}</b> proj pts · </> : ""}<b style={{ color: myVal > 0 ? "var(--green)" : myVal < 0 ? "var(--red)" : "var(--ink)" }}>{myVal > 0 ? "+" : ""}{myVal}</b> value <span style={{ opacity: .8 }}>({ordinal(valRank)} in league)</span>
-                          </div>
-                        </div>
-                        <button className="btn btn-gold btn-mini" style={{ flexShrink: 0 }} onClick={() => {
-                          const ok = copyText(shareText);
-                          if (ok !== false) { setCopied(true); setTimeout(() => setCopied(false), 1600); }
-                        }}>{copied ? "Copied ✓" : "Share"}</button>
-                      </div>
-                    </div>
-                    {/* FACTS — best picks / reaches */}
-                    <div style={{ padding: "12px 16px 14px" }}>
-                      <div className="disp" style={{ fontSize: 11, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--green)", marginBottom: 3 }}>Best picks</div>
-                      {bestPicks.length ? bestPicks.map((g) => line(g, "var(--green)")) : <div className="mut" style={{ fontSize: 12.5 }}>—</div>}
-                      {worstPicks.length > 0 && <>
-                        <div className="disp" style={{ fontSize: 11, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--red)", margin: "10px 0 3px" }}>Reaches</div>
-                        {worstPicks.map((g) => line(g, "var(--red)"))}
-                      </>}
-                    </div>
-                  </>
-                );
-              })()}
-            </div>
-          )}
 
           {/* Live grades table + "how the draft flowed", side by side. */}
           <div style={{ gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1.1fr)", gap: 12, alignItems: "start" }} className="recap-row">
