@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27e";
+const BUILD_TAG = "2026.06.27g";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2149,14 +2149,13 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
     const n = cfg.teams || TEAMS_FALLBACK;
     const rosters = Array.from({ length: n }, () => []);
     ctx.allPicks.forEach((pk, o) => { const pl = ctx.players[pk]; if (pl) { const t = ctx.teamAtFn(o); if (t != null && rosters[t]) rosters[t].push(pl); } });
-    // position strength per team = sum of top-(starters+1) projected pts at that position
-    const posStrength = (rosterArr, pos) => {
-      const need = (req[pos] || 0) + 1;
-      return rosterArr.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts).slice(0, need).reduce((s, p) => s + (p.pts || 0), 0);
-    };
+    // position strength per team = SHARED quality score (quality × quantity, starter-focused with drop-off
+    // credit) so this ranking matches the hub/overview coloring exactly.
     ["QB", "RB", "WR", "TE"].forEach((pos) => {
-      const mine = posStrength(rosters[userIdxOf(ctx)], pos);
-      const all = rosters.map((r, i) => ({ i, v: posStrength(r, pos) })).sort((a, b) => b.v - a.v);
+      const reqN = req[pos] || 0;
+      const scoreOfTeam = (rosterArr) => posQualityScore(rosterArr.filter((p) => p.pos === pos), reqN);
+      const mine = scoreOfTeam(rosters[userIdxOf(ctx)]);
+      const all = rosters.map((r, i) => ({ i, v: scoreOfTeam(r) })).sort((a, b) => b.v - a.v);
       const rank = all.findIndex((x) => x.i === userIdxOf(ctx)) + 1;
       posRankByPos[pos] = { rank: rank || n, of: n, mine: Math.round(mine) };
     });
@@ -2271,38 +2270,31 @@ function BootSplash({ css }) {
       <style>{`
         @keyframes fdcfloatin{0%{opacity:0;transform:translateY(6px)}100%{opacity:1;transform:translateY(0)}}
         @keyframes fdcbar{0%{width:8%}70%{width:88%}100%{width:96%}}
-        @keyframes fdcbob{0%,100%{transform:translateY(-3px)}50%{transform:translateY(3px)}}
+        @keyframes fdcspin{to{transform:rotate(360deg)}}
       `}</style>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 26 }}>
-        {/* A slim football with a quiet compass ring behind it. Minimal motion — just a slow, gentle bob. */}
+        {/* A compass rose that slowly rotates around a football outline set into its center. The football
+            stays still; only the compass turns — one clean, calm motion. */}
         <div style={{ position: "relative", width: 132, height: 132 }}>
-          {/* quiet compass ring behind (static) */}
-          <svg width="132" height="132" viewBox="0 0 100 100" style={{ position: "absolute", inset: 0, display: "block" }} aria-hidden="true">
-            <circle cx="50" cy="50" r="46" fill="none" stroke="var(--line2)" strokeWidth="1" opacity="0.4" />
-            {[0, 90, 180, 270].map((a) => (
-              <line key={a} x1="50" y1="6" x2="50" y2="11" stroke="var(--gold)" strokeWidth="1.4" opacity="0.6" transform={`rotate(${a} 50 50)`} />
-            ))}
-            <text x="50" y="15" textAnchor="middle" fontSize="6.5" fontWeight="800" fill="var(--gold)" opacity="0.65" fontFamily="inherit">N</text>
+          {/* spinning compass rose */}
+          <svg width="132" height="132" viewBox="0 0 100 100" style={{ position: "absolute", inset: 0, display: "block", animation: "fdcspin 18s linear infinite", transformOrigin: "50px 50px" }} aria-hidden="true">
+            <circle cx="50" cy="50" r="47" fill="none" stroke="var(--gold)" strokeWidth="1.3" opacity="0.7" />
+            <circle cx="50" cy="50" r="42" fill="none" stroke="var(--line2)" strokeWidth="0.9" opacity="0.5" />
+            {[...Array(24)].map((_, i) => { const a = i * 15; const card = i % 6 === 0; return (
+              <line key={i} x1="50" y1="5" x2="50" y2={card ? 13 : 9} stroke={card ? "var(--gold)" : "var(--line2)"} strokeWidth={card ? 1.7 : 0.9} opacity={card ? 0.95 : 0.6} transform={`rotate(${a} 50 50)`} strokeLinecap="round" />
+            ); })}
           </svg>
-          {/* slim football, gentle bob */}
-          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", animation: "fdcbob 3.6s ease-in-out infinite" }}>
-            <svg width="92" height="92" viewBox="0 0 100 100" aria-hidden="true" style={{ filter: "drop-shadow(0 2px 5px rgba(0,0,0,.4))" }}>
-              <defs>
-                <linearGradient id="fdcLeather" x1="0" y1="0" x2="0.4" y2="1">
-                  <stop offset="0%" stopColor="#95582C" /><stop offset="55%" stopColor="#7A4420" /><stop offset="100%" stopColor="#5A3015" />
-                </linearGradient>
-              </defs>
-              <g transform="rotate(-38 50 50)">
-                <path d="M50 30 C63 30 76 39 76 50 C76 61 63 70 50 70 C37 70 24 61 24 50 C24 39 37 30 50 30 Z" fill="url(#fdcLeather)" stroke="#33190A" strokeWidth="1.6" />
-                <path d="M24 50 C18 47.5 18 52.5 24 50 Z" fill="#33190A" />
-                <path d="M76 50 C82 47.5 82 52.5 76 50 Z" fill="#33190A" />
-                <line x1="41" y1="50" x2="59" y2="50" stroke="#EFE4D2" strokeWidth="1.6" opacity="0.8" />
-                {[-6, -2, 2, 6].map((dx, i) => (
-                  <line key={i} x1={50 + dx} y1="47" x2={50 + dx} y2="53" stroke="#EFE4D2" strokeWidth="1.5" strokeLinecap="round" opacity="0.8" />
-                ))}
-              </g>
-            </svg>
-          </div>
+          {/* football OUTLINE engrained into the dial — still */}
+          <svg width="132" height="132" viewBox="0 0 100 100" style={{ position: "absolute", inset: 0, display: "block" }} aria-hidden="true">
+            <g transform="rotate(-38 50 50)">
+              <path d="M50 28 C64 28 78 38 78 50 C78 62 64 72 50 72 C36 72 22 62 22 50 C22 38 36 28 50 28 Z" fill="none" stroke="var(--gold)" strokeWidth="2.2" strokeLinejoin="round" />
+              <path d="M22 50 L15 50 M78 50 L85 50" stroke="var(--gold)" strokeWidth="2.2" strokeLinecap="round" />
+              <line x1="40" y1="50" x2="60" y2="50" stroke="var(--gold)" strokeWidth="1.4" opacity="0.85" />
+              {[-5.5, -1.8, 1.8, 5.5].map((dx, i) => (
+                <line key={i} x1={50 + dx} y1="47" x2={50 + dx} y2="53" stroke="var(--gold)" strokeWidth="1.3" strokeLinecap="round" opacity="0.85" />
+              ))}
+            </g>
+          </svg>
         </div>
 
         <div style={{ textAlign: "center" }}>
@@ -2419,6 +2411,58 @@ function posStrength(count, bestVbd, req, remaining) {
   if (!haveStarters && quality != null && quality >= 40 && remaining != null && remaining > short) return 1;
   // Otherwise weak: thin headcount, below-replacement talent, or running out of picks to fix it.
   return 2;
+}
+// SHARED position-strength score (quality × quantity) used everywhere we color or rank a team's position:
+// the hub's "League needs" table, the League Overview chips, AND the Team-analysis "Where you rank" bars.
+// One formula → the color and the ranking always agree.
+//   players: array of that team's players AT this position (each with a .vbd and .pts)
+//   req: number of starting slots this format uses at the position
+// Method: STARTER QUALITY dominates — we sum the VBD of the players that would actually start (top `req`),
+// with empty starter slots penalized (they drag the lineup). THEN, only once the starters are filled, we
+// add a smaller "depth/insurance" credit based on the NEXT best player — this captures the drop-off: a
+// team with startable depth behind full starters is stronger than one a single injury from a hole. Bench
+// beyond that first backup barely matters. Pure function; returns a single comparable number.
+function posQualityScore(playersAtPos, req) {
+  const REPLACEMENT = -35; // value of an empty/again-replacement starter slot
+  const arr = (playersAtPos || []).map((p) => (p && p.vbd != null ? p.vbd : REPLACEMENT)).sort((a, b) => b - a);
+  if (!req || req <= 0) {
+    // non-starting position in this format: light credit for any useful piece, no empty-slot penalty
+    return arr.length ? Math.max(0, arr[0]) * 0.4 : 0;
+  }
+  // 1) starter quality — the core of the score; missing starters count as replacement-level holes
+  let score = 0;
+  for (let k = 0; k < req; k++) score += (arr[k] != null ? arr[k] : REPLACEMENT);
+  // 2) drop-off / insurance — only credited once every starter slot is actually filled with a real player
+  const startersFilled = arr.length >= req && (req === 0 || arr[req - 1] != null);
+  if (startersFilled) {
+    const backup = arr[req]; // best player beyond the starters
+    if (backup != null) {
+      // credit scales with how good the backup is relative to a replacement — i.e. how soft the drop-off is
+      score += Math.max(0, backup - REPLACEMENT) * 0.28;
+    }
+  }
+  return score;
+}
+// Rank every team at a position by the shared quality score, then bucket into terciles:
+// 0 = top third (green/strong), 1 = middle (amber), 2 = bottom third (red/weak). This is the single
+// source of truth for position coloring across the hub and the team-analysis tab.
+function posQualityTiers(rostersByTeam, cfg) {
+  const n = rostersByTeam.length;
+  const req = REQ_F(cfg.sf);
+  const level = {}; for (let i = 0; i < n; i++) level[i] = {};
+  const scoreByTeam = {}; for (let i = 0; i < n; i++) scoreByTeam[i] = {};
+  ["QB", "RB", "WR", "TE"].forEach((pos) => {
+    for (let i = 0; i < n; i++) {
+      const atPos = (rostersByTeam[i] || []).filter((p) => p && p.pos === pos);
+      scoreByTeam[i][pos] = posQualityScore(atPos, req[pos] || 0);
+    }
+    const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => scoreByTeam[b][pos] - scoreByTeam[a][pos]);
+    order.forEach((teamIdx, rank) => {
+      const frac = rank / Math.max(1, n - 1);
+      level[teamIdx][pos] = frac <= 0.33 ? 0 : frac <= 0.66 ? 1 : 2;
+    });
+  });
+  return { level, score: scoreByTeam };
 }
 // Draft-pick value curve. Like a trade-value chart, early picks are worth dramatically more than
 // late ones (non-linear). We score a pick position into "value points" so the WORTH of moving a
@@ -2764,31 +2808,38 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 // `heading` points the needle to a fixed bearing (else it rests pointing north).
 function Compass({ size = 40, heading = null, spin = false }) {
   const uid = React.useMemo(() => "cmp" + Math.random().toString(36).slice(2, 8), []);
-  // A slim, subtle football with a quiet compass ring behind it. The logo is intentionally STATIC — no
-  // motion — so it reads as a clean mark everywhere it appears. (`spin`/`heading` kept for call-site compat.)
+  // The brand mark: a compass rose that slowly rotates around a football outline set into its center.
+  // The football is a clean OUTLINE (engrained into the dial), not a heavy filled ball, so it reads as a
+  // single integrated emblem. Only the outer compass ring spins (when `spin`); the football stays still.
+  const ticks = [];
+  for (let i = 0; i < 24; i++) {
+    const a = i * 15;
+    const cardinal = i % 6 === 0;
+    ticks.push(
+      <line key={i} x1="50" y1="7" x2="50" y2={cardinal ? 14 : 11}
+        stroke={cardinal ? "var(--gold,#F2B63C)" : "var(--line2,#3A4757)"}
+        strokeWidth={cardinal ? 1.8 : 0.9} opacity={cardinal ? 0.95 : 0.6}
+        transform={`rotate(${a} 50 50)`} strokeLinecap="round" />
+    );
+  }
   return (
     <svg width={size} height={size} viewBox="0 0 100 100" style={{ display: "block", overflow: "visible" }}>
-      <defs>
-        <linearGradient id={uid + "L"} x1="0" y1="0" x2="0.4" y2="1">
-          <stop offset="0%" stopColor="#95582C" /><stop offset="55%" stopColor="#7A4420" /><stop offset="100%" stopColor="#5A3015" />
-        </linearGradient>
-      </defs>
-      {/* compass ring behind — quiet, thin, just enough to read as a compass */}
-      <circle cx="50" cy="50" r="43" fill="none" stroke="var(--line2,#3A4757)" strokeWidth="1.2" opacity="0.45" />
-      {[0, 90, 180, 270].map((a) => (
-        <line key={a} x1="50" y1="9" x2="50" y2="14" stroke="var(--gold,#F2B63C)" strokeWidth="1.4" opacity="0.7" transform={`rotate(${a} 50 50)`} />
-      ))}
-      {/* slim football, gently tilted, pointing NE/SW like a compass needle */}
+      {/* the compass rose (rings + graduated ticks). Slowly rotates as one piece when spin is set. */}
+      <g className={spin ? "spin-slow" : ""} style={{ transformOrigin: "50px 50px" }}>
+        <circle cx="50" cy="50" r="46" fill="none" stroke="var(--gold,#F2B63C)" strokeWidth="1.4" opacity="0.7" />
+        <circle cx="50" cy="50" r="41" fill="none" stroke="var(--line2,#3A4757)" strokeWidth="1" opacity="0.55" />
+        {ticks}
+      </g>
+      {/* football OUTLINE engrained into the dial — tilted like a compass needle, stays still */}
       <g transform="rotate(-38 50 50)">
-        {/* body: narrower than before (pointier, less "fat") */}
-        <path d="M50 30 C63 30 76 39 76 50 C76 61 63 70 50 70 C37 70 24 61 24 50 C24 39 37 30 50 30 Z" fill={`url(#${uid}L)`} stroke="#33190A" strokeWidth="1.6" />
-        {/* pointed tips */}
-        <path d="M24 50 C18 47.5 18 52.5 24 50 Z" fill="#33190A" />
-        <path d="M76 50 C82 47.5 82 52.5 76 50 Z" fill="#33190A" />
-        {/* central seam + a few short laces (subtle) */}
-        <line x1="41" y1="50" x2="59" y2="50" stroke="#EFE4D2" strokeWidth="1.6" opacity="0.8" />
-        {[-6, -2, 2, 6].map((dx, i) => (
-          <line key={i} x1={50 + dx} y1="47" x2={50 + dx} y2="53" stroke="#EFE4D2" strokeWidth="1.5" strokeLinecap="round" opacity="0.8" />
+        <path d="M50 28 C64 28 78 38 78 50 C78 62 64 72 50 72 C36 72 22 62 22 50 C22 38 36 28 50 28 Z"
+          fill="none" stroke="var(--gold,#F2B63C)" strokeWidth="2.2" strokeLinejoin="round" />
+        {/* pointed tips (the needle-like ends) */}
+        <path d="M22 50 L15 50 M78 50 L85 50" stroke="var(--gold,#F2B63C)" strokeWidth="2.2" strokeLinecap="round" />
+        {/* seam + a few laces, as thin outline strokes */}
+        <line x1="40" y1="50" x2="60" y2="50" stroke="var(--gold,#F2B63C)" strokeWidth="1.4" opacity="0.85" />
+        {[-5.5, -1.8, 1.8, 5.5].map((dx, i) => (
+          <line key={i} x1={50 + dx} y1="47" x2={50 + dx} y2="53" stroke="var(--gold,#F2B63C)" strokeWidth="1.3" strokeLinecap="round" opacity="0.85" />
         ))}
       </g>
     </svg>
@@ -7508,31 +7559,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // what makes the Teams tab meaningful: it shows who's actually ahead/behind at each spot, so you
   // don't see every team green. Uses current (drafted-only) or projected rosters to match the toggle.
   const posRel = useMemo(() => {
-    const score = {}; // teamIdx -> { QB,RB,WR,TE: number }
+    // Build each team's roster (projected or current), then rank positions with the SHARED quality score
+    // so the hub coloring matches the team-analysis coloring exactly.
+    const rosters = [];
     for (let i = 0; i < TEAMS; i++) {
-      const ros = teamsProj && proj ? proj.rosters[i] : picks.map((pk, o) => (teamAt(o) === i ? players[pk] : null)).filter(Boolean);
-      const byPos = { QB: [], RB: [], WR: [], TE: [] };
-      ros.forEach((p) => { if (p && byPos[p.pos]) byPos[p.pos].push(p.vbd != null ? p.vbd : -40); });
-      const s = {};
-      POS.forEach((pos) => {
-        const arr = byPos[pos].sort((a, b) => b - a);
-        const req = REQ_F(cfg.sf)[pos] || 1;
-        // weight: starters count full, bench depth at a discount; empty starter slots are penalized.
-        let v = 0; for (let k = 0; k < Math.max(req, arr.length); k++) { const val = arr[k] != null ? arr[k] : -35; v += val * (k < req ? 1 : 0.25); }
-        s[pos] = v;
-      });
-      score[i] = s;
+      rosters.push(teamsProj && proj ? proj.rosters[i] : picks.map((pk, o) => (teamAt(o) === i ? players[pk] : null)).filter(Boolean));
     }
-    // rank teams per position → tercile (0 green / 1 amber / 2 red)
-    const level = {}; for (let i = 0; i < TEAMS; i++) level[i] = {};
-    POS.forEach((pos) => {
-      const order = Array.from({ length: TEAMS }, (_, i) => i).sort((a, b) => score[b][pos] - score[a][pos]);
-      order.forEach((teamIdx, rank) => {
-        const frac = rank / Math.max(1, TEAMS - 1); // 0 = best, 1 = worst
-        level[teamIdx][pos] = frac <= 0.33 ? 0 : frac <= 0.66 ? 1 : 2;
-      });
-    });
-    return level;
+    return posQualityTiers(rosters, cfg).level;
   }, [players, picks, cfg, teamsProj, proj, userIdx, liveSlots]);
   const projBoard = useMemo(() => (boardProj ? projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, advice?.verdict?.id ?? null) : null), [boardProj, players, sortedAdp, picks, userIdx, cfg, strategy, advice]);
   // The user's next few upcoming pick indices (for highlighting on the board).
@@ -9252,10 +9285,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     {["QB", "RB", "WR", "TE"].map((pos) => {
                       const r = ta.posRankByPos[pos]; if (!r) return null;
                       const pctile = 1 - (r.rank - 1) / Math.max(1, r.of - 1);
-                      // Color tier comes from the SAME league-relative tercile the hub's "League needs"
-                      // strength table uses (quality × quantity), so the two always agree. The rank number
-                      // still comes from posRankByPos; only the green/amber/red tier is unified here.
-                      const lvl = posRel[userIdx] ? posRel[userIdx][pos] : 1;
+                      // Bar length AND color both come from posRankByPos (the shared quality × quantity score),
+                      // so within this panel they always agree — and because posRankByPos and the hub's posRel
+                      // use the SAME scorer (posQualityScore), this panel also matches the hub's League needs.
+                      const frac = (r.rank - 1) / Math.max(1, r.of - 1); // 0 = best
+                      const lvl = frac <= 0.33 ? 0 : frac <= 0.66 ? 1 : 2;
                       const tone = lvl === 0 ? "var(--green)" : lvl === 1 ? "var(--gold)" : "var(--red)";
                       const word = lvl === 0 ? "Strong" : lvl === 1 ? "Middle" : "Weak";
                       const plist = (ta.byPos[pos] && ta.byPos[pos].list) || [];
