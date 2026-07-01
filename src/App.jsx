@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27u";
+const BUILD_TAG = "2026.06.27v";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4450,9 +4450,35 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     const myWorstAtPos = (myByPos[p.pos] && myByPos[p.pos][ (req[p.pos]||1) - 1 ]) ? myByPos[p.pos][(req[p.pos]||1)-1].pts : 0;
     const upgrade = Math.max(0, (p.pts || 0) - myWorstAtPos); // how much better than your current worst starter there
     const needBoost = (needByPos[p.pos] === 999 ? 60 : 0);
-    return { p, score: base + upgrade * 1.4 + needBoost, upgrade };
+    // The worst BENCH player at this position — a churn candidate if we add someone.
+    const posList = myByPos[p.pos] || [];
+    const worstOnRoster = posList.length ? posList[posList.length - 1] : null;
+    // MOVE VERDICT — should you actually add him, given your window?
+    //  - win-now: add if he upgrades a starter (this year's points matter most)
+    //  - rebuild: add if he's young/ascending with upside, even if not an immediate points bump
+    //  - balanced: add for a clear upgrade OR a promising young stash
+    const age = p.age || 27;
+    const young = age <= 24;
+    let verdict = "hold", reason = "";
+    if (needByPos[p.pos] === 999) { verdict = "add"; reason = `you're short a starter at ${p.pos}`; }
+    else if (!isDynasty || activePosture === "winnow") {
+      if (upgrade >= 8) { verdict = "add"; reason = `upgrades your ${p.pos} by ~${Math.round(upgrade)} pts`; }
+      else if (upgrade >= 3) { verdict = "stream"; reason = `a small ${p.pos} upgrade — worth it in a bye/injury pinch`; }
+      else { verdict = "hold"; reason = `not better than what you start at ${p.pos}`; }
+    } else if (activePosture === "rebuild") {
+      if (young && (p.rookie || (p.ceil && p.pts && p.ceil - p.pts > p.pts * 0.25))) { verdict = "add"; reason = `young (${age}) with upside — the kind of stash a rebuild wants`; }
+      else if (upgrade >= 10 && young) { verdict = "add"; reason = `young and a real ${p.pos} upgrade`; }
+      else if (age >= 29) { verdict = "hold"; reason = `${age} years old — doesn't fit a rebuild`; }
+      else { verdict = "hold"; reason = `not enough upside to roster in a rebuild`; }
+    } else { // balanced
+      if (upgrade >= 8) { verdict = "add"; reason = `a clear ${p.pos} upgrade (~${Math.round(upgrade)} pts)`; }
+      else if (young && (p.rookie || (p.ceil && p.pts && p.ceil - p.pts > p.pts * 0.25))) { verdict = "add"; reason = `young with upside — worth a bench stash`; }
+      else if (upgrade >= 3) { verdict = "stream"; reason = `a modest upgrade — fine for a bye/injury week`; }
+      else { verdict = "hold"; reason = `not worth a roster spot right now`; }
+    }
+    return { p, score: base + upgrade * 0.7 + needBoost, upgrade, verdict, reason, worstOnRoster };
   }).sort((a, b) => b.score - a.score);
-  const topFA = faScored.slice(0, 12);
+  const topFA = faScored.slice(0, 15);
 
   // -------- Weekly notes --------
   const notes = [];
@@ -4472,6 +4498,26 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
 
   const postureLabel = { winnow: "Win now", balanced: "Balanced", rebuild: "Rebuild" };
   const myStanding = (data.standings || []).find((s) => s.isMe);
+
+  // Matchup points: Sleeper's live `weekPoints` is 0 until games are played (pre-game / off-season). So we
+  // show LIVE points when they're actually scoring, otherwise fall back to each side's PROJECTED optimal
+  // total from our engine — and label which one we're showing.
+  let matchupView = null;
+  if (data.matchup && data.matchup.opp) {
+    const meRoster = resolve(myTeam.players);
+    const oppTeam = data.teams.find((t) => t.rosterId === data.matchup.opp.rosterId);
+    const oppRoster = oppTeam ? resolve(oppTeam.players) : [];
+    const meLive = data.matchup.me.weekPoints;
+    const oppLive = data.matchup.opp.weekPoints;
+    const isLive = (meLive != null && meLive > 0) || (oppLive != null && oppLive > 0);
+    matchupView = {
+      isLive,
+      meName: data.matchup.me.teamName,
+      oppName: data.matchup.opp.teamName,
+      mePts: isLive ? (meLive || 0) : lineupPts(meRoster, cfg.sf),
+      oppPts: isLive ? (oppLive || 0) : lineupPts(oppRoster, cfg.sf),
+    };
+  }
 
   return (
     <HubShell title={data.leagueName || "Team hub"} onBack={onBack} onHome={onHome} onSignOut={onSignOut} user={user}>
@@ -4506,20 +4552,23 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
         </div>
 
         {/* This week's matchup */}
-        {data.matchup && data.matchup.opp && (
+        {matchupView && (
           <div className="panel" style={{ padding: 14, marginBottom: 14 }}>
-            <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 8 }}>Week {data.week} matchup</div>
+            <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 8 }}>
+              Week {data.week} matchup · {matchupView.isLive ? "live score" : "projected"}
+            </div>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 700 }}>{data.matchup.me.teamName}</div>
-                <div className="num" style={{ fontSize: 22, fontWeight: 800, color: "var(--gold)" }}>{data.matchup.me.weekPoints != null ? data.matchup.me.weekPoints.toFixed(1) : "—"}</div>
+                <div style={{ fontWeight: 700 }}>{matchupView.meName}</div>
+                <div className="num" style={{ fontSize: 22, fontWeight: 800, color: matchupView.mePts >= matchupView.oppPts ? "var(--green)" : "var(--gold)" }}>{matchupView.mePts.toFixed(1)}</div>
               </div>
               <div className="mut" style={{ fontSize: 12, fontWeight: 700 }}>vs</div>
               <div style={{ flex: 1, textAlign: "right" }}>
-                <div style={{ fontWeight: 700 }}>{data.matchup.opp.teamName}</div>
-                <div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{data.matchup.opp.weekPoints != null ? data.matchup.opp.weekPoints.toFixed(1) : "—"}</div>
+                <div style={{ fontWeight: 700 }}>{matchupView.oppName}</div>
+                <div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{matchupView.oppPts.toFixed(1)}</div>
               </div>
             </div>
+            {!matchupView.isLive && <div className="mut" style={{ fontSize: 10.5, marginTop: 6 }}>Projected from each team's best possible lineup. Switches to the live score once games kick off.</div>}
           </div>
         )}
 
@@ -4562,12 +4611,30 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                   <span className="disp" style={{ fontSize: 11, fontWeight: 700, color: "var(--mut)", width: 42 }}>{s.slot}</span>
                   {s.p ? <>
                     <Dot pos={s.p.pos} /><span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>{s.p.name} <span className="mut" style={{ fontSize: 11 }}>{s.p.pos}{s.p.posRank} · {s.p.team}</span></span>
+                    {s.p.bye === data.week && <span className="chip" style={{ fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>BYE</span>}
                     <span className="num" style={{ fontWeight: 700 }}>{Math.round(s.p.pts)}</span>
                     {!currentSet.has(s.p.sid) && <span className="chip" style={{ fontSize: 9, borderColor: "var(--green)", color: "var(--green)" }}>swap in</span>}
                   </> : <span className="mut" style={{ flex: 1 }}>— empty —</span>}
                 </div>
               ))}
             </div>
+            {/* Bench — everyone not in the optimal lineup, so the full picture is clear. */}
+            {opt.bench.length > 0 && (
+              <>
+                <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", margin: "14px 0 6px" }}>Bench <span style={{ opacity: 0.7 }}>({opt.bench.length})</span></div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  {opt.bench.map((p) => (
+                    <div key={p.sid} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 10px", borderRadius: 7, opacity: 0.82 }}>
+                      <span className="disp" style={{ fontSize: 10, fontWeight: 700, color: "var(--mut)", width: 42 }}>BN</span>
+                      <Dot pos={p.pos} /><span style={{ fontSize: 12.5, flex: 1 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · {p.team}</span></span>
+                      {p.bye === data.week && <span className="chip" style={{ fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>BYE</span>}
+                      {p.inj && <span className="chip" style={{ fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>{p.inj}</span>}
+                      <span className="num" style={{ fontWeight: 600, color: "var(--mut)" }}>{Math.round(p.pts)}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -4578,21 +4645,30 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
             <div className="mut" style={{ fontSize: 12, marginBottom: 12 }}>
               Ranked for your team{isDynasty ? ` in ${postureLabel[activePosture].toLowerCase()} mode` : ""} — factoring your positional needs and how much each upgrades your current starters.
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {topFA.map(({ p, upgrade }) => (
-                <div key={p.sid} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 11px", background: "var(--panel2)", borderRadius: 8 }}>
-                  <Dot pos={p.pos} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · {p.team}{p.age ? ` · ${p.age}y` : ""}{p.rookie ? " · rookie" : ""}</span></div>
-                    {p.inj && <div style={{ fontSize: 10.5, color: "var(--red)" }}>{p.inj}</div>}
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              {topFA.map(({ p, upgrade, verdict, reason, worstOnRoster }) => {
+                const vc = verdict === "add" ? { c: "var(--green)", bg: "rgba(95,208,168,.10)", label: "Add" } : verdict === "stream" ? { c: "var(--gold)", bg: "rgba(242,182,60,.10)", label: "Stream" } : { c: "var(--mut)", bg: "transparent", label: "Hold" };
+                return (
+                  <div key={p.sid} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", background: vc.bg !== "transparent" ? vc.bg : "var(--panel2)", border: `1px solid ${verdict === "add" ? "var(--green)" : "var(--line)"}`, borderRadius: 8 }}>
+                    <Dot pos={p.pos} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · {p.team}{p.age ? ` · ${p.age}y` : ""}{p.rookie ? " · rookie" : ""}</span></div>
+                      <div style={{ fontSize: 10.5, color: verdict === "add" ? "var(--green)" : "var(--mut)", lineHeight: 1.35 }}>
+                        {reason}{verdict === "add" && worstOnRoster ? <span className="mut"> · drop candidate: {worstOnRoster.name}</span> : null}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right", flexShrink: 0 }}>
+                      <div className="num" style={{ fontWeight: 700, fontSize: 12.5 }}>{Math.round(p.pts)} pts</div>
+                      {upgrade > 3 && <div style={{ fontSize: 10, color: "var(--green)" }}>+{Math.round(upgrade)} vs your {p.pos}</div>}
+                    </div>
+                    <span style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 700, color: vc.c, border: `1px solid ${vc.c}`, borderRadius: 99, padding: "2px 9px" }}>{vc.label}</span>
                   </div>
-                  <div style={{ textAlign: "right" }}>
-                    <div className="num" style={{ fontWeight: 700 }}>{Math.round(p.pts)} pts</div>
-                    {upgrade > 3 && <div style={{ fontSize: 10.5, color: "var(--green)" }}>+{Math.round(upgrade)} vs your {p.pos}</div>}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
               {!topFA.length && <div className="mut">No available players found — your league pool may be fully rostered.</div>}
+            </div>
+            <div className="mut" style={{ fontSize: 10.5, marginTop: 10, lineHeight: 1.45 }}>
+              <b style={{ color: "var(--green)" }}>Add</b> = worth a roster move for your team{isDynasty ? ` in ${postureLabel[activePosture].toLowerCase()} mode` : ""}. <b style={{ color: "var(--gold)" }}>Stream</b> = only in a bye/injury pinch. <b>Hold</b> = not better than what you have.
             </div>
           </div>
         )}
@@ -4600,21 +4676,50 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
         {/* ---- ROSTER TAB ---- */}
         {tab === "roster" && (
           <div className="panel" style={{ padding: 16 }}>
-            <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 10 }}>My roster <span className="mut" style={{ fontSize: 12, fontWeight: 400 }}>({myRoster.length} players)</span></div>
-            {POS.map((pos) => {
-              const at = myRoster.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts);
-              if (!at.length) return null;
-              return <div key={pos} style={{ marginBottom: 12 }}>
-                <div className="disp" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: POS_COLOR[pos], marginBottom: 4 }}>{pos} <span className="mut">({at.length})</span></div>
-                {at.map((p, i) => (
-                  <div key={p.sid} style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 8px", fontSize: 12.5, borderBottom: "1px solid var(--line)" }}>
-                    <span style={{ fontWeight: 600, flex: 1 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · {p.team}{p.age ? ` · ${p.age}y` : ""}{i < (req[pos] || 0) ? "" : " · bench"}</span></span>
-                    {p.bye === data.week && <span className="chip" style={{ fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>BYE</span>}
-                    <span className="num" style={{ fontWeight: 700 }}>{Math.round(p.pts)}</span>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+              <div className="disp" style={{ fontSize: 17, fontWeight: 700 }}>My roster <span className="mut" style={{ fontSize: 12, fontWeight: 400 }}>({myRoster.length} players)</span></div>
+              {/* Quick position-count summary so a deep roster is scannable at a glance. */}
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {POS.map((pos) => {
+                  const n = myRoster.filter((p) => p.pos === pos).length;
+                  const short = needByPos[pos] === 999;
+                  return <span key={pos} style={{ fontSize: 11, fontWeight: 700, color: short ? "var(--red)" : POS_COLOR[pos], border: `1px solid ${short ? "var(--red)" : "var(--line)"}`, borderRadius: 6, padding: "2px 8px" }}>{pos} {n}{short ? " ⚠" : ""}</span>;
+                })}
+              </div>
+            </div>
+            {/* One column per position; starters (top N) highlighted, the rest are clearly bench. */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(215px, 1fr))", gap: 12 }}>
+              {POS.map((pos) => {
+                const at = myRoster.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts);
+                if (!at.length) return null;
+                const need = req[pos] || 0;
+                return (
+                  <div key={pos} style={{ background: "var(--panel2)", borderRadius: 10, padding: "10px 12px" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 7 }}>
+                      <span className="disp" style={{ fontSize: 12, fontWeight: 700, color: POS_COLOR[pos] }}>{pos}</span>
+                      <span className="mut" style={{ fontSize: 10.5 }}>{at.length} rostered · {need} start</span>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      {at.map((p, i) => {
+                        const isStarter = i < need;
+                        return (
+                          <div key={p.sid} style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 6px", borderRadius: 6, background: isStarter ? "rgba(242,182,60,.07)" : "transparent" }}>
+                            <span style={{ width: 4, height: 4, borderRadius: "50%", background: isStarter ? "var(--gold)" : "var(--line2)", flexShrink: 0 }} />
+                            <span style={{ fontSize: 12.5, fontWeight: isStarter ? 600 : 400, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isStarter ? "var(--ink)" : "var(--mut)" }}>
+                              {p.name} <span style={{ fontSize: 10, opacity: 0.7 }}>{p.team}{p.age ? ` · ${p.age}y` : ""}</span>
+                            </span>
+                            {p.bye === data.week && <span style={{ fontSize: 8.5, fontWeight: 700, color: "var(--red)", flexShrink: 0 }}>BYE</span>}
+                            {p.inj && <span style={{ fontSize: 8.5, fontWeight: 700, color: "var(--red)", flexShrink: 0 }} title={p.inj}>⚕</span>}
+                            <span className="num" style={{ fontWeight: isStarter ? 700 : 400, fontSize: 12, flexShrink: 0, color: isStarter ? "var(--ink)" : "var(--mut)" }}>{Math.round(p.pts)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                ))}
-              </div>;
-            })}
+                );
+              })}
+            </div>
+            <div className="mut" style={{ fontSize: 10.5, marginTop: 10 }}>Gold dot = projected starter at the position. Faded rows are bench depth.</div>
           </div>
         )}
 
@@ -5135,7 +5240,7 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
           <div className="disp" style={{ fontSize: 13, letterSpacing: ".22em", color: "var(--gold)", marginBottom: 14 }}>FIND YOUR DIRECTION ON DRAFT DAY</div>
           <div className="disp hero-h">YOUR DRAFT,<br /><span className="gold">TRUE NORTH.</span></div>
           <div className="mut" style={{ fontSize: 17, maxWidth: 520, margin: "18px 0 24px", lineHeight: 1.55 }}>
-            Fantasy Draft Compass reads <b style={{ color: "var(--ink)" }}>thousands of real drafts</b> across the fantasy landscape — tracking how players actually come off the board, where the market is trending, and who's getting reached for — then points you to the right pick in real time, recalculating after every selection.
+            Fantasy Draft Compass reads <b style={{ color: "var(--ink)" }}>thousands of real drafts</b> across the fantasy landscape — tracking how players actually come off the board, where the market is trending, and who's getting reached for — then points you to the right pick in real time. <b style={{ color: "var(--ink)" }}>And once you've drafted, it keeps working all season</b> — lineup calls, waiver targets, and weekly strategy from your live Sleeper roster.
           </div>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
             {paid ? <>
@@ -5157,6 +5262,33 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
 
       {/* ===== OVERVIEW BODY — contained sections with consistent rhythm ===== */}
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: "20px 20px 50px", display: "flex", flexDirection: "column", gap: 20 }}>
+
+        {/* DRAFT + IN-SEASON — one pass makes clear this isn't just a draft tool */}
+        <div className="hubsection">
+          <div style={{ textAlign: "center", marginBottom: 16 }}>
+            <div className="disp" style={{ fontSize: 27, fontWeight: 700, lineHeight: 1.1 }}>Draft it. Then <span className="gold">run it all season.</span></div>
+            <div className="mut" style={{ fontSize: 14, maxWidth: 640, margin: "6px auto 0", lineHeight: 1.5 }}>Fantasy Draft Compass is two tools in one: a real-time draft brain, and an in-season team hub that keeps working every week after the draft ends.</div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14 }}>
+            <div style={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 12, padding: 18 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 8 }}>
+                <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(242,182,60,.12)", display: "flex", alignItems: "center", justifyContent: "center" }}><i className="ti ti-target-arrow" style={{ fontSize: 19, color: "var(--gold)" }} aria-hidden="true" /></div>
+                <div className="disp" style={{ fontSize: 17, fontWeight: 700 }}>On draft day</div>
+              </div>
+              <div className="mut" style={{ fontSize: 13.5, lineHeight: 1.55 }}>Live pick recommendations, availability odds, take-now-vs-wait, run detection, and a shareable recap — recalculated after every selection. Syncs live to your Sleeper draft.</div>
+            </div>
+            <div style={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 12, padding: 18 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 8 }}>
+                <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(107,168,229,.12)", display: "flex", alignItems: "center", justifyContent: "center" }}><i className="ti ti-calendar-stats" style={{ fontSize: 19, color: "var(--blue)" }} aria-hidden="true" /></div>
+                <div className="disp" style={{ fontSize: 17, fontWeight: 700 }}>Every week after</div>
+              </div>
+              <div className="mut" style={{ fontSize: 13.5, lineHeight: 1.55 }}>Link your Sleeper account and the in-season hub reads your live roster: a lineup optimizer that flags points left on your bench, a free-agent finder that tells you who to actually add, and week-to-week strategy — tuned to whether you're contending or rebuilding.</div>
+            </div>
+          </div>
+          <div style={{ textAlign: "center", marginTop: 14 }}>
+            <span className="chip" style={{ color: "var(--blue)", fontSize: 12 }}><i className="ti ti-plug-connected" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Link your Sleeper account once — it stays connected all season</span>
+          </div>
+        </div>
 
         {/* SHOWCASE */}
         <div className="hubsection">
