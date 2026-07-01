@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27q";
+const BUILD_TAG = "2026.06.27r";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4111,45 +4111,105 @@ function QuickMockSetup({ onStart, onCancel }) {
   );
 }
 
-// A single dropdown that gathers everything the user can jump into: the drafts they've created in FDC,
-// PLUS the leagues on their linked Sleeper account (fetched live). Gives one place to see all their teams.
-function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, onUpdate }) {
+// Shared Sleeper-link state hook: reads the current link, links a new username, and unlinks. Used by both
+// the inline link control and the teams dropdown so they stay in sync.
+function useSleeperLink(user, onUpdate) {
+  const [linked, setLinked] = useState(!!(user && user.sleeperUsername));
+  const [username, setUsername] = useState((user && user.sleeperUsername) || "");
+  const link = async (u) => {
+    const name = (u || "").trim();
+    if (!name) throw new Error("Enter your Sleeper username");
+    if (hasBackend) {
+      const r = await api.sleeperLink(name);
+      setLinked(true); setUsername(r.sleeperUsername || name);
+      if (onUpdate) onUpdate({ sleeperUsername: r.sleeperUsername || name, sleeperUserId: r.sleeperUserId || null });
+      return r.sleeperUsername || name;
+    }
+    setLinked(true); setUsername(name);
+    if (onUpdate) onUpdate({ sleeperUsername: name });
+    return name;
+  };
+  const unlink = async () => {
+    try { if (hasBackend) await api.sleeperUnlink(); } catch (e) {}
+    setLinked(false); setUsername("");
+    if (onUpdate) onUpdate({ sleeperUsername: null, sleeperUserId: null });
+  };
+  return { linked, username, link, unlink, setLinked };
+}
+
+// The Sleeper link control — a compact pill that sits NEXT TO the teams dropdown. When not linked it shows
+// an inline username field; when linked it shows who's connected with a Relink and Unlink option. All
+// linking happens right here (no trip to the Account page).
+function SleeperLinkControl({ link, unlink, linked, username }) {
+  const [editing, setEditing] = useState(false);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const doLink = async () => {
+    setBusy(true); setErr("");
+    try { await link(input); setInput(""); setEditing(false); }
+    catch (e) { setErr(e && e.message ? e.message : "Could not link"); }
+    finally { setBusy(false); }
+  };
+
+  // Linked, not editing: show status + relink/unlink.
+  if (linked && !editing) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 8, border: "1px solid var(--line)", background: "var(--panel)", borderRadius: 12, padding: "9px 13px", minHeight: 56 }}>
+        <div style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(95,208,168,.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          <i className="ti ti-plug-connected" style={{ fontSize: 16, color: "var(--green)" }} aria-hidden="true" />
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 11, color: "var(--green)", fontWeight: 700 }}>Sleeper linked</div>
+          <div style={{ fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 130 }}>{username}</div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 3, marginLeft: 2 }}>
+          <button className="btn btn-mini" style={{ fontSize: 10, padding: "2px 7px" }} onClick={() => { setEditing(true); setInput(""); }}>Relink</button>
+          <button className="btn btn-mini" style={{ fontSize: 10, padding: "2px 7px" }} onClick={unlink}>Unlink</button>
+        </div>
+      </div>
+    );
+  }
+  // Not linked (or relinking): inline username field.
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 7, border: `1px solid ${editing ? "var(--gold)" : "var(--line)"}`, background: "var(--panel)", borderRadius: 12, padding: "9px 12px", minHeight: 56 }}>
+      <div style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(107,168,229,.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <i className="ti ti-ghost-2" style={{ fontSize: 16, color: "var(--blue)" }} aria-hidden="true" />
+      </div>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ fontSize: 11, color: "var(--mut)", fontWeight: 600, marginBottom: 2 }}>{editing ? "Link a different Sleeper account" : "Link your Sleeper account"}</div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <input className="gs" style={{ flex: 1, minWidth: 0, fontSize: 12.5, padding: "5px 8px" }} placeholder="Sleeper username" value={input}
+            onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") doLink(); }} autoFocus={editing} />
+          <button className="btn btn-gold btn-mini" onClick={doLink} disabled={busy || !input.trim()}>{busy ? "…" : "Link"}</button>
+          {editing && <button className="btn btn-mini" onClick={() => { setEditing(false); setErr(""); }}>Cancel</button>}
+        </div>
+        {err && <div style={{ color: "var(--red)", fontSize: 11, marginTop: 3 }}>{err}</div>}
+      </div>
+    </div>
+  );
+}
+
+// The teams dropdown — PURELY for viewing your teams. Linking lives in SleeperLinkControl next to it.
+function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, linked, sleeperName }) {
   const [open, setOpen] = useState(false);
-  const [sleeperLeagues, setSleeperLeagues] = useState(null); // null = not loaded, [] = loaded empty
+  const [sleeperLeagues, setSleeperLeagues] = useState(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
-  const [linkedState, setLinkedState] = useState(!!(user && user.sleeperUsername));
-  const linked = linkedState;
-  const sleeperName = user && user.sleeperUsername;
 
   const loadSleeper = async () => {
     if (!hasBackend || !linked) return;
     setLoading(true); setErr("");
-    try {
-      const r = await api.sleeperMyLeagues();
-      setSleeperLeagues((r && r.leagues) || []);
-    } catch (e) {
-      setErr(e && e.message ? e.message : "Could not load your Sleeper leagues");
-      setSleeperLeagues([]);
-    } finally { setLoading(false); }
+    try { const r = await api.sleeperMyLeagues(); setSleeperLeagues((r && r.leagues) || []); }
+    catch (e) { setErr(e && e.message ? e.message : "Could not load your Sleeper leagues"); setSleeperLeagues([]); }
+    finally { setLoading(false); }
   };
+  const toggle = () => { const next = !open; setOpen(next); if (next && linked && sleeperLeagues === null) loadSleeper(); };
 
-  const toggle = () => {
-    const next = !open; setOpen(next);
-    if (next && linked && sleeperLeagues === null) loadSleeper();
-  };
-
-  const unlink = async () => {
-    try { if (hasBackend) await api.sleeperUnlink(); } catch (e) {}
-    setLinkedState(false); setSleeperLeagues(null);
-    if (onUpdate) onUpdate({ sleeperUsername: null, sleeperUserId: null });
-  };
-
-  // Which FDC leagues are already linked to a Sleeper league (so we don't double-list)?
   const linkedLeagueIds = new Set(leagues.map((l) => l.connect && l.connect.leagueId).filter(Boolean));
   const unimportedSleeper = (sleeperLeagues || []).filter((sl) => !linkedLeagueIds.has(sl.league_id));
 
-  // Human-readable draft status for a Sleeper league.
   const sleeperStatus = (sl) => {
     const s = sl.draft_status;
     if (!s || s === 'pre_draft') return { label: "Pre-draft", color: "var(--blue)", dot: "var(--blue)" };
@@ -4160,7 +4220,6 @@ function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, onUp
     }
     return { label: "—", color: "var(--mut)", dot: "var(--mut)" };
   };
-
   const StatusPill = ({ dot, color, label }) => (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, color, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 99, padding: "2px 9px", flexShrink: 0 }}>
       <span style={{ width: 6, height: 6, borderRadius: "50%", background: dot }} />{label}
@@ -4168,21 +4227,20 @@ function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, onUp
   );
 
   return (
-    <div style={{ maxWidth: 940, margin: "0 auto", padding: "0 20px 8px" }}>
-      <button onClick={toggle} className="team-row" style={{ width: "100%", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1px solid var(--line)", background: "var(--panel)", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", gap: 11 }}>
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <button onClick={toggle} className="team-row" style={{ width: "100%", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1px solid var(--line)", background: "var(--panel)", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", gap: 11, minHeight: 56 }}>
         <div style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(242,182,60,.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
           <i className="ti ti-users-group" style={{ fontSize: 17, color: "var(--gold)" }} aria-hidden="true" />
         </div>
         <div style={{ textAlign: "left", flex: 1, minWidth: 0 }}>
           <div className="disp" style={{ fontSize: 14.5, fontWeight: 700 }}>Your teams</div>
-          <div className="mut" style={{ fontSize: 11.5 }}>{leagues.length} draft{leagues.length === 1 ? "" : "s"} in FDC{linked ? ` · Sleeper linked as ${sleeperName}` : " · Sleeper not linked"}</div>
+          <div className="mut" style={{ fontSize: 11.5 }}>{leagues.length} draft{leagues.length === 1 ? "" : "s"} in FDC{linked ? ` · Sleeper: ${sleeperName}` : ""}</div>
         </div>
         <i className={`ti ti-chevron-${open ? "up" : "down"}`} style={{ fontSize: 16, color: "var(--mut)" }} aria-hidden="true" />
       </button>
 
       {open && (
         <div className="panel" style={{ padding: 14, marginTop: 8, borderRadius: 12 }}>
-          {/* FDC drafts */}
           <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 9 }}>
             <i className="ti ti-clipboard-list" style={{ fontSize: 14, color: "var(--gold)" }} aria-hidden="true" />
             <div className="disp" style={{ fontSize: 11.5, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--mut)" }}>Your drafts in Fantasy Draft Compass</div>
@@ -4214,20 +4272,14 @@ function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, onUp
             </div>
           ) : <div className="mut" style={{ fontSize: 12.5, marginBottom: 18 }}>No drafts yet — create a league to get started.</div>}
 
-          {/* Sleeper section header with unlink */}
           <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 9 }}>
             <i className="ti ti-plug-connected" style={{ fontSize: 14, color: linked ? "var(--blue)" : "var(--mut)" }} aria-hidden="true" />
             <div className="disp" style={{ fontSize: 11.5, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--mut)", flex: 1 }}>
               Your Sleeper leagues{linked ? ` — ${sleeperName}` : ""}
             </div>
-            {linked && (
-              <button className="btn btn-mini" onClick={unlink} title="Sign out of Sleeper" style={{ fontSize: 11 }}>
-                <i className="ti ti-logout" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Unlink
-              </button>
-            )}
           </div>
           {!linked ? (
-            <div className="mut" style={{ fontSize: 12.5 }}>No Sleeper account linked. Link one on your Account page to see all your Sleeper leagues and their draft status here. It stays linked until you unlink.</div>
+            <div className="mut" style={{ fontSize: 12.5 }}>Link your Sleeper account (just to the left) to see all your Sleeper leagues and their draft status here.</div>
           ) : loading ? (
             <div className="mut" style={{ fontSize: 12.5 }}>Loading your Sleeper leagues…</div>
           ) : err ? (
@@ -4264,6 +4316,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
   const totalMocks = leagues.reduce((s, l) => s + (l.mocks || []).length, 0) + funMocks.length;
   const inProgress = leagues.filter((l) => l.picks.length > 0 && l.picks.length < (l.cfg.teams || 12) * l.cfg.rounds);
   const [q, setQ] = useState("");
+  const sleeperLink = useSleeperLink(user, onUpdate);
   const firstName = (user?.name || (user?.email ? user.email.split("@")[0] : "") || "").split(/[ .]/)[0];
   const greetName = firstName ? firstName.charAt(0).toUpperCase() + firstName.slice(1) : null;
   const hour = new Date().getHours();
@@ -4346,8 +4399,15 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         </div>
       </div>
 
-      {/* Your teams — a single dropdown of FDC drafts + linked Sleeper leagues */}
-      <YourTeamsDropdown user={user} leagues={leagues} onOpenLeague={(id) => onUmbrella(id)} onNewFromSleeper={() => onNewLeague()} onUpdate={onUpdate} />
+      {/* Your teams (dropdown, view-only) with the Sleeper link control right beside it */}
+      <div style={{ maxWidth: 940, margin: "0 auto", padding: "0 20px 8px" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-start", flexWrap: "wrap" }}>
+          <YourTeamsDropdown user={user} leagues={leagues} onOpenLeague={(id) => onUmbrella(id)} onNewFromSleeper={() => onNewLeague()} linked={sleeperLink.linked} sleeperName={sleeperLink.username} />
+          <div style={{ width: 260, maxWidth: "100%" }}>
+            <SleeperLinkControl link={sleeperLink.link} unlink={sleeperLink.unlink} linked={sleeperLink.linked} username={sleeperLink.username} />
+          </div>
+        </div>
+      </div>
 
       {/* the existing-league picker can open straight from the quick action above */}
       {openPick && leagues.length > 0 && (
@@ -7749,9 +7809,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   };
   // Recommendation for the CURRENT pick on the clock (whoever it is).
   const advice = useMemo(() => adviceFor(picks.length, onClock, sims), [sims, picks, players, sortedAdp, draftedSet, onClock, cfg, strategy, done, dem]);
-  // A SECOND recommendation for YOUR pick using the "My build" strategy, shown alongside the primary one so
-  // you can compare a market/balanced pick against a build-fit pick. Only meaningful on your own pick.
-  const buildAdvice = useMemo(() => (onClock === userIdx && strategy !== "build" ? adviceFor(picks.length, onClock, sims, "build") : null), [sims, picks, players, sortedAdp, draftedSet, onClock, userIdx, cfg, strategy, done, dem]);
+  // The overall index of YOUR next pick (whether you're on the clock right now or it's coming up).
+  const myPickOverall = onClock === userIdx ? picks.length : myNextOverall;
+  // Recommendation for YOUR next pick under the SELECTED strategy (top line of the plaque) and, separately,
+  // under the "My build" strategy (bottom line). BOTH come from adviceFor — the same engine that produces
+  // the real recommendation — so the "My build" line is always exactly the My-build recommendation, and the
+  // top line always matches the selected strategy (identical to the build line when "My build" is selected).
+  const mySelAdvice = useMemo(() => adviceFor(myPickOverall, userIdx, sims), [sims, picks, players, sortedAdp, draftedSet, userIdx, myPickOverall, cfg, strategy, done, dem]);
+  const myBuildAdvice = useMemo(() => adviceFor(myPickOverall, userIdx, sims, "build"), [sims, picks, players, sortedAdp, draftedSet, userIdx, myPickOverall, cfg, done, dem]);
+  // Back-compat aliases used elsewhere in the tracker.
+  const buildAdvice = myBuildAdvice;
   // Recommendation specifically for YOUR next pick (may be the same as current if you're on the clock).
   const myAdvice = useMemo(() => (onClock === userIdx ? null : adviceFor(myNextOverall, userIdx, sims)), [sims, picks, players, sortedAdp, draftedSet, onClock, userIdx, myNextOverall, cfg, strategy, done, dem]);
 
@@ -8689,24 +8756,28 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     </div>
                   );
                 }
-                // YOUR pick: show BOTH the selected-strategy pick and the "My build" pick, stacked, each hoverable.
+                // YOUR pick: top line = selected strategy's pick; bottom line = the "My build" pick (always
+                // shown so the build rec is constant), unless "My build" IS the selected strategy (no dupe).
                 const primaryLabel = stratLabel[strategy] || "Recommended";
-                const showBuildToo = buildAdvice && buildAdvice.verdict && (!advice.verdict || buildAdvice.verdict.id !== advice.verdict.id);
-                const primaryTip = adviceTip(advice, primaryLabel);
-                const buildTip = adviceTip(buildAdvice, "My build");
+                const selVerdict = mySelAdvice && mySelAdvice.verdict ? mySelAdvice.verdict : (advice && advice.verdict);
+                const bldVerdict = myBuildAdvice && myBuildAdvice.verdict ? myBuildAdvice.verdict : null;
+                const showBuildToo = strategy !== "build" && bldVerdict;
+                const primaryTip = adviceTip(mySelAdvice || advice, primaryLabel);
+                const buildTip = adviceTip(myBuildAdvice, "My build");
+                if (!selVerdict) return null;
                 return (
                   <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 3 }}>
                     <div style={{ fontSize: 11.5, cursor: primaryTip ? "help" : "default", display: "flex", alignItems: "baseline", gap: 5 }} onMouseEnter={primaryTip} onMouseLeave={primaryTip ? hideTip : undefined}>
                       <span className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", minWidth: 62 }}>{primaryLabel}</span>
-                      <b style={{ color: "var(--gold)" }}>{advice.verdict.name}</b>
-                      <span className="mut" style={{ fontSize: 10 }}><Dot pos={advice.verdict.pos} />{advice.verdict.pos}{advice.verdict.posRank}</span>
+                      <b style={{ color: "var(--gold)" }}>{selVerdict.name}</b>
+                      <span className="mut" style={{ fontSize: 10 }}><Dot pos={selVerdict.pos} />{selVerdict.pos}{selVerdict.posRank}</span>
                       {primaryTip && <span className="mut" style={{ fontSize: 9.5, opacity: 0.7 }}>· hover</span>}
                     </div>
                     {showBuildToo && (
                       <div style={{ fontSize: 11.5, cursor: buildTip ? "help" : "default", display: "flex", alignItems: "baseline", gap: 5 }} onMouseEnter={buildTip} onMouseLeave={buildTip ? hideTip : undefined}>
                         <span className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", minWidth: 62 }}>My build</span>
-                        <b style={{ color: "var(--blue)" }}>{buildAdvice.verdict.name}</b>
-                        <span className="mut" style={{ fontSize: 10 }}><Dot pos={buildAdvice.verdict.pos} />{buildAdvice.verdict.pos}{buildAdvice.verdict.posRank}</span>
+                        <b style={{ color: "var(--blue)" }}>{bldVerdict.name}</b>
+                        <span className="mut" style={{ fontSize: 10 }}><Dot pos={bldVerdict.pos} />{bldVerdict.pos}{bldVerdict.posRank}</span>
                         {buildTip && <span className="mut" style={{ fontSize: 9.5, opacity: 0.7 }}>· hover</span>}
                       </div>
                     )}
@@ -8726,10 +8797,21 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   //           summary + alternatives. Shows for every future pick of yours.
                   const stratLabel = { balanced: "Balanced", value: "Max VBD", build: "My build", upside: "Upside", adp: "Strict ADP" };
                   const away = step.o - picks.length;
-                  const balPick = step.cands5 && step.cands5[0] ? step.cands5[0].p : step.p;
-                  const bldPick = step.buildPick || (step.cands5Build && step.cands5Build[0] ? step.cands5Build[0].p : null);
+                  // For your NEXT pick, use the authoritative advice (same engine as the real recommendation)
+                  // so the "My build" line is always exactly the My-build rec and the top line matches the
+                  // selected strategy. For picks further out, fall back to the projected candidates.
+                  const isNextUserPick = step.o === myPickOverall;
+                  const selCands = isNextUserPick && mySelAdvice && mySelAdvice.verdict
+                    ? [{ p: mySelAdvice.verdict }, ...(mySelAdvice.alts || []).map((p) => ({ p }))]
+                    : step.cands5;
+                  const bldCands = isNextUserPick && myBuildAdvice && myBuildAdvice.verdict
+                    ? [{ p: myBuildAdvice.verdict }, ...(myBuildAdvice.alts || []).map((p) => ({ p }))]
+                    : step.cands5Build;
+                  const balPick = selCands && selCands[0] ? selCands[0].p : step.p;
+                  const bldPick = bldCands && bldCands[0] ? bldCands[0].p : null;
                   const primaryLabel = stratLabel[strategy] || "Recommended";
-                  const showBuild = bldPick && (!balPick || bldPick.id !== balPick.id);
+                  // Always show the "My build" line (constant), unless "My build" is the selected strategy.
+                  const showBuild = strategy !== "build" && bldPick;
                   // Hover builder for a given pick + its candidate list.
                   const recTip = (label, pick, cands, color) => {
                     if (!pick) return undefined;
@@ -8742,8 +8824,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       { kind: "why", x: whyPick(pick, advice && advice.waitCost, true) },
                     ]);
                   };
-                  const balTip = recTip(primaryLabel, balPick, step.cands5, "var(--gold)");
-                  const bldTip = recTip("My build", bldPick, step.cands5Build, "var(--blue)");
+                  const balTip = recTip(primaryLabel, balPick, selCands, "var(--gold)");
+                  const bldTip = recTip("My build", bldPick, bldCands, "var(--blue)");
                   const recLine = (label, pick, tip, color) => pick ? (
                     <div onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined} style={{ display: "flex", alignItems: "baseline", gap: 5, cursor: tip ? "help" : "default", padding: "1px 0" }}>
                       <span className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".04em", minWidth: 54, flexShrink: 0 }}>{label}</span>
