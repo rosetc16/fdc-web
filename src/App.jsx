@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27j";
+const BUILD_TAG = "2026.06.27k";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -8929,6 +8929,31 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     +{advice.verdict.vbd.toFixed(0)} VBD • waiting costs {Math.max(0, advice.waitCost[advice.verdict.pos]).toFixed(0)} pts
                     {advice.impacts[advice.verdict.id] && <> • projects you <b style={{ color: "var(--ink)" }}>{ordinal(advice.impacts[advice.verdict.id].rank)}</b> ({advice.impacts[advice.verdict.id].pts} pts)</>}
                   </div>
+                  {(() => {
+                    // "Why this pick" — one plain-English line assembled from the live inputs the engine
+                    // actually used: value vs the market, whether it fills a positional need, how fast the
+                    // position is drying up, and whether it fits your build lane. Reads like a human take.
+                    const v = advice.verdict;
+                    const reasons = [];
+                    const gap = v.valueRank != null && v.adp != null ? Math.round(v.adp - v.valueRank) : 0;
+                    if (gap > 10) reasons.push("clear value here — he's worth more than his draft cost");
+                    else if (gap > 4) reasons.push("solid value at this spot");
+                    const need = advice.waitCost && advice.waitCost[v.pos] != null ? advice.waitCost[v.pos] : 0;
+                    if (need > 12) reasons.push(`fills a real need at ${v.pos} that gets costly if you wait`);
+                    else if (need > 5) reasons.push(`addresses your ${v.pos} depth`);
+                    const surv = sims && sims.pct && sims.pct[0] && sims.pct[0][v.id] != null ? sims.pct[0][v.id] : null;
+                    if (surv != null && surv <= 25 && onClock === userIdx) reasons.push("unlikely to make it back to your next pick");
+                    if (v.rookie && cfg.type !== "redraft") reasons.push("a young piece for the long haul");
+                    if (!reasons.length) reasons.push(`the best overall value on the board for you right now`);
+                    // Capitalize first, join into one flowing sentence.
+                    let why = reasons.slice(0, 2).join(", and ");
+                    why = why.charAt(0).toUpperCase() + why.slice(1) + ".";
+                    return (
+                      <div style={{ fontSize: 12.5, lineHeight: 1.45, marginTop: 8, padding: "8px 10px", background: "rgba(242,182,60,.08)", borderLeft: "2px solid var(--gold)", borderRadius: "0 6px 6px 0" }}>
+                        <span style={{ color: "var(--gold)", fontWeight: 700 }}>Why: </span><span style={{ color: "var(--ink)" }}>{why}</span>
+                      </div>
+                    );
+                  })()}
                   <button className="btn btn-gold" style={{ width: "100%", marginTop: 9 }} onClick={() => draftPlayer(advice.verdict.id)}>
                     Draft {advice.verdict.name.split(" ").slice(-1)}{onClock !== userIdx ? ` (to ${TEAM_NAMES[onClock].split(" ")[0]})` : ""}
                   </button>
@@ -9798,48 +9823,76 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           {/* Recap on the left; "how the draft flowed" + superlatives stacked on the right. */}
           <div style={{ gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "minmax(0,1.1fr) minmax(0,1fr)", gap: 12, alignItems: "start" }} className="recap-row">
           {recap && recapHead && (
-            <div className="panel" style={{ padding: 14 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>League recap <span className="mut" style={{ fontSize: 12 }}>AI-style, shareable</span></div>
-                <button className="btn btn-mini" onClick={() => {
-                  const headTxt = [
-                    `Projected Winner: ${recapHead.winner}`,
-                    `Projected Loser: ${recapHead.loser}`,
-                    `Biggest Steal: ${recapHead.steal}`,
-                    `Biggest Reach: ${recapHead.reach}`,
-                    `Best value draft: ${recapHead.bestDraft}`,
-                    `Least value draft: ${recapHead.worstDraft}`,
-                    `Your team trends: ${recapHead.trend}`,
-                  ].join("\n");
-                  const ok = copyText(`${cfg.name} — draft recap\n\n${headTxt}\n\n${recap.join("\n\n")}`);
-                  if (ok !== false) { setCopied(true); setTimeout(() => setCopied(false), 1500); }
-                }}>{copied ? "Copied ✓" : "Copy"}</button>
-              </div>
+            <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
+              {(() => {
+                // The shareable Draft Card: your headline result up top (the brag), the league's key
+                // storylines below it, then the AI-style recap prose. Built entirely from live engine data.
+                const myGrade = grades[userIdx] ? grades[userIdx].g : "—";
+                const myRank = proj ? proj.rank[userIdx] : null;
+                const myPts = proj ? proj.pts[userIdx] : null;
+                const rankColor = myRank && myRank <= Math.ceil(TEAMS / 3) ? "var(--green)" : myRank && myRank <= Math.ceil((2 * TEAMS) / 3) ? "var(--gold)" : "var(--red)";
+                const mySteal = graded.slice().filter((g) => g.t === userIdx).sort((a, b) => b.val - a.val)[0];
+                const shareText = [
+                  `${cfg.name} — my draft (Fantasy Draft Compass)`,
+                  `Grade ${myGrade} · projected ${myRank ? ordinal(myRank) : "—"} of ${TEAMS}${myPts ? ` · ${myPts} pts` : ""}`,
+                  mySteal ? `Best value: ${mySteal.p.name} (${mySteal.val > 0 ? "+" : ""}${mySteal.val.toFixed(0)} spots)` : "",
+                  ``,
+                  `League storylines:`,
+                  `• Projected winner: ${recapHead.winner}`,
+                  `• Biggest steal: ${recapHead.steal}`,
+                  `• Biggest reach: ${recapHead.reach}`,
+                  ``,
+                  recap.join("\n\n"),
+                  ``,
+                  `→ fantasydraftcompass.com`,
+                ].filter((l) => l !== undefined).join("\n");
+                return (
+                  <>
+                    {/* HERO — your result, the shareable brag */}
+                    <div style={{ position: "relative", padding: "18px 18px 16px", background: "linear-gradient(135deg, rgba(242,182,60,.14), rgba(242,182,60,.03))", borderBottom: "1px solid var(--line)" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div className="disp" style={{ fontSize: 12, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--gold)", display: "flex", alignItems: "center", gap: 7 }}>
+                            <Compass size={16} /> Your draft card
+                          </div>
+                          <div className="disp" style={{ fontSize: 26, fontWeight: 800, marginTop: 6, lineHeight: 1.05 }}>
+                            Grade {myGrade} · <span style={{ color: rankColor }}>{myRank ? ordinal(myRank) : "—"}</span> <span className="mut" style={{ fontSize: 15, fontWeight: 600 }}>of {TEAMS}</span>
+                          </div>
+                          <div className="mut" style={{ fontSize: 12.5, marginTop: 5 }}>
+                            {myPts ? `${myPts} projected pts` : ""}{mySteal ? ` · best value ${mySteal.p.name.split(" ").slice(-1)} (${mySteal.val > 0 ? "+" : ""}${mySteal.val.toFixed(0)})` : ""}{recapHead.trend && recapHead.trend.includes("leaning") ? ` · leaning ${recapHead.trend.split("leaning ")[1].split(" ")[0]}` : ""}
+                          </div>
+                        </div>
+                        <button className="btn btn-gold btn-mini" style={{ flexShrink: 0 }} onClick={() => {
+                          const ok = copyText(shareText);
+                          if (ok !== false) { setCopied(true); setTimeout(() => setCopied(false), 1600); }
+                        }}>{copied ? "Copied ✓" : "Share"}</button>
+                      </div>
+                    </div>
 
-              {/* constant headline stats */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: "8px 18px", padding: "10px 12px", background: "var(--panel2)", borderRadius: 8, marginBottom: 12 }}>
-                {[
-                  ["Projected Winner", recapHead.winner, "var(--green)"],
-                  ["Projected Loser", recapHead.loser, "var(--red)"],
-                  ["Biggest Steal", recapHead.steal, "var(--green)"],
-                  ["Biggest Reach", recapHead.reach, "var(--red)"],
-                  ["Best value draft", recapHead.bestDraft, "var(--ink)"],
-                  ["Least value draft", recapHead.worstDraft, "var(--ink)"],
-                ].map(([label, val, color]) => (
-                  <div key={label}>
-                    <div className="disp" style={{ fontSize: 11, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--mut)" }}>{label}</div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color }}>{val}</div>
-                  </div>
-                ))}
-                <div style={{ gridColumn: "1 / -1", borderTop: "1px solid var(--line)", paddingTop: 8 }}>
-                  <div className="disp" style={{ fontSize: 11, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--gold)" }}>Your team trends</div>
-                  <div style={{ fontSize: 13, fontWeight: 700 }}>{recapHead.trend}</div>
-                </div>
-              </div>
+                    {/* League storylines — compact, four tiles */}
+                    <div style={{ padding: "12px 14px" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: "10px 16px" }}>
+                        {[
+                          ["Projected winner", recapHead.winner, "var(--green)"],
+                          ["Cellar-bound", recapHead.loser, "var(--red)"],
+                          ["Biggest steal", recapHead.steal, "var(--green)"],
+                          ["Biggest reach", recapHead.reach, "var(--red)"],
+                        ].map(([label, val, color]) => (
+                          <div key={label}>
+                            <div className="disp" style={{ fontSize: 10.5, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--mut)" }}>{label}</div>
+                            <div style={{ fontSize: 12.5, fontWeight: 700, color, lineHeight: 1.35, marginTop: 1 }}>{val}</div>
+                          </div>
+                        ))}
+                      </div>
 
-              {/* funny AI-style prose */}
-              {recap.map((s, i) => <p key={i} style={{ fontSize: 13.5, lineHeight: 1.55, margin: "0 0 9px" }}>{s}</p>)}
-              <div className="mut" style={{ fontSize: 11.5, marginTop: 4 }}>The headline stats above always reflect the live draft; the commentary is template-generated in this demo. The full version writes the prose with AI over the same engine data — plus what-if rewind and shareable grade cards.</div>
+                      {/* AI-style prose — kept, but tighter */}
+                      <div style={{ borderTop: "1px solid var(--line)", marginTop: 12, paddingTop: 11 }}>
+                        {recap.map((s, i) => <p key={i} style={{ fontSize: 13, lineHeight: 1.5, margin: "0 0 8px", color: "var(--ink)" }}>{s}</p>)}
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           )}
 
@@ -9972,6 +10025,72 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     {rookieKing && rookieKing.n >= 2 && award("ti-baby-carriage", "Rookie hauler", nm(rookieKing.i), `Most rookies — ${rookieKing.n} first-years`, "var(--green)")}
                     {balanced && balanced.share <= 0.4 && award("ti-scale", "Best balance", nm(balanced.i), `Most even roster build across positions`, "var(--ink)")}
                     {zealot && zealot.share >= 0.45 && award("ti-target", "One-track mind", nm(zealot.i), `${Math.round(zealot.share * 100)}% ${zealot.pos} — ${zealot.n} of them`, "var(--blue)")}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
+          {/* ===== What to do now — a post-draft bridge to the season ===== */}
+          {done && proj && (
+            <div className="panel" style={{ padding: 16, gridColumn: "1 / -1" }}>
+              <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 3 }}>What to do now <span className="mut" style={{ fontSize: 12 }}>your season starts here</span></div>
+              <div className="mut" style={{ fontSize: 12, marginBottom: 14 }}>The draft's done — here's where your roster stands and where to focus next.</div>
+              {(() => {
+                const myRoster = (proj.rosters[userIdx] || []).filter(Boolean);
+                const req = REQ_F(cfg.sf);
+                // 1) Weakest starting spot — the position where your best starter is thinnest vs the league.
+                const posScore = {};
+                POS.forEach((pos) => { posScore[pos] = posQualityScore(myRoster.filter((p) => p && p.pos === pos), req[pos] || 0); });
+                const weakest = POS.filter((p) => (req[p] || 0) > 0).sort((a, b) => posScore[a] - posScore[b])[0] || "RB";
+                // 2) Bye-week clusters — weeks where you're thin because too many starters are off.
+                const byeCount = {};
+                myRoster.forEach((p) => { if (p && p.bye) byeCount[p.bye] = (byeCount[p.bye] || 0) + 1; });
+                const heavyByes = Object.entries(byeCount).filter(([w, n]) => n >= 3).sort((a, b) => b[1] - a[1]);
+                // 3) Best players you DIDN'T draft — your first waiver/trade targets, by position of need.
+                const draftedIds = new Set(picks);
+                const undrafted = (sortedAdp || []).filter((p) => p && !draftedIds.has(p.id));
+                const waiverTargets = [];
+                [weakest, ...POS.filter((p) => p !== weakest)].forEach((pos) => {
+                  const best = undrafted.filter((p) => p.pos === pos).sort((a, b) => (b.pts || 0) - (a.pts || 0))[0];
+                  if (best && waiverTargets.length < 4) waiverTargets.push(best);
+                });
+                const posName = { QB: "quarterback", RB: "running back", WR: "receiver", TE: "tight end" };
+                return (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(230px,1fr))", gap: 14 }}>
+                    {/* Weakest spot */}
+                    <div style={{ padding: "12px 14px", borderRadius: 9, background: "var(--panel2)", border: "1px solid var(--line)" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                        <i className="ti ti-target-arrow" style={{ fontSize: 18, color: "var(--red)" }} aria-hidden="true" />
+                        <div className="disp" style={{ fontSize: 12.5, fontWeight: 700 }}>Target in trades</div>
+                      </div>
+                      <div style={{ fontSize: 13, lineHeight: 1.5 }}>Your thinnest starting spot is <b style={{ color: POS_COLOR[weakest] }}>{posName[weakest] || weakest}</b>. Shop your surplus positions to shore it up before Week 1.</div>
+                    </div>
+                    {/* Bye weeks */}
+                    <div style={{ padding: "12px 14px", borderRadius: 9, background: "var(--panel2)", border: "1px solid var(--line)" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                        <i className="ti ti-calendar-event" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
+                        <div className="disp" style={{ fontSize: 12.5, fontWeight: 700 }}>Bye-week watch</div>
+                      </div>
+                      <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+                        {heavyByes.length ? <>Heads up on <b style={{ color: "var(--gold)" }}>Week {heavyByes[0][0]}</b> — {heavyByes[0][1]} of your players are off. {heavyByes.length > 1 ? `(Also Week ${heavyByes[1][0]}.)` : ""} Plan your bench and streamers around it.</> : <>Your byes are nicely spread out — no single week leaves you short. One less thing to manage.</>}
+                      </div>
+                    </div>
+                    {/* Waiver targets */}
+                    <div style={{ padding: "12px 14px", borderRadius: 9, background: "var(--panel2)", border: "1px solid var(--line)" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                        <i className="ti ti-user-plus" style={{ fontSize: 18, color: "var(--green)" }} aria-hidden="true" />
+                        <div className="disp" style={{ fontSize: 12.5, fontWeight: 700 }}>First waiver looks</div>
+                      </div>
+                      <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+                        Best undrafted players to watch:
+                        <div style={{ marginTop: 5, display: "flex", flexDirection: "column", gap: 3 }}>
+                          {waiverTargets.map((p) => (
+                            <div key={p.id} style={{ fontSize: 12.5 }}><Dot pos={p.pos} /><b>{p.name}</b> <span className="mut">{p.pos} · {Math.round(p.pts || 0)} pts</span></div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 );
               })()}
