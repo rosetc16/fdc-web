@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.26x";
+const BUILD_TAG = "2026.06.26y";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2054,7 +2054,11 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
       if (!c) { continue; }
       // guard the probability: if total weight is 0 (degenerate), fall back to an even split
       const prob = sum > 0 ? Math.round((ws[bi] / sum) * 100) : Math.round(100 / cands.length);
-      entry = { o, t, p: c, prob: Number.isFinite(prob) ? prob : 0 };
+      // Top-5 candidates for this slot (by weight) with each one's likelihood — powers the tracker hover
+      // that shows the engine's alternatives, with the expected pick clearly first.
+      const cands5 = cands.map((cc, i) => ({ p: cc, prob: sum > 0 ? Math.round((ws[i] / sum) * 100) : Math.round(100 / cands.length) }))
+        .sort((a, b) => b.prob - a.prob).slice(0, 5);
+      entry = { o, t, p: c, prob: Number.isFinite(prob) ? prob : 0, cands5 };
       drafted[c.id] = 1; if (counts[t][c.pos] != null) counts[t][c.pos]++; recent = [...recent.slice(-7), c.pos];
     }
     path.push(entry);
@@ -2636,7 +2640,7 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 @keyframes pulseGold{0%,100%{opacity:.5}50%{opacity:1}}
 .glowline{background:linear-gradient(90deg,transparent,var(--gold),transparent);height:1px;opacity:.5}
 .hover-row{transition:background .12s}.hover-row:hover{background:#16160F}
-@media(max-width:980px){.cols{flex-direction:column}.rail{width:100%!important}.hero-h{font-size:38px}.myteam-grid{grid-template-columns:1fr!important}.needteam-row{grid-template-columns:1fr!important}.recap-row{grid-template-columns:1fr!important}}
+@media(max-width:980px){.cols{flex-direction:column}.rail{width:100%!important}.hero-h{font-size:38px}.myteam-grid{grid-template-columns:1fr!important}.needteam-row{grid-template-columns:1fr!important}.recap-row{grid-template-columns:1fr!important}.superlative-grid{grid-template-columns:repeat(2,1fr)!important}}
 @media(max-width:640px){
   .hero-h{font-size:30px!important}
   .statline{font-size:30px}
@@ -7057,7 +7061,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const introKey = "fdc-hide-intro-" + ((user && user.email) ? user.email.toLowerCase() : "guest");
   const [showIntro, setShowIntro] = useState(() => { try { return window.localStorage ? window.localStorage.getItem(introKey) !== "1" : true; } catch (e) { return true; } });
   const [introDont, setIntroDont] = useState(false);
+  const [introTab, setIntroTab] = useState("how"); // "how" (how to use) | "tips" (deeper dive)
   const closeIntro = () => { try { if (introDont && window.localStorage) window.localStorage.setItem(introKey, "1"); } catch (e) {} setShowIntro(false); };
+  // Open the guide on demand (from the hub's "Tips" button), optionally to a specific tab.
+  const openGuide = (tab) => { setIntroTab(tab || "how"); setShowIntro(true); };
   const toggleQueue = (name) => setQueue((prev) => {
     const next = new Set(prev);
     if (next.has(name)) next.delete(name); else next.add(name);
@@ -8207,11 +8214,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 <button className="btn btn-gold btn-mini" style={{ marginTop: 5 }} onClick={() => setBriefOpen(true)}>AI briefing</button>
               </div>
             ) : (
-              <div key={step.o} className="tickcard">
+              <div key={step.o} className="tickcard" style={{ cursor: step.cands5 && step.cands5.length ? "help" : "default" }}
+                onMouseEnter={step.cands5 && step.cands5.length ? (e) => showTip(e, [
+                  { kind: "take", tone: "neutral", x: `${pickLabel(step.o)} · ${TEAM_NAMES[step.t]} — engine's top candidates` },
+                  ...step.cands5.map((c, ci) => ({
+                    t: `${c.prob}%`,
+                    tc: ci === 0 ? "var(--gold)" : POS_COLOR[c.p.pos],
+                    x: `${ci === 0 ? "★ " : ""}${c.p.name} — ${c.p.pos}${c.p.posRank}${ci === 0 ? " (expected)" : ""}`,
+                  })),
+                  { t: "", x: "★ = who the engine expects here. Others are the next-most-likely picks if the board breaks differently." },
+                ]) : undefined} onMouseLeave={hideTip}>
                 <div className="mut" style={{ fontSize: 11 }}>{pickLabel(step.o)} <span style={{ opacity: 0.7 }}>({step.o + 1})</span> • {TEAM_NAMES[step.t].split(" ")[0]}</div>
                 <div style={{ fontWeight: 600, fontSize: 13 }}><Dot pos={step.p.pos} />{step.p.name}</div>
                 <div className="meter"><div style={{ width: `${step.prob}%` }} /></div>
-                <div className="mut num" style={{ fontSize: 10, marginTop: 2 }}>{step.prob}% likely</div>
+                <div className="mut num" style={{ fontSize: 10, marginTop: 2 }}>{step.prob}% likely{step.cands5 && step.cands5.length > 1 ? " · hover for alts" : ""}</div>
               </div>
             ))}
             <button className="btn btn-mini" style={{ alignSelf: "center", flexShrink: 0, borderColor: "var(--gold)", color: "var(--gold)" }} onClick={() => setFutureBig((b) => !b)} title="Collapsed view shows the next 4 picks plus your next pick. Expand to see the next 15 upcoming picks instead.">{futureBig ? "« show fewer" : "expand picks »"}</button>
@@ -8346,16 +8362,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 value={search} onChange={(e) => setSearch(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") { const hit = rows.find((p) => !draftedSet.has(p.id)); if (hit) draftPlayer(hit.id); } }} />
               <button className="btn btn-mini" style={{ borderColor: "var(--gold)", color: "var(--gold)" }}
-                onMouseEnter={(e) => showTip(e, [
-                  { kind: "take", tone: "good", x: "Tips & how to use this board" },
-                  { t: "Strategy", x: "The Strategy dropdown reshapes the whole board — Balanced follows the market, while My build, Upside, Youth, and the position lenses tilt toward your approach. Click a column header any time to sort by it instead." },
-                  { t: "Priority queue", x: "Star (☆) any player to add him to your priority queue, then hit Priority to see only your starred targets. It saves automatically per league." },
-                  { t: "Avail @", x: "The Avail column's header is a dropdown — pick any upcoming slot (★ = a pick you own) to see each player's chance of surviving to that pick." },
-                  { t: "Edge / My ADP / Blend", x: "Add your own rankings (or import your platform's) via 'My ranks' to unlock columns that compare your board to Sleeper ADP and surface values." },
-                  { t: "Columns", x: "Drag column headers to reorder within a section; use the ◂ ▸ arrows on a section label to move a whole group. Toggle columns with the Columns menu." },
-                  { t: "Roles & photos", x: "The Role column shows each player's depth on his NFL team (RB1, WR2…). Hover any player for his photo, projection, and full outlook." },
-                  { t: "Scenario mode", x: "Use “Explore a scenario” (top of the board) to play out hypothetical picks and see how they'd cascade — without touching your real draft. Hit “Revert to live draft” to undo it all." },
-                ])} onMouseLeave={hideTip}>
+                onClick={() => openGuide("tips")} title="How to use this Hub, plus power-user tips">
                 <i className="ti ti-bulb" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Tips</button>
               {["ALL", ...POS].map((p) => (
                 <button key={p} className="btn btn-mini" style={{ borderColor: posFilter === p ? "var(--gold)" : "var(--line)" }} onClick={() => setPosFilter(p)}>{p}</button>
@@ -9148,7 +9155,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 <>
                   <div className="disp" style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", margin: "12px 0 6px" }}>Bench ({taShown.bench.length})</div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {taShown.bench.map((p, i) => <span key={i} className="chip" style={{ fontSize: 11, cursor: "help" }} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, true))} onMouseLeave={hideTip}><Dot pos={p.pos} />{p.name} <span className="mut">{p.pos}{p.posRank}</span></span>)}
+                    {taShown.bench.map((p, i) => {
+                      const isProj = myProjView && projectedAdds.includes(p);
+                      return <span key={i} className="chip" style={{ fontSize: 11, cursor: "help", background: isProj ? "rgba(242,182,60,.10)" : undefined, borderColor: isProj ? "var(--gold)" : undefined, borderStyle: isProj ? "dashed" : undefined, color: isProj ? "var(--gold)" : undefined }} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, true))} onMouseLeave={hideTip}><Dot pos={p.pos} />{p.name} <span className="mut">{p.pos}{p.posRank}</span>{isProj && <span className="gold" style={{ fontSize: 8, fontWeight: 700, marginLeft: 3 }}>PROJ</span>}</span>;
+                    })}
                   </div>
                 </>
               )}
@@ -9596,7 +9606,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           {picks.length >= TEAMS && (
             <div className="panel" style={{ padding: 14 }}>
               <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>How the draft flowed <span className="mut" style={{ fontSize: 12 }}>position mix by round</span></div>
-              <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Each row is a round. Hover any colored block to see exactly who went and which team took them — your picks are gold.</div>
+              <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Each row is a round. Hover any colored block to see exactly who went and which team took them. A gold outline marks the block where you made your pick that round.</div>
               {(() => {
                 const rounds = Math.ceil(picks.length / TEAMS);
                 const rows = [];
@@ -9619,14 +9629,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 return (
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                     {rows.map((row) => {
-                      const mineThisRound = ["QB", "RB", "WR", "TE"].some((pos) => row.byPos[pos].some((x) => teamAt(x.overall) === userIdx));
                       return (
                         <div key={row.r} style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                          <span className="num" style={{ width: 42, fontSize: 11, textAlign: "right", color: mineThisRound ? "var(--gold)" : "var(--mut)", fontWeight: mineThisRound ? 700 : 400 }}>R{row.r}</span>
+                          <span className="num mut" style={{ width: 42, fontSize: 11, textAlign: "right" }}>R{row.r}</span>
                           <div style={{ flex: 1, display: "flex", height: 22, borderRadius: 5, overflow: "hidden", background: "var(--panel2)", border: "1px solid var(--line)" }}>
                             {["QB", "RB", "WR", "TE"].map((pos) => row.counts[pos] > 0 && (
                               <div key={pos} onMouseEnter={segTip(pos, row.byPos[pos])} onMouseLeave={hideTip}
-                                style={{ width: `${(row.counts[pos] / row.total) * 100}%`, background: POS_COLOR[pos], display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10.5, fontWeight: 800, color: "#0b0f14", cursor: "help", borderRight: "1px solid rgba(0,0,0,.25)" }}>
+                                style={{ width: `${(row.counts[pos] / row.total) * 100}%`, background: POS_COLOR[pos], display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10.5, fontWeight: 800, color: "#0b0f14", cursor: "help", borderRight: "1px solid rgba(0,0,0,.25)", boxShadow: row.byPos[pos].some((x) => teamAt(x.overall) === userIdx) ? "inset 0 0 0 2px var(--gold)" : "none" }}>
                                 {row.counts[pos]} {pos}
                               </div>
                             ))}
@@ -9691,8 +9700,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 let lineupKing = null;
                 if (proj && proj.pts) { const order = proj.pts.map((v, i) => ({ i, v })).sort((a, b) => b.v - a.v); lineupKing = order[0]; }
                 // highest-ceiling single pick (by ceil)
-                let ceilPick = null;
-                picks.forEach((pk, o) => { const p = players[pk]; if (p && p.ceil != null && (!ceilPick || p.ceil > ceilPick.p.ceil)) ceilPick = { p, o, t: teamAt(o) }; });
                 // most rookies drafted
                 const rookieCounts = Array.from({ length: TEAMS }, (_, i) => ({ i, n: picks.filter((pk, o) => teamAt(o) === i && players[pk] && players[pk].rookie).length }));
                 const rookieKing = rookieCounts.slice().sort((a, b) => b.n - a.n)[0];
@@ -9712,13 +9719,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   });
                 }
                 return (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+                  <div className="superlative-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 }}>
                     {steal && steal.val > 0 && award("ti-diamond", "Best value", steal.p.name, `${steal.p.pos}${steal.p.posRank} to ${steal.t === userIdx ? "you" : TEAM_NAMES[steal.t]} — ${steal.val.toFixed(0)} spots past ADP`, "var(--green)")}
                     {reach && reach.val < 0 && award("ti-flame", "Biggest reach", reach.p.name, `${reach.p.pos}${reach.p.posRank} by ${reach.t === userIdx ? "you" : TEAM_NAMES[reach.t]} — ${Math.abs(reach.val).toFixed(0)} spots early`, "var(--red)")}
                     {valKing && valKing.v > 0 && award("ti-coins", "Value champ", nm(valKing.i), `Most total draft value — +${valKing.v.toFixed(0)} spots across the board`, "var(--green)")}
                     {lineupKing && award("ti-crown", "Best on paper", nm(lineupKing.i), `Top projected starting lineup — ${Math.round(lineupKing.v)} pts`, "var(--gold)")}
                     {powerhouse && award("ti-bolt", `${powerhouse.pos} powerhouse`, nm(powerhouse.i), `Loaded at ${powerhouse.pos} — ${powerhouse.names}`, POS_COLOR[powerhouse.pos])}
-                    {ceilPick && award("ti-rocket", "Highest ceiling", ceilPick.p.name, `${ceilPick.p.pos}${ceilPick.p.posRank} to ${nm(ceilPick.t)} — biggest boom potential`, "var(--blue)")}
                     {youngest && award("ti-seedling", "Youth movement", nm(youngest.i), `Youngest core — ${youngest.avg.toFixed(1)} avg age`, "var(--green)")}
                     {oldest && award("ti-trophy", "Win-now mode", nm(oldest.i), `Oldest core — ${oldest.avg.toFixed(1)} avg age`, "var(--gold)")}
                     {rookieKing && rookieKing.n >= 2 && award("ti-baby-carriage", "Rookie hauler", nm(rookieKing.i), `Most rookies — ${rookieKing.n} first-years`, "var(--green)")}
@@ -9858,43 +9864,74 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
       {showIntro && (
         <div className="modalbg" onClick={closeIntro}>
-          <div className="panel" style={{ maxWidth: 560, width: "100%", padding: 24, borderColor: "var(--gold)", maxHeight: "88vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+          <div className="panel" style={{ maxWidth: 580, width: "100%", padding: 24, borderColor: "var(--gold)", maxHeight: "88vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
               <i className="ti ti-compass" style={{ fontSize: 24, color: "var(--gold)" }} aria-hidden="true" />
-              <div className="disp" style={{ fontSize: 22, fontWeight: 800 }}>Welcome to your draft room</div>
+              <div className="disp" style={{ fontSize: 22, fontWeight: 800 }}>{introTab === "how" ? "How to use Fantasy Draft Compass" : "Tips & deeper dive"}</div>
             </div>
-            <div className="mut" style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 16 }}>Here's the quick tour — everything you need to draft with confidence. It takes 30 seconds.</div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {[
-                ["ti-list-numbers", "The board (center)", "Every available player, ranked for YOUR league. Green ADP means he's a value at the current pick. Click a player to draft him; hover any row for a full scouting take."],
-                ["ti-target-arrow", "The recommendation (right)", "Your pick, decided. Toggle “Recommended” (best value for your roster) vs “Engine expects” (who the market will actually take). Hover the ⓘ to learn the difference."],
-                ["ti-layout-grid", "League needs · Your team · Scarcity (below the board)", "See where every team is strong or thin, your own roster filling in, and which positions are drying up. Hover any number to see the exact players."],
-                ["ti-user-search", "Team analysis tab", "Deep-dive any team. Flip “Current” vs “Projected” to see your roster now or how it finishes if you follow the engine. “League overview” compares all teams at once."],
-                ["ti-trophy", "Summary tab", "Grades, steals & reaches, how the draft flowed round-by-round, and fun superlatives — updates live as you draft."],
-              ].map(([icon, h, b]) => (
-                <div key={h} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-                  <i className={`ti ${icon}`} style={{ fontSize: 20, color: "var(--gold)", marginTop: 2, flexShrink: 0 }} aria-hidden="true" />
-                  <div>
-                    <div style={{ fontWeight: 700, fontSize: 13.5 }}>{h}</div>
-                    <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.45 }}>{b}</div>
-                  </div>
-                </div>
+            {/* Toggle: How to use ↔ Tips (deeper dive) */}
+            <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden", marginBottom: 16 }}>
+              {[["how", "How to use"], ["tips", "Tips & deeper dive"]].map(([k, l]) => (
+                <button key={k} className="btn" style={{ borderRadius: 0, border: "none", fontSize: 12.5, padding: "6px 14px", background: introTab === k ? "var(--gold)" : "transparent", color: introTab === k ? "#151002" : "var(--ink)", fontWeight: introTab === k ? 700 : 400 }} onClick={() => setIntroTab(k)}>{l}</button>
               ))}
             </div>
 
-            {isConnectedLive && (
-              <div style={{ marginTop: 14, padding: "10px 12px", borderRadius: 8, background: "rgba(95,208,168,.10)", border: "1px solid var(--green)", fontSize: 12.5, lineHeight: 1.45 }}>
-                <b style={{ color: "var(--green)" }}><i className="ti ti-bolt" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />You're connected live to Sleeper.</b> Picks sync automatically as they happen in your real draft — there's nothing to start, pause, or save. Just watch the recommendation and draft your best player.
+            {introTab === "how" ? (<>
+              <div className="mut" style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 16 }}>The quick tour — everything you need to draft with confidence. It takes 30 seconds. Most of the action happens on the <b style={{ color: "var(--ink)" }}>Hub</b>, your main draft screen.</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {[
+                  ["ti-layout-dashboard", "The Hub — your command center", "This is the main screen you're looking at. It holds the player board, the live recommendation, and your league snapshot. Everything below is part of the Hub."],
+                  ["ti-list-numbers", "The board (center of the Hub)", "Every available player, ranked for YOUR league. A green ADP means he's a value at the current pick. Click a player to draft him; hover any row for a full scouting take."],
+                  ["ti-target-arrow", "The recommendation (right of the Hub)", "Your pick, decided. Toggle “Recommended” (best value for your roster) vs “Engine expects” (who the market will actually take). Hover the ⓘ to learn the difference."],
+                  ["ti-grid-dots", "League needs · Your team · Scarcity (below the Hub board)", "See where every team is strong or thin, your own roster filling in, and which positions are drying up. Hover any number to see the exact players."],
+                  ["ti-user-search", "Team analysis tab", "Deep-dive any team. Flip “Current” vs “Projected” to see your roster now or how it finishes if you follow the engine. “League overview” compares all teams at once."],
+                  ["ti-trophy", "Summary tab", "Grades, steals & reaches, how the draft flowed round-by-round, and fun superlatives — updates live as you draft."],
+                ].map(([icon, h, b]) => (
+                  <div key={h} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                    <i className={`ti ${icon}`} style={{ fontSize: 20, color: "var(--gold)", marginTop: 2, flexShrink: 0 }} aria-hidden="true" />
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 13.5 }}>{h}</div>
+                      <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.45 }}>{b}</div>
+                    </div>
+                  </div>
+                ))}
               </div>
-            )}
+              {isConnectedLive && (
+                <div style={{ marginTop: 14, padding: "10px 12px", borderRadius: 8, background: "rgba(95,208,168,.10)", border: "1px solid var(--green)", fontSize: 12.5, lineHeight: 1.45 }}>
+                  <b style={{ color: "var(--green)" }}><i className="ti ti-bolt" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />You're connected live to Sleeper.</b> Picks sync automatically as they happen in your real draft — there's nothing to start, pause, or save. Just watch the recommendation on the Hub and draft your best player.
+                </div>
+              )}
+            </>) : (<>
+              <div className="mut" style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 16 }}>Power-user features on the <b style={{ color: "var(--ink)" }}>Hub</b> that most people miss. These make the board work harder for you.</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {[
+                  ["ti-adjustments", "Strategy dropdown", "The Strategy dropdown reshapes the whole board — Balanced follows the market, while My build, Upside, Youth, and the position lenses tilt toward your approach. Click any column header to sort by it instead."],
+                  ["ti-star", "Priority queue", "Star (☆) any player to add him to your priority queue, then hit Priority to see only your starred targets. It saves automatically per league and follows you across devices."],
+                  ["ti-clock-hour-4", "Avail @ (survival odds)", "The Avail column's header is a dropdown — pick any upcoming slot (★ = a pick you own) to see each player's chance of surviving to that pick."],
+                  ["ti-chart-line", "Edge / My ADP / Blend", "Add your own rankings (or import your platform's) via “My ranks” to unlock columns that compare your board to Sleeper ADP and surface values only you see."],
+                  ["ti-columns", "Custom columns", "Drag column headers to reorder within a section; use the ◂ ▸ arrows on a section label to move a whole group. Toggle columns on/off with the Columns menu."],
+                  ["ti-user-circle", "Roles & photos", "The Role column shows each player's depth on his NFL team (RB1, WR2…). Hover any player for his photo, projection, and full outlook."],
+                  ["ti-flask", "Scenario mode", "Use “Explore a scenario” at the top of the Hub board to play out hypothetical picks and see how they'd cascade — without touching your real draft. Hit “Revert to live draft” to undo it all."],
+                  ["ti-arrows-exchange", "Draft tracker hovers", "On the Hub's draft tracker up top, hover any upcoming pick to see the engine's top-5 candidates for that slot — the one it expects is highlighted."],
+                ].map(([icon, h, b]) => (
+                  <div key={h} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                    <i className={`ti ${icon}`} style={{ fontSize: 20, color: "var(--gold)", marginTop: 2, flexShrink: 0 }} aria-hidden="true" />
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 13.5 }}>{h}</div>
+                      <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.45 }}>{b}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>)}
 
             <label style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 18, cursor: "pointer", fontSize: 12.5, color: "var(--mut)" }}>
               <input type="checkbox" checked={introDont} onChange={(e) => setIntroDont(e.target.checked)} style={{ width: 16, height: 16, accentColor: "var(--gold)" }} />
-              Don't show this again on this account
+              Don't show this automatically again on this account <span style={{ opacity: .8 }}>— you can always reopen it with the “Tips” button on the Hub.</span>
             </label>
             <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-              <button className="btn btn-gold" style={{ flex: 1 }} onClick={closeIntro}>Got it — let's draft</button>
+              <button className="btn btn-gold" style={{ flex: 1 }} onClick={closeIntro}>{introTab === "how" ? "Got it — let's draft" : "Close"}</button>
             </div>
           </div>
         </div>
