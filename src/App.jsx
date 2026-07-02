@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28l";
+const BUILD_TAG = "2026.06.28m";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1173,6 +1173,11 @@ const TEAM_NAMES_POOL = ["Gridiron Gurus","Waiver Wolves","Bye Week Blues","The 
 // Active team names for the current league (may be overridden by manual/Sleeper entry).
 let TEAM_NAMES = TEAM_NAMES_POOL.slice(0, 12);
 const setTeamNames = (names) => { TEAM_NAMES = names; };
+// Parallel array of Sleeper usernames per team index (from slotOwners), shown as "(username)" next to team
+// names so people who know a manager's handle but not their team name can identify teams. Empty when not a
+// Sleeper-linked league.
+let TEAM_OWNERS = [];
+const setTeamOwners = (owners) => { TEAM_OWNERS = owners || []; };
 const POS_COLOR = { QB:"#EF6A6A", RB:"#4FD1A1", WR:"#5BA8F5", TE:"#F2A35C", DL:"#b07cc6", LB:"#7e9b59", DB:"#5fb0b0", K:"var(--mut)", DST:"var(--mut)" };
 // ---- Recent trends feed --------------------------------------------------------------
 // PLUGGABLE DATA LAYER. In production, getTrendsFeed() reads a nightly-synced blend of
@@ -4565,6 +4570,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   // strong ADP or top-tier season value is almost certainly rostered elsewhere (here he's on a bye, hurt, or
   // was just dropped) — we must never suggest dropping a real starter for him, and we flag him as a stash.
   const rosterableByAdp = (p) => (p.adp != null && p.adp <= teamsN * 14); // ~ drafted inside standard roster depth
+  // Absolute "elite tier" per position by SEASON value — the top (demand × teams) players. Anyone in this
+  // tier is a proven asset and is never a throwaway drop in a contending build, ADP data present or not.
+  const eliteTierPts = {};
+  POS.forEach((pos) => {
+    const ranked = perGamePool.filter((p) => p.pos === pos).sort((a, b) => seasonOf(b) - seasonOf(a));
+    const idx = Math.max(0, Math.round((effDemand[pos] || 0) * teamsN) - 1);
+    eliteTierPts[pos] = ranked[idx] ? seasonOf(ranked[idx]) : 0;
+  });
   // Your roster by position — ranked by SEASON value so a bye-week stud stays where he belongs.
   const myByPos = { QB: [], RB: [], WR: [], TE: [] };
   myRoster.forEach((p) => { if (myByPos[p.pos]) myByPos[p.pos].push(p); });
@@ -4593,10 +4606,25 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     const startableBoost = startable ? (scarce ? 30 : 15) : 0;
     const assetBoost = eliteAsset ? 25 : 0; // rostered-everywhere types rank high as stashes
     const posList = myByPos[p.pos] || [];
-    // Drop candidate: your least valuable player at this position who is ALSO genuinely droppable — i.e.
-    // not himself a rosterable asset (good ADP) or a startable-value player. We never suggest cutting a
-    // player who'd be rostered everywhere (a bye-week stud like a 0.0-this-week elite) for a lesser add.
-    const droppableList = posList.filter((mp) => !(rosterableByAdp(mp) || seasonOf(mp) >= startableCut[p.pos] * 0.92));
+    // Drop candidate: your least valuable player at this position who is genuinely EXPENDABLE given your
+    // team's posture. We never surface a proven/rosterable player as a casualty for a lesser add.
+    //  - A player is "protected" if he'd be rostered everywhere (good ADP) or is startable by season value.
+    //  - Posture matters: in win-now/balanced, a proven veteran producer is a KEEP even if he's older, so we
+    //    also protect anyone with real season value. Only in rebuild do we let an aging vet be the casualty
+    //    (and even then, only for a younger player), because that's when trading age for youth makes sense.
+    const protectedFromDrop = (mp) => {
+      if (rosterableByAdp(mp)) return true;                          // rostered everywhere
+      if (seasonOf(mp) >= startableCut[p.pos] * 0.92) return true;   // startable by season value
+      if (seasonOf(mp) >= (eliteTierPts[p.pos] || 0) * 0.9) return true; // proven elite-tier producer (ADP-independent)
+      if (activePosture !== "rebuild" && seasonOf(mp) >= startableCut[p.pos] * 0.75) return true; // proven producer in a contending build
+      return false;
+    };
+    let droppableList = posList.filter((mp) => !protectedFromDrop(mp));
+    // In rebuild, an aging vet can be the casualty — but only when the incoming FA is actually younger.
+    if (activePosture === "rebuild" && !droppableList.length) {
+      const faAge = p.age || 27;
+      droppableList = posList.filter((mp) => (mp.age || 27) >= 29 && (mp.age || 27) > faAge && !rosterableByAdp(mp));
+    }
     const worstOnRoster = droppableList.length ? droppableList[droppableList.length - 1] : null;
 
     const age = p.age || 27;
@@ -5131,8 +5159,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                       const inPlayoffs = pj && pj.projRank <= playoffSpots;
                       return (
                         <tr key={st.rosterId} style={{ borderTop: "1px solid var(--line)", background: st.isMe ? "rgba(242,182,60,.07)" : "transparent" }}>
-                          <td style={{ padding: "6px", fontWeight: st.isMe ? 700 : 500, color: st.isMe ? "var(--gold)" : "var(--ink)" }}>
-                            {st.rank}. {st.teamName}{st.isMe ? " ★" : ""}
+                          <td style={{ padding: "6px", fontWeight: st.isMe ? 700 : 500, color: st.isMe ? "var(--gold)" : "var(--ink)", cursor: st.ownerName ? "help" : "default" }} title={st.ownerName ? `@${st.ownerName}` : undefined}>
+                            {st.rank}. {st.teamName}{st.isMe ? " ★" : ""}{st.ownerName ? <span className="mut" style={{ fontSize: 10, fontWeight: 400 }}> (@{st.ownerName})</span> : null}
                           </td>
                           <td style={{ textAlign: "center", padding: "6px" }}>{st.record.wins}-{st.record.losses}{st.record.ties ? `-${st.record.ties}` : ""}</td>
                           <td style={{ textAlign: "center", padding: "6px", color: inPlayoffs ? "var(--green)" : "var(--mut)", fontWeight: 600 }}>{pj ? ordinal(pj.projRank) : "—"}</td>
@@ -5172,7 +5200,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                       <tbody>
                         {powerRanked.map((t) => (
                           <tr key={t.rosterId} style={{ borderTop: "1px solid var(--line)", background: t.isMe ? "rgba(242,182,60,.07)" : "transparent" }}>
-                            <td style={{ padding: "5px 6px", fontWeight: t.isMe ? 700 : 500, color: t.isMe ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap" }}>{t.teamName}{t.isMe ? " ★" : ""}</td>
+                            <td style={{ padding: "5px 6px", fontWeight: t.isMe ? 700 : 500, color: t.isMe ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", cursor: t.ownerName ? "help" : "default" }} title={t.ownerName ? `@${t.ownerName}` : undefined}>{t.teamName}{t.isMe ? " ★" : ""}{t.ownerName ? <span className="mut" style={{ fontSize: 10, fontWeight: 400 }}> (@{t.ownerName})</span> : null}</td>
                             {POS.map((pos) => (
                               <td key={pos} style={{ textAlign: "center", padding: "5px 6px" }}>
                                 <span className="num" style={{ color: cellColor(posRankMap[pos][t.rosterId], n), fontWeight: 700 }}>{t.posStrength[pos].toFixed(0)}</span>
@@ -7362,7 +7390,7 @@ function ConnectBox({ connect, onConnect, onClear }) {
         leagueId: lg.league_id, leagueName: lg.name,
         draftId: d.draft_id || lg.draft_id || null,
         cfg: d.cfg || null, picks: d.picks || [], status: d.status || lg.draft_status || null,
-        teams: d.teams || null, yourSlot: d.yourSlot || null, slotNames: d.slotNames || null,
+        teams: d.teams || null, yourSlot: d.yourSlot || null, slotNames: d.slotNames || null, slotOwners: d.slotOwners || null,
         draftType: d.draftType || "snake", tradedPicks: d.tradedPicks || [], keepers: d.keepers || [],
         existingRosters: d.existingRosters || null,
       });
@@ -8406,6 +8434,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [liveClock, setLiveClock] = useState(null);
   const [nameVersion, setNameVersion] = useState(0);       // bumps when live Sleeper team names refresh, to re-render
   const [liveTeamNames, setLiveTeamNames] = useState(null); // real names pulled live from Sleeper (win over cfg)
+  const [liveTeamOwners, setLiveTeamOwners] = useState(null); // Sleeper usernames per slot, pulled live
   // set active team count + names for this league before any engine call
   setTeams(cfg.teams || 12);
   setSpec(cfg.start);
@@ -8432,6 +8461,18 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     : (cfg.teamNames && cfg.teamNames.length === (cfg.teams || 12)) ? cfg.teamNames
     : TEAM_NAMES_POOL.slice(0, cfg.teams || 12)
   );
+  // Sleeper usernames per team index (0-based). slotOwners arrives as { slot: username } (1-based); convert.
+  // Live owners (pulled during the draft) win over the saved ones. Empty array when not Sleeper-linked.
+  (() => {
+    const N = cfg.teams || 12;
+    const src = (liveTeamOwners && liveTeamOwners.length === N) ? null : (league.slotOwners || cfg.slotOwners || null);
+    if (liveTeamOwners && liveTeamOwners.length === N) { setTeamOwners(liveTeamOwners); return; }
+    if (src && typeof src === "object") {
+      const arr = [];
+      for (let s = 1; s <= N; s++) arr.push(src[s] || null);
+      setTeamOwners(arr);
+    } else setTeamOwners([]);
+  })();
   const ROUNDS = cfg.rounds;
   const TOTAL = totalOf(cfg);
   const hasSlot = cfg.slot != null && cfg.slot >= 1;
@@ -9043,6 +9084,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               setTeamNames(fresh);
               setNameVersion((v) => v + 1);
             }
+          }
+          // Usernames follow the same live data — store a parallel owner array when Sleeper provides it.
+          if (d.slotOwners) {
+            const owners = []; for (let s = 1; s <= cfg.teams; s++) owners.push(d.slotOwners[s] || null);
+            if (JSON.stringify(owners) !== JSON.stringify(liveTeamOwners || [])) { setLiveTeamOwners(owners); setTeamOwners(owners); }
           }
         }
         // Build the engine pick list from Sleeper's pick order, mapping names→ids and dropping any
@@ -10662,7 +10708,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     Team analysis
                     <select className="gs" style={{ fontSize: 13, padding: "4px 8px" }} value={selTeam} onChange={(e) => setAnalysisTeam(+e.target.value === userIdx ? null : +e.target.value)}>
                       {Array.from({ length: cfg.teams || 12 }, (_, t) => t).map((t) => (
-                        <option key={t} value={t}>{t === userIdx ? "★ My team" : (TEAM_NAMES[t] || `Team ${t + 1}`)}</option>
+                        <option key={t} value={t}>{t === userIdx ? "★ My team" : (TEAM_NAMES[t] || `Team ${t + 1}`)}{t !== userIdx && TEAM_OWNERS[t] ? ` (@${TEAM_OWNERS[t]})` : ""}</option>
                       ))}
                     </select>
                     <button className="btn btn-mini" onClick={() => setLeagueOpen((o) => !o)} style={{ fontSize: 11.5, display: "inline-flex", alignItems: "center", gap: 5, background: leagueOpen ? "var(--gold)" : "var(--panel3)", color: leagueOpen ? "#151002" : "var(--ink)", fontWeight: 700, border: leagueOpen ? "1px solid var(--gold)" : "1px solid var(--line2)" }}>
@@ -11014,7 +11060,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <div className="bhead" style={{ gridTemplateColumns: `40px repeat(${TEAMS}, minmax(112px,1fr))`, minWidth: 60 + TEAMS * 116 }}>
               <div className="bteam" style={{ background: "transparent", border: "none" }} />
               {TEAM_NAMES.map((n, i) => (
-                <div key={i} className={`bteam${i === userIdx ? " you" : ""}`} title={n}>
+                <div key={i} className={`bteam${i === userIdx ? " you" : ""}`} title={TEAM_OWNERS[i] ? `${n} — @${TEAM_OWNERS[i]}` : n}
+                  onMouseEnter={TEAM_OWNERS[i] ? (e) => showTip(e, [{ kind: "take", tone: i === userIdx ? "good" : "neutral", x: n }, { t: "Sleeper user", x: `@${TEAM_OWNERS[i]}` }]) : undefined}
+                  onClick={TEAM_OWNERS[i] ? (e) => showTip(e, [{ kind: "take", tone: i === userIdx ? "good" : "neutral", x: n }, { t: "Sleeper user", x: `@${TEAM_OWNERS[i]}` }]) : undefined}
+                  onMouseLeave={TEAM_OWNERS[i] ? hideTip : undefined} style={{ cursor: TEAM_OWNERS[i] ? "help" : "default" }}>
                   <div className="nm" style={{ color: i === userIdx ? "var(--gold)" : "var(--ink)" }}>{i === userIdx ? (TEAM_NAMES[i] || "Your team") : n}</div>
                   <div className="sub mut">{i === userIdx ? "you" : `slot ${i + 1}`}</div>
                 </div>
@@ -11746,7 +11795,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           <div className="panel" style={{ maxWidth: 580, width: "100%", padding: 24, borderColor: "var(--gold)", maxHeight: "88vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
               <i className="ti ti-compass" style={{ fontSize: 24, color: "var(--gold)" }} aria-hidden="true" />
-              <div className="disp" style={{ fontSize: 22, fontWeight: 800 }}>{introTab === "how" ? "How to use Fantasy Draft Compass" : "Tips & deeper dive"}</div>
+              <div className="disp" style={{ fontSize: 22, fontWeight: 800, flex: 1 }}>{introTab === "how" ? "How to use Fantasy Draft Compass" : "Tips & deeper dive"}</div>
+              <button onClick={closeIntro} aria-label="Close" title="Close" style={{ background: "transparent", border: "none", color: "var(--mut)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: 4, borderRadius: 6, flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center" }} onMouseEnter={(e) => { e.currentTarget.style.color = "var(--ink)"; e.currentTarget.style.background = "var(--panel3)"; }} onMouseLeave={(e) => { e.currentTarget.style.color = "var(--mut)"; e.currentTarget.style.background = "transparent"; }}>
+                <i className="ti ti-x" style={{ fontSize: 20 }} aria-hidden="true" />
+              </button>
             </div>
 
             {/* Toggle: How to use ↔ Tips (deeper dive) */}
