@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28d";
+const BUILD_TAG = "2026.06.28e";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4619,14 +4619,18 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     dataStatus = { tone: "info", text: `Showing this week's matchup projections. Defense-vs-position difficulty needs at least one completed NFL week and is still populating — it'll show shortly.` };
   }
 
-  // Matchup points: Sleeper's live `weekPoints` is 0 until games are played (pre-game / off-season). So we
-  // show LIVE points when they're actually scoring, otherwise fall back to each side's PROJECTED optimal
-  // total from our engine — and label which one we're showing.
+  // Matchup points: Sleeper's live `weekPoints` is 0 until games are played (pre-game / off-season). Before
+  // kickoff we show each team's PROJECTED total from the lineup they've ACTUALLY SET on Sleeper (their
+  // `starters`), not their theoretical best lineup — so it matches what the Sleeper app shows. We keep each
+  // side's resolved starters so the Matchup tab can show both teams side by side.
   let matchupView = null;
   if (data.matchup && data.matchup.opp) {
     const oppTeam = data.teams.find((t) => t.rosterId === data.matchup.opp.rosterId);
+    // Each side's ACTUAL set starters (fall back to optimal only if a team has none set).
+    const meStarters = currentStarters.length ? currentStarters : optimalStarters;
+    const oppSetStarters = oppTeam ? resolve((oppTeam.starters || []).filter(Boolean)) : [];
     const oppRoster = oppTeam ? resolve(oppTeam.players) : [];
-    const oppOptimal = oppRoster.length ? lineupSlots(oppRoster, cfg.sf).slots.map((s) => s.p).filter(Boolean) : [];
+    const oppStarters = oppSetStarters.length ? oppSetStarters : (oppRoster.length ? lineupSlots(oppRoster, cfg.sf).slots.map((s) => s.p).filter(Boolean) : []);
     const meLive = data.matchup.me.weekPoints;
     const oppLive = data.matchup.opp.weekPoints;
     const isLive = (meLive != null && meLive > 0) || (oppLive != null && oppLive > 0);
@@ -4634,8 +4638,11 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
       isLive,
       meName: data.matchup.me.teamName,
       oppName: data.matchup.opp.teamName,
-      mePts: isLive ? (meLive || 0) : optimalPts,
-      oppPts: isLive ? (oppLive || 0) : sumPts(oppOptimal),
+      mePts: isLive ? (meLive || 0) : sumPts(meStarters),
+      oppPts: isLive ? (oppLive || 0) : sumPts(oppStarters),
+      meStarters,
+      oppStarters,
+      oppRecord: oppTeam ? oppTeam.record : null,
     };
   }
 
@@ -4702,7 +4709,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-          {[["lineup", "Lineup", "ti-clipboard-check"], ["freeagents", "Free agents", "ti-user-plus"], ["roster", "My roster", "ti-users"], ["league", "League", "ti-trophy"], ["notes", "This week", "ti-notes"]].map(([k, label, icon]) => (
+          {[["lineup", "Matchup", "ti-swords"], ["freeagents", "Free agents", "ti-user-plus"], ["roster", "My roster", "ti-users"], ["league", "League", "ti-trophy"], ["notes", "This week", "ti-notes"]].map(([k, label, icon]) => (
             <button key={k} className="btn btn-mini" style={{ background: tab === k ? "var(--gold)" : "transparent", color: tab === k ? "#151002" : "var(--ink)", fontWeight: tab === k ? 700 : 400 }} onClick={() => setTab(k)}>
               <i className={`ti ${icon}`} style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />{label}
             </button>
@@ -4713,7 +4720,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
         {tab === "lineup" && (
           <div className="panel" style={{ padding: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
-              <div className="disp" style={{ fontSize: 17, fontWeight: 700 }}>Lineup optimizer</div>
+              <div className="disp" style={{ fontSize: 17, fontWeight: 700 }}>Your lineup{matchupView ? " vs " + matchupView.oppName : ""}</div>
               <div style={{ fontSize: 13 }}>
                 <span className="mut">Optimal </span><b style={{ color: "var(--gold)" }}>{optimalPts.toFixed(1)}</b>
                 <span className="mut"> · Current </span><b>{currentPts.toFixed(1)}</b>
@@ -4770,6 +4777,34 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                 </div>
               </>
             )}
+          </div>
+        )}
+
+        {/* ---- OPPONENT LINEUP (Matchup tab) ---- */}
+        {tab === "lineup" && matchupView && matchupView.oppStarters.length > 0 && (
+          <div className="panel" style={{ padding: 16, marginTop: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+              <div className="disp" style={{ fontSize: 17, fontWeight: 700 }}>{matchupView.oppName}{matchupView.oppRecord ? <span className="mut" style={{ fontSize: 12, fontWeight: 400 }}> ({matchupView.oppRecord.wins}-{matchupView.oppRecord.losses}{matchupView.oppRecord.ties ? `-${matchupView.oppRecord.ties}` : ""})</span> : null}</div>
+              <div style={{ fontSize: 13 }}>
+                <span className="mut">{matchupView.isLive ? "Scoring " : "Projected "}</span><b style={{ color: "var(--ink)" }}>{matchupView.oppPts.toFixed(1)}</b>
+              </div>
+            </div>
+            <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>Their starters</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              {matchupView.oppStarters.slice().sort((a, b) => (b.pts || 0) - (a.pts || 0)).map((p) => (
+                <div key={p.sid} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 10px", background: "var(--panel2)", borderRadius: 7 }}>
+                  <Dot pos={p.pos} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos} · {p.team}{p.opp ? ` vs ${p.opp}` : ""}</span></div>
+                  </div>
+                  {p.bye === data.week && <span className="chip" style={{ fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>BYE</span>}
+                  <span className="num" style={{ fontWeight: 700 }}>{(p.pts || 0).toFixed(1)}</span>
+                </div>
+              ))}
+            </div>
+            <div className="mut" style={{ fontSize: 10.5, marginTop: 8 }}>
+              {(() => { const diff = Math.round((matchupView.mePts - matchupView.oppPts) * 10) / 10; return diff >= 0 ? <span style={{ color: "var(--green)" }}>You're projected to win by {diff}.</span> : <span style={{ color: "var(--red)" }}>You're projected to lose by {Math.abs(diff)}.</span>; })()}
+            </div>
           </div>
         )}
 
