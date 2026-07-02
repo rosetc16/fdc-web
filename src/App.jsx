@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27z";
+const BUILD_TAG = "2026.06.28b";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4394,6 +4394,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   const GAMES = 17;
   const weeklyMap = (data && data.weekly) || {};
   const diffMap = (data && data.matchupDifficulty) || {};
+  // Matchup difficulty is now season-to-date ACTUAL points allowed by each defense per position (the method
+  // the major sites use), computed on the backend. Show it when the backend has data (empty very early in
+  // the season before any week has completed).
+  const SHOW_MATCHUP_DIFF = true;
   const resolve = (ids) => {
     if (!poolBySid || !ids) return [];
     return ids.map((id) => {
@@ -4545,10 +4549,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   const injured = myRoster.filter((p) => p.inj);
   if (injured.length) notes.push({ tone: "warn", icon: "ti-ambulance", text: `Injury flags: ${injured.map((p) => `${p.name} (${p.inj})`).join(", ")}.` });
   if (topFA.length && topFA[0].upgrade > 2) notes.push({ tone: "good", icon: "ti-arrow-up-right", text: `${topFA[0].p.name} is available and projects ${(Math.round(topFA[0].upgrade * 10) / 10)} pts/wk better than your weakest ${topFA[0].p.pos} starter.` });
-  // Matchup difficulty flags for your projected starters.
+  // Matchup difficulty flags for your projected starters (disabled — see SHOW_MATCHUP_DIFF above).
   const starterList = opt.slots.map((s) => s.p).filter(Boolean);
-  const toughStarters = starterList.filter((p) => p.matchupDiff && p.matchupDiff.tier === "tough");
-  const smashStarters = starterList.filter((p) => p.matchupDiff && p.matchupDiff.tier === "soft");
+  const toughStarters = SHOW_MATCHUP_DIFF ? starterList.filter((p) => p.matchupDiff && p.matchupDiff.tier === "tough") : [];
+  const smashStarters = SHOW_MATCHUP_DIFF ? starterList.filter((p) => p.matchupDiff && p.matchupDiff.tier === "soft") : [];
   if (toughStarters.length) notes.push({ tone: "warn", icon: "ti-shield-half", text: `Tough matchup${toughStarters.length > 1 ? "s" : ""} this week: ${toughStarters.map((p) => `${p.name} (vs ${p.opp}, ${ordinal(p.matchupDiff.rank)}-toughest vs ${p.pos})`).join("; ")}.` });
   if (smashStarters.length) notes.push({ tone: "good", icon: "ti-flame", text: `Smash spot${smashStarters.length > 1 ? "s" : ""}: ${smashStarters.map((p) => `${p.name} (vs ${p.opp})`).join(", ")} — a soft matchup for your ${smashStarters.length > 1 ? "guys" : smashStarters[0].pos}.` });
   POS.forEach((pos) => { if (needByPos[pos] === 999) notes.push({ tone: "warn", icon: "ti-user-question", text: `You don't have enough starters at ${pos} — see free agents.` }); });
@@ -4719,7 +4723,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                       <div style={{ fontWeight: 600, fontSize: 13 }}>{s.p.name} <span className="mut" style={{ fontSize: 11 }}>{s.p.team}{s.p.opp ? ` vs ${s.p.opp}` : ""}</span></div>
                       <div className="mut" style={{ fontSize: 10.5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                         <span>{wkPosRankBySid[s.p.sid] ? `proj ${s.p.pos}${wkPosRankBySid[s.p.sid]} this week` : `${s.p.pos}${s.p.posRank}`}{s.p.isRealWeekly ? "" : " · season avg"}</span>
-                        {s.p.matchupDiff && (() => { const d = s.p.matchupDiff; const c = d.tier === "tough" ? "var(--red)" : d.tier === "soft" ? "var(--green)" : "var(--mut)"; return <span style={{ color: c, fontWeight: 600 }}>· {d.tier === "tough" ? "tough" : d.tier === "soft" ? "smash" : "neutral"} matchup (vs {s.p.opp} {ordinal(d.rank)} vs {s.p.pos})</span>; })()}
+                        {SHOW_MATCHUP_DIFF && s.p.matchupDiff && (() => { const d = s.p.matchupDiff; const c = d.tier === "tough" ? "var(--red)" : d.tier === "soft" ? "var(--green)" : "var(--mut)"; return <span style={{ color: c, fontWeight: 600 }} title={`${s.p.opp} allows ${d.pg} pts/game to ${s.p.pos}s this season (${ordinal(d.rank)} of ${d.of})`}>· {d.tier === "tough" ? "tough" : d.tier === "soft" ? "smash" : "neutral"} matchup ({s.p.opp} {ordinal(d.rank)} vs {s.p.pos})</span>; })()}
                       </div>
                     </div>
                     {s.p.bye === data.week && <span className="chip" style={{ fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>BYE</span>}
@@ -4988,7 +4992,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                 })}
               </div>
               <div className="mut" style={{ fontSize: 10.5, marginTop: 12, lineHeight: 1.5, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
-                Points, opponents, and <b>defense-vs-position matchup difficulty</b> now reflect this week. <b>Coming next:</b> kickoff weather.
+                Points, opponents, and <b>defense-vs-position matchup difficulty</b> (season-to-date points allowed, per game) now reflect this week. <b>Coming next:</b> kickoff weather.
               </div>
             </div>
           </div>
