@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.27w";
+const BUILD_TAG = "2026.06.27x";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4386,30 +4386,43 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     return () => { alive = false; };
   }, [leagueId]);
 
-  // Resolve a list of Sleeper ids to enriched players. IMPORTANT: the engine's projections are FULL-SEASON
-  // totals (great for draft value), but the in-season hub is week-by-week — so here we clone each player and
-  // overwrite `pts` with a PER-GAME projection (season ÷ 17). Everything downstream (lineup math, display,
-  // free-agent upgrades) then speaks in realistic weekly points, e.g. a ~266-pt season QB shows as ~15.6.
+  // Resolve a list of Sleeper ids to enriched players. Points are the player's REAL projection for THIS
+  // week's matchup (from the backend's `weekly` map, sourced from Sleeper's weekly projections) — so a
+  // player's number reflects who he's facing, not a season total. If the weekly figure is missing for
+  // someone (bye, or data gap), we fall back to a season-average estimate (season ÷ games) so the lineup
+  // still computes. We also attach opponent + game date + this-week injury when available.
   const GAMES = 17;
+  const weeklyMap = (data && data.weekly) || {};
   const resolve = (ids) => {
     if (!poolBySid || !ids) return [];
     return ids.map((id) => {
       const base = poolBySid.bySid.get(String(id));
       if (!base) return null;
+      const wk = weeklyMap[String(id)];
+      const wkPts = wk && wk.pts != null ? wk.pts : null;
+      const seasonAvg = Math.round((base.pts / GAMES) * 10) / 10;
       return {
         ...base,
         ptsSeason: base.pts,
-        pts: Math.round((base.pts / GAMES) * 10) / 10,
+        pts: wkPts != null ? wkPts : seasonAvg,
+        isRealWeekly: wkPts != null,
+        opp: wk ? wk.opp : null,
+        gameDate: wk ? wk.date : null,
+        wkInj: wk ? wk.inj : null,
         floorWk: base.floor != null ? Math.round((base.floor / GAMES) * 10) / 10 : null,
         ceilWk: base.ceil != null ? Math.round((base.ceil / GAMES) * 10) / 10 : null,
       };
     }).filter(Boolean);
   };
-  // A per-game view of the WHOLE pool (for free agents), same conversion.
+  // A per-game view of the WHOLE pool (for free agents): real weekly where we have it, else season avg.
   const perGamePool = React.useMemo(() => {
     if (!poolBySid) return [];
-    return poolBySid.pool.filter((p) => p.sid != null).map((p) => ({ ...p, ptsSeason: p.pts, pts: Math.round((p.pts / GAMES) * 10) / 10 }));
-  }, [poolBySid]);
+    return poolBySid.pool.filter((p) => p.sid != null).map((p) => {
+      const wk = weeklyMap[String(p.sid)];
+      const wkPts = wk && wk.pts != null ? wk.pts : null;
+      return { ...p, ptsSeason: p.pts, pts: wkPts != null ? wkPts : Math.round((p.pts / GAMES) * 10) / 10, isRealWeekly: wkPts != null, opp: wk ? wk.opp : null };
+    });
+  }, [poolBySid, data && data.weekly]);
   // Weekly positional rank: within each position, rank all relevant players by per-game points, so we can
   // show "the WR14 this week" etc. Keyed by sid.
   const wkPosRankBySid = React.useMemo(() => {
@@ -4648,7 +4661,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                 <div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{matchupView.oppPts.toFixed(1)}</div>
               </div>
             </div>
-            {!matchupView.isLive && <div className="mut" style={{ fontSize: 10.5, marginTop: 6 }}>Projected from each team's best possible lineup. Switches to the live score once games kick off.</div>}
+            {!matchupView.isLive && <div className="mut" style={{ fontSize: 10.5, marginTop: 6 }}>Projected from each team's best lineup using this week's matchup projections. Switches to the live score once games kick off.</div>}
           </div>
         )}
 
@@ -4692,8 +4705,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                   {s.p ? <>
                     <Dot pos={s.p.pos} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13 }}>{s.p.name} <span className="mut" style={{ fontSize: 11 }}>{s.p.team}</span></div>
-                      <div className="mut" style={{ fontSize: 10.5 }}>{wkPosRankBySid[s.p.sid] ? `${s.p.pos}${wkPosRankBySid[s.p.sid]} this week` : `${s.p.pos}${s.p.posRank}`}</div>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>{s.p.name} <span className="mut" style={{ fontSize: 11 }}>{s.p.team}{s.p.opp ? ` vs ${s.p.opp}` : ""}</span></div>
+                      <div className="mut" style={{ fontSize: 10.5 }}>{wkPosRankBySid[s.p.sid] ? `proj ${s.p.pos}${wkPosRankBySid[s.p.sid]} this week` : `${s.p.pos}${s.p.posRank}`}{s.p.isRealWeekly ? "" : " · season avg"}</div>
                     </div>
                     {s.p.bye === data.week && <span className="chip" style={{ fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>BYE</span>}
                     <span className="num" style={{ fontWeight: 700 }}>{s.p.pts.toFixed(1)}</span>
@@ -4961,7 +4974,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                 })}
               </div>
               <div className="mut" style={{ fontSize: 10.5, marginTop: 12, lineHeight: 1.5, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
-                <b>Coming soon:</b> opponent matchup difficulty by position, kickoff times, and weather — these need a game-data source we're still wiring up.
+                Points and opponents now reflect each player's <b>projection for this week's matchup</b>. <b>Coming next:</b> kickoff weather and defense-vs-position difficulty.
               </div>
             </div>
           </div>
