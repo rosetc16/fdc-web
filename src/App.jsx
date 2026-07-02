@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28p";
+const BUILD_TAG = "2026.06.28q";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5440,9 +5440,10 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
     return () => { alive = false; };
   }, [sleeperLink.linked]);
   const linkedLeagueIds = new Set(leagues.map((l) => l.connect && l.connect.leagueId).filter(Boolean));
-  const unimportedSleeper = (sleeperLeagues || [])
-    .filter((sl) => !linkedLeagueIds.has(sl.league_id))
-    .filter((sl) => !q.trim() || (sl.name || "").toLowerCase().includes(q.toLowerCase()));
+  const unimportedSleeperAll = (sleeperLeagues || []).filter((sl) => !linkedLeagueIds.has(sl.league_id));
+  const unimportedSleeper = unimportedSleeperAll.filter((sl) => !q.trim() || (sl.name || "").toLowerCase().includes(q.toLowerCase()));
+  // Total count that DOESN'T change as you type — so the search bar never disappears mid-search.
+  const totalLeagueCount = leagues.length + unimportedSleeperAll.length;
   // open exactly one picker at a time
   const openLeaguePanel = () => { setMockPick(false); setOpenPickFlow(false); setOpenPick((v) => !v); };
   const openLeagueFlow = () => { setMockPick(false); setOpenPick(false); setOpenPickFlow((v) => !v); };
@@ -5499,6 +5500,22 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         </div>
       </div>
 
+      {/* RESUME — in-progress drafts, front and center above everything */}
+      {inProgress.length > 0 && (
+        <div style={{ maxWidth: 940, margin: "0 auto", padding: "8px 20px 4px", display: "flex", flexDirection: "column", gap: 8 }}>
+          {inProgress.map((lg) => (
+            <button key={lg.id} className="bigact" onClick={() => onOfficial(lg.id)} style={{ width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1.5px solid var(--gold)", background: "linear-gradient(90deg, #1b1708, #141206)", borderRadius: 14, padding: "14px 18px", display: "flex", alignItems: "center", gap: 14 }}>
+              <div style={{ width: 38, height: 38, borderRadius: 19, background: "var(--gold)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className="ti ti-player-play-filled" style={{ fontSize: 18, color: "#151002" }} aria-hidden="true" /></div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Resume your draft</div>
+                <div className="mut" style={{ fontSize: 12.5 }}>{lg.name} — {lg.picks.length}/{(lg.cfg.teams || 12) * lg.cfg.rounds} picks made</div>
+              </div>
+              <span className="gold" style={{ fontSize: 13, fontWeight: 600, flexShrink: 0 }}>Continue →</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* QUICK ACTIONS — equal-weight menu items, subtly highlighted as the primary zone */}
       <div style={{ maxWidth: 940, margin: "0 auto", padding: "14px 20px 18px" }}>
         <div style={{ display: "flex", alignItems: "stretch", border: "1px solid rgba(214,170,75,0.45)", borderRadius: 12, overflow: "hidden", background: "linear-gradient(180deg, rgba(214,170,75,0.10), rgba(214,170,75,0.04))" }}>
@@ -5532,10 +5549,10 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         </div>
 
         {/* Search — helpful when you have a lot of leagues */}
-        {(leagues.length + unimportedSleeper.length) > 4 && (
+        {totalLeagueCount > 4 && (
           <div style={{ position: "relative", marginBottom: 10 }}>
             <i className="ti ti-search" style={{ position: "absolute", left: 12, top: 10, fontSize: 15, color: "var(--mut)" }} aria-hidden="true" />
-            <input className="gs" style={{ width: "100%", paddingLeft: 36, paddingTop: 9, paddingBottom: 9, fontSize: 13.5 }} placeholder={`Search your ${leagues.length + unimportedSleeper.length} leagues…`} value={q} onChange={(e) => setQ(e.target.value)} />
+            <input className="gs" style={{ width: "100%", paddingLeft: 36, paddingTop: 9, paddingBottom: 9, fontSize: 13.5 }} placeholder={`Search your ${totalLeagueCount} leagues…`} value={q} onChange={(e) => setQ(e.target.value)} />
             {q.trim() && <button onClick={() => setQ("")} style={{ position: "absolute", right: 8, top: 7, background: "transparent", border: "none", color: "var(--mut)", cursor: "pointer", fontSize: 16, padding: 4 }} aria-label="Clear search"><i className="ti ti-x" aria-hidden="true" /></button>}
           </div>
         )}
@@ -5551,6 +5568,12 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
           </div>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 10 }}>
+            {q.trim() && sortedLeagues.length === 0 && unimportedSleeper.length === 0 && (
+              <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: "16px 0" }}>
+                <div className="mut" style={{ fontSize: 13, marginBottom: 8 }}>No leagues match “{q.trim()}”.</div>
+                <button className="btn btn-mini" onClick={() => setQ("")}>Clear search</button>
+              </div>
+            )}
             {sortedLeagues.map((l) => {
               const st = leagueStatus(l);
               const isSleeper = !!(l.connect && l.connect.leagueId);
@@ -5671,17 +5694,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
 
       <div style={{ maxWidth: 940, margin: "0 auto", padding: "26px 20px 64px", display: "flex", flexDirection: "column", gap: 22 }}>
 
-        {/* RESUME */}
-        {inProgress.length > 0 && (
-          <button className="bigact" onClick={() => onOfficial(inProgress[0].id)} style={{ width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1.5px solid var(--gold)", background: "linear-gradient(90deg, #1b1708, #141206)", borderRadius: 14, padding: "15px 18px", display: "flex", alignItems: "center", gap: 14 }}>
-            <div style={{ width: 40, height: 40, borderRadius: 20, background: "var(--gold)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className="ti ti-player-play-filled" style={{ fontSize: 19, color: "#151002" }} aria-hidden="true" /></div>
-            <div style={{ flex: 1 }}>
-              <div className="disp" style={{ fontSize: 16, fontWeight: 700 }}>Resume your draft</div>
-              <div className="mut" style={{ fontSize: 12.5 }}>{inProgress[0].name} — {inProgress[0].picks.length}/{(inProgress[0].cfg.teams || 12) * inProgress[0].cfg.rounds} picks made</div>
-            </div>
-            <span className="gold" style={{ fontSize: 13, fontWeight: 600 }}>Continue →</span>
-          </button>
-        )}
+        {/* RESUME banner now lives at the very top, above Your leagues */}
 
         {/* ===== SECTION: GET STARTED (collapsed by default for veterans) ===== */}
         <div className="hubsection">
