@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28c";
+const BUILD_TAG = "2026.06.28d";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4607,6 +4607,18 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     leverage = distToCut <= 1 ? "high" : distToCut <= 3 ? "medium" : "low";
   }
 
+  // Data status: are we showing real weekly projections, or off-season/pre-week estimates? And is
+  // defense-vs-position matchup data available yet? Drives a small explainer banner so an empty matchup
+  // section is never a mystery (e.g. in the off-season there are simply no games to project or grade).
+  const anyRealWeekly = myRoster.some((p) => p.isRealWeekly);
+  const hasDiffData = SHOW_MATCHUP_DIFF && Object.keys(diffMap).length > 0;
+  let dataStatus = null;
+  if (!anyRealWeekly) {
+    dataStatus = { tone: "info", text: `No live weekly projections for Week ${data.week} yet — showing season-average estimates. Weekly matchup numbers and defense-vs-position difficulty appear once the NFL week's projections post (in-season).` };
+  } else if (!hasDiffData) {
+    dataStatus = { tone: "info", text: `Showing this week's matchup projections. Defense-vs-position difficulty needs at least one completed NFL week and is still populating — it'll show shortly.` };
+  }
+
   // Matchup points: Sleeper's live `weekPoints` is 0 until games are played (pre-game / off-season). So we
   // show LIVE points when they're actually scoring, otherwise fall back to each side's PROJECTED optimal
   // total from our engine — and label which one we're showing.
@@ -4658,6 +4670,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
             </div>
           </div>
         </div>
+
+        {/* Data status explainer — makes an empty matchup/difficulty section self-explanatory */}
+        {dataStatus && (
+          <div style={{ display: "flex", gap: 9, alignItems: "flex-start", padding: "10px 13px", marginBottom: 14, background: "rgba(107,168,229,.08)", border: "1px solid var(--blue)", borderRadius: 9 }}>
+            <i className="ti ti-info-circle" style={{ fontSize: 15, color: "var(--blue)", marginTop: 1, flexShrink: 0 }} aria-hidden="true" />
+            <span style={{ fontSize: 12.5, lineHeight: 1.45 }}>{dataStatus.text}</span>
+          </div>
+        )}
 
         {/* This week's matchup */}
         {matchupView && (
