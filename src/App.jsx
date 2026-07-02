@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28h";
+const BUILD_TAG = "2026.06.28i";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2803,6 +2803,8 @@ select.gs option{background:var(--panel2);color:var(--ink)}
   .gs-pad{padding-left:14px!important;padding-right:14px!important}
   /* header button labels: keep them from overflowing */
   .appheader{flex-wrap:wrap;row-gap:6px}
+  /* tooltips: fit the phone width, sit near the bottom as a sheet, and allow touch-scrolling of long content */
+  .tooltip{width:auto!important;max-width:calc(100vw - 20px)!important;left:10px!important;right:10px!important;pointer-events:auto!important;max-height:60vh!important}
 }
 @media(prefers-reduced-motion:reduce){.gs-root *{transition:none!important;animation:none!important}}
 `;
@@ -9578,8 +9580,27 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     };
   }, [proj, grades, graded, valByTeam, picks, players, userIdx]);
 
-  const showTip = (e, content) => { setTip(positionTip(e.clientX, e.clientY, content)); };
+  // Tooltip trigger. Works for mouse (hover) AND touch/click, since phones have no hover — we read coords
+  // from whichever event type fired. On touch, the tip stays until the next tap elsewhere (see effect below).
+  const showTip = (e, content) => {
+    let cx = 0, cy = 0;
+    if (e) {
+      if (e.touches && e.touches[0]) { cx = e.touches[0].clientX; cy = e.touches[0].clientY; }
+      else if (e.changedTouches && e.changedTouches[0]) { cx = e.changedTouches[0].clientX; cy = e.changedTouches[0].clientY; }
+      else { cx = e.clientX || 0; cy = e.clientY || 0; }
+    }
+    setTip(positionTip(cx, cy, content));
+  };
   const hideTip = () => setTip(null);
+  // On touch devices, a hover tip has no "mouse leave" — so dismiss it on the next tap anywhere, and don't
+  // let hover-handlers leave a tip stuck open. (Desktop is unaffected: it uses onMouseLeave as before.)
+  useEffect(() => {
+    if (!tip) return;
+    const onDocTouch = () => setTip(null);
+    // Defer so the tap that OPENED the tip doesn't immediately close it.
+    const t = setTimeout(() => document.addEventListener("touchstart", onDocTouch, { once: true, passive: true }), 0);
+    return () => { clearTimeout(t); document.removeEventListener("touchstart", onDocTouch); };
+  }, [tip]);
 
   const depth = useMemo(() => {
     const DEPTH_ORDER = ["QB", "RB", "WR", "TE", "K", "DST"];
@@ -9650,7 +9671,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <span style={{ fontSize: 12.5, fontWeight: 600 }}>Scenario mode</span>
               <div style={{ flex: 1 }} />
               <button onClick={startHypo}
-                onMouseEnter={(e) => showTip(e, [
+                onClick={(e) => showTip(e, [
+                  { kind: "take", tone: "good", x: "Explore a scenario" },
+                  { t: "What it does", x: "Lets you play out hypothetical picks on top of the live draft — draft a player for any team, then keep going — to see how the board and your recommendations would shift. Your real draft is never touched." },
+                  { t: "How to use it", x: "Click to start. Then draft players as if the next picks happened. The board, availability odds, and advice all update so you can test “what if I take X here?” scenarios." },
+                  { t: "Getting back", x: "Hit “Revert to live draft” to clear every what-if pick and snap back to the real draft. If real picks come in while you explore, you'll get a button to sync up to them." },
+                ])} onMouseEnter={(e) => showTip(e, [
                   { kind: "take", tone: "good", x: "Explore a scenario" },
                   { t: "What it does", x: "Lets you play out hypothetical picks on top of the live draft — draft a player for any team, then keep going — to see how the board and your recommendations would shift. Your real draft is never touched." },
                   { t: "How to use it", x: "Click to start. Then draft players as if the next picks happened. The board, availability odds, and advice all update so you can test “what if I take X here?” scenarios." },
@@ -10101,7 +10127,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       onClick={() => c.sortable && setSort(c.sortKey || c.key)} title={`${SECTION_LABELS[c.section] ? SECTION_LABELS[c.section] + " · " : ""}${c.tip ? c.tip + " · " : ""}Click to sort. Drag to reorder (columns can only be reordered within their own section).`}
                       style={{ cursor: "grab", ...(sectionStart[c.key] ? { borderLeft: "2px solid var(--line)" } : {}), ...(dragCol === c.key ? { opacity: 0.4 } : {}) }}>
                       {c.key === "edge" || c.key === "vbd" ? (
-                        <span className="info" onMouseEnter={(e) => showTip(e, c.key === "edge" ? [
+                        <span className="info" onClick={(e) => showTip(e, c.key === "edge" ? [
+                          { t: "Edge", x: "Sleeper ADP minus YOUR personal rank. Positive (green) = the market lets him slide past where you'd take him — a value you can wait on." },
+                          { t: "Negative (red)", x: "You rank him higher than the market, so you'd have to reach to get him. Needs your rankings set." },
+                        ] : [
+                          { t: "VBD — value based drafting", x: "Projected points above a replacement-level starter at the position." },
+                          { t: "Why it matters", x: "Makes positions comparable: a +60 RB beats a +40 WR even if the WR scores more raw points." },
+                        ])} onMouseEnter={(e) => showTip(e, c.key === "edge" ? [
                           { t: "Edge", x: "Sleeper ADP minus YOUR personal rank. Positive (green) = the market lets him slide past where you'd take him — a value you can wait on." },
                           { t: "Negative (red)", x: "You rank him higher than the market, so you'd have to reach to get him. Needs your rankings set." },
                         ] : [
@@ -10142,10 +10174,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             {!gone
                               ? <button className={`btn btn-mini${onClock === userIdx ? " btn-gold" : ""}`} style={{ flexShrink: 0, border: onClock === userIdx ? "none" : "1.5px solid #fff", fontWeight: 700 }} onClick={() => draftPlayer(p.id)}>{onClock === userIdx ? "Draft" : "Pick"}</button>
                               : <span style={{ width: 38, flexShrink: 0 }} />}
-                            <span onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone))} onMouseLeave={hideTip} style={{ cursor: "help", whiteSpace: "nowrap" }}>
+                            <span onClick={(e) => showTip(e, makeOutlook(p, sims, gone))} onClick={(e) => showTip(e, makeOutlook(p, sims, gone))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone))} onMouseLeave={hideTip} style={{ cursor: "help", whiteSpace: "nowrap" }}>
                               <PosName p={p} /> <span className="mut">{p.team}</span>
                             </span>
-                            {injInfo && <span onMouseEnter={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note }])} onMouseLeave={hideTip}
+                            {injInfo && <span onClick={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note }])} onMouseEnter={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note }])} onMouseLeave={hideTip}
                               style={{ flexShrink: 0, height: 14, borderRadius: 3, background: injInfo.color, color: "#fff", fontSize: 8.5, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "help", padding: "0 4px", letterSpacing: ".02em" }} title="">{injInfo.abbr}</span>}
                             {p.rookie && <span style={{ flexShrink: 0, fontSize: 9, color: "var(--gold)", border: "1px solid var(--gold)", borderRadius: 3, padding: "0 3px" }}>R</span>}
                             {!gone && (() => { const tag = insightTag(p); return tag ? <span style={{ flexShrink: 0, fontSize: 8.5, fontWeight: 700, letterSpacing: ".02em", color: tag.color, border: `1px solid ${tag.color}66`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>{tag.label}</span> : null; })()}
@@ -10171,7 +10203,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
                 <div className="disp" style={{ fontSize: 14, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--mut)" }}>{recView === "expect" ? "Engine expects" : "Recommendation"}</div>
                 <span className="info" style={{ cursor: "help", color: "var(--mut)", fontSize: 12 }}
-                  onMouseEnter={(e) => showTip(e, [
+                  onClick={(e) => showTip(e, [
+                    { kind: "take", tone: "neutral", x: "Two ways to read the pick" },
+                    { t: "Recommended", tc: "var(--gold)", x: "What's the smartest pick for YOUR roster — best value for your build, factoring need, your window, and what's likely to fall to you. This is advice." },
+                    { t: "Engine expects", tc: "var(--blue)", x: "What the market is most likely to actually do here — the pick the engine predicts based on real draft behavior (ADP, runs, position scarcity). This is a forecast, not advice." },
+                    { t: "Why both", x: "When they AGREE, it's a clean pick. When they DIFFER, there's a value gap — the market may let a better-for-you player slide, or reach for someone you'd pass on." },
+                  ])} onMouseEnter={(e) => showTip(e, [
                     { kind: "take", tone: "neutral", x: "Two ways to read the pick" },
                     { t: "Recommended", tc: "var(--gold)", x: "What's the smartest pick for YOUR roster — best value for your build, factoring need, your window, and what's likely to fall to you. This is advice." },
                     { t: "Engine expects", tc: "var(--blue)", x: "What the market is most likely to actually do here — the pick the engine predicts based on real draft behavior (ADP, runs, position scarcity). This is a forecast, not advice." },
@@ -10247,7 +10284,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       <div className="mut" style={{ fontSize: 11.5, margin: "10px 0 4px", textTransform: "uppercase", letterSpacing: ".07em" }}>Alternatives</div>
                       {A.alts.map((a) => (
                         <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, padding: "3px 0", borderBottom: "1px solid #16203340", fontSize: 12.5 }}>
-                          <span onMouseEnter={(e) => showTip(e, makeOutlook(a, sims, false))} onMouseLeave={hideTip} style={{ cursor: "help", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={a.pos} />{a.name}</span>
+                          <span onClick={(e) => showTip(e, makeOutlook(a, sims, false))} onMouseEnter={(e) => showTip(e, makeOutlook(a, sims, false))} onMouseLeave={hideTip} style={{ cursor: "help", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={a.pos} />{a.name}</span>
                           <span style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
                             <span className="mut num">{sims ? `${sims.pct[0][a.id]}%` : ""}{A.impacts[a.id] ? ` • ${ordinal(A.impacts[a.id].rank)}` : ""}</span>
                             {!showMine && <button className="btn btn-mini" onClick={() => draftPlayer(a.id)}>Draft</button>}
@@ -10255,7 +10292,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         </div>
                       ))}
                       <div className="mut" style={{ fontSize: 11.5, margin: "10px 0 4px", textTransform: "uppercase", letterSpacing: ".07em" }}>
-                        <span className="info" onMouseEnter={(e) => showTip(e, [
+                        <span className="info" onClick={(e) => showTip(e, [
+                          { t: "Take now vs. wait", x: "For each position: the best player on the board RIGHT NOW versus the best the simulations expect to survive to YOUR NEXT PICK." },
+                          { t: "Reading it", x: "\u201C+72 \u2192 ~+58 (\u221214)\u201D means waiting costs 14 points of value. \u201CSafe to wait\u201D means the pool holds its value until your turn." },
+                        ])} onMouseEnter={(e) => showTip(e, [
                           { t: "Take now vs. wait", x: "For each position: the best player on the board RIGHT NOW versus the best the simulations expect to survive to YOUR NEXT PICK." },
                           { t: "Reading it", x: "\u201C+72 \u2192 ~+58 (\u221214)\u201D means waiting costs 14 points of value. \u201CSafe to wait\u201D means the pool holds its value until your turn." },
                         ])} onMouseLeave={hideTip}>Take now vs. wait ⓘ</span>
@@ -10315,7 +10355,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   <div className="mut" style={{ fontSize: 11.5, margin: "10px 0 4px", textTransform: "uppercase", letterSpacing: ".07em" }}>Alternatives</div>
                   {advice.alts.map((a) => (
                     <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, padding: "3px 0", borderBottom: "1px solid #16203340", fontSize: 12.5 }}>
-                      <span onMouseEnter={(e) => showTip(e, makeOutlook(a, sims, false))} onMouseLeave={hideTip} style={{ cursor: "help", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={a.pos} />{a.name}</span>
+                      <span onClick={(e) => showTip(e, makeOutlook(a, sims, false))} onMouseEnter={(e) => showTip(e, makeOutlook(a, sims, false))} onMouseLeave={hideTip} style={{ cursor: "help", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={a.pos} />{a.name}</span>
                       <span style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
                         <span className="mut num">{sims ? `${sims.pct[0][a.id]}%` : ""}{advice.impacts[a.id] ? ` • ${ordinal(advice.impacts[a.id].rank)}` : ""}</span>
                         <button className="btn btn-mini" onClick={() => draftPlayer(a.id)}>Draft</button>
@@ -10323,7 +10363,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     </div>
                   ))}
                   <div className="mut" style={{ fontSize: 11.5, margin: "10px 0 4px", textTransform: "uppercase", letterSpacing: ".07em" }}>
-                    <span className="info" onMouseEnter={(e) => showTip(e, [
+                    <span className="info" onClick={(e) => showTip(e, [
+                      { t: "Take now vs. wait", x: "For each position: the best player on the board RIGHT NOW versus the best the simulations expect to survive to YOUR NEXT PICK." },
+                      { t: "Reading it", x: "\u201C+72 \u2192 ~+58 (\u221214)\u201D means waiting costs 14 points of value. \u201CSafe to wait\u201D means the pool holds its value until your turn — spend this pick elsewhere." },
+                    ])} onMouseEnter={(e) => showTip(e, [
                       { t: "Take now vs. wait", x: "For each position: the best player on the board RIGHT NOW versus the best the simulations expect to survive to YOUR NEXT PICK." },
                       { t: "Reading it", x: "\u201C+72 \u2192 ~+58 (\u221214)\u201D means waiting costs 14 points of value. \u201CSafe to wait\u201D means the pool holds its value until your turn — spend this pick elsewhere." },
                     ])} onMouseLeave={hideTip}>Take now vs. wait ⓘ</span>
@@ -10390,7 +10433,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <div className="panel" style={{ padding: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                 <div className="disp" style={{ fontSize: 14, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--mut)" }}>
-                  <span className="info" onMouseEnter={(e) => showTip(e, needMode === "strength" ? [
+                  <span className="info" onClick={(e) => showTip(e, needMode === "strength" ? [
+                    { t: "League needs — strength", x: "Each cell scores a team's position by QUALITY × QUANTITY, not just headcount." },
+                    { t: "Colors", x: "Green = strong (enough starters AND real talent). Amber = middle of the pack. Red = weak — thin or below-replacement." },
+                    { t: "Tip", x: "This is the version to scout with: a team with two replacement-level RBs still shows amber/red, because bodies aren't the same as quality." },
+                  ] : [
+                    { t: "League needs — filled", x: "Pure roster-fill status, ignoring quality." },
+                    { t: "Colors", x: "Green = starting slots at this position filled. Amber = not filled but not yet urgent. Red = unfilled and critical (running out of picks)." },
+                  ])} onMouseEnter={(e) => showTip(e, needMode === "strength" ? [
                     { t: "League needs — strength", x: "Each cell scores a team's position by QUALITY × QUANTITY, not just headcount." },
                     { t: "Colors", x: "Green = strong (enough starters AND real talent). Amber = middle of the pack. Red = weak — thin or below-replacement." },
                     { t: "Tip", x: "This is the version to scout with: a team with two replacement-level RBs still shows amber/red, because bodies aren't the same as quality." },
@@ -10457,7 +10507,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 A fast way to see which positions are drying up so you don't get caught reaching late. */}
             <div className="panel" style={{ padding: 12 }}>
               <div className="disp" style={{ fontSize: 14, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--mut)", marginBottom: 8 }}>
-                <span className="info" onMouseEnter={(e) => showTip(e, [
+                <span className="info" onClick={(e) => showTip(e, [
+                  { t: "Position scarcity", x: "How many quality players are still available at each position, split by tier." },
+                  { t: "Elite / Strong", x: "Elite = tier 1 (true difference-makers). Strong = tiers 2–3 (clear starters)." },
+                  { t: "Why it matters", x: "When a position's elite/strong counts hit zero, the drop-off is real — that's your cue to prioritize it before the tier empties." },
+                ])} onMouseEnter={(e) => showTip(e, [
                   { t: "Position scarcity", x: "How many quality players are still available at each position, split by tier." },
                   { t: "Elite / Strong", x: "Elite = tier 1 (true difference-makers). Strong = tiers 2–3 (clear starters)." },
                   { t: "Why it matters", x: "When a position's elite/strong counts hit zero, the drop-off is real — that's your cue to prioritize it before the tier empties." },
@@ -10568,7 +10622,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   {ta.avgAge && <div style={{ textAlign: "center" }}><div className="disp" style={{ fontSize: 22, fontWeight: 800 }}>{ta.avgAge.toFixed(1)}</div><div className="mut" style={{ fontSize: 10, textTransform: "uppercase" }}>Avg age</div></div>}
                   {isMe && myWindow && (
                     <div style={{ textAlign: "center", cursor: "help" }}
-                      onMouseEnter={(e) => showTip(e, [
+                      onClick={(e) => showTip(e, [
+                        { kind: "take", tone: "good", x: `Your window: ${myWindow.lane === "rebuild" ? "Rebuild" : myWindow.lane === "winnow" ? "Win-now" : "Balanced"}${!myWindow.decided ? " (still forming)" : ""}` },
+                        { t: "What it means", x: windowExplain[myWindow.lane] || windowExplain.balanced },
+                        { t: "Win-now", x: "Built to compete this year — favor proven, established production." },
+                        { t: "Balanced", x: "No strong lean — take the best value and let your roster commit you." },
+                        { t: "Rebuild", x: "Building for the future — favor young, ascending players and upside." },
+                      ])} onMouseEnter={(e) => showTip(e, [
                         { kind: "take", tone: "good", x: `Your window: ${myWindow.lane === "rebuild" ? "Rebuild" : myWindow.lane === "winnow" ? "Win-now" : "Balanced"}${!myWindow.decided ? " (still forming)" : ""}` },
                         { t: "What it means", x: windowExplain[myWindow.lane] || windowExplain.balanced },
                         { t: "Win-now", x: "Built to compete this year — favor proven, established production." },
@@ -10760,7 +10820,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   const isProj = myProjView && s.p && projectedAdds.includes(s.p);
                   return (
                     <div key={i} style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 8px", borderRadius: 7, background: s.p ? (isProj ? "rgba(242,182,60,.08)" : "var(--panel2)") : "rgba(255,90,90,.08)", border: s.p ? (isProj ? "1px dashed var(--gold)" : "1px solid var(--line)") : "1px dashed var(--red)", cursor: s.p ? "help" : "default" }}
-                      onMouseEnter={s.p ? (e) => showTip(e, makeOutlook(s.p, sims, true)) : undefined} onMouseLeave={hideTip}>
+                      onClick={s.p ? (e) => showTip(e, makeOutlook(s.p, sims, true)) : undefined} onMouseEnter={s.p ? (e) => showTip(e, makeOutlook(s.p, sims, true)) : undefined} onMouseLeave={hideTip}>
                       <span style={{ width: 38, fontSize: 10.5, fontWeight: 700, color: "var(--mut)", flexShrink: 0 }}>{s.slot}</span>
                       {s.p ? <>
                         <PlayerPhoto sid={s.p.sid} pos={s.p.pos} size={22} />
@@ -10779,7 +10839,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                     {taShown.bench.map((p, i) => {
                       const isProj = myProjView && projectedAdds.includes(p);
-                      return <span key={i} className="chip" style={{ fontSize: 11, cursor: "help", background: isProj ? "rgba(242,182,60,.10)" : undefined, borderColor: isProj ? "var(--gold)" : undefined, borderStyle: isProj ? "dashed" : undefined, color: isProj ? "var(--gold)" : undefined }} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, true))} onMouseLeave={hideTip}><Dot pos={p.pos} />{p.name} <span className="mut">{p.pos}{p.posRank}</span>{isProj && <span className="gold" style={{ fontSize: 8, fontWeight: 700, marginLeft: 3 }}>PROJ</span>}</span>;
+                      return <span key={i} className="chip" style={{ fontSize: 11, cursor: "help", background: isProj ? "rgba(242,182,60,.10)" : undefined, borderColor: isProj ? "var(--gold)" : undefined, borderStyle: isProj ? "dashed" : undefined, color: isProj ? "var(--gold)" : undefined }} onClick={(e) => showTip(e, makeOutlook(p, sims, true))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, true))} onMouseLeave={hideTip}><Dot pos={p.pos} />{p.name} <span className="mut">{p.pos}{p.posRank}</span>{isProj && <span className="gold" style={{ fontSize: 8, fontWeight: 700, marginLeft: 3 }}>PROJ</span>}</span>;
                     })}
                   </div>
                 </>
@@ -10801,7 +10861,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                         {targets.map((t, i) => t && (
                           <div key={i} style={{ display: "flex", alignItems: "center", gap: 9, padding: "5px 8px", borderRadius: 7, background: "var(--panel2)", cursor: "help" }}
-                            onMouseEnter={(e) => showTip(e, makeOutlook(t, sims, false))} onMouseLeave={hideTip}>
+                            onClick={(e) => showTip(e, makeOutlook(t, sims, false))} onMouseEnter={(e) => showTip(e, makeOutlook(t, sims, false))} onMouseLeave={hideTip}>
                             <span className="num mut" style={{ width: 16, fontSize: 11 }}>{i + 1}</span>
                             <PlayerPhoto sid={t.sid} pos={t.pos} size={22} />
                             <span style={{ fontWeight: 600, fontSize: 12.5 }}>{t.name}</span>
@@ -11063,7 +11123,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 </div>
                 {arr.map((p) => (
                   <div key={p.id} className={draftedSet.has(p.id) ? "struck" : ""} style={{ fontSize: 12, padding: "1.5px 0" }}
-                    onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, draftedSet.has(p.id)))} onMouseLeave={hideTip}>
+                    onClick={(e) => showTip(e, makeOutlook(p, sims, draftedSet.has(p.id)))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, draftedSet.has(p.id)))} onMouseLeave={hideTip}>
                     <Dot pos={p.pos} /><span className="mut" style={{ fontSize: 11 }}>{p.pos}</span> {p.name} <span className="mut num" style={{ fontSize: 11 }}>{p.pts}</span>
                   </div>
                 ))}
@@ -12415,7 +12475,7 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
                   const v = tradeValue(p, cfg);
                   return (
                     <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, opacity: draftedSet.has(p.id) ? 0.5 : 1 }}
-                      onMouseEnter={(e) => showTip(e, makeOutlook(p, null, draftedSet.has(p.id)))} onMouseLeave={hideTip}>
+                      onClick={(e) => showTip(e, makeOutlook(p, null, draftedSet.has(p.id)))} onMouseEnter={(e) => showTip(e, makeOutlook(p, null, draftedSet.has(p.id)))} onMouseLeave={hideTip}>
                       <Dot pos={p.pos} /><span style={{ fontSize: 12.5, width: 180, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", cursor: "help" }}>{p.name} <span className="mut">{p.team}</span></span>
                       <div style={{ flex: 1, maxWidth: 360, height: 9, background: "var(--panel2)", borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${(v / maxV) * 100}%`, height: "100%", background: POS_COLOR[p.pos] }} /></div>
                       <span className="num" style={{ fontSize: 12, width: 30, textAlign: "right" }}>{v}</span>
@@ -12436,7 +12496,7 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
                   const v = tradeValue(p, cfg);
                   return (
                     <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, opacity: draftedSet.has(p.id) ? 0.5 : 1 }}
-                      onMouseEnter={(e) => showTip(e, makeOutlook(p, null, draftedSet.has(p.id)))} onMouseLeave={hideTip}>
+                      onClick={(e) => showTip(e, makeOutlook(p, null, draftedSet.has(p.id)))} onMouseEnter={(e) => showTip(e, makeOutlook(p, null, draftedSet.has(p.id)))} onMouseLeave={hideTip}>
                       <span style={{ fontSize: 12, width: 116, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", cursor: "help" }}>{p.name}</span>
                       <div style={{ flex: 1, height: 9, background: "var(--panel2)", borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${(v / maxV) * 100}%`, height: "100%", background: POS_COLOR[pos] }} /></div>
                       <span className="num" style={{ fontSize: 11, width: 26, textAlign: "right" }}>{v}</span>
