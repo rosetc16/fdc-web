@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28j";
+const BUILD_TAG = "2026.06.28k";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4551,77 +4551,88 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     TE: (start.TE || 0) + flexN + superN,
   };
   const isSuperflex = superN > 0 || cfg.sf;
-  // League-wide startable threshold per position: the points of the "last starter" across the league at that
-  // position (demand × teams). A free agent above that line is a legit startable asset — worth rostering
-  // regardless of whether he beats YOUR current starter, because scarcity makes him valuable.
+  // League-wide startable threshold per position, based on SEASON value (not this week's points — a stud on
+  // a bye reads 0.0 this week but is still an elite asset). A player above this line is a legit starter.
   const teamsN = cfg.teams || 12;
+  const seasonOf = (p) => (p.ptsSeason != null ? p.ptsSeason : (p.pts || 0));
   const startableCut = {};
   POS.forEach((pos) => {
-    const ranked = perGamePool.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts);
+    const ranked = perGamePool.filter((p) => p.pos === pos).sort((a, b) => seasonOf(b) - seasonOf(a));
     const lastStarterIdx = Math.max(0, Math.round((effDemand[pos] || 0) * teamsN) - 1);
-    startableCut[pos] = ranked[lastStarterIdx] ? ranked[lastStarterIdx].pts : 0;
+    startableCut[pos] = ranked[lastStarterIdx] ? seasonOf(ranked[lastStarterIdx]) : 0;
   });
-  // Your roster by position (points-desc), and how you stack up.
+  // "Rostered everywhere" proxy: real leagues don't have elite players truly available. A free agent with a
+  // strong ADP or top-tier season value is almost certainly rostered elsewhere (here he's on a bye, hurt, or
+  // was just dropped) — we must never suggest dropping a real starter for him, and we flag him as a stash.
+  const rosterableByAdp = (p) => (p.adp != null && p.adp <= teamsN * 14); // ~ drafted inside standard roster depth
+  // Your roster by position — ranked by SEASON value so a bye-week stud stays where he belongs.
   const myByPos = { QB: [], RB: [], WR: [], TE: [] };
   myRoster.forEach((p) => { if (myByPos[p.pos]) myByPos[p.pos].push(p); });
-  POS.forEach((k) => myByPos[k].sort((a, b) => b.pts - a.pts));
-  // Do you have enough startable bodies to fill your effective demand at each position?
+  POS.forEach((k) => myByPos[k].sort((a, b) => seasonOf(b) - seasonOf(a)));
+  // Do you have enough startable bodies (by season value) to fill your effective demand at each position?
   const needByPos = {};
   POS.forEach((pos) => {
     const demand = effDemand[pos] || 0;
-    // count your players at/above the league startable line
-    const startableHave = myByPos[pos].filter((p) => p.pts >= startableCut[pos] * 0.92).length;
+    const startableHave = myByPos[pos].filter((p) => seasonOf(p) >= startableCut[pos] * 0.92).length;
     needByPos[pos] = startableHave < demand ? 999 : 0;
   });
 
   const faScored = freeAgents.map((p) => {
     const base = postureValue(p, activePosture, isDynasty);
-    // Is this player a startable asset at his position, league-wide?
-    const startable = p.pts >= startableCut[p.pos] * 0.92;
-    // Upgrade vs YOUR weakest player currently filling an effective slot at this position.
+    const pSeason = seasonOf(p);
+    // Startable / rosterable is judged on SEASON value + ADP, NOT this week's points.
+    const startable = pSeason >= startableCut[p.pos] * 0.92;
+    const eliteAsset = rosterableByAdp(p) || startable;
+    // Upgrade vs YOUR weakest starter at this position — this DOES use weekly points (it's a lineup call),
+    // but only counts when the free agent actually has a game this week (a 0.0 bye isn't a real upgrade).
     const slotN = Math.max(1, effDemand[p.pos] || 1);
     const myWorstStarter = myByPos[p.pos][slotN - 1] ? myByPos[p.pos][slotN - 1].pts : 0;
-    const upgrade = Math.max(0, (p.pts || 0) - myWorstStarter);
-    // Scarcity bonus: QBs in superflex, and TEs in TE-premium, are scarce — a startable one is a real asset.
+    const upgrade = (p.noGame ? 0 : Math.max(0, (p.pts || 0) - myWorstStarter));
     const scarce = (p.pos === "QB" && isSuperflex) || (p.pos === "TE" && (cfg.tePremMult || 0) > 0);
     const needBoost = needByPos[p.pos] === 999 ? 40 : 0;
     const startableBoost = startable ? (scarce ? 30 : 15) : 0;
+    const assetBoost = eliteAsset ? 25 : 0; // rostered-everywhere types rank high as stashes
     const posList = myByPos[p.pos] || [];
-    const worstOnRoster = posList.length ? posList[posList.length - 1] : null;
+    // Drop candidate: your least valuable player at this position who is ALSO genuinely droppable — i.e.
+    // not himself a rosterable asset (good ADP) or a startable-value player. We never suggest cutting a
+    // player who'd be rostered everywhere (a bye-week stud like a 0.0-this-week elite) for a lesser add.
+    const droppableList = posList.filter((mp) => !(rosterableByAdp(mp) || seasonOf(mp) >= startableCut[p.pos] * 0.92));
+    const worstOnRoster = droppableList.length ? droppableList[droppableList.length - 1] : null;
 
     const age = p.age || 27;
     const young = age <= 24;
-    const hasUpside = p.rookie || (p.ceil && p.pts && (p.ceil / 17) - p.pts > p.pts * 0.25);
+    const hasUpside = p.rookie || (p.ceil && pSeason && (p.ceil) - pSeason > pSeason * 0.25);
     const fmtUp = (u) => (Math.round(u * 10) / 10);
     // MOVE VERDICT — is he worth a roster spot for your team + window?
     let verdict = "hold", reason = "";
-    if (needByPos[p.pos] === 999 && startable) {
-      verdict = "add"; reason = `you're thin at ${p.pos} and he's a startable ${p.pos}${scarce ? " in a scarce spot" : ""}`;
+    if (eliteAsset && !startable && p.noGame) {
+      // Elite by ADP but 0 this week (bye/injury) — a stash-worthy add, never a throwaway.
+      verdict = "add"; reason = `high-value ${p.pos} available (likely on bye or just dropped) — worth grabbing`;
+    } else if (needByPos[p.pos] === 999 && (startable || eliteAsset)) {
+      verdict = "add"; reason = `you're thin at ${p.pos} and he's a rosterable ${p.pos}${scarce ? " in a scarce spot" : ""}`;
     } else if (!isDynasty || activePosture === "winnow") {
-      // Win-now: value immediate startability + upgrades.
       if (upgrade >= 2) { verdict = "add"; reason = `upgrades your ${p.pos} by ~${fmtUp(upgrade)} pts/wk`; }
       else if (startable && scarce) { verdict = "add"; reason = `a startable ${p.pos} — scarce and worth holding`; }
-      else if (startable) { verdict = "stream"; reason = `a startable ${p.pos} for bye/injury weeks`; }
+      else if (eliteAsset) { verdict = "add"; reason = `a rosterable ${p.pos} — worth a bench spot`; }
       else if (upgrade >= 0.8) { verdict = "stream"; reason = `a small ${p.pos} upgrade — bye/injury depth`; }
       else { verdict = "hold"; reason = `below your ${p.pos} starters`; }
     } else if (activePosture === "rebuild") {
-      // Rebuild: youth + upside, but a young startable scarce-position player is gold.
       if (young && startable && scarce) { verdict = "add"; reason = `young, startable ${p.pos} in a scarce spot — exactly what a rebuild hoards`; }
       else if (young && hasUpside) { verdict = "add"; reason = `young (${age}) with upside — a rebuild stash`; }
-      else if (young && startable) { verdict = "add"; reason = `young and already startable at ${p.pos}`; }
-      else if (age >= 30 && !scarce) { verdict = "hold"; reason = `${age} — doesn't fit a rebuild's timeline`; }
+      else if (young && (startable || eliteAsset)) { verdict = "add"; reason = `young and rosterable at ${p.pos}`; }
       else if (startable && scarce) { verdict = "add"; reason = `startable ${p.pos} in a scarce spot — hold him even in a rebuild`; }
+      else if (age >= 30 && !scarce && !eliteAsset) { verdict = "hold"; reason = `${age} — doesn't fit a rebuild's timeline`; }
       else { verdict = "hold"; reason = `not enough upside to roster in a rebuild`; }
     } else { // balanced
       if (upgrade >= 2) { verdict = "add"; reason = `a clear ${p.pos} upgrade (~${fmtUp(upgrade)} pts/wk)`; }
       else if (startable && scarce) { verdict = "add"; reason = `a startable ${p.pos} in a scarce spot — worth a roster spot`; }
+      else if (eliteAsset) { verdict = "add"; reason = `a rosterable ${p.pos} — worth a bench spot`; }
       else if (young && hasUpside) { verdict = "add"; reason = `young with upside — worth a bench stash`; }
-      else if (startable) { verdict = "stream"; reason = `startable ${p.pos} depth for byes/injuries`; }
       else if (upgrade >= 0.8) { verdict = "stream"; reason = `modest ${p.pos} depth`; }
       else { verdict = "hold"; reason = `below rosterable value for your team`; }
     }
-    const score = base + upgrade * 2 + needBoost + startableBoost + (young && isDynasty ? 8 : 0);
-    return { p, score, upgrade, verdict, reason, worstOnRoster, startable, scarce };
+    const score = base + upgrade * 2 + needBoost + startableBoost + assetBoost + (young && isDynasty ? 8 : 0);
+    return { p, score, upgrade, verdict, reason, worstOnRoster, startable, scarce, eliteAsset };
   }).sort((a, b) => b.score - a.score);
   const topFA = faScored.slice(0, 15);
 
@@ -4992,9 +5003,9 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                   <div key={p.sid} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", background: vc.bg !== "transparent" ? vc.bg : "var(--panel2)", border: `1px solid ${verdict === "add" ? "var(--green)" : "var(--line)"}`, borderRadius: 8 }}>
                     <Dot pos={p.pos} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · {p.team}{p.age ? ` · ${p.age}y` : ""}{p.rookie ? " · rookie" : ""}</span></div>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · {p.team}{p.age ? ` · ${p.age}y` : ""}{p.rookie ? " · rookie" : ""}{p.noGame ? " · 0 this week" : ""}</span></div>
                       <div style={{ fontSize: 10.5, color: verdict === "add" ? "var(--green)" : "var(--mut)", lineHeight: 1.35 }}>
-                        {reason}{verdict === "add" && worstOnRoster ? <span className="mut"> · drop candidate: {worstOnRoster.name}</span> : null}
+                        {reason}{verdict === "add" && worstOnRoster ? <span className="mut"> · drop candidate: {worstOnRoster.name}</span> : (verdict === "add" ? <span className="mut"> · no obvious drop — your bench is all worth keeping</span> : null)}
                       </div>
                     </div>
                     <div style={{ textAlign: "right", flexShrink: 0 }}>
