@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28e";
+const BUILD_TAG = "2026.06.28f";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4394,6 +4394,11 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   const GAMES = 17;
   const weeklyMap = (data && data.weekly) || {};
   const diffMap = (data && data.matchupDifficulty) || {};
+  // Does this week's projection payload exist at all? Sleeper only includes players who have a game that
+  // week — so if the payload is populated but a given player is absent, that player has NO game (inactive,
+  // cut, bye) and should read 0.0, matching the Sleeper app. Only when the whole payload is empty (e.g.
+  // off-season, before projections post) do we fall back to a season-average estimate.
+  const haveWeeklyData = Object.keys(weeklyMap).length > 0;
   // Matchup difficulty is now season-to-date ACTUAL points allowed by each defense per position (the method
   // the major sites use), computed on the backend. Show it when the backend has data (empty very early in
   // the season before any week has completed).
@@ -4404,16 +4409,20 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
       const base = poolBySid.bySid.get(String(id));
       if (!base) return null;
       const wk = weeklyMap[String(id)];
-      const wkPts = wk && wk.pts != null ? wk.pts : null;
+      // Real weekly number if present; else 0 when we have this week's data (player has no game) or the
+      // season-average estimate when there's no weekly data at all.
       const seasonAvg = Math.round((base.pts / GAMES) * 10) / 10;
+      const wkPts = wk && wk.pts != null ? wk.pts : (haveWeeklyData ? 0 : seasonAvg);
+      const hasWk = !!(wk && wk.pts != null);
       // Difficulty of the defense this player faces, at his position.
       const opp = wk ? wk.opp : null;
       const diff = opp && diffMap[opp] && diffMap[opp][base.pos] ? diffMap[opp][base.pos] : null;
       return {
         ...base,
         ptsSeason: base.pts,
-        pts: wkPts != null ? wkPts : seasonAvg,
-        isRealWeekly: wkPts != null,
+        pts: wkPts,
+        isRealWeekly: hasWk,
+        noGame: haveWeeklyData && !hasWk, // we have the slate but this player isn't in it → no game this week
         opp,
         matchupDiff: diff, // { rank, of, tier, allowed } | null
         gameDate: wk ? wk.date : null,
@@ -4428,8 +4437,9 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     if (!poolBySid) return [];
     return poolBySid.pool.filter((p) => p.sid != null).map((p) => {
       const wk = weeklyMap[String(p.sid)];
-      const wkPts = wk && wk.pts != null ? wk.pts : null;
-      return { ...p, ptsSeason: p.pts, pts: wkPts != null ? wkPts : Math.round((p.pts / GAMES) * 10) / 10, isRealWeekly: wkPts != null, opp: wk ? wk.opp : null };
+      const hasWk = !!(wk && wk.pts != null);
+      const pts = hasWk ? wk.pts : (haveWeeklyData ? 0 : Math.round((p.pts / GAMES) * 10) / 10);
+      return { ...p, ptsSeason: p.pts, pts, isRealWeekly: hasWk, noGame: haveWeeklyData && !hasWk, opp: wk ? wk.opp : null };
     });
   }, [poolBySid, data && data.weekly]);
   // Weekly positional rank: within each position, rank all relevant players by per-game points, so we can
@@ -4623,26 +4633,48 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   // kickoff we show each team's PROJECTED total from the lineup they've ACTUALLY SET on Sleeper (their
   // `starters`), not their theoretical best lineup — so it matches what the Sleeper app shows. We keep each
   // side's resolved starters so the Matchup tab can show both teams side by side.
+  //
+  // Slot template: Sleeper stores `starters` positionally against the league's roster_positions (QB, RB, RB,
+  // WR, WR, TE, FLEX, SUPER_FLEX, K, DEF, ...). We build a matching label list from cfg.start so BOTH teams
+  // render in the same slot order, and pair each set starter to its slot by index.
+  const slotTemplate = (() => {
+    const st = cfg.start || {};
+    const rows = [];
+    for (let i = 0; i < (st.QB || 0); i++) rows.push({ label: (st.QB > 1 ? `QB${i + 1}` : "QB"), color: POS_COLOR.QB });
+    for (let i = 0; i < (st.RB || 0); i++) rows.push({ label: (st.RB > 1 ? `RB${i + 1}` : "RB"), color: POS_COLOR.RB });
+    for (let i = 0; i < (st.WR || 0); i++) rows.push({ label: (st.WR > 1 ? `WR${i + 1}` : "WR"), color: POS_COLOR.WR });
+    for (let i = 0; i < (st.TE || 0); i++) rows.push({ label: (st.TE > 1 ? `TE${i + 1}` : "TE"), color: POS_COLOR.TE });
+    for (let i = 0; i < (st.FLEX || 0); i++) rows.push({ label: "FLEX", color: "var(--blue)" });
+    for (let i = 0; i < (st.SUPER || 0); i++) rows.push({ label: "SUPERFLEX", color: "var(--blue)" });
+    for (let i = 0; i < (st.K || 0); i++) rows.push({ label: "K", color: "var(--mut)" });
+    for (let i = 0; i < (st.DST || 0); i++) rows.push({ label: "DST", color: "var(--mut)" });
+    return rows;
+  })();
+
   let matchupView = null;
   if (data.matchup && data.matchup.opp) {
     const oppTeam = data.teams.find((t) => t.rosterId === data.matchup.opp.rosterId);
-    // Each side's ACTUAL set starters (fall back to optimal only if a team has none set).
-    const meStarters = currentStarters.length ? currentStarters : optimalStarters;
-    const oppSetStarters = oppTeam ? resolve((oppTeam.starters || []).filter(Boolean)) : [];
+    // Each side's ACTUAL set starters, IN SLOT ORDER (Sleeper stores them positionally). Fall back to the
+    // optimal lineup only if a team hasn't set one.
+    const meSet = (myTeam.starters && myTeam.starters.length) ? resolve(myTeam.starters.filter(Boolean)) : optimalStarters;
+    const oppSet = (oppTeam && oppTeam.starters && oppTeam.starters.length) ? resolve(oppTeam.starters.filter(Boolean)) : [];
     const oppRoster = oppTeam ? resolve(oppTeam.players) : [];
-    const oppStarters = oppSetStarters.length ? oppSetStarters : (oppRoster.length ? lineupSlots(oppRoster, cfg.sf).slots.map((s) => s.p).filter(Boolean) : []);
+    const oppStartersFallback = oppSet.length ? oppSet : (oppRoster.length ? lineupSlots(oppRoster, cfg.sf).slots.map((s) => s.p).filter(Boolean) : []);
     const meLive = data.matchup.me.weekPoints;
     const oppLive = data.matchup.opp.weekPoints;
     const isLive = (meLive != null && meLive > 0) || (oppLive != null && oppLive > 0);
+    // Pair each slot to the starter at that index (Sleeper's starters are already slot-ordered).
+    const pairRows = slotTemplate.map((slot, i) => ({ slot, me: meSet[i] || null, opp: oppStartersFallback[i] || null }));
     matchupView = {
       isLive,
       meName: data.matchup.me.teamName,
       oppName: data.matchup.opp.teamName,
-      mePts: isLive ? (meLive || 0) : sumPts(meStarters),
-      oppPts: isLive ? (oppLive || 0) : sumPts(oppStarters),
-      meStarters,
-      oppStarters,
+      mePts: isLive ? (meLive || 0) : sumPts(meSet),
+      oppPts: isLive ? (oppLive || 0) : sumPts(oppStartersFallback),
+      meStarters: meSet,
+      oppStarters: oppStartersFallback,
       oppRecord: oppTeam ? oppTeam.record : null,
+      pairRows,
     };
   }
 
@@ -4686,8 +4718,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
           </div>
         )}
 
-        {/* This week's matchup */}
-        {matchupView && (
+        {/* This week's matchup — persistent context on other tabs; hidden on the Matchup tab which has its own header */}
+        {matchupView && tab !== "lineup" && (
           <div className="panel" style={{ padding: 14, marginBottom: 14 }}>
             <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 8 }}>
               Week {data.week} matchup · {matchupView.isLive ? "live score" : "projected"}
@@ -4703,7 +4735,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                 <div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{matchupView.oppPts.toFixed(1)}</div>
               </div>
             </div>
-            {!matchupView.isLive && <div className="mut" style={{ fontSize: 10.5, marginTop: 6 }}>Projected from each team's best lineup using this week's matchup projections. Switches to the live score once games kick off.</div>}
+            {!matchupView.isLive && <div className="mut" style={{ fontSize: 10.5, marginTop: 6 }}>Projected from each team's set lineup using this week's matchup projections. Switches to the live score once games kick off.</div>}
           </div>
         )}
 
@@ -4716,59 +4748,94 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
           ))}
         </div>
 
-        {/* ---- LINEUP TAB ---- */}
+        {/* ---- MATCHUP TAB (side-by-side lineups) ---- */}
         {tab === "lineup" && (
           <div className="panel" style={{ padding: 16 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
-              <div className="disp" style={{ fontSize: 17, fontWeight: 700 }}>Your lineup{matchupView ? " vs " + matchupView.oppName : ""}</div>
-              <div style={{ fontSize: 13 }}>
-                <span className="mut">Optimal </span><b style={{ color: "var(--gold)" }}>{optimalPts.toFixed(1)}</b>
-                <span className="mut"> · Current </span><b>{currentPts.toFixed(1)}</b>
-                {leftOnBench > 0 ? <span style={{ color: "var(--red)", fontWeight: 700 }}> · {leftOnBench.toFixed(1)} left on bench</span> : <span style={{ color: "var(--green)", fontWeight: 700 }}> · optimized ✓</span>}
+            {/* Score header: you vs them */}
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 10, marginBottom: 14 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="disp" style={{ fontSize: 15, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{myTeam.teamName}</div>
+                <div className="num" style={{ fontSize: 24, fontWeight: 800, color: "var(--gold)" }}>{(matchupView ? matchupView.mePts : currentPts).toFixed(1)}</div>
               </div>
+              <div className="mut" style={{ fontSize: 12, fontWeight: 700, paddingBottom: 6 }}>{matchupView && matchupView.isLive ? "" : "proj"}</div>
+              {matchupView ? (
+                <div style={{ flex: 1, minWidth: 0, textAlign: "right" }}>
+                  <div className="disp" style={{ fontSize: 15, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{matchupView.oppName}{matchupView.oppRecord ? <span className="mut" style={{ fontSize: 11, fontWeight: 400 }}> ({matchupView.oppRecord.wins}-{matchupView.oppRecord.losses})</span> : null}</div>
+                  <div className="num" style={{ fontSize: 24, fontWeight: 800 }}>{matchupView.oppPts.toFixed(1)}</div>
+                </div>
+              ) : <div style={{ flex: 1 }} />}
             </div>
+            {matchupView && (
+              <div className="mut" style={{ fontSize: 11, textAlign: "center", marginBottom: 12 }}>
+                {(() => { const d = Math.round((matchupView.mePts - matchupView.oppPts) * 10) / 10; return d >= 0 ? <span style={{ color: "var(--green)", fontWeight: 600 }}>Projected to win by {d}</span> : <span style={{ color: "var(--red)", fontWeight: 600 }}>Projected to lose by {Math.abs(d)}</span>; })()}
+                {!matchupView.isLive && <span> · from each team's set lineup</span>}
+              </div>
+            )}
+
+            {/* Optimizer nudge — you may not be starting your best lineup */}
             {leftOnBench > 0 && (swapsIn.length > 0) && (
               <div style={{ background: "rgba(242,101,92,.08)", border: "1px solid var(--red)", borderRadius: 8, padding: "10px 12px", marginBottom: 12 }}>
-                <div style={{ fontWeight: 700, color: "var(--red)", fontSize: 13, marginBottom: 5 }}>Suggested changes</div>
+                <div style={{ fontWeight: 700, color: "var(--red)", fontSize: 12.5, marginBottom: 5 }}>You're leaving {leftOnBench.toFixed(1)} pts on your bench — suggested changes</div>
                 {swapsIn.map((pin, i) => {
                   const pout = swapsOut[i];
-                  return <div key={pin.sid} style={{ fontSize: 12.5, padding: "2px 0" }}>
+                  return <div key={pin.sid} style={{ fontSize: 12, padding: "2px 0" }}>
                     <span style={{ color: "var(--green)" }}><i className="ti ti-arrow-up" style={{ fontSize: 12 }} aria-hidden="true" /> Start <b><Dot pos={pin.pos} />{pin.name}</b> ({pin.pts.toFixed(1)})</span>
                     {pout && <span className="mut"> over <Dot pos={pout.pos} />{pout.name} ({pout.pts.toFixed(1)})</span>}
                   </div>;
                 })}
               </div>
             )}
-            <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>Optimal starting lineup</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-              {opt.slots.map((s, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 10px", background: "var(--panel2)", borderRadius: 7 }}>
-                  <span className="disp" style={{ fontSize: 11, fontWeight: 700, color: "var(--mut)", width: 42 }}>{s.slot}</span>
-                  {s.p ? <>
-                    <Dot pos={s.p.pos} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13 }}>{s.p.name} <span className="mut" style={{ fontSize: 11 }}>{s.p.team}{s.p.opp ? ` vs ${s.p.opp}` : ""}</span></div>
-                      <div className="mut" style={{ fontSize: 10.5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                        <span>{wkPosRankBySid[s.p.sid] ? `proj ${s.p.pos}${wkPosRankBySid[s.p.sid]} this week` : `${s.p.pos}${s.p.posRank}`}{s.p.isRealWeekly ? "" : " · season avg"}</span>
-                        {SHOW_MATCHUP_DIFF && s.p.matchupDiff && (() => { const d = s.p.matchupDiff; const c = d.tier === "tough" ? "var(--red)" : d.tier === "soft" ? "var(--green)" : "var(--mut)"; return <span style={{ color: c, fontWeight: 600 }} title={`${s.p.opp} allows ${d.pg} pts/game to ${s.p.pos}s this season (${ordinal(d.rank)} of ${d.of})`}>· {d.tier === "tough" ? "tough" : d.tier === "soft" ? "smash" : "neutral"} matchup ({s.p.opp} {ordinal(d.rank)} vs {s.p.pos})</span>; })()}
+
+            {/* Side-by-side lineups, same slot template down the middle */}
+            {matchupView && matchupView.pairRows.length > 0 ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                {matchupView.pairRows.map((row, i) => {
+                  const cell = (p, align) => p ? (
+                    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: align === "right" ? "flex-end" : "flex-start" }}>
+                      <div style={{ fontWeight: 600, fontSize: 12.5, display: "flex", alignItems: "center", gap: 5, maxWidth: "100%" }}>
+                        {align !== "right" && <Dot pos={p.pos} />}
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+                        {align === "right" && <Dot pos={p.pos} />}
                       </div>
+                      <div className="mut" style={{ fontSize: 10, whiteSpace: "nowrap" }}>{p.team}{p.opp ? ` vs ${p.opp}` : ""}{p.bye === data.week ? " · BYE" : ""}{p.noGame ? " · no game" : ""}</div>
                     </div>
-                    {s.p.bye === data.week && <span className="chip" style={{ fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>BYE</span>}
-                    <span className="num" style={{ fontWeight: 700 }}>{s.p.pts.toFixed(1)}</span>
-                    {!currentSet.has(s.p.sid) && <span className="chip" style={{ fontSize: 9, borderColor: "var(--green)", color: "var(--green)" }}>swap in</span>}
-                  </> : <span className="mut" style={{ flex: 1 }}>— empty —</span>}
-                </div>
-              ))}
-            </div>
-            {/* Bench — everyone not in the optimal lineup, so the full picture is clear. */}
+                  ) : <div style={{ flex: 1, color: "var(--mut)", fontSize: 12, textAlign: align === "right" ? "right" : "left" }}>—</div>;
+                  const mePts = row.me ? row.me.pts : 0;
+                  const oppPts = row.opp ? row.opp.pts : 0;
+                  const meWins = row.me && row.opp && mePts >= oppPts;
+                  const oppWins = row.me && row.opp && oppPts > mePts;
+                  return (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", background: "var(--panel2)", borderRadius: 7 }}>
+                      {cell(row.me, "left")}
+                      <span className="num" style={{ fontWeight: 700, fontSize: 12.5, width: 38, textAlign: "right", color: meWins ? "var(--green)" : "var(--ink)" }}>{mePts.toFixed(1)}</span>
+                      <span className="disp" style={{ fontSize: 9.5, fontWeight: 700, color: row.slot.color, width: 62, textAlign: "center", flexShrink: 0 }}>{row.slot.label}</span>
+                      <span className="num" style={{ fontWeight: 700, fontSize: 12.5, width: 38, color: oppWins ? "var(--green)" : "var(--ink)" }}>{oppPts.toFixed(1)}</span>
+                      {cell(row.opp, "right")}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              /* No opponent (e.g. bye week in schedule) — just show your set lineup in slot order */
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                {slotTemplate.map((slot, i) => { const p = matchupView ? matchupView.meStarters[i] : (opt.slots[i] && opt.slots[i].p); return (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 10px", background: "var(--panel2)", borderRadius: 7 }}>
+                    <span className="disp" style={{ fontSize: 10, fontWeight: 700, color: slot.color, width: 62 }}>{slot.label}</span>
+                    {p ? <><Dot pos={p.pos} /><span style={{ fontWeight: 600, fontSize: 13, flex: 1, minWidth: 0 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.team}{p.opp ? ` vs ${p.opp}` : ""}</span></span><span className="num" style={{ fontWeight: 700 }}>{(p.pts || 0).toFixed(1)}</span></> : <span className="mut" style={{ flex: 1 }}>— empty —</span>}
+                  </div>
+                ); })}
+              </div>
+            )}
+
+            {/* Your bench */}
             {opt.bench.length > 0 && (
               <>
-                <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", margin: "14px 0 6px" }}>Bench <span style={{ opacity: 0.7 }}>({opt.bench.length})</span></div>
+                <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", margin: "14px 0 6px" }}>Your bench <span style={{ opacity: 0.7 }}>({opt.bench.length})</span></div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                   {opt.bench.map((p) => (
                     <div key={p.sid} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 10px", borderRadius: 7, opacity: 0.82 }}>
                       <span className="disp" style={{ fontSize: 10, fontWeight: 700, color: "var(--mut)", width: 42 }}>BN</span>
-                      <Dot pos={p.pos} /><span style={{ fontSize: 12.5, flex: 1 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · {p.team}</span></span>
+                      <Dot pos={p.pos} /><span style={{ fontSize: 12.5, flex: 1, minWidth: 0 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · {p.team}</span></span>
                       {p.bye === data.week && <span className="chip" style={{ fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>BYE</span>}
                       {p.inj && <span className="chip" style={{ fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>{p.inj}</span>}
                       <span className="num" style={{ fontWeight: 600, color: "var(--mut)" }}>{p.pts.toFixed(1)}</span>
@@ -4777,34 +4844,6 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                 </div>
               </>
             )}
-          </div>
-        )}
-
-        {/* ---- OPPONENT LINEUP (Matchup tab) ---- */}
-        {tab === "lineup" && matchupView && matchupView.oppStarters.length > 0 && (
-          <div className="panel" style={{ padding: 16, marginTop: 14 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
-              <div className="disp" style={{ fontSize: 17, fontWeight: 700 }}>{matchupView.oppName}{matchupView.oppRecord ? <span className="mut" style={{ fontSize: 12, fontWeight: 400 }}> ({matchupView.oppRecord.wins}-{matchupView.oppRecord.losses}{matchupView.oppRecord.ties ? `-${matchupView.oppRecord.ties}` : ""})</span> : null}</div>
-              <div style={{ fontSize: 13 }}>
-                <span className="mut">{matchupView.isLive ? "Scoring " : "Projected "}</span><b style={{ color: "var(--ink)" }}>{matchupView.oppPts.toFixed(1)}</b>
-              </div>
-            </div>
-            <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>Their starters</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-              {matchupView.oppStarters.slice().sort((a, b) => (b.pts || 0) - (a.pts || 0)).map((p) => (
-                <div key={p.sid} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 10px", background: "var(--panel2)", borderRadius: 7 }}>
-                  <Dot pos={p.pos} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos} · {p.team}{p.opp ? ` vs ${p.opp}` : ""}</span></div>
-                  </div>
-                  {p.bye === data.week && <span className="chip" style={{ fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>BYE</span>}
-                  <span className="num" style={{ fontWeight: 700 }}>{(p.pts || 0).toFixed(1)}</span>
-                </div>
-              ))}
-            </div>
-            <div className="mut" style={{ fontSize: 10.5, marginTop: 8 }}>
-              {(() => { const diff = Math.round((matchupView.mePts - matchupView.oppPts) * 10) / 10; return diff >= 0 ? <span style={{ color: "var(--green)" }}>You're projected to win by {diff}.</span> : <span style={{ color: "var(--red)" }}>You're projected to lose by {Math.abs(diff)}.</span>; })()}
-            </div>
           </div>
         )}
 
