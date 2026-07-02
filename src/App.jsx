@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28s";
+const BUILD_TAG = "2026.06.28t";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2951,8 +2951,10 @@ export default function App() {
   useEffect(() => {
     if (!bootReady) return;
     const NEEDS_USER = ["teamHub", "leagueHub", "draft", "rankings", "trendsTime", "tradeTools", "adpIntel", "account", "admin", "trends"];
-    if (NEEDS_USER.includes(route) && !user) setRoute("home");
-  }, [bootReady, route, user]);
+    // The free demo draft intentionally runs WITHOUT a signed-in user (it's the pre-signup trial), so
+    // don't bounce it home — only redirect a userless "draft" route when it isn't the demo.
+    if (NEEDS_USER.includes(route) && !user && !(route === "draft" && activeId === "demo")) setRoute("home");
+  }, [bootReady, route, user, activeId]);
 
   useEffect(() => {
     (async () => {
@@ -6035,11 +6037,11 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
               <button className="btn btn-gold" style={{ padding: "13px 26px", fontSize: 16 }} onClick={onApp}>Open the App</button>
               <button className="btn" style={{ padding: "13px 26px", fontSize: 16, border: "1.5px solid #fff" }} onClick={onDemo}>Run a Mock Draft</button>
             </> : <>
-              <button className="btn btn-gold" style={{ padding: "13px 26px", fontSize: 16 }} onClick={onDemo}>Try a Free Demo Draft</button>
+              <button className="btn btn-gold" style={{ padding: "13px 26px", fontSize: 16 }} onClick={onDemo}><i className="ti ti-player-play" style={{ fontSize: 15, marginRight: 7 }} aria-hidden="true" />Try a Free Mock Draft</button>
               <button className="btn" style={{ padding: "13px 26px", fontSize: 16, border: "1.5px solid #fff" }} onClick={onBuy}>Season Pass — ${biz.price.toFixed(2)}</button>
             </>}
           </div>
-          <div className="mut" style={{ fontSize: 12, marginTop: 11 }}>{paid ? "Your season pass is active — jump into your leagues anytime." : "Free demo — no signup, no card, no catch. Draft five rounds on the real engine."}</div>
+          <div className="mut" style={{ fontSize: 12, marginTop: 11 }}>{paid ? "Your season pass is active — jump into your leagues anytime." : "Free mock draft — no signup, no card, 30 seconds to start. Draft three rounds on the real engine."}</div>
         </div>
 
         <div style={{ flex: "0 0 300px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16 }}>
@@ -6087,12 +6089,12 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
           <HeroShowcase />
         </div>
 
-        {/* FORMATS SUPPORTED — quick convincer strip; IDP listed as a peer, not highlighted */}
+        {/* FORMATS SUPPORTED — quick convincer strip (IDP intentionally excluded; not supported) */}
         <div className="hubsection">
           <div className="disp" style={{ fontSize: 17, fontWeight: 700, textAlign: "center", marginBottom: 3 }}>Built for your league — whatever it is</div>
-          <div className="mut" style={{ fontSize: 12.5, textAlign: "center", marginBottom: 14 }}>Every format reprices the board. If you play it, the compass speaks it — including full IDP support.</div>
+          <div className="mut" style={{ fontSize: 12.5, textAlign: "center", marginBottom: 14 }}>Every format reprices the board. If you play it, the compass speaks it.</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
-            {["Redraft", "Dynasty", "Keeper", "Best ball", "Rookie-only", "1QB", "SuperFlex / 2QB", "PPR / Half / Standard", "TE premium", "IDP — defensive players"].map((t) => (
+            {["Redraft", "Dynasty", "Keeper", "Best ball", "Rookie-only", "1QB", "SuperFlex / 2QB", "PPR / Half / Standard", "TE premium"].map((t) => (
               <span key={t} className="chip" style={{ fontSize: 12 }}>{t}</span>
             ))}
           </div>
@@ -6172,7 +6174,8 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
           {[
             ["Which platforms does it work with?", "Live auto-sync with Sleeper at launch — every pick in the room, traded picks, rosters, and depth charts flow in automatically and the board updates within seconds. Note: you still make your pick inside Sleeper (their draft is the source of truth); we read it live and tell you what to do — we don't draft for you. Every other platform (ESPN, Yahoo, anywhere) works through fast manual entry: type a few letters, hit Enter, done."],
             ["What makes the predictions different?", "We don't just read public ADP — we read thousands of real completed drafts in your format to learn actual board behavior: runs, slides, reaches, and weekly trends. Then 1,000 simulations per pick turn that into live availability odds and recommendations."],
-            ["What formats are supported?", "Redraft, dynasty, keeper, best ball, and rookie-only drafts. 1QB and Superflex/2QB. PPR variants and adjustable TE premium. Full IDP support too — start individual defensive players (DL, LB, DB) with their own scoring, and they're projected and ranked right alongside offense. Your league's exact scoring drives every number you see."],
+            ["What formats are supported?", "Redraft, dynasty, keeper, best ball, and rookie-only drafts. 1QB and Superflex/2QB. PPR variants and adjustable TE premium. Your league's exact scoring drives every number you see."],
+            ["Do you support IDP (individual defensive players)?", "Not at this time. Fantasy Draft Compass is built for offensive skill positions plus team D/ST and kickers. IDP leagues — where you start individual DL, LB, and DB — aren't supported, since reliable IDP projections and draft-trend data are limited and defensive scoring varies widely. We may revisit it down the road."],
             ["Is my payment information safe?", "Yes — because we never have it. Checkout is handled entirely by our payment processor; card numbers go directly to them and we store only a token. We support card, PayPal, Venmo, and wallets."],
             ["What happens when the season ends?", "Passes run to the March 1 league-year cutoff, then everyone renews together before next draft season. Your leagues and draft history stay saved on your account."],
           ].map((q, i) => <Faq key={i} q={q[0]} a={q[1]} />)}
@@ -8011,10 +8014,6 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
             <button className="btn" onClick={() => upd({ pickTrading: !f.pickTrading })}>{f.pickTrading ? "On — trade picks & rookie picks" : "Off"}</button>,
             f.pickTrading ? "Your draft picks (incl. rookie picks) become tradeable assets in the trade tools." : "Turn on if your league allows trading draft picks."
           )}
-          {f.type !== "rookie" && Row("IDP (defensive players)?",
-            <button className="btn" onClick={() => { const on = !f.idp; const start = { ...f.start }; if (on && !(start.DL || start.LB || start.DB || start.IDPFLEX)) { start.LB = 2; start.DL = 1; start.DB = 1; } upd({ idp: on, start }); }}>{f.idp ? "On — defensive players draftable" : "Off"}</button>,
-            f.idp ? "Individual defensive players (DL, LB, DB) join the pool. Set their starting slots on the Roster tab and tune their scoring on the Scoring tab." : "Turn on if your league starts individual defensive players (not just team D/ST)."
-          )}
           <div className="mut" style={{ fontSize: 11.5, margin: "6px 0 0" }}>Connecting a league auto-fills all settings from the platform and lets you pick which of your leagues to view.</div>
         </>
       )}
@@ -8752,6 +8751,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // Mocks wait for an explicit Start so you can watch them unfold. Official drafts run immediately.
   // Resuming an in-progress mock (picks already made) counts as already started.
   const [started, setStarted] = useState((!isMock && !isDemo) || (league.picks || []).length > 0);
+  // Free-demo welcome modal — explains it's redraft-only, 3 rounds, and that dynasty/custom/Sleeper are paid.
+  const [showDemoIntro, setShowDemoIntro] = useState(isDemo);
   // How picks are entered. Mocks AND the demo default to AUTO (engine drafts opponents, stops on
   // your pick) and only ever offer auto/manual — never platform sync. Official drafts: if a platform
   // is connected, adopt it; otherwise ask on arrival (default manual).
@@ -12194,6 +12195,26 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         </div>
       )}
 
+      {isDemo && showDemoIntro && (
+        <div className="modalbg">
+          <div className="panel" style={{ maxWidth: 480, width: "100%", padding: 26, borderColor: "var(--gold)" }}>
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}><Compass size={40} /></div>
+            <div className="disp" style={{ fontSize: 22, fontWeight: 800, textAlign: "center" }}>Your free 3-round mock</div>
+            <div className="mut" style={{ fontSize: 13.5, margin: "12px 0 16px", lineHeight: 1.55, textAlign: "center" }}>
+              This is the real draft room — live recommendations, availability odds, and steal/reach grades — running a standard <b style={{ color: "var(--ink)" }}>12-team redraft</b> for the first <b style={{ color: "var(--ink)" }}>3 rounds</b>.
+            </div>
+            <div style={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 10, padding: "12px 14px", marginBottom: 18 }}>
+              <div style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+                <i className="ti ti-lock" style={{ fontSize: 13, color: "var(--gold)", marginRight: 6 }} aria-hidden="true" />
+                <b>Dynasty, superflex, TE-premium, custom scoring, keepers, and linking your real Sleeper league</b> are all part of the season pass. The demo keeps it simple so you can feel the engine fast.
+              </div>
+            </div>
+            <button className="btn btn-gold" style={{ width: "100%", padding: 12, fontSize: 15, marginBottom: 8 }} onClick={() => setShowDemoIntro(false)}>Start the mock →</button>
+            <button className="btn" style={{ width: "100%" }} onClick={onBuy}>See the full version</button>
+          </div>
+        </div>
+      )}
+
       {gated && (
         <div className="modalbg">
           <div className="panel" style={{ maxWidth: 460, width: "100%", padding: 26, borderColor: "var(--gold)", textAlign: "center" }}>
@@ -12202,7 +12223,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <div className="mut" style={{ fontSize: 13.5, margin: "10px 0 16px", lineHeight: 1.55 }}>
               {isDemo
                 ? `The free demo covers the first ${cfg.demoRounds || 3} rounds on the real engine — live projections, availability odds, and steal/reach value, exactly what you'd get on draft night. Unlock the season pass to finish this draft and get unlimited leagues, mock drafts, your own rankings, trade tools, depth charts, and every other feature.`
-                : "You've drafted five rounds on the real engine — the projected path, live availability odds, and waiting-cost math are all exactly what you'd get on draft night. The season pass opens the full draft plus unlimited leagues, mock drafts, your own rankings, trade tools, and everything else."}
+                : "You've drafted five picks on the real engine — the projected path, live availability odds, and waiting-cost math are all exactly what you'd get on draft night. The season pass opens the full draft plus unlimited leagues, mock drafts, your own rankings, trade tools, and everything else."}
             </div>
             <button className="btn btn-gold" style={{ width: "100%", padding: 12, fontSize: 15, marginBottom: 8 }} onClick={onBuy}>Get the Season Pass</button>
             <button className="btn" style={{ width: "100%" }} onClick={onExit}>Back to the Homepage</button>
