@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28k";
+const BUILD_TAG = "2026.06.28l";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -9753,7 +9753,42 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 </div>
               );
             })}
-            <div className="tickcard clock" style={{ borderColor: onClock === userIdx ? "var(--gold)" : "#33476B" }}>
+            {(() => {
+              // Compute ONE tooltip for the whole on-the-clock card so hovering anywhere on it works
+              // (previously only the inner advice lines were hoverable). Picks the relevant tip: your
+              // strategy/build advice when it's your pick, else the market "engine expects" candidates.
+              const stratLabelC = { balanced: "Balanced", value: "Max VBD", build: "My build", upside: "Upside", adp: "Strict ADP" };
+              const adviceTipC = (adv, label) => {
+                if (!adv || !adv.verdict) return null;
+                const v = adv.verdict;
+                const cands = [{ p: v }, ...(adv.alts || []).map((p) => ({ p }))].slice(0, 5);
+                return [
+                  { kind: "take", tone: "good", x: `${label} pick — ${v.name}` },
+                  { kind: "stats", chips: [`${v.pos}${v.posRank}`, `+${v.vbd.toFixed(0)} VBD`, `${Math.round(v.pts)} pts`, `wait costs ${Math.max(0, adv.waitCost[v.pos]).toFixed(0)}`, ...(adv.impacts[v.id] ? [`projects you ${ordinal(adv.impacts[v.id].rank)}`] : [])] },
+                  { kind: "why", x: whyPick(v, adv.waitCost, true, adv.myCounts) },
+                  ...(cands.length > 1 ? [{ kind: "altheader", x: "Potential alternatives" }] : []),
+                  ...cands.slice(1).map((c) => ({ tc: POS_COLOR[c.p.pos], t: `${c.p.pos}${c.p.posRank}`, x: `${c.p.name} · ${Math.round(c.p.pts)} pts` })),
+                ];
+              };
+              let cardTipContent = null;
+              if (currentPred) {
+                if (onClock === userIdx) {
+                  const sel = mySelAdvice && mySelAdvice.verdict ? mySelAdvice : advice;
+                  cardTipContent = adviceTipC(sel, stratLabelC[strategy] || "Recommended");
+                } else {
+                  const cur = path && path[0] ? path[0] : null;
+                  const cands5 = cur && cur.cands5 && cur.cands5.length > 1 ? cur.cands5 : null;
+                  if (cands5) cardTipContent = [
+                    { kind: "take", tone: "neutral", x: `${pickLabel(picks.length)} · ${TEAM_NAMES[onClock]} — engine's top candidates` },
+                    ...cands5.map((c, ci) => ({ tc: ci === 0 ? "var(--gold)" : POS_COLOR[c.p.pos], t: `${c.prob != null ? c.prob + "%" : ""}`, x: `${ci === 0 ? "★ " : ""}${c.p.name} — ${c.p.pos}${c.p.posRank}${ci === 0 ? " (expected)" : ""}` })),
+                    { t: "", x: "★ = who the engine expects here. Others are the next-most-likely picks if the board breaks differently." },
+                  ];
+                }
+              }
+              const cardTip = cardTipContent ? (e) => showTip(e, cardTipContent) : undefined;
+              return (
+            <div className="tickcard clock" style={{ borderColor: onClock === userIdx ? "var(--gold)" : "#33476B", cursor: cardTip ? "help" : "default" }}
+              onClick={cardTip} onMouseEnter={cardTip} onMouseLeave={cardTip ? hideTip : undefined}>
               <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".07em", color: onClock === userIdx ? "var(--gold)" : "var(--mut)" }}>On the clock</div>
               <div className="disp" style={{ fontSize: 17, fontWeight: 700, color: onClock === userIdx ? "var(--gold)" : "var(--ink)" }}>
                 {pickLabel(picks.length)} <span className="mut" style={{ fontWeight: 600, fontSize: 14 }}>({picks.length + 1})</span> — {onClock === userIdx ? "YOU" : TEAM_NAMES[onClock]}
@@ -9774,68 +9809,45 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               )}
               {currentPred && (() => {
                 const isYou = onClock === userIdx;
-                // Build a hover tooltip for a given advice object: its top pick's value + why + alternatives.
-                const stratLabel = { balanced: "Balanced", value: "Max VBD", build: "My build", upside: "Upside", adp: "Strict ADP" };
-                const adviceTip = (adv, label) => {
-                  if (!adv || !adv.verdict) return undefined;
-                  const v = adv.verdict;
-                  const cands = [{ p: v }, ...(adv.alts || []).map((p) => ({ p }))].slice(0, 5);
-                  return (e) => showTip(e, [
-                    { kind: "take", tone: "good", x: `${label} pick — ${v.name}` },
-                    { kind: "stats", chips: [`${v.pos}${v.posRank}`, `+${v.vbd.toFixed(0)} VBD`, `${Math.round(v.pts)} pts`, `wait costs ${Math.max(0, adv.waitCost[v.pos]).toFixed(0)}`, ...(adv.impacts[v.id] ? [`projects you ${ordinal(adv.impacts[v.id].rank)}`] : [])] },
-                    { kind: "why", x: whyPick(v, adv.waitCost, true, adv.myCounts) },
-                    ...(cands.length > 1 ? [{ kind: "altheader", x: "Potential alternatives" }] : []),
-                    ...cands.slice(1).map((c) => ({ tc: POS_COLOR[c.p.pos], t: `${c.p.pos}${c.p.posRank}`, x: `${c.p.name} · ${Math.round(c.p.pts)} pts` })),
-                  ]);
-                };
-                // Non-user pick: keep the simple "engine expects" line with its market-candidate hover.
+                // Non-user pick: the simple "engine expects" line (hover handled by the whole card now).
                 if (!isYou) {
-                  const cur = path && path[0] ? path[0] : null;
-                  const cands5 = cur && cur.cands5 && cur.cands5.length > 1 ? cur.cands5 : null;
-                  const tip = cands5 ? (e) => showTip(e, [
-                    { kind: "take", tone: "neutral", x: `${pickLabel(picks.length)} · ${TEAM_NAMES[onClock]} — engine's top candidates` },
-                    ...cands5.map((c, ci) => ({ tc: ci === 0 ? "var(--gold)" : POS_COLOR[c.p.pos], t: `${c.prob != null ? c.prob + "%" : ""}`, x: `${ci === 0 ? "★ " : ""}${c.p.name} — ${c.p.pos}${c.p.posRank}${ci === 0 ? " (expected)" : ""}` })),
-                    { t: "", x: "★ = who the engine expects here. Others are the next-most-likely picks if the board breaks differently." },
-                  ]) : undefined;
                   return (
-                    <div style={{ fontSize: 11, marginTop: 3, cursor: tip ? "help" : "default" }} className="mut" onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
+                    <div style={{ fontSize: 11, marginTop: 3 }} className="mut">
                       engine expects: <b style={{ color: "var(--ink)" }}>{currentPred.name}</b>{currentProb != null && ` (${currentProb}%)`}
-                      {tip && <span style={{ marginLeft: 5, opacity: 0.7 }}>· hover for alternatives</span>}
+                      {cardTip && <span style={{ marginLeft: 5, opacity: 0.7 }}>· hover for alternatives</span>}
                     </div>
                   );
                 }
-                // YOUR pick: top line = selected strategy's pick; bottom line = the "My build" pick (always
-                // shown so the build rec is constant), unless "My build" IS the selected strategy (no dupe).
-                const primaryLabel = stratLabel[strategy] || "Recommended";
+                // YOUR pick: top line = selected strategy's pick; bottom line = the "My build" pick.
+                const primaryLabel = stratLabelC[strategy] || "Recommended";
                 const selVerdict = mySelAdvice && mySelAdvice.verdict ? mySelAdvice.verdict : (advice && advice.verdict);
                 const bldVerdict = myBuildAdvice && myBuildAdvice.verdict ? myBuildAdvice.verdict : null;
                 const showBuildToo = strategy !== "build" && bldVerdict;
-                const primaryTip = adviceTip(mySelAdvice || advice, primaryLabel);
-                const buildTip = adviceTip(myBuildAdvice, "My build");
                 if (!selVerdict) return null;
                 return (
                   <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 3 }}>
-                    <div style={{ fontSize: 11.5, cursor: primaryTip ? "help" : "default", display: "flex", alignItems: "baseline", gap: 5 }} onMouseEnter={primaryTip} onMouseLeave={primaryTip ? hideTip : undefined}>
+                    <div style={{ fontSize: 11.5, display: "flex", alignItems: "baseline", gap: 5 }}>
                       <span className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", minWidth: 62 }}>{primaryLabel}</span>
                       <b style={{ color: "var(--gold)" }}>{selVerdict.name}</b>
                       <span className="mut" style={{ fontSize: 10 }}><Dot pos={selVerdict.pos} />{selVerdict.pos}{selVerdict.posRank}</span>
-                      {primaryTip && <span className="mut" style={{ fontSize: 9.5, opacity: 0.7 }}>· hover</span>}
+                      {cardTip && <span className="mut" style={{ fontSize: 9.5, opacity: 0.7 }}>· hover</span>}
                     </div>
                     {showBuildToo && (
-                      <div style={{ fontSize: 11.5, cursor: buildTip ? "help" : "default", display: "flex", alignItems: "baseline", gap: 5 }} onMouseEnter={buildTip} onMouseLeave={buildTip ? hideTip : undefined}>
+                      <div style={{ fontSize: 11.5, display: "flex", alignItems: "baseline", gap: 5 }}>
                         <span className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", minWidth: 62 }}>My build</span>
                         <b style={{ color: "var(--blue)" }}>{bldVerdict.name}</b>
                         <span className="mut" style={{ fontSize: 10 }}><Dot pos={bldVerdict.pos} />{bldVerdict.pos}{bldVerdict.posRank}</span>
-                        {buildTip && <span className="mut" style={{ fontSize: 9.5, opacity: 0.7 }}>· hover</span>}
                       </div>
                     )}
                   </div>
                 );
               })()}
               {currentPred && onClock === userIdx && !gated && (
-                <button className="btn btn-gold btn-mini" style={{ marginTop: 6, width: "100%" }} onClick={() => draftPlayer(currentPred.id)}>Draft {currentPred.name.split(" ").slice(-1)}</button>
+                <button className="btn btn-gold btn-mini" style={{ marginTop: 6, width: "100%" }} onClick={(e) => { e.stopPropagation(); draftPlayer(currentPred.id); }}>Draft {currentPred.name.split(" ").slice(-1)}</button>
               )}
             </div>
+              );
+            })()}
             {displayPath.map((step, di) => step.user ? (
               <div key={step.o} className="tickcard you" style={{ ...(!futureBig && di === displayPath.length - 1 && di >= 3 ? { borderColor: "var(--gold)", borderWidth: 2, boxShadow: "0 0 0 2px rgba(242,182,60,.25)", background: "linear-gradient(180deg,rgba(242,182,60,.16),rgba(242,182,60,.04))" } : {}) }}>
                 {(() => {
