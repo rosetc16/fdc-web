@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28o";
+const BUILD_TAG = "2026.06.28p";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5426,16 +5426,23 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
   const [slLoading, setSlLoading] = useState(false);
   useEffect(() => {
     let alive = true;
-    if (hasBackend && sleeperLink.linked && sleeperLeagues === null && !slLoading) {
-      setSlLoading(true);
-      api.sleeperMyLeagues().then((r) => { if (alive) setSleeperLeagues((r && r.leagues) || []); })
-        .catch(() => { if (alive) setSleeperLeagues([]); })
-        .finally(() => { if (alive) setSlLoading(false); });
+    if (hasBackend && sleeperLink.linked) {
+      if (sleeperLeagues === null && !slLoading) {
+        setSlLoading(true);
+        api.sleeperMyLeagues().then((r) => { if (alive) setSleeperLeagues((r && r.leagues) || []); })
+          .catch(() => { if (alive) setSleeperLeagues([]); })
+          .finally(() => { if (alive) setSlLoading(false); });
+      }
+    } else {
+      // Unlinked (or backend gone): drop any fetched Sleeper leagues so they disappear from the list.
+      if (sleeperLeagues !== null) setSleeperLeagues(null);
     }
     return () => { alive = false; };
   }, [sleeperLink.linked]);
   const linkedLeagueIds = new Set(leagues.map((l) => l.connect && l.connect.leagueId).filter(Boolean));
-  const unimportedSleeper = (sleeperLeagues || []).filter((sl) => !linkedLeagueIds.has(sl.league_id));
+  const unimportedSleeper = (sleeperLeagues || [])
+    .filter((sl) => !linkedLeagueIds.has(sl.league_id))
+    .filter((sl) => !q.trim() || (sl.name || "").toLowerCase().includes(q.toLowerCase()));
   // open exactly one picker at a time
   const openLeaguePanel = () => { setMockPick(false); setOpenPickFlow(false); setOpenPick((v) => !v); };
   const openLeagueFlow = () => { setMockPick(false); setOpenPick(false); setOpenPickFlow((v) => !v); };
@@ -5483,6 +5490,15 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         <button className="btn btn-mini" onClick={onSignOut}>Sign out</button>
       </div>
 
+      {/* Personalized greeting — clearly signed in as this person */}
+      <div style={{ maxWidth: 940, margin: "0 auto", padding: "18px 20px 4px", display: "flex", alignItems: "center", gap: 14 }}>
+        <Compass size={40} spin />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="disp" style={{ fontSize: 25, fontWeight: 700, letterSpacing: "-.02em", lineHeight: 1.05 }}>{timeGreet}{greetName ? `, ${greetName}` : ""}.</div>
+          <div className="mut" style={{ fontSize: 13, marginTop: 2 }}>{inProgress.length ? "You've got a draft in progress — jump back in below." : leagues.length ? "Here are your leagues — pick up where you left off." : "Welcome to your draft command center."}</div>
+        </div>
+      </div>
+
       {/* QUICK ACTIONS — equal-weight menu items, subtly highlighted as the primary zone */}
       <div style={{ maxWidth: 940, margin: "0 auto", padding: "14px 20px 18px" }}>
         <div style={{ display: "flex", alignItems: "stretch", border: "1px solid rgba(214,170,75,0.45)", borderRadius: 12, overflow: "hidden", background: "linear-gradient(180deg, rgba(214,170,75,0.10), rgba(214,170,75,0.04))" }}>
@@ -5514,6 +5530,15 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
             <SleeperLinkControl link={sleeperLink.link} unlink={sleeperLink.unlink} linked={sleeperLink.linked} username={sleeperLink.username} />
           </div>
         </div>
+
+        {/* Search — helpful when you have a lot of leagues */}
+        {(leagues.length + unimportedSleeper.length) > 4 && (
+          <div style={{ position: "relative", marginBottom: 10 }}>
+            <i className="ti ti-search" style={{ position: "absolute", left: 12, top: 10, fontSize: 15, color: "var(--mut)" }} aria-hidden="true" />
+            <input className="gs" style={{ width: "100%", paddingLeft: 36, paddingTop: 9, paddingBottom: 9, fontSize: 13.5 }} placeholder={`Search your ${leagues.length + unimportedSleeper.length} leagues…`} value={q} onChange={(e) => setQ(e.target.value)} />
+            {q.trim() && <button onClick={() => setQ("")} style={{ position: "absolute", right: 8, top: 7, background: "transparent", border: "none", color: "var(--mut)", cursor: "pointer", fontSize: 16, padding: 4 }} aria-label="Clear search"><i className="ti ti-x" aria-hidden="true" /></button>}
+          </div>
+        )}
 
         {leagues.length === 0 && unimportedSleeper.length === 0 ? (
           <div className="panel" style={{ padding: 18, textAlign: "center" }}>
@@ -5643,19 +5668,6 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         </div>
       )}
 
-      {/* HERO */}
-      <div style={{ position: "relative", overflow: "hidden", borderBottom: "1px solid var(--line)", background: "radial-gradient(130% 150% at 88% -30%, rgba(214,170,75,0.20), transparent 58%), radial-gradient(90% 120% at 5% 0%, rgba(91,168,245,0.10), transparent 55%), linear-gradient(180deg, var(--panel) 0%, var(--bg) 100%)" }}>
-        <div style={{ maxWidth: 940, margin: "0 auto", padding: "26px 20px 26px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap", marginBottom: 20 }}>
-            <Compass size={62} spin />
-            <div style={{ flex: 1, minWidth: 240 }}>
-              <div className="disp" style={{ fontSize: 30, fontWeight: 700, letterSpacing: "-.02em", lineHeight: 1.05 }}>{timeGreet}{greetName ? `, ${greetName}` : ""}.</div>
-              <div className="mut" style={{ fontSize: 14.5, marginTop: 4 }}>{leagues.length === 0 ? "Your draft command center. Here's what it does — then jump in below." : inProgress.length ? "You've got a draft in progress — jump back in below." : "Your draft command center. Pick a topic to see it in action."}</div>
-            </div>
-          </div>
-          <HeroShowcase />
-        </div>
-      </div>
 
       <div style={{ maxWidth: 940, margin: "0 auto", padding: "26px 20px 64px", display: "flex", flexDirection: "column", gap: 22 }}>
 
@@ -5681,6 +5693,11 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
           </button>
           {showSteps && (<>
           <div className="mut" style={{ fontSize: 12.5, marginBottom: 14 }}>The whole flow, in order — jump in anywhere. Hover a card for details; your next step glows gold.</div>
+          {/* Quick "here's what it does" demo — the animated board preview, kept here for newcomers */}
+          <div style={{ marginBottom: 16, padding: 14, borderRadius: 12, border: "1px solid var(--line)", background: "linear-gradient(180deg, rgba(214,170,75,0.06), transparent)" }}>
+            <div className="mut" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 10 }}>See it in action</div>
+            <HeroShowcase />
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(165px,1fr))", gap: 10 }}>
             {steps.map((s) => {
               const isNext = s.n === nextStep.n;
@@ -9249,6 +9266,30 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const nameToId = useMemo(() => { const m = {}; players.forEach((p) => { m[normName(p.name)] = p.id; }); return m; }, [players]);
   const [syncState, setSyncState] = useState({ status: null, lastAt: null, error: null });
   const sleeperLive = connectedPlatform === "sleeper" && draftMode === "sleeper" && !!(cfg.connect && cfg.connect.leagueId) && hasBackend;
+  // One-time fetch of team names + Sleeper usernames — runs even when the draft is COMPLETE (the live
+  // sync below stops once `done`, so without this a finished league would never load owner names).
+  useEffect(() => {
+    if (!(connectedPlatform === "sleeper" && cfg.connect && cfg.connect.leagueId && hasBackend)) return;
+    if (TEAM_OWNERS.length && TEAM_OWNERS.some(Boolean)) return; // already have them
+    let alive = true;
+    (async () => {
+      try {
+        const d = await api.sleeperDraft(cfg.connect.leagueId, cfg.connect.username);
+        if (!alive) return;
+        const N = cfg.teams || 12;
+        if (d.slotOwners) {
+          const owners = []; for (let s = 1; s <= N; s++) owners.push(d.slotOwners[s] || null);
+          if (owners.some(Boolean)) { setLiveTeamOwners(owners); setTeamOwners(owners); setNameVersion((v) => v + 1); }
+        }
+        if (d.slotNames) {
+          const names = []; let real = 0;
+          for (let s = 1; s <= N; s++) { const nm = d.slotNames[s]; if (nm && !/^Team\s+\d+$/.test(nm)) { real++; names.push(nm); } else names.push((cfg.teamNames && cfg.teamNames[s - 1]) || `Team ${s}`); }
+          if (real >= Math.ceil(N / 2)) { setLiveTeamNames(names); setTeamNames(names); setNameVersion((v) => v + 1); }
+        }
+      } catch (e) { /* leave fallbacks */ }
+    })();
+    return () => { alive = false; };
+  }, []);
   useEffect(() => {
     if (!sleeperLive || done) return;
     let alive = true;
