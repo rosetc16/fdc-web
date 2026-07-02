@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28q";
+const BUILD_TAG = "2026.06.28r";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5439,8 +5439,14 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
     }
     return () => { alive = false; };
   }, [sleeperLink.linked]);
-  const linkedLeagueIds = new Set(leagues.map((l) => l.connect && l.connect.leagueId).filter(Boolean));
-  const unimportedSleeperAll = (sleeperLeagues || []).filter((sl) => !linkedLeagueIds.has(sl.league_id));
+  // Build a set of every Sleeper league_id already imported into Compass, normalized to strings so a
+  // number-vs-string mismatch can't cause a duplicate. Check the common places the id may be stored.
+  const linkedLeagueIds = new Set();
+  leagues.forEach((l) => {
+    const ids = [l.connect && l.connect.leagueId, l.connect && l.connect.league_id, l.cfg && l.cfg.connect && l.cfg.connect.leagueId, l.sleeperLeagueId];
+    ids.forEach((id) => { if (id != null && id !== "") linkedLeagueIds.add(String(id)); });
+  });
+  const unimportedSleeperAll = (sleeperLeagues || []).filter((sl) => !linkedLeagueIds.has(String(sl.league_id)));
   const unimportedSleeper = unimportedSleeperAll.filter((sl) => !q.trim() || (sl.name || "").toLowerCase().includes(q.toLowerCase()));
   // Total count that DOESN'T change as you type — so the search bar never disappears mid-search.
   const totalLeagueCount = leagues.length + unimportedSleeperAll.length;
