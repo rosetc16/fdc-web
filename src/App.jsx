@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28r";
+const BUILD_TAG = "2026.06.28s";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5421,6 +5421,8 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
   const [mockPick, setMockPick] = useState(false); // expand the "run a mock" picker box
   const [delConfirm, setDelConfirm] = useState(null); // league id pending delete confirmation
   const [showSteps, setShowSteps] = useState(leagues.length === 0); // getting-started collapsed by default for veterans; open for first-timers
+  const [showTools, setShowTools] = useState(false); // toolkit collapsed into a dropdown by default
+  const [statusFilter, setStatusFilter] = useState("all"); // all | pre | drafting | complete — league status tabs
   // Pull the user's Sleeper leagues so we can surface any not yet imported into FDC, right in the leagues list.
   const [sleeperLeagues, setSleeperLeagues] = useState(null);
   const [slLoading, setSlLoading] = useState(false);
@@ -5506,22 +5508,6 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         </div>
       </div>
 
-      {/* RESUME — in-progress drafts, front and center above everything */}
-      {inProgress.length > 0 && (
-        <div style={{ maxWidth: 940, margin: "0 auto", padding: "8px 20px 4px", display: "flex", flexDirection: "column", gap: 8 }}>
-          {inProgress.map((lg) => (
-            <button key={lg.id} className="bigact" onClick={() => onOfficial(lg.id)} style={{ width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1.5px solid var(--gold)", background: "linear-gradient(90deg, #1b1708, #141206)", borderRadius: 14, padding: "14px 18px", display: "flex", alignItems: "center", gap: 14 }}>
-              <div style={{ width: 38, height: 38, borderRadius: 19, background: "var(--gold)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className="ti ti-player-play-filled" style={{ fontSize: 18, color: "#151002" }} aria-hidden="true" /></div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Resume your draft</div>
-                <div className="mut" style={{ fontSize: 12.5 }}>{lg.name} — {lg.picks.length}/{(lg.cfg.teams || 12) * lg.cfg.rounds} picks made</div>
-              </div>
-              <span className="gold" style={{ fontSize: 13, fontWeight: 600, flexShrink: 0 }}>Continue →</span>
-            </button>
-          ))}
-        </div>
-      )}
-
       {/* QUICK ACTIONS — equal-weight menu items, subtly highlighted as the primary zone */}
       <div style={{ maxWidth: 940, margin: "0 auto", padding: "14px 20px 18px" }}>
         <div style={{ display: "flex", alignItems: "stretch", border: "1px solid rgba(214,170,75,0.45)", borderRadius: 12, overflow: "hidden", background: "linear-gradient(180deg, rgba(214,170,75,0.10), rgba(214,170,75,0.04))" }}>
@@ -5543,6 +5529,22 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         </div>
       </div>
 
+      {/* RESUME — in-progress drafts, right under the quick actions */}
+      {inProgress.length > 0 && (
+        <div style={{ maxWidth: 940, margin: "0 auto", padding: "0 20px 10px", display: "flex", flexDirection: "column", gap: 8 }}>
+          {inProgress.map((lg) => (
+            <button key={lg.id} className="bigact" onClick={() => onOfficial(lg.id)} style={{ width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1.5px solid var(--gold)", background: "linear-gradient(90deg, #1b1708, #141206)", borderRadius: 14, padding: "14px 18px", display: "flex", alignItems: "center", gap: 14 }}>
+              <div style={{ width: 38, height: 38, borderRadius: 19, background: "var(--gold)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className="ti ti-player-play-filled" style={{ fontSize: 18, color: "#151002" }} aria-hidden="true" /></div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Resume your draft</div>
+                <div className="mut" style={{ fontSize: 12.5 }}>{lg.name} — {lg.picks.length}/{(lg.cfg.teams || 12) * lg.cfg.rounds} picks made</div>
+              </div>
+              <span className="gold" style={{ fontSize: 13, fontWeight: 600, flexShrink: 0 }}>Continue →</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* ===== YOUR LEAGUES — front and center, no dropdown. Each league: clear Draft room + My Team. ===== */}
       <div data-teams-anchor style={{ maxWidth: 940, margin: "0 auto", padding: "0 20px 8px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 9, flexWrap: "wrap" }}>
@@ -5563,6 +5565,27 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
           </div>
         )}
 
+        {/* Status tabs — filter your leagues by where their draft stands */}
+        {leagues.length > 1 && (() => {
+          const statusOf = (l) => { const tot = (l.cfg.teams || 12) * l.cfg.rounds; return l.picks.length >= tot ? "complete" : l.picks.length > 0 ? "drafting" : "pre"; };
+          const counts = { all: leagues.length, pre: 0, drafting: 0, complete: 0 };
+          leagues.forEach((l) => { counts[statusOf(l)]++; });
+          const tabs = [["all", "All"], ["pre", "Pre-draft"], ["drafting", "Drafting"], ["complete", "Post-draft"]];
+          return (
+            <div style={{ display: "flex", gap: 6, marginBottom: 11, flexWrap: "wrap" }}>
+              {tabs.map(([k, label]) => {
+                const active = statusFilter === k;
+                const c = k === "drafting" ? "var(--gold)" : k === "complete" ? "var(--green)" : k === "pre" ? "var(--blue)" : "var(--ink)";
+                return (
+                  <button key={k} onClick={() => setStatusFilter(k)} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: active ? 700 : 500, padding: "5px 12px", borderRadius: 99, border: `1px solid ${active ? c : "var(--line)"}`, background: active ? (k === "all" ? "var(--panel3)" : c + "1a") : "transparent", color: active ? (k === "all" ? "var(--ink)" : c) : "var(--mut)" }}>
+                    {label} <span style={{ opacity: 0.7 }}>{counts[k]}</span>
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })()}
+
         {leagues.length === 0 && unimportedSleeper.length === 0 ? (
           <div className="panel" style={{ padding: 18, textAlign: "center" }}>
             <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>No leagues yet</div>
@@ -5580,7 +5603,12 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                 <button className="btn btn-mini" onClick={() => setQ("")}>Clear search</button>
               </div>
             )}
-            {sortedLeagues.map((l) => {
+            {sortedLeagues.filter((l) => {
+              if (statusFilter === "all") return true;
+              const tot = (l.cfg.teams || 12) * l.cfg.rounds;
+              const s = l.picks.length >= tot ? "complete" : l.picks.length > 0 ? "drafting" : "pre";
+              return s === statusFilter;
+            }).map((l) => {
               const st = leagueStatus(l);
               const isSleeper = !!(l.connect && l.connect.leagueId);
               const mocks = (l.mocks || []).length;
@@ -5626,7 +5654,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
             })}
 
             {/* Unimported Sleeper leagues — one tap to connect */}
-            {unimportedSleeper.map((sl) => (
+            {(statusFilter === "all" || statusFilter === "pre") && unimportedSleeper.map((sl) => (
               <div key={sl.league_id} style={{ border: "1px dashed var(--line2)", background: "var(--panel2)", borderRadius: 13, padding: 14, display: "flex", flexDirection: "column", gap: 11 }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
@@ -5837,12 +5865,15 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         </>)}
         </div>{/* end Get started section */}
 
-        {/* ===== SECTION: YOUR TOOLKIT ===== */}
+        {/* ===== SECTION: YOUR TOOLKIT (dropdown) ===== */}
         <div className="hubsection">
-          <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 3 }}>
+          <button onClick={() => setShowTools((v) => !v)} style={{ width: "100%", cursor: "pointer", fontFamily: "inherit", background: "transparent", border: "none", padding: 0, textAlign: "left", display: "flex", alignItems: "center", gap: 9, marginBottom: showTools ? 3 : 0, color: "var(--ink)" }}>
             <i className="ti ti-tools" style={{ fontSize: 19, color: "var(--gold)" }} aria-hidden="true" />
-            <div className="disp" style={{ fontSize: 19, fontWeight: 700 }}>Your toolkit</div>
-          </div>
+            <div className="disp" style={{ fontSize: 19, fontWeight: 700, flex: 1 }}>Your toolkit</div>
+            <span className="mut" style={{ fontSize: 12 }}>{showTools ? "Hide" : `${flipTools.length} tools`}</span>
+            <i className={`ti ti-chevron-${showTools ? "up" : "down"}`} style={{ fontSize: 16, color: "var(--mut)" }} aria-hidden="true" />
+          </button>
+          {showTools && (<>
           <div className="mut" style={{ fontSize: 13, marginBottom: 14 }}>Hover any card to see what it does. These work across all your leagues.</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 12 }}>
             {flipTools.map((t, i) => (
@@ -5871,6 +5902,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
               </div>
             ))}
           </div>
+          </>)}
         </div>
 
         <div className="mut" style={{ fontSize: 11.5, marginTop: 26, textAlign: "center" }}>Season pass valid through the March 1 league-year cutoff · unlimited leagues & mock drafts.</div>
@@ -11506,6 +11538,83 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <span className="mut" style={{ fontSize: 11.5 }}>{summaryTeam == null ? "Steals & reaches show the whole league; your roster is highlighted." : `Showing ${summaryTeam === userIdx ? "your" : TEAM_NAMES[summaryTeam] + "'s"} picks, steals & reaches.`}</span>
           </div>
 
+          {/* ===== Superlatives: fun awards drawn from the live engine numbers — now the very top of the summary ===== */}
+          {graded.length >= 4 && (
+            <div className="panel" style={{ padding: 14, gridColumn: "1 / -1" }}>
+              <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 10 }}>Draft superlatives <span className="mut" style={{ fontSize: 12 }}>awards so far</span></div>
+              {(() => {
+                const byVal = graded.slice().sort((a, b) => b.val - a.val);
+                const steal = byVal[0];
+                const reach = byVal[byVal.length - 1];
+                // youngest & oldest team by avg age of drafted skill players
+                const ages = Array.from({ length: TEAMS }, (_, i) => {
+                  const r = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => x.p && teamAt(x.o) === i && x.p.age);
+                  const avg = r.length ? r.reduce((s, x) => s + x.p.age, 0) / r.length : null;
+                  return { i, avg, n: r.length };
+                }).filter((x) => x.avg != null && x.n >= 2);
+                const youngest = ages.slice().sort((a, b) => a.avg - b.avg)[0];
+                const oldest = ages.slice().sort((a, b) => b.avg - a.avg)[0];
+                // most one-sided roster (highest share at a single position)
+                let zealot = null;
+                for (let i = 0; i < TEAMS; i++) {
+                  const counts = { QB: 0, RB: 0, WR: 0, TE: 0 }; let tot = 0;
+                  picks.forEach((pk, o) => { if (teamAt(o) === i) { const p = players[pk]; if (p && counts[p.pos] != null) { counts[p.pos]++; tot++; } } });
+                  if (tot >= 4) { const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]; const share = top[1] / tot; if (!zealot || share > zealot.share) zealot = { i, pos: top[0], share, n: top[1] }; }
+                }
+                const award = (icon, label, who, detail, color) => (
+                  <div style={{ flex: "1 1 200px", minWidth: 190, display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", borderRadius: 9, background: "var(--panel2)", border: "1px solid var(--line)" }}>
+                    <i className={`ti ${icon}`} style={{ fontSize: 20, color, marginTop: 1 }} aria-hidden="true" />
+                    <div style={{ minWidth: 0 }}>
+                      <div className="disp" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)" }}>{label}</div>
+                      <div style={{ fontWeight: 700, fontSize: 13.5 }}>{who}</div>
+                      <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.4 }}>{detail}</div>
+                    </div>
+                  </div>
+                );
+                // ---- additional awards computed across all teams ----
+                const nm = (i) => i === userIdx ? "Your team" : (TEAM_NAMES[i] || `Team ${i + 1}`);
+                // total draft value (sum of pickValue) per team
+                const teamVal = Array.from({ length: TEAMS }, (_, i) => ({ i, v: graded.filter((g) => g.t === i).reduce((s, g) => s + g.val, 0) }));
+                const valKing = teamVal.slice().sort((a, b) => b.v - a.v)[0];
+                // best projected starting lineup (uses proj rosters)
+                let lineupKing = null;
+                if (proj && proj.pts) { const order = proj.pts.map((v, i) => ({ i, v })).sort((a, b) => b.v - a.v); lineupKing = order[0]; }
+                // most rookies drafted
+                const rookieCounts = Array.from({ length: TEAMS }, (_, i) => ({ i, n: picks.filter((pk, o) => teamAt(o) === i && players[pk] && players[pk].rookie).length }));
+                const rookieKing = rookieCounts.slice().sort((a, b) => b.n - a.n)[0];
+                // most balanced roster (lowest max single-position share, min 5 picks)
+                let balanced = null;
+                for (let i = 0; i < TEAMS; i++) {
+                  const counts = { QB: 0, RB: 0, WR: 0, TE: 0 }; let tot = 0;
+                  picks.forEach((pk, o) => { if (teamAt(o) === i) { const p = players[pk]; if (p && counts[p.pos] != null) { counts[p.pos]++; tot++; } } });
+                  if (tot >= 5) { const share = Math.max(...Object.values(counts)) / tot; if (!balanced || share < balanced.share) balanced = { i, share }; }
+                }
+                // best single WR / RB / QB corps (by summed top-2 vbd) — "position powerhouse"
+                let powerhouse = null;
+                for (let i = 0; i < TEAMS; i++) {
+                  POS.forEach((pos) => {
+                    const arr = picks.map((pk, o) => teamAt(o) === i ? players[pk] : null).filter((p) => p && p.pos === pos).sort((a, b) => b.vbd - a.vbd);
+                    if (arr.length >= 2) { const sc = arr[0].vbd + arr[1].vbd; if (!powerhouse || sc > powerhouse.sc) powerhouse = { i, pos, sc, names: `${arr[0].name.split(" ").slice(-1)} & ${arr[1].name.split(" ").slice(-1)}` }; }
+                  });
+                }
+                return (
+                  <div className="superlative-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 }}>
+                    {steal && steal.val > 0 && award("ti-diamond", "Best value", steal.p.name, `${steal.p.pos}${steal.p.posRank} to ${steal.t === userIdx ? "you" : TEAM_NAMES[steal.t]} — ${steal.val.toFixed(0)} spots past ADP`, "var(--green)")}
+                    {reach && reach.val < 0 && award("ti-flame", "Biggest reach", reach.p.name, `${reach.p.pos}${reach.p.posRank} by ${reach.t === userIdx ? "you" : TEAM_NAMES[reach.t]} — ${Math.abs(reach.val).toFixed(0)} spots early`, "var(--red)")}
+                    {valKing && valKing.v > 0 && award("ti-coins", "Value champ", nm(valKing.i), `Most total draft value — +${valKing.v.toFixed(0)} spots across the board`, "var(--green)")}
+                    {lineupKing && award("ti-crown", "Best on paper", nm(lineupKing.i), `Top projected starting lineup — ${Math.round(lineupKing.v)} pts`, "var(--gold)")}
+                    {powerhouse && award("ti-bolt", `${powerhouse.pos} powerhouse`, nm(powerhouse.i), `Loaded at ${powerhouse.pos} — ${powerhouse.names}`, POS_COLOR[powerhouse.pos])}
+                    {youngest && award("ti-seedling", "Youth movement", nm(youngest.i), `Youngest core — ${youngest.avg.toFixed(1)} avg age`, "var(--green)")}
+                    {oldest && award("ti-trophy", "Win-now mode", nm(oldest.i), `Oldest core — ${oldest.avg.toFixed(1)} avg age`, "var(--gold)")}
+                    {rookieKing && rookieKing.n >= 2 && award("ti-baby-carriage", "Rookie hauler", nm(rookieKing.i), `Most rookies — ${rookieKing.n} first-years`, "var(--green)")}
+                    {balanced && balanced.share <= 0.4 && award("ti-scale", "Best balance", nm(balanced.i), `Most even roster build across positions`, "var(--ink)")}
+                    {zealot && zealot.share >= 0.45 && award("ti-target", "One-track mind", nm(zealot.i), `${Math.round(zealot.share * 100)}% ${zealot.pos} — ${zealot.n} of them`, "var(--blue)")}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
           {/* ===== DRAFT CARD — the full shareable summary. First thing the eye hits (top-left). ===== */}
           {recap && recapHead && (
             <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
@@ -11768,83 +11877,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           </div>
           </div>
 
-          {/* ===== Superlatives: fun awards drawn from the live engine numbers — full width bottom row ===== */}
-          {graded.length >= 4 && (
-            <div className="panel" style={{ padding: 14, gridColumn: "1 / -1" }}>
-              <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 10 }}>Draft superlatives <span className="mut" style={{ fontSize: 12 }}>awards so far</span></div>
-              {(() => {
-                const byVal = graded.slice().sort((a, b) => b.val - a.val);
-                const steal = byVal[0];
-                const reach = byVal[byVal.length - 1];
-                // youngest & oldest team by avg age of drafted skill players
-                const ages = Array.from({ length: TEAMS }, (_, i) => {
-                  const r = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => x.p && teamAt(x.o) === i && x.p.age);
-                  const avg = r.length ? r.reduce((s, x) => s + x.p.age, 0) / r.length : null;
-                  return { i, avg, n: r.length };
-                }).filter((x) => x.avg != null && x.n >= 2);
-                const youngest = ages.slice().sort((a, b) => a.avg - b.avg)[0];
-                const oldest = ages.slice().sort((a, b) => b.avg - a.avg)[0];
-                // most one-sided roster (highest share at a single position)
-                let zealot = null;
-                for (let i = 0; i < TEAMS; i++) {
-                  const counts = { QB: 0, RB: 0, WR: 0, TE: 0 }; let tot = 0;
-                  picks.forEach((pk, o) => { if (teamAt(o) === i) { const p = players[pk]; if (p && counts[p.pos] != null) { counts[p.pos]++; tot++; } } });
-                  if (tot >= 4) { const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]; const share = top[1] / tot; if (!zealot || share > zealot.share) zealot = { i, pos: top[0], share, n: top[1] }; }
-                }
-                const award = (icon, label, who, detail, color) => (
-                  <div style={{ flex: "1 1 200px", minWidth: 190, display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", borderRadius: 9, background: "var(--panel2)", border: "1px solid var(--line)" }}>
-                    <i className={`ti ${icon}`} style={{ fontSize: 20, color, marginTop: 1 }} aria-hidden="true" />
-                    <div style={{ minWidth: 0 }}>
-                      <div className="disp" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)" }}>{label}</div>
-                      <div style={{ fontWeight: 700, fontSize: 13.5 }}>{who}</div>
-                      <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.4 }}>{detail}</div>
-                    </div>
-                  </div>
-                );
-                // ---- additional awards computed across all teams ----
-                const nm = (i) => i === userIdx ? "Your team" : (TEAM_NAMES[i] || `Team ${i + 1}`);
-                // total draft value (sum of pickValue) per team
-                const teamVal = Array.from({ length: TEAMS }, (_, i) => ({ i, v: graded.filter((g) => g.t === i).reduce((s, g) => s + g.val, 0) }));
-                const valKing = teamVal.slice().sort((a, b) => b.v - a.v)[0];
-                // best projected starting lineup (uses proj rosters)
-                let lineupKing = null;
-                if (proj && proj.pts) { const order = proj.pts.map((v, i) => ({ i, v })).sort((a, b) => b.v - a.v); lineupKing = order[0]; }
-                // highest-ceiling single pick (by ceil)
-                // most rookies drafted
-                const rookieCounts = Array.from({ length: TEAMS }, (_, i) => ({ i, n: picks.filter((pk, o) => teamAt(o) === i && players[pk] && players[pk].rookie).length }));
-                const rookieKing = rookieCounts.slice().sort((a, b) => b.n - a.n)[0];
-                // most balanced roster (lowest max single-position share, min 5 picks)
-                let balanced = null;
-                for (let i = 0; i < TEAMS; i++) {
-                  const counts = { QB: 0, RB: 0, WR: 0, TE: 0 }; let tot = 0;
-                  picks.forEach((pk, o) => { if (teamAt(o) === i) { const p = players[pk]; if (p && counts[p.pos] != null) { counts[p.pos]++; tot++; } } });
-                  if (tot >= 5) { const share = Math.max(...Object.values(counts)) / tot; if (!balanced || share < balanced.share) balanced = { i, share }; }
-                }
-                // best single WR / RB / QB corps (by summed top-2 vbd) — "position powerhouse"
-                let powerhouse = null;
-                for (let i = 0; i < TEAMS; i++) {
-                  POS.forEach((pos) => {
-                    const arr = picks.map((pk, o) => teamAt(o) === i ? players[pk] : null).filter((p) => p && p.pos === pos).sort((a, b) => b.vbd - a.vbd);
-                    if (arr.length >= 2) { const sc = arr[0].vbd + arr[1].vbd; if (!powerhouse || sc > powerhouse.sc) powerhouse = { i, pos, sc, names: `${arr[0].name.split(" ").slice(-1)} & ${arr[1].name.split(" ").slice(-1)}` }; }
-                  });
-                }
-                return (
-                  <div className="superlative-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 }}>
-                    {steal && steal.val > 0 && award("ti-diamond", "Best value", steal.p.name, `${steal.p.pos}${steal.p.posRank} to ${steal.t === userIdx ? "you" : TEAM_NAMES[steal.t]} — ${steal.val.toFixed(0)} spots past ADP`, "var(--green)")}
-                    {reach && reach.val < 0 && award("ti-flame", "Biggest reach", reach.p.name, `${reach.p.pos}${reach.p.posRank} by ${reach.t === userIdx ? "you" : TEAM_NAMES[reach.t]} — ${Math.abs(reach.val).toFixed(0)} spots early`, "var(--red)")}
-                    {valKing && valKing.v > 0 && award("ti-coins", "Value champ", nm(valKing.i), `Most total draft value — +${valKing.v.toFixed(0)} spots across the board`, "var(--green)")}
-                    {lineupKing && award("ti-crown", "Best on paper", nm(lineupKing.i), `Top projected starting lineup — ${Math.round(lineupKing.v)} pts`, "var(--gold)")}
-                    {powerhouse && award("ti-bolt", `${powerhouse.pos} powerhouse`, nm(powerhouse.i), `Loaded at ${powerhouse.pos} — ${powerhouse.names}`, POS_COLOR[powerhouse.pos])}
-                    {youngest && award("ti-seedling", "Youth movement", nm(youngest.i), `Youngest core — ${youngest.avg.toFixed(1)} avg age`, "var(--green)")}
-                    {oldest && award("ti-trophy", "Win-now mode", nm(oldest.i), `Oldest core — ${oldest.avg.toFixed(1)} avg age`, "var(--gold)")}
-                    {rookieKing && rookieKing.n >= 2 && award("ti-baby-carriage", "Rookie hauler", nm(rookieKing.i), `Most rookies — ${rookieKing.n} first-years`, "var(--green)")}
-                    {balanced && balanced.share <= 0.4 && award("ti-scale", "Best balance", nm(balanced.i), `Most even roster build across positions`, "var(--ink)")}
-                    {zealot && zealot.share >= 0.45 && award("ti-target", "One-track mind", nm(zealot.i), `${Math.round(zealot.share * 100)}% ${zealot.pos} — ${zealot.n} of them`, "var(--blue)")}
-                  </div>
-                );
-              })()}
-            </div>
-          )}
+          {/* Superlatives moved to the top of the summary (below the focus selector) */}
 
           {/* ===== What to do now — a post-draft bridge to the season ===== */}
           {done && proj && (
