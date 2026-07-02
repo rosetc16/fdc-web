@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28m";
+const BUILD_TAG = "2026.06.28n";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4400,7 +4400,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [posture, setPosture] = useState(null); // null until we auto-detect; user can override
-  const [tab, setTab] = useState("lineup");     // lineup | freeagents | roster | notes
+  const [tab, setTab] = useState("notes");     // notes(Summary) | lineup | freeagents | roster | league
 
   // Build the enriched, projection-scored player pool for THIS league's cfg, keyed by Sleeper id.
   const cfg = data && data.cfg ? normalizeHubCfg(data.cfg) : null;
@@ -4679,11 +4679,6 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   if (toughStarters.length) notes.push({ tone: "warn", icon: "ti-shield-half", text: `Tough matchup${toughStarters.length > 1 ? "s" : ""} this week: ${toughStarters.map((p) => `${p.name} (vs ${p.opp}, ${ordinal(p.matchupDiff.rank)}-toughest vs ${p.pos})`).join("; ")}.` });
   if (smashStarters.length) notes.push({ tone: "good", icon: "ti-flame", text: `Smash spot${smashStarters.length > 1 ? "s" : ""}: ${smashStarters.map((p) => `${p.name} (vs ${p.opp})`).join(", ")} — a soft matchup for your ${smashStarters.length > 1 ? "guys" : smashStarters[0].pos}.` });
   POS.forEach((pos) => { if (needByPos[pos] === 999) notes.push({ tone: "warn", icon: "ti-user-question", text: `You don't have enough starters at ${pos} — see free agents.` }); });
-  if (isDynasty) {
-    if (activePosture === "rebuild") notes.push({ tone: "info", icon: "ti-seedling", text: "Rebuild mode: the free-agent list favors younger, ascending players with upside over aging veterans." });
-    else if (activePosture === "winnow") notes.push({ tone: "info", icon: "ti-trophy", text: "Win-now mode: the free-agent list is ranked purely on this season's projected points." });
-    else notes.push({ tone: "info", icon: "ti-scale", text: "Balanced mode: the free-agent list blends this-year production with youth and upside." });
-  }
   if (!notes.length) notes.push({ tone: "good", icon: "ti-circle-check", text: "Your lineup is optimized and you have no urgent roster holes. Nicely set." });
 
   const postureLabel = { winnow: "Win now", balanced: "Balanced", rebuild: "Rebuild" };
@@ -4729,6 +4724,23 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     const distToCut = Math.abs(myProj.projRank - playoffSpots);
     leverage = distToCut <= 1 ? "high" : distToCut <= 3 ? "medium" : "low";
   }
+
+  // ---- Strengths & weaknesses (for the Summary tab) ----
+  // Rank each of your positions against the league. We already have per-team positional strength in
+  // `powerRanked` (posStrength) — turn my ranks into a strong/solid/thin verdict per position.
+  const myPosRank = {};
+  POS.forEach((pos) => {
+    const sorted = leagueTeams.slice().sort((a, b) => (b.posStrength[pos] || 0) - (a.posStrength[pos] || 0));
+    const idx = sorted.findIndex((t) => t.rosterId === data.myRosterId);
+    myPosRank[pos] = { rank: idx >= 0 ? idx + 1 : null, of: leagueTeams.length };
+  });
+  const strengths = POS.filter((pos) => myPosRank[pos].rank && myPosRank[pos].rank <= Math.ceil(leagueTeams.length / 3));
+  const weaknesses = POS.filter((pos) => myPosRank[pos].rank && myPosRank[pos].rank > Math.ceil((2 * leagueTeams.length) / 3));
+  // Top 3 free-agent adds for the summary (only genuine adds).
+  const summaryFA = faScored.filter((f) => f.verdict === "add").slice(0, 3);
+  // Injury + bye concerns among your starters/roster.
+  const injuredRoster = myRoster.filter((p) => p.wkInj || p.inj);
+  const byeStarters = (opt && opt.slots ? opt.slots.map((s) => s.p).filter(Boolean) : []).filter((p) => p.bye === data.week);
 
   // Data status: are we showing real weekly projections, or off-season/pre-week estimates? And is
   // defense-vs-position matchup data available yet? Drives a small explainer banner so an empty matchup
@@ -4799,6 +4811,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
       isLive,
       meName: data.matchup.me.teamName,
       oppName: data.matchup.opp.teamName,
+      oppOwnerName: (oppTeam && oppTeam.ownerName) || data.matchup.opp.ownerName || null,
       mePts: isLive ? (meLive || 0) : sumPts(meSet),
       oppPts: isLive ? (oppLive || 0) : oppSetPts,
       meStarters: meSet,
@@ -4819,7 +4832,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
         <div className="panel" style={{ padding: 16, marginBottom: 14 }}>
           <div style={{ display: "flex", alignItems: "flex-start", gap: 14, flexWrap: "wrap" }}>
             <div style={{ flex: 1, minWidth: 200 }}>
-              <div className="disp" style={{ fontSize: 20, fontWeight: 800 }}>{myTeam.teamName}</div>
+              <div className="disp" style={{ fontSize: 20, fontWeight: 800 }}>{myTeam.teamName}{myTeam.ownerName ? <span className="mut" style={{ fontSize: 13, fontWeight: 400 }}> (@{myTeam.ownerName})</span> : null}</div>
               <div className="mut" style={{ fontSize: 12.5, marginTop: 2 }}>
                 {data.leagueName} · Week {data.week} · {cfg.teams}-team {isDynasty ? "dynasty" : "redraft"}{cfg.sf ? " · SF" : ""}
                 {myStanding ? <> · {ordinal(myStanding.rank)} place ({myStanding.record.wins}-{myStanding.record.losses}{myStanding.record.ties ? `-${myStanding.record.ties}` : ""})</> : null}
@@ -4852,8 +4865,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
           </div>
         )}
 
-        {/* This week's matchup — persistent context on other tabs; hidden on the Matchup tab which has its own header */}
-        {matchupView && tab !== "lineup" && (
+        {/* This week's matchup — persistent context on roster/FA/league tabs; the Matchup and Summary tabs have their own */}
+        {matchupView && tab !== "lineup" && tab !== "notes" && (
           <div className="panel" style={{ padding: 14, marginBottom: 14 }}>
             <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 8 }}>
               Week {data.week} matchup · {matchupView.isLive ? "live score" : "projected"}
@@ -4875,7 +4888,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-          {[["lineup", "Matchup", "ti-swords"], ["freeagents", "Free agents", "ti-user-plus"], ["roster", "My roster", "ti-users"], ["league", "League", "ti-trophy"], ["notes", "This week", "ti-notes"]].map(([k, label, icon]) => (
+          {[["notes", "Summary", "ti-clipboard-text"], ["lineup", "Matchup", "ti-swords"], ["freeagents", "Free agents", "ti-user-plus"], ["roster", "My roster", "ti-users"], ["league", "League", "ti-trophy"]].map(([k, label, icon]) => (
             <button key={k} className="btn btn-mini" style={{ background: tab === k ? "var(--gold)" : "transparent", color: tab === k ? "#151002" : "var(--ink)", fontWeight: tab === k ? 700 : 400 }} onClick={() => setTab(k)}>
               <i className={`ti ${icon}`} style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />{label}
             </button>
@@ -4894,7 +4907,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
               <div className="mut" style={{ fontSize: 12, fontWeight: 700, paddingBottom: 6 }}>{matchupView && matchupView.isLive ? "" : "proj"}</div>
               {matchupView ? (
                 <div style={{ flex: 1, minWidth: 0, textAlign: "right" }}>
-                  <div className="disp" style={{ fontSize: 15, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{matchupView.oppName}{matchupView.oppRecord ? <span className="mut" style={{ fontSize: 11, fontWeight: 400 }}> ({matchupView.oppRecord.wins}-{matchupView.oppRecord.losses})</span> : null}</div>
+                  <div className="disp" style={{ fontSize: 15, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{matchupView.oppName}{matchupView.oppOwnerName ? <span className="mut" style={{ fontSize: 11, fontWeight: 400 }}> (@{matchupView.oppOwnerName})</span> : null}{matchupView.oppRecord ? <span className="mut" style={{ fontSize: 11, fontWeight: 400 }}> ({matchupView.oppRecord.wins}-{matchupView.oppRecord.losses})</span> : null}</div>
                   <div className="num" style={{ fontSize: 24, fontWeight: 800 }}>{matchupView.oppPts.toFixed(2)}</div>
                 </div>
               ) : <div style={{ flex: 1 }} />}
@@ -5220,45 +5233,131 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
         {/* ---- NOTES TAB ---- */}
         {tab === "notes" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            {/* Matchup outlook headline */}
-            {matchupView && (
-              <div className="panel" style={{ padding: 16 }}>
-                <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 8 }}>Week {data.week} outlook</div>
-                {(() => {
-                  const margin = Math.round((matchupView.mePts - matchupView.oppPts) * 10) / 10;
-                  const favored = margin >= 0;
-                  return (
-                    <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-                      <div style={{ background: favored ? "rgba(95,208,168,.10)" : "rgba(242,101,92,.10)", border: `1px solid ${favored ? "var(--green)" : "var(--red)"}`, borderRadius: 10, padding: "10px 16px" }}>
-                        <div style={{ fontSize: 12, fontWeight: 700, color: favored ? "var(--green)" : "var(--red)" }}>{favored ? "Projected to win" : "Projected to lose"}</div>
-                        <div className="num" style={{ fontSize: 20, fontWeight: 800 }}>{favored ? "+" : ""}{margin}</div>
-                        <div className="mut" style={{ fontSize: 10.5 }}>vs {matchupView.oppName}</div>
-                      </div>
-                      <div style={{ fontSize: 13, lineHeight: 1.5, flex: 1, minWidth: 200 }}>
-                        You project <b>{matchupView.mePts.toFixed(1)}</b> to their <b>{matchupView.oppPts.toFixed(1)}</b>.{" "}
-                        {leverage === "high" ? <span style={{ color: "var(--red)", fontWeight: 700 }}>This is a must-win for your playoff position.</span> : leverage === "medium" ? <span style={{ color: "var(--gold)", fontWeight: 600 }}>An important game for your seeding.</span> : <span className="mut">Lower stakes this week — you've got some cushion.</span>}
-                      </div>
+            {/* ===== TOP: this-week + season outlook side by side ===== */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 14 }}>
+              {/* This week */}
+              {matchupView && (() => {
+                const margin = Math.round((matchupView.mePts - matchupView.oppPts) * 10) / 10;
+                const favored = margin >= 0;
+                return (
+                  <div className="panel" style={{ padding: 16, borderColor: favored ? "var(--green)" : "var(--red)" }}>
+                    <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>This week · Week {data.week}</div>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                      <div className="disp" style={{ fontSize: 24, fontWeight: 800, color: favored ? "var(--green)" : "var(--red)" }}>{favored ? "Win" : "Loss"}</div>
+                      <div className="num" style={{ fontSize: 18, fontWeight: 700 }}>{favored ? "+" : ""}{margin}</div>
                     </div>
-                  );
-                })()}
-              </div>
-            )}
-            {/* Action items */}
-            <div className="panel" style={{ padding: 16 }}>
-              <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 12 }}>What to consider this week</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {notes.map((n, i) => {
-                  const c = n.tone === "warn" ? "var(--red)" : n.tone === "good" ? "var(--green)" : "var(--blue)";
-                  return <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", background: "var(--panel2)", borderRadius: 8, borderLeft: `2px solid ${c}` }}>
-                    <i className={`ti ${n.icon}`} style={{ fontSize: 16, color: c, marginTop: 1 }} aria-hidden="true" />
-                    <span style={{ fontSize: 13, lineHeight: 1.45 }}>{n.text}</span>
-                  </div>;
-                })}
-              </div>
-              <div className="mut" style={{ fontSize: 10.5, marginTop: 12, lineHeight: 1.5, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
-                Points and opponents reflect each player's weekly matchup. <b>Waiting on the NFL season:</b> defense-vs-position matchup strength needs completed games to grade, and kickoff times + weather need the published 2026 schedule and forecasts — both arrive as the season nears. They'll populate automatically here once available.
+                    <div style={{ fontSize: 12.5, lineHeight: 1.5, marginTop: 6 }}>
+                      You project <b>{matchupView.mePts.toFixed(2)}</b> vs <b>{matchupView.oppName}</b>'s <b>{matchupView.oppPts.toFixed(2)}</b>.
+                    </div>
+                    <div style={{ fontSize: 12, marginTop: 6 }}>
+                      {leverage === "high" ? <span style={{ color: "var(--red)", fontWeight: 700 }}>Must-win for your playoff position.</span> : leverage === "medium" ? <span style={{ color: "var(--gold)", fontWeight: 600 }}>Important for your seeding.</span> : <span className="mut">Lower stakes — you've got cushion.</span>}
+                    </div>
+                  </div>
+                );
+              })()}
+              {/* Season */}
+              <div className="panel" style={{ padding: 16 }}>
+                <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>Season outlook</div>
+                <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+                  {myStanding && <div><div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{ordinal(myStanding.rank)}</div><div className="mut" style={{ fontSize: 10.5 }}>current place</div></div>}
+                  {myProj && <div><div className="num" style={{ fontSize: 22, fontWeight: 800, color: myProj.projRank <= playoffSpots ? "var(--green)" : "var(--mut)" }}>{ordinal(myProj.projRank)}</div><div className="mut" style={{ fontSize: 10.5 }}>projected finish</div></div>}
+                  {myPowerRank && <div><div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{ordinal(myPowerRank)}</div><div className="mut" style={{ fontSize: 10.5 }}>power rank</div></div>}
+                </div>
+                <div style={{ fontSize: 12.5, lineHeight: 1.5, marginTop: 8 }}>
+                  {myProj && myProj.projRank <= playoffSpots ? <span style={{ color: "var(--green)" }}>On track for the playoffs ({playoffSpots} make it).</span> : <span style={{ color: "var(--gold)" }}>Outside the playoff cut ({playoffSpots} spots) — every week counts.</span>}
+                  {myStanding && myProj && myProj.projRank < myStanding.rank ? <span className="mut"> Your roster projects to climb.</span> : myStanding && myProj && myProj.projRank > myStanding.rank ? <span className="mut"> Tougher schedule ahead — hold your ground.</span> : null}
+                </div>
               </div>
             </div>
+
+            {/* ===== Strengths & weaknesses ===== */}
+            <div className="panel" style={{ padding: 16 }}>
+              <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Team shape</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <div>
+                  <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6, color: "var(--green)" }}>Strengths</div>
+                  {strengths.length ? strengths.map((pos) => (
+                    <div key={pos} style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 0", fontSize: 12.5 }}>
+                      <Dot pos={pos} /><b>{pos}</b> <span className="mut">— {ordinal(myPosRank[pos].rank)} of {myPosRank[pos].of} in the league</span>
+                    </div>
+                  )) : <div className="mut" style={{ fontSize: 12 }}>No standout strengths yet — balanced roster.</div>}
+                </div>
+                <div>
+                  <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6, color: "var(--red)" }}>Needs work</div>
+                  {weaknesses.length ? weaknesses.map((pos) => (
+                    <div key={pos} style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 0", fontSize: 12.5 }}>
+                      <Dot pos={pos} /><b>{pos}</b> <span className="mut">— {ordinal(myPosRank[pos].rank)} of {myPosRank[pos].of}, target upgrades</span>
+                    </div>
+                  )) : <div className="mut" style={{ fontSize: 12 }}>No glaring holes — nice and deep.</div>}
+                </div>
+              </div>
+            </div>
+
+            {/* ===== Lineup call ===== */}
+            <div className="panel" style={{ padding: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
+                <div className="disp" style={{ fontSize: 15, fontWeight: 700 }}>Lineup</div>
+                <button className="btn btn-mini" onClick={() => setTab("lineup")}>Open matchup →</button>
+              </div>
+              {leftOnBench > 0 && swapsIn.length > 0 ? (
+                <div>
+                  <div style={{ fontSize: 12.5, color: "var(--red)", fontWeight: 700, marginBottom: 5 }}>You're leaving {leftOnBench.toFixed(2)} points on your bench.</div>
+                  {swapsIn.map((pin, i) => { const pout = swapsOut[i]; return (
+                    <div key={pin.sid} style={{ fontSize: 12, padding: "2px 0" }}>
+                      <span style={{ color: "var(--green)" }}><Dot pos={pin.pos} />Start {pin.name} ({pin.pts.toFixed(2)})</span>
+                      {pout && <span className="mut"> over {pout.name} ({pout.pts.toFixed(2)})</span>}
+                    </div>
+                  ); })}
+                </div>
+              ) : <div style={{ fontSize: 12.5, color: "var(--green)" }}>✓ Your lineup is already optimal for this week.</div>}
+            </div>
+
+            {/* ===== Free agents to consider ===== */}
+            <div className="panel" style={{ padding: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
+                <div className="disp" style={{ fontSize: 15, fontWeight: 700 }}>Free agents to consider</div>
+                <button className="btn btn-mini" onClick={() => setTab("freeagents")}>See all →</button>
+              </div>
+              {summaryFA.length ? summaryFA.map(({ p, reason }) => (
+                <div key={p.sid} style={{ display: "flex", alignItems: "center", gap: 9, padding: "6px 0", fontSize: 12.5 }}>
+                  <Dot pos={p.pos} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <b>{p.name}</b> <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · {p.team}</span>
+                    <div style={{ fontSize: 10.5, color: "var(--green)" }}>{reason}</div>
+                  </div>
+                </div>
+              )) : <div className="mut" style={{ fontSize: 12 }}>No clear waiver upgrades right now — your roster covers your starters.</div>}
+            </div>
+
+            {/* ===== Concerns: injuries / byes / (weather when available) ===== */}
+            {(injuredRoster.length > 0 || byeStarters.length > 0) && (
+              <div className="panel" style={{ padding: 16, borderColor: "var(--red)" }}>
+                <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 8, color: "var(--red)" }}>Heads up</div>
+                {byeStarters.length > 0 && (
+                  <div style={{ fontSize: 12.5, marginBottom: 6 }}><i className="ti ti-calendar-off" style={{ fontSize: 13, marginRight: 5, color: "var(--red)" }} aria-hidden="true" /><b>{byeStarters.length}</b> projected starter{byeStarters.length > 1 ? "s" : ""} on bye: {byeStarters.map((p) => p.name).join(", ")}.</div>
+                )}
+                {injuredRoster.length > 0 && (
+                  <div style={{ fontSize: 12.5 }}><i className="ti ti-ambulance" style={{ fontSize: 13, marginRight: 5, color: "var(--red)" }} aria-hidden="true" />Injury flags: {injuredRoster.map((p) => `${p.name} (${p.wkInj || p.inj})`).join(", ")}.</div>
+                )}
+                <div className="mut" style={{ fontSize: 10, marginTop: 8 }}>Weather alerts will appear here once the NFL schedule and forecasts are available.</div>
+              </div>
+            )}
+
+            {/* ===== Everything else worth a glance ===== */}
+            {notes.length > 0 && (
+              <div className="panel" style={{ padding: 16 }}>
+                <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Also worth a look</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                  {notes.map((n, i) => {
+                    const c = n.tone === "warn" ? "var(--red)" : n.tone === "good" ? "var(--green)" : "var(--blue)";
+                    return <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "9px 11px", background: "var(--panel2)", borderRadius: 8, borderLeft: `2px solid ${c}` }}>
+                      <i className={`ti ${n.icon}`} style={{ fontSize: 15, color: c, marginTop: 1 }} aria-hidden="true" />
+                      <span style={{ fontSize: 12.5, lineHeight: 1.45 }}>{n.text}</span>
+                    </div>;
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -9825,7 +9924,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   const cur = path && path[0] ? path[0] : null;
                   const cands5 = cur && cur.cands5 && cur.cands5.length > 1 ? cur.cands5 : null;
                   if (cands5) cardTipContent = [
-                    { kind: "take", tone: "neutral", x: `${pickLabel(picks.length)} · ${TEAM_NAMES[onClock]} — engine's top candidates` },
+                    { kind: "take", tone: "neutral", x: `${pickLabel(picks.length)} · ${TEAM_NAMES[onClock]}${TEAM_OWNERS[onClock] ? ` (@${TEAM_OWNERS[onClock]})` : ""} — engine's top candidates` },
                     ...cands5.map((c, ci) => ({ tc: ci === 0 ? "var(--gold)" : POS_COLOR[c.p.pos], t: `${c.prob != null ? c.prob + "%" : ""}`, x: `${ci === 0 ? "★ " : ""}${c.p.name} — ${c.p.pos}${c.p.posRank}${ci === 0 ? " (expected)" : ""}` })),
                     { t: "", x: "★ = who the engine expects here. Others are the next-most-likely picks if the board breaks differently." },
                   ];
@@ -9963,7 +10062,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             ) : (
               <div key={step.o} className="tickcard" style={{ cursor: step.cands5 && step.cands5.length ? "help" : "default" }}
                 onMouseEnter={step.cands5 && step.cands5.length ? (e) => showTip(e, [
-                  { kind: "take", tone: "neutral", x: `${pickLabel(step.o)} · ${TEAM_NAMES[step.t]} — engine's top candidates` },
+                  { kind: "take", tone: "neutral", x: `${pickLabel(step.o)} · ${TEAM_NAMES[step.t]}${TEAM_OWNERS[step.t] ? ` (@${TEAM_OWNERS[step.t]})` : ""} — engine's top candidates` },
                   ...step.cands5.map((c, ci) => ({
                     t: `${c.prob}%`,
                     tc: ci === 0 ? "var(--gold)" : POS_COLOR[c.p.pos],
@@ -10781,7 +10880,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               const rowBg = isYou ? "rgba(242,182,60,.10)" : ri % 2 ? "rgba(255,255,255,.022)" : "transparent";
                               return (
                                 <tr key={t.idx} style={{ background: rowBg, borderTop: "1px solid var(--line)" }}>
-                                  <td style={{ padding: "5px 8px", fontWeight: isYou ? 700 : 500, color: isYou ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", position: "sticky", left: 0, background: isYou ? "#231f10" : (ri % 2 ? "#141a22" : "var(--panel)") }}>{isYou ? "★ " : ""}{(TEAM_NAMES[t.idx] || `Team ${t.idx + 1}`).split(" ").slice(0, 2).join(" ")}</td>
+                                  <td style={{ padding: "5px 8px", fontWeight: isYou ? 700 : 500, color: isYou ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", position: "sticky", left: 0, background: isYou ? "#231f10" : (ri % 2 ? "#141a22" : "var(--panel)"), cursor: TEAM_OWNERS[t.idx] ? "help" : "default" }} title={TEAM_OWNERS[t.idx] ? `@${TEAM_OWNERS[t.idx]}` : undefined}>{isYou ? "★ " : ""}{(TEAM_NAMES[t.idx] || `Team ${t.idx + 1}`).split(" ").slice(0, 2).join(" ")}{TEAM_OWNERS[t.idx] ? <span className="mut" style={{ fontSize: 9.5, fontWeight: 400 }}> (@{TEAM_OWNERS[t.idx]})</span> : null}</td>
                                   {lo.positions.map((pos) => {
                                     const b = t.byPos[pos];
                                     const tr = lo.posTiers[t.idx][pos];
