@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28f";
+const BUILD_TAG = "2026.06.28g";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2888,13 +2888,28 @@ const PosName = ({ p }) => <span><Dot pos={p.pos} /><span className="mut" style=
 
 /* ============================================================ APP SHELL */
 export default function App() {
-  const [route, setRoute] = useState("home"); // home | checkout | library | setup | draft | admin
+  // Restore the last view on refresh (sessionStorage: survives reload, clears when the tab closes) so a
+  // page refresh returns you to where you were instead of the home page. Only restore routes that are safe
+  // to land on directly (a draft/hub needs its id; if that's missing we fall back to home).
+  const restoreNav = () => {
+    try {
+      const r = sessionStorage.getItem("gs-nav");
+      const n = r ? JSON.parse(r) : {};
+      const SAFE = ["home", "library", "teamHub", "leagueHub", "draft", "rankings", "trendsTime", "tradeTools", "adpIntel", "database", "trends", "help", "guide", "account", "admin"];
+      if (!SAFE.includes(n.route)) return {};
+      if (n.route === "teamHub" && !n.hubLeagueId) return {};
+      if ((n.route === "draft" || n.route === "leagueHub") && !n.activeId) return {};
+      return n;
+    } catch { return {}; }
+  };
+  const nav0 = restoreNav();
+  const [route, setRoute] = useState(nav0.route || "home"); // home | checkout | library | setup | draft | admin
   const [user, setUser] = useState(null); // {email, paid, admin}
   const [authOpen, setAuthOpen] = useState(false);
   const [authError, setAuthError] = useState(null);
   const [leagues, setLeagues] = useState([]);
-  const [activeId, setActiveId] = useState(null);
-  const [hubLeagueId, setHubLeagueId] = useState(null); // Sleeper league_id for the in-season team hub
+  const [activeId, setActiveId] = useState(nav0.activeId || null);
+  const [hubLeagueId, setHubLeagueId] = useState(nav0.hubLeagueId || null); // Sleeper league_id for the in-season team hub
   const [draftTab, setDraftTab] = useState(null); // optional tab to open the draft room on
   const [helpTab, setHelpTab] = useState(null); // optional tab to open Help on
   const [setupReturn, setSetupReturn] = useState(null); // where the New League flow should return to
@@ -2914,6 +2929,23 @@ export default function App() {
   const [quickMockOpen, setQuickMockOpen] = useState(false); // quick-mock pre-draft prompt
   const [funMocks, setFunMocks] = useState([]); // standalone mocks not tied to a league
   const [feedback, setFeedback] = useState([]); // user-submitted feedback {id,email,topic,msg,ts,status,reply}
+
+  // Persist the current view so a refresh restores it. We don't persist transient/modal routes like
+  // checkout (those should return home on reload rather than trap the user).
+  useEffect(() => {
+    try {
+      const persistable = !["checkout"].includes(route);
+      if (persistable) sessionStorage.setItem("gs-nav", JSON.stringify({ route, activeId, hubLeagueId }));
+    } catch { /* sessionStorage unavailable — refresh just falls back to home */ }
+  }, [route, activeId, hubLeagueId]);
+
+  // Safety net for restored routes: once boot completes, if we're on a route that needs a signed-in user
+  // but there isn't one (e.g. a stale restore after sign-out), return home instead of a blank screen.
+  useEffect(() => {
+    if (!bootReady) return;
+    const NEEDS_USER = ["teamHub", "leagueHub", "draft", "rankings", "trendsTime", "tradeTools", "adpIntel", "account", "admin", "trends"];
+    if (NEEDS_USER.includes(route) && !user) setRoute("home");
+  }, [bootReady, route, user]);
 
   useEffect(() => {
     (async () => {
@@ -4553,7 +4585,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
 
   // -------- Weekly notes --------
   const notes = [];
-  if (leftOnBench >= 1) notes.push({ tone: "warn", icon: "ti-alert-triangle", text: `You're projected to leave ${leftOnBench.toFixed(1)} points on your bench this week — check the Lineup tab for the swaps.` });
+  if (leftOnBench >= 1) notes.push({ tone: "warn", icon: "ti-alert-triangle", text: `You're projected to leave ${leftOnBench.toFixed(2)} points on your bench this week — check the Lineup tab for the swaps.` });
   const byeThisWeek = myRoster.filter((p) => p.bye === data.week);
   if (byeThisWeek.length) notes.push({ tone: "warn", icon: "ti-calendar-off", text: `${byeThisWeek.length} of your players are on bye in Week ${data.week}: ${byeThisWeek.map((p) => p.name).join(", ")}.` });
   const injured = myRoster.filter((p) => p.inj);
@@ -4727,12 +4759,12 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 700 }}>{matchupView.meName}</div>
-                <div className="num" style={{ fontSize: 22, fontWeight: 800, color: matchupView.mePts >= matchupView.oppPts ? "var(--green)" : "var(--gold)" }}>{matchupView.mePts.toFixed(1)}</div>
+                <div className="num" style={{ fontSize: 22, fontWeight: 800, color: matchupView.mePts >= matchupView.oppPts ? "var(--green)" : "var(--gold)" }}>{matchupView.mePts.toFixed(2)}</div>
               </div>
               <div className="mut" style={{ fontSize: 12, fontWeight: 700 }}>vs</div>
               <div style={{ flex: 1, textAlign: "right" }}>
                 <div style={{ fontWeight: 700 }}>{matchupView.oppName}</div>
-                <div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{matchupView.oppPts.toFixed(1)}</div>
+                <div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{matchupView.oppPts.toFixed(2)}</div>
               </div>
             </div>
             {!matchupView.isLive && <div className="mut" style={{ fontSize: 10.5, marginTop: 6 }}>Projected from each team's set lineup using this week's matchup projections. Switches to the live score once games kick off.</div>}
@@ -4755,13 +4787,13 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
             <div style={{ display: "flex", alignItems: "flex-end", gap: 10, marginBottom: 14 }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="disp" style={{ fontSize: 15, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{myTeam.teamName}</div>
-                <div className="num" style={{ fontSize: 24, fontWeight: 800, color: "var(--gold)" }}>{(matchupView ? matchupView.mePts : currentPts).toFixed(1)}</div>
+                <div className="num" style={{ fontSize: 24, fontWeight: 800, color: "var(--gold)" }}>{(matchupView ? matchupView.mePts : currentPts).toFixed(2)}</div>
               </div>
               <div className="mut" style={{ fontSize: 12, fontWeight: 700, paddingBottom: 6 }}>{matchupView && matchupView.isLive ? "" : "proj"}</div>
               {matchupView ? (
                 <div style={{ flex: 1, minWidth: 0, textAlign: "right" }}>
                   <div className="disp" style={{ fontSize: 15, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{matchupView.oppName}{matchupView.oppRecord ? <span className="mut" style={{ fontSize: 11, fontWeight: 400 }}> ({matchupView.oppRecord.wins}-{matchupView.oppRecord.losses})</span> : null}</div>
-                  <div className="num" style={{ fontSize: 24, fontWeight: 800 }}>{matchupView.oppPts.toFixed(1)}</div>
+                  <div className="num" style={{ fontSize: 24, fontWeight: 800 }}>{matchupView.oppPts.toFixed(2)}</div>
                 </div>
               ) : <div style={{ flex: 1 }} />}
             </div>
@@ -4775,12 +4807,12 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
             {/* Optimizer nudge — you may not be starting your best lineup */}
             {leftOnBench > 0 && (swapsIn.length > 0) && (
               <div style={{ background: "rgba(242,101,92,.08)", border: "1px solid var(--red)", borderRadius: 8, padding: "10px 12px", marginBottom: 12 }}>
-                <div style={{ fontWeight: 700, color: "var(--red)", fontSize: 12.5, marginBottom: 5 }}>You're leaving {leftOnBench.toFixed(1)} pts on your bench — suggested changes</div>
+                <div style={{ fontWeight: 700, color: "var(--red)", fontSize: 12.5, marginBottom: 5 }}>You're leaving {leftOnBench.toFixed(2)} pts on your bench — suggested changes</div>
                 {swapsIn.map((pin, i) => {
                   const pout = swapsOut[i];
                   return <div key={pin.sid} style={{ fontSize: 12, padding: "2px 0" }}>
-                    <span style={{ color: "var(--green)" }}><i className="ti ti-arrow-up" style={{ fontSize: 12 }} aria-hidden="true" /> Start <b><Dot pos={pin.pos} />{pin.name}</b> ({pin.pts.toFixed(1)})</span>
-                    {pout && <span className="mut"> over <Dot pos={pout.pos} />{pout.name} ({pout.pts.toFixed(1)})</span>}
+                    <span style={{ color: "var(--green)" }}><i className="ti ti-arrow-up" style={{ fontSize: 12 }} aria-hidden="true" /> Start <b><Dot pos={pin.pos} />{pin.name}</b> ({pin.pts.toFixed(2)})</span>
+                    {pout && <span className="mut"> over <Dot pos={pout.pos} />{pout.name} ({pout.pts.toFixed(2)})</span>}
                   </div>;
                 })}
               </div>
@@ -4807,9 +4839,9 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                   return (
                     <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", background: "var(--panel2)", borderRadius: 7 }}>
                       {cell(row.me, "left")}
-                      <span className="num" style={{ fontWeight: 700, fontSize: 12.5, width: 38, textAlign: "right", color: meWins ? "var(--green)" : "var(--ink)" }}>{mePts.toFixed(1)}</span>
+                      <span className="num" style={{ fontWeight: 700, fontSize: 12.5, width: 38, textAlign: "right", color: meWins ? "var(--green)" : "var(--ink)" }}>{mePts.toFixed(2)}</span>
                       <span className="disp" style={{ fontSize: 9.5, fontWeight: 700, color: row.slot.color, width: 62, textAlign: "center", flexShrink: 0 }}>{row.slot.label}</span>
-                      <span className="num" style={{ fontWeight: 700, fontSize: 12.5, width: 38, color: oppWins ? "var(--green)" : "var(--ink)" }}>{oppPts.toFixed(1)}</span>
+                      <span className="num" style={{ fontWeight: 700, fontSize: 12.5, width: 38, color: oppWins ? "var(--green)" : "var(--ink)" }}>{oppPts.toFixed(2)}</span>
                       {cell(row.opp, "right")}
                     </div>
                   );
@@ -4821,7 +4853,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                 {slotTemplate.map((slot, i) => { const p = matchupView ? matchupView.meStarters[i] : (opt.slots[i] && opt.slots[i].p); return (
                   <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 10px", background: "var(--panel2)", borderRadius: 7 }}>
                     <span className="disp" style={{ fontSize: 10, fontWeight: 700, color: slot.color, width: 62 }}>{slot.label}</span>
-                    {p ? <><Dot pos={p.pos} /><span style={{ fontWeight: 600, fontSize: 13, flex: 1, minWidth: 0 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.team}{p.opp ? ` vs ${p.opp}` : ""}</span></span><span className="num" style={{ fontWeight: 700 }}>{(p.pts || 0).toFixed(1)}</span></> : <span className="mut" style={{ flex: 1 }}>— empty —</span>}
+                    {p ? <><Dot pos={p.pos} /><span style={{ fontWeight: 600, fontSize: 13, flex: 1, minWidth: 0 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.team}{p.opp ? ` vs ${p.opp}` : ""}</span></span><span className="num" style={{ fontWeight: 700 }}>{(p.pts || 0).toFixed(2)}</span></> : <span className="mut" style={{ flex: 1 }}>— empty —</span>}
                   </div>
                 ); })}
               </div>
@@ -4838,7 +4870,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                       <Dot pos={p.pos} /><span style={{ fontSize: 12.5, flex: 1, minWidth: 0 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · {p.team}</span></span>
                       {p.bye === data.week && <span className="chip" style={{ fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>BYE</span>}
                       {p.inj && <span className="chip" style={{ fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>{p.inj}</span>}
-                      <span className="num" style={{ fontWeight: 600, color: "var(--mut)" }}>{p.pts.toFixed(1)}</span>
+                      <span className="num" style={{ fontWeight: 600, color: "var(--mut)" }}>{p.pts.toFixed(2)}</span>
                     </div>
                   ))}
                 </div>
@@ -4867,7 +4899,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                       </div>
                     </div>
                     <div style={{ textAlign: "right", flexShrink: 0 }}>
-                      <div className="num" style={{ fontWeight: 700, fontSize: 12.5 }}>{p.pts.toFixed(1)} pts/wk</div>
+                      <div className="num" style={{ fontWeight: 700, fontSize: 12.5 }}>{p.pts.toFixed(2)} pts/wk</div>
                       {upgrade > 1 && <div style={{ fontSize: 10, color: "var(--green)" }}>+{(Math.round(upgrade * 10) / 10)} vs your {p.pos}</div>}
                     </div>
                     <span style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 700, color: vc.c, border: `1px solid ${vc.c}`, borderRadius: 99, padding: "2px 9px" }}>{vc.label}</span>
@@ -4923,7 +4955,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                             {isFlex && <span style={{ fontSize: 8.5, fontWeight: 700, color: "var(--blue)", flexShrink: 0 }}>{slot === "SFLX" ? "SF" : "FLEX"}</span>}
                             {p.bye === data.week && <span style={{ fontSize: 8.5, fontWeight: 700, color: "var(--red)", flexShrink: 0 }}>BYE</span>}
                             {p.inj && <span style={{ fontSize: 8.5, fontWeight: 700, color: "var(--red)", flexShrink: 0 }} title={p.inj}>⚕</span>}
-                            <span className="num" style={{ fontWeight: isStarter ? 700 : 400, fontSize: 12, flexShrink: 0, color: isStarter ? "var(--ink)" : "var(--mut)" }}>{p.pts.toFixed(1)}</span>
+                            <span className="num" style={{ fontWeight: isStarter ? 700 : 400, fontSize: 12, flexShrink: 0, color: isStarter ? "var(--ink)" : "var(--mut)" }}>{p.pts.toFixed(2)}</span>
                           </div>
                         );
                       })}
@@ -4995,7 +5027,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                           <td style={{ textAlign: "center", padding: "6px" }}>{st.record.wins}-{st.record.losses}{st.record.ties ? `-${st.record.ties}` : ""}</td>
                           <td style={{ textAlign: "center", padding: "6px", color: inPlayoffs ? "var(--green)" : "var(--mut)", fontWeight: 600 }}>{pj ? ordinal(pj.projRank) : "—"}</td>
                           <td style={{ textAlign: "center", padding: "6px" }}>{pr ? ordinal(pr) : "—"}</td>
-                          <td style={{ textAlign: "right", padding: "6px" }} className="num">{lt.power != null ? lt.power.toFixed(1) : "—"}</td>
+                          <td style={{ textAlign: "right", padding: "6px" }} className="num">{lt.power != null ? lt.power.toFixed(2) : "—"}</td>
                         </tr>
                       );
                     })}
