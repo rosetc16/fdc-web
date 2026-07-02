@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28n";
+const BUILD_TAG = "2026.06.28o";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5420,6 +5420,22 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
   const [openPickFlow, setOpenPickFlow] = useState(false); // in-flow (Get started) league picker
   const [mockPick, setMockPick] = useState(false); // expand the "run a mock" picker box
   const [delConfirm, setDelConfirm] = useState(null); // league id pending delete confirmation
+  const [showSteps, setShowSteps] = useState(leagues.length === 0); // getting-started collapsed by default for veterans; open for first-timers
+  // Pull the user's Sleeper leagues so we can surface any not yet imported into FDC, right in the leagues list.
+  const [sleeperLeagues, setSleeperLeagues] = useState(null);
+  const [slLoading, setSlLoading] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    if (hasBackend && sleeperLink.linked && sleeperLeagues === null && !slLoading) {
+      setSlLoading(true);
+      api.sleeperMyLeagues().then((r) => { if (alive) setSleeperLeagues((r && r.leagues) || []); })
+        .catch(() => { if (alive) setSleeperLeagues([]); })
+        .finally(() => { if (alive) setSlLoading(false); });
+    }
+    return () => { alive = false; };
+  }, [sleeperLink.linked]);
+  const linkedLeagueIds = new Set(leagues.map((l) => l.connect && l.connect.leagueId).filter(Boolean));
+  const unimportedSleeper = (sleeperLeagues || []).filter((sl) => !linkedLeagueIds.has(sl.league_id));
   // open exactly one picker at a time
   const openLeaguePanel = () => { setMockPick(false); setOpenPickFlow(false); setOpenPick((v) => !v); };
   const openLeagueFlow = () => { setMockPick(false); setOpenPick(false); setOpenPickFlow((v) => !v); };
@@ -5488,19 +5504,91 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         </div>
       </div>
 
-      {/* Your teams (dropdown, view-only) with the Sleeper link control right beside it */}
+      {/* ===== YOUR LEAGUES — front and center, no dropdown. Each league: clear Draft room + My Team. ===== */}
       <div data-teams-anchor style={{ maxWidth: 940, margin: "0 auto", padding: "0 20px 8px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7 }}>
-          <i className="ti ti-calendar-stats" style={{ fontSize: 15, color: "var(--blue)" }} aria-hidden="true" />
-          <span className="disp" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink)" }}>Draft & in-season</span>
-          <span className="mut" style={{ fontSize: 11.5 }}>— open a draft, or link Sleeper and run your team all season</span>
-        </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "flex-start", flexWrap: "wrap" }}>
-          <YourTeamsDropdown user={user} leagues={leagues} onOpenLeague={(id) => onUmbrella(id)} onNewFromSleeper={() => onNewLeague()} onOpenHub={onOpenHub} linked={sleeperLink.linked} sleeperName={sleeperLink.username} />
-          <div style={{ width: 260, maxWidth: "100%" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 9, flexWrap: "wrap" }}>
+          <i className="ti ti-clipboard-list" style={{ fontSize: 16, color: "var(--gold)" }} aria-hidden="true" />
+          <span className="disp" style={{ fontSize: 15, fontWeight: 800, color: "var(--ink)" }}>Your leagues</span>
+          <div style={{ flex: 1 }} />
+          <div style={{ width: 240, maxWidth: "100%" }}>
             <SleeperLinkControl link={sleeperLink.link} unlink={sleeperLink.unlink} linked={sleeperLink.linked} username={sleeperLink.username} />
           </div>
         </div>
+
+        {leagues.length === 0 && unimportedSleeper.length === 0 ? (
+          <div className="panel" style={{ padding: 18, textAlign: "center" }}>
+            <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>No leagues yet</div>
+            <div className="mut" style={{ fontSize: 12.5, marginBottom: 12 }}>{sleeperLink.linked ? "Create a league by hand, or run a quick mock to get a feel for the board." : "Link your Sleeper account above to pull your leagues in, or create one by hand."}</div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+              <button className="btn btn-gold btn-mini" onClick={() => onNewLeague()}><i className="ti ti-plus" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Create a league</button>
+              <button className="btn btn-mini" onClick={() => onQuickMock()}><i className="ti ti-dice-5" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Run a quick mock</button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 10 }}>
+            {sortedLeagues.map((l) => {
+              const st = leagueStatus(l);
+              const isSleeper = !!(l.connect && l.connect.leagueId);
+              const mocks = (l.mocks || []).length;
+              const draftLive = l.picks.length > 0 && st.pct < 100;
+              return (
+                <div key={l.id} style={{ border: `1px solid ${draftLive ? "var(--gold)" : "var(--line)"}`, background: draftLive ? "linear-gradient(180deg,rgba(242,182,60,.06),transparent)" : "var(--panel)", borderRadius: 13, padding: 14, display: "flex", flexDirection: "column", gap: 11 }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>{l.name}</span>
+                        {isSleeper && <span className="chip" style={{ fontSize: 8.5, color: "var(--blue)" }}>Sleeper</span>}
+                      </div>
+                      <div className="mut" style={{ fontSize: 11, marginTop: 2 }}>
+                        {l.cfg.teams || 12}T · {l.cfg.sf ? "Superflex" : "1QB"}{l.cfg.tePremMult > 0 ? " · TE+" : ""} · {l.cfg.rounds} rds
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 5 }}>
+                        <i className={`ti ${st.icon}`} style={{ fontSize: 12, color: st.color }} aria-hidden="true" />
+                        <span style={{ fontSize: 11.5, color: st.color, fontWeight: 600 }}>{st.label}</span>
+                        {mocks > 0 && <span className="chip" style={{ fontSize: 8.5 }}>{mocks} mock{mocks === 1 ? "" : "s"}</span>}
+                      </div>
+                    </div>
+                    {onDelete && (delConfirm === l.id
+                      ? <span style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                          <button className="btn btn-mini" style={{ borderColor: "var(--red)", color: "var(--red)" }} onClick={() => { onDelete(l.id); setDelConfirm(null); }} title="Confirm delete"><i className="ti ti-check" style={{ fontSize: 12 }} aria-hidden="true" /></button>
+                          <button className="btn btn-mini" onClick={() => setDelConfirm(null)} title="Cancel"><i className="ti ti-x" style={{ fontSize: 12 }} aria-hidden="true" /></button>
+                        </span>
+                      : <button className="btn btn-mini" onClick={() => setDelConfirm(l.id)} title="Delete league" style={{ flexShrink: 0, borderColor: "transparent", color: "var(--mut)", padding: "3px 6px" }}><i className="ti ti-trash" style={{ fontSize: 13 }} aria-hidden="true" /></button>
+                    )}
+                  </div>
+                  {/* two clearly-distinct actions */}
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => onUmbrella(l.id)} style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "9px 10px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: `1px solid ${draftLive ? "var(--gold)" : "var(--line2)"}`, background: draftLive ? "var(--gold)" : "var(--panel3)", color: draftLive ? "#151002" : "var(--ink)", fontWeight: 700, fontSize: 13 }}>
+                      <i className="ti ti-clipboard-text" style={{ fontSize: 14 }} aria-hidden="true" />{draftLive ? "Resume draft" : "Draft room"}
+                    </button>
+                    {isSleeper && onOpenHub && (
+                      <button onClick={() => onOpenHub({ league_id: l.connect.leagueId })} style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "9px 10px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--blue)", background: "rgba(107,168,229,.10)", color: "var(--blue)", fontWeight: 700, fontSize: 13 }}>
+                        <i className="ti ti-user-heart" style={{ fontSize: 14 }} aria-hidden="true" />My Team
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Unimported Sleeper leagues — one tap to connect */}
+            {unimportedSleeper.map((sl) => (
+              <div key={sl.league_id} style={{ border: "1px dashed var(--line2)", background: "var(--panel2)", borderRadius: 13, padding: 14, display: "flex", flexDirection: "column", gap: 11 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>{sl.name}</span>
+                    <span className="chip" style={{ fontSize: 8.5, color: "var(--blue)" }}>Sleeper</span>
+                  </div>
+                  <div className="mut" style={{ fontSize: 11, marginTop: 2 }}>{sl.total_rosters || "?"}T · not yet in Compass</div>
+                </div>
+                <button onClick={() => onNewLeague()} style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "9px 10px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--gold)", background: "rgba(242,182,60,.10)", color: "var(--gold)", fontWeight: 700, fontSize: 13 }}>
+                  <i className="ti ti-plus" style={{ fontSize: 14 }} aria-hidden="true" />Add to Compass
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {slLoading && <div className="mut" style={{ fontSize: 11.5, marginTop: 8 }}>Checking Sleeper for more of your leagues…</div>}
       </div>
 
       {/* the existing-league picker can open straight from the quick action above */}
@@ -5583,12 +5671,15 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
           </button>
         )}
 
-        {/* ===== SECTION: GET STARTED ===== */}
+        {/* ===== SECTION: GET STARTED (collapsed by default for veterans) ===== */}
         <div className="hubsection">
-          <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 3 }}>
+          <button onClick={() => setShowSteps((v) => !v)} style={{ width: "100%", cursor: "pointer", fontFamily: "inherit", background: "transparent", border: "none", padding: 0, textAlign: "left", display: "flex", alignItems: "center", gap: 9, marginBottom: showSteps ? 3 : 0, color: "var(--ink)" }}>
             <i className="ti ti-route" style={{ fontSize: 19, color: "var(--gold)" }} aria-hidden="true" />
-            <div className="disp" style={{ fontSize: 19, fontWeight: 700 }}>Get started</div>
-          </div>
+            <div className="disp" style={{ fontSize: 19, fontWeight: 700, flex: 1 }}>New here? Get started</div>
+            <span className="mut" style={{ fontSize: 12 }}>{showSteps ? "Hide" : "Show the 5 steps"}</span>
+            <i className={`ti ti-chevron-${showSteps ? "up" : "down"}`} style={{ fontSize: 16, color: "var(--mut)" }} aria-hidden="true" />
+          </button>
+          {showSteps && (<>
           <div className="mut" style={{ fontSize: 12.5, marginBottom: 14 }}>The whole flow, in order — jump in anywhere. Hover a card for details; your next step glows gold.</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(165px,1fr))", gap: 10 }}>
             {steps.map((s) => {
@@ -5707,6 +5798,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
             </div>
           </div>
         )}
+        </>)}
         </div>{/* end Get started section */}
 
         {/* ===== SECTION: YOUR TOOLKIT ===== */}
