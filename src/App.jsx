@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ay";
+const BUILD_TAG = "2026.06.28az";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1451,6 +1451,7 @@ function scoreFromStats(pos, s, sc) {
 }
 
 function buildPlayers(cfg) {
+  setBestBall(isBestBallCfg(cfg)); // engine mode flag follows the league type on every rebuild
   const teMult = cfg.tePremMult != null ? cfg.tePremMult : (cfg.tePrem ? 1.0 : 0);
   const sf = isSuperflex(cfg); // canonical: covers cfg.sf, SUPER slot, or 2+ QB slots
   const useIdp = idpOn(cfg);
@@ -1812,10 +1813,30 @@ const baseW = (p, pick) => {
 // start: dedicated starters per position; FLEX (RB/WR/TE) and SUPER (any) are generic slots.
 let SPEC = { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0, DST: 0, K: 0 };
 const setSpec = (s) => { SPEC = { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0, DST: 0, K: 0, ...(s || {}) }; };
+// Best-ball mode flag (set per league from cfg.type before engine calls). Best ball has no in-season
+// management: the platform auto-optimizes each week from your whole roster, so you draft for CEILING and
+// DEPTH at spike-week positions rather than a fixed starting lineup. When true, the engine re-tunes its
+// depth caps, positional demand, marginal-value falloff, and value weighting (ceiling over floor), and
+// rewards QB↔pass-catcher stacks. It changes weighting only — the VBD/position/ADP model is untouched.
+let BB = false;
+const setBestBall = (on) => { BB = !!on; };
+const isBestBallCfg = (cfg) => !!(cfg && (cfg.type === "bestball" || cfg.bestBall));
 const genericSlots = () => (SPEC.FLEX || 0) + (SPEC.SUPER || 0);
 // demand ~ expected roster need scaled by starters + a share of generic slots
 const demand = (sf) => {
   const g = genericSlots();
+  if (BB) {
+    // Best ball: no waiver replacements, so you want a deep, spike-week-heavy roster. Demand is meaningfully
+    // higher everywhere — you keep drafting bodies at RB/WR, carry 2-3 QB (spike weeks win weeks), and
+    // 2-3 TE. These larger demand numbers keep the engine recommending depth deep into the draft instead of
+    // treating a position as "done" after the starters are nominally filled.
+    return {
+      QB: (sf || SPEC.SUPER > 0 ? 2.6 : 2.1) + (SPEC.SUPER ? SPEC.SUPER * 0.5 : 0),
+      RB: SPEC.RB + g * 0.42 + 3.2,
+      WR: SPEC.WR + g * 0.46 + 3.6,
+      TE: SPEC.TE + (SPEC.tePrem ? 1.6 : 1.1),
+    };
+  }
   return {
     QB: SPEC.QB + (sf || SPEC.SUPER > 0 ? 0.7 : 0.05) + (SPEC.SUPER ? SPEC.SUPER * 0.5 : 0),
     RB: SPEC.RB + g * 0.42,
@@ -1826,6 +1847,18 @@ const demand = (sf) => {
 const REQ_F = (sf) => ({ QB: SPEC.QB, RB: SPEC.RB, WR: SPEC.WR, TE: SPEC.TE });
 function capsOf(cfg) {
   const d = Math.max(0, cfg.rounds - 8);
+  if (isBestBallCfg(cfg)) {
+    // Best ball rosters run deep (~18-20 spots) and reward spike-week depth. Caps are generous so the engine
+    // can keep stacking bodies — especially RB/WR — and carry 3+ QB and 3+ TE (more in TE-premium).
+    const base = {
+      QB: (cfg.sf ? 4 : 3) + Math.floor(d / 8),
+      RB: 7 + Math.ceil(d / 2),
+      WR: 8 + Math.ceil(d / 2),
+      TE: (cfg.tePremMult > 0 ? 4 : 3) + Math.floor(d / 8),
+    };
+    POS.forEach((p) => { const x = cfg.caps && cfg.caps[p]; if (x != null && x !== "" && +x > 0) base[p] = +x; });
+    return base;
+  }
   const base = cfg.sf
     ? { QB: 3 + Math.floor(d / 6), RB: 4 + Math.ceil(d / 2), WR: 4 + Math.ceil(d / 2), TE: 2 + Math.floor(d / 6) }
     : { QB: 2 + Math.floor(d / 6), RB: 4 + Math.ceil(d / 2), WR: 4 + Math.ceil(d / 2), TE: 2 + Math.floor(d / 6) };
@@ -1853,12 +1886,40 @@ function marginalVbd(c, counts, sf) {
   let surplus = 0; ["RB","WR","TE"].forEach((p) => (surplus += Math.max(0, counts[p] - req[p])));
   if (superOnly > 0) surplus += Math.max(0, counts.QB - req.QB);
   const eligible = c.pos !== "QB" || superOnly > 0 || sf;
-  return surplus < G && eligible ? c.vbd : c.vbd * 0.25;
+  if (surplus < G && eligible) return c.vbd;
+  // Past the generic slots: in best ball, depth still scores (the platform auto-starts spike weeks), so the
+  // falloff is gentle — a strong bench piece keeps most of its value. In redraft a surplus body is mostly
+  // wasted, so it's discounted hard.
+  return c.vbd * (BB ? 0.7 : 0.25);
+}
+// Best-ball value adjustment, added on top of any strategy's score when BB mode is on. Two effects:
+//  (1) CEILING OVER FLOOR — best ball auto-starts a player's good weeks, so his upside (ceil above his mean
+//      projection) is worth far more than in redraft. We reward the gap between ceiling and mean.
+//  (2) STACKING — a QB and his own team's pass-catchers spike together, so once you roster a QB, his WR/TE
+//      teammates get a modest correlated-upside nudge (and vice-versa). A nudge, not an override.
+// `myTeams` is the set/counts of NFL teams the user already rosters QBs (and pass-catchers) from — passed in
+// via BB_STACK set before advice runs, so we don't recompute per candidate.
+let BB_QB_TEAMS = new Set();   // NFL teams where the user already has a QB
+let BB_PC_TEAMS = new Set();   // NFL teams where the user already has a pass-catcher (WR/TE)
+function setBBStacks(qbTeams, pcTeams) { BB_QB_TEAMS = qbTeams || new Set(); BB_PC_TEAMS = pcTeams || new Set(); }
+function bbBonus(c) {
+  if (!BB) return 0;
+  let b = 0;
+  // (1) ceiling weight: gap between ceiling and mean projection, scaled. Best ball leans into boom weeks.
+  if (c.ceil != null && c.pts != null && c.pts > 0) b += Math.max(0, c.ceil - c.pts) * 0.55;
+  // (2) stack bonus: correlated spike weeks. A pass-catcher stacked behind your QB (or a QB behind your
+  // pass-catcher) gets a modest bump. Only same NFL team, only in best ball.
+  const tm = c.team || c.nflTeam;
+  if (tm) {
+    if ((c.pos === "WR" || c.pos === "TE") && BB_QB_TEAMS.has(tm)) b += 14; // WR/TE behind your QB
+    if (c.pos === "QB" && BB_PC_TEAMS.has(tm)) b += 10;                      // QB behind your WR/TE
+  }
+  return b;
 }
 function userScore(c, counts, dem, strategy, sf, pickNum, build) {
   if (strategy === "adp") return -c.adp;
   const mv = marginalVbd(c, counts, sf);
-  if (strategy === "value") return mv;
+  if (strategy === "value") return mv + bbBonus(c);
   if (strategy === "build") {
     // "My build" — roster-aware: weight your contention window (youth in a rebuild) and TRUE positional
     // need, and penalize positions you've already filled. This is what makes it NOT recommend a 3rd TE
@@ -1871,7 +1932,7 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build) {
     if (lane === "rebuild") { s += Math.max(0, 28 - (c.age || 27)) * 7; if (c.rookie) s += 25; }
     else if (lane === "winnow") { s += Math.max(0, (c.age || 27) - 24) * 3; if (c.rookie) s -= 15; }
     s -= reachPenalty(c, pickNum) * 0.4;
-    return s;
+    return s + bbBonus(c);
   }
   if (strategy === "upside") {
     // UPSIDE / BREAKOUT — still anchored to the market (ADP) so it won't wildly reach, but it pushes
@@ -1885,20 +1946,24 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build) {
     const ceilBonus = c.ceil != null && c.pts != null && c.pts > 0 ? Math.max(0, (c.ceil - c.pts)) * 0.25 : 0; // wide ceiling = boom potential
     const posVar = c.pos === "WR" || c.pos === "RB" ? 10 : c.pos === "TE" ? 5 : 3;
     return mv + youngBonus + rookieBonus + ceilBonus + posVar
-      + 5 * Math.max(0, dem[c.pos] - counts[c.pos]) - agePenalty - reachPenalty(c, pickNum) * 0.7;
+      + 5 * Math.max(0, dem[c.pos] - counts[c.pos]) - agePenalty - reachPenalty(c, pickNum) * 0.7 + bbBonus(c);
   }
   // BALANCED: early in the draft this should essentially FOLLOW the market — with an empty roster there's
   // no construction pressure yet, so the consensus board order should win (a balanced drafter takes the
   // ADP-1 player at 1.1, not the guy who's 4 VBD points higher but ADP-3). We add an ADP-anchor bonus that
   // is strong in round 1-2 and DECAYS as the draft develops, so value + positional need + strategy
   // gradually take over and pull the pick away from pure ADP later — which is where real edges are found.
-  const need = 7 * Math.max(0, dem[c.pos] - counts[c.pos]);
+  const need = (BB ? 10 : 7) * Math.max(0, dem[c.pos] - counts[c.pos]);
   // Over-stack penalty: once you've filled a position beyond what the lineup can use (a 3rd QB in a 1QB
   // league, a 2nd TE with no TE-flex value, etc.), balanced should stop valuing more of it — a balanced
   // drafter pivots to depth at positions that actually start. `dem[pos]` already bakes in flex/superflex
-  // share, so a surplus over it is genuinely wasted. Grows the further past demand you are.
+  // share, so a surplus over it is genuinely wasted. Grows the further past demand you are. In BEST BALL,
+  // extra bodies at spike-week positions aren't wasted (the platform auto-starts the best score each week),
+  // so the penalty is much gentler — a 3rd QB / 3rd TE is a legitimate best-ball move.
   const surplus = counts[c.pos] - dem[c.pos];
-  const overStack = surplus > 0 ? surplus * (c.pos === "QB" || c.pos === "TE" ? 26 : 14) : 0;
+  const overStack = surplus > 0
+    ? surplus * (BB ? (c.pos === "QB" || c.pos === "TE" ? 6 : 4) : (c.pos === "QB" || c.pos === "TE" ? 26 : 14))
+    : 0;
   // Balanced blends a MARKET score (follow ADP) with a VALUE score (VBD + need). Early in the draft the
   // market dominates, so balanced takes the consensus board in order (ADP-1 at 1.1, even over a higher-VBD
   // ADP-2 player). As the draft develops, the blend shifts toward value + need, so your roster construction
@@ -1906,7 +1971,7 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build) {
   const value = mv + need - overStack - reachPenalty(c, pickNum);
   const market = c.adp != null ? 300 - c.adp * 3.0 : 0; // pure board-order score: earlier ADP = higher
   const mktW = pickNum != null ? Math.max(0, Math.min(0.92, 0.92 - (pickNum - 1) * 0.034)) : 0; // 0.92 → 0 by ~pick 28
-  return market * mktW + value * (1 - mktW);
+  return market * mktW + value * (1 - mktW) + bbBonus(c);
 }
 // cost of drafting a player well before the market would — grows the earlier you are
 // (a round-1 reach is far more wasteful than a round-12 reach) and with the gap size.
@@ -4516,7 +4581,9 @@ function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, onOp
                       <div className="mut" style={{ fontSize: 11 }}>{sl.total_rosters}-team{sl.made_picks != null ? ` · ${sl.made_picks} picks in` : ""}</div>
                     </div>
                     <StatusPill {...st} />
-                    {onOpenHub && <button className="btn btn-mini btn-gold" onClick={() => onOpenHub(sl)} style={{ flexShrink: 0 }}>Open hub</button>}
+                    {sl.best_ball
+                      ? <span className="chip" style={{ fontSize: 10, color: "var(--mut)", flexShrink: 0 }} title="Best ball has no weekly management — the platform auto-starts your best scorers.">Best ball — no weekly management</span>
+                      : (onOpenHub && <button className="btn btn-mini btn-gold" onClick={() => onOpenHub(sl)} style={{ flexShrink: 0 }}>Open hub</button>)}
                     {onNewFromSleeper && <button className="btn btn-mini" onClick={() => onNewFromSleeper(sl)} style={{ flexShrink: 0 }}>Set up draft</button>}
                   </div>
                 );
@@ -9005,7 +9072,15 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
             </div>
           )}{Row("League name", <input className="gs" style={{ width: "100%" }} value={f.name} onChange={(e) => upd({ name: e.target.value })} />)}
           {Row("League type",
-            <select className="gs" style={{ width: "100%" }} value={f.type} onChange={(e) => upd({ type: e.target.value })}>
+            <select className="gs" style={{ width: "100%" }} value={f.type} onChange={(e) => {
+              const t = e.target.value;
+              // Best ball drafts deep (no in-season adds), so default to a deeper roster when the user hasn't
+              // already customized rounds. Leave their value alone if they've set something non-default.
+              const patch = { type: t };
+              if (t === "bestball" && (f.rounds === 15 || f.rounds === 16)) patch.rounds = 18;
+              if (t !== "bestball" && f.rounds === 18) patch.rounds = 15; // revert the auto-bump if they switch back
+              upd(patch);
+            }}>
               {LEAGUE_TYPES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
             </select>
           )}
@@ -10365,8 +10440,22 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const surv = sims && sims.pct && sims.pct[0] && sims.pct[0][p.id] != null ? sims.pct[0][p.id] : null;
     if (surv != null && surv <= 25 && atUserPick) fit = fit ? `${fit}, and he likely won't last to your next pick` : "he likely won't last to your next pick";
 
+    // 4) BEST BALL framing — ceiling-first, depth-friendly, and stack-aware. Best ball auto-starts spike
+    //    weeks, so upside and correlation matter more than a fixed lineup slot.
+    let bbNote = "";
+    if (isBestBallCfg(cfg)) {
+      const tm = p.team || p.nflTeam;
+      const stacksQB = (p.pos === "WR" || p.pos === "TE") && tm && BB_QB_TEAMS.has(tm);
+      const stacksPC = p.pos === "QB" && tm && BB_PC_TEAMS.has(tm);
+      if (stacksQB) bbNote = "stacks with your QB — correlated spike weeks";
+      else if (stacksPC) bbNote = "stacks with your pass-catcher — their big weeks tend to come together";
+      else if (p.ceil != null && p.pts && p.ceil - p.pts > p.pts * 0.25) bbNote = "the kind of ceiling best ball feeds on — his boom weeks get auto-started";
+      else if (have != null && have >= (req[p.pos] || 0)) bbNote = "adds spike-week depth, which best ball rewards";
+    }
+
     let out = who;
     if (fit) out += ` — ${fit}`;
+    if (bbNote) out += `${fit ? "; " : " — "}${bbNote}`;
     out = out.trim();
     if (!out) out = `a strong value on the board for you here`;
     return out.charAt(0).toUpperCase() + out.slice(1) + (/[.!?]$/.test(out) ? "" : ".");
@@ -10395,6 +10484,19 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     seedKeeperCounts(players, forTeam, myCounts);
     const bestNow = { QB: null, RB: null, WR: null, TE: null };
     for (const p of sortedAdp) if (!goneSet.has(p.id) && (!bestNow[p.pos] || p.vbd > bestNow[p.pos].vbd)) bestNow[p.pos] = p;
+    // Best-ball stacks: gather the NFL teams this drafter already has a QB / pass-catcher from, so the
+    // stack bonus in userScore can reward correlated spike-week pairings. No-op cost when not best ball.
+    if (BB) {
+      const qbTeams = new Set(), pcTeams = new Set();
+      picks.forEach((pk, o) => {
+        if (teamAt(o) !== forTeam) return;
+        const pl = players[pk]; if (!pl) return;
+        const tm = pl.team || pl.nflTeam; if (!tm) return;
+        if (pl.pos === "QB") qbTeams.add(tm);
+        if (pl.pos === "WR" || pl.pos === "TE") pcTeams.add(tm);
+      });
+      setBBStacks(qbTeams, pcTeams);
+    } else setBBStacks(new Set(), new Set());
     const waitCost = {};
     POS.forEach((pos) => { waitCost[pos] = bestNow[pos] ? Math.round((bestNow[pos].vbd - simState.expBest1[pos]) * 10) / 10 : 0; });
     const pool0 = sortedAdp.filter((p) => !goneSet.has(p.id) && p.adp <= pickNum + 16).slice(0, 40);
