@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28aj";
+const BUILD_TAG = "2026.06.28ak";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -11350,7 +11350,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               // Value read for the pick: how far from market ADP he went (steal = fell past ADP; reach = early).
               // Classify by how far off market he went (spots), which is intuitive at every round — the
               // curve-value is nearly flat late, so a 10-spot slide there would otherwise always read "fair".
-              const spotGap = p.adp != null ? (o + 1) - p.adp : 0; // >0 = fell past ADP (steal), <0 = reached
+              const spotGap = p.adp != null ? Math.round((o + 1) - p.adp) : 0; // >0 = fell past ADP (steal), <0 = reached
               const valRead = spotGap >= 8 ? { t: "Steal", c: "#5FD0A8", i: "ti-diamond" } : spotGap <= -8 ? { t: "Reach", c: "#F2655C", i: "ti-flame" } : { t: "Fair value", c: "var(--mut)", i: "ti-check" };
               const isFirst = idx === 0;
               const isLast = idx === pastPicks.length - 1;
@@ -13145,21 +13145,73 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   items.push({ t: "ADP", x: `${p.adp != null ? p.adp.toFixed(1) : "—"}` });
                 }
                 items.push({ t: "Value to team", x: `${p.pts} proj pts · ${p.vbd > 0 ? "+" : ""}${p.vbd.toFixed(0)} VBD (${p.vbd > 25 ? "core starter" : p.vbd > 8 ? "solid starter" : p.vbd > -8 ? "depth/flex" : "bench"})`, tc: rankTierColor(p.pos, p.posRank) });
-                return (e) => showTip(e, items);
+              return (e) => showTip(e, items);
               };
+              // Position-strength strip (mirrors the "Show my team" popup): combine quantity (starters vs
+              // requirement) and quality (league tercile from posRel) into a one-word read per position.
+              const reqF = REQ_F(cfg.sf);
+              const relI = posRel[ti] || {};
+              const posAssess = ["QB", "RB", "WR", "TE"].map((pos) => {
+                const haveN = roster.filter((p) => p && p.pos === pos).length;
+                const short = Math.max(0, (reqF[pos] || 0) - haveN);
+                const lvl = relI[pos];
+                let tag, color;
+                if (short > 0) { tag = short >= 1 ? `Need ${short} starter${short >= 2 ? "s" : ""}` : "Thin"; color = "#F2655C"; }
+                else if (lvl === 2) { tag = "Weak — upgrade"; color = "var(--gold)"; }
+                else if (lvl === 0) { tag = "Strength"; color = "#5FD0A8"; }
+                else { tag = "Solid"; color = "var(--ink)"; }
+                return { pos, tag, color, haveN };
+              });
+              const benchPts = bench.reduce((s, p) => s + (p.pts || 0), 0);
+              const benchSorted = bench.slice().sort((a, b) => { const order = { QB: 0, RB: 1, WR: 2, TE: 3, K: 4, DST: 5 }; const oa = order[a.pos] != null ? order[a.pos] : 9, ob = order[b.pos] != null ? order[b.pos] : 9; return oa !== ob ? oa - ob : (b.pts || 0) - (a.pts || 0); });
               return (
                 <>
-                  <div className="mut" style={{ fontSize: 12.5, marginBottom: 8 }}>Optimal lineup <b style={{ color: "var(--ink)" }}>{lineupPts(roster, cfg.sf)} pts</b> • projected <b style={{ color: "var(--gold)" }}>{ordinal(proj.rank[ti])}</b> <span style={{ fontSize: 11 }}>· hover a player for draft & team value</span></div>
-                  {slots.map((s, i) => (
-                    <div key={i} style={{ fontSize: 12.5, padding: "2.5px 0", display: "flex", justifyContent: "space-between" }}>
-                      <span><span className="slotlbl">{s.slot}</span>{s.p ? <span style={{ cursor: "help", opacity: !done && !curSet.has(s.p.id) ? 0.62 : 1, color: !done && !curSet.has(s.p.id) ? "var(--gold)" : "var(--ink)" }} onMouseEnter={playerTip(s.p)} onMouseLeave={hideTip}><Dot pos={s.p.pos} />{s.p.name}{!done && !curSet.has(s.p.id) && " (proj)"}</span> : <span className="mut">—</span>}</span>
-                      {s.p && <span className="mut num">{s.p.pts}</span>}
-                    </div>
-                  ))}
-                  {bench.length > 0 && (
-                    <div className="mut" style={{ fontSize: 11.5, marginTop: 6 }}>Bench: {bench.map((b, k) => (
-                      <span key={b.id} style={{ cursor: "help", color: !done && !curSet.has(b.id) ? "var(--gold)" : "var(--mut)" }} onMouseEnter={playerTip(b)} onMouseLeave={hideTip}>{b.name}{!done && !curSet.has(b.id) ? " (proj)" : ""}{k < bench.length - 1 ? ", " : ""}</span>
-                    ))}</div>
+                  <div className="mut" style={{ fontSize: 12.5, marginBottom: 8 }}>Optimal lineup <b style={{ color: "var(--ink)" }}>{lineupPts(roster, cfg.sf)} pts</b> • projected <b style={{ color: "var(--gold)" }}>{ordinal(proj.rank[ti])}</b>{bench.length ? <> • bench <b style={{ color: "var(--ink)" }}>{Math.round(benchPts)}</b></> : null} <span style={{ fontSize: 11 }}>· hover a player for value</span></div>
+                  {/* position strength strip */}
+                  <div style={{ display: "flex", gap: 5, marginBottom: 11, flexWrap: "wrap" }}>
+                    {posAssess.map((a) => (
+                      <div key={a.pos} style={{ flex: "1 1 78px", background: a.color + "1c", border: `1px solid ${a.color}44`, borderRadius: 7, padding: "5px 7px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}><Dot pos={a.pos} /><span style={{ fontSize: 11, fontWeight: 700, color: POS_COLOR[a.pos] }}>{a.pos}</span><span className="mut" style={{ fontSize: 9, marginLeft: "auto" }}>{a.haveN}</span></div>
+                        <div style={{ fontSize: 10, fontWeight: 600, color: a.color, marginTop: 1 }}>{a.tag}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {/* starting lineup rows */}
+                  <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", marginBottom: 4 }}>Starting lineup</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2, marginBottom: 12 }}>
+                    {slots.map((s, i) => {
+                      const isProj = s.p && !done && !curSet.has(s.p.id);
+                      return (
+                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, padding: "4px 8px", borderRadius: 6, background: i % 2 ? "var(--panel2)" : "transparent" }}>
+                          <span className="mut num" style={{ width: 40, flexShrink: 0, fontSize: 10.5, fontWeight: 700 }}>{s.slot}</span>
+                          {s.p ? <>
+                            <Dot pos={s.p.pos} />
+                            <span style={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "help", color: isProj ? "var(--gold)" : "var(--ink)" }} onMouseEnter={playerTip(s.p)} onMouseLeave={hideTip}>{s.p.name}{isProj && <span className="mut"> (proj)</span>}</span>
+                            <span className="mut" style={{ fontSize: 10 }}>{s.p.pos}</span>
+                            <span className="num" style={{ fontWeight: 700, width: 34, textAlign: "right" }}>{Math.round(s.p.pts || 0)}</span>
+                          </> : <span className="mut" style={{ flex: 1, fontStyle: "italic" }}>empty</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {/* bench rows */}
+                  {benchSorted.length > 0 && (
+                    <>
+                      <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", marginBottom: 4 }}>Bench ({benchSorted.length})</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        {benchSorted.map((b, i) => {
+                          const isProj = !done && !curSet.has(b.id);
+                          return (
+                            <div key={i} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, padding: "3px 8px", opacity: 0.85 }}>
+                              <Dot pos={b.pos} />
+                              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "help", color: isProj ? "var(--gold)" : "var(--ink)" }} onMouseEnter={playerTip(b)} onMouseLeave={hideTip}>{b.name}{isProj && <span className="mut"> (proj)</span>}</span>
+                              <span className="mut" style={{ fontSize: 10 }}>{b.pos}</span>
+                              <span className="num mut" style={{ width: 34, textAlign: "right" }}>{Math.round(b.pts || 0)}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
                   )}
                 </>
               );
