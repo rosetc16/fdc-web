@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bd";
+const BUILD_TAG = "2026.06.28be";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -83,6 +83,14 @@ function isSuperflex(cfg) {
   if (cfg.sf) return true;
   const st = cfg.start || {};
   return (st.SUPER || 0) > 0 || (st.QB || 0) >= 2;
+}
+// TRUE 2-QB league: two DEDICATED QB starting slots (not a superflex that a RB/WR could fill). QBs are even
+// scarcer here than superflex — every team MUST start two, so the top ~24 QBs all have hard starting value.
+// This warrants a stronger QB premium than superflex.
+function is2QB(cfg) {
+  if (!cfg) return false;
+  const st = cfg.start || {};
+  return (st.QB || 0) >= 2;
 }
 // The defensive (IDP) position set, parallel to the offensive POS list.
 const IDP_POS = ["DL", "LB", "DB"];
@@ -1483,6 +1491,7 @@ function buildPlayers(cfg) {
   setBestBall(isBestBallCfg(cfg)); // engine mode flag follows the league type on every rebuild
   const teMult = cfg.tePremMult != null ? cfg.tePremMult : (cfg.tePrem ? 1.0 : 0);
   const sf = isSuperflex(cfg); // canonical: covers cfg.sf, SUPER slot, or 2+ QB slots
+  const twoQb = is2QB(cfg);    // TRUE 2-QB (two dedicated QB slots) → even stronger QB premium than superflex
   const useIdp = idpOn(cfg);
   const sc = { ...DEFAULT_SCORING, ...(cfg.scoring || {}) };
   const exclude = !!cfg.excludeRookies;
@@ -1674,16 +1683,28 @@ function buildPlayers(cfg) {
         // QBs hold value for a decade while RBs decay fast. So the lift is large for QB1-5 and dynasty
         // gets an extra multiplier. Tuned so elite QBs (Allen, Daniels, Maye) clearly lead, with elite
         // young RB/WR just behind — matching real SF (dynasty) ADP.
+        // TRUE 2-QB leagues push QBs even higher: every team MUST start two dedicated QBs, so the top ~24 all
+        // carry hard starting value (a superflex 2nd slot could go to a RB/WR; a 2-QB slot cannot). We raise
+        // the base AND flatten the decay so QB2-QB12 stay elevated deeper down the position.
         const rank = qbRankById.get(p.id) ?? 99; // 0 = QB1
-        const decay = Math.pow(0.86, rank);       // QB1 full → QB5 ~53% → QB10 ~22%
-        const base = isDynasty ? 78 : 52;          // dynasty QBs anchor the top harder
+        const decay = Math.pow(twoQb ? 0.90 : 0.86, rank); // 2QB decays slower → more QBs stay valuable
+        const base = (isDynasty ? 78 : 52) * (twoQb ? 1.35 : 1); // 2QB lifts the whole QB tier higher
         v += base * decay;
-      } else if (!sf && p.pos === "QB") {
+      } else if (!sf && p.pos === "QB" && !rookieOnly) {
         // 1QB leagues: a QB's raw VBD is high but his DRAFT value is low (you start one, replacement is
         // cheap). We do NOT try to fix that with a VBD penalty here — that distorts ordering vs RB/WR. Instead
         // a dedicated post-pass (below) slots the top QBs at realistic 1QB ADP positions in value order. Here
         // we just push QBs out of the top of the value interleave so they don't leak into round 1.
+        // (Skipped for rookie-only drafts — rookie QBs are long-term picks and hold their value.)
         v -= 40;
+      } else if (rookieOnly && p.pos === "QB") {
+        // ROOKIE drafts value a QB on long-term franchise upside, not year-1 points — so a first-year QB's
+        // modest rookie projection understates his draft capital. Lift the top rookie QBs so a franchise QB
+        // (the class's QB1) lands in the early-first range (~pick 9-12 area of the rookie board) rather than
+        // sinking on raw points. Superflex rookie drafts push them even higher via the sf branch above.
+        const rank = qbRankById.get(p.id) ?? 99; // 0 = rookie QB1
+        const decay = Math.pow(0.82, rank);
+        v += (sf ? 0 : 60) * decay; // 1QB rookie lift; SF rookie already handled above
       }
       if (p.pos === "RB") {
         // Market-realism lift for elite RBs: top bell-cows get drafted ahead of pure VBD (recency +
@@ -1738,7 +1759,11 @@ function buildPlayers(cfg) {
     // the mid-30s, then a steady slide — regardless of raw VBD. We place the top QBs (in VBD/value order, so
     // the ORDER is always right — Allen/Lamar/Daniels ahead of streamers) at those canonical slots, overriding
     // whatever the value interleave gave them. This fixes both problems at once: QBs too high AND out of order.
-    if (!sf) {
+    // NOTE: this 1QB down-slotting is for REDRAFT/DYNASTY veteran boards where the market waits on QBs. A
+    // ROOKIE-only draft is different: the pool is just incoming rookies (long-term picks), and even in 1QB a
+    // franchise rookie QB (e.g. the class's QB1) goes early — pushing him to pick 30 in a ~28-player rookie
+    // pool is wrong. So we skip the down-slotting for rookie drafts and let rookie QBs sit at their value.
+    if (!sf && !rookieOnly) {
       const qbOrder = valPool.filter((p) => p.pos === "QB").sort((a, b) => (b.vbd ?? -50) - (a.vbd ?? -50));
       // canonical 1QB ADP anchors by QB rank (0-based). QB1≈30, QB2≈35, QB3≈40, then ~+6-7/rank, easing out.
       const qbSlot = (rank) => {
@@ -3086,6 +3111,7 @@ export default function App() {
   const nav0 = restoreNav();
   const [route, setRoute] = useState(nav0.route || "home"); // home | checkout | library | setup | draft | admin
   const [pendingRankEdit, setPendingRankEdit] = useState(null); // a rank-set id to open directly in the hub
+  const [rankEditFromDraft, setRankEditFromDraft] = useState(null); // league id to return to if editing came from a draft
   // Wire the global navigation hook so shared chrome (AppHeader, etc.) can always route — this is what makes
   // the admin/account/home buttons work on every page without threading a handler through each component.
   setGlobalNav(setRoute);
@@ -3562,7 +3588,7 @@ export default function App() {
       {route === "tradeTools" && user && <TradeToolsPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} />}
       {route === "adpIntel" && user && <AdpIntelPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} />}
       {route === "account" && user && <Account user={user} onUpdate={updateUser} onBack={() => setRoute(user.paid ? "home" : "library")} onHome={() => setRoute("home")} onSignOut={signOut} onRankings={() => setRoute("rankings")} onAdmin={() => setRoute("admin")} />}
-      {route === "rankings" && user && <RankingsHub user={user} leagues={leagues} openSetId={pendingRankEdit} onConsumeOpen={() => setPendingRankEdit(null)} onUpdate={updateUser} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} onNewLeague={() => { setSetupReturn("rankings"); setRoute("setup"); }} />}
+      {route === "rankings" && user && <RankingsHub user={user} leagues={leagues} openSetId={pendingRankEdit} onConsumeOpen={() => setPendingRankEdit(null)} returnToDraft={rankEditFromDraft ? () => { const rid = rankEditFromDraft; setRankEditFromDraft(null); setActiveId(rid); setRoute("draft"); } : null} onUpdate={updateUser} onSignOut={signOut} onHome={() => { setRankEditFromDraft(null); setRoute("home"); }} onBack={() => { setRankEditFromDraft(null); setRoute(user.paid ? "home" : "library"); }} onNewLeague={() => { setSetupReturn("rankings"); setRoute("setup"); }} />}
       {route === "setup" && <Setup onCreate={createLeague} onBack={() => { const r = setupReturn || (user?.paid ? "home" : "library"); setSetupReturn(null); setRoute(r); }} backLabel={setupReturn === "rankings" ? "Rankings" : user?.paid ? "Home" : "Library"} />}
       {route === "draft" && active && (
         <DraftRoom key={active.id} league={active} user={user} isMock={!!(mockLeague && active.id === mockLeague.id)} isDemo={!!active.demo} initialTab={draftTab} dataVersion={dataVersion} allLeagues={leagues} allFunMocks={funMocks}
@@ -3583,7 +3609,7 @@ export default function App() {
           onExit={() => { if (mockLeague && active.id === mockLeague.id) setMockLeague(null); setDraftTab(null); setRoute(user ? (user.paid ? "home" : "library") : "home"); }}
           onSettings={(cfg) => { if (active.id === "demo") setDemoLeague((d) => ({ ...d, cfg })); else if (mockLeague && active.id === mockLeague.id) setMockLeague((m) => ({ ...m, cfg })); else updateLeagueCfg(active.id, cfg); }}
           onEditRanks={() => { if (mockLeague && active.id === mockLeague.id) setMockLeague(null); setDraftTab(null); setRoute("rankings"); }}
-          onEditRankSet={(setId) => { if (mockLeague && active.id === mockLeague.id) setMockLeague(null); setDraftTab(null); setPendingRankEdit(setId); setRoute("rankings"); }}
+          onEditRankSet={(setId) => { const rid = active.id; setDraftTab(null); setPendingRankEdit(setId); setRankEditFromDraft(rid); setRoute("rankings"); }}
           onDeleteRankSet={(setId) => { if (!user) return; const next = (user.rankSets || []).filter((rs) => rs.id !== setId); updateUser({ rankSets: next }); }}
           onRanksOff={(lgId) => {
             if (!user) return;
@@ -8252,7 +8278,7 @@ function Account({ user, onUpdate, onBack, onHome, onSignOut, onRankings, onAdmi
   );
 }
 
-function RankingsHub({ user, leagues, onUpdate, onBack, onHome, onSignOut, onNewLeague, openSetId, onConsumeOpen }) {
+function RankingsHub({ user, leagues, onUpdate, onBack, onHome, onSignOut, onNewLeague, openSetId, onConsumeOpen, returnToDraft }) {
   const allSets = (user.rankSets) || [];
   const season = user.season || CURRENT_SEASON;
   const [view, setView] = useState("home"); // home | editor
@@ -8309,7 +8335,7 @@ function RankingsHub({ user, leagues, onUpdate, onBack, onHome, onSignOut, onNew
   // ---------- EDITOR ----------
   const editing = allSets.find((s) => s.id === editId);
   if (view === "editor" && editing) {
-    return <RankSetEditor user={user} set={editing} leagues={leagues} allSets={allSets}
+    return <RankSetEditor user={user} set={editing} leagues={leagues} allSets={allSets} returnToDraft={returnToDraft}
       onBackToList={() => setView("home")} onBack={onBack} onHome={onHome} onSignOut={onSignOut}
       onSaveList={(list) => updateSet(editing.id, { list })}
       onRename={(name) => updateSet(editing.id, { name })}
@@ -8451,7 +8477,7 @@ function RankingsHub({ user, leagues, onUpdate, onBack, onHome, onSignOut, onNew
   );
 }
 
-function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHome, onSignOut, onSaveList, onRename, onAttach, onAdj, onImportList }) {
+function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHome, onSignOut, onSaveList, onRename, onAttach, onAdj, onImportList, returnToDraft }) {
   const [mode, setMode] = useState("list"); // list | board | adjust
   const [flash, setFlash] = useState("");
   const flashMsg = (m) => { setFlash(m); setTimeout(() => setFlash(""), 1600); };
@@ -8579,7 +8605,10 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
     <div>
       <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="Rankings" />
       <div style={{ maxWidth: 820, margin: "0 auto", padding: "20px 20px 50px" }}>
-        <button className="btn btn-mini" onClick={() => { onSaveList(list); onBackToList(); }} style={{ marginBottom: 12 }}>← All ranking sets</button>
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+          <button className="btn btn-mini" onClick={() => { onSaveList(list); onBackToList(); }}>← All ranking sets</button>
+          {returnToDraft && <button className="btn btn-mini btn-gold" onClick={() => { onSaveList(list); returnToDraft(); }}><i className="ti ti-arrow-back-up" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Save &amp; return to draft</button>}
+        </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
           <input className="gs disp" style={{ fontSize: 20, fontWeight: 700, flex: "1 1 220px", minWidth: 0 }} value={name} onChange={(e) => setName(e.target.value)} onBlur={() => name.trim() && name !== set.name && onRename(name.trim())} />
         </div>
@@ -8996,8 +9025,12 @@ function DraftOrderTab({ f, upd, ensureNames }) {
   );
 }
 
-function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
+function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, initialMode }) {
   const [seg, setSeg] = useState(initialSeg || "basics");
+  // Simple vs complex view. Simple shows only the essentials (Basics tab); complex reveals the full tabbed
+  // form (roster, scoring, teams & order, pick trades). Mirrors the mock-setup simple/complex choice so
+  // opening settings mid-draft isn't jarring after starting from a simple mock.
+  const [mode, setMode] = useState(initialMode === "simple" ? "simple" : "complex");
   const [keeperModal, setKeeperModal] = useState(false);
   const [rosterModal, setRosterModal] = useState(false); // manual existing-dynasty-roster entry (rookie/dynasty drafts)
   const [f, setF] = useState(() => {
@@ -9087,6 +9120,22 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
 
   return (
     <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
+      {/* Simple / Complex switch — simple keeps you on the essentials; complex opens roster, scoring,
+           teams & order, and pick trades. */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderBottom: "1px solid var(--line)", background: "var(--panel2)" }}>
+        <span className="mut" style={{ fontSize: 11.5, fontWeight: 600 }}>View</span>
+        <div style={{ display: "flex", gap: 4 }}>
+          {[["simple", "Simple"], ["complex", "Complex"]].map(([k, l]) => (
+            <button key={k} onClick={() => { setMode(k); if (k === "simple") setSeg("basics"); }}
+              style={{ padding: "5px 12px", borderRadius: 7, border: `1px solid ${mode === k ? "var(--gold)" : "var(--line)"}`, background: mode === k ? "rgba(242,182,60,.10)" : "transparent", color: mode === k ? "var(--gold)" : "var(--mut)", fontWeight: 600, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+              {l}
+            </button>
+          ))}
+        </div>
+        <div style={{ flex: 1 }} />
+        <span className="mut" style={{ fontSize: 11 }}>{mode === "simple" ? "Essentials only" : "Full control — roster, scoring, trades, keepers"}</span>
+      </div>
+      {mode === "complex" && (
       <div style={{ display: "flex", borderBottom: "1px solid var(--line)" }}>
         {SEGS.map(([k, l]) => (
           <button key={k} onClick={() => setSeg(k)}
@@ -9095,6 +9144,7 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
           </button>
         ))}
       </div>
+      )}
       <div style={{ padding: 22 }}>
       {(() => {
         const SEG_INTRO = {
@@ -9185,6 +9235,13 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
               {DRAFT_ORDERS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
             </select>,
             "Snake, linear, or third-round reversal. Set who picks where — and your own slot — on the Draft order tab."
+          )}
+          {Row("Your draft slot",
+            <select className="gs" style={{ width: "100%" }} value={f.slot} onChange={(e) => upd({ slot: e.target.value === "" ? "" : +e.target.value })}>
+              <option value="">Pick your slot…</option>
+              {Array.from({ length: +f.teams || 12 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>Slot {n}</option>)}
+            </select>,
+            "Which pick is yours in round 1 — this is what tells the engine when you're on the clock."
           )}
           {f.type !== "rookie" && Row("Include rookies?",
             <button className="btn" onClick={() => upd({ excludeRookies: !f.excludeRookies })}>{f.excludeRookies ? "No — rookies drafted separately" : "Yes — rookies in this draft pool"}</button>,
@@ -13887,7 +13944,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           </div>
           {!hasSlot && <div style={{ fontSize: 12, marginBottom: 12, color: "var(--gold)", display: "flex", alignItems: "center", gap: 6 }}><i className="ti ti-alert-triangle" style={{ fontSize: 14 }} aria-hidden="true" />Set your draft slot on the “Teams & order” section so recommendations know when you pick.</div>}
           <div style={{ marginBottom: 8 }} />
-          <ConfigForm initial={{ ...cfg, slot: cfg.slot == null ? "" : cfg.slot, scoring: { ...DEFAULT_SCORING, ...(cfg.scoring || {}) } }} submitLabel="Save settings" onSubmit={(newCfg) => { onSettings(newCfg); setTab("hub"); }} onCancel={() => setTab("hub")} />
+          <ConfigForm initial={{ ...cfg, slot: cfg.slot == null ? "" : cfg.slot, scoring: { ...DEFAULT_SCORING, ...(cfg.scoring || {}) } }} initialMode="simple" submitLabel="Save settings" onSubmit={(newCfg) => { onSettings(newCfg); setTab("hub"); }} onCancel={() => setTab("hub")} />
         </div>
       )}
 
@@ -14395,13 +14452,16 @@ function resolveMyRanks(players, cfg, user, rankAdj, leagueId) {
     working = withShift.map((x) => x.p);
   }
   const map = {};
-  // Blended ADP: weight your personal rank heavily but temper it with public consensus ADP,
-  // so you're not 100% captive to your own board. 65% you / 35% market.
+  // Blended ADP: weight your personal rank heavily but temper it with the MARKET ADP — the same number the
+  // board shows (p.adp), NOT the separate `consensus` field, which can diverge (e.g. in the sparse-fallback
+  // board p.adp is rebuilt from value while consensus keeps an older transform). Using p.adp guarantees the
+  // blend always lands between your rank and the ADP you see on the board. 65% you / 35% market.
   const W_ME = 0.65;
+  const adpById = {}; players.forEach((p) => { adpById[p.id] = p.adp; });
   working.forEach((p, i) => {
     const myPos = i + 1;
-    const cons = p.consensus != null ? p.consensus : p.adp;
-    const blend = +(W_ME * myPos + (1 - W_ME) * cons).toFixed(1);
+    const mkt = adpById[p.id] != null ? adpById[p.id] : (p.consensus != null ? p.consensus : p.adp);
+    const blend = +(W_ME * myPos + (1 - W_ME) * mkt).toFixed(1);
     map[p.id] = { rank: myPos, blend, exact: exactSet.has(p.id), adjusted: !!(rankAdj && rankAdj[p.name]) };
   });
   return { map, key, has: true, setName: set ? set.name : null };
@@ -14519,10 +14579,12 @@ function AdpIntel({ players, cfg, myRanks, compact, draftedSet }) {
   const sel = pool.find((p) => p.id === selId) || pool[0] || null;
   const data = useMemo(() => (sel ? adpSources(sel, cfg) : null), [sel, cfg]);
   const myAdp = sel && myRanks && myRanks.map && myRanks.map[sel.id] != null ? myRanks.map[sel.id] : null;
-  const blend = sel && myAdp != null ? +((data.consensus * 0.65 + myAdp * 0.35)).toFixed(1) : null;
+  // Reuse the blend already computed in resolveMyRanks (your rank tempered by the board's market ADP) so this
+  // panel matches the board's Blend column exactly. myAdp is the {rank, blend} record for this player.
+  const blend = myAdp != null && myAdp.blend != null ? myAdp.blend : null;
 
   if (!sel) return <div className="mut" style={{ fontSize: 13 }}>No players to analyze.</div>;
-  const maxBar = Math.max(data.hi, data.consensus, myAdp || 0, blend || 0) * 1.05;
+  const maxBar = Math.max(data.hi, data.consensus, (myAdp ? myAdp.rank : 0) || 0, blend || 0) * 1.05;
   const trendUp = data.trend < -0.3, trendDown = data.trend > 0.3;
   const trendColor = trendUp ? "var(--green)" : trendDown ? "var(--red)" : "var(--mut)";
   const trendLabel = trendUp ? `Rising ${Math.abs(data.trend)} (going earlier)` : trendDown ? `Falling ${Math.abs(data.trend)} (sliding later)` : "Flat";
@@ -14568,7 +14630,7 @@ function AdpIntel({ players, cfg, myRanks, compact, draftedSet }) {
           <div style={{ display: "flex", gap: 16, marginTop: 12, flexWrap: "wrap", fontSize: 12 }}>
             <div><span className="mut">Range </span><b className="num">{data.lo}–{data.hi}</b></div>
             <div><span className="mut">Trend </span><b style={{ color: trendColor }}>{trendLabel}</b></div>
-            {myAdp != null && <div><span className="mut">Your rank </span><b className="num" style={{ color: "#d6aa4b" }}>{myAdp.toFixed(1)}</b></div>}
+            {myAdp != null && <div><span className="mut">Your rank </span><b className="num" style={{ color: "#d6aa4b" }}>{myAdp.rank.toFixed(1)}</b></div>}
             {blend != null && <div><span className="mut">Blend (65/35) </span><b className="num" style={{ color: "#d6aa4b" }}>{blend}</b></div>}
           </div>
         </div>
