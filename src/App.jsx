@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28aa";
+const BUILD_TAG = "2026.06.28ac";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1509,10 +1509,15 @@ function buildPlayers(cfg) {
     let a = raw;
     if (sf && !loadedIsSF) {
       if (pos === "QB") {
-        // Superflex lifts QBs, but only MODESTLY (this runs only when the loaded ADP is a 1QB board).
+        // Superflex lifts QBs. In a real SF (esp. dynasty) startup the top few QBs go inside the first
+        // 3-6 picks, because two QB slots roughly double QB scarcity. This blend used to keep 45% of the
+        // 1QB raw ADP, which dragged elite QBs down to ~pick 20 — far later than an SF room takes them.
+        // Weight the SF target more heavily (esp. for the top tier) so QB1-QB5 land in a realistic SF range,
+        // while still easing off for streamer QBs so we don't flood round 1 with backups.
         const r = qbRankOfRaw(raw);
-        const target = r <= 6 ? 4 + (r - 1) * 4 : 28 + (r - 6) * 7;
-        a = raw * 0.45 + target * 0.55;
+        const target = r <= 6 ? 3 + (r - 1) * 3.5 : 26 + (r - 6) * 7; // QB1≈3, QB2≈6.5, QB3≈10, QB4≈13.5…
+        const tw = r <= 6 ? 0.78 : 0.5; // top QBs lean hard on the SF target; tail stays closer to raw
+        a = raw * (1 - tw) + target * tw;
         a = Math.min(a, raw);
         a = Math.max(1.8, a);
       } else {
@@ -1882,10 +1887,16 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build) {
     return mv + youngBonus + rookieBonus + ceilBonus + posVar
       + 5 * Math.max(0, dem[c.pos] - counts[c.pos]) - agePenalty - reachPenalty(c, pickNum) * 0.7;
   }
-  // BALANCED: value + need, anchored to the market so it won't pass an obvious consensus pick. The reach
-  // penalty makes drafting far ahead of ADP costly, which is why at pick 5 it takes the best available
-  // top-of-board player.
-  let s = mv + 7 * Math.max(0, dem[c.pos] - counts[c.pos]) - reachPenalty(c, pickNum);
+  // BALANCED: early in the draft this should essentially FOLLOW the market — with an empty roster there's
+  // no construction pressure yet, so the consensus board order should win (a balanced drafter takes the
+  // ADP-1 player at 1.1, not the guy who's 4 VBD points higher but ADP-3). We add an ADP-anchor bonus that
+  // is strong in round 1-2 and DECAYS as the draft develops, so value + positional need + strategy
+  // gradually take over and pull the pick away from pure ADP later — which is where real edges are found.
+  const need = 7 * Math.max(0, dem[c.pos] - counts[c.pos]);
+  // anchor: rewards being high on the consensus board; weight fades from ~round 1 to near-zero by mid draft
+  const anchorW = pickNum != null ? Math.max(0, 40 - pickNum * 1.3) : 0; // ~39 at pick 1 → 0 by ~pick 30
+  const anchor = anchorW > 0 && c.adp != null ? anchorW * (1 / (1 + c.adp * 0.05)) : 0; // higher for low-ADP players
+  let s = mv + need + anchor - reachPenalty(c, pickNum);
   return s;
 }
 // cost of drafting a player well before the market would — grows the earlier you are
@@ -3379,7 +3390,7 @@ export default function App() {
       {route === "rankings" && user && <RankingsHub user={user} leagues={leagues} onUpdate={updateUser} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} onNewLeague={() => { setSetupReturn("rankings"); setRoute("setup"); }} />}
       {route === "setup" && <Setup onCreate={createLeague} onBack={() => { const r = setupReturn || (user?.paid ? "home" : "library"); setSetupReturn(null); setRoute(r); }} backLabel={setupReturn === "rankings" ? "Rankings" : user?.paid ? "Home" : "Library"} />}
       {route === "draft" && active && (
-        <DraftRoom key={active.id} league={active} user={user} isMock={!!(mockLeague && active.id === mockLeague.id)} isDemo={!!active.demo} initialTab={draftTab} dataVersion={dataVersion}
+        <DraftRoom key={active.id} league={active} user={user} isMock={!!(mockLeague && active.id === mockLeague.id)} isDemo={!!active.demo} initialTab={draftTab} dataVersion={dataVersion} allLeagues={leagues} allFunMocks={funMocks}
           onSave={(picks, preds) => {
             if (active.id === "demo") setDemoLeague((d) => ({ ...d, picks, preds }));
             else if (mockLeague && active.id === mockLeague.id) { setMockLeague((m) => ({ ...m, picks, preds })); saveMock(picks, preds); }
@@ -5581,6 +5592,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         <div style={{ flex: 1 }} />
         <span className="chip" style={{ color: "var(--green)" }}><i className="ti ti-circle-check" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Season pass active</span>
         {(user?.admin || isAdminEmail(user?.email)) && <button className="btn btn-mini" onClick={onAdmin || (() => navTo("admin"))}>Admin</button>}
+        <button className="btn btn-mini" onClick={onDraftTrends}><i className="ti ti-chart-histogram" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Draft Trends</button>
         <button className="btn btn-mini" onClick={onHelp}><i className="ti ti-help-circle" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Help</button>
         <button className="btn btn-mini" onClick={onAccount}><i className="ti ti-user" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Account</button>
         <button className="btn btn-mini" onClick={onSignOut}>Sign out</button>
@@ -5699,9 +5711,9 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
             </div>
           </div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 10 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {q.trim() && sortedLeagues.length === 0 && unimportedSleeper.length === 0 && (
-              <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: "16px 0" }}>
+              <div style={{ textAlign: "center", padding: "16px 0" }}>
                 <div className="mut" style={{ fontSize: 13, marginBottom: 8 }}>No leagues match “{q.trim()}”.</div>
                 <button className="btn btn-mini" onClick={() => setQ("")}>Clear search</button>
               </div>
@@ -5717,22 +5729,31 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
               const mocks = (l.mocks || []).length;
               const draftLive = l.picks.length > 0 && st.pct < 100;
               return (
-                <div key={l.id} style={{ border: `1px solid ${draftLive ? "var(--gold)" : "var(--line)"}`, background: draftLive ? "linear-gradient(180deg,rgba(242,182,60,.06),transparent)" : "var(--panel)", borderRadius: 13, padding: 14, display: "flex", flexDirection: "column", gap: 11 }}>
-                  <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                        <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>{l.name}</span>
-                        {isSleeper && <span className="chip" style={{ fontSize: 8.5, color: "var(--blue)" }}>Sleeper</span>}
-                      </div>
-                      <div className="mut" style={{ fontSize: 11, marginTop: 2 }}>
-                        {l.cfg.teams || 12}T · {l.cfg.sf ? "Superflex" : "1QB"}{l.cfg.tePremMult > 0 ? " · TE+" : ""} · {l.cfg.rounds} rds
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 5 }}>
-                        <i className={`ti ${st.icon}`} style={{ fontSize: 12, color: st.color }} aria-hidden="true" />
-                        <span style={{ fontSize: 11.5, color: st.color, fontWeight: 600 }}>{st.label}</span>
-                        {mocks > 0 && <span className="chip" style={{ fontSize: 8.5 }}>{mocks} mock{mocks === 1 ? "" : "s"}</span>}
-                      </div>
+                <div key={l.id} style={{ border: `1px solid ${draftLive ? "var(--gold)" : "var(--line)"}`, background: draftLive ? "linear-gradient(90deg,rgba(242,182,60,.06),transparent 60%)" : "var(--panel)", borderRadius: 12, padding: "11px 14px", display: "flex", alignItems: "center", gap: 13, flexWrap: "wrap" }}>
+                  {/* status icon */}
+                  <div style={{ width: 38, height: 38, borderRadius: 10, background: draftLive ? "rgba(242,182,60,.14)" : "var(--panel3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className={`ti ${st.icon}`} style={{ fontSize: 18, color: st.color }} aria-hidden="true" /></div>
+                  {/* name + meta */}
+                  <div style={{ flex: "1 1 220px", minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <span className="disp" style={{ fontSize: 15.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{l.name}</span>
+                      {isSleeper && <span className="chip" style={{ fontSize: 8.5, color: "var(--blue)" }}>Sleeper</span>}
+                      {mocks > 0 && <span className="chip" style={{ fontSize: 8.5 }}>{mocks} mock{mocks === 1 ? "" : "s"}</span>}
                     </div>
+                    <div className="mut" style={{ fontSize: 11, marginTop: 2, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <span>{l.cfg.teams || 12}T · {l.cfg.sf ? "Superflex" : "1QB"}{l.cfg.tePremMult > 0 ? " · TE+" : ""} · {l.cfg.rounds} rds</span>
+                      <span style={{ color: st.color, fontWeight: 600 }}>· {st.label}{st.pct > 0 && st.pct < 100 ? ` (${st.pct}%)` : ""}</span>
+                    </div>
+                  </div>
+                  {/* actions */}
+                  <div style={{ display: "flex", gap: 7, flexShrink: 0, alignItems: "center" }}>
+                    <button onClick={() => onUmbrella(l.id)} style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: `1px solid ${draftLive ? "var(--gold)" : "var(--line2)"}`, background: draftLive ? "var(--gold)" : "var(--panel3)", color: draftLive ? "#151002" : "var(--ink)", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>
+                      <i className="ti ti-clipboard-text" style={{ fontSize: 14 }} aria-hidden="true" />{draftLive ? "Resume" : "Draft room"}
+                    </button>
+                    {isSleeper && onOpenHub && (
+                      <button onClick={() => onOpenHub({ league_id: l.connect.leagueId })} style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--blue)", background: "rgba(107,168,229,.10)", color: "var(--blue)", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>
+                        <i className="ti ti-user-heart" style={{ fontSize: 14 }} aria-hidden="true" />My Team
+                      </button>
+                    )}
                     {onDelete && (delConfirm === l.id
                       ? <span style={{ display: "flex", gap: 4, flexShrink: 0 }}>
                           <button className="btn btn-mini" style={{ borderColor: "var(--red)", color: "var(--red)" }} onClick={() => { onDelete(l.id); setDelConfirm(null); }} title="Confirm delete"><i className="ti ti-check" style={{ fontSize: 12 }} aria-hidden="true" /></button>
@@ -5741,32 +5762,22 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                       : <button className="btn btn-mini" onClick={() => setDelConfirm(l.id)} title="Delete league" style={{ flexShrink: 0, borderColor: "transparent", color: "var(--mut)", padding: "3px 6px" }}><i className="ti ti-trash" style={{ fontSize: 13 }} aria-hidden="true" /></button>
                     )}
                   </div>
-                  {/* two clearly-distinct actions */}
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button onClick={() => onUmbrella(l.id)} style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "9px 10px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: `1px solid ${draftLive ? "var(--gold)" : "var(--line2)"}`, background: draftLive ? "var(--gold)" : "var(--panel3)", color: draftLive ? "#151002" : "var(--ink)", fontWeight: 700, fontSize: 13 }}>
-                      <i className="ti ti-clipboard-text" style={{ fontSize: 14 }} aria-hidden="true" />{draftLive ? "Resume draft" : "Draft room"}
-                    </button>
-                    {isSleeper && onOpenHub && (
-                      <button onClick={() => onOpenHub({ league_id: l.connect.leagueId })} style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "9px 10px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--blue)", background: "rgba(107,168,229,.10)", color: "var(--blue)", fontWeight: 700, fontSize: 13 }}>
-                        <i className="ti ti-user-heart" style={{ fontSize: 14 }} aria-hidden="true" />My Team
-                      </button>
-                    )}
-                  </div>
                 </div>
               );
             })}
 
             {/* Unimported Sleeper leagues — one tap to connect */}
             {(statusFilter === "all" || statusFilter === "pre") && unimportedSleeper.map((sl) => (
-              <div key={sl.league_id} style={{ border: "1px dashed var(--line2)", background: "var(--panel2)", borderRadius: 13, padding: 14, display: "flex", flexDirection: "column", gap: 11 }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
+              <div key={sl.league_id} style={{ border: "1px dashed var(--line2)", background: "var(--panel2)", borderRadius: 12, padding: "11px 14px", display: "flex", alignItems: "center", gap: 13, flexWrap: "wrap" }}>
+                <div style={{ width: 38, height: 38, borderRadius: 10, background: "var(--panel3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className="ti ti-cloud-download" style={{ fontSize: 18, color: "var(--blue)" }} aria-hidden="true" /></div>
+                <div style={{ flex: "1 1 220px", minWidth: 0 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                     <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>{sl.name}</span>
                     <span className="chip" style={{ fontSize: 8.5, color: "var(--blue)" }}>Sleeper</span>
                   </div>
                   <div className="mut" style={{ fontSize: 11, marginTop: 2 }}>{sl.total_rosters || "?"}T · not yet in Compass</div>
                 </div>
-                <button onClick={() => onNewLeague()} style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "9px 10px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--gold)", background: "rgba(242,182,60,.10)", color: "var(--gold)", fontWeight: 700, fontSize: 13 }}>
+                <button onClick={() => onNewLeague()} style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--gold)", background: "rgba(242,182,60,.10)", color: "var(--gold)", fontWeight: 700, fontSize: 13, flexShrink: 0, whiteSpace: "nowrap" }}>
                   <i className="ti ti-plus" style={{ fontSize: 14 }} aria-hidden="true" />Add to Compass
                 </button>
               </div>
@@ -9367,7 +9378,100 @@ function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
 }
 
 
-function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQueue, onExit, onBuy, onSettings, onEditRanks, onUseRankSet, onColPrefs, onSaveInRoomRanks, dataVersion = 0 }) {
+// In-draft trends drawer: a slide-in panel that shows how the board is moving ACROSS your other drafts +
+// mocks in THIS league's format — without leaving the draft. Focuses on what helps you right now: which
+// still-available players are going earlier/later than ADP, plus positional flow by round. Reuses the same
+// analyzeDraftTrends engine as the full Draft Trends page, but scoped to this format and this board.
+function InDraftTrends({ cfg, players, draftedSet, allLeagues, allFunMocks, onClose }) {
+  const drafts = useMemo(() => {
+    const key = formatKey(cfg);
+    const out = [];
+    (allLeagues || []).forEach((l) => {
+      if (formatKey(l.cfg) !== key) return;
+      if (l.picks && l.picks.length >= 12) out.push({ picks: l.picks, cfg: l.cfg, at: l.lastPickAt || null });
+      (l.mocks || []).forEach((m) => { if (m.picks && m.picks.length >= 12) out.push({ picks: m.picks, cfg: l.cfg, at: m.at || null }); });
+    });
+    (allFunMocks || []).forEach((m) => { if (formatKey(m.cfg) === key && m.picks && m.picks.length >= 12) out.push({ picks: m.picks, cfg: m.cfg, at: m.at || null }); });
+    return out;
+  }, [allLeagues, allFunMocks, cfg]);
+
+  const trends = useMemo(() => analyzeDraftTrends(drafts, players, { weightRecency: true, now: Date.now() }), [drafts, players]);
+  // Available risers/fallers: only players still on the board (most actionable mid-draft).
+  const availRisers = (trends.risers || []).filter((r) => !draftedSet.has(r.pid)).slice(0, 6);
+  const availFallers = (trends.fallers || []).filter((r) => !draftedSet.has(r.pid)).slice(0, 6);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 70, display: "flex", justifyContent: "flex-end" }}>
+      <div style={{ position: "absolute", inset: 0, background: "#000a" }} onClick={onClose} aria-hidden="true" />
+      <div className="panel" style={{ position: "relative", width: "min(460px, 94vw)", height: "100%", borderRadius: 0, overflowY: "auto", padding: 18, boxShadow: "-20px 0 60px #000a" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+          <i className="ti ti-chart-histogram" style={{ fontSize: 20, color: "var(--gold)" }} aria-hidden="true" />
+          <div className="disp" style={{ fontSize: 18, fontWeight: 700, flex: 1 }}>Draft Trends</div>
+          <button className="btn btn-mini" onClick={onClose}><i className="ti ti-x" style={{ fontSize: 13 }} aria-hidden="true" /></button>
+        </div>
+        <div className="mut" style={{ fontSize: 12, marginBottom: 14 }}>How the board moves across your other <b style={{ color: "var(--ink)" }}>{cfg.sf ? "Superflex" : "1QB"}{cfg.tePremMult > 0 ? " TE-premium" : ""} {cfg.type === "dynasty" ? "dynasty" : cfg.type === "bestball" ? "best-ball" : cfg.type === "rookie" ? "rookie" : "redraft"}</b> drafts — recent ones weighted more.</div>
+
+        {trends.n === 0 ? (
+          <div className="panel" style={{ padding: 16, textAlign: "center", background: "var(--panel2)" }}>
+            <i className="ti ti-chart-dots" style={{ fontSize: 28, color: "var(--mut)", marginBottom: 8 }} aria-hidden="true" />
+            <div className="disp" style={{ fontSize: 14, fontWeight: 700, marginBottom: 3 }}>Not enough drafts yet</div>
+            <div className="mut" style={{ fontSize: 12 }}>Run or complete a few more drafts in this exact format and their patterns will show up here — recent ones counting most.</div>
+          </div>
+        ) : (
+          <>
+            <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+              <span className="chip" style={{ color: "var(--gold)" }}>{trends.n} matching draft{trends.n === 1 ? "" : "s"}</span>
+              {!trends.enough && <span className="chip" style={{ borderColor: "var(--gold)", color: "var(--gold)" }}>small sample</span>}
+              {trends.firstQBRound != null && <span className="chip">1st QB ~R{trends.firstQBRound.toFixed(1)}</span>}
+              {trends.firstTERound != null && <span className="chip">1st TE ~R{trends.firstTERound.toFixed(1)}</span>}
+            </div>
+
+            {availRisers.length > 0 && (
+              <div className="panel" style={{ padding: 13, marginBottom: 10, background: "var(--panel2)" }}>
+                <div className="disp" style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 2 }}>Going earlier than ADP <span className="mut" style={{ fontSize: 10.5 }}>still available</span></div>
+                <div className="mut" style={{ fontSize: 11, marginBottom: 8 }}>Don't wait on these — your drafts keep taking them ahead of the market.</div>
+                {availRisers.map((r) => (
+                  <div key={r.pid} style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 0", borderTop: "1px solid var(--line)" }}>
+                    <Dot pos={r.pos} />
+                    <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 600, fontSize: 12.5 }}>{r.name} <span className="mut" style={{ fontSize: 10.5 }}>{r.pos}</span></div><div className="mut" style={{ fontSize: 10.5 }}>goes ~{r.avgPick.toFixed(0)} · ADP {r.baseline != null ? r.baseline.toFixed(0) : "—"}</div></div>
+                    <span className="num" style={{ fontWeight: 700, color: "var(--green)", fontSize: 12.5 }}>▲{r.delta.toFixed(0)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {availFallers.length > 0 && (
+              <div className="panel" style={{ padding: 13, marginBottom: 10, background: "var(--panel2)" }}>
+                <div className="disp" style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 2 }}>Sliding past ADP <span className="mut" style={{ fontSize: 10.5 }}>still available</span></div>
+                <div className="mut" style={{ fontSize: 11, marginBottom: 8 }}>These tend to last — you can often wait a round and still get them.</div>
+                {availFallers.map((r) => (
+                  <div key={r.pid} style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 0", borderTop: "1px solid var(--line)" }}>
+                    <Dot pos={r.pos} />
+                    <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 600, fontSize: 12.5 }}>{r.name} <span className="mut" style={{ fontSize: 10.5 }}>{r.pos}</span></div><div className="mut" style={{ fontSize: 10.5 }}>goes ~{r.avgPick.toFixed(0)} · ADP {r.baseline != null ? r.baseline.toFixed(0) : "—"}</div></div>
+                    <span className="num" style={{ fontWeight: 700, color: "var(--red)", fontSize: 12.5 }}>▼{Math.abs(r.delta).toFixed(0)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {trends.flow && trends.flow.length > 0 && (
+              <div className="panel" style={{ padding: 13, background: "var(--panel2)" }}>
+                <div className="disp" style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>Positional flow by round</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  {trends.flow.slice(0, 10).map((row) => <PosFlowBar key={row.round} row={row} />)}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+
+function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQueue, onExit, onBuy, onSettings, onEditRanks, onUseRankSet, onColPrefs, onSaveInRoomRanks, dataVersion = 0, allLeagues, allFunMocks }) {
   const cfg = league.cfg;
   // Live per-pick ownership from a connected platform (Sleeper draft_slot). Declared here so it can
   // be applied to the engine's team-assignment BEFORE any roster/sim computation in this render.
@@ -9452,6 +9556,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const askOfficialMode = !mockLike && !connectedPlatform && !cfg.draftMode;
   const [mockTradingOn, setMockTradingOn] = useState(false); // in-mock trading with CPU teams (opt-in)
   const [tab, setTab] = useState(initialTab || "hub");
+  const [trendsOpen, setTrendsOpen] = useState(false); // in-draft cross-draft trends drawer
   // The player pool and its ADP are loaded ONCE at app startup and never modified during a session.
   // We previously experimented with re-fetching/overlaying per-league ADP here; that risked the board and
   // is intentionally NOT done. Format differences (SF/dynasty/TE-premium) are reflected by the engine's
@@ -11130,6 +11235,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <button className="btn btn-mini" onClick={() => setShowDrafted((s) => !s)} title={showDrafted ? "Currently showing every player — drafted ones are crossed out. Click to hide them." : "Currently hiding drafted players — only those still available show. Click to show everyone."}>
                 <i className={`ti ${showDrafted ? "ti-eye" : "ti-eye-off"}`} style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />{showDrafted ? "All players" : "Available only"}
               </button>
+              <button className="btn btn-mini" onClick={() => setTrendsOpen(true)} title="See how the board is moving across your other drafts in this format — who's going early, who's sliding, and positional runs by round"><i className="ti ti-chart-histogram" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trends</button>
               <button className="btn btn-mini" onClick={() => setRanksWarn(true)} title="Your rankings & platform ADP — build a board or pick a saved one to power Edge / My ADP / Blend"><i className="ti ti-list-numbers" style={{ fontSize: 13 }} aria-hidden="true" /> My ranks</button>
               <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — who traded which pick to whom. The board updates instantly."><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks</button>
               <button className="btn btn-mini" onClick={() => setColMenu((m) => !m)}><i className="ti ti-columns" style={{ fontSize: 13 }} aria-hidden="true" /> Columns</button>
@@ -12926,6 +13032,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         </div>
       )}
 
+      {trendsOpen && <InDraftTrends cfg={cfg} players={players} draftedSet={draftedSet} allLeagues={allLeagues} allFunMocks={allFunMocks} onClose={() => setTrendsOpen(false)} />}
       {tradeModalOpen && (() => {
         return <TradePickModal
           teams={TEAMS} rounds={ROUNDS} teamNames={TEAM_NAMES} userIdx={userIdx}
