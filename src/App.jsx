@@ -37,7 +37,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28t";
+const BUILD_TAG = "2026.06.28u";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1511,6 +1511,14 @@ function buildPlayers(cfg) {
       } else {
         a = raw * 1.02;
       }
+    } else if (!sf && loadedIsSF && pos === "QB") {
+      // INVERSE CASE — this is a 1QB league but the loaded ADP is an SF board (QBs artificially high,
+      // often inside round 1). Without correction, a 1QB draft sends QBs off way too early. Push each QB
+      // DOWN to a realistic 1QB slot by QB rank: QB1 ≈ 34, QB2 ≈ 44, then ~10/rank, easing for the tail.
+      // (Real 1QB redraft: the first QB rarely goes before the mid-3rd; streamers slide to double digits.)
+      const r = qbRankOfRaw(raw);
+      const target = r <= 8 ? 34 + (r - 1) * 10 : 104 + (r - 8) * 6;
+      a = Math.max(raw, target); // never move a QB UP in a 1QB league — only down to the 1QB slot
     }
     if (teMult > 0 && pos === "TE" && !loadedIsTEP) {
       // TE-premium nudge. Sleeper's own draft board does NOT publish a separate TE-premium ADP — owners
@@ -2931,6 +2939,12 @@ export default function App() {
   const packDoneRef = useRef(false);
   const MIN_SPLASH_MS = 2600, MAX_SPLASH_MS = 7000;
   const [dataVersion, setDataVersion] = useState(0); // bumps when live player data loads, to refresh boards
+  // Per-format ADP overlay cache. The GLOBAL pack loads once from the user's dominant league format, but a
+  // draft in a DIFFERENT format (e.g. a 1QB redraft mock when your leagues are SF-dynasty) must draft
+  // against THAT format's ADP — otherwise QBs from an SF board flood the first round of a 1QB draft.
+  // We fetch the correct-format pack on demand and overlay just the ADP numbers (name-matched, index-safe).
+  const adpOverlayCache = useRef({});   // formatKey -> pack (or 'pending'/'miss')
+  const adpOverlayApplied = useRef(null); // the formatKey currently overlaid onto the board
   const [demoLeague, setDemoLeague] = useState(null); // unsaved demo draft from homepage
   const [mockLeague, setMockLeague] = useState(null); // transient mock draft running against a saved league
   const [quickMockOpen, setQuickMockOpen] = useState(false); // quick-mock pre-draft prompt
@@ -3291,6 +3305,31 @@ export default function App() {
   };
 
   const active = activeId === "demo" ? demoLeague : (mockLeague && activeId === mockLeague.id) ? mockLeague : leagues.find((l) => l.id === activeId);
+
+  // ---- Per-draft, format-correct ADP ----
+  // When a draft opens (mock, demo, or real) whose format differs from what's currently overlaid on the
+  // board, fetch that format's published Sleeper ADP and overlay it (name-matched, index-preserving, so
+  // existing picks stay valid). This is what stops an SF-dynasty global pack from putting QBs in round 1
+  // of a 1QB redraft mock. Falls back silently to the loaded board if the format's ADP is unavailable.
+  const activeFmt = (route === "draft" && active && active.cfg) ? backendFormatKey(active.cfg) : null;
+  useEffect(() => {
+    if (!hasBackend || !activeFmt) return;
+    if (adpOverlayApplied.current === activeFmt) return; // already showing this format
+    const cache = adpOverlayCache.current;
+    const applyPack = (pack) => {
+      if (pack && applyAdpOverlay(pack)) { adpOverlayApplied.current = activeFmt; setDataVersion((v) => v + 1); }
+    };
+    if (cache[activeFmt] && cache[activeFmt] !== "pending" && cache[activeFmt] !== "miss") { applyPack(cache[activeFmt]); return; }
+    if (cache[activeFmt] === "pending" || cache[activeFmt] === "miss") return;
+    cache[activeFmt] = "pending";
+    const st = (active.cfg && active.cfg.start) || {};
+    const opts = { k: !!(st.K > 0), dst: !!(st.DST > 0) };
+    let alive = true;
+    api.playerPack(activeFmt, undefined, opts)
+      .then((pack) => { if (!alive) return; if (pack && Array.isArray(pack.players) && pack.players.length) { cache[activeFmt] = pack; applyPack(pack); } else { cache[activeFmt] = "miss"; } })
+      .catch(() => { cache[activeFmt] = "miss"; });
+    return () => { alive = false; };
+  }, [activeFmt]);
 
   if (!bootReady) return <BootSplash css={css} />;
 
