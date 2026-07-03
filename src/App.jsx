@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ad";
+const BUILD_TAG = "2026.06.28ae";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2935,7 +2935,7 @@ export default function App() {
     try {
       const r = sessionStorage.getItem("gs-nav");
       const n = r ? JSON.parse(r) : {};
-      const SAFE = ["home", "library", "teamHub", "leagueHub", "draft", "rankings", "trendsTime", "tradeTools", "adpIntel", "database", "trends", "help", "guide", "account", "admin"];
+      const SAFE = ["home", "library", "teamHub", "leagueHub", "draft", "rankings", "trendsTime", "tradeTools", "adpIntel", "database", "trends", "draftTrends", "help", "guide", "account", "admin"];
       if (!SAFE.includes(n.route)) return {};
       if (n.route === "teamHub" && !n.hubLeagueId) return {};
       if ((n.route === "draft" || n.route === "leagueHub") && !n.activeId) return {};
@@ -2978,6 +2978,7 @@ export default function App() {
   const [quickMockOpen, setQuickMockOpen] = useState(false); // quick-mock pre-draft prompt
   const [funMocks, setFunMocks] = useState([]); // standalone mocks not tied to a league
   const [feedback, setFeedback] = useState([]); // user-submitted feedback {id,email,topic,msg,ts,status,reply}
+  const [updateReady, setUpdateReady] = useState(false); // a newer build is deployed; prompt user to refresh
 
   // Persist the current view so a refresh restores it. We don't persist transient/modal routes like
   // checkout (those should return home on reload rather than trap the user).
@@ -2997,6 +2998,25 @@ export default function App() {
     // don't bounce it home — only redirect a userless "draft" route when it isn't the demo.
     if (NEEDS_USER.includes(route) && !user && !(route === "draft" && activeId === "demo")) setRoute("home");
   }, [bootReady, route, user, activeId]);
+
+  // Update detector: periodically fetch the freshly-deployed version marker (cache-busted). When the site
+  // has been redeployed to a newer build than the one currently running in this tab, we surface a gentle
+  // "refresh for the latest" banner. We NEVER auto-reload (that could interrupt a live draft) — the user
+  // chooses when. This also protects against a stale cached bundle silently running old features.
+  useEffect(() => {
+    let alive = true;
+    const check = async () => {
+      try {
+        const r = await fetch(`/version.json?t=${Date.now()}`, { cache: "no-store" });
+        if (!r.ok) return;
+        const j = await r.json();
+        if (alive && j && j.build && j.build !== BUILD_TAG) setUpdateReady(true);
+      } catch { /* offline or file missing — ignore; never block the app */ }
+    };
+    const t0 = setTimeout(check, 8000);          // first check shortly after load
+    const iv = setInterval(check, 5 * 60 * 1000); // then every 5 minutes
+    return () => { alive = false; clearTimeout(t0); clearInterval(iv); };
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -3364,6 +3384,15 @@ export default function App() {
   return (
     <div className="gs-root">
       <style>{css}</style>
+      {updateReady && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 200, background: "var(--gold)", color: "#151002", padding: "9px 16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, flexWrap: "wrap", boxShadow: "0 2px 12px #0006", fontSize: 13.5 }}>
+          <i className="ti ti-sparkles" style={{ fontSize: 16 }} aria-hidden="true" />
+          <span style={{ fontWeight: 700 }}>A new version of Fantasy Draft Compass is available.</span>
+          <span style={{ opacity: 0.85 }}>Refresh to get the latest features.</span>
+          <button onClick={() => window.location.reload()} style={{ background: "#151002", color: "var(--gold)", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Refresh now</button>
+          <button onClick={() => setUpdateReady(false)} title="Dismiss — I'll refresh later" style={{ background: "transparent", border: "none", color: "#151002", cursor: "pointer", padding: 4, display: "flex", opacity: 0.7 }}><i className="ti ti-x" style={{ fontSize: 15 }} aria-hidden="true" /></button>
+        </div>
+      )}
       {route === "home" && user?.paid && <PaidHub user={user} leagues={leagues} funMocks={funMocks}
         onLibrary={() => setRoute("library")} onNewLeague={() => { setSetupReturn(null); setRoute("setup"); }} onDatabase={() => setRoute("database")}
         onOfficial={(id) => { setActiveId(id); setRoute("draft"); }} onMock={startMock} onQuickMock={() => setQuickMockOpen(true)}
@@ -3890,11 +3919,23 @@ function ToolGraphic({ kind, color }) {
       <line x1="120" y1="14" x2="120" y2="80" stroke={c} strokeWidth="2" strokeDasharray="3 3" /><text x="124" y="20" fontSize="8" fill={c} fontFamily="monospace">consensus</text>
     </svg>
   );
+  if (kind === "drafttrends") return (
+    <svg viewBox="0 0 200 90" style={bg} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+      {[[20,54],[44,40],[68,60],[92,26],[116,44],[140,20],[164,34]].map(([x,h],i)=>(<rect key={i} x={x} y={80-h} width="14" height={h} rx="2" fill={c} opacity={0.45 + (i%3)*0.18} />))}
+      <polyline points="27,40 51,50 75,30 99,20 123,34 147,16 171,26" fill="none" stroke="var(--ink)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.85" />
+      <line x1="14" y1="80" x2="186" y2="80" stroke="var(--line)" strokeWidth="1" />
+    </svg>
+  );
+  if (kind === "inseason") return (
+    <svg viewBox="0 0 200 90" style={bg} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+      <rect x="22" y="16" width="156" height="60" rx="6" fill="none" stroke={c} strokeWidth="1.5" opacity="0.5" />
+      <line x1="22" y1="32" x2="178" y2="32" stroke={c} strokeWidth="1.5" opacity="0.5" />
+      {[0,1,2,3].map((wk)=>[0,1,2].map((d)=>(<rect key={`${wk}-${d}`} x={34+d*48} y={40+wk*8} width="40" height="5" rx="2.5" fill={wk===1&&d===1?c:"var(--panel2)"} opacity={wk===1&&d===1?1:0.8} />)))}
+      <circle cx="150" cy="24" r="5" fill={c} />
+    </svg>
+  );
   return null;
 }
-
-// Interactive hero showcase — each topic is a working mini version of the real feature, so a new
-// visitor immediately gets what the tool does and gets fired up to use it.
 function HeroShowcase() {
   const TOPICS = [
     { key: "board", icon: "ti-layout-board", label: "Live board", color: "#e0833a" },
