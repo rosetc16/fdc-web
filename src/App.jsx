@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ak";
+const BUILD_TAG = "2026.06.28al";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2502,9 +2502,12 @@ function pickValue(p, overall, cfg) {
   // Steal (fell past ADP): actual > adp → you spent a cheaper pick on a pricier asset → positive.
   // Reach (taken early):   actual < adp → you spent a premium pick on a cheaper asset → negative.
   const curveGap = pickCurve(adp) - pickCurve(actual);
-  // Scale to a readable range and round. The curve already bakes in round disparity (a few picks at
-  // the top swing far more value than many picks at the bottom), so no separate round multiplier.
-  let v = curveGap / 6;
+  // Scale to a readable range. The curve heavily weights early picks (as it should), but it goes nearly
+  // flat by the late rounds, so a genuine 15-spot slide at pick 110 would otherwise round to ~0. Add a
+  // modest LINEAR spots term so late-round value/reaches still register — early rounds stay curve-dominated
+  // (where the swings are huge), late rounds get a readable floor proportional to how far off market it was.
+  const spotGap = actual - adp;             // >0 = fell past ADP (steal), <0 = reached
+  let v = curveGap / 6 + spotGap * 0.5;     // curve (early-weighted) + a flat per-spot floor
   // Reaches sting a touch harder than equivalent steals reward — premium capital misused is worse
   // than capital saved. Asymmetric by ~25%.
   if (v < 0) v *= 1.25;
@@ -9914,6 +9917,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [teamsProj, setTeamsProj] = useState(false);
   const [boardProj, setBoardProj] = useState(false);
   const [showBoardVal, setShowBoardVal] = useState(false); // toggle pick-value under each name
+  const [boardHi, setBoardHi] = useState({ steals: false, reaches: false }); // highlight steals/reaches on board
   const [pastBig, setPastBig] = useState(false);
   const [futureBig, setFutureBig] = useState(false);
   const [tip, setTip] = useState(null);
@@ -9994,6 +9998,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [sumSort, setSumSort] = useState({ key: "z", dir: -1 });
   const [summaryTeam, setSummaryTeam] = useState(null); // null = you + league-wide; else a team idx
   const [summaryExpand, setSummaryExpand] = useState(false); // show more steals/reaches
+  const [benchExpand, setBenchExpand] = useState(false); // summary Your-team: show full bench vs top 5
+  const [depthPos, setDepthPos] = useState("ALL"); // depth charts: filter to one position to shorten tiles
   const [capWarn, setCapWarn] = useState(null);
   const connected = !!cfg.connect;
   const [clock, setClock] = useState(90);
@@ -11195,12 +11201,24 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         {!isConnectedLive && <button className="btn" onClick={undo} disabled={!picks.length} title="Undo last pick — test what-if scenarios">Undo</button>}
         {!isConnectedLive && user && <button className="btn" onClick={() => { onSave(picks, preds); setCopied(true); setTimeout(() => setCopied(false), 1200); }}>{copied ? "Saved ✓" : "Save"}</button>}
         {isConnectedLive && <div className="chip" style={{ borderColor: "var(--green)", color: "var(--green)" }} title="Picks sync automatically from your Sleeper draft. There's nothing to save or pause."><i className="ti ti-bolt" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Live · auto-syncing</div>}
+        {!done && !hypoMode && sleeperLive && (
+          <button onClick={startHypo}
+            onMouseEnter={(e) => showTip(e, [
+              { kind: "take", tone: "good", x: "Explore a scenario" },
+              { t: "What it does", x: "Lets you play out hypothetical picks on top of the live draft — draft a player for any team, then keep going — to see how the board and your recommendations would shift. Your real draft is never touched." },
+              { t: "How to use it", x: "Click to start. Then draft players as if the next picks happened. The board, availability odds, and advice all update so you can test “what if I take X here?” scenarios." },
+              { t: "Getting back", x: "Hit “Revert to live draft” to clear every what-if pick and snap back to the real draft. If real picks come in while you explore, you'll get a button to sync up to them." },
+            ])} onMouseLeave={hideTip}
+            style={{ background: "var(--gold)", color: "#151002", border: "none", fontWeight: 700, fontSize: 12.5, padding: "6px 12px", borderRadius: 7, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5, boxShadow: "0 1px 6px rgba(242,182,60,.30)" }}>
+            <i className="ti ti-flask" style={{ fontSize: 13 }} aria-hidden="true" />Scenario mode
+          </button>
+        )}
       </div>
 
       <div style={{ position: "sticky", top: 0, zIndex: 12, background: "var(--bg)" }}>
-      {!done && (hypoMode || sleeperLive) && (
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 16px", flexWrap: "wrap", background: hypoMode ? "rgba(242,182,60,.10)" : "var(--panel2)", borderBottom: `1px solid ${hypoMode ? "var(--gold)" : "var(--line)"}` }}>
-          {hypoMode ? (
+      {!done && hypoMode && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 16px", flexWrap: "wrap", background: "rgba(242,182,60,.10)", borderBottom: "1px solid var(--gold)" }}>
+          {(
             <>
               <i className="ti ti-flask" style={{ fontSize: 15, color: "var(--gold)" }} aria-hidden="true" />
               <span style={{ fontSize: 12.5, color: "var(--gold)", fontWeight: 600 }}>Scenario mode — exploring what-if picks ({Math.max(0, picks.length - hypoBase)} added). The real draft isn't affected.</span>
@@ -11212,27 +11230,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 <button className="btn btn-mini" style={{ borderColor: "var(--gold)", color: "var(--gold)" }} onClick={syncLive}>Update with live picks</button>
               )}
               <button className="btn btn-mini" onClick={revertHypo}><i className="ti ti-arrow-back-up" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Revert to live draft</button>
-            </>
-          ) : (
-            <>
-              <i className="ti ti-flask" style={{ fontSize: 15, color: "var(--gold)" }} aria-hidden="true" />
-              <span style={{ fontSize: 12.5, fontWeight: 600 }}>Scenario mode</span>
-              <div style={{ flex: 1 }} />
-              <button onClick={startHypo}
-                onClick={(e) => showTip(e, [
-                  { kind: "take", tone: "good", x: "Explore a scenario" },
-                  { t: "What it does", x: "Lets you play out hypothetical picks on top of the live draft — draft a player for any team, then keep going — to see how the board and your recommendations would shift. Your real draft is never touched." },
-                  { t: "How to use it", x: "Click to start. Then draft players as if the next picks happened. The board, availability odds, and advice all update so you can test “what if I take X here?” scenarios." },
-                  { t: "Getting back", x: "Hit “Revert to live draft” to clear every what-if pick and snap back to the real draft. If real picks come in while you explore, you'll get a button to sync up to them." },
-                ])} onMouseEnter={(e) => showTip(e, [
-                  { kind: "take", tone: "good", x: "Explore a scenario" },
-                  { t: "What it does", x: "Lets you play out hypothetical picks on top of the live draft — draft a player for any team, then keep going — to see how the board and your recommendations would shift. Your real draft is never touched." },
-                  { t: "How to use it", x: "Click to start. Then draft players as if the next picks happened. The board, availability odds, and advice all update so you can test “what if I take X here?” scenarios." },
-                  { t: "Getting back", x: "Hit “Revert to live draft” to clear every what-if pick and snap back to the real draft. If real picks come in while you explore, you'll get a button to sync up to them." },
-                ])} onMouseLeave={hideTip}
-                style={{ background: "var(--gold)", color: "#151002", border: "none", fontWeight: 700, fontSize: 12.5, padding: "6px 14px", borderRadius: 7, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5, boxShadow: "0 1px 6px rgba(242,182,60,.35)" }}>
-                <i className="ti ti-flask" style={{ fontSize: 13 }} aria-hidden="true" />Explore a scenario →
-              </button>
             </>
           )}
         </div>
@@ -12715,6 +12712,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <input type="checkbox" checked={showBoardVal} onChange={(e) => setShowBoardVal(e.target.checked)} style={{ accentColor: "var(--gold)", cursor: "pointer" }} />
               Show pick value
             </label>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--line)", borderRadius: 9, padding: "3px 5px" }}>
+              <span className="mut" style={{ fontSize: 11, paddingLeft: 3 }}>Highlight</span>
+              <button className="btn btn-mini" style={{ fontSize: 11, padding: "3px 9px", borderColor: boardHi.steals ? "#5FD0A8" : "var(--line2)", background: boardHi.steals ? "rgba(95,208,168,.16)" : "transparent", color: boardHi.steals ? "#5FD0A8" : "var(--mut)", fontWeight: boardHi.steals ? 700 : 400 }} onClick={() => setBoardHi((h) => ({ ...h, steals: !h.steals }))}><i className="ti ti-diamond" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Steals</button>
+              <button className="btn btn-mini" style={{ fontSize: 11, padding: "3px 9px", borderColor: boardHi.reaches ? "#F2655C" : "var(--line2)", background: boardHi.reaches ? "rgba(242,101,92,.16)" : "transparent", color: boardHi.reaches ? "#F2655C" : "var(--mut)", fontWeight: boardHi.reaches ? 700 : 400 }} onClick={() => setBoardHi((h) => ({ ...h, reaches: !h.reaches }))}><i className="ti ti-flame" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Reaches</button>
+            </div>
             <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — the board updates instantly to show picks in their new owners' columns."><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks</button>
             <span className="mut" style={{ fontSize: 11.5, marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: "var(--gold)", marginRight: 4, verticalAlign: "middle" }} />Your picks</span>
@@ -12763,9 +12765,18 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     const isOnClock = o === picks.length && !done;
                     // Highlight a cell as "yours" whenever you own that pick — natural or traded-for.
                     const cls = `bcell${ownedByYou ? " you" : ""}${ownedByYou && isOnClock ? " oncl" : ""}${isUpcoming ? " upcoming" : ""}${!p ? " empty" : ""}`;
+                    // Steal/reach highlight: tint the cell green (steal) or red (reach) when its toggle is on.
+                    // For YOUR picks we keep the gold "you" identity via a gold outline, and tint the fill so
+                    // you can still tell it's yours AND see the value read.
+                    const isRealPick = p && !isProjected && !isKeeper;
+                    const isSteal = isRealPick && boardHi.steals && v >= 8;
+                    const isReach = isRealPick && boardHi.reaches && v <= -8;
+                    let hiStyle = {};
+                    if (isSteal) hiStyle = { background: "rgba(95,208,168,.20)", ...(ownedByYou ? { outline: "2px solid var(--gold)", outlineOffset: "-2px" } : { boxShadow: "inset 0 0 0 1px rgba(95,208,168,.55)" }) };
+                    else if (isReach) hiStyle = { background: "rgba(242,101,92,.20)", ...(ownedByYou ? { outline: "2px solid var(--gold)", outlineOffset: "-2px" } : { boxShadow: "inset 0 0 0 1px rgba(242,101,92,.55)" }) };
                     return (
                       <div key={`${r}-${col}`} className={cls}
-                        style={{ borderLeft: p ? `3px solid ${POS_COLOR[p.pos]}` : undefined, opacity: p ? (isProjected ? 0.9 : 1) : undefined }}
+                        style={{ borderLeft: p ? `3px solid ${POS_COLOR[p.pos]}` : undefined, opacity: p ? (isProjected ? 0.9 : 1) : undefined, ...hiStyle }}
                         onMouseEnter={p ? (e) => showTip(e, isKeeper ? [
                           { t: "Keeper", x: `${pickLabel(o)} — ${teamAt(o) === userIdx ? "You" : TEAM_NAMES[teamAt(o)]}` },
                           { t: "Kept", x: `${p.name} (${p.pos}${p.posRank}) — kept at this pick, locked to this slot.` },
@@ -12886,14 +12897,24 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
       {tab === "depth" && (
         <div style={{ padding: 14 }}>
-          <div className="panel" style={{ padding: "9px 12px", marginBottom: 12, background: "var(--panel2)", display: "flex", alignItems: "center", gap: 8 }}>            <i className="ti ti-info-circle" style={{ fontSize: 14, color: "var(--gold)" }} aria-hidden="true" />
-            <span className="mut" style={{ fontSize: 11.5, lineHeight: 1.45 }}>Depth charts are ordered by projected fantasy points from current Sleeper data. Players with no projected value and free agents are hidden. Updates daily.</span>
+          <div className="panel" style={{ padding: "9px 12px", marginBottom: 12, background: "var(--panel2)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <i className="ti ti-info-circle" style={{ fontSize: 14, color: "var(--gold)" }} aria-hidden="true" />
+            <span className="mut" style={{ fontSize: 11.5, lineHeight: 1.45, flex: "1 1 260px" }}>Depth charts are ordered by projected fantasy points from current Sleeper data. Players with no projected value and free agents are hidden.</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+              <span className="mut" style={{ fontSize: 11.5 }}>Show</span>
+              <select className="gs" style={{ minWidth: 130 }} value={depthPos} onChange={(e) => setDepthPos(e.target.value)}>
+                <option value="ALL">All positions</option>
+                {["QB", "RB", "WR", "TE", "K", "DST"].map((pos) => <option key={pos} value={pos}>{pos} only</option>)}
+              </select>
+            </div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(225px,1fr))", gap: 10 }}>
-          {depth.map(([team, arr]) => {
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(225px,1fr))", gap: 10, alignItems: "start" }}>
+          {depth.map(([team, arr0]) => {
+            const arr = depthPos === "ALL" ? arr0 : arr0.filter((p) => p.pos === depthPos);
+            if (depthPos !== "ALL" && arr.length === 0) return null;
             const avail = arr.filter((p) => !draftedSet.has(p.id)).length;
             return (
-              <div key={team} className="panel" style={{ padding: 10 }}>
+              <div key={team} className="panel" style={{ padding: 10, alignSelf: "start" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
                   <div className="disp" style={{ fontSize: 15, fontWeight: 700 }}>{team}</div>
                   <div className="mut" style={{ fontSize: 11 }}>{avail} available</div>
@@ -13195,11 +13216,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     })}
                   </div>
                   {/* bench rows */}
-                  {benchSorted.length > 0 && (
+                  {benchSorted.length > 0 && (() => {
+                    // Collapsed: top 5 by projected points. Expanded: the full bench in position order.
+                    const topByPts = bench.slice().sort((a, b) => (b.pts || 0) - (a.pts || 0)).slice(0, 5);
+                    const shown = benchExpand ? benchSorted : topByPts;
+                    return (
                     <>
-                      <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", marginBottom: 4 }}>Bench ({benchSorted.length})</div>
+                      <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", marginBottom: 4 }}>Bench ({benchSorted.length}){!benchExpand && benchSorted.length > 5 ? " · top 5 by projection" : ""}</div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                        {benchSorted.map((b, i) => {
+                        {shown.map((b, i) => {
                           const isProj = !done && !curSet.has(b.id);
                           return (
                             <div key={i} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, padding: "3px 8px", opacity: 0.85 }}>
@@ -13211,8 +13236,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           );
                         })}
                       </div>
+                      {benchSorted.length > 5 && (
+                        <button className="btn btn-mini" style={{ marginTop: 7, width: "100%", fontSize: 11 }} onClick={() => setBenchExpand((b) => !b)}>{benchExpand ? "‹ Show top 5 only" : `Show full bench (${benchSorted.length}) ›`}</button>
+                      )}
                     </>
-                  )}
+                    );
+                  })()}
                 </>
               );
             })()}
