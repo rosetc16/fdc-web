@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28an";
+const BUILD_TAG = "2026.06.28ap";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -7145,6 +7145,36 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
     return true;
   }), [allDrafts, typeF, qbF, teF, teamsF, kindF, cutoffMs]);
 
+  // ===== Aggregated pool from the backend (thousands of harvested real Sleeper drafts) =====
+  // This is the headline data source: how the WHOLE FIELD drafts each player in this format, not just the
+  // handful of drafts on this account. Derived format key follows the filter chips so it always matches
+  // what the user is looking at. Falls back server-side to a richer profile when a format is thin.
+  const poolFormat = useMemo(() => {
+    const scoring = teF === "tep" ? "PPR" : "PPR"; // trends are PPR-bucketed by default; TE prem is its own axis
+    const qb = qbF === "sf" ? "SF" : "1QB";
+    const te = teF === "tep" ? "TEP" : "STD";
+    const pool = typeF === "dynasty" ? "DYNASTY" : typeF === "bestball" ? "BESTBALL" : typeF === "rookie" ? "ROOKIE" : "REDRAFT";
+    const teams = teamsF === "all" ? "12" : (Number(teamsF) <= 10 ? "8-10" : Number(teamsF) >= 14 ? "14+" : "12");
+    return [scoring, qb, te, pool, teams].join("|");
+  }, [typeF, qbF, teF, teamsF]);
+  const [pool, setPool] = useState({ state: "idle", players: [], draftCount: 0, usedFormat: null, thin: false, fallback: false });
+  useEffect(() => {
+    if (!hasBackend) { setPool({ state: "off", players: [], draftCount: 0 }); return; }
+    let cancelled = false;
+    setPool((p) => ({ ...p, state: "loading" }));
+    api.trendsBoard(poolFormat, CURRENT_SEASON, { limit: 300, minDrafts: 5, minPicks: 2 })
+      .then((r) => { if (cancelled) return; setPool({ state: "done", players: r.players || [], draftCount: r.draftCount || 0, usedFormat: r.usedFormat, thin: !!r.thin, fallback: !!r.fallback, note: r.note }); })
+      .catch(() => { if (!cancelled) setPool({ state: "error", players: [], draftCount: 0 }); });
+    return () => { cancelled = true; };
+  }, [poolFormat]);
+  // Pool rows filtered by the same player-name search box.
+  const poolRows = useMemo(() => {
+    if (!pool.players || !pool.players.length) return [];
+    if (!q.trim()) return pool.players;
+    const s = q.toLowerCase();
+    return pool.players.filter((r) => (r.name || "").toLowerCase().includes(s));
+  }, [pool, q]);
+
   // Build a representative player pool for the matched format (use the most common cfg among matches).
   const repCfg = useMemo(() => {
     if (!matched.length) return null;
@@ -7359,9 +7389,60 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
               </div>
             )}
 
+            {/* ===== How the field drafts — the aggregated pool of harvested real Sleeper drafts ===== */}
+            <div className="panel" style={{ padding: 16, border: "1px solid rgba(242,182,60,.4)" }}>
+              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 6, marginBottom: 3 }}>
+                <div className="disp" style={{ fontSize: 15, fontWeight: 700 }}>How the field drafts <span className="mut" style={{ fontSize: 11 }}>aggregated real drafts</span></div>
+                {pool.state === "done" && pool.draftCount > 0 && (
+                  <span className="chip" style={{ fontSize: 10, color: "var(--gold)", borderColor: "rgba(242,182,60,.4)" }}>{pool.draftCount.toLocaleString()} drafts{pool.fallback ? " · nearest format" : ""}</span>
+                )}
+              </div>
+              <div className="mut" style={{ fontSize: 12, marginBottom: 10 }}>Draft position across thousands of harvested Sleeper drafts in this format — average pick, the typical range (middle 50%), and how often each player is drafted. Independent of your own drafts below.</div>
+              {pool.state === "loading" && <div className="mut" style={{ fontSize: 12.5, textAlign: "center", padding: "16px 0" }}>Loading the aggregated draft pool…</div>}
+              {pool.state === "off" && <div className="mut" style={{ fontSize: 12.5, textAlign: "center", padding: "16px 0" }}>Sign in with the live app to load the aggregated pool.</div>}
+              {pool.state === "error" && <div className="mut" style={{ fontSize: 12.5, textAlign: "center", padding: "16px 0" }}>Couldn't reach the trends pool right now — try again in a moment.</div>}
+              {pool.state === "done" && pool.players.length === 0 && (
+                <div className="mut" style={{ fontSize: 12.5, textAlign: "center", padding: "16px 0" }}>{pool.note || "No harvested drafts for this format yet — the pool is still being built."}</div>
+              )}
+              {pool.state === "done" && poolRows.length > 0 && (
+                <>
+                  {pool.thin && <div className="mut" style={{ fontSize: 11, marginBottom: 8, color: "var(--gold)" }}>Thin sample for the exact format — showing the nearest format with enough drafts.</div>}
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: "100%" }}>
+                      <thead>
+                        <tr className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".04em" }}>
+                          <th style={{ textAlign: "left", padding: "0 8px 6px 0" }}>Player</th>
+                          <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }}>Avg</th>
+                          <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }}>Median</th>
+                          <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }}>Range</th>
+                          <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }} title="Middle 50% of drafts — the typical window he goes in">Typical</th>
+                          <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }} title="Share of drafts he was taken in">Drafted</th>
+                          <th className="num" style={{ textAlign: "right", padding: "0 0 6px" }} title="Number of drafts he appears in">N</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {poolRows.slice(0, q.trim() ? 200 : 120).map((r) => (
+                          <tr key={r.id} style={{ borderTop: "1px solid var(--line)" }}>
+                            <td style={{ padding: "5px 8px 5px 0", whiteSpace: "nowrap" }}><span className="posdot" style={{ background: POS_COLOR[r.position] }} /><b>{r.name}</b> <span className="mut" style={{ fontSize: 10 }}>{r.position}{r.team ? ` · ${r.team}` : ""}</span></td>
+                            <td className="num" style={{ textAlign: "right", padding: "5px 8px", fontWeight: 700 }}>{r.avg}</td>
+                            <td className="num" style={{ textAlign: "right", padding: "5px 8px" }}>{r.median}</td>
+                            <td className="num mut" style={{ textAlign: "right", padding: "5px 8px", fontSize: 11 }}>{r.min}–{r.max}</td>
+                            <td className="num" style={{ textAlign: "right", padding: "5px 8px", fontSize: 11 }}>{r.p25}–{r.p75}</td>
+                            <td className="num" style={{ textAlign: "right", padding: "5px 8px", color: r.draftedRate >= 90 ? "#5FD0A8" : r.draftedRate >= 50 ? "var(--ink)" : "var(--mut)" }}>{r.draftedRate != null ? `${r.draftedRate}%` : "—"}</td>
+                            <td className="num mut" style={{ textAlign: "right", padding: "5px 0", fontSize: 11 }}>{r.n}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {!q.trim() && poolRows.length > 120 && <div className="mut" style={{ fontSize: 11, textAlign: "center", paddingTop: 8 }}>Showing top 120 by average pick — search a name to find anyone.</div>}
+                  </div>
+                </>
+              )}
+            </div>
+
             {/* realized ADP table */}
             <div className="panel" style={{ padding: 16 }}>
-              <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 3 }}>Realized ADP <span className="mut" style={{ fontSize: 11 }}>{realizedRows.length} players{q.trim() ? " · filtered" : ""}</span></div>
+              <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 3 }}>Realized ADP <span className="mut" style={{ fontSize: 11 }}>{realizedRows.length} players{q.trim() ? " · filtered" : ""} · your drafts</span></div>
               <div className="mut" style={{ fontSize: 12, marginBottom: 10 }}>Where each player actually gets drafted across this set, vs. their baseline market ADP.</div>
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
@@ -9166,6 +9247,9 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
   };
   const cancelInvite = async (email) => { setBusy(true); try { await api.adminCancelInvite(email); await loadInvites(); note(`Invite canceled for ${email}`); } catch (e) {} finally { setBusy(false); } };
   const [jobResult, setJobResult] = useState(null);
+  const [trendsDiag, setTrendsDiag] = useState(null);
+  const loadTrendsDiag = async () => { try { const r = await api.trendsDiag(); setTrendsDiag(r); } catch (e) { setTrendsDiag({ error: e.data?.error || e.message }); } };
+  useEffect(() => { if (hasBackend && tab === "tools") loadTrendsDiag(); }, [tab]);
   const runJob = async (job) => {
     setBusy(true); setJobResult(null);
     note(job === "refresh" ? "Running full refresh — this can take a minute…" : "Pulling Sleeper ADP…");
@@ -9328,6 +9412,38 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
                 </div>
               )}
               <div className="mut" style={{ fontSize: 11, marginTop: 8 }}>After it finishes, hard-refresh the app and reconnect your league to see the updated board.</div>
+            </div>
+            <div className="panel" style={{ padding: 16, gridColumn: "1 / -1" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
+                <div className="disp" style={{ fontSize: 16, fontWeight: 700 }}>Draft Trends pool <span className="mut" style={{ fontSize: 12 }}>harvested real drafts</span></div>
+                <button className="btn btn-mini" disabled={busy} onClick={loadTrendsDiag}><i className="ti ti-refresh" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Refresh</button>
+              </div>
+              <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 10 }}>This pool powers the "How the field drafts" tables. It harvests automatically — a little after each deploy if empty, and every night at 4 AM — so you never have to run it by hand. The numbers below are just a health check.</div>
+              {!trendsDiag && <div className="mut" style={{ fontSize: 12 }}>Loading pool stats…</div>}
+              {trendsDiag && trendsDiag.error && <div style={{ fontSize: 12, color: "var(--red)" }}>Couldn't load: {trendsDiag.error}</div>}
+              {trendsDiag && !trendsDiag.error && (
+                <>
+                  <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 10 }}>
+                    <div><div className="num" style={{ fontSize: 22, fontWeight: 800, color: trendsDiag.harvestedDrafts > 0 ? "var(--green)" : "var(--gold)" }}>{(trendsDiag.harvestedDrafts || 0).toLocaleString()}</div><div className="mut" style={{ fontSize: 10.5 }}>drafts in pool</div></div>
+                    <div><div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{(trendsDiag.harvestObservations?.players || 0).toLocaleString()}</div><div className="mut" style={{ fontSize: 10.5 }}>players covered</div></div>
+                    <div><div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{(trendsDiag.draftsByFormat?.length || 0)}</div><div className="mut" style={{ fontSize: 10.5 }}>formats</div></div>
+                    <div><div className="num" style={{ fontSize: 13, fontWeight: 700, marginTop: 6 }}>{trendsDiag.lastHarvestedAt ? new Date(trendsDiag.lastHarvestedAt).toLocaleString() : "never"}</div><div className="mut" style={{ fontSize: 10.5 }}>last harvest</div></div>
+                  </div>
+                  {trendsDiag.harvestedDrafts === 0 && <div style={{ fontSize: 11.5, color: "var(--gold)", marginBottom: 8 }}>Pool is empty — it will fill automatically within a minute of the next deploy/boot, or at 4 AM. You can also force it now with Full refresh above.</div>}
+                  {trendsDiag.draftsByFormat && trendsDiag.draftsByFormat.length > 0 && (
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ borderCollapse: "collapse", fontSize: 11.5, minWidth: 320 }}>
+                        <thead><tr className="mut" style={{ fontSize: 10, textTransform: "uppercase" }}><th style={{ textAlign: "left", padding: "0 10px 4px 0" }}>Format</th><th className="num" style={{ textAlign: "right", padding: "0 10px 4px" }}>Drafts</th><th className="num" style={{ textAlign: "right", padding: "0 0 4px" }}>Picks</th></tr></thead>
+                        <tbody>
+                          {trendsDiag.draftsByFormat.slice(0, 15).map((f) => (
+                            <tr key={f.format_key} style={{ borderTop: "1px solid var(--line)" }}><td style={{ padding: "3px 10px 3px 0", fontFamily: "monospace" }}>{f.format_key}</td><td className="num" style={{ textAlign: "right", padding: "3px 10px", fontWeight: 700 }}>{f.drafts.toLocaleString()}</td><td className="num mut" style={{ textAlign: "right", padding: "3px 0" }}>{(f.picks || 0).toLocaleString()}</td></tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           </div>
         )}
@@ -11444,12 +11560,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               )}
               {currentPred && (() => {
                 const isYou = onClock === userIdx;
-                // Non-user pick: the simple "engine expects" line (hover handled by the whole card now).
+                // Non-user pick: prominent "engine expects" — colored position dot + the player's name large
+                // and clear, so it's easy to spot who's coming off the board. Hover on the card shows alts.
                 if (!isYou) {
                   return (
-                    <div style={{ fontSize: 11, marginTop: 3 }} className="mut">
-                      engine expects: <b style={{ color: "var(--ink)" }}>{currentPred.name}</b>{currentProb != null && ` (${currentProb}%)`}
-                      {cardTip && <span style={{ marginLeft: 5, opacity: 0.7 }}>· hover for alternatives</span>}
+                    <div style={{ marginTop: 5, display: "flex", alignItems: "center", gap: 7 }}>
+                      <span style={{ width: 22, height: 22, borderRadius: 6, background: POS_COLOR[currentPred.pos], color: "#0E1217", fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{currentPred.pos}</span>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", lineHeight: 1 }}>Engine expects</div>
+                        <div style={{ fontSize: 15, fontWeight: 800, color: "var(--ink)", lineHeight: 1.15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{currentPred.name}</div>
+                      </div>
+                      {currentProb != null && <span className="num" style={{ fontSize: 13, fontWeight: 700, color: "var(--gold)", flexShrink: 0 }}>{currentProb}%</span>}
                     </div>
                   );
                 }
@@ -11465,7 +11586,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       <span className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", minWidth: 62 }}>{primaryLabel}</span>
                       <b style={{ color: "var(--gold)" }}>{selVerdict.name}</b>
                       <span className="mut" style={{ fontSize: 10 }}><Dot pos={selVerdict.pos} />{selVerdict.pos}{selVerdict.posRank}</span>
-                      {cardTip && <span className="mut" style={{ fontSize: 9.5, opacity: 0.7 }}>· hover</span>}
                     </div>
                     {showBuildToo && (
                       <div style={{ fontSize: 11.5, display: "flex", alignItems: "baseline", gap: 5 }}>
@@ -11563,7 +11683,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 <div className="mut" style={{ fontSize: 11 }}>{pickLabel(step.o)} <span style={{ opacity: 0.7 }}>({step.o + 1})</span> • {TEAM_NAMES[step.t].split(" ")[0]}</div>
                 <div style={{ fontWeight: 600, fontSize: 13 }}><Dot pos={step.p.pos} />{step.p.name}</div>
                 <div className="meter"><div style={{ width: `${step.prob}%` }} /></div>
-                <div className="mut num" style={{ fontSize: 10, marginTop: 2 }}>{step.prob}% likely{step.cands5 && step.cands5.length > 1 ? " · hover for alts" : ""}</div>
+                <div className="mut num" style={{ fontSize: 10, marginTop: 2 }}>{step.prob}% likely</div>
               </div>
             ))}
             <button className="btn btn-mini" style={{ alignSelf: "center", flexShrink: 0, borderColor: "var(--gold)", color: "var(--gold)" }} onClick={() => setFutureBig((b) => !b)} title="Collapsed view shows the next 4 picks plus your next pick. Expand to see the next 15 upcoming picks instead.">{futureBig ? "« show fewer" : "expand picks »"}</button>

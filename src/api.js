@@ -64,6 +64,24 @@ export const api = {
   async adpPlayer(playerId, format, season) {
     return call(`/api/adp/player/${playerId}?format=${encodeURIComponent(format)}${season ? `&season=${season}` : ''}`, { auth: false });
   },
+  // Aggregated draft trends from the harvested-drafts pool (thousands of real Sleeper drafts).
+  async trendsBoard(format, season, opts = {}) {
+    const extra = [];
+    if (season) extra.push(`season=${season}`);
+    if (opts.limit) extra.push(`limit=${opts.limit}`);
+    if (opts.minDrafts != null) extra.push(`minDrafts=${opts.minDrafts}`);
+    if (opts.minPicks != null) extra.push(`minPicks=${opts.minPicks}`);
+    return call(`/api/trends/board?format=${encodeURIComponent(format)}${extra.length ? `&${extra.join('&')}` : ''}`, { auth: false });
+  },
+  async trendsPlayer(playerId, format, season, teams) {
+    const extra = [];
+    if (season) extra.push(`season=${season}`);
+    if (teams) extra.push(`teams=${teams}`);
+    return call(`/api/trends/player/${playerId}?format=${encodeURIComponent(format)}${extra.length ? `&${extra.join('&')}` : ''}`, { auth: false });
+  },
+  async trendsDiag(season) {
+    return call(`/api/trends/diag${season ? `?season=${season}` : ''}`, { auth: false });
+  },
   async projections(season) {
     return call(`/api/projections${season ? `?season=${season}` : ''}`, { auth: false });
   },
