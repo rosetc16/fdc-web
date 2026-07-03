@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28x";
+const BUILD_TAG = "2026.06.28aa";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2977,7 +2977,7 @@ export default function App() {
   // but there isn't one (e.g. a stale restore after sign-out), return home instead of a blank screen.
   useEffect(() => {
     if (!bootReady) return;
-    const NEEDS_USER = ["teamHub", "leagueHub", "draft", "rankings", "trendsTime", "tradeTools", "adpIntel", "account", "admin", "trends"];
+    const NEEDS_USER = ["teamHub", "leagueHub", "draft", "rankings", "trendsTime", "tradeTools", "adpIntel", "account", "admin", "trends", "draftTrends"];
     // The free demo draft intentionally runs WITHOUT a signed-in user (it's the pre-signup trial), so
     // don't bounce it home — only redirect a userless "draft" route when it isn't the demo.
     if (NEEDS_USER.includes(route) && !user && !(route === "draft" && activeId === "demo")) setRoute("home");
@@ -3236,7 +3236,7 @@ export default function App() {
     setActiveId(lg.id); setRoute("draft");
   };
   const saveLeague = (id, picks, preds) => {
-    const next = leagues.map((l) => (l.id === id ? { ...l, picks, preds } : l));
+    const next = leagues.map((l) => (l.id === id ? { ...l, picks, preds, lastPickAt: Date.now() } : l));
     setLeagues(next); persist({ leagues: next });
   };
   const updateLeagueCfg = (id, cfg) => {
@@ -3266,12 +3266,12 @@ export default function App() {
       const randSlot = Math.floor(Math.random() * (lg.cfg.teams || 12)) + 1;
       mcfg = { ...lg.cfg, slot: randSlot, slotRandomized: true };
     }
-    setMockLeague({ id: mockId, mockOf: leagueId, name: `${lg.name} — mock`, cfg: mcfg, picks: [], preds: [] });
+    setMockLeague({ id: mockId, mockOf: leagueId, name: `${lg.name} — mock`, cfg: { ...mcfg, mockSeed: (Math.random() * 1e9) | 0 }, picks: [], preds: [] });
     setDraftTab(null); setActiveId(mockId); setRoute("draft");
   };
   const saveMock = (picks, preds) => {
     if (!mockLeague) return;
-    const entry = { id: mockLeague.id, picks, preds, ran: new Date().toLocaleString(), n: picks.length };
+    const entry = { id: mockLeague.id, picks, preds, ran: new Date().toLocaleString(), at: Date.now(), n: picks.length };
     if (mockLeague.mockOf == null) {
       // standalone "fun" mock — store in the global funMocks list, not under a league
       const e2 = { ...entry, name: mockLeague.name, cfg: mockLeague.cfg };
@@ -3290,7 +3290,7 @@ export default function App() {
   const startQuickMock = (cfg) => {
     const c = cfg || { name: "Quick mock", type: "redraft", teams: 12, rounds: 15, slot: 6, sf: false, tePrem: false, tePremMult: 0, caps: {}, start: { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0, DST: 0, K: 0 } };
     const id = `fun-${Date.now()}`;
-    setMockLeague({ id, mockOf: null, name: c.name || "Quick mock", cfg: c, picks: [], preds: [] });
+    setMockLeague({ id, mockOf: null, name: c.name || "Quick mock", cfg: { ...c, mockSeed: (Math.random() * 1e9) | 0 }, picks: [], preds: [] });
     setActiveId(id); setRoute("draft");
   };
   const deleteFunMock = (id) => { const next = funMocks.filter((m) => m.id !== id); setFunMocks(next); persist({ funMocks: next }); };
@@ -3353,7 +3353,9 @@ export default function App() {
         onLibrary={() => setRoute("library")} onNewLeague={() => { setSetupReturn(null); setRoute("setup"); }} onDatabase={() => setRoute("database")}
         onOfficial={(id) => { setActiveId(id); setRoute("draft"); }} onMock={startMock} onQuickMock={() => setQuickMockOpen(true)}
         onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} onGuide={() => { setHelpTab("guide"); setRoute("help"); }} onAccount={() => setRoute("account")} onAdmin={() => setRoute("admin")} onSignOut={signOut}
-        onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }} />}
+        onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }}
+        onDraftTrends={() => setRoute("draftTrends")}
+        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [] }); setActiveId(m.id); setRoute("draft"); }} onDeleteFun={deleteFunMock} />}
       {route === "leagueHub" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? <LeagueUmbrella user={user} league={lg} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")}
         onOfficial={(id) => { setDraftTab(null); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
         onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [] }); setActiveId(m.id); setRoute("draft"); }}
@@ -3362,6 +3364,7 @@ export default function App() {
       {route === "home" && !user?.paid && <HomePage biz={biz} user={user} onSignIn={() => setAuthOpen(true)} onDemo={startDemo} onBuy={() => (user ? setRoute("checkout") : setAuthOpen(true))} onApp={() => setRoute("library")} onHelp={(t) => { setHelpTab(t || null); setRoute("help"); }} />}
       {route === "learn" && <HomePage biz={biz} user={user} onSignIn={() => setAuthOpen(true)} onDemo={startDemo} onBuy={() => (user ? setRoute("checkout") : setAuthOpen(true))} onApp={() => setRoute(user?.paid ? "home" : "library")} onHelp={(t) => { setHelpTab(t || null); setRoute("help"); }} initialTab="how" />}
       {route === "trends" && user && <TrendsPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user?.paid ? "home" : "library")} />}
+      {route === "draftTrends" && user && <DraftTrendsPage user={user} leagues={leagues} funMocks={funMocks} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user?.paid ? "home" : "library")} onOpenLeague={(id) => { setActiveId(id); setRoute("leagueHub"); }} />}
       {route === "help" && <HelpPage user={user} biz={biz} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user ? (user.paid ? "home" : "library") : "home")} onSubmit={submitFeedback} initialTab={helpTab} />}
       {route === "checkout" && user && <Checkout biz={biz} user={user} onDone={completePurchase} onBack={() => setRoute("home")} />}
       {route === "library" && user && <Library user={user} leagues={leagues} onNew={() => setRoute("setup")} onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onDelete={deleteLeague} onAdmin={() => setRoute("admin")} onSignOut={signOut} onHome={() => setRoute("home")} onAccount={() => setRoute("account")} onDeleteMock={deleteMock} onOpenMockView={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [] }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onDatabase={() => setRoute("database")} onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} funMockCount={funMocks.length} />}
@@ -4114,30 +4117,48 @@ function HeroShowcase() {
 // Quick-mock pre-draft prompt: choose type + simple format + your slot, shown over a faded
 // preview of the draft board behind it. On submit, builds a cfg and launches the mock.
 function QuickMockSetup({ onStart, onCancel }) {
+  const [mode, setMode] = useState("simple"); // simple | complex
   const [type, setType] = useState("redraft");
   const [teams, setTeams] = useState(12);
-  const [qb, setQb] = useState("1QB");      // 1QB | SF
+  const [qb, setQb] = useState("1QB");      // 1QB | SF | 2QB
   const [te, setTe] = useState("std");      // std | tep
   const [slot, setSlot] = useState("random"); // "random" or a number
   const TYPES = [["redraft", "Redraft"], ["dynasty", "Dynasty"], ["bestball", "Best ball"], ["rookie", "Rookie only"]];
 
   const launch = () => {
-    const start = { QB: qb === "SF" ? 1 : 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: qb === "SF" ? 1 : 0, DST: 0, K: 0 };
+    // QB format: 1QB (one QB slot), SF (one QB + a superflex), or 2QB (two dedicated QB slots).
+    const start = { QB: qb === "2QB" ? 2 : 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: qb === "SF" ? 1 : 0, DST: 0, K: 0 };
     const scoring = { ...DEFAULT_SCORING };
     if (te === "tep") scoring.recTE = (scoring.rec || 0) + 0.5;
     const chosenSlot = slot === "random" ? (1 + Math.floor(Math.random() * teams)) : +slot;
     const cfg = {
       name: "Quick mock", type, teams: +teams, rounds: 15, slot: chosenSlot,
-      sf: qb === "SF", tePrem: te === "tep", tePremMult: te === "tep" ? 0.5 : 0,
+      sf: qb === "SF" || qb === "2QB", tePrem: te === "tep", tePremMult: te === "tep" ? 0.5 : 0,
       caps: {}, start, scoring, excludeRookies: false, keeper: false, idp: false,
     };
     onStart(cfg);
+  };
+
+  // Complex mode reuses the full league-setup form. Its submit launches the mock with a randomized slot if
+  // the user didn't fix one, and names it a quick mock so it lands in the standalone-mocks list.
+  const launchComplex = (cfg) => {
+    const t = +(cfg.teams || 12);
+    const chosenSlot = (cfg.slot == null || cfg.slot === "") ? (1 + Math.floor(Math.random() * t)) : +cfg.slot;
+    onStart({ ...cfg, name: cfg.name && cfg.name !== "My league" ? cfg.name : "Quick mock", slot: chosenSlot, rounds: cfg.rounds || 15 });
   };
 
   const Seg = ({ value, set, options }) => (
     <div style={{ display: "inline-flex", background: "var(--panel2)", borderRadius: 9, padding: 3, gap: 2, flexWrap: "wrap" }}>
       {options.map(([k, l]) => (
         <button key={k} onClick={() => set(k)} className="bigact" style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, padding: "6px 12px", borderRadius: 7, border: "none", background: value === k ? "var(--gold)" : "transparent", color: value === k ? "#151002" : "var(--ink)" }}>{l}</button>
+      ))}
+    </div>
+  );
+
+  const modeToggle = (
+    <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 9, overflow: "hidden", marginTop: 4 }}>
+      {[["simple", "Simple"], ["complex", "Complex"]].map(([k, l]) => (
+        <button key={k} onClick={() => setMode(k)} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, padding: "6px 16px", border: "none", background: mode === k ? "var(--gold)" : "transparent", color: mode === k ? "#151002" : "var(--mut)" }}>{l}</button>
       ))}
     </div>
   );
@@ -4163,15 +4184,17 @@ function QuickMockSetup({ onStart, onCancel }) {
       </div>
 
       {/* prompt card */}
-      <div className="panel" style={{ position: "relative", maxWidth: 460, width: "100%", padding: 24, boxShadow: "0 24px 60px #000a" }}>
+      <div className="panel" style={{ position: "relative", maxWidth: mode === "complex" ? 640 : 460, width: "100%", padding: 24, boxShadow: "0 24px 60px #000a", maxHeight: "88vh", overflowY: "auto" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-          <div style={{ width: 38, height: 38, borderRadius: 10, background: "#4FD1A122", display: "flex", alignItems: "center", justifyContent: "center" }}><i className="ti ti-dice-5" style={{ fontSize: 20, color: "#4FD1A1" }} aria-hidden="true" /></div>
-          <div>
+          <div style={{ width: 38, height: 38, borderRadius: 10, background: "#4FD1A122", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className="ti ti-dice-5" style={{ fontSize: 20, color: "#4FD1A1" }} aria-hidden="true" /></div>
+          <div style={{ flex: 1 }}>
             <div className="disp" style={{ fontSize: 20, fontWeight: 700 }}>Quick mock</div>
-            <div className="mut" style={{ fontSize: 12 }}>A fast practice draft — set it up and go.</div>
+            <div className="mut" style={{ fontSize: 12 }}>{mode === "simple" ? "A fast practice draft — set it up and go." : "Dial in exact scoring, roster, and format."}</div>
           </div>
+          {modeToggle}
         </div>
 
+        {mode === "simple" ? (<>
         <div style={{ marginTop: 16 }}>
           <div className="mut" style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 6, letterSpacing: ".03em" }}>LEAGUE TYPE</div>
           <Seg value={type} set={setType} options={TYPES} />
@@ -4180,7 +4203,7 @@ function QuickMockSetup({ onStart, onCancel }) {
         <div style={{ marginTop: 16, display: "flex", gap: 24, flexWrap: "wrap" }}>
           <div>
             <div className="mut" style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 6, letterSpacing: ".03em" }}>QB FORMAT</div>
-            <Seg value={qb} set={setQb} options={[["1QB", "1QB"], ["SF", "Superflex"]]} />
+            <Seg value={qb} set={setQb} options={[["1QB", "1QB"], ["SF", "Superflex"], ["2QB", "2QB"]]} />
           </div>
           <div>
             <div className="mut" style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 6, letterSpacing: ".03em" }}>TIGHT END</div>
@@ -4209,6 +4232,11 @@ function QuickMockSetup({ onStart, onCancel }) {
           <div style={{ flex: 1 }} />
           <button className="btn btn-gold" onClick={launch}><i className="ti ti-player-play" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />Start mock</button>
         </div>
+        </>) : (
+        <div style={{ marginTop: 14 }}>
+          <ConfigForm initial={{ name: "Quick mock", type, teams }} submitLabel="Start mock" onSubmit={launchComplex} onCancel={onCancel} />
+        </div>
+        )}
       </div>
     </div>
   );
@@ -5454,7 +5482,7 @@ function HubShell({ title, onBack, onHome, onSignOut, user, children }) {
   );
 }
 
-function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub }) {
+function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onDeleteFun, onDraftTrends }) {
   const totalMocks = leagues.reduce((s, l) => s + (l.mocks || []).length, 0) + funMocks.length;
   const inProgress = leagues.filter((l) => l.picks.length > 0 && l.picks.length < (l.cfg.teams || 12) * l.cfg.rounds);
   const [q, setQ] = useState("");
@@ -5477,6 +5505,10 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
   const [showSteps, setShowSteps] = useState(leagues.length === 0); // getting-started collapsed by default for veterans; open for first-timers
   const [showTools, setShowTools] = useState(false); // toolkit collapsed into a dropdown by default
   const [statusFilter, setStatusFilter] = useState("all"); // all | pre | drafting | complete — league status tabs
+  const [showMocks, setShowMocks] = useState(false); // standalone quick-mock history dropdown
+  const [mockQ, setMockQ] = useState(""); // search within quick mocks
+  const [mockTypeF, setMockTypeF] = useState("all"); // all | redraft | dynasty | bestball | rookie
+  const [mockQbF, setMockQbF] = useState("all"); // all | 1qb | sf
   // Pull the user's Sleeper leagues so we can surface any not yet imported into FDC, right in the leagues list.
   const [sleeperLeagues, setSleeperLeagues] = useState(null);
   const [slLoading, setSlLoading] = useState(false);
@@ -5525,6 +5557,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
     { kind: "mockinsights", icon: "ti-chart-line", color: "#7ed6a5", title: "My Mock Insights", back: totalMocks ? `Patterns across your own ${totalMocks} mock${totalMocks === 1 ? "" : "s"} — the spots where you find value and the players you keep landing.` : "After you run a few mock drafts, this reveals the patterns across them — your tendencies and best value spots.", action: onTrendsTime },
     { kind: "news", icon: "ti-rss", color: "#ff9d6a", title: "League News & Movers", back: "The wider fantasy wire: ADP risers and fallers, signings, depth-chart changes, and injuries. Not tied to your leagues.", action: onTrends },
     { kind: "trade", icon: "ti-arrows-exchange", color: "#4FD1A1", title: "Trade Tools", back: "Format-aware trade values and a quick evaluator — weigh any deal by format, even outside a draft. Inside a league it adds your roster, picks, and the trade finder.", action: onTradeTools },
+    { kind: "drafttrends", icon: "ti-chart-histogram", color: "#F2B63C", title: "Draft Trends", back: "Aggregate your official drafts and mocks by format to see how the board really moves: realized ADP, position runs by round, and who consistently goes early or slides. Search and filter to any format.", action: onDraftTrends },
     { kind: "adp", icon: "ti-chart-dots", color: "#5BA8F5", title: "ADP Intelligence", back: "Every ADP consideration for a player: the consensus to follow, how it's trending across recent Sleeper drafts, the spread, sample size, and your blended number — all format-aware.", action: onAdpIntel },
     { kind: "guide", icon: "ti-compass", color: "#d6aa4b", title: "Quick-Start Guide", back: "A short walkthrough of how every piece fits together. Start here if anything feels unclear.", action: onGuide },
   ];
@@ -5576,6 +5609,11 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
             <i className={`ti ti-chevron-${openPick ? "up" : "down"}`} style={{ fontSize: 14, color: "var(--mut)" }} aria-hidden="true" />
           </button>
           <div style={{ width: 1, background: "rgba(214,170,75,0.30)" }} />
+          <button onClick={() => onQuickMock()} className="menuitem" style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: "transparent", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
+            <i className="ti ti-dice-5" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
+            <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Quick Mock</span>
+          </button>
+          <div style={{ width: 1, background: "rgba(214,170,75,0.30)" }} />
           <button onClick={() => onRankings()} className="menuitem" style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: "transparent", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
             <i className="ti ti-list-numbers" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
             <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>My Rankings</span>
@@ -5619,20 +5657,31 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
           </div>
         )}
 
-        {/* Status tabs — filter your leagues by where their draft stands */}
+        {/* Status list — filter your leagues by where their draft stands, as a vertical list with detail */}
         {leagues.length > 1 && (() => {
           const statusOf = (l) => { const tot = (l.cfg.teams || 12) * l.cfg.rounds; return l.picks.length >= tot ? "complete" : l.picks.length > 0 ? "drafting" : "pre"; };
           const counts = { all: leagues.length, pre: 0, drafting: 0, complete: 0 };
           leagues.forEach((l) => { counts[statusOf(l)]++; });
-          const tabs = [["all", "All"], ["pre", "Pre-draft"], ["drafting", "Drafting"], ["complete", "Post-draft"]];
+          const rows = [
+            ["all", "All leagues", "ti-clipboard-list", "var(--ink)", "Everything you've added, in one place."],
+            ["pre", "Pre-draft", "ti-clock", "var(--blue)", "Set up and waiting — draft hasn't started."],
+            ["drafting", "Drafting", "ti-player-play", "var(--gold)", "Live right now — jump back in and pick."],
+            ["complete", "Post-draft", "ti-circle-check", "var(--green)", "Draft done — review, manage, and set lineups."],
+          ];
           return (
-            <div style={{ display: "flex", gap: 6, marginBottom: 11, flexWrap: "wrap" }}>
-              {tabs.map(([k, label]) => {
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+              {rows.map(([k, label, icon, c, detail]) => {
                 const active = statusFilter === k;
-                const c = k === "drafting" ? "var(--gold)" : k === "complete" ? "var(--green)" : k === "pre" ? "var(--blue)" : "var(--ink)";
+                const n = counts[k];
+                if (k !== "all" && n === 0) return null; // hide empty statuses
                 return (
-                  <button key={k} onClick={() => setStatusFilter(k)} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: active ? 700 : 500, padding: "5px 12px", borderRadius: 99, border: `1px solid ${active ? c : "var(--line)"}`, background: active ? (k === "all" ? "var(--panel3)" : c + "1a") : "transparent", color: active ? (k === "all" ? "var(--ink)" : c) : "var(--mut)" }}>
-                    {label} <span style={{ opacity: 0.7 }}>{counts[k]}</span>
+                  <button key={k} onClick={() => setStatusFilter(k)} style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 11, padding: "10px 13px", borderRadius: 11, border: `1px solid ${active ? c : "var(--line)"}`, background: active ? (k === "all" ? "var(--panel2)" : c + "14") : "transparent", color: "var(--ink)" }}>
+                    <div style={{ width: 30, height: 30, borderRadius: 8, background: k === "all" ? "var(--panel3)" : c + "22", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className={`ti ${icon}`} style={{ fontSize: 16, color: k === "all" ? "var(--ink)" : c }} aria-hidden="true" /></div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="disp" style={{ fontSize: 14, fontWeight: 700, color: active && k !== "all" ? c : "var(--ink)" }}>{label} <span className="mut" style={{ fontSize: 12, fontWeight: 500 }}>· {n} league{n === 1 ? "" : "s"}</span></div>
+                      <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.35 }}>{detail}</div>
+                    </div>
+                    {active && <i className="ti ti-check" style={{ fontSize: 15, color: k === "all" ? "var(--ink)" : c, flexShrink: 0 }} aria-hidden="true" />}
                   </button>
                 );
               })}
@@ -5779,6 +5828,93 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         </div>
       )}
 
+      {/* ===== STANDALONE QUICK MOCKS — a dropdown below your leagues. These aren't tied to any league; ===== */}
+      {/* they're saved to your account so you can re-open or review them. */}
+      {funMocks && funMocks.length > 0 && (
+        <div style={{ maxWidth: 940, margin: "0 auto", padding: "0 20px 8px" }}>
+          <button onClick={() => setShowMocks((v) => !v)} style={{ width: "100%", cursor: "pointer", fontFamily: "inherit", background: "transparent", border: "1px solid var(--line)", borderRadius: 11, padding: "11px 14px", textAlign: "left", display: "flex", alignItems: "center", gap: 9, color: "var(--ink)" }}>
+            <i className="ti ti-dice-5" style={{ fontSize: 16, color: "#4FD1A1" }} aria-hidden="true" />
+            <span className="disp" style={{ fontSize: 14, fontWeight: 800, flex: 1 }}>Quick mocks</span>
+            <span className="mut" style={{ fontSize: 12 }}>{funMocks.length} saved</span>
+            <i className={`ti ti-chevron-${showMocks ? "up" : "down"}`} style={{ fontSize: 16, color: "var(--mut)" }} aria-hidden="true" />
+          </button>
+          {showMocks && (() => {
+            const qbOf = (c) => ((c.start && c.start.SUPER > 0) || c.sf || (c.start && c.start.QB >= 2)) ? "sf" : "1qb";
+            const filtered = funMocks.filter((m) => {
+              const c = m.cfg || {};
+              if (mockTypeF !== "all" && (c.type || "redraft") !== mockTypeF) return false;
+              if (mockQbF !== "all" && qbOf(c) !== mockQbF) return false;
+              if (mockQ.trim()) { const q = mockQ.toLowerCase(); const hay = `${m.name || ""} ${c.type || ""} ${c.teams || ""}`.toLowerCase(); if (!hay.includes(q)) return false; }
+              return true;
+            });
+            const chip = (val, cur, set, label) => (
+              <button onClick={() => set(val)} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: cur === val ? 700 : 500, padding: "4px 10px", borderRadius: 99, border: `1px solid ${cur === val ? "var(--gold)" : "var(--line)"}`, background: cur === val ? "rgba(242,182,60,.14)" : "transparent", color: cur === val ? "var(--gold)" : "var(--mut)" }}>{label}</button>
+            );
+            return (
+            <div style={{ marginTop: 8 }}>
+              {/* search + filters */}
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+                <div style={{ position: "relative", flex: "1 1 220px", minWidth: 180 }}>
+                  <i className="ti ti-search" style={{ position: "absolute", left: 10, top: 8, fontSize: 14, color: "var(--mut)" }} aria-hidden="true" />
+                  <input className="gs" style={{ width: "100%", paddingLeft: 30, paddingTop: 6, paddingBottom: 6, fontSize: 12.5 }} placeholder="Search mocks…" value={mockQ} onChange={(e) => setMockQ(e.target.value)} />
+                  {mockQ.trim() && <button onClick={() => setMockQ("")} style={{ position: "absolute", right: 6, top: 5, background: "transparent", border: "none", color: "var(--mut)", cursor: "pointer", padding: 3 }} aria-label="Clear"><i className="ti ti-x" aria-hidden="true" /></button>}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 6 }}>
+                <span className="mut" style={{ fontSize: 11, alignSelf: "center", marginRight: 2 }}>Type</span>
+                {chip("all", mockTypeF, setMockTypeF, "All")}
+                {chip("redraft", mockTypeF, setMockTypeF, "Redraft")}
+                {chip("dynasty", mockTypeF, setMockTypeF, "Dynasty")}
+                {chip("bestball", mockTypeF, setMockTypeF, "Best ball")}
+                {chip("rookie", mockTypeF, setMockTypeF, "Rookie")}
+              </div>
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 12 }}>
+                <span className="mut" style={{ fontSize: 11, alignSelf: "center", marginRight: 2 }}>QB</span>
+                {chip("all", mockQbF, setMockQbF, "All")}
+                {chip("1qb", mockQbF, setMockQbF, "1QB")}
+                {chip("sf", mockQbF, setMockQbF, "SF / 2QB")}
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 10 }}>
+              {filtered.length === 0 && (
+                <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: "14px 0" }}>
+                  <div className="mut" style={{ fontSize: 12.5, marginBottom: 8 }}>No mocks match your search or filters.</div>
+                  <button className="btn btn-mini" onClick={() => { setMockQ(""); setMockTypeF("all"); setMockQbF("all"); }}>Clear all</button>
+                </div>
+              )}
+              {filtered.map((m) => {
+                const c = m.cfg || {};
+                const total = (c.teams || 12) * (c.rounds || 15);
+                const made = (m.picks || []).length;
+                const complete = made >= total;
+                const fmt = [c.type === "dynasty" ? "Dynasty" : c.type === "bestball" ? "Best ball" : c.type === "rookie" ? "Rookie" : "Redraft",
+                  ((c.start && c.start.SUPER > 0) || c.sf || (c.start && c.start.QB >= 2)) ? "SF/2QB" : "1QB",
+                  c.tePremMult > 0 ? "TEP" : null, `${c.teams || 12}-team`].filter(Boolean).join(" · ");
+                const when = m.ran || (m.savedAt ? new Date(m.savedAt).toLocaleDateString() : null);
+                return (
+                  <div key={m.id} style={{ border: "1px solid var(--line)", background: "var(--panel)", borderRadius: 12, padding: 13, display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span className="disp" style={{ fontSize: 14, fontWeight: 700, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name || "Quick mock"}</span>
+                      <span className="chip" style={{ fontSize: 10, color: complete ? "var(--green)" : "var(--gold)" }}>{complete ? "Complete" : `${made}/${total}`}</span>
+                    </div>
+                    <div className="mut" style={{ fontSize: 11.5 }}>{fmt}{when ? ` · ${when}` : ""}</div>
+                    <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
+                      <button className="btn btn-mini btn-gold" style={{ flex: 1 }} onClick={() => onOpenFun && onOpenFun(m)}><i className="ti ti-player-play" style={{ fontSize: 11, marginRight: 4 }} aria-hidden="true" />{complete ? "Review" : "Resume"}</button>
+                      {onDeleteFun && <button className="btn btn-mini" onClick={() => onDeleteFun(m.id)} title="Delete this mock"><i className="ti ti-trash" style={{ fontSize: 12 }} aria-hidden="true" /></button>}
+                    </div>
+                  </div>
+                );
+              })}
+              <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8, marginTop: 2 }}>
+                <button className="btn btn-mini" onClick={onQuickMock}><i className="ti ti-dice-5" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />New quick mock</button>
+                <button className="btn btn-mini" onClick={onDatabase}><i className="ti ti-database" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Browse all drafts &amp; mocks</button>
+              </div>
+              </div>
+            </div>
+            );
+          })()}
+        </div>
+      )}
 
       <div style={{ maxWidth: 940, margin: "0 auto", padding: "26px 20px 64px", display: "flex", flexDirection: "column", gap: 22 }}>
 
@@ -6674,6 +6810,402 @@ function MockTrendsLazy({ league }) {
     return buildPlayers(league.cfg);
   }, [league]);
   return <MockTrendsPanel league={league} players={players} />;
+}
+
+// ===== DRAFT TRENDS =========================================================================
+// Aggregate a SET of drafts (official league drafts + mocks, already filtered to one comparable
+// format) into cross-draft trends: realized ADP per player, positional flow by round, consistent
+// risers/fallers vs. baseline ADP, and where position runs start. Pure function.
+// `drafts` = [{ picks:[playerId], cfg, at }]; `players` = the built pool for this format (baseline adp).
+// `opts.now` = reference time for recency weighting; `opts.weightRecency` = apply exponential recency
+// decay so newer drafts count more (matches how the ADP feed already weights recent Sleeper drafts).
+function analyzeDraftTrends(drafts, players, opts = {}) {
+  const usable = (drafts || []).filter((d) => d.picks && d.picks.length >= 12);
+  const byId = {}; players.forEach((p) => (byId[p.id] = p));
+  const teamsOf = (d) => d.cfg && d.cfg.teams ? d.cfg.teams : 12;
+  const n = usable.length;
+  if (!n) return { n: 0, samples: (drafts || []).length };
+
+  // Recency weight per draft: exponential decay by age in days (half-life ~21 days), matching the ADP
+  // consensus blender's philosophy that the most recent drafts are the most relevant. A draft with no
+  // timestamp gets a neutral mid weight so it still contributes without dominating.
+  const now = opts.now || Date.now();
+  const HALFLIFE_DAYS = 21;
+  const wRec = (d) => {
+    if (!opts.weightRecency) return 1;
+    const at = d.at || d.lastPickAt || null;
+    if (!at) return 0.6;
+    const ageDays = Math.max(0, (now - at) / 86400000);
+    return Math.pow(0.5, ageDays / HALFLIFE_DAYS);
+  };
+
+  // 1) Realized ADP per player: recency-weighted average overall pick (1-based) across drafts.
+  const agg = {}; // pid -> { w, sumPickW, sumRoundW, times }
+  usable.forEach((d) => {
+    const teams = teamsOf(d); const w = wRec(d);
+    d.picks.forEach((pid, o) => {
+      if (pid == null) return;
+      const round = Math.floor(o / teams) + 1;
+      const a = agg[pid] || (agg[pid] = { w: 0, sumPickW: 0, sumRoundW: 0, times: 0 });
+      a.w += w; a.sumPickW += (o + 1) * w; a.sumRoundW += round * w; a.times++;
+    });
+  });
+  const minAppear = Math.max(2, Math.round(n * 0.34)); // must show up in a third of drafts to count
+  const realized = Object.entries(agg).map(([pid, a]) => {
+    const p = byId[pid]; if (!p || a.w <= 0) return null;
+    const avgPick = a.sumPickW / a.w;
+    const baseline = p.adp != null ? p.adp : null;
+    return { pid: +pid, name: p.name, pos: p.pos, team: p.team, times: a.times, avgPick, avgRound: a.sumRoundW / a.w, baseline, delta: baseline != null ? baseline - avgPick : null };
+  }).filter(Boolean).filter((x) => x.times >= minAppear);
+  realized.sort((a, b) => a.avgPick - b.avgPick);
+
+  // 2) Positional flow by round: recency-weighted share of each position among picks in each round.
+  const roundPos = {}; // round -> {QB,RB,WR,TE, total} (weighted)
+  usable.forEach((d) => {
+    const teams = teamsOf(d); const w = wRec(d);
+    d.picks.forEach((pid, o) => {
+      const p = byId[pid]; if (!p || !POS.includes(p.pos)) return;
+      const round = Math.floor(o / teams) + 1;
+      const r = roundPos[round] || (roundPos[round] = { QB: 0, RB: 0, WR: 0, TE: 0, total: 0 });
+      r[p.pos] += w; r.total += w;
+    });
+  });
+  const maxRound = Math.max(...Object.keys(roundPos).map(Number), 0);
+  const flow = [];
+  for (let r = 1; r <= Math.min(maxRound, 15); r++) {
+    const d = roundPos[r]; if (!d || !d.total) continue;
+    flow.push({ round: r, QB: d.QB / d.total, RB: d.RB / d.total, WR: d.WR / d.total, TE: d.TE / d.total, total: d.total });
+  }
+
+  // 3) Risers / fallers vs. baseline ADP (consistent, meaningful gaps only).
+  const withDelta = realized.filter((x) => x.delta != null && x.times >= minAppear);
+  const risers = withDelta.filter((x) => x.delta >= 6).sort((a, b) => b.delta - a.delta).slice(0, 8);   // going EARLIER than baseline
+  const fallers = withDelta.filter((x) => x.delta <= -6).sort((a, b) => a.delta - b.delta).slice(0, 8); // going LATER
+
+  // 4) First-QB / first-TE landing spot (recency-weighted avg round the position first goes).
+  const firstAt = { QB: { s: 0, w: 0 }, TE: { s: 0, w: 0 } };
+  usable.forEach((d) => {
+    const teams = teamsOf(d); const w = wRec(d);
+    const seen = {};
+    d.picks.forEach((pid, o) => {
+      const p = byId[pid]; if (!p) return;
+      if ((p.pos === "QB" || p.pos === "TE") && seen[p.pos] == null) { seen[p.pos] = Math.floor(o / teams) + 1; }
+    });
+    if (seen.QB) { firstAt.QB.s += seen.QB * w; firstAt.QB.w += w; }
+    if (seen.TE) { firstAt.TE.s += seen.TE * w; firstAt.TE.w += w; }
+  });
+  const firstQBRound = firstAt.QB.w ? firstAt.QB.s / firstAt.QB.w : null;
+  const firstTERound = firstAt.TE.w ? firstAt.TE.s / firstAt.TE.w : null;
+
+  return { n, samples: (drafts || []).length, realized: realized.slice(0, 60), flow, risers, fallers, firstQBRound, firstTERound, enough: n >= 5 };
+}
+
+// A compact stacked bar showing positional share for one round.
+function PosFlowBar({ row }) {
+  const segs = POS.filter((pos) => row[pos] > 0).map((pos) => ({ pos, w: row[pos] }));
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <span className="mut num" style={{ fontSize: 11, width: 26, flexShrink: 0 }}>R{row.round}</span>
+      <div style={{ flex: 1, height: 16, borderRadius: 4, overflow: "hidden", display: "flex", background: "var(--panel2)" }}>
+        {segs.map((s) => <div key={s.pos} title={`${s.pos} ${Math.round(s.w * 100)}%`} style={{ width: `${s.w * 100}%`, background: POS_COLOR[s.pos] }} />)}
+      </div>
+      <span className="mut num" style={{ fontSize: 10, width: 96, flexShrink: 0, textAlign: "right" }}>
+        {segs.slice(0, 2).map((s) => `${Math.round(s.w * 100)}% ${s.pos}`).join(" · ")}
+      </span>
+    </div>
+  );
+}
+
+function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, onOpenLeague }) {
+  // Pulled real Sleeper drafts (the user's own completed drafts), merged into the trend set on demand.
+  // Only offered when a Sleeper account is linked — that's the "only if it's possible" gate.
+  const canPullSleeper = !!(user && user.sleeperUsername) && hasBackend;
+  const [pulled, setPulled] = useState([]);       // [{ id, name, cfg, picks:[ourId], kind:'sleeper', fmt, at }]
+  const [pullState, setPullState] = useState("idle"); // idle | loading | done | error
+  const [pullMsg, setPullMsg] = useState("");
+  // Collect EVERY draft the account has — official league drafts and all mocks (league + standalone) —
+  // each tagged with its format so we can filter to a comparable set.
+  const allDrafts = useMemo(() => {
+    const out = [];
+    leagues.forEach((l) => {
+      if (l.picks && l.picks.length >= 12) out.push({ id: l.id, name: l.name, cfg: l.cfg, picks: l.picks, kind: "official", fmt: formatKey(l.cfg), at: l.lastPickAt || null });
+      (l.mocks || []).forEach((m) => { if (m.picks && m.picks.length >= 12) out.push({ id: `${l.id}:${m.id}`, name: `${l.name} — mock`, cfg: l.cfg, picks: m.picks, kind: "mock", fmt: formatKey(l.cfg), at: m.at || null }); });
+    });
+    (funMocks || []).forEach((m) => { if (m.picks && m.picks.length >= 12) out.push({ id: m.id, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks, kind: "mock", fmt: formatKey(m.cfg), at: m.at || null }); });
+    pulled.forEach((d) => out.push(d));
+    return out;
+  }, [leagues, funMocks, pulled]);
+
+  // Pull the user's own completed Sleeper drafts and fold the format-matched ones into the trend set.
+  // Sequence: list their Sleeper leagues → fetch each league's draft → keep completed ones → map each
+  // pick's NAME to our player id → store as a 'sleeper' draft. Purely additive; can be cleared.
+  const pullSleeper = async () => {
+    if (!canPullSleeper) return;
+    setPullState("loading"); setPullMsg("Finding your Sleeper leagues…");
+    try {
+      const resLg = await api.sleeperMyLeagues().catch(() => null);
+      const lgs = (resLg && resLg.leagues) || [];
+      if (!lgs.length) { setPullState("done"); setPulled([]); setPullMsg("No Sleeper leagues found on your account."); return; }
+      // name → our player id, from the current rep pool (falls back to a generic pool if none yet)
+      const pool = players.length ? players : (() => { setTeams(12); setSpec({ QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0 }); setOrder("snake"); setPickTrades(null); setKeeperAdds({}); return buildPlayers({ type: "redraft", teams: 12, rounds: 15, start: { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0 }, scoring: { rec: 1 } }); })();
+      const byName = {}; pool.forEach((p) => { byName[normName(p.name)] = p.id; });
+      const out = [];
+      let done = 0;
+      for (const lg of lgs) {
+        setPullMsg(`Reading drafts… (${++done}/${lgs.length})`);
+        const lid = lg.league_id || lg.leagueId || lg.id;
+        if (!lid) continue;
+        const dr = await api.sleeperDraft(lid, user.sleeperUsername).catch(() => null);
+        if (!dr || !Array.isArray(dr.picks) || dr.picks.length < 12) continue; // skip empty / too-short
+        const cfg = dr.cfg || {};
+        const picks = dr.picks.map((pk) => { const id = byName[normName(pk.name || "")]; return id != null ? id : null; }).filter((x) => x != null);
+        if (picks.length < 12) continue; // couldn't map enough names — skip rather than show junk
+        out.push({ id: `sleeper:${lid}`, name: `${dr.name || lg.name || "Sleeper league"} (Sleeper)`, cfg, picks, kind: "sleeper", fmt: formatKey(cfg), at: dr.startedAt || dr.completedAt || null });
+      }
+      setPulled(out);
+      setPullState("done");
+      setPullMsg(out.length ? `Pulled ${out.length} Sleeper draft${out.length === 1 ? "" : "s"} into your trends.` : "No completed Sleeper drafts found to add.");
+    } catch (e) {
+      setPullState("error"); setPullMsg("Couldn't reach Sleeper right now — try again in a moment.");
+    }
+  };
+
+  const [q, setQ] = useState("");
+  const [typeF, setTypeF] = useState("all");
+  const [qbF, setQbF] = useState("all");
+  const [teF, setTeF] = useState("all");
+  const [teamsF, setTeamsF] = useState("all");
+  const [kindF, setKindF] = useState("all"); // all | official | mock
+  const [cutoff, setCutoff] = useState(""); // "" = auto (model chooses + weights recent); else YYYY-MM-DD
+  const [showCal, setShowCal] = useState(false);
+
+  const qbOf = (c) => ((c.start && c.start.SUPER > 0) || c.sf || (c.start && c.start.QB >= 2)) ? "sf" : "1qb";
+  const cutoffMs = cutoff ? new Date(cutoff + "T00:00:00").getTime() : null;
+  const matched = useMemo(() => allDrafts.filter((d) => {
+    const c = d.cfg || {};
+    if (typeF !== "all" && (c.type || "redraft") !== typeF) return false;
+    if (qbF !== "all" && qbOf(c) !== qbF) return false;
+    if (teF !== "all") { const isTep = c.tePremMult > 0; if ((teF === "tep") !== isTep) return false; }
+    if (teamsF !== "all" && String(c.teams || 12) !== teamsF) return false;
+    if (kindF !== "all" && d.kind !== kindF) return false;
+    // Explicit cutoff: drop drafts BEFORE the chosen date (drafts with no timestamp are kept — we can't
+    // date them, and excluding them would silently hide data). Auto mode (no cutoff) keeps everything and
+    // instead down-weights older drafts in the aggregation.
+    if (cutoffMs != null && d.at != null && d.at < cutoffMs) return false;
+    return true;
+  }), [allDrafts, typeF, qbF, teF, teamsF, kindF, cutoffMs]);
+
+  // Build a representative player pool for the matched format (use the most common cfg among matches).
+  const repCfg = useMemo(() => {
+    if (!matched.length) return null;
+    const tally = {}; matched.forEach((d) => { const k = formatKey(d.cfg); (tally[k] = tally[k] || { n: 0, cfg: d.cfg }); tally[k].n++; });
+    return Object.values(tally).sort((a, b) => b.n - a.n)[0].cfg;
+  }, [matched]);
+  const players = useMemo(() => {
+    if (!repCfg) return [];
+    setTeams(repCfg.teams || 12); setSpec(repCfg.start); setOrder(repCfg.order || "snake"); setPickTrades(null); setKeeperAdds({});
+    return buildPlayers(repCfg);
+  }, [repCfg]);
+
+  // When no explicit cutoff is chosen, the model weights recent drafts more (recency decay) — the newest
+  // drafts are the most relevant. An explicit cutoff instead hard-filters and treats the kept set evenly.
+  const trends = useMemo(() => analyzeDraftTrends(matched, players, { weightRecency: !cutoff, now: Date.now() }), [matched, players, cutoff]);
+
+  // Player-name search filters the realized-ADP table (separate from the draft-set filters above).
+  const realizedRows = useMemo(() => {
+    if (!trends.realized) return [];
+    if (!q.trim()) return trends.realized;
+    const s = q.toLowerCase();
+    return trends.realized.filter((r) => r.name.toLowerCase().includes(s));
+  }, [trends, q]);
+
+  const chip = (val, cur, set, label) => (
+    <button onClick={() => set(val)} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: cur === val ? 700 : 500, padding: "4px 10px", borderRadius: 99, border: `1px solid ${cur === val ? "var(--gold)" : "var(--line)"}`, background: cur === val ? "rgba(242,182,60,.14)" : "transparent", color: cur === val ? "var(--gold)" : "var(--mut)" }}>{label}</button>
+  );
+
+  const teamOpts = useMemo(() => Array.from(new Set(allDrafts.map((d) => String(d.cfg.teams || 12)))).sort((a, b) => +a - +b), [allDrafts]);
+
+  return (
+    <div>
+      <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="Draft Trends" />
+      <div style={{ maxWidth: 1000, margin: "0 auto", padding: "24px 20px 60px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6, flexWrap: "wrap" }}>
+          <div style={{ width: 40, height: 40, borderRadius: 11, background: "rgba(242,182,60,.14)", display: "flex", alignItems: "center", justifyContent: "center" }}><i className="ti ti-chart-histogram" style={{ fontSize: 22, color: "var(--gold)" }} aria-hidden="true" /></div>
+          <div>
+            <div className="disp" style={{ fontSize: 24, fontWeight: 700, lineHeight: 1.05 }}>Draft Trends</div>
+            <div className="mut" style={{ fontSize: 13 }}>How the board actually behaves across your drafts — filter to a format and see the patterns.</div>
+          </div>
+        </div>
+
+        {/* filters */}
+        <div className="panel" style={{ padding: 14, marginTop: 14, marginBottom: 16 }}>
+          <div style={{ position: "relative", marginBottom: 12 }}>
+            <i className="ti ti-search" style={{ position: "absolute", left: 11, top: 9, fontSize: 15, color: "var(--mut)" }} aria-hidden="true" />
+            <input className="gs" style={{ width: "100%", paddingLeft: 34, paddingTop: 8, paddingBottom: 8, fontSize: 13.5 }} placeholder="Search a player in the results…" value={q} onChange={(e) => setQ(e.target.value)} />
+            {q.trim() && <button onClick={() => setQ("")} style={{ position: "absolute", right: 8, top: 7, background: "transparent", border: "none", color: "var(--mut)", cursor: "pointer", padding: 4 }} aria-label="Clear"><i className="ti ti-x" aria-hidden="true" /></button>}
+          </div>
+
+          {/* Date cutoff — drop drafts before a chosen date. Empty = auto (model weights recent drafts more). */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <span className="mut" style={{ fontSize: 11, width: 42 }}>Since</span>
+            <div style={{ position: "relative" }}>
+              <button onClick={() => setShowCal((v) => !v)} className="btn btn-mini" style={{ borderColor: cutoff ? "var(--gold)" : "var(--line)", color: cutoff ? "var(--gold)" : "var(--ink)" }}>
+                <i className="ti ti-calendar" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />
+                {cutoff ? new Date(cutoff + "T00:00:00").toLocaleDateString() : "Auto (recent weighted)"}
+              </button>
+              {showCal && (
+                <div style={{ position: "absolute", zIndex: 10, top: "100%", left: 0, marginTop: 6, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 10, padding: 12, boxShadow: "0 12px 40px #0009", width: 244 }}>
+                  <div className="mut" style={{ fontSize: 11.5, marginBottom: 8, lineHeight: 1.4 }}>Only include drafts on or after this date. Leave on <b style={{ color: "var(--ink)" }}>Auto</b> to keep everything and let the model weight the most recent drafts more.</div>
+                  <input type="date" className="gs" style={{ width: "100%", marginBottom: 8, colorScheme: "dark" }} value={cutoff} onChange={(e) => setCutoff(e.target.value)} />
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button className="btn btn-mini" style={{ flex: 1 }} onClick={() => { setCutoff(""); setShowCal(false); }}>Auto</button>
+                    <button className="btn btn-mini btn-gold" style={{ flex: 1 }} onClick={() => setShowCal(false)}>Apply</button>
+                  </div>
+                  <div style={{ display: "flex", gap: 5, marginTop: 8, flexWrap: "wrap" }}>
+                    {[["7d", 7], ["30d", 30], ["90d", 90]].map(([lbl, days]) => (
+                      <button key={lbl} className="btn btn-mini" style={{ fontSize: 10.5, padding: "3px 8px" }} onClick={() => { const d = new Date(Date.now() - days * 86400000); setCutoff(d.toISOString().slice(0, 10)); setShowCal(false); }}>Last {lbl}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            {cutoff && <button className="btn btn-mini" onClick={() => setCutoff("")} title="Back to auto"><i className="ti ti-x" style={{ fontSize: 12 }} aria-hidden="true" /></button>}
+            <span className="mut" style={{ fontSize: 11, opacity: 0.8 }}>{cutoff ? "older drafts excluded" : "newest drafts count most"}</span>
+          </div>
+          <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 7, alignItems: "center" }}>
+            <span className="mut" style={{ fontSize: 11, width: 42 }}>Type</span>
+            {chip("all", typeF, setTypeF, "All")}{chip("redraft", typeF, setTypeF, "Redraft")}{chip("dynasty", typeF, setTypeF, "Dynasty")}{chip("bestball", typeF, setTypeF, "Best ball")}{chip("rookie", typeF, setTypeF, "Rookie")}
+          </div>
+          <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 7, alignItems: "center" }}>
+            <span className="mut" style={{ fontSize: 11, width: 42 }}>QB</span>
+            {chip("all", qbF, setQbF, "All")}{chip("1qb", qbF, setQbF, "1QB")}{chip("sf", qbF, setQbF, "SF / 2QB")}
+          </div>
+          <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 7, alignItems: "center" }}>
+            <span className="mut" style={{ fontSize: 11, width: 42 }}>TE</span>
+            {chip("all", teF, setTeF, "All")}{chip("std", teF, setTeF, "Standard")}{chip("tep", teF, setTeF, "TE premium")}
+          </div>
+          <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 7, alignItems: "center" }}>
+            <span className="mut" style={{ fontSize: 11, width: 42 }}>Teams</span>
+            {chip("all", teamsF, setTeamsF, "All")}{teamOpts.map((t) => <span key={t}>{chip(t, teamsF, setTeamsF, `${t}-team`)}</span>)}
+          </div>
+          <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
+            <span className="mut" style={{ fontSize: 11, width: 42 }}>Source</span>
+            {chip("all", kindF, setKindF, "All")}{chip("official", kindF, setKindF, "Official drafts")}{chip("mock", kindF, setKindF, "Mocks")}
+            {pulled.length > 0 && chip("sleeper", kindF, setKindF, "Sleeper pulls")}
+          </div>
+
+          {/* Pull real Sleeper drafts — only shown when a Sleeper account is linked (otherwise not possible). */}
+          {canPullSleeper && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)" }}>
+              <button className="btn btn-mini" style={{ borderColor: "var(--blue)", color: "var(--blue)" }} disabled={pullState === "loading"} onClick={pullSleeper}>
+                <i className={`ti ${pullState === "loading" ? "ti-loader-2" : "ti-plug-connected"}`} style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />
+                {pullState === "loading" ? "Pulling…" : pulled.length ? "Refresh Sleeper drafts" : "Pull in my Sleeper drafts"}
+              </button>
+              {pulled.length > 0 && <button className="btn btn-mini" onClick={() => { setPulled([]); if (kindF === "sleeper") setKindF("all"); setPullMsg(""); setPullState("idle"); }}>Remove Sleeper drafts</button>}
+              {pullMsg && <span className="mut" style={{ fontSize: 11.5, color: pullState === "error" ? "var(--red)" : "var(--mut)" }}>{pullMsg}</span>}
+            </div>
+          )}
+        </div>
+
+        {trends.n === 0 ? (
+          <div className="panel" style={{ padding: 24, textAlign: "center" }}>
+            <i className="ti ti-chart-dots" style={{ fontSize: 34, color: "var(--mut)", marginBottom: 10 }} aria-hidden="true" />
+            <div className="disp" style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>{allDrafts.length ? "No drafts match these filters" : "No drafts to analyze yet"}</div>
+            <div className="mut" style={{ fontSize: 13, maxWidth: 460, margin: "0 auto 12px" }}>{allDrafts.length ? "Loosen the filters, or run a few more drafts in this format. Trends need at least a couple of comparable drafts to be meaningful." : "Run some mocks or complete a draft, and this page will surface how the board tends to move in each format."}</div>
+            {allDrafts.length > 0 && <button className="btn btn-mini" onClick={() => { setQ(""); setTypeF("all"); setQbF("all"); setTeF("all"); setTeamsF("all"); setKindF("all"); }}>Clear filters</button>}
+          </div>
+        ) : (
+          <>
+            {/* summary line */}
+            <div className="panel" style={{ padding: 16, marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                <span className="chip" style={{ color: "var(--gold)" }}><i className="ti ti-stack-2" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />{trends.n} draft{trends.n === 1 ? "" : "s"}</span>
+                {!trends.enough && <span className="chip" style={{ borderColor: "var(--gold)", color: "var(--gold)" }}>small sample — run more for sharper trends</span>}
+              </div>
+              <div style={{ fontSize: 13, lineHeight: 1.55 }}>
+                Across these {trends.n} draft{trends.n === 1 ? "" : "s"}, {trends.firstQBRound != null ? `the first QB typically comes off the board around round ${trends.firstQBRound.toFixed(1)}` : "QBs vary in timing"}{trends.firstTERound != null ? `, and the first TE around round ${trends.firstTERound.toFixed(1)}` : ""}. The tables below show your <b style={{ color: "var(--ink)" }}>realized ADP</b> (where players actually go) and how each round's position mix breaks down.
+              </div>
+            </div>
+
+            {/* positional flow */}
+            {trends.flow.length > 0 && (
+              <div className="panel" style={{ padding: 16, marginBottom: 14 }}>
+                <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 3 }}>Positional flow by round</div>
+                <div className="mut" style={{ fontSize: 12, marginBottom: 12 }}>Share of each position drafted in each round — where runs happen and when positions dry up.</div>
+                <div style={{ display: "flex", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+                  {POS.map((pos) => <span key={pos} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: POS_COLOR[pos] }} />{pos}</span>)}
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {trends.flow.map((row) => <PosFlowBar key={row.round} row={row} />)}
+                </div>
+              </div>
+            )}
+
+            {/* risers & fallers */}
+            {(trends.risers.length > 0 || trends.fallers.length > 0) && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 14, marginBottom: 14 }}>
+                {trends.risers.length > 0 && (
+                  <div className="panel" style={{ padding: 16 }}>
+                    <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 3 }}>Going earlier than ADP <span className="mut" style={{ fontSize: 11 }}>▲ reaches</span></div>
+                    <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Players your drafts consistently take ahead of their baseline market ADP.</div>
+                    {trends.risers.map((r) => (
+                      <div key={r.pid} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderTop: "1px solid var(--line)" }}>
+                        <Dot pos={r.pos} />
+                        <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 600, fontSize: 13 }}>{r.name} <span className="mut" style={{ fontSize: 11 }}>{r.pos} · {r.team}</span></div><div className="mut" style={{ fontSize: 11 }}>goes ~{r.avgPick.toFixed(0)} · ADP {r.baseline != null ? r.baseline.toFixed(0) : "—"} · in {r.times}/{trends.n}</div></div>
+                        <span className="num" style={{ fontWeight: 700, color: "var(--green)", fontSize: 13 }}>▲{r.delta.toFixed(0)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {trends.fallers.length > 0 && (
+                  <div className="panel" style={{ padding: 16 }}>
+                    <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 3 }}>Sliding past ADP <span className="mut" style={{ fontSize: 11 }}>▼ values</span></div>
+                    <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Players that consistently last longer than their baseline ADP — recurring value.</div>
+                    {trends.fallers.map((r) => (
+                      <div key={r.pid} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderTop: "1px solid var(--line)" }}>
+                        <Dot pos={r.pos} />
+                        <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 600, fontSize: 13 }}>{r.name} <span className="mut" style={{ fontSize: 11 }}>{r.pos} · {r.team}</span></div><div className="mut" style={{ fontSize: 11 }}>goes ~{r.avgPick.toFixed(0)} · ADP {r.baseline != null ? r.baseline.toFixed(0) : "—"} · in {r.times}/{trends.n}</div></div>
+                        <span className="num" style={{ fontWeight: 700, color: "var(--red)", fontSize: 13 }}>▼{Math.abs(r.delta).toFixed(0)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* realized ADP table */}
+            <div className="panel" style={{ padding: 16 }}>
+              <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 3 }}>Realized ADP <span className="mut" style={{ fontSize: 11 }}>{realizedRows.length} players{q.trim() ? " · filtered" : ""}</span></div>
+              <div className="mut" style={{ fontSize: 12, marginBottom: 10 }}>Where each player actually gets drafted across this set, vs. their baseline market ADP.</div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                  <thead><tr className="mut" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em" }}>
+                    <th style={{ textAlign: "left", padding: "0 6px 6px 0" }}>Player</th>
+                    <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }}>Realized</th>
+                    <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }}>ADP</th>
+                    <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }}>Δ</th>
+                    <th className="num" style={{ textAlign: "right", padding: "0 0 6px 8px" }}>Seen</th>
+                  </tr></thead>
+                  <tbody>
+                    {realizedRows.slice(0, 60).map((r) => (
+                      <tr key={r.pid} style={{ borderTop: "1px solid var(--line)" }}>
+                        <td style={{ padding: "5px 6px 5px 0" }}><span className="posdot" style={{ background: POS_COLOR[r.pos] }} /><b>{r.name}</b> <span className="mut" style={{ fontSize: 10.5 }}>{r.pos} · {r.team}</span></td>
+                        <td className="num" style={{ textAlign: "right", padding: "5px 8px" }}>{r.avgPick.toFixed(1)}</td>
+                        <td className="num" style={{ textAlign: "right", padding: "5px 8px", color: "var(--mut)" }}>{r.baseline != null ? r.baseline.toFixed(1) : "—"}</td>
+                        <td className="num" style={{ textAlign: "right", padding: "5px 8px", color: r.delta == null ? "var(--mut)" : r.delta > 2 ? "var(--green)" : r.delta < -2 ? "var(--red)" : "var(--mut)", fontWeight: 700 }}>{r.delta == null ? "—" : r.delta > 0 ? `▲${r.delta.toFixed(0)}` : r.delta < 0 ? `▼${Math.abs(r.delta).toFixed(0)}` : "—"}</td>
+                        <td className="num" style={{ textAlign: "right", padding: "5px 0 5px 8px", color: "var(--mut)" }}>{r.times}/{trends.n}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {realizedRows.length === 0 && <div className="mut" style={{ fontSize: 12.5, textAlign: "center", padding: "12px 0" }}>No players match “{q.trim()}”.</div>}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function TrendsOverTimePage({ user, leagues, funMocks, onBack, onHome, onSignOut, onOpenLeague }) {
@@ -9463,7 +9995,19 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         const pickNum = prev.length + 1, rd = Math.floor(prev.length / TEAMS) + 1;
         const cands0 = []; for (const p of sortedAdp) { if (!drafted.has(p.id)) { cands0.push(p); if (cands0.length >= 34) break; } }
         const cands = legalCands(cands0, counts, cfg);
-        const ws = cands.map((c) => weightFor(c, pickNum, counts, rd, recent, dem, ROUNDS));
+        let ws = cands.map((c) => weightFor(c, pickNum, counts, rd, recent, dem, ROUNDS));
+        // MOCK VARIANCE: in a mock, seed a per-mock RNG and apply a MILD temperature to the weights so each
+        // mock plays out a little differently (different runs, an occasional slide) — good practice reps.
+        // Bounded on purpose: a small exponent flattening + a light per-candidate jitter, so opponents still
+        // track ADP closely and never reach wildly. Live/connected drafts are untouched (deterministic feed).
+        if (mockLike && cfg.mockSeed != null) {
+          seedRng(((cfg.mockSeed >>> 0) ^ (pickNum * 2654435761)) >>> 0);
+          const TEMP = 0.82;               // <1 flattens the distribution slightly (more spread, not chaos)
+          ws = ws.map((w) => {
+            const jitter = 0.85 + rng() * 0.3; // ±15% per-candidate wobble
+            return Math.pow(Math.max(w, 1e-9), TEMP) * jitter;
+          });
+        }
         const chosen = cands[sample(cands, ws)];
         setPreds((pp) => [...pp, currentPred ? currentPred.id : null]);
         return [...prev, chosen.id];
