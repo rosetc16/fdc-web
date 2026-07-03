@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bb";
+const BUILD_TAG = "2026.06.28bc";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1675,16 +1675,11 @@ function buildPlayers(cfg) {
         const base = isDynasty ? 78 : 52;          // dynasty QBs anchor the top harder
         v += base * decay;
       } else if (!sf && p.pos === "QB") {
-        // 1QB (single-QB) leagues: a QB's raw VBD is high (he scores a lot), but his DRAFT value is low —
-        // you start only one and the replacement QB is nearly as good, so the market waits. Without this,
-        // elite QBs (Allen, Lamar) leapfrog to picks 1-2 on raw VBD, which is exactly wrong for 1QB. Push
-        // QBs DOWN to a realistic 1QB slot: the QB1 lands late-2nd/early-3rd, and each subsequent QB slides
-        // further. We subtract a large, rank-scaled penalty so QBs interleave below the elite RB/WR where a
-        // 1QB room actually takes them. (In dynasty 1QB the top QB is a touch earlier, so a smaller cut.)
-        const rank = qbRankById.get(p.id) ?? 99;  // 0 = QB1
-        const cut = isDynasty ? 62 : 78;          // how far below their VBD the QB1 sits
-        const decay = Math.pow(0.90, rank);        // QB1 full cut → fades slowly down the position
-        v -= cut * decay;
+        // 1QB leagues: a QB's raw VBD is high but his DRAFT value is low (you start one, replacement is
+        // cheap). We do NOT try to fix that with a VBD penalty here — that distorts ordering vs RB/WR. Instead
+        // a dedicated post-pass (below) slots the top QBs at realistic 1QB ADP positions in value order. Here
+        // we just push QBs out of the top of the value interleave so they don't leak into round 1.
+        v -= 40;
       }
       if (p.pos === "RB") {
         // Market-realism lift for elite RBs: top bell-cows get drafted ahead of pure VBD (recency +
@@ -1735,6 +1730,21 @@ function buildPlayers(cfg) {
     }
     // players outside the value pool (shouldn't be many) sink below
     ps.forEach((p) => { if (!valPool.includes(p)) { p.adp = ranked.length + 50; } });
+    // 1QB QB SLOTTING post-pass. In single-QB leagues the market takes the QB1 around pick 28-32, QB2/QB3 in
+    // the mid-30s, then a steady slide — regardless of raw VBD. We place the top QBs (in VBD/value order, so
+    // the ORDER is always right — Allen/Lamar/Daniels ahead of streamers) at those canonical slots, overriding
+    // whatever the value interleave gave them. This fixes both problems at once: QBs too high AND out of order.
+    if (!sf) {
+      const qbOrder = valPool.filter((p) => p.pos === "QB").sort((a, b) => (b.vbd ?? -50) - (a.vbd ?? -50));
+      // canonical 1QB ADP anchors by QB rank (0-based). QB1≈30, QB2≈35, QB3≈40, then ~+6-7/rank, easing out.
+      const qbSlot = (rank) => {
+        if (rank <= 0) return 30;
+        if (rank <= 2) return 30 + rank * 5;          // QB2≈35, QB3≈40
+        if (rank <= 7) return 40 + (rank - 2) * 7;    // QB4≈47 … QB8≈75
+        return 75 + (rank - 7) * 9;                    // streamers slide further
+      };
+      qbOrder.forEach((p, i) => { p.adp = qbSlot(i); p.adpMarket = p.adp; });
+    }
   }
   // OVERALL value tiers across positions (VBD-based). Walk players in VBD order; a tier
   // breaks at an elbow — a drop clearly bigger than the local average — for chunky tiers.
@@ -3071,6 +3081,7 @@ export default function App() {
   };
   const nav0 = restoreNav();
   const [route, setRoute] = useState(nav0.route || "home"); // home | checkout | library | setup | draft | admin
+  const [pendingRankEdit, setPendingRankEdit] = useState(null); // a rank-set id to open directly in the hub
   // Wire the global navigation hook so shared chrome (AppHeader, etc.) can always route — this is what makes
   // the admin/account/home buttons work on every page without threading a handler through each component.
   setGlobalNav(setRoute);
@@ -3547,7 +3558,7 @@ export default function App() {
       {route === "tradeTools" && user && <TradeToolsPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} />}
       {route === "adpIntel" && user && <AdpIntelPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} />}
       {route === "account" && user && <Account user={user} onUpdate={updateUser} onBack={() => setRoute(user.paid ? "home" : "library")} onHome={() => setRoute("home")} onSignOut={signOut} onRankings={() => setRoute("rankings")} onAdmin={() => setRoute("admin")} />}
-      {route === "rankings" && user && <RankingsHub user={user} leagues={leagues} onUpdate={updateUser} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} onNewLeague={() => { setSetupReturn("rankings"); setRoute("setup"); }} />}
+      {route === "rankings" && user && <RankingsHub user={user} leagues={leagues} openSetId={pendingRankEdit} onConsumeOpen={() => setPendingRankEdit(null)} onUpdate={updateUser} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} onNewLeague={() => { setSetupReturn("rankings"); setRoute("setup"); }} />}
       {route === "setup" && <Setup onCreate={createLeague} onBack={() => { const r = setupReturn || (user?.paid ? "home" : "library"); setSetupReturn(null); setRoute(r); }} backLabel={setupReturn === "rankings" ? "Rankings" : user?.paid ? "Home" : "Library"} />}
       {route === "draft" && active && (
         <DraftRoom key={active.id} league={active} user={user} isMock={!!(mockLeague && active.id === mockLeague.id)} isDemo={!!active.demo} initialTab={draftTab} dataVersion={dataVersion} allLeagues={leagues} allFunMocks={funMocks}
@@ -3568,7 +3579,23 @@ export default function App() {
           onExit={() => { if (mockLeague && active.id === mockLeague.id) setMockLeague(null); setDraftTab(null); setRoute(user ? (user.paid ? "home" : "library") : "home"); }}
           onSettings={(cfg) => { if (active.id === "demo") setDemoLeague((d) => ({ ...d, cfg })); else if (mockLeague && active.id === mockLeague.id) setMockLeague((m) => ({ ...m, cfg })); else updateLeagueCfg(active.id, cfg); }}
           onEditRanks={() => { if (mockLeague && active.id === mockLeague.id) setMockLeague(null); setDraftTab(null); setRoute("rankings"); }}
-          onUseRankSet={(setId, lgId) => { if (!user) return; const next = (user.rankSets || []).map((rs) => rs.id === setId ? { ...rs, leagueId: lgId } : rs); updateUser({ rankSets: next }); }}
+          onEditRankSet={(setId) => { if (mockLeague && active.id === mockLeague.id) setMockLeague(null); setDraftTab(null); setPendingRankEdit(setId); setRoute("rankings"); }}
+          onDeleteRankSet={(setId) => { if (!user) return; const next = (user.rankSets || []).filter((rs) => rs.id !== setId); updateUser({ rankSets: next }); }}
+          onRanksOff={(lgId) => {
+            if (!user) return;
+            // "Use none": detach any set attached to this league AND record a per-league opt-out so no other
+            // set auto-matches by format. Clearing it (choosing a set again) removes the opt-out.
+            const next = (user.rankSets || []).map((rs) => rs.leagueId === lgId ? { ...rs, leagueId: null } : rs);
+            const off = { ...(user.ranksOff || {}), [lgId]: true };
+            updateUser({ rankSets: next, ranksOff: off });
+          }}
+          onUseRankSet={(setId, lgId) => {
+            if (!user) return;
+            const next = (user.rankSets || []).map((rs) => rs.id === setId ? { ...rs, leagueId: lgId } : rs);
+            // choosing a set clears any per-league opt-out
+            const off = { ...(user.ranksOff || {}) }; delete off[lgId];
+            updateUser({ rankSets: next, ranksOff: off });
+          }}
           onSaveInRoomRanks={(list, cfg, lgId) => {
             if (!user) return;
             // Create (or replace) a ranking set built inside the draft room, attached to THIS league +
@@ -8221,11 +8248,15 @@ function Account({ user, onUpdate, onBack, onHome, onSignOut, onRankings, onAdmi
   );
 }
 
-function RankingsHub({ user, leagues, onUpdate, onBack, onHome, onSignOut, onNewLeague }) {
+function RankingsHub({ user, leagues, onUpdate, onBack, onHome, onSignOut, onNewLeague, openSetId, onConsumeOpen }) {
   const allSets = (user.rankSets) || [];
   const season = user.season || CURRENT_SEASON;
   const [view, setView] = useState("home"); // home | editor
   const [editId, setEditId] = useState(null);
+  // If we were asked to open a specific set directly (from the draft-room "edit" action), jump into it.
+  useEffect(() => {
+    if (openSetId && allSets.some((s) => s.id === openSetId)) { setEditId(openSetId); setView("editor"); onConsumeOpen && onConsumeOpen(); }
+  }, [openSetId]);
   const [flash, setFlash] = useState("");
   const flashMsg = (m) => { setFlash(m); setTimeout(() => setFlash(""), 1800); };
 
@@ -10060,7 +10091,7 @@ function InDraftTrends({ cfg, players, draftedSet, allLeagues, allFunMocks, onCl
 
 
 
-function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQueue, onExit, onBuy, onSettings, onEditRanks, onUseRankSet, onColPrefs, onSaveInRoomRanks, dataVersion = 0, allLeagues, allFunMocks }) {
+function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQueue, onExit, onBuy, onSettings, onEditRanks, onEditRankSet, onDeleteRankSet, onRanksOff, onUseRankSet, onColPrefs, onSaveInRoomRanks, dataVersion = 0, allLeagues, allFunMocks }) {
   const cfg = league.cfg;
   // Live per-pick ownership from a connected platform (Sleeper draft_slot). Declared here so it can
   // be applied to the engine's team-assignment BEFORE any roster/sim computation in this render.
@@ -13878,6 +13909,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         </div>
                         <button className="btn btn-mini btn-gold" disabled={isActive} onClick={() => { onUseRankSet && onUseRankSet(set.id, lgId); setRanksWarn(false); }}>{isActive ? "Using" : "Use"}</button>
                       </div>
+                      {/* per-set actions: view/edit, and delete (with confirm) */}
+                      <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                        <button className="btn btn-mini" onClick={() => { onSave(picks, preds); onEditRankSet && onEditRankSet(set.id); }} title="View and edit this ranking set">
+                          <i className="ti ti-pencil" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />View / edit
+                        </button>
+                        <button className="btn btn-mini" style={{ color: "var(--red)", borderColor: "rgba(242,101,92,.4)" }}
+                          onClick={() => { if (window.confirm(`Delete "${set.name}"? This permanently removes the ranking set.`)) { onDeleteRankSet && onDeleteRankSet(set.id); } }}
+                          title="Permanently delete this ranking set">
+                          <i className="ti ti-trash" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Delete
+                        </button>
+                      </div>
                       {/* relevance bar */}
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 7 }}>
                         <div style={{ flex: 1, height: 6, borderRadius: 3, background: "#23231C", overflow: "hidden" }}>
@@ -13893,6 +13935,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             ) : (
               <div className="panel" style={{ padding: 14, marginBottom: 16, background: "var(--panel2)", textAlign: "center" }}>
                 <div className="mut" style={{ fontSize: 12.5 }}>You haven't built any {typeFamily(cfg.type) === "dynasty" ? "dynasty/keeper" : typeFamily(cfg.type) === "bestball" ? "best ball" : "redraft"} rankings yet. Create one and it'll show as a “My ADP” + “Blend” column here.</div>
+              </div>
+            )}
+
+            {/* Use none: turn off personal rankings for this draft so the board runs on pure consensus/value.
+                 Useful when a set is auto-matching that you don't want. */}
+            {active && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 12px", marginBottom: 16, border: "1px solid var(--line)", borderRadius: 9, background: "var(--panel2)" }}>
+                <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>Currently using <b style={{ color: "var(--ink)" }}>{active.name}</b>. Don't want personal ranks driving this draft?</div>
+                <button className="btn btn-mini" style={{ flexShrink: 0 }} onClick={() => { onRanksOff && onRanksOff(lgId); setRanksWarn(false); }}>Use none</button>
               </div>
             )}
 
@@ -14292,6 +14343,8 @@ function adjForPlayer(adj, name, baseRank, boardSize) {
 function pickRankSet(user, cfg, leagueId) {
   const sets = (user && user.rankSets) || [];
   if (!sets.length) return null;
+  // Per-league opt-out: the user explicitly chose "use none" for this league, so don't auto-match a set.
+  if (leagueId != null && user && user.ranksOff && user.ranksOff[leagueId]) return null;
   const season = (user && user.season) || CURRENT_SEASON;
   const key = formatKey(cfg);
   if (leagueId != null) { const attached = sets.find((s) => s.leagueId === leagueId); if (attached) return attached; }
