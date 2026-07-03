@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28w";
+const BUILD_TAG = "2026.06.28x";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -10724,11 +10724,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     upcomingList.forEach((o, idx) => {
                       const picksAway = o - picks.length; // others' picks before your turn
                       if (picksAway < 0) return;
-                      // You're guaranteed at least the (picksAway+1)-th best available — so the line sits AFTER
-                      // that many available players. E.g. 2 picks ahead of you ⇒ line after the 3rd player.
-                      const slot = picksAway + 1;
+                      // `picksAway` players are expected to be taken before you're up (the top `picksAway`
+                      // available). The line sits AFTER those — so the first player BELOW it (position
+                      // picksAway+1) is the one you should expect to reach you. E.g. current pick 179, your
+                      // pick 184 ⇒ 5 picks ahead ⇒ line after the 5th player, before the 6th.
+                      const slot = picksAway;
+                      if (slot < 1) return; // if you're on the clock, no "expected gone" line to draw
                       const label = idx === 0 ? "Your next pick" : `Your pick +${idx}`;
-                      const sub = `${pickLabel(o)} · expect this or better`;
+                      const sub = `${pickLabel(o)} · expect the next player or better`;
                       if (markerAfter.has(slot)) markerAfter.get(slot).push({ label, sub });
                       else markerAfter.set(slot, [{ label, sub }]);
                     });
