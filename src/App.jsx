@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28as";
+const BUILD_TAG = "2026.06.28at";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -9418,7 +9418,7 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
                 <div className="disp" style={{ fontSize: 16, fontWeight: 700 }}>Draft Trends pool <span className="mut" style={{ fontSize: 12 }}>harvested real drafts</span></div>
                 <div style={{ display: "flex", gap: 6 }}>
                   <button className="btn btn-mini" disabled={busy} onClick={loadTrendsDiag}><i className="ti ti-refresh" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Refresh stats</button>
-                  <button className="btn btn-mini" disabled={busy} onClick={async () => { if (!window.confirm("Rebuild the trends pool? This clears harvested drafts and re-crawls from scratch — can take a minute.")) return; await runJob("rebuild-trends"); loadTrendsDiag(); }}>Rebuild pool</button>
+                  <button className="btn btn-mini" disabled={busy} onClick={async () => { if (!window.confirm("Rebuild the trends pool? This clears the harvested drafts and re-crawls the full league graph in the background — it can take a few minutes to fill.")) return; await runJob("rebuild-trends"); note("Rebuild started — re-harvesting in the background. Hit Refresh stats in a minute or two."); setTimeout(loadTrendsDiag, 15000); }}>Rebuild pool</button>
                 </div>
               </div>
               <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 10 }}>This pool powers the "How the field drafts" tables. It harvests automatically — a little after each deploy if empty, and every night at 4 AM — so you never have to run it by hand. The numbers below are just a health check.</div>
