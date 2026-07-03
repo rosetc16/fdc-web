@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28az";
+const BUILD_TAG = "2026.06.28ba";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1631,6 +1631,8 @@ function buildPlayers(cfg) {
     // fallback board stands in for the MARKET (what others will pick), it should mirror that behavior.
     const rbs = valPool.filter((p) => p.pos === "RB").sort((a, b) => (b.vbd ?? -50) - (a.vbd ?? -50));
     const rbRankById = new Map(); rbs.forEach((p, i) => rbRankById.set(p.id, i)); // 0 = RB1
+    const tes = valPool.filter((p) => p.pos === "TE").sort((a, b) => (b.vbd ?? -50) - (a.vbd ?? -50));
+    const teRankById = new Map(); tes.forEach((p, i) => teRankById.set(p.id, i)); // 0 = TE1
     const effVal = (p) => {
       let v = p.vbd != null ? p.vbd : -50;
       if (sf && p.pos === "QB") {
@@ -1643,6 +1645,17 @@ function buildPlayers(cfg) {
         const decay = Math.pow(0.86, rank);       // QB1 full → QB5 ~53% → QB10 ~22%
         const base = isDynasty ? 78 : 52;          // dynasty QBs anchor the top harder
         v += base * decay;
+      } else if (!sf && p.pos === "QB") {
+        // 1QB (single-QB) leagues: a QB's raw VBD is high (he scores a lot), but his DRAFT value is low —
+        // you start only one and the replacement QB is nearly as good, so the market waits. Without this,
+        // elite QBs (Allen, Lamar) leapfrog to picks 1-2 on raw VBD, which is exactly wrong for 1QB. Push
+        // QBs DOWN to a realistic 1QB slot: the QB1 lands late-2nd/early-3rd, and each subsequent QB slides
+        // further. We subtract a large, rank-scaled penalty so QBs interleave below the elite RB/WR where a
+        // 1QB room actually takes them. (In dynasty 1QB the top QB is a touch earlier, so a smaller cut.)
+        const rank = qbRankById.get(p.id) ?? 99;  // 0 = QB1
+        const cut = isDynasty ? 62 : 78;          // how far below their VBD the QB1 sits
+        const decay = Math.pow(0.90, rank);        // QB1 full cut → fades slowly down the position
+        v -= cut * decay;
       }
       if (p.pos === "RB") {
         // Market-realism lift for elite RBs: top bell-cows get drafted ahead of pure VBD (recency +
@@ -1651,6 +1664,17 @@ function buildPlayers(cfg) {
         const rank = rbRankById.get(p.id) ?? 99; // 0 = RB1
         const decay = Math.pow(0.88, rank);       // RB1 full → RB6 ~46% → RB10 ~28%
         const base = isDynasty ? 18 : 38;          // much smaller in dynasty
+        v += base * decay;
+      }
+      if (teMult > 0 && p.pos === "TE") {
+        // TE-PREMIUM lift. Extra points-per-reception for TEs makes the elite ones (Bowers, McBride, Kittle)
+        // genuine early picks — but the effect is smaller than the SF QB premium and fades fast down the
+        // position (streaming TEs barely move). Scaled by how strong the premium is (teMult: 0.5 ≈ standard
+        // TE-prem, 1.0 ≈ super-prem). Elite TEs rise into the RB/WR mix without flooding the top.
+        const teRank = teRankById.get(p.id) ?? 99;   // 0 = TE1
+        const decay = Math.pow(0.82, teRank);         // TE1 full → TE3 ~55% → TE6 ~30%
+        const strength = Math.min(1, teMult / 0.5);
+        const base = (isDynasty ? 30 : 26) * strength; // meaningfully below the QB-SF base (52-78)
         v += base * decay;
       }
       return v;
