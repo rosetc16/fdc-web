@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ac";
+const BUILD_TAG = "2026.06.28ad";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1893,11 +1893,14 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build) {
   // is strong in round 1-2 and DECAYS as the draft develops, so value + positional need + strategy
   // gradually take over and pull the pick away from pure ADP later — which is where real edges are found.
   const need = 7 * Math.max(0, dem[c.pos] - counts[c.pos]);
-  // anchor: rewards being high on the consensus board; weight fades from ~round 1 to near-zero by mid draft
-  const anchorW = pickNum != null ? Math.max(0, 40 - pickNum * 1.3) : 0; // ~39 at pick 1 → 0 by ~pick 30
-  const anchor = anchorW > 0 && c.adp != null ? anchorW * (1 / (1 + c.adp * 0.05)) : 0; // higher for low-ADP players
-  let s = mv + need + anchor - reachPenalty(c, pickNum);
-  return s;
+  // Balanced blends a MARKET score (follow ADP) with a VALUE score (VBD + need). Early in the draft the
+  // market dominates, so balanced takes the consensus board in order (ADP-1 at 1.1, even over a higher-VBD
+  // ADP-2 player). As the draft develops, the blend shifts toward value + need, so your roster construction
+  // and the real edges take over. `mktW` goes from ~0.8 at pick 1 to 0 by ~pick 30.
+  const value = mv + need - reachPenalty(c, pickNum);
+  const market = c.adp != null ? 300 - c.adp * 3.0 : 0; // pure board-order score: earlier ADP = higher
+  const mktW = pickNum != null ? Math.max(0, Math.min(0.92, 0.92 - (pickNum - 1) * 0.034)) : 0; // 0.92 → 0 by ~pick 28
+  return market * mktW + value * (1 - mktW);
 }
 // cost of drafting a player well before the market would — grows the earlier you are
 // (a round-1 reach is far more wasteful than a round-12 reach) and with the gap size.
@@ -2724,7 +2727,8 @@ select.gs:hover{border-color:var(--gold)}
 .flipinner{position:relative;width:100%;height:100%;transition:transform .5s;transform-style:preserve-3d}
 .flipcard:hover .flipinner,.flipcard:focus-visible .flipinner{transform:rotateY(180deg)}
 .flipface{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;border:1px solid var(--line);border-radius:13px;overflow:hidden;display:flex;flex-direction:column}
-.flipback{transform:rotateY(180deg);background:var(--panel);padding:15px;justify-content:center}
+.flipback{transform:rotateY(180deg);background:var(--panel);padding:13px;justify-content:flex-start}
+.flipback .flipbacktext{flex:1;min-height:0;overflow:hidden;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical}
 .bigact:hover{transform:translateY(-2px);box-shadow:0 8px 24px #0009}
 .bigact{transition:transform .15s,box-shadow .15s,border-color .15s}
 .dblsep{border:none;height:0;margin:0;border-top:2px solid var(--ink);border-bottom:2px solid var(--ink);padding:3px 0;opacity:.22}
@@ -5626,6 +5630,11 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
             <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Quick Mock</span>
           </button>
           <div style={{ width: 1, background: "rgba(214,170,75,0.30)" }} />
+          <button onClick={() => onDraftTrends()} className="menuitem" style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: "transparent", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
+            <i className="ti ti-chart-histogram" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
+            <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Draft Trends</span>
+          </button>
+          <div style={{ width: 1, background: "rgba(214,170,75,0.30)" }} />
           <button onClick={() => onRankings()} className="menuitem" style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: "transparent", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
             <i className="ti ti-list-numbers" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
             <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>My Rankings</span>
@@ -5886,9 +5895,9 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                 {chip("sf", mockQbF, setMockQbF, "SF / 2QB")}
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 10 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
               {filtered.length === 0 && (
-                <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: "14px 0" }}>
+                <div style={{ textAlign: "center", padding: "14px 0" }}>
                   <div className="mut" style={{ fontSize: 12.5, marginBottom: 8 }}>No mocks match your search or filters.</div>
                   <button className="btn btn-mini" onClick={() => { setMockQ(""); setMockTypeF("all"); setMockQbF("all"); }}>Clear all</button>
                 </div>
@@ -5903,20 +5912,23 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                   c.tePremMult > 0 ? "TEP" : null, `${c.teams || 12}-team`].filter(Boolean).join(" · ");
                 const when = m.ran || (m.savedAt ? new Date(m.savedAt).toLocaleDateString() : null);
                 return (
-                  <div key={m.id} style={{ border: "1px solid var(--line)", background: "var(--panel)", borderRadius: 12, padding: 13, display: "flex", flexDirection: "column", gap: 8 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span className="disp" style={{ fontSize: 14, fontWeight: 700, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name || "Quick mock"}</span>
-                      <span className="chip" style={{ fontSize: 10, color: complete ? "var(--green)" : "var(--gold)" }}>{complete ? "Complete" : `${made}/${total}`}</span>
+                  <div key={m.id} style={{ border: "1px solid var(--line)", background: "var(--panel)", borderRadius: 11, padding: "10px 13px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                    <div style={{ width: 34, height: 34, borderRadius: 9, background: "var(--panel3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className="ti ti-dice-5" style={{ fontSize: 15, color: "#4FD1A1" }} aria-hidden="true" /></div>
+                    <div style={{ flex: "1 1 180px", minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span className="disp" style={{ fontSize: 14, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{m.name || "Quick mock"}</span>
+                        <span className="chip" style={{ fontSize: 9.5, color: complete ? "var(--green)" : "var(--gold)", flexShrink: 0 }}>{complete ? "Complete" : `${made}/${total}`}</span>
+                      </div>
+                      <div className="mut" style={{ fontSize: 11 }}>{fmt}{when ? ` · ${when}` : ""}</div>
                     </div>
-                    <div className="mut" style={{ fontSize: 11.5 }}>{fmt}{when ? ` · ${when}` : ""}</div>
-                    <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
-                      <button className="btn btn-mini btn-gold" style={{ flex: 1 }} onClick={() => onOpenFun && onOpenFun(m)}><i className="ti ti-player-play" style={{ fontSize: 11, marginRight: 4 }} aria-hidden="true" />{complete ? "Review" : "Resume"}</button>
+                    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                      <button className="btn btn-mini btn-gold" onClick={() => onOpenFun && onOpenFun(m)}><i className="ti ti-player-play" style={{ fontSize: 11, marginRight: 4 }} aria-hidden="true" />{complete ? "Review" : "Resume"}</button>
                       {onDeleteFun && <button className="btn btn-mini" onClick={() => onDeleteFun(m.id)} title="Delete this mock"><i className="ti ti-trash" style={{ fontSize: 12 }} aria-hidden="true" /></button>}
                     </div>
                   </div>
                 );
               })}
-              <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8, marginTop: 2 }}>
+              <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                 <button className="btn btn-mini" onClick={onQuickMock}><i className="ti ti-dice-5" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />New quick mock</button>
                 <button className="btn btn-mini" onClick={onDatabase}><i className="ti ti-database" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Browse all drafts &amp; mocks</button>
               </div>
@@ -6092,12 +6104,12 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                     </div>
                   </div>
                   <div className="flipface flipback">
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexShrink: 0 }}>
                       <div style={{ width: 30, height: 30, borderRadius: 8, background: t.color + "22", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className={`ti ${t.icon}`} style={{ fontSize: 16, color: t.color }} aria-hidden="true" /></div>
-                      <span className="disp" style={{ fontSize: 14.5, fontWeight: 700 }}>{t.title}</span>
+                      <span className="disp" style={{ fontSize: 14, fontWeight: 700 }}>{t.title}</span>
                     </div>
-                    <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.45 }}>{t.back}</div>
-                    <div className="gold" style={{ fontSize: 11.5, fontWeight: 600, marginTop: 8 }}>Open →</div>
+                    <div className="mut flipbacktext" style={{ fontSize: 11, lineHeight: 1.4 }}>{t.back}</div>
+                    <div className="gold" style={{ fontSize: 11.5, fontWeight: 600, marginTop: 6, flexShrink: 0 }}>Open →</div>
                   </div>
                 </div>
               </div>
@@ -6872,6 +6884,7 @@ function analyzeDraftTrends(drafts, players, opts = {}) {
 
   // 2) Positional flow by round: recency-weighted share of each position among picks in each round.
   const roundPos = {}; // round -> {QB,RB,WR,TE, total} (weighted)
+  const roundPosPlayers = {}; // round -> pos -> { pid -> weightedCount } (for hover detail)
   usable.forEach((d) => {
     const teams = teamsOf(d); const w = wRec(d);
     d.picks.forEach((pid, o) => {
@@ -6879,13 +6892,22 @@ function analyzeDraftTrends(drafts, players, opts = {}) {
       const round = Math.floor(o / teams) + 1;
       const r = roundPos[round] || (roundPos[round] = { QB: 0, RB: 0, WR: 0, TE: 0, total: 0 });
       r[p.pos] += w; r.total += w;
+      const rp = roundPosPlayers[round] || (roundPosPlayers[round] = {});
+      const pp = rp[p.pos] || (rp[p.pos] = {});
+      pp[pid] = (pp[pid] || 0) + w;
     });
   });
   const maxRound = Math.max(...Object.keys(roundPos).map(Number), 0);
   const flow = [];
   for (let r = 1; r <= Math.min(maxRound, 15); r++) {
     const d = roundPos[r]; if (!d || !d.total) continue;
-    flow.push({ round: r, QB: d.QB / d.total, RB: d.RB / d.total, WR: d.WR / d.total, TE: d.TE / d.total, total: d.total });
+    // top players per position this round (most-frequently taken here), for the hover detail
+    const players_by_pos = {};
+    POS.forEach((pos) => {
+      const pp = (roundPosPlayers[r] && roundPosPlayers[r][pos]) || {};
+      players_by_pos[pos] = Object.entries(pp).map(([pid, wc]) => { const pl = byId[pid]; return pl ? { name: pl.name, team: pl.team, wc } : null; }).filter(Boolean).sort((a, b) => b.wc - a.wc).slice(0, 6).map((x) => x.name);
+    });
+    flow.push({ round: r, QB: d.QB / d.total, RB: d.RB / d.total, WR: d.WR / d.total, TE: d.TE / d.total, total: d.total, players: players_by_pos });
   }
 
   // 3) Risers / fallers vs. baseline ADP (consistent, meaningful gaps only).
@@ -6911,18 +6933,39 @@ function analyzeDraftTrends(drafts, players, opts = {}) {
   return { n, samples: (drafts || []).length, realized: realized.slice(0, 60), flow, risers, fallers, firstQBRound, firstTERound, enough: n >= 5 };
 }
 
-// A compact stacked bar showing positional share for one round.
+// A compact stacked bar showing positional share for one round. Hovering a segment reveals the specific
+// players most often taken at that position in that round.
 function PosFlowBar({ row }) {
   const segs = POS.filter((pos) => row[pos] > 0).map((pos) => ({ pos, w: row[pos] }));
+  const [hover, setHover] = useState(null); // pos being hovered
+  const players = (row.players && hover) ? (row.players[hover] || []) : [];
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <span className="mut num" style={{ fontSize: 11, width: 26, flexShrink: 0 }}>R{row.round}</span>
-      <div style={{ flex: 1, height: 16, borderRadius: 4, overflow: "hidden", display: "flex", background: "var(--panel2)" }}>
-        {segs.map((s) => <div key={s.pos} title={`${s.pos} ${Math.round(s.w * 100)}%`} style={{ width: `${s.w * 100}%`, background: POS_COLOR[s.pos] }} />)}
+    <div style={{ position: "relative" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span className="mut num" style={{ fontSize: 11, width: 26, flexShrink: 0 }}>R{row.round}</span>
+        <div style={{ flex: 1, height: 18, borderRadius: 4, overflow: "hidden", display: "flex", background: "var(--panel2)" }}>
+          {segs.map((s) => (
+            <div key={s.pos}
+              onMouseEnter={() => setHover(s.pos)} onMouseLeave={() => setHover(null)}
+              title={`${s.pos} ${Math.round(s.w * 100)}%`}
+              style={{ width: `${s.w * 100}%`, background: POS_COLOR[s.pos], cursor: "help", opacity: hover && hover !== s.pos ? 0.55 : 1, transition: "opacity .1s" }} />
+          ))}
+        </div>
+        <span className="mut num" style={{ fontSize: 10, width: 96, flexShrink: 0, textAlign: "right" }}>
+          {segs.slice(0, 2).map((s) => `${Math.round(s.w * 100)}% ${s.pos}`).join(" · ")}
+        </span>
       </div>
-      <span className="mut num" style={{ fontSize: 10, width: 96, flexShrink: 0, textAlign: "right" }}>
-        {segs.slice(0, 2).map((s) => `${Math.round(s.w * 100)}% ${s.pos}`).join(" · ")}
-      </span>
+      {hover && players.length > 0 && (
+        <div style={{ position: "absolute", zIndex: 20, left: 30, top: "100%", marginTop: 3, background: "var(--panel)", border: `1px solid ${POS_COLOR[hover]}`, borderRadius: 8, padding: "8px 11px", boxShadow: "0 8px 30px #000a", minWidth: 180, pointerEvents: "none" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 5 }}>
+            <span style={{ width: 9, height: 9, borderRadius: 2, background: POS_COLOR[hover] }} />
+            <span style={{ fontSize: 11.5, fontWeight: 700, color: POS_COLOR[hover] }}>{hover}s taken in round {row.round}</span>
+          </div>
+          <div style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--ink)" }}>
+            {players.map((n, i) => <div key={i}>{n}</div>)}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -6969,9 +7012,13 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
         const dr = await api.sleeperDraft(lid, user.sleeperUsername).catch(() => null);
         if (!dr || !Array.isArray(dr.picks) || dr.picks.length < 12) continue; // skip empty / too-short
         const cfg = dr.cfg || {};
-        const picks = dr.picks.map((pk) => { const id = byName[normName(pk.name || "")]; return id != null ? id : null; }).filter((x) => x != null);
-        if (picks.length < 12) continue; // couldn't map enough names — skip rather than show junk
-        out.push({ id: `sleeper:${lid}`, name: `${dr.name || lg.name || "Sleeper league"} (Sleeper)`, cfg, picks, kind: "sleeper", fmt: formatKey(cfg), at: dr.startedAt || dr.completedAt || null });
+        // Preserve pick POSITIONS: map names to ids but keep null for unmapped names (don't collapse the
+        // array, or every later player shifts to an earlier pick — that's what made ADPs look impossible).
+        // analyzeDraftTrends skips null pids, so positions stay accurate.
+        const mapped = dr.picks.map((pk) => { const id = byName[normName(pk.name || "")]; return id != null ? id : null; });
+        const hit = mapped.filter((x) => x != null).length;
+        if (hit < 12 || hit < mapped.length * 0.6) continue; // too few names matched — skip rather than distort
+        out.push({ id: `sleeper:${lid}`, name: `${dr.name || lg.name || "Sleeper league"} (Sleeper)`, cfg, picks: mapped, kind: "sleeper", fmt: formatKey(cfg), at: dr.startedAt || dr.completedAt || null });
       }
       setPulled(out);
       setPullState("done");
@@ -6982,9 +7029,9 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
   };
 
   const [q, setQ] = useState("");
-  const [typeF, setTypeF] = useState("all");
-  const [qbF, setQbF] = useState("all");
-  const [teF, setTeF] = useState("all");
+  const [typeF, setTypeF] = useState("redraft"); // must choose a type; rookie is its own category
+  const [qbF, setQbF] = useState("1qb");
+  const [teF, setTeF] = useState("std");
   const [teamsF, setTeamsF] = useState("all");
   const [kindF, setKindF] = useState("all"); // all | official | mock
   const [cutoff, setCutoff] = useState(""); // "" = auto (model chooses + weights recent); else YYYY-MM-DD
@@ -7085,15 +7132,15 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
           </div>
           <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 7, alignItems: "center" }}>
             <span className="mut" style={{ fontSize: 11, width: 42 }}>Type</span>
-            {chip("all", typeF, setTypeF, "All")}{chip("redraft", typeF, setTypeF, "Redraft")}{chip("dynasty", typeF, setTypeF, "Dynasty")}{chip("bestball", typeF, setTypeF, "Best ball")}{chip("rookie", typeF, setTypeF, "Rookie")}
+            {chip("redraft", typeF, setTypeF, "Redraft")}{chip("dynasty", typeF, setTypeF, "Dynasty")}{chip("bestball", typeF, setTypeF, "Best ball")}{chip("rookie", typeF, setTypeF, "Rookie")}
           </div>
           <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 7, alignItems: "center" }}>
             <span className="mut" style={{ fontSize: 11, width: 42 }}>QB</span>
-            {chip("all", qbF, setQbF, "All")}{chip("1qb", qbF, setQbF, "1QB")}{chip("sf", qbF, setQbF, "SF / 2QB")}
+            {chip("1qb", qbF, setQbF, "1QB")}{chip("sf", qbF, setQbF, "SF / 2QB")}
           </div>
           <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 7, alignItems: "center" }}>
             <span className="mut" style={{ fontSize: 11, width: 42 }}>TE</span>
-            {chip("all", teF, setTeF, "All")}{chip("std", teF, setTeF, "Standard")}{chip("tep", teF, setTeF, "TE premium")}
+            {chip("std", teF, setTeF, "Standard")}{chip("tep", teF, setTeF, "TE premium")}
           </div>
           <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 7, alignItems: "center" }}>
             <span className="mut" style={{ fontSize: 11, width: 42 }}>Teams</span>
@@ -7107,13 +7154,16 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
 
           {/* Pull real Sleeper drafts — only shown when a Sleeper account is linked (otherwise not possible). */}
           {canPullSleeper && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)" }}>
-              <button className="btn btn-mini" style={{ borderColor: "var(--blue)", color: "var(--blue)" }} disabled={pullState === "loading"} onClick={pullSleeper}>
-                <i className={`ti ${pullState === "loading" ? "ti-loader-2" : "ti-plug-connected"}`} style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />
-                {pullState === "loading" ? "Pulling…" : pulled.length ? "Refresh Sleeper drafts" : "Pull in my Sleeper drafts"}
-              </button>
-              {pulled.length > 0 && <button className="btn btn-mini" onClick={() => { setPulled([]); if (kindF === "sleeper") setKindF("all"); setPullMsg(""); setPullState("idle"); }}>Remove Sleeper drafts</button>}
-              {pullMsg && <span className="mut" style={{ fontSize: 11.5, color: pullState === "error" ? "var(--red)" : "var(--mut)" }}>{pullMsg}</span>}
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <button className="btn btn-mini" style={{ borderColor: "var(--blue)", color: "var(--blue)" }} disabled={pullState === "loading"} onClick={pullSleeper}>
+                  <i className={`ti ${pullState === "loading" ? "ti-loader-2" : "ti-plug-connected"}`} style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />
+                  {pullState === "loading" ? "Pulling…" : pulled.length ? "Refresh my Sleeper drafts" : "Pull in my Sleeper drafts"}
+                </button>
+                {pulled.length > 0 && <button className="btn btn-mini" onClick={() => { setPulled([]); if (kindF === "sleeper") setKindF("all"); setPullMsg(""); setPullState("idle"); }}>Remove</button>}
+                {pullMsg && <span className="mut" style={{ fontSize: 11.5, color: pullState === "error" ? "var(--red)" : "var(--mut)" }}>{pullMsg}</span>}
+              </div>
+              <div className="mut" style={{ fontSize: 10.5, marginTop: 6, lineHeight: 1.4 }}>Pulls the completed drafts from <b style={{ color: "var(--ink)" }}>your own</b> Sleeper leagues. The broad, cross-user ADP you see on the board already blends thousands of harvested Sleeper drafts (recency-weighted) — this just adds your personal drafts to the trend view.</div>
             </div>
           )}
         </div>
@@ -13139,7 +13189,13 @@ function SummaryTable({ rows, userIdx }) {
 function formatKey(cfg) {
   const qb = (cfg.start && cfg.start.SUPER > 0) || cfg.sf ? "SF" : "1QB";
   const te = cfg.tePremMult > 0 ? `TEP${cfg.tePremMult}` : "TEstd";
-  const mode = cfg.type === "dynasty" || cfg.type === "keeper" ? "DYN" : cfg.type === "bestball" ? "BB" : "RE";
+  const t = (cfg.type || "redraft").toLowerCase();
+  // Rookie-only drafts use a completely different player pool (rookies only), so their picks are NOT
+  // comparable to redraft/dynasty ADP — they MUST live in their own category or they pollute the trends
+  // (a rookie "going 1.1" in a rookie draft is not the same as him going 1.1 overall in a startup).
+  const mode = (t === "rookie" || t === "rookie only") ? "ROOK"
+    : (t === "dynasty" || t === "keeper") ? "DYN"
+    : t === "bestball" ? "BB" : "RE";
   return `${mode}-${qb}-${te}`;
 }
 // Build the BACKEND ADP format string (SCORING|QB|TE|POOL|TEAMS) from a league cfg. Must match the
