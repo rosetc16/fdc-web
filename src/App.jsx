@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28be";
+const BUILD_TAG = "2026.06.28bf";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1704,7 +1704,7 @@ function buildPlayers(cfg) {
         // sinking on raw points. Superflex rookie drafts push them even higher via the sf branch above.
         const rank = qbRankById.get(p.id) ?? 99; // 0 = rookie QB1
         const decay = Math.pow(0.82, rank);
-        v += (sf ? 0 : 60) * decay; // 1QB rookie lift; SF rookie already handled above
+        v += (sf ? 0 : 18) * decay; // 1QB rookie lift → QB1 lands ~pick 9-12; SF rookie handled above
       }
       if (p.pos === "RB") {
         // Market-realism lift for elite RBs: top bell-cows get drafted ahead of pure VBD (recency +
@@ -8224,6 +8224,8 @@ function Account({ user, onUpdate, onBack, onHome, onSignOut, onRankings, onAdmi
   const [email, setEmail] = useState(user.email);
   const [fav, setFav] = useState(user.fav || "");
   const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [pwErr, setPwErr] = useState("");
   const [saved, setSaved] = useState("");
   const flash = (m) => { setSaved(m); setTimeout(() => setSaved(""), 1500); };
   return (
@@ -8258,10 +8260,18 @@ function Account({ user, onUpdate, onBack, onHome, onSignOut, onRankings, onAdmi
           </div>
           <div style={{ marginBottom: 8 }}>
             <label className="mut" style={{ fontSize: 13, display: "block", marginBottom: 4 }}>Change password</label>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input className="gs" type="password" style={{ flex: 1 }} placeholder="New password" value={pw} onChange={(e) => setPw(e.target.value)} />
-              <button className="btn" onClick={() => { if (pw.length >= 4) { setPw(""); flash("Password changed"); } }}>Change</button>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <input className="gs" type="password" style={{ width: "100%" }} placeholder="New password (at least 6 characters)" value={pw} onChange={(e) => { setPw(e.target.value); setPwErr(""); }} />
+              <div style={{ display: "flex", gap: 8 }}>
+                <input className="gs" type="password" style={{ flex: 1 }} placeholder="Confirm new password" value={pw2} onChange={(e) => { setPw2(e.target.value); setPwErr(""); }} />
+                <button className="btn" onClick={() => {
+                  if (pw.length < 6) { setPwErr("Password must be at least 6 characters."); return; }
+                  if (pw !== pw2) { setPwErr("The two passwords don't match."); return; }
+                  setPw(""); setPw2(""); setPwErr(""); flash("Password changed");
+                }}>Change</button>
+              </div>
             </div>
+            {pwErr && <div style={{ color: "var(--red)", fontSize: 12, marginTop: 6 }}>{pwErr}</div>}
           </div>
           {saved && <div style={{ color: "var(--green)", fontSize: 12.5, marginTop: 10 }}>{saved} ✓</div>}
         </div>
@@ -8503,15 +8513,37 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
   const results = search.trim() ? players.filter((p) => !inList.has(p.id) && p.name.toLowerCase().includes(search.toLowerCase())).slice(0, 8) : [];
   const add = (id) => { setList((l) => [...l, id]); setSearch(""); };
   const remove = (id) => setList((l) => l.filter((x) => x !== id));
-  // Parse a pasted ranking list (one player per line; ignores leading numbers/dots/parens like "1. " or
-  // "12) "). Matches names to players via normName, dedups, and sets the list to the matched order.
-  // This is how you import your league platform's ADP/ranks to power the Edge / My ADP / Blend columns.
+  // Parse a pasted ranking list. Two accepted formats, auto-detected per line:
+  //   • Rank order — one player per line ("1. Ja'Marr Chase"): the ORDER becomes your ranks.
+  //   • Name + ADP — a name followed by a number ("Ja'Marr Chase 1.2" or "Bijan Robinson, 2.4"): we read the
+  //     number as that player's ADP and SORT everyone by it. This lets you paste a Sleeper/other-site ADP
+  //     export directly. Leading list numbers ("1." / "12)") are stripped before we look for a trailing ADP.
+  // Either way we match names via normName, dedup, and set your ranks. Powers Edge / My ADP / Blend.
   const applyPaste = () => {
     const byName = {}; players.forEach((p) => { byName[normName(p.name)] = p.id; });
-    const lines = pasteText.split(/\r?\n/).map((ln) => ln.replace(/^\s*\d+[.)\]]?\s*/, "").replace(/\s*\([^)]*\)\s*$/, "").trim()).filter(Boolean);
-    const ids = []; const seen = new Set(); const missed = [];
-    lines.forEach((ln) => { const id = byName[normName(ln)]; if (id != null && !seen.has(id)) { ids.push(id); seen.add(id); } else if (id == null) missed.push(ln); });
-    if (ids.length) { setList(ids); flashMsg(`Imported ${ids.length} players${missed.length ? ` · ${missed.length} not matched` : ""}`); }
+    const rawLines = pasteText.split(/\r?\n/).map((ln) => ln.trim()).filter(Boolean);
+    const parsed = []; const missed = []; const seen = new Set(); let sawAdp = 0;
+    rawLines.forEach((raw) => {
+      // strip a leading list index like "1." / "12)" / "3 -"
+      let ln = raw.replace(/^\s*\d+\s*[.)\]\-:]?\s+/, (m) => m).replace(/^\s*\d+[.)\]:\-]\s*/, "");
+      // look for a trailing ADP number (optionally after a comma / tab / spaces): "Name 12.4" or "Name, 12.4"
+      let adp = null;
+      const mAdp = ln.match(/^(.*?)[\s,]+(\d{1,3}(?:\.\d+)?)\s*$/);
+      let namePart = ln;
+      if (mAdp) { namePart = mAdp[1]; adp = parseFloat(mAdp[2]); sawAdp++; }
+      namePart = namePart.replace(/\s*\([^)]*\)\s*$/, "").replace(/[,\s]+$/, "").trim();
+      const id = byName[normName(namePart)];
+      if (id != null && !seen.has(id)) { parsed.push({ id, adp }); seen.add(id); }
+      else if (id == null) missed.push(namePart);
+    });
+    // If most lines carried an ADP number, sort by it; otherwise keep the paste order as the rank order.
+    let ids;
+    if (sawAdp >= Math.max(3, parsed.length * 0.5)) {
+      ids = parsed.slice().sort((a, b) => (a.adp ?? 9999) - (b.adp ?? 9999)).map((x) => x.id);
+    } else {
+      ids = parsed.map((x) => x.id);
+    }
+    if (ids.length) { setList(ids); flashMsg(`Imported ${ids.length} players${sawAdp >= 3 ? " by ADP" : ""}${missed.length ? ` · ${missed.length} not matched` : ""}`); }
     else flashMsg("No players matched — check the names");
     setShowPaste(false); setPasteText("");
   };
@@ -8724,9 +8756,9 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
         {showPaste && (
           <div className="modalbg" onClick={() => setShowPaste(false)}>
             <div className="panel" style={{ maxWidth: 460, width: "100%", padding: 20 }} onClick={(e) => e.stopPropagation()}>
-              <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Paste a ranking list</div>
-              <div className="mut" style={{ fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}>One player per line, in your preferred order. Paste your league platform's ADP/ranks or your own board. Leading numbers like “1.” or “12)” and trailing notes in (parentheses) are ignored. This replaces your current order with the matched players.</div>
-              <textarea className="gs" style={{ width: "100%", minHeight: 200, resize: "vertical", fontFamily: "inherit", fontSize: 13 }} placeholder={"e.g.\n1. Ja'Marr Chase\n2. Bijan Robinson\n3. Justin Jefferson\n..."} value={pasteText} onChange={(e) => setPasteText(e.target.value)} />
+              <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Paste your rankings or ADP</div>
+              <div className="mut" style={{ fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}>One player per line. Two ways to do it: paste just <b style={{ color: "var(--ink)" }}>names in your order</b> (top = your #1), or paste <b style={{ color: "var(--ink)" }}>name + an ADP number</b> (e.g. “Ja'Marr Chase 1.2” or “Bijan Robinson, 2.4”) and we'll sort by the number. Leading list numbers and (parenthetical notes) are ignored. This replaces your current order.</div>
+              <textarea className="gs" style={{ width: "100%", minHeight: 200, resize: "vertical", fontFamily: "inherit", fontSize: 13 }} placeholder={"Rank order:\n1. Ja'Marr Chase\n2. Bijan Robinson\n\n— or with ADP —\nJa'Marr Chase 1.2\nBijan Robinson 2.4"} value={pasteText} onChange={(e) => setPasteText(e.target.value)} />
               <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
                 <button className="btn" onClick={() => { setShowPaste(false); setPasteText(""); }}>Cancel</button>
                 <div style={{ flex: 1 }} />
@@ -10287,6 +10319,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [endConfirm, setEndConfirm] = useState(false);
   const [ranksWarn, setRanksWarn] = useState(false);
   const [inRoomRanks, setInRoomRanks] = useState(null); // when set, an in-draft ranking editor (array of ids)
+  const [pasteRanksOpen, setPasteRanksOpen] = useState(false); // paste-your-ranks/ADP modal in the draft room
+  const [pasteRanksText, setPasteRanksText] = useState("");
   const [needMode, setNeedMode] = useState("strength"); // strength | filled
   const [customPick, setCustomPick] = useState("");
   // The pick (overall number) the hub "Avail" column reports survival for. Defaults to your NEXT pick;
@@ -14020,6 +14054,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 <button className="btn btn-gold" onClick={() => { const board = players.filter((p) => POS.includes(p.pos)).slice().sort((a, b) => a.adp - b.adp).map((p) => p.id); setInRoomRanks(board.slice(0, 200)); setRanksWarn(false); }}>
                   <i className="ti ti-list-numbers" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />Build my ranks here
                 </button>
+                <button className="btn" onClick={() => { setRanksWarn(false); setPasteRanksText(""); setPasteRanksOpen(true); }} title="Paste your rankings, or a name+ADP list, to power Edge / My ADP / Blend">
+                  <i className="ti ti-clipboard-text" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Paste rankings / ADP
+                </button>
                 <button className="btn" onClick={() => { setRanksWarn(false); onSave(picks, preds); onEditRanks && onEditRanks(); }}>Open full Rankings hub →</button>
                 <div style={{ flex: 1 }} />
                 <button className="btn" onClick={() => setRanksWarn(false)}>Close</button>
@@ -14060,6 +14097,43 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <button className="btn" onClick={() => setInRoomRanks(null)}>Cancel</button>
               <div style={{ flex: 1 }} />
               <button className="btn btn-gold" onClick={() => { onSaveInRoomRanks && onSaveInRoomRanks(inRoomRanks, cfg, lgId); setInRoomRanks(null); }}><i className="ti ti-device-floppy" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Save &amp; use</button>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
+
+      {pasteRanksOpen && (() => {
+        const lgId = league.mockOf != null ? league.mockOf : league.id;
+        const doImport = () => {
+          const byName = {}; players.forEach((p) => { byName[normName(p.name)] = p.id; });
+          const rawLines = pasteRanksText.split(/\r?\n/).map((ln) => ln.trim()).filter(Boolean);
+          const parsed = []; const seen = new Set(); let sawAdp = 0;
+          rawLines.forEach((raw) => {
+            let ln = raw.replace(/^\s*\d+[.)\]:\-]\s*/, "");
+            let adp = null; let namePart = ln;
+            const mAdp = ln.match(/^(.*?)[\s,]+(\d{1,3}(?:\.\d+)?)\s*$/);
+            if (mAdp) { namePart = mAdp[1]; adp = parseFloat(mAdp[2]); sawAdp++; }
+            namePart = namePart.replace(/\s*\([^)]*\)\s*$/, "").replace(/[,\s]+$/, "").trim();
+            const id = byName[normName(namePart)];
+            if (id != null && !seen.has(id)) { parsed.push({ id, adp }); seen.add(id); }
+          });
+          let ids;
+          if (sawAdp >= Math.max(3, parsed.length * 0.5)) ids = parsed.slice().sort((a, b) => (a.adp ?? 9999) - (b.adp ?? 9999)).map((x) => x.id);
+          else ids = parsed.map((x) => x.id);
+          if (ids.length && onSaveInRoomRanks) { onSaveInRoomRanks(ids, cfg, lgId); }
+          setPasteRanksOpen(false); setPasteRanksText("");
+        };
+        return (
+        <div className="modalbg" onClick={() => setPasteRanksOpen(false)}>
+          <div className="panel" style={{ maxWidth: 480, width: "100%", padding: 22 }} onClick={(e) => e.stopPropagation()}>
+            <div className="disp" style={{ fontSize: 19, fontWeight: 700, marginBottom: 4 }}>Paste your rankings or ADP</div>
+            <div className="mut" style={{ fontSize: 12.5, marginBottom: 12, lineHeight: 1.5 }}>One player per line. Either <b style={{ color: "var(--ink)" }}>names in your order</b> (top = your #1), or <b style={{ color: "var(--ink)" }}>name + an ADP number</b> (e.g. “Bijan Robinson 2.4”) and we'll sort by it. This builds a board attached to this draft and powers your <b style={{ color: "var(--ink)" }}>Edge</b>, <b style={{ color: "var(--ink)" }}>My ADP</b>, and <b style={{ color: "var(--ink)" }}>Blend</b> columns.</div>
+            <textarea className="gs" style={{ width: "100%", minHeight: 200, resize: "vertical", fontFamily: "inherit", fontSize: 13 }} placeholder={"Rank order:\n1. Ja'Marr Chase\n2. Bijan Robinson\n\n— or with ADP —\nJa'Marr Chase 1.2\nBijan Robinson 2.4"} value={pasteRanksText} onChange={(e) => setPasteRanksText(e.target.value)} />
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button className="btn" onClick={() => { setPasteRanksOpen(false); setPasteRanksText(""); }}>Cancel</button>
+              <div style={{ flex: 1 }} />
+              <button className="btn btn-gold" onClick={doImport} disabled={!pasteRanksText.trim()}><i className="ti ti-check" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Import &amp; use</button>
             </div>
           </div>
         </div>
