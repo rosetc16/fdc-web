@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28aw";
+const BUILD_TAG = "2026.06.28ax";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -7337,11 +7337,63 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
           )}
         </div>
 
+        {/* ===== How the field drafts — aggregated pool of harvested real Sleeper drafts. Renders ALWAYS,
+             independent of whether the user has their own drafts (trends.n) — it's the league-wide view. ===== */}
+        <div className="panel" style={{ padding: 16, border: "1px solid rgba(242,182,60,.4)", marginBottom: 14 }}>
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 6, marginBottom: 3 }}>
+            <div className="disp" style={{ fontSize: 15, fontWeight: 700 }}>How the field drafts <span className="mut" style={{ fontSize: 11 }}>aggregated real drafts</span></div>
+            {pool.state === "done" && pool.draftCount > 0 && (
+              <span className="chip" style={{ fontSize: 10, color: "var(--gold)", borderColor: "rgba(242,182,60,.4)" }}>{pool.draftCount.toLocaleString()} drafts{pool.fallback ? " · nearest format" : ""}</span>
+            )}
+          </div>
+          <div className="mut" style={{ fontSize: 12, marginBottom: 10 }}>Draft position across thousands of harvested Sleeper drafts in this format — average pick, the typical range (middle 50%), and how often each player is drafted. This is the whole field, independent of your own drafts.</div>
+          {pool.state === "loading" && <div className="mut" style={{ fontSize: 12.5, textAlign: "center", padding: "16px 0" }}>Loading the aggregated draft pool…</div>}
+          {pool.state === "off" && <div className="mut" style={{ fontSize: 12.5, textAlign: "center", padding: "16px 0" }}>Sign in with the live app to load the aggregated pool.</div>}
+          {pool.state === "error" && <div className="mut" style={{ fontSize: 12.5, textAlign: "center", padding: "16px 0" }}>Couldn't reach the trends pool right now — try again in a moment.</div>}
+          {pool.state === "done" && pool.players.length === 0 && (
+            <div className="mut" style={{ fontSize: 12.5, textAlign: "center", padding: "16px 0" }}>{pool.note || "No harvested drafts for this format yet — the pool is still being built."}</div>
+          )}
+          {pool.state === "done" && poolRows.length > 0 && (
+            <>
+              {pool.thin && <div className="mut" style={{ fontSize: 11, marginBottom: 8, color: "var(--gold)" }}>Thin sample for the exact format — showing the nearest format with enough drafts.</div>}
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: "100%" }}>
+                  <thead>
+                    <tr className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".04em" }}>
+                      <th style={{ textAlign: "left", padding: "0 8px 6px 0" }}>Player</th>
+                      <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }}>Avg</th>
+                      <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }}>Median</th>
+                      <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }}>Range</th>
+                      <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }} title="Middle 50% of drafts — the typical window he goes in">Typical</th>
+                      <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }} title="Share of drafts he was taken in">Drafted</th>
+                      <th className="num" style={{ textAlign: "right", padding: "0 0 6px" }} title="Number of drafts he appears in">N</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {poolRows.slice(0, q.trim() ? 200 : 120).map((r) => (
+                      <tr key={r.id} style={{ borderTop: "1px solid var(--line)" }}>
+                        <td style={{ padding: "5px 8px 5px 0", whiteSpace: "nowrap" }}><span className="posdot" style={{ background: POS_COLOR[r.position] }} /><b>{r.name}</b> <span className="mut" style={{ fontSize: 10 }}>{r.position}{r.team ? ` · ${r.team}` : ""}</span></td>
+                        <td className="num" style={{ textAlign: "right", padding: "5px 8px", fontWeight: 700 }}>{r.avg}</td>
+                        <td className="num" style={{ textAlign: "right", padding: "5px 8px" }}>{r.median}</td>
+                        <td className="num mut" style={{ textAlign: "right", padding: "5px 8px", fontSize: 11 }}>{r.min}–{r.max}</td>
+                        <td className="num" style={{ textAlign: "right", padding: "5px 8px", fontSize: 11 }}>{r.p25}–{r.p75}</td>
+                        <td className="num" style={{ textAlign: "right", padding: "5px 8px", color: r.draftedRate >= 90 ? "#5FD0A8" : r.draftedRate >= 50 ? "var(--ink)" : "var(--mut)" }}>{r.draftedRate != null ? `${r.draftedRate}%` : "—"}</td>
+                        <td className="num mut" style={{ textAlign: "right", padding: "5px 0", fontSize: 11 }}>{r.n}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {!q.trim() && poolRows.length > 120 && <div className="mut" style={{ fontSize: 11, textAlign: "center", paddingTop: 8 }}>Showing top 120 by average pick — search a name to find anyone.</div>}
+              </div>
+            </>
+          )}
+        </div>
+
         {trends.n === 0 ? (
           <div className="panel" style={{ padding: 24, textAlign: "center" }}>
             <i className="ti ti-chart-dots" style={{ fontSize: 34, color: "var(--mut)", marginBottom: 10 }} aria-hidden="true" />
-            <div className="disp" style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>{allDrafts.length ? "No drafts match these filters" : "No drafts to analyze yet"}</div>
-            <div className="mut" style={{ fontSize: 13, maxWidth: 460, margin: "0 auto 12px" }}>{allDrafts.length ? "Loosen the filters, or run a few more drafts in this format. Trends need at least a couple of comparable drafts to be meaningful." : "Run some mocks or complete a draft, and this page will surface how the board tends to move in each format."}</div>
+            <div className="disp" style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>{allDrafts.length ? "None of your own drafts match these filters" : "No drafts of your own to analyze yet"}</div>
+            <div className="mut" style={{ fontSize: 13, maxWidth: 460, margin: "0 auto 12px" }}>{allDrafts.length ? "The field-wide pool above still shows how everyone drafts this format. This lower section adds YOUR drafts once you have some in this format." : "The field-wide pool above shows how everyone drafts this format. Run some mocks or complete a draft and your personal realized ADP will appear here too."}</div>
             {allDrafts.length > 0 && <button className="btn btn-mini" onClick={() => { setQ(""); setTypeF("all"); setQbF("all"); setTeF("all"); setTeamsF("all"); setKindF("all"); }}>Clear filters</button>}
           </div>
         ) : (
@@ -7403,57 +7455,6 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
                 )}
               </div>
             )}
-
-            {/* ===== How the field drafts — the aggregated pool of harvested real Sleeper drafts ===== */}
-            <div className="panel" style={{ padding: 16, border: "1px solid rgba(242,182,60,.4)" }}>
-              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 6, marginBottom: 3 }}>
-                <div className="disp" style={{ fontSize: 15, fontWeight: 700 }}>How the field drafts <span className="mut" style={{ fontSize: 11 }}>aggregated real drafts</span></div>
-                {pool.state === "done" && pool.draftCount > 0 && (
-                  <span className="chip" style={{ fontSize: 10, color: "var(--gold)", borderColor: "rgba(242,182,60,.4)" }}>{pool.draftCount.toLocaleString()} drafts{pool.fallback ? " · nearest format" : ""}</span>
-                )}
-              </div>
-              <div className="mut" style={{ fontSize: 12, marginBottom: 10 }}>Draft position across thousands of harvested Sleeper drafts in this format — average pick, the typical range (middle 50%), and how often each player is drafted. Independent of your own drafts below.</div>
-              {pool.state === "loading" && <div className="mut" style={{ fontSize: 12.5, textAlign: "center", padding: "16px 0" }}>Loading the aggregated draft pool…</div>}
-              {pool.state === "off" && <div className="mut" style={{ fontSize: 12.5, textAlign: "center", padding: "16px 0" }}>Sign in with the live app to load the aggregated pool.</div>}
-              {pool.state === "error" && <div className="mut" style={{ fontSize: 12.5, textAlign: "center", padding: "16px 0" }}>Couldn't reach the trends pool right now — try again in a moment.</div>}
-              {pool.state === "done" && pool.players.length === 0 && (
-                <div className="mut" style={{ fontSize: 12.5, textAlign: "center", padding: "16px 0" }}>{pool.note || "No harvested drafts for this format yet — the pool is still being built."}</div>
-              )}
-              {pool.state === "done" && poolRows.length > 0 && (
-                <>
-                  {pool.thin && <div className="mut" style={{ fontSize: 11, marginBottom: 8, color: "var(--gold)" }}>Thin sample for the exact format — showing the nearest format with enough drafts.</div>}
-                  <div style={{ overflowX: "auto" }}>
-                    <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: "100%" }}>
-                      <thead>
-                        <tr className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".04em" }}>
-                          <th style={{ textAlign: "left", padding: "0 8px 6px 0" }}>Player</th>
-                          <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }}>Avg</th>
-                          <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }}>Median</th>
-                          <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }}>Range</th>
-                          <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }} title="Middle 50% of drafts — the typical window he goes in">Typical</th>
-                          <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }} title="Share of drafts he was taken in">Drafted</th>
-                          <th className="num" style={{ textAlign: "right", padding: "0 0 6px" }} title="Number of drafts he appears in">N</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {poolRows.slice(0, q.trim() ? 200 : 120).map((r) => (
-                          <tr key={r.id} style={{ borderTop: "1px solid var(--line)" }}>
-                            <td style={{ padding: "5px 8px 5px 0", whiteSpace: "nowrap" }}><span className="posdot" style={{ background: POS_COLOR[r.position] }} /><b>{r.name}</b> <span className="mut" style={{ fontSize: 10 }}>{r.position}{r.team ? ` · ${r.team}` : ""}</span></td>
-                            <td className="num" style={{ textAlign: "right", padding: "5px 8px", fontWeight: 700 }}>{r.avg}</td>
-                            <td className="num" style={{ textAlign: "right", padding: "5px 8px" }}>{r.median}</td>
-                            <td className="num mut" style={{ textAlign: "right", padding: "5px 8px", fontSize: 11 }}>{r.min}–{r.max}</td>
-                            <td className="num" style={{ textAlign: "right", padding: "5px 8px", fontSize: 11 }}>{r.p25}–{r.p75}</td>
-                            <td className="num" style={{ textAlign: "right", padding: "5px 8px", color: r.draftedRate >= 90 ? "#5FD0A8" : r.draftedRate >= 50 ? "var(--ink)" : "var(--mut)" }}>{r.draftedRate != null ? `${r.draftedRate}%` : "—"}</td>
-                            <td className="num mut" style={{ textAlign: "right", padding: "5px 0", fontSize: 11 }}>{r.n}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    {!q.trim() && poolRows.length > 120 && <div className="mut" style={{ fontSize: 11, textAlign: "center", paddingTop: 8 }}>Showing top 120 by average pick — search a name to find anyone.</div>}
-                  </div>
-                </>
-              )}
-            </div>
 
             {/* realized ADP table */}
             <div className="panel" style={{ padding: 16 }}>
