@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ae";
+const BUILD_TAG = "2026.06.28af";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4176,20 +4176,25 @@ function QuickMockSetup({ onStart, onCancel }) {
   const [mode, setMode] = useState("simple"); // simple | complex
   const [type, setType] = useState("redraft");
   const [teams, setTeams] = useState(12);
-  const [qb, setQb] = useState("1QB");      // 1QB | SF | 2QB
   const [te, setTe] = useState("std");      // std | tep
   const [slot, setSlot] = useState("random"); // "random" or a number
+  const [rounds, setRounds] = useState(15);
+  // Starting roster — the SF toggle is gone; superflex is simply "SUPER >= 1". Editing this fully
+  // determines the format, so there's one source of truth for the lineup.
+  const [roster, setRoster] = useState({ QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0 });
   const TYPES = [["redraft", "Redraft"], ["dynasty", "Dynasty"], ["bestball", "Best ball"], ["rookie", "Rookie only"]];
+  const ROSTER_SLOTS = [["QB", "QB"], ["RB", "RB"], ["WR", "WR"], ["TE", "TE"], ["FLEX", "Flex"], ["SUPER", "Superflex"]];
+  const setSlotCount = (k, d) => setRoster((r) => ({ ...r, [k]: Math.max(0, Math.min(k === "SUPER" ? 2 : 4, (r[k] || 0) + d)) }));
 
   const launch = () => {
-    // QB format: 1QB (one QB slot), SF (one QB + a superflex), or 2QB (two dedicated QB slots).
-    const start = { QB: qb === "2QB" ? 2 : 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: qb === "SF" ? 1 : 0, DST: 0, K: 0 };
+    const start = { QB: roster.QB, RB: roster.RB, WR: roster.WR, TE: roster.TE, FLEX: roster.FLEX, SUPER: roster.SUPER, DST: 0, K: 0 };
+    const sf = roster.SUPER >= 1 || roster.QB >= 2; // superflex is derived from the roster now
     const scoring = { ...DEFAULT_SCORING };
     if (te === "tep") scoring.recTE = (scoring.rec || 0) + 0.5;
     const chosenSlot = slot === "random" ? (1 + Math.floor(Math.random() * teams)) : +slot;
     const cfg = {
-      name: "Quick mock", type, teams: +teams, rounds: 15, slot: chosenSlot,
-      sf: qb === "SF" || qb === "2QB", tePrem: te === "tep", tePremMult: te === "tep" ? 0.5 : 0,
+      name: "Quick mock", type, teams: +teams, rounds: +rounds, slot: chosenSlot,
+      sf, tePrem: te === "tep", tePremMult: te === "tep" ? 0.5 : 0,
       caps: {}, start, scoring, excludeRookies: false, keeper: false, idp: false,
     };
     onStart(cfg);
@@ -4256,11 +4261,23 @@ function QuickMockSetup({ onStart, onCancel }) {
           <Seg value={type} set={setType} options={TYPES} />
         </div>
 
-        <div style={{ marginTop: 16, display: "flex", gap: 24, flexWrap: "wrap" }}>
-          <div>
-            <div className="mut" style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 6, letterSpacing: ".03em" }}>QB FORMAT</div>
-            <Seg value={qb} set={setQb} options={[["1QB", "1QB"], ["SF", "Superflex"], ["2QB", "2QB"]]} />
+        <div style={{ marginTop: 16 }}>
+          <div className="mut" style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 6, letterSpacing: ".03em" }}>STARTING ROSTER <span style={{ opacity: 0.7, fontWeight: 400 }}>· this sets the format (superflex ≥ 1 makes it a superflex league)</span></div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {ROSTER_SLOTS.map(([k, lbl]) => (
+              <div key={k} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, background: "var(--panel2)", borderRadius: 9, padding: "8px 10px", minWidth: 74 }}>
+                <span style={{ fontSize: 10.5, fontWeight: 700, color: POS_COLOR[k] || (k === "FLEX" ? "var(--blue)" : k === "SUPER" ? "#c79cff" : "var(--ink)") }}>{lbl}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <button className="bigact" onClick={() => setSlotCount(k, -1)} disabled={(roster[k] || 0) <= 0} style={{ cursor: "pointer", border: "1px solid var(--line)", background: "var(--panel)", color: "var(--ink)", borderRadius: 6, width: 22, height: 22, fontSize: 15, fontWeight: 700, opacity: (roster[k] || 0) <= 0 ? 0.4 : 1 }}>−</button>
+                  <span className="num" style={{ fontSize: 15, fontWeight: 700, minWidth: 14, textAlign: "center" }}>{roster[k] || 0}</span>
+                  <button className="bigact" onClick={() => setSlotCount(k, 1)} style={{ cursor: "pointer", border: "1px solid var(--line)", background: "var(--panel)", color: "var(--ink)", borderRadius: 6, width: 22, height: 22, fontSize: 15, fontWeight: 700 }}>+</button>
+                </div>
+              </div>
+            ))}
           </div>
+        </div>
+
+        <div style={{ marginTop: 16, display: "flex", gap: 24, flexWrap: "wrap" }}>
           <div>
             <div className="mut" style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 6, letterSpacing: ".03em" }}>TIGHT END</div>
             <Seg value={te} set={setTe} options={[["std", "Standard"], ["tep", "TE premium"]]} />
@@ -4272,6 +4289,12 @@ function QuickMockSetup({ onStart, onCancel }) {
             <div className="mut" style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 6, letterSpacing: ".03em" }}>TEAMS</div>
             <select className="gs" value={teams} onChange={(e) => { const n = +e.target.value; setTeams(n); if (slot !== "random" && +slot > n) setSlot("random"); }}>
               {[8, 10, 12, 14, 16].map((n) => <option key={n} value={n}>{n} teams</option>)}
+            </select>
+          </div>
+          <div>
+            <div className="mut" style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 6, letterSpacing: ".03em" }}>ROUNDS</div>
+            <select className="gs" value={rounds} onChange={(e) => setRounds(+e.target.value)}>
+              {[8, 10, 12, 14, 15, 16, 18, 20, 22, 25].map((n) => <option key={n} value={n}>{n} rounds</option>)}
             </select>
           </div>
           <div>
@@ -5662,7 +5685,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
           <div style={{ width: 1, background: "rgba(214,170,75,0.30)" }} />
           <button onClick={() => (leagues.length ? openLeaguePanel() : onNewLeague())} className="menuitem" style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: "transparent", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
             <i className="ti ti-stack-2" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
-            <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Choose Existing League</span>
+            <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Existing Leagues</span>
             <i className={`ti ti-chevron-${openPick ? "up" : "down"}`} style={{ fontSize: 14, color: "var(--mut)" }} aria-hidden="true" />
           </button>
           <div style={{ width: 1, background: "rgba(214,170,75,0.30)" }} />
@@ -5824,12 +5847,25 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                   <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                     <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>{sl.name}</span>
                     <span className="chip" style={{ fontSize: 8.5, color: "var(--blue)" }}>Sleeper</span>
+                    {(() => {
+                      const stat = (sl.status || "").toLowerCase();
+                      const map = { pre_draft: { t: "Pre-draft", c: "var(--mut)" }, drafting: { t: "Drafting now", c: "var(--gold)" }, complete: { t: "Draft complete", c: "var(--green)" }, in_season: { t: "In season", c: "var(--green)" }, post_season: { t: "Season over", c: "var(--mut)" } };
+                      const m = map[stat];
+                      return m ? <span className="chip" style={{ fontSize: 8.5, color: m.c }}>{m.t}</span> : null;
+                    })()}
                   </div>
                   <div className="mut" style={{ fontSize: 11, marginTop: 2 }}>{sl.total_rosters || "?"}T · not yet in Compass</div>
                 </div>
-                <button onClick={() => onNewLeague()} style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--gold)", background: "rgba(242,182,60,.10)", color: "var(--gold)", fontWeight: 700, fontSize: 13, flexShrink: 0, whiteSpace: "nowrap" }}>
-                  <i className="ti ti-plus" style={{ fontSize: 14 }} aria-hidden="true" />Add to Compass
-                </button>
+                <div style={{ display: "flex", gap: 7, flexShrink: 0 }}>
+                  {onOpenHub && (
+                    <button onClick={() => onOpenHub({ league_id: sl.league_id })} style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--blue)", background: "rgba(107,168,229,.10)", color: "var(--blue)", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }} title="See your live roster, matchup, and standings for this league — no need to add it first">
+                      <i className="ti ti-user-heart" style={{ fontSize: 14 }} aria-hidden="true" />View team
+                    </button>
+                  )}
+                  <button onClick={() => onNewLeague()} style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--gold)", background: "rgba(242,182,60,.10)", color: "var(--gold)", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>
+                    <i className="ti ti-plus" style={{ fontSize: 14 }} aria-hidden="true" />Add to Compass
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -7071,6 +7107,8 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
 
   const [q, setQ] = useState("");
   const [typeF, setTypeF] = useState("redraft"); // must choose a type; rookie is its own category
+  const [showDraftList, setShowDraftList] = useState(false); // "see the drafts behind this trend" modal
+  const [viewDraft, setViewDraft] = useState(null);          // a single draft opened for its full board
   const [qbF, setQbF] = useState("1qb");
   const [teF, setTeF] = useState("std");
   const [teamsF, setTeamsF] = useState("all");
@@ -7193,6 +7231,38 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
             {pulled.length > 0 && chip("sleeper", kindF, setKindF, "Sleeper pulls")}
           </div>
 
+          {/* Quick-jump: shows the exact formats present in your drafts so you never have to guess which
+              filter combo will surface them. Click one to snap all filters to that format. */}
+          {allDrafts.length > 0 && (() => {
+            const fmts = {};
+            allDrafts.forEach((d) => {
+              const c = d.cfg || {};
+              const t = (c.type || "redraft");
+              const key = JSON.stringify({ t, qb: qbOf(c), te: c.tePremMult > 0 ? "tep" : "std", teams: String(c.teams || 12) });
+              fmts[key] = (fmts[key] || 0) + 1;
+            });
+            const entries = Object.entries(fmts).map(([k, n]) => ({ ...JSON.parse(k), n }));
+            if (!entries.length) return null;
+            const label = (e) => `${e.t === "rookie" ? "Rookie" : e.t === "dynasty" ? "Dynasty" : e.t === "bestball" ? "Best ball" : "Redraft"} · ${e.qb === "sf" ? "SF" : "1QB"}${e.te === "tep" ? " · TE+" : ""} · ${e.teams}T`;
+            const activeKey = JSON.stringify({ t: typeF, qb: qbF, te: teF, teams: teamsF });
+            return (
+              <div style={{ marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--line)" }}>
+                <div className="mut" style={{ fontSize: 10.5, marginBottom: 5 }}>Your drafts by format — tap to jump straight to one:</div>
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                  {entries.sort((a, b) => b.n - a.n).map((e, i) => {
+                    const isActive = JSON.stringify({ t: e.t, qb: e.qb, te: e.te, teams: e.teams }) === activeKey;
+                    return (
+                      <button key={i} className="btn btn-mini" style={{ fontSize: 10.5, padding: "3px 9px", borderColor: isActive ? "var(--gold)" : "var(--line2)", color: isActive ? "var(--gold)" : "var(--ink)", fontWeight: isActive ? 700 : 400 }}
+                        onClick={() => { setTypeF(e.t); setQbF(e.qb); setTeF(e.te); setTeamsF(e.teams); }}>
+                        {label(e)} <span style={{ opacity: 0.6 }}>({e.n})</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Pull real Sleeper drafts — only shown when a Sleeper account is linked (otherwise not possible). */}
           {canPullSleeper && (
             <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)" }}>
@@ -7223,6 +7293,7 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
                 <span className="chip" style={{ color: "var(--gold)" }}><i className="ti ti-stack-2" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />{trends.n} draft{trends.n === 1 ? "" : "s"}</span>
                 {!trends.enough && <span className="chip" style={{ borderColor: "var(--gold)", color: "var(--gold)" }}>small sample — run more for sharper trends</span>}
+                {matched.length > 0 && <button className="btn btn-mini" style={{ fontSize: 10.5, padding: "3px 9px" }} onClick={() => setShowDraftList(true)}><i className="ti ti-list-search" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Click to see drafts</button>}
               </div>
               <div style={{ fontSize: 13, lineHeight: 1.55 }}>
                 Across these {trends.n} draft{trends.n === 1 ? "" : "s"}, {trends.firstQBRound != null ? `the first QB typically comes off the board around round ${trends.firstQBRound.toFixed(1)}` : "QBs vary in timing"}{trends.firstTERound != null ? `, and the first TE around round ${trends.firstTERound.toFixed(1)}` : ""}. The tables below show your <b style={{ color: "var(--ink)" }}>realized ADP</b> (where players actually go) and how each round's position mix breaks down.
@@ -7306,6 +7377,72 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
           </>
         )}
       </div>
+
+      {/* "See the drafts behind this trend" — lists each matched draft with source, date, format. */}
+      {showDraftList && (
+        <div className="modalbg" onClick={() => { setShowDraftList(false); setViewDraft(null); }} style={{ position: "fixed", inset: 0, zIndex: 80, background: "#000a", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+          <div className="panel" style={{ maxWidth: 560, width: "100%", maxHeight: "84vh", overflowY: "auto", padding: 18 }} onClick={(e) => e.stopPropagation()}>
+            {viewDraft ? (() => {
+              const d = viewDraft; const c = d.cfg || {};
+              const teams = c.teams || 12;
+              const fmtL = `${c.type === "dynasty" ? "Dynasty" : c.type === "rookie" ? "Rookie" : c.type === "bestball" ? "Best ball" : "Redraft"} · ${((c.start && c.start.SUPER > 0) || c.sf) ? "SF" : "1QB"}${c.tePremMult > 0 ? " · TE+" : ""} · ${teams}-team`;
+              const srcL = d.kind === "official" ? "Official league draft" : d.kind === "sleeper" ? "Pulled from Sleeper" : "Mock draft";
+              return (
+                <>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                    <button className="btn btn-mini" onClick={() => setViewDraft(null)}><i className="ti ti-arrow-left" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" />Back</button>
+                    <div className="disp" style={{ fontSize: 16, fontWeight: 700, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}</div>
+                    <button className="btn btn-mini" onClick={() => { setShowDraftList(false); setViewDraft(null); }}><i className="ti ti-x" style={{ fontSize: 13 }} aria-hidden="true" /></button>
+                  </div>
+                  <div className="mut" style={{ fontSize: 11.5, marginBottom: 12, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <span className="chip">{srcL}</span><span className="chip">{fmtL}</span>{d.at ? <span className="chip">{new Date(d.at).toLocaleDateString()}</span> : <span className="chip" style={{ opacity: 0.6 }}>no date</span>}<span className="chip">{d.picks.filter((x) => x != null).length} picks</span>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                    {d.picks.map((pid, o) => {
+                      const p = pid != null ? players.find((x) => x.id === pid) : null;
+                      const rd = Math.floor(o / teams) + 1, inRd = (o % teams) + 1;
+                      return (
+                        <div key={o} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "3px 6px", borderRadius: 6, background: o % (teams * 2) < teams ? "transparent" : "var(--panel2)" }}>
+                          <span className="mut num" style={{ width: 42, flexShrink: 0, fontSize: 10.5 }}>{rd}.{String(inRd).padStart(2, "0")}</span>
+                          <span className="mut num" style={{ width: 26, flexShrink: 0, fontSize: 10 }}>#{o + 1}</span>
+                          {p ? <><Dot pos={p.pos} /><span style={{ fontWeight: 600 }}>{p.name}</span><span className="mut" style={{ fontSize: 10.5 }}>{p.pos}</span></> : <span className="mut" style={{ fontStyle: "italic" }}>— (unmapped)</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              );
+            })() : (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <i className="ti ti-stack-2" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
+                  <div className="disp" style={{ fontSize: 17, fontWeight: 700, flex: 1 }}>The {matched.length} draft{matched.length === 1 ? "" : "s"} behind this trend</div>
+                  <button className="btn btn-mini" onClick={() => setShowDraftList(false)}><i className="ti ti-x" style={{ fontSize: 13 }} aria-hidden="true" /></button>
+                </div>
+                <div className="mut" style={{ fontSize: 11.5, marginBottom: 12 }}>Tap any draft to see its full board — source, date, and every pick.</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                  {matched.slice().sort((a, b) => (b.at || 0) - (a.at || 0)).map((d) => {
+                    const c = d.cfg || {};
+                    const fmtL = `${c.type === "dynasty" ? "Dynasty" : c.type === "rookie" ? "Rookie" : c.type === "bestball" ? "Best ball" : "Redraft"} · ${((c.start && c.start.SUPER > 0) || c.sf) ? "SF" : "1QB"}${c.tePremMult > 0 ? " · TE+" : ""} · ${c.teams || 12}T`;
+                    const srcIcon = d.kind === "official" ? "ti-clipboard-check" : d.kind === "sleeper" ? "ti-plug-connected" : "ti-dice-5";
+                    const srcColor = d.kind === "official" ? "var(--gold)" : d.kind === "sleeper" ? "var(--blue)" : "#4FD1A1";
+                    return (
+                      <button key={d.id} onClick={() => setViewDraft(d)} style={{ textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1px solid var(--line)", background: "var(--panel2)", borderRadius: 10, padding: "10px 12px", display: "flex", alignItems: "center", gap: 11 }}>
+                        <div style={{ width: 32, height: 32, borderRadius: 8, background: srcColor + "1e", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className={`ti ${srcIcon}`} style={{ fontSize: 15, color: srcColor }} aria-hidden="true" /></div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 700, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}</div>
+                          <div className="mut" style={{ fontSize: 10.5 }}>{d.kind === "official" ? "Official" : d.kind === "sleeper" ? "Sleeper" : "Mock"} · {fmtL}{d.at ? ` · ${new Date(d.at).toLocaleDateString()}` : ""}</div>
+                        </div>
+                        <i className="ti ti-chevron-right" style={{ fontSize: 15, color: "var(--mut)", flexShrink: 0 }} aria-hidden="true" />
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -9648,6 +9785,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [mockTradingOn, setMockTradingOn] = useState(false); // in-mock trading with CPU teams (opt-in)
   const [tab, setTab] = useState(initialTab || "hub");
   const [trendsOpen, setTrendsOpen] = useState(false); // in-draft cross-draft trends drawer
+  const [myTeamOpen, setMyTeamOpen] = useState(false); // "show my team" popup over the hub
   // The player pool and its ADP are loaded ONCE at app startup and never modified during a session.
   // We previously experimented with re-fetching/overlaying per-league ADP here; that risked the board and
   // is intentionally NOT done. Format differences (SF/dynasty/TE-premium) are reflected by the engine's
@@ -10119,7 +10257,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // your next pick falls within those first 4, we just show the natural sequence (no appended 5th). When
   // "expand" is on, we instead show the next 15 picks straight through.
   const displayPath = useMemo(() => {
-    const base = onClock === userIdx ? path : path.slice(1); // drop the on-clock pick when it isn't yours
+    // The current pick is ALWAYS shown in the "On the clock" card above, so drop path[0] here regardless
+    // of whose pick it is — otherwise, on your own turn, your current pick renders twice (the on-clock card
+    // AND the first upcoming-pick tile). This shows only your UPCOMING picks below the clock.
+    const base = path.slice(1);
     if (futureBig) return base.slice(0, 15);
     const firstThree = base.slice(0, 3);
     const yourInThree = firstThree.some((s) => s.user);
@@ -10905,7 +11046,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     return Object.entries(byTeam).sort((a, b) => a[0].localeCompare(b[0]));
   }, [players]);
 
-  const pastPicks = picks.slice(-(pastBig ? 12 : 3)).map((pk, i) => ({ pk, o: picks.length - Math.min(pastBig ? 12 : 3, picks.length) + i }));
+  const pastPicks = picks.slice(-(pastBig ? 12 : 2)).map((pk, i) => ({ pk, o: picks.length - Math.min(pastBig ? 12 : 2, picks.length) + i }));
 
   return (
     <div>
@@ -10973,14 +11114,64 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         <div className="hairline" style={{ background: "var(--panel2)" }}>
           <div className="ticker">
             <button className="btn btn-mini" style={{ alignSelf: "center", flexShrink: 0 }} onClick={() => setPastBig((b) => !b)}>{pastBig ? "‹ less" : "« history"}</button>
+            {(() => {
+              // YOUR STATUS block — a compact "how am I doing" panel: contention lane (win-now / balanced /
+              // rebuild), your biggest 2-3 positional needs, and where you're currently projected to finish.
+              // Build/needs intentionally stay quiet until ~round 4 (myWindow.decided) since there's no real
+              // shape to a roster before then. Projected finish shows as soon as you've made a pick or two.
+              const laneMap = { rebuild: { t: "Rebuild", c: "#5FD0A8", i: "ti-seedling" }, winnow: { t: "Win-now", c: "#F2655C", i: "ti-flame" }, balanced: { t: "Balanced", c: "var(--gold)", i: "ti-scale" }, undecided: { t: "Forming…", c: "var(--mut)", i: "ti-loader" } };
+              const isReDraft = !(cfg.type === "dynasty" || cfg.type === "keeper");
+              // Redraft is always effectively win-now; dynasty/keeper uses the detected lane.
+              const laneKey = isReDraft ? "winnow" : (myWindow.decided ? myWindow.lane : "undecided");
+              const lane = laneMap[laneKey] || laneMap.undecided;
+              // biggest needs: positive deficit vs requirement, sorted desc, top 3
+              const needs = ["QB", "RB", "WR", "TE"]
+                .map((pos) => ({ pos, deficit: Math.max(0, (myWindow.req[pos] || 0) - (myWindow.have[pos] || 0)) }))
+                .filter((x) => x.deficit > 0.01)
+                .sort((a, b) => b.deficit - a.deficit).slice(0, 3);
+              const showBuild = isReDraft || myWindow.decided; // don't guess a dynasty lane too early
+              const finish = (proj && proj.rank && proj.rank[userIdx] != null) ? proj.rank[userIdx] : null;
+              const finishColor = finish == null ? "var(--mut)" : finish <= 3 ? "#5FD0A8" : finish <= Math.ceil(TEAMS / 2) ? "var(--gold)" : "#F2655C";
+              return (
+                <div style={{ alignSelf: "stretch", flexShrink: 0, display: "flex", flexDirection: "column", gap: 4, padding: "8px 12px", borderRadius: 10, border: "1px solid var(--line)", background: "linear-gradient(180deg,rgba(242,182,60,.05),transparent)", minWidth: 150, maxWidth: 172 }}>
+                  <div style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", fontWeight: 700 }}>How you're doing</div>
+                  {/* build lane */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 5 }} title={isReDraft ? "Redraft is a win-now format by nature — every pick is for this season." : myWindow.decided ? `Detected from your roster's age lean (avg ~${myWindow.avgAge ? myWindow.avgAge.toFixed(1) : "?"}).` : "Your contention window forms around round 4, once your core takes shape."}>
+                    <i className={`ti ${lane.i}`} style={{ fontSize: 13, color: lane.c }} aria-hidden="true" />
+                    <span style={{ fontSize: 12, fontWeight: 700, color: lane.c }}>{showBuild ? lane.t : "Forming…"}</span>
+                    <span className="mut" style={{ fontSize: 9.5 }}>build</span>
+                  </div>
+                  {/* biggest needs */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }} title="Your biggest remaining starter needs vs this league's lineup requirements.">
+                    <span className="mut" style={{ fontSize: 9.5 }}>needs</span>
+                    {needs.length ? needs.map((n) => (
+                      <span key={n.pos} style={{ fontSize: 10.5, fontWeight: 700, color: POS_COLOR[n.pos], background: POS_COLOR[n.pos] + "1e", borderRadius: 4, padding: "1px 5px" }}>{n.pos}</span>
+                    )) : <span style={{ fontSize: 10.5, color: "#5FD0A8", fontWeight: 600 }}>starters set ✓</span>}
+                  </div>
+                  {/* projected finish */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 5 }} title="Where the engine currently projects your team to finish, based on your roster's projected starting points vs the rest of the league.">
+                    <span className="mut" style={{ fontSize: 9.5 }}>proj. finish</span>
+                    <span style={{ fontSize: 12.5, fontWeight: 800, color: finishColor }}>{finish != null ? ordinal(finish) : "—"}</span>
+                    {finish != null && <span className="mut" style={{ fontSize: 9.5 }}>of {TEAMS}</span>}
+                  </div>
+                </div>
+              );
+            })()}
             {pastPicks.map(({ pk, o }) => {
               const p = players[pk];
               const wasHit = preds[o] != null && preds[o] === pk;
+              // A stored prediction is only valid if that player was still on the board AT pick o. After a
+              // sign-out/rejoin, an older prediction can point at someone already drafted earlier (e.g. it
+              // shows "engine: Mayfield" 4 rounds after Mayfield was actually taken). Suppress those — only
+              // show a prediction for a player who was genuinely available when this pick came up.
+              const predId = preds[o];
+              const predValid = predId != null && (predId === pk || picks.slice(0, o).indexOf(predId) === -1);
+              const showPred = predValid && players[predId];
               return (
                 <div key={o} className="tickcard" style={{ opacity: 0.75 }}>
                   <div className="mut" style={{ fontSize: 11 }}>{pickLabel(o)} <span style={{ opacity: 0.7 }}>(#{o + 1})</span> • {teamAt(o) === userIdx ? "You" : TEAM_NAMES[teamAt(o)].split(" ")[0]}</div>
                   <div style={{ fontWeight: 600, fontSize: 13 }}><Dot pos={p.pos} />{p.name}</div>
-                  <div style={{ fontSize: 10, marginTop: 2, color: wasHit ? "var(--green)" : "var(--mut)" }}>{preds[o] != null ? (wasHit ? "✓ engine called it" : `engine: ${players[preds[o]].name.split(" ").slice(-1)}`) : ""}</div>
+                  <div style={{ fontSize: 10, marginTop: 2, color: wasHit ? "var(--green)" : "var(--mut)" }}>{showPred ? (wasHit ? "✓ engine called it" : `engine: ${players[predId].name.split(" ").slice(-1)}`) : ""}</div>
                 </div>
               );
             })}
@@ -11326,6 +11517,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <button className="btn btn-mini" onClick={() => setShowDrafted((s) => !s)} title={showDrafted ? "Currently showing every player — drafted ones are crossed out. Click to hide them." : "Currently hiding drafted players — only those still available show. Click to show everyone."}>
                 <i className={`ti ${showDrafted ? "ti-eye" : "ti-eye-off"}`} style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />{showDrafted ? "All players" : "Available only"}
               </button>
+              <button className="btn btn-mini" onClick={() => setMyTeamOpen(true)} title="See your current roster, projected points, and lineup — without leaving the board"><i className="ti ti-users" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Show my team</button>
               <button className="btn btn-mini" onClick={() => setTrendsOpen(true)} title="See how the board is moving across your other drafts in this format — who's going early, who's sliding, and positional runs by round"><i className="ti ti-chart-histogram" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trends</button>
               <button className="btn btn-mini" onClick={() => setRanksWarn(true)} title="Your rankings & platform ADP — build a board or pick a saved one to power Edge / My ADP / Blend"><i className="ti ti-list-numbers" style={{ fontSize: 13 }} aria-hidden="true" /> My ranks</button>
               <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — who traded which pick to whom. The board updates instantly."><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks</button>
@@ -12516,8 +12708,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   picks.forEach((pk, o) => { if (teamAt(o) === i) { const p = players[pk]; if (p && counts[p.pos] != null) { counts[p.pos]++; tot++; } } });
                   if (tot >= 4) { const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]; const share = top[1] / tot; if (!zealot || share > zealot.share) zealot = { i, pos: top[0], share, n: top[1] }; }
                 }
-                const award = (icon, label, who, detail, color) => (
-                  <div style={{ flex: "1 1 200px", minWidth: 190, display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", borderRadius: 9, background: "var(--panel2)", border: "1px solid var(--line)" }}>
+                const award = (icon, label, who, detail, color, mine) => (
+                  <div style={{ flex: "1 1 200px", minWidth: 190, display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", borderRadius: 9, background: mine ? "rgba(242,182,60,.12)" : "var(--panel2)", border: `1px solid ${mine ? "var(--gold)" : "var(--line)"}`, boxShadow: mine ? "0 0 0 1px rgba(242,182,60,.3)" : "none", position: "relative" }}>
+                    {mine && <span style={{ position: "absolute", top: 6, right: 8, fontSize: 8.5, fontWeight: 800, color: "#151002", background: "var(--gold)", borderRadius: 4, padding: "1px 5px", letterSpacing: ".04em" }}>YOU</span>}
                     <i className={`ti ${icon}`} style={{ fontSize: 20, color, marginTop: 1 }} aria-hidden="true" />
                     <div style={{ minWidth: 0 }}>
                       <div className="disp" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)" }}>{label}</div>
@@ -12554,16 +12747,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 }
                 return (
                   <div className="superlative-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 }}>
-                    {steal && steal.val > 0 && award("ti-diamond", "Best value", steal.p.name, `${steal.p.pos}${steal.p.posRank} to ${steal.t === userIdx ? "you" : TEAM_NAMES[steal.t]} — ${steal.val.toFixed(0)} spots past ADP`, "var(--green)")}
-                    {reach && reach.val < 0 && award("ti-flame", "Biggest reach", reach.p.name, `${reach.p.pos}${reach.p.posRank} by ${reach.t === userIdx ? "you" : TEAM_NAMES[reach.t]} — ${Math.abs(reach.val).toFixed(0)} spots early`, "var(--red)")}
-                    {valKing && valKing.v > 0 && award("ti-coins", "Value champ", nm(valKing.i), `Most total draft value — +${valKing.v.toFixed(0)} spots across the board`, "var(--green)")}
-                    {lineupKing && award("ti-crown", "Best on paper", nm(lineupKing.i), `Top projected starting lineup — ${Math.round(lineupKing.v)} pts`, "var(--gold)")}
-                    {powerhouse && award("ti-bolt", `${powerhouse.pos} powerhouse`, nm(powerhouse.i), `Loaded at ${powerhouse.pos} — ${powerhouse.names}`, POS_COLOR[powerhouse.pos])}
-                    {youngest && award("ti-seedling", "Youth movement", nm(youngest.i), `Youngest core — ${youngest.avg.toFixed(1)} avg age`, "var(--green)")}
-                    {oldest && award("ti-trophy", "Win-now mode", nm(oldest.i), `Oldest core — ${oldest.avg.toFixed(1)} avg age`, "var(--gold)")}
-                    {rookieKing && rookieKing.n >= 2 && award("ti-baby-carriage", "Rookie hauler", nm(rookieKing.i), `Most rookies — ${rookieKing.n} first-years`, "var(--green)")}
-                    {balanced && balanced.share <= 0.4 && award("ti-scale", "Best balance", nm(balanced.i), `Most even roster build across positions`, "var(--ink)")}
-                    {zealot && zealot.share >= 0.45 && award("ti-target", "One-track mind", nm(zealot.i), `${Math.round(zealot.share * 100)}% ${zealot.pos} — ${zealot.n} of them`, "var(--blue)")}
+                    {steal && steal.val > 0 && award("ti-diamond", "Best value", steal.p.name, `${steal.p.pos}${steal.p.posRank} to ${steal.t === userIdx ? "you" : TEAM_NAMES[steal.t]} — ${steal.val.toFixed(0)} spots past ADP`, "var(--green)", steal.t === userIdx)}
+                    {reach && reach.val < 0 && award("ti-flame", "Biggest reach", reach.p.name, `${reach.p.pos}${reach.p.posRank} by ${reach.t === userIdx ? "you" : TEAM_NAMES[reach.t]} — ${Math.abs(reach.val).toFixed(0)} spots early`, "var(--red)", reach.t === userIdx)}
+                    {valKing && valKing.v > 0 && award("ti-coins", "Value champ", nm(valKing.i), `Most total draft value — +${valKing.v.toFixed(0)} spots across the board`, "var(--green)", valKing.i === userIdx)}
+                    {lineupKing && award("ti-crown", "Best on paper", nm(lineupKing.i), `Top projected starting lineup — ${Math.round(lineupKing.v)} pts`, "var(--gold)", lineupKing.i === userIdx)}
+                    {powerhouse && award("ti-bolt", `${powerhouse.pos} powerhouse`, nm(powerhouse.i), `Loaded at ${powerhouse.pos} — ${powerhouse.names}`, POS_COLOR[powerhouse.pos], powerhouse.i === userIdx)}
+                    {youngest && award("ti-seedling", "Youth movement", nm(youngest.i), `Youngest core — ${youngest.avg.toFixed(1)} avg age`, "var(--green)", youngest.i === userIdx)}
+                    {oldest && award("ti-trophy", "Win-now mode", nm(oldest.i), `Oldest core — ${oldest.avg.toFixed(1)} avg age`, "var(--gold)", oldest.i === userIdx)}
+                    {rookieKing && rookieKing.n >= 2 && award("ti-baby-carriage", "Rookie hauler", nm(rookieKing.i), `Most rookies — ${rookieKing.n} first-years`, "var(--green)", rookieKing.i === userIdx)}
+                    {balanced && balanced.share <= 0.4 && award("ti-scale", "Best balance", nm(balanced.i), `Most even roster build across positions`, "var(--ink)", balanced.i === userIdx)}
+                    {zealot && zealot.share >= 0.45 && award("ti-target", "One-track mind", nm(zealot.i), `${Math.round(zealot.share * 100)}% ${zealot.pos} — ${zealot.n} of them`, "var(--blue)", zealot.i === userIdx)}
                   </div>
                 );
               })()}
@@ -12776,7 +12969,37 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
-          {/* ===== Position run timeline: how the board flowed, round by round ===== */}
+          {/* ===== Positional strength across the league (same read as the Teams tab) ===== */}
+          {picks.length >= TEAMS && (
+            <div className="panel" style={{ padding: 14 }}>
+              <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 3 }}>Positional strength <span className="mut" style={{ fontSize: 12 }}>where each team is strong or thin</span></div>
+              <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Green = top third of the league at that spot, amber = middle, red = bottom third. Your row is highlighted.</div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                  <thead><tr className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em" }}>
+                    <th style={{ textAlign: "left", paddingBottom: 5 }}>Team</th>
+                    {POS.map((pos) => <th key={pos} style={{ textAlign: "center", color: POS_COLOR[pos] }}>{pos}</th>)}
+                  </tr></thead>
+                  <tbody>
+                    {Array.from({ length: TEAMS }, (_, i) => i).map((i) => {
+                      const mine = i === userIdx;
+                      const lvlColor = (lvl) => lvl === 2 ? "#5FD0A8" : lvl === 1 ? "var(--gold)" : "#F2655C";
+                      const lvlBg = (lvl) => lvl === 2 ? "rgba(95,208,168,.14)" : lvl === 1 ? "rgba(242,182,60,.12)" : "rgba(242,101,92,.14)";
+                      return (
+                        <tr key={i} style={{ background: mine ? "rgba(242,182,60,.08)" : "transparent", outline: mine ? "1px solid rgba(242,182,60,.4)" : "none" }}>
+                          <td style={{ padding: "4px 0", color: mine ? "var(--gold)" : "var(--ink)", fontWeight: mine ? 700 : 400, whiteSpace: "nowrap" }}>{mine ? (TEAM_NAMES[i] || "Your team") : TEAM_NAMES[i]}{mine && <span className="mut" style={{ fontSize: 9, marginLeft: 4 }}>YOU</span>}</td>
+                          {POS.map((pos) => {
+                            const lvl = posRel[i] ? posRel[i][pos] : 1;
+                            return <td key={pos} style={{ textAlign: "center", padding: "3px 2px" }}><span style={{ display: "inline-block", minWidth: 22, fontSize: 10.5, fontWeight: 700, color: lvlColor(lvl), background: lvlBg(lvl), borderRadius: 5, padding: "2px 6px" }}>{lvl === 2 ? "Strong" : lvl === 1 ? "OK" : "Thin"}</span></td>;
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
           {picks.length >= TEAMS && (
             <div className="panel" style={{ padding: 14 }}>
               <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>How the draft flowed <span className="mut" style={{ fontSize: 12 }}>position mix by round</span></div>
@@ -13124,6 +13347,53 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       )}
 
       {trendsOpen && <InDraftTrends cfg={cfg} players={players} draftedSet={draftedSet} allLeagues={allLeagues} allFunMocks={allFunMocks} onClose={() => setTrendsOpen(false)} />}
+      {myTeamOpen && (() => {
+        const roster = picks.map((pk, o) => (teamAt(o) === userIdx ? players[pk] : null)).filter(Boolean);
+        Object.values(noCostByTeam || {}).flat().forEach(() => {});
+        (noCostByTeam[userIdx] || []).forEach((id) => { const p = players[id]; if (p && !roster.includes(p)) roster.push(p); });
+        const { slots, bench } = lineupSlots(roster, cfg.sf);
+        const starterPts = slots.reduce((s, x) => s + (x.p ? x.p.pts || 0 : 0), 0);
+        const benchPts = bench.reduce((s, p) => s + (p.pts || 0), 0);
+        return (
+          <div onClick={() => setMyTeamOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 75, background: "#000a", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
+            <div className="panel" style={{ maxWidth: 460, width: "100%", padding: 18, boxShadow: "0 20px 60px #000b" }} onClick={(e) => e.stopPropagation()}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+                <i className="ti ti-users" style={{ fontSize: 19, color: "var(--gold)" }} aria-hidden="true" />
+                <div className="disp" style={{ fontSize: 18, fontWeight: 700, flex: 1 }}>My team</div>
+                <button className="btn btn-mini" onClick={() => setMyTeamOpen(false)}><i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true" /></button>
+              </div>
+              <div className="mut" style={{ fontSize: 12, marginBottom: 12 }}>{roster.length} player{roster.length === 1 ? "" : "s"} · starters project <b style={{ color: "var(--gold)" }}>{Math.round(starterPts)} pts</b>{bench.length ? <> · bench {Math.round(benchPts)}</> : null}</div>
+              {roster.length === 0 ? (
+                <div className="mut" style={{ fontSize: 12.5, textAlign: "center", padding: "18px 0" }}>You haven't drafted anyone yet. Your picks will show here as you draft.</div>
+              ) : (
+                <>
+                  <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", marginBottom: 5 }}>Starting lineup</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2, marginBottom: 12 }}>
+                    {slots.map((s, i) => (
+                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, padding: "4px 8px", borderRadius: 6, background: i % 2 ? "var(--panel2)" : "transparent" }}>
+                        <span className="mut num" style={{ width: 40, flexShrink: 0, fontSize: 10.5, fontWeight: 700 }}>{s.slot}</span>
+                        {s.p ? <><Dot pos={s.p.pos} /><span style={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.p.name}</span><span className="mut" style={{ fontSize: 10.5 }}>{s.p.pos}</span><span className="num" style={{ fontWeight: 700, width: 34, textAlign: "right" }}>{Math.round(s.p.pts || 0)}</span></> : <span className="mut" style={{ flex: 1, fontStyle: "italic" }}>empty</span>}
+                      </div>
+                    ))}
+                  </div>
+                  {bench.length > 0 && (
+                    <>
+                      <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", marginBottom: 5 }}>Bench</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        {bench.map((p, i) => (
+                          <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, padding: "3px 8px", opacity: 0.82 }}>
+                            <Dot pos={p.pos} /><span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span><span className="mut" style={{ fontSize: 10.5 }}>{p.pos}</span><span className="num mut" style={{ width: 34, textAlign: "right" }}>{Math.round(p.pts || 0)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })()}
       {tradeModalOpen && (() => {
         return <TradePickModal
           teams={TEAMS} rounds={ROUNDS} teamNames={TEAM_NAMES} userIdx={userIdx}
