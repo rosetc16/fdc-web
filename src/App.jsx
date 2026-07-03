@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ba";
+const BUILD_TAG = "2026.06.28bb";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1082,7 +1082,19 @@ export function applyLivePack(pack) {
   // i.e. real redraft drafts are happening) — not just a handful of early rookie picks. A high count is
   // the signal that the market has matured past rookie-only drafts.
   const rookieShareOfAdp = adpCount > 0 ? withRealAdp.filter((p) => p.rookie).length / adpCount : 0;
-  const ADP_HEALTHY = adpCount >= 120 && rookieShareOfAdp < 0.5; // broad coverage, not rookie-dominated
+  // DEGENERACY guard: a healthy ADP set must actually SPREAD OUT. If the published/consensus ADP has
+  // collapsed (hundreds of players sharing ~one value, or the top of the board not separating), trusting it
+  // flattens the whole board and floats streamers/QBs to the top. Detect that and treat the ADP as unusable
+  // so we rank by projection/VBD instead (the good baseline).
+  const adpNums = withRealAdp.map((p) => Number(p.adp)).sort((a, b) => a - b);
+  const distinctAdp = new Set(adpNums.map((v) => Math.round(v * 10) / 10)).size;
+  const freqA = {}; let maxFreqA = 0;
+  for (const v of adpNums) { const k = Math.round(v * 10) / 10; freqA[k] = (freqA[k] || 0) + 1; if (freqA[k] > maxFreqA) maxFreqA = freqA[k]; }
+  const spreadOk = adpNums.length <= 30 || (adpNums[29] - adpNums[0]) >= 8; // top-30 must separate by 8+ picks
+  const distinctOk = distinctAdp >= Math.min(60, adpCount * 0.4);
+  const notDominated = maxFreqA <= adpCount * 0.25;
+  const ADP_NOT_COLLAPSED = spreadOk && distinctOk && notDominated;
+  const ADP_HEALTHY = adpCount >= 120 && rookieShareOfAdp < 0.5 && ADP_NOT_COLLAPSED; // broad, not rookie-dominated, not collapsed
 
   const projValueAll = (p) => projValue(p.stats, normPos(p.pos));
   // Provisional ADP for players lacking a real ADP number. Rather than dumping them all AFTER the last
@@ -1155,13 +1167,30 @@ function applyAdpOverlay(pack) {
   if (!pack || !Array.isArray(pack.players)) return false;
   const byName = new Map();
   let withAdp = 0;
+  const adpVals = [];
   for (const p of pack.players) {
     if (!p.name || p.adp == null) continue;
     byName.set(normName(p.name), p);
+    adpVals.push(Number(p.adp));
     withAdp++;
   }
   // Only overlay when the format actually has broad real ADP coverage; otherwise keep the current board.
   if (withAdp < 120) return false;
+  // SANITY GUARD: reject a DEGENERATE pack whose ADP has collapsed — e.g. hundreds of players sharing a
+  // single value (~15.9), which happens when the backend's published/consensus ADP for a format is missing
+  // or malformed. Applying it flattens the whole board (every player ~identical ADP, QBs/streamers floating
+  // to the top). The static baseline is far better than a collapsed overlay, so we bail and keep it.
+  const sorted = adpVals.slice().sort((a, b) => a - b);
+  const distinct = new Set(adpVals.map((v) => Math.round(v * 10) / 10)).size;
+  // (a) too few distinct values across a large pack = collapsed
+  if (distinct < Math.min(60, withAdp * 0.4)) return false;
+  // (b) the top of the board must actually spread out: the 30th-ranked ADP should be clearly later than the
+  //     1st. If ~everyone is bunched near one number, the 1st and 30th will be nearly equal.
+  if (sorted.length > 30 && (sorted[29] - sorted[0]) < 8) return false;
+  // (c) a single value must not dominate the pack (e.g. >25% share one ADP)
+  const freq = {}; let maxFreq = 0;
+  for (const v of adpVals) { const k = Math.round(v * 10) / 10; freq[k] = (freq[k] || 0) + 1; if (freq[k] > maxFreq) maxFreq = freq[k]; }
+  if (maxFreq > withAdp * 0.25) return false;
   for (const row of RAW) {
     const m = byName.get(normName(row[0]));
     if (m && m.adp != null) {
