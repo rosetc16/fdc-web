@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28aq";
+const BUILD_TAG = "2026.06.28ar";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -11543,24 +11543,21 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               return (
             <div className="tickcard clock" style={{ borderColor: onClock === userIdx ? "var(--gold)" : "#33476B", cursor: cardTip ? "help" : "default" }}
               onClick={cardTip} onMouseEnter={cardTip} onMouseLeave={cardTip ? hideTip : undefined}>
-              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".07em", color: onClock === userIdx ? "var(--gold)" : "var(--mut)" }}>On the clock</div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".07em", color: onClock === userIdx ? "var(--gold)" : "var(--mut)" }}>On the clock</div>
+                {connected && (
+                  liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? (
+                    <span className="num" style={{ fontSize: 11, color: "var(--mut)" }}>no timer</span>
+                  ) : clock <= 0 ? (
+                    <span className="num" style={{ fontSize: 11, color: "var(--red)", fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 3 }}><i className="ti ti-clock-exclamation" style={{ fontSize: 12 }} aria-hidden="true" />overdue</span>
+                  ) : (
+                    <span className="num" style={{ fontSize: 12.5, color: clock <= 15 ? "var(--red)" : "var(--ink)", fontWeight: clock <= 15 ? 800 : 700, display: "inline-flex", alignItems: "center", gap: 3, background: clock <= 15 ? "rgba(242,101,92,.14)" : "rgba(255,255,255,.05)", padding: "1px 7px", borderRadius: 5 }}><i className="ti ti-clock" style={{ fontSize: 11 }} aria-hidden="true" />{fmtClock(clock)}{liveClock && liveClock.deadlineMs ? "" : ""}</span>
+                  )
+                )}
+              </div>
               <div className="disp" style={{ fontSize: 17, fontWeight: 700, color: onClock === userIdx ? "var(--gold)" : "var(--ink)" }}>
                 {pickLabel(picks.length)} <span className="mut" style={{ fontWeight: 600, fontSize: 14 }}>({picks.length + 1})</span> — {onClock === userIdx ? "YOU" : TEAM_NAMES[onClock]}
               </div>
-              {connected && (
-                <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 3 }}>
-                  {liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? (
-                    <span className="num" style={{ fontSize: 12, color: "var(--mut)" }}>Slow draft — no per-pick timer</span>
-                  ) : clock <= 0 ? (
-                    <span className="num" style={{ fontSize: 12, color: "var(--red)", fontWeight: 700 }}><i className="ti ti-clock-exclamation" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Time expired — pick is overdue</span>
-                  ) : (
-                    <>
-                      <i className="ti ti-clock" style={{ fontSize: 12, color: clock <= 15 ? "var(--red)" : "var(--mut)" }} aria-hidden="true" />
-                      <span className="num" style={{ fontSize: 12, color: clock <= 15 ? "var(--red)" : "var(--mut)", fontWeight: clock <= 15 ? 700 : 400 }}>{fmtClock(clock)} on the clock{liveClock && liveClock.deadlineMs ? " · live" : ""}</span>
-                    </>
-                  )}
-                </div>
-              )}
               {currentPred && (() => {
                 const isYou = onClock === userIdx;
                 // Non-user pick: prominent "engine expects" — colored position dot + the player's name large
@@ -11660,7 +11657,19 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         <span style={{ fontSize: 11, color: "var(--gold)", textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700 }}>
                           {!futureBig && di >= 3 ? "↩ Your next pick" : "Your pick"} {pickLabel(step.o)} <span style={{ opacity: 0.75 }}>({step.o + 1})</span>
                         </span>
-                        {away > 0 && <span style={{ background: "var(--gold)", color: "#151002", borderRadius: 5, padding: "1px 6px", fontSize: 10, fontWeight: 800 }}>{away === 1 ? "next up!" : `${away} picks away`}</span>}
+                        {away > 0 && (() => {
+                          // Conditional color: the closer your pick, the greener; the further out, the redder.
+                          // Interpolates green→amber→red across ~1..12 picks away so it reads at a glance.
+                          const t = Math.max(0, Math.min(1, (away - 1) / 11)); // 0 = imminent, 1 = far
+                          // green (95,208,168) → amber (242,182,60) → red (242,101,92)
+                          const lerp = (a, b, x) => Math.round(a + (b - a) * x);
+                          let r, g, b;
+                          if (t < 0.5) { const k = t / 0.5; r = lerp(95, 242, k); g = lerp(208, 182, k); b = lerp(168, 60, k); }
+                          else { const k = (t - 0.5) / 0.5; r = lerp(242, 242, k); g = lerp(182, 101, k); b = lerp(60, 92, k); }
+                          const bg = `rgb(${r},${g},${b})`;
+                          const dark = t < 0.72; // light backgrounds get dark text, red end gets light text
+                          return <span style={{ background: bg, color: dark ? "#151002" : "#fff", borderRadius: 5, padding: "1px 6px", fontSize: 10, fontWeight: 800 }}>{away === 1 ? "next up!" : `${away} picks away`}</span>;
+                        })()}
                       </div>
                       {/* bottom section — both recommendations */}
                       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
