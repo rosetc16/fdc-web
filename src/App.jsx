@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28at";
+const BUILD_TAG = "2026.06.28au";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -7118,12 +7118,27 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
   };
 
   const [q, setQ] = useState("");
-  const [typeF, setTypeF] = useState("redraft"); // must choose a type; rookie is its own category
+  // Smart defaults from the user's own leagues: if they play superflex and/or dynasty, start there — the
+  // page is far more useful landing on the format they actually draft than on a generic 1QB redraft that's
+  // often empty in the offseason. Falls back to redraft/1QB when we can't tell.
+  const leagueDefaults = useMemo(() => {
+    const cfgs = (leagues || []).map((l) => l.cfg).filter(Boolean);
+    if (!cfgs.length) return { type: "redraft", qb: "1qb", te: "std" };
+    const sf = cfgs.filter((c) => (c.start && c.start.SUPER > 0) || c.sf || (c.start && c.start.QB >= 2)).length;
+    const dyn = cfgs.filter((c) => (c.type || "redraft") === "dynasty").length;
+    const tep = cfgs.filter((c) => c.tePremMult > 0).length;
+    return {
+      type: dyn > cfgs.length / 2 ? "dynasty" : "redraft",
+      qb: sf > cfgs.length / 2 ? "sf" : "1qb",
+      te: tep > cfgs.length / 2 ? "tep" : "std",
+    };
+  }, [leagues]);
+  const [typeF, setTypeF] = useState(leagueDefaults.type);
   const [showDraftList, setShowDraftList] = useState(false); // "see the drafts behind this trend" modal
   const [draftListQ, setDraftListQ] = useState("");           // search drafts by a player they contain
   const [viewDraft, setViewDraft] = useState(null);          // a single draft opened for its full board
-  const [qbF, setQbF] = useState("1qb");
-  const [teF, setTeF] = useState("std");
+  const [qbF, setQbF] = useState(leagueDefaults.qb);
+  const [teF, setTeF] = useState(leagueDefaults.te);
   const [teamsF, setTeamsF] = useState("all");
   const [kindF, setKindF] = useState("all"); // all | official | mock
   const [cutoff, setCutoff] = useState(""); // "" = auto (model chooses + weights recent); else YYYY-MM-DD
