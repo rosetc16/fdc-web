@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bc";
+const BUILD_TAG = "2026.06.28bd";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1486,10 +1486,14 @@ function buildPlayers(cfg) {
   const useIdp = idpOn(cfg);
   const sc = { ...DEFAULT_SCORING, ...(cfg.scoring || {}) };
   const exclude = !!cfg.excludeRookies;
+  const rookieOnly = cfg.type === "rookie"; // rookie-only draft → pool is JUST this year's rookies
   // IDP players only enter the pool when the league actually starts defensive slots.
   const SRC = RAW.filter((r) => {
     if (!useIdp && IDP_POS.includes(r[1])) return false;
     if (exclude && META[r[0]] && META[r[0]].rookie) return false;
+    // Rookie drafts draft ONLY incoming rookies — veterans (Bijan, CMC, Chase, Allen) are already on
+    // rosters and are not in a rookie draft pool. Keep only players flagged rookie.
+    if (rookieOnly && !(META[r[0]] && META[r[0]].rookie)) return false;
     return true;
   });
   const ps = SRC.map((r, i) => {
@@ -8533,6 +8537,11 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
   const stopAutoScroll = () => { autoScrollRef.current = 0; if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; } };
   const prefillTop = (n) => setList(byAdp.slice(0, n).map((p) => p.id));
   const fillRest = () => setList((l) => { const have = new Set(l); return [...l, ...byAdp.filter((p) => !have.has(p.id)).map((p) => p.id)]; });
+  // Revert this set to the organic ADP/consensus order — a clean slate that matches the default board. Two
+  // flavors: "Use ADP order" fills the list with the full consensus order (so you can see it and tweak from
+  // there), and "Clear all" empties it (unranked players fall to their consensus spot, so the board runs on
+  // pure ADP with no personal overrides).
+  const resetToAdp = () => { setList(byAdp.filter((p) => POS.includes(p.pos)).map((p) => p.id)); flashMsg("Reset to ADP order — tweak from here"); };
   const saveList = () => { onSaveList(list); flashMsg("Rankings saved"); };
   const placedSet = new Set(list);
 
@@ -8677,7 +8686,8 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
               <button className="btn btn-gold" onClick={saveList}>Save ranks</button>
               <button className="btn btn-mini" onClick={() => setShowPaste(true)} title="Paste a ranking or ADP list (e.g. from your league platform) to fill your ranks fast"><i className="ti ti-clipboard-text" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Paste a list</button>
               {list.length > 0 && <button className="btn btn-mini" onClick={fillRest} title="Append the rest of the board (by consensus) below what you've already ranked">Fill rest of board</button>}
-              {list.length > 0 && <button className="btn btn-mini" onClick={() => setList([])}>Clear all</button>}
+              <button className="btn btn-mini" onClick={resetToAdp} title="Reset this set to the organic ADP/consensus order, so you can tweak from the default board"><i className="ti ti-refresh" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Reset to ADP order</button>
+              {list.length > 0 && <button className="btn btn-mini" onClick={() => setList([])} title="Empty this set — the board reverts to pure ADP with no personal overrides">Clear all</button>}
             </div>
           </div>
         )}
