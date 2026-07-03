@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bf";
+const BUILD_TAG = "2026.06.28bg";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3641,6 +3641,7 @@ export default function App() {
             updateUser({ rankSets: sets });
           }}
           onColPrefs={(prefs) => { if (user) updateUser({ colPrefs: prefs }); }}
+          onUpdate={(patch) => { if (user) updateUser(patch); }}
           onBuy={() => { if (!user) setAuthOpen(true); else setRoute("checkout"); }} />
       )}
       {route === "admin" && user && (isAdminEmail(user.email) || user.admin) && <Admin biz={biz} setBiz={(b) => { setBiz(b); persist({ biz: b }); }} user={user} leagues={leagues} feedback={feedback} onRespond={respondFeedback} onDeleteFeedback={deleteFeedback} onGrantComp={grantComp} onRevokeComp={revokeComp} onBack={() => setRoute(user.paid ? "home" : "library")} />}
@@ -3789,7 +3790,7 @@ function HelpPage({ user, biz, onBack, onHome, onSignOut, onSubmit, initialTab }
               <div className="mut" style={{ fontSize: 13, lineHeight: 1.55 }}>These are the same five steps as the “Get started” flow on your home screen — here with a bit more on the why behind each. Do them in order and you'll walk into draft night more prepared than anyone in your league.</div>
             </div>
             {[
-              ["rankings", "ti-list-numbers", "Set your rankings", "Optional, but do it first if you want your own values driving the board. Tell the tool where you disagree with the market and your ranks become a “My ADP” column plus a “Blend” (your read tempered by consensus) right on the draft board. One global injury/news tweak ripples a player across every board at once."],
+              ["rankings", "ti-list-numbers", "Set your rankings", "Two separate tools. My Ranks is your own board — tell the tool where you disagree with the market and your ranks become a “My ADP” column plus a “Blend” (your read tempered by the market). Platform Ranks (entered in the draft room) is your platform's ADP, and it powers the “Edge” column — how much value you're getting versus where your platform ranks a player. One global injury/news tweak ripples across every board at once."],
               ["create", "ti-plus", "Create or connect a league", "Connect Sleeper, ESPN, or Yahoo to auto-import — or build one by hand in a minute. Set the real rules: teams, scoring, roster slots, SuperFlex, TE premium, draft order, keepers, traded picks. Everything downstream is computed from these, so a SuperFlex 0.5-PPR board looks nothing like a standard 1QB one."],
               ["open", "ti-stack-2", "Open an existing league", "Everything you've built lives in one place. Jump back into any league to draft, mock, edit settings, or review past drafts — your keepers, pick trades, and rankings all travel with it."],
               ["mock", "ti-dice-5", "Run a mock", "Mocks are your highest-leverage habit — reps on your exact settings. Each one is scored and saved, and “My Mock Insights” surfaces your tendencies across them (where you reach, the values you keep missing), kept separate by format. The more you run, the sharper the read."],
@@ -5819,7 +5820,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
   // Secondary tools as flip cards (front = title + graphic, back = explanation).
   const flipTools = [
     { kind: "inseason", icon: "ti-calendar-stats", color: "#6BA8E5", title: "In-Season Team Hub", back: sleeperLink.linked ? "Your live Sleeper roster, all season: a lineup optimizer, free-agent finder, league standings & power rankings, and weekly strategy. Open it from “Your teams” above." : "Link your Sleeper account (top of this page) to unlock the in-season hub: lineup optimizer, waiver targets, standings, and weekly strategy from your live roster.", action: () => { const el = document.querySelector('[data-teams-anchor]'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" }); } },
-    { kind: "rankings", icon: "ti-list-numbers", color: "#6aa9ff", title: "My Rankings", back: "Build your own player board. Attach it to a league and it powers the “My ADP” and “Blend” columns right inside that draft.", action: onRankings },
+    { kind: "rankings", icon: "ti-list-numbers", color: "#6aa9ff", title: "My Rankings", back: "Build your own personal player board — your opinions, independent of the platform. Attach it to a league and it powers the “My ADP” and “Blend” columns inside that draft. (This is separate from Platform Ranks, which you enter in the draft room to drive the Edge column.)", action: onRankings },
     { kind: "mockinsights", icon: "ti-chart-line", color: "#7ed6a5", title: "My Mock Insights", back: totalMocks ? `Patterns across your own ${totalMocks} mock${totalMocks === 1 ? "" : "s"} — the spots where you find value and the players you keep landing.` : "After you run a few mock drafts, this reveals the patterns across them — your tendencies and best value spots.", action: onTrendsTime },
     { kind: "news", icon: "ti-rss", color: "#ff9d6a", title: "League News & Movers", back: "The wider fantasy wire: ADP risers and fallers, signings, depth-chart changes, and injuries. Not tied to your leagues.", action: onTrends },
     { kind: "trade", icon: "ti-arrows-exchange", color: "#4FD1A1", title: "Trade Tools", back: "Format-aware trade values and a quick evaluator — weigh any deal by format, even outside a draft. Inside a league it adds your roster, picks, and the trade finder.", action: onTradeTools },
@@ -6668,7 +6669,7 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
           <div className="disp" style={{ fontSize: 28, fontWeight: 700, marginBottom: 6 }}>How to Use It</div>
           <div className="mut" style={{ fontSize: 14, marginBottom: 24, maxWidth: 640 }}>Five steps from zero to drafting. Set it up, get your reps, then let the compass do the heavy lifting on the clock.</div>
           {[
-            ["rankings", "ti-list-numbers", "Set your rankings", "Optional, but powerful: tell the tool where you disagree with the market. Your ranks become a “My ADP” column plus a “Blend” (your read tempered by consensus) right on the draft board, and one global injury/news tweak ripples a player across every board at once."],
+            ["rankings", "ti-list-numbers", "Set your rankings", "Two tools, kept separate. My Ranks is your own board — tell the tool where you disagree with the market and your ranks become a “My ADP” column plus a “Blend” (your read tempered by the market). Platform Ranks is the ADP your platform shows, and it powers the “Edge” column so you can see where you're getting value. One global injury/news tweak ripples a player across every board at once."],
             ["create", "ti-plug-connected", "Create or connect a league", "Link Sleeper, ESPN, or Yahoo and we pull in teams, roster slots, scoring, and your draft slot automatically — or build one by hand in under a minute. Your scoring drives every number: add a SuperFlex slot and the whole board re-prices for 2QB; bump TE reception value and tight ends climb."],
             ["open", "ti-stack-2", "Open your league", "Everything you've built lives in one place. Jump into any league to draft, mock, edit settings, or review past drafts — your keepers, pick trades, and rankings all travel with it."],
             ["mock", "ti-dice-5", "Run a mock", "Mocks are your reps on your exact settings. Each one is scored and saved, and the tool surfaces your tendencies across them — where you reach, the values you keep missing — kept separate by format. The more you run, the sharper the read."],
@@ -10190,7 +10191,7 @@ function InDraftTrends({ cfg, players, draftedSet, allLeagues, allFunMocks, onCl
 
 
 
-function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQueue, onExit, onBuy, onSettings, onEditRanks, onEditRankSet, onDeleteRankSet, onRanksOff, onUseRankSet, onColPrefs, onSaveInRoomRanks, dataVersion = 0, allLeagues, allFunMocks }) {
+function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQueue, onExit, onBuy, onSettings, onEditRanks, onEditRankSet, onDeleteRankSet, onRanksOff, onUseRankSet, onColPrefs, onSaveInRoomRanks, onUpdate, dataVersion = 0, allLeagues, allFunMocks }) {
   const cfg = league.cfg;
   // Live per-pick ownership from a connected platform (Sleeper draft_slot). Declared here so it can
   // be applied to the engine's team-assignment BEFORE any roster/sim computation in this render.
@@ -10318,9 +10319,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [copied, setCopied] = useState(false);
   const [endConfirm, setEndConfirm] = useState(false);
   const [ranksWarn, setRanksWarn] = useState(false);
-  const [inRoomRanks, setInRoomRanks] = useState(null); // when set, an in-draft ranking editor (array of ids)
-  const [pasteRanksOpen, setPasteRanksOpen] = useState(false); // paste-your-ranks/ADP modal in the draft room
-  const [pasteRanksText, setPasteRanksText] = useState("");
+  const [inRoomRanks, setInRoomRanks] = useState(null); // when set, an in-draft PERSONAL ranking editor (array of ids)
+  const [platEditor, setPlatEditor] = useState(null); // when set, the Platform Ranks editor: array of {id, adp}
   const [needMode, setNeedMode] = useState("strength"); // strength | filled
   const [customPick, setCustomPick] = useState("");
   // The pick (overall number) the hub "Avail" column reports survival for. Defaults to your NEXT pick;
@@ -10482,6 +10482,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // Personal rankings resolved for this league's format (empty if the user has none for it).
   const myRanks = useMemo(() => resolveMyRanks(players, cfg, user, user?.rankAdj, league.mockOf != null ? league.mockOf : league.id), [players, cfg, user, league]);
   useEffect(() => { if (myRanks.has) setCols((c) => (c.myRank && c.blendAdp ? c : { ...c, myRank: true, blendAdp: true })); }, [myRanks.has]);
+  // PLATFORM RANKS: the ADP your league platform (Sleeper etc.) shows, entered per-league. This is separate
+  // from your PERSONAL ranks — it drives the EDGE column (market ADP vs where the platform ranks a player).
+  // Shape: user.platformRanks[leagueId] = { list: [{ id, adp }], ... }. Maps player id → platform ADP.
+  const platRanks = useMemo(() => {
+    const lgId = league.mockOf != null ? league.mockOf : league.id;
+    const rec = user && user.platformRanks && user.platformRanks[lgId];
+    const list = rec && Array.isArray(rec.list) ? rec.list : null;
+    if (!list || !list.length) return { has: false, map: {} };
+    const map = {};
+    list.forEach((entry, i) => {
+      if (!entry || entry.id == null) return;
+      // ADP: use the typed number if present, else the player's position in the platform list (1-based).
+      map[entry.id] = entry.adp != null && entry.adp !== "" ? +entry.adp : (i + 1);
+    });
+    return { has: true, map };
+  }, [user, league]);
+  useEffect(() => { if (platRanks.has) setCols((c) => (c.edge ? c : { ...c, edge: true })); }, [platRanks.has]);
   const draftedSet = useMemo(() => { const s = new Set(picks); Object.values(noCostByTeam).flat().forEach((id) => s.add(id)); return s; }, [picks, cfg]);
   const done = picks.length >= TOTAL;
   // Demo stops after a limited number of rounds (it's not "complete" — you must purchase to continue).
@@ -11095,7 +11112,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       case "name": return p.name;
       case "adp": return p.adp;
       case "consensus": return p.consensus;
-      case "edge": { const r = myRanks.map[p.id]; if (!r || !r.exact) return -9999; return Math.round(p.adp - r.rank); }
+      case "edge": { const pAdp = platRanks.map[p.id]; if (pAdp == null) return -9999; return Math.round(p.adp - pAdp); }
       case "pts": case "proj": return p.pts;
       case "floor": return p.floor;
       case "ceil": return p.ceil;
@@ -11272,12 +11289,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // — ADP & market —
     { key: "adp", label: "ADP", group: "draft", section: "market", num: true, sortable: true, tip: "Sleeper ADP for this league's format — the average pick across real Sleeper drafts. This is the board everyone in your league sees." },
     { key: "consensus", label: "Sleeper ADP", group: "draft", section: "market", num: true, sortable: true, hidden: true, tip: "Sleeper ADP (same source as ADP). Hidden by default since this app uses Sleeper as its single source." },
-    { key: "edge", label: "Edge", group: "draft", section: "mine", num: true, sortable: true, needsRanks: true, tip: "Your edge: Sleeper ADP minus YOUR personal rank. Positive (green) = the market lets him slide past where you'd take him (wait for value). Negative (red) = you rank him above the market, so you'd have to reach. Requires your personal rankings." },
+    { key: "edge", label: "Edge", group: "draft", section: "mine", num: true, sortable: true, needsPlat: true, tip: "Your edge vs the platform: market ADP minus the platform's ADP that you entered in Platform Ranks. Positive (green) = the market lets him slide past where your platform ranks him (a value). Negative (red) = the market takes him earlier than your platform, so he's going above his platform price. Requires Platform Ranks." },
     { key: "adpTier", label: "ADP tier", group: "draft", section: "market", num: true, sortable: true, tip: "Tier from gaps in market ADP." },
     { key: "mockAdp", label: "ADP mock", group: "draft", section: "market", num: true, sortable: true, needsMocks: true, tip: "Average pick this player went at across your mock drafts for this league." },
-    // — Your board (only when you have ranks matching this league's type + format) —
-    { key: "myRank", label: "My ADP", group: "draft", section: "mine", num: true, sortable: true, needsRanks: true, tip: "Your personal rank for this format. Players you didn't rank fall into their consensus spot." },
-    { key: "blendAdp", label: "Blend", group: "draft", section: "mine", num: true, sortable: true, needsRanks: true, tip: "Your personal rank blended with public consensus (weighted ~65% toward you) — your opinion, tempered by the market." },
+    // — Your board (only when you have PERSONAL ranks matching this league's type + format) —
+    { key: "myRank", label: "My ADP", group: "draft", section: "mine", num: true, sortable: true, needsRanks: true, tip: "Your PERSONAL rank for this format (from My Ranks) — your own board, independent of the platform. Players you didn't rank fall into their consensus spot. Powers the Blend column." },
+    { key: "blendAdp", label: "Blend", group: "draft", section: "mine", num: true, sortable: true, needsRanks: true, tip: "Your PERSONAL rank (My Ranks) blended with the market ADP shown on this board (weighted ~65% toward you) — your opinion, tempered by the market." },
     // — Valuation —
     { key: "proj", label: "Proj", group: "draft", section: "value", num: true, sortable: true, sortKey: "pts", tip: "Projected season points in this scoring." },
     { key: "floor", label: "Floor", group: "draft", section: "value", num: true, sortable: true, tip: "Realistic low-end outcome." },
@@ -11303,7 +11320,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     { key: "recTD", label: "Rec TD", group: "stat", section: "stat", num: true, sortable: true },
   ];
   const SECTION_LABELS = { market: "ADP & market", mine: "Your board", value: "Valuation", demo: "Demographics", avail: "Availability", stat: "Projected stats" };
-  const colAvailable = (c) => !(c.needsPlatform && !connected) && !(c.needsMocks && mockAdp.n === 0) && !(c.needsRanks && !myRanks.has);
+  const colAvailable = (c) => !(c.needsPlatform && !connected) && !(c.needsMocks && mockAdp.n === 0) && !(c.needsRanks && !myRanks.has) && !(c.needsPlat && !platRanks.has);
   // boardMode controls which sections show. The ADP/market group is always visible and always
   // pinned leftmost. "info" = your board + valuation + demographics + availability.
   // "stats" = projected stats only (everything else is hidden).
@@ -11366,7 +11383,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const av = targetSurv ? targetSurv[p.id] : null;
     const av2 = sims && sims.pct[1] ? sims.pct[1][p.id] : null;
     const _er = myRanks.map[p.id];
-    const edge = (_er && _er.exact) ? Math.round(p.adp - _er.rank) : null;
+    const _pAdp = platRanks.map[p.id];
+    const edge = _pAdp != null ? Math.round(p.adp - _pAdp) : null;
     switch (key) {
       case "adp": {
         // Value highlight: when a player's ADP is EARLIER than the current pick, he's lasted past where
@@ -11388,7 +11406,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         return p.adp != null ? p.adp.toFixed(1) : "—";
       }
       case "consensus": return <span className="mut">{p.consensus.toFixed(1)}</span>;
-      case "edge": return edge == null ? <span className="mut" title="Set your personal rankings to see your edge vs the market">—</span> : <span style={{ color: edge > 3 ? "var(--green)" : edge < -3 ? "var(--red)" : "var(--mut)" }}>{edge > 0 ? `+${edge}` : edge}</span>;
+      case "edge": return edge == null ? <span className="mut" title="Enter Platform Ranks (your platform's ADP) to see your edge vs the market">—</span> : <span style={{ color: edge > 3 ? "var(--green)" : edge < -3 ? "var(--red)" : "var(--mut)" }} title="Market ADP minus your platform's ADP for this player">{edge > 0 ? `+${edge}` : edge}</span>;
       case "proj": return p.pts;
       case "floor": return <span className="mut">{p.floor}</span>;
       case "ceil": return <span className="mut">{p.ceil}</span>;
@@ -12168,7 +12186,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               </button>
               <button className="btn btn-mini" onClick={() => setMyTeamOpen(true)} title="See your current roster, projected points, and lineup — without leaving the board"><i className="ti ti-users" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Show my team</button>
               <button className="btn btn-mini" onClick={() => setTrendsOpen(true)} title="See how the board is moving across your other drafts in this format — who's going early, who's sliding, and positional runs by round"><i className="ti ti-chart-histogram" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trends</button>
-              <button className="btn btn-mini" onClick={() => setRanksWarn(true)} title="Your rankings & platform ADP — build a board or pick a saved one to power Edge / My ADP / Blend"><i className="ti ti-list-numbers" style={{ fontSize: 13 }} aria-hidden="true" /> My ranks</button>
+              <button className="btn btn-mini" onClick={() => setRanksWarn(true)} title="My Ranks (your personal board → My ADP & Blend) and Platform Ranks (your platform's ADP → the Edge column)"><i className="ti ti-list-numbers" style={{ fontSize: 13 }} aria-hidden="true" /> My ranks</button>
               <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — who traded which pick to whom. The board updates instantly."><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks</button>
               <button className="btn btn-mini" onClick={() => setColMenu((m) => !m)}><i className="ti ti-columns" style={{ fontSize: 13 }} aria-hidden="true" /> Columns</button>
               {colMenu && (
@@ -12209,7 +12227,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         <div className="disp" style={{ fontSize: 9.5, letterSpacing: ".08em", color: "var(--gold)", margin: "6px 0 3px", textTransform: "uppercase" }}>{SECTION_LABELS[sec]}{sec === "market" && <span className="mut" style={{ fontSize: 9 }}> · pinned left</span>}</div>
                         {colsInSec.filter((c) => !c.hidden).map((c) => {
                           const avail = colAvailable(c);
-                          const why = !avail ? (c.needsRanks ? "Set personal rankings for this format to unlock" : c.needsPlatform ? "Connect a platform to unlock" : c.needsMocks ? "Run mocks for this league to unlock" : "Unavailable") : "";
+                          const why = !avail ? (c.needsPlat ? "Enter Platform Ranks (your platform's ADP) in the draft to unlock" : c.needsRanks ? "Set My Ranks for this format to unlock" : c.needsPlatform ? "Connect a platform to unlock" : c.needsMocks ? "Run mocks for this league to unlock" : "Unavailable") : "";
                           return (
                           <label key={c.key} title={avail ? (c.tip || c.label) : why} style={{ display: "flex", alignItems: "center", gap: 7, padding: "3px 0", fontSize: 12.5, cursor: (c.key === "adp" || !avail) ? "default" : "pointer", opacity: !avail ? 0.4 : (c.key === "adp" ? 0.7 : 1) }}>
                             <input type="checkbox" checked={!!cols[c.key] && avail} disabled={c.key === "adp" || !avail} onChange={() => setCols((s) => ({ ...s, [c.key]: !s[c.key] }))} />
@@ -12262,14 +12280,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       style={{ cursor: "grab", ...(sectionStart[c.key] ? { borderLeft: "2px solid var(--line)" } : {}), ...(dragCol === c.key ? { opacity: 0.4 } : {}) }}>
                       {c.key === "edge" || c.key === "vbd" ? (
                         <span className="info" onClick={(e) => showTip(e, c.key === "edge" ? [
-                          { t: "Edge", x: "Sleeper ADP minus YOUR personal rank. Positive (green) = the market lets him slide past where you'd take him — a value you can wait on." },
-                          { t: "Negative (red)", x: "You rank him higher than the market, so you'd have to reach to get him. Needs your rankings set." },
+                          { t: "Edge", x: "Market ADP minus your platform's ADP (from Platform Ranks). Positive (green) = the market lets him slide past where your platform ranks him — a value you can wait on." },
+                          { t: "Negative (red)", x: "The market takes him earlier than your platform ranks him — above his platform price. Needs Platform Ranks entered." },
                         ] : [
                           { t: "VBD — value based drafting", x: "Projected points above a replacement-level starter at the position." },
                           { t: "Why it matters", x: "Makes positions comparable: a +60 RB beats a +40 WR even if the WR scores more raw points." },
                         ])} onMouseEnter={(e) => showTip(e, c.key === "edge" ? [
-                          { t: "Edge", x: "Sleeper ADP minus YOUR personal rank. Positive (green) = the market lets him slide past where you'd take him — a value you can wait on." },
-                          { t: "Negative (red)", x: "You rank him higher than the market, so you'd have to reach to get him. Needs your rankings set." },
+                          { t: "Edge", x: "Market ADP minus your platform's ADP (from Platform Ranks). Positive (green) = the market lets him slide past where your platform ranks him — a value you can wait on." },
+                          { t: "Negative (red)", x: "The market takes him earlier than your platform ranks him — above his platform price. Needs Platform Ranks entered." },
                         ] : [
                           { t: "VBD — value based drafting", x: "Projected points above a replacement-level starter at the position." },
                           { t: "Why it matters", x: "Makes positions comparable: a +60 RB beats a +40 WR even if the WR scores more raw points." },
@@ -14049,18 +14067,25 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             )}
 
             <div style={{ borderTop: "1px solid var(--line)", paddingTop: 14 }}>
-              <div className="mut" style={{ fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}>Build a board <b style={{ color: "var(--ink)" }}>right here</b> — start from the Sleeper consensus and drag players where you want them. It saves to your Rankings hub and auto-attaches to this league &amp; format, and powers your Edge / My ADP / Blend columns immediately.</div>
+              <div className="mut" style={{ fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}><b style={{ color: "var(--ink)" }}>My Ranks</b> is your own player board — drag players where you want them. It powers your <b style={{ color: "var(--ink)" }}>My ADP</b> and <b style={{ color: "var(--ink)" }}>Blend</b> columns.</div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button className="btn btn-gold" onClick={() => { const board = players.filter((p) => POS.includes(p.pos)).slice().sort((a, b) => a.adp - b.adp).map((p) => p.id); setInRoomRanks(board.slice(0, 200)); setRanksWarn(false); }}>
-                  <i className="ti ti-list-numbers" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />Build my ranks here
+                <button className="btn btn-gold" onClick={() => { const board = players.filter((p) => POS.includes(p.pos)).slice().sort((a, b) => a.adp - b.adp).map((p) => p.id); setInRoomRanks(board.slice(0, 200)); setRanksWarn(false); }} title="My Ranks: your personal player board. Drives the My ADP and Blend columns.">
+                  <i className="ti ti-list-numbers" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />Build My Ranks here
                 </button>
-                <button className="btn" onClick={() => { setRanksWarn(false); setPasteRanksText(""); setPasteRanksOpen(true); }} title="Paste your rankings, or a name+ADP list, to power Edge / My ADP / Blend">
-                  <i className="ti ti-clipboard-text" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Paste rankings / ADP
+                <button className="btn" onClick={() => {
+                  setRanksWarn(false);
+                  // seed the platform editor from an existing saved platform list, else from the board ADP order
+                  const existing = user && user.platformRanks && user.platformRanks[lgId] && Array.isArray(user.platformRanks[lgId].list) ? user.platformRanks[lgId].list : null;
+                  if (existing && existing.length) setPlatEditor(existing.map((e) => ({ id: e.id, adp: e.adp != null ? e.adp : "" })));
+                  else setPlatEditor(players.filter((p) => POS.includes(p.pos)).slice().sort((a, b) => a.adp - b.adp).slice(0, 200).map((p) => ({ id: p.id, adp: "" })));
+                }} title="Platform Ranks: enter the ADP your league platform (Sleeper etc.) shows. Drives the Edge column — market ADP vs your platform's ADP.">
+                  <i className="ti ti-clipboard-list" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Platform Ranks
                 </button>
                 <button className="btn" onClick={() => { setRanksWarn(false); onSave(picks, preds); onEditRanks && onEditRanks(); }}>Open full Rankings hub →</button>
                 <div style={{ flex: 1 }} />
                 <button className="btn" onClick={() => setRanksWarn(false)}>Close</button>
               </div>
+              <div className="mut" style={{ fontSize: 11.5, marginTop: 10, lineHeight: 1.5, paddingTop: 10, borderTop: "1px solid var(--line)" }}><b style={{ color: "var(--gold)" }}>Platform Ranks</b> is separate — it's the ADP your platform shows, and it powers the <b style={{ color: "var(--ink)" }}>Edge</b> column (how much value you're getting vs where your platform ranks a player).</div>
             </div>
           </div>
         </div>
@@ -14103,37 +14128,51 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         );
       })()}
 
-      {pasteRanksOpen && (() => {
+      {platEditor && (() => {
         const lgId = league.mockOf != null ? league.mockOf : league.id;
-        const doImport = () => {
-          const byName = {}; players.forEach((p) => { byName[normName(p.name)] = p.id; });
-          const rawLines = pasteRanksText.split(/\r?\n/).map((ln) => ln.trim()).filter(Boolean);
-          const parsed = []; const seen = new Set(); let sawAdp = 0;
-          rawLines.forEach((raw) => {
-            let ln = raw.replace(/^\s*\d+[.)\]:\-]\s*/, "");
-            let adp = null; let namePart = ln;
-            const mAdp = ln.match(/^(.*?)[\s,]+(\d{1,3}(?:\.\d+)?)\s*$/);
-            if (mAdp) { namePart = mAdp[1]; adp = parseFloat(mAdp[2]); sawAdp++; }
-            namePart = namePart.replace(/\s*\([^)]*\)\s*$/, "").replace(/[,\s]+$/, "").trim();
-            const id = byName[normName(namePart)];
-            if (id != null && !seen.has(id)) { parsed.push({ id, adp }); seen.add(id); }
-          });
-          let ids;
-          if (sawAdp >= Math.max(3, parsed.length * 0.5)) ids = parsed.slice().sort((a, b) => (a.adp ?? 9999) - (b.adp ?? 9999)).map((x) => x.id);
-          else ids = parsed.map((x) => x.id);
-          if (ids.length && onSaveInRoomRanks) { onSaveInRoomRanks(ids, cfg, lgId); }
-          setPasteRanksOpen(false); setPasteRanksText("");
+        const byId = {}; players.forEach((p) => (byId[p.id] = p));
+        const move = (i, dir) => { const j = i + dir; if (j < 0 || j >= platEditor.length) return; setPlatEditor((l) => { const c = l.slice(); [c[i], c[j]] = [c[j], c[i]]; return c; }); };
+        const onDrop = (from, to) => setPlatEditor((l) => { if (from == null || to == null || from === to) return l; const c = l.slice(); const [m] = c.splice(from, 1); c.splice(to, 0, m); return c; });
+        const setAdp = (i, v) => setPlatEditor((l) => { const c = l.slice(); c[i] = { ...c[i], adp: v.replace(/[^0-9.]/g, "") }; return c; });
+        const removeRow = (i) => setPlatEditor((l) => l.filter((_, k) => k !== i));
+        const sortByAdp = () => setPlatEditor((l) => l.slice().sort((a, b) => (a.adp !== "" && a.adp != null ? +a.adp : 9999) - (b.adp !== "" && b.adp != null ? +b.adp : 9999)));
+        const save = () => {
+          // keep only rows that map to a real player; store id + adp (blank adp → use list position at read time)
+          const list = platEditor.filter((e) => e && byId[e.id]).map((e) => ({ id: e.id, adp: e.adp === "" || e.adp == null ? null : +e.adp }));
+          const pr = { ...(user.platformRanks || {}), [lgId]: { list, updated: Date.now() } };
+          onUpdate && onUpdate({ platformRanks: pr });
+          setPlatEditor(null);
         };
         return (
-        <div className="modalbg" onClick={() => setPasteRanksOpen(false)}>
-          <div className="panel" style={{ maxWidth: 480, width: "100%", padding: 22 }} onClick={(e) => e.stopPropagation()}>
-            <div className="disp" style={{ fontSize: 19, fontWeight: 700, marginBottom: 4 }}>Paste your rankings or ADP</div>
-            <div className="mut" style={{ fontSize: 12.5, marginBottom: 12, lineHeight: 1.5 }}>One player per line. Either <b style={{ color: "var(--ink)" }}>names in your order</b> (top = your #1), or <b style={{ color: "var(--ink)" }}>name + an ADP number</b> (e.g. “Bijan Robinson 2.4”) and we'll sort by it. This builds a board attached to this draft and powers your <b style={{ color: "var(--ink)" }}>Edge</b>, <b style={{ color: "var(--ink)" }}>My ADP</b>, and <b style={{ color: "var(--ink)" }}>Blend</b> columns.</div>
-            <textarea className="gs" style={{ width: "100%", minHeight: 200, resize: "vertical", fontFamily: "inherit", fontSize: 13 }} placeholder={"Rank order:\n1. Ja'Marr Chase\n2. Bijan Robinson\n\n— or with ADP —\nJa'Marr Chase 1.2\nBijan Robinson 2.4"} value={pasteRanksText} onChange={(e) => setPasteRanksText(e.target.value)} />
-            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-              <button className="btn" onClick={() => { setPasteRanksOpen(false); setPasteRanksText(""); }}>Cancel</button>
+        <div className="modalbg" onClick={() => setPlatEditor(null)}>
+          <div className="panel" style={{ maxWidth: 560, width: "100%", padding: 20, maxHeight: "88vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+            <div className="disp" style={{ fontSize: 19, fontWeight: 700, marginBottom: 4 }}>Platform Ranks</div>
+            <div className="mut" style={{ fontSize: 12.5, marginBottom: 6, lineHeight: 1.5 }}>Enter the ADP your league platform (Sleeper, etc.) shows for each player — drag to reorder, use the arrows, or type an ADP number in the box. This is <b style={{ color: "var(--ink)" }}>separate from My Ranks</b>: it powers the <b style={{ color: "var(--gold)" }}>Edge</b> column, which compares this board's market ADP to your platform's ADP so you can see where you're getting value.</div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+              <button className="btn btn-mini" onClick={sortByAdp} title="Reorder the list by the ADP numbers you've typed">Sort by ADP typed</button>
               <div style={{ flex: 1 }} />
-              <button className="btn btn-gold" onClick={doImport} disabled={!pasteRanksText.trim()}><i className="ti ti-check" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Import &amp; use</button>
+              <span className="mut" style={{ fontSize: 11 }}>{platEditor.length} players</span>
+            </div>
+            <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8 }}>
+              {platEditor.map((e, i) => { const p = byId[e.id]; if (!p) return null; return (
+                <div key={e.id} draggable onDragStart={(ev) => { ev.dataTransfer.setData("text/plain", String(i)); }} onDragOver={(ev) => ev.preventDefault()} onDrop={(ev) => { ev.preventDefault(); onDrop(+ev.dataTransfer.getData("text/plain"), i); }}
+                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderBottom: "1px solid var(--line)", fontSize: 13 }}>
+                  <i className="ti ti-grip-vertical" style={{ fontSize: 12, color: "var(--mut)", cursor: "grab" }} aria-hidden="true" />
+                  <span className="mut num" style={{ width: 22, textAlign: "right", fontSize: 11 }}>{i + 1}</span>
+                  <Dot pos={p.pos} /><span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+                  <span className="mut num" style={{ fontSize: 10.5 }}>mkt {p.adp.toFixed(1)}</span>
+                  <input className="gs num" style={{ width: 58, padding: "3px 6px", fontSize: 12, textAlign: "center" }} placeholder="ADP" value={e.adp} onChange={(ev) => setAdp(i, ev.target.value)} title="Type the platform's ADP for this player" />
+                  <button className="btn btn-mini" style={{ padding: "0 5px" }} disabled={i === 0} onClick={() => move(i, -1)}>▲</button>
+                  <button className="btn btn-mini" style={{ padding: "0 5px" }} disabled={i === platEditor.length - 1} onClick={() => move(i, 1)}>▼</button>
+                  <button className="btn btn-mini" style={{ padding: "0 5px", color: "var(--red)" }} onClick={() => removeRow(i)} title="Remove from platform ranks">✕</button>
+                </div>
+              ); })}
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button className="btn" onClick={() => setPlatEditor(null)}>Cancel</button>
+              {user && user.platformRanks && user.platformRanks[lgId] && <button className="btn btn-mini" style={{ color: "var(--red)" }} onClick={() => { const pr = { ...(user.platformRanks || {}) }; delete pr[lgId]; onUpdate && onUpdate({ platformRanks: pr }); setPlatEditor(null); }} title="Clear platform ranks for this league">Clear all</button>}
+              <div style={{ flex: 1 }} />
+              <button className="btn btn-gold" onClick={save}><i className="ti ti-device-floppy" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Save &amp; use</button>
             </div>
           </div>
         </div>
