@@ -32,12 +32,19 @@ let TEAMS = 12;
 const ADMIN_EMAILS = ["rosetc16@gmail.com", "trey.rose@pirates.com"];
 const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase()).includes(String(email).trim().toLowerCase());
 
+// Global navigation hook. The App wires this once (setGlobalNav) so shared chrome like AppHeader can always
+// route — e.g. an admin's "Admin" button works on EVERY page, even ones that didn't explicitly thread an
+// onAdmin handler through. Falls back gracefully to a no-op before the App mounts.
+let GLOBAL_NAV = null;
+const setGlobalNav = (fn) => { GLOBAL_NAV = fn; };
+const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(route); };
+
 // --- Seasons ---------------------------------------------------------------------------
 // One account holds every season. The user picks an active season; rankings, leagues, and
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28u";
+const BUILD_TAG = "2026.06.28w";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2732,6 +2739,9 @@ table.board tr.sechead th.frz{z-index:5}
 table.board td{padding:6px 9px;border-bottom:1px solid #16203320;white-space:nowrap}
 table.board tbody tr:nth-child(even) td{background:rgba(255,255,255,.022)}
 table.board tbody tr:hover td{background:rgba(107,168,229,.10)}
+table.board tbody tr.pickmarker:hover td{background:transparent}
+table.board tbody tr.pickmarker td{border-bottom:none;padding:0;background:transparent!important}
+table.board tbody tr.pickmarker td.frz,table.board tbody tr.pickmarker:hover td.frz{background:transparent;box-shadow:none;position:static}
 table.board th.frz,table.board td.frz{position:sticky;left:0;z-index:3;background:var(--panel)}
 table.board tbody tr:nth-child(even) td.frz{background:#141A22}
 table.board tbody tr:hover td.frz{background:#1A2230}
@@ -2919,6 +2929,9 @@ export default function App() {
   };
   const nav0 = restoreNav();
   const [route, setRoute] = useState(nav0.route || "home"); // home | checkout | library | setup | draft | admin
+  // Wire the global navigation hook so shared chrome (AppHeader, etc.) can always route — this is what makes
+  // the admin/account/home buttons work on every page without threading a handler through each component.
+  setGlobalNav(setRoute);
   const [user, setUser] = useState(null); // {email, paid, admin}
   const [authOpen, setAuthOpen] = useState(false);
   const [authError, setAuthError] = useState(null);
@@ -3359,7 +3372,7 @@ export default function App() {
       {route === "trendsTime" && user && <TrendsOverTimePage user={user} leagues={leagues} funMocks={funMocks} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} onOpenLeague={(id) => { setActiveId(id); setRoute("leagueHub"); }} />}
       {route === "tradeTools" && user && <TradeToolsPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} />}
       {route === "adpIntel" && user && <AdpIntelPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} />}
-      {route === "account" && user && <Account user={user} onUpdate={updateUser} onBack={() => setRoute(user.paid ? "home" : "library")} onHome={() => setRoute("home")} onSignOut={signOut} onRankings={() => setRoute("rankings")} />}
+      {route === "account" && user && <Account user={user} onUpdate={updateUser} onBack={() => setRoute(user.paid ? "home" : "library")} onHome={() => setRoute("home")} onSignOut={signOut} onRankings={() => setRoute("rankings")} onAdmin={() => setRoute("admin")} />}
       {route === "rankings" && user && <RankingsHub user={user} leagues={leagues} onUpdate={updateUser} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} onNewLeague={() => { setSetupReturn("rankings"); setRoute("setup"); }} />}
       {route === "setup" && <Setup onCreate={createLeague} onBack={() => { const r = setupReturn || (user?.paid ? "home" : "library"); setSetupReturn(null); setRoute(r); }} backLabel={setupReturn === "rankings" ? "Rankings" : user?.paid ? "Home" : "Library"} />}
       {route === "draft" && active && (
@@ -3399,7 +3412,7 @@ export default function App() {
           onColPrefs={(prefs) => { if (user) updateUser({ colPrefs: prefs }); }}
           onBuy={() => { if (!user) setAuthOpen(true); else setRoute("checkout"); }} />
       )}
-      {route === "admin" && user && isAdminEmail(user.email) && <Admin biz={biz} setBiz={(b) => { setBiz(b); persist({ biz: b }); }} user={user} leagues={leagues} feedback={feedback} onRespond={respondFeedback} onDeleteFeedback={deleteFeedback} onGrantComp={grantComp} onRevokeComp={revokeComp} onBack={() => setRoute("library")} />}
+      {route === "admin" && user && (isAdminEmail(user.email) || user.admin) && <Admin biz={biz} setBiz={(b) => { setBiz(b); persist({ biz: b }); }} user={user} leagues={leagues} feedback={feedback} onRespond={respondFeedback} onDeleteFeedback={deleteFeedback} onGrantComp={grantComp} onRevokeComp={revokeComp} onBack={() => setRoute(user.paid ? "home" : "library")} />}
       {quickMockOpen && <QuickMockSetup onCancel={() => setQuickMockOpen(false)} onStart={(cfg) => { setQuickMockOpen(false); startQuickMock(cfg); }} />}
       {authOpen && <AuthModal hasBackend={hasBackend} authError={authError} onClose={() => { setAuthOpen(false); setAuthError(null); }} onSignUp={async (email, password, mode) => {
         try {
@@ -5534,7 +5547,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         <Wordmark size={20} />
         <div style={{ flex: 1 }} />
         <span className="chip" style={{ color: "var(--green)" }}><i className="ti ti-circle-check" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Season pass active</span>
-        {user?.admin && <button className="btn btn-mini" onClick={onAdmin}>Admin</button>}
+        {(user?.admin || isAdminEmail(user?.email)) && <button className="btn btn-mini" onClick={onAdmin || (() => navTo("admin"))}>Admin</button>}
         <button className="btn btn-mini" onClick={onHelp}><i className="ti ti-help-circle" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Help</button>
         <button className="btn btn-mini" onClick={onAccount}><i className="ti ti-user" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Account</button>
         <button className="btn btn-mini" onClick={onSignOut}>Sign out</button>
@@ -6576,7 +6589,7 @@ function AppHeader({ user, onAdmin, onSignOut, onHome, onAccount, onApp, onHelp,
       {user?.paid ? <span className="chip" style={{ color: "var(--green)", cursor: "default" }} title="Your season pass is active"><i className="ti ti-circle-check" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Season pass active</span> : <span className="chip" style={{ cursor: "default" }} title="You're on the free demo">Free demo</span>}
       {onHome && <button className="btn btn-mini" onClick={onHome} title="Home, FAQ & guides">Home</button>}
       {onHelp && <button className="btn btn-mini" onClick={onHelp} title="Help, contact & terms">Help</button>}
-      {user?.admin && <button className="btn" onClick={onAdmin}>Admin</button>}
+      {(user?.admin || isAdminEmail(user?.email)) && <button className="btn" onClick={onAdmin || (() => navTo("admin"))}>Admin</button>}
       {onAccount && <button className="btn" onClick={onAccount} title="Account settings"><i className="ti ti-user" style={{ fontSize: 14 }} aria-hidden="true" /> Account</button>}
       <button className="btn btn-mini" onClick={onSignOut}>Sign out</button>
       <span className="mut" style={{ fontSize: 9, opacity: 0.5, marginLeft: 2 }} title={`App version — confirms the latest deploy is live${typeof LIVE_PACK_FORMAT !== "undefined" && LIVE_PACK_FORMAT ? ` · ADP: ${LIVE_PACK_FORMAT}${LIVE_PACK_PUB_FORMAT ? ` (published ${LIVE_PACK_PUB_FORMAT})` : " (no published ADP — using harvested)"}` : ""}`}>v{BUILD_TAG}</span>
@@ -7065,7 +7078,7 @@ function SleeperLinkPanel({ user, onUpdate }) {
   );
 }
 
-function Account({ user, onUpdate, onBack, onHome, onSignOut, onRankings }) {
+function Account({ user, onUpdate, onBack, onHome, onSignOut, onRankings, onAdmin }) {
   const [email, setEmail] = useState(user.email);
   const [fav, setFav] = useState(user.fav || "");
   const [pw, setPw] = useState("");
@@ -7073,7 +7086,7 @@ function Account({ user, onUpdate, onBack, onHome, onSignOut, onRankings }) {
   const flash = (m) => { setSaved(m); setTimeout(() => setSaved(""), 1500); };
   return (
     <div>
-      <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="Account" />
+      <AppHeader user={user} onAdmin={onAdmin} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="Account" />
       <div style={{ maxWidth: 520, margin: "0 auto", padding: "28px 20px" }}>
         <button className="btn btn-mini" onClick={onBack} style={{ marginBottom: 14 }}>← Library</button>
         <div className="panel" style={{ padding: 24 }}>
@@ -7860,6 +7873,7 @@ function DraftOrderTab({ f, upd, ensureNames }) {
 function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
   const [seg, setSeg] = useState(initialSeg || "basics");
   const [keeperModal, setKeeperModal] = useState(false);
+  const [rosterModal, setRosterModal] = useState(false); // manual existing-dynasty-roster entry (rookie/dynasty drafts)
   const [f, setF] = useState(() => {
     const base = {
       name: "My league", type: "redraft", teams: 12, rounds: 15, slot: "", order: "snake", excludeRookies: false, pickTrading: false, keeper: false, idp: false,
@@ -7867,7 +7881,7 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
       caps: { QB: "", RB: "", WR: "", TE: "" },
       scoring: { ...DEFAULT_SCORING },
       teamNames: [], favTeams: [], manual: false, connect: null,
-      draftOrder: null, keepers: [], pickTrades: [],
+      draftOrder: null, keepers: [], pickTrades: [], existingRosters: null,
       ...initial,
     };
     // A saved/connected cfg can carry null for these arrays; the editors index into them, so coerce to
@@ -7876,6 +7890,7 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
     base.favTeams = Array.isArray(base.favTeams) ? base.favTeams : [];
     base.keepers = Array.isArray(base.keepers) ? base.keepers : [];
     base.pickTrades = Array.isArray(base.pickTrades) ? base.pickTrades : [];
+    base.existingRosters = (base.existingRosters && typeof base.existingRosters === "object") ? base.existingRosters : null;
     return base;
   });
   const upd = (patch) => setF((s) => ({ ...s, ...patch }));
@@ -7915,6 +7930,7 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
       start: f.start, caps: f.caps, scoring: f.scoring, connect: f.connect,
       draftOrder: f.draftOrder && f.draftOrder.length === +f.teams ? f.draftOrder : null,
       keepers: f.keepers || [], pickTrades: f.pickTrades || [],
+      existingRosters: (f.existingRosters && Object.keys(f.existingRosters).length) ? f.existingRosters : null,
       teamNames: f.manual && f.teamNames.length === +f.teams ? f.teamNames : null,
       favTeams: f.manual && f.favTeams.length === +f.teams ? f.favTeams : null,
     };
@@ -8052,6 +8068,13 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
           {Row("Draft-pick trading",
             <button className="btn" onClick={() => upd({ pickTrading: !f.pickTrading })}>{f.pickTrading ? "On — trade picks & rookie picks" : "Off"}</button>,
             f.pickTrading ? "Your draft picks (incl. rookie picks) become tradeable assets in the trade tools." : "Turn on if your league allows trading draft picks."
+          )}
+          {(f.type === "rookie" || f.type === "dynasty") && !(f.connect && f.connect.existingRosters) && Row("Existing rosters",
+            <button className="btn" onClick={() => setRosterModal(true)}><i className="ti ti-users" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Enter rosters{(() => { const er = f.existingRosters || {}; const n = Object.values(er).reduce((s, l) => s + (Array.isArray(l) ? l.length : 0), 0); return n ? ` (${n})` : ""; })()}</button>,
+            "For a rookie or dynasty draft that isn't connected to Sleeper: enter what each team already rosters so recommendations account for it — e.g. a team with 3 QBs won't be steered toward another. Positions are what matter most."
+          )}
+          {f.connect && f.connect.existingRosters && (f.type === "rookie" || f.type === "dynasty") && (
+            <div className="mut" style={{ fontSize: 11.5, marginLeft: 162, marginBottom: 10 }}><i className="ti ti-circle-check" style={{ fontSize: 12, marginRight: 4, color: "var(--green)" }} aria-hidden="true" />Existing rosters imported from Sleeper — recommendations already account for them.</div>
           )}
           <div className="mut" style={{ fontSize: 11.5, margin: "6px 0 0" }}>Connecting a league auto-fills all settings from the platform and lets you pick which of your leagues to view.</div>
         </>
@@ -8215,6 +8238,19 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg }) {
             </div>
             <div className="mut" style={{ fontSize: 12, marginBottom: 14 }}>Add each player a team is keeping, and whether it costs a draft pick. These apply to the official draft and every mock for this league.</div>
             <KeepersEditor cfg={{ ...cfgPreview, keepers: f.keepers, pickTrades: f.pickTrades }} players={kPlayers} embedded section="keepers" onChange={(newCfg) => upd({ keepers: newCfg.keepers, pickTrades: newCfg.pickTrades })} />
+          </div>
+        </div>
+      )}
+
+      {rosterModal && (
+        <div className="modalbg" onClick={() => setRosterModal(false)}>
+          <div className="panel" style={{ maxWidth: 620, width: "100%", padding: 20, maxHeight: "85vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", marginBottom: 4 }}>
+              <div className="disp" style={{ fontSize: 19, fontWeight: 700, flex: 1 }}>Existing rosters</div>
+              <button className="btn btn-mini btn-gold" onClick={() => setRosterModal(false)}>Done</button>
+            </div>
+            <div className="mut" style={{ fontSize: 12, marginBottom: 14 }}>Enter what each team already rosters going into this {f.type === "rookie" ? "rookie" : "dynasty"} draft. The engine uses this so recommendations respect roster construction — a team already deep at a position won't be steered toward more of it. You don't have to fill in every team; even just your own helps.</div>
+            <ExistingRostersEditor cfg={cfgPreview} players={kPlayers} onChange={(er) => upd({ existingRosters: er })} />
           </div>
         </div>
       )}
@@ -8590,6 +8626,84 @@ function TradePickModal({ teams, rounds, teamNames, userIdx, ownerOf, naturalOwn
   );
 }
 
+// Manual entry of existing rosters for a rookie/dynasty draft that ISN'T connected to a platform. The
+// engine only needs POSITIONS to make roster-aware recommendations (a team with 3 QBs shouldn't be pushed
+// another), so this UI is a fast per-team position tally with an optional player name for clarity. Stored on
+// cfg.existingRosters as { teamSlot(1-based): [{ name?, pos }] } — the same shape Sleeper connect produces.
+function ExistingRostersEditor({ cfg, players, onChange }) {
+  const teamsN = cfg.teams || 12;
+  const names = (cfg.teamNames && cfg.teamNames.length === teamsN) ? cfg.teamNames : TEAM_NAMES_POOL.slice(0, teamsN);
+  const [rosters, setRosters] = useState(cfg.existingRosters || {});
+  const [team, setTeam] = useState(1); // 1-based slot
+  const [pSearch, setPSearch] = useState("");
+  useEffect(() => { onChange && onChange(rosters); }, [rosters]);
+
+  const teamList = (t) => rosters[t] || [];
+  const removeAt = (t, i) => setRosters((r) => ({ ...r, [t]: (r[t] || []).filter((_, j) => j !== i) }));
+  const clearTeam = (t) => setRosters((r) => { const n = { ...r }; delete n[t]; return n; });
+  const addPlayer = (p) => { setRosters((r) => ({ ...r, [team]: [...(r[team] || []), { name: p.name, pos: p.pos }] })); setPSearch(""); };
+
+  const opts = useMemo(() => {
+    if (!pSearch) return [];
+    const used = new Set(teamList(team).map((x) => x.name).filter(Boolean));
+    return players.filter((p) => POS.includes(p.pos) && !used.has(p.name) && p.name.toLowerCase().includes(pSearch.toLowerCase())).slice(0, 8);
+  }, [players, pSearch, rosters, team]);
+
+  const posCount = (t) => { const c = { QB: 0, RB: 0, WR: 0, TE: 0 }; teamList(t).forEach((x) => { if (c[x.pos] != null) c[x.pos]++; }); return c; };
+  const totalEntered = Object.values(rosters).reduce((s, l) => s + (Array.isArray(l) ? l.length : 0), 0);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+        <span className="mut" style={{ fontSize: 12 }}>Team</span>
+        <select className="gs" value={team} onChange={(e) => setTeam(+e.target.value)} style={{ minWidth: 150 }}>
+          {Array.from({ length: teamsN }, (_, i) => <option key={i} value={i + 1}>{i === 0 ? `${names[i]} (you)` : names[i]}</option>)}
+        </select>
+        <span className="mut" style={{ fontSize: 11.5 }}>
+          {(() => { const c = posCount(team); return `${c.QB} QB · ${c.RB} RB · ${c.WR} WR · ${c.TE} TE`; })()}
+        </span>
+        {teamList(team).length > 0 && <button className="btn btn-mini" onClick={() => clearTeam(team)}>Clear team</button>}
+      </div>
+
+      {/* add by player name */}
+      <div style={{ position: "relative", marginBottom: 8 }}>
+        <input className="gs" style={{ width: "100%" }} placeholder="Add a player by name (recommended)…" value={pSearch} onChange={(e) => setPSearch(e.target.value)} />
+        {opts.length > 0 && (
+          <div style={{ position: "absolute", zIndex: 5, top: "100%", left: 0, right: 0, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 8, marginTop: 3, maxHeight: 240, overflowY: "auto" }}>
+            {opts.map((p) => (
+              <button key={p.id} className="menuitem" onClick={() => addPlayer(p)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", padding: "7px 10px", background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)" }}>
+                <Dot pos={p.pos} /> <span style={{ fontWeight: 600, fontSize: 13 }}>{p.name}</span> <span className="mut" style={{ fontSize: 11 }}>{p.pos} · {p.team}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      {/* or add by position only (quick) */}
+      <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
+        <span className="mut" style={{ fontSize: 11.5 }}>or add by position:</span>
+        {POS.map((pos) => (
+          <button key={pos} className="btn btn-mini" onClick={() => setRosters((r) => ({ ...r, [team]: [...(r[team] || []), { pos }] }))} style={{ borderColor: POS_COLOR[pos], color: POS_COLOR[pos] }}>+{pos}</button>
+        ))}
+      </div>
+
+      {/* current team's roster */}
+      {teamList(team).length > 0 ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+          {teamList(team).map((x, i) => (
+            <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 20, padding: "3px 6px 3px 9px", fontSize: 12 }}>
+              <Dot pos={x.pos} />{x.name || x.pos}
+              <button onClick={() => removeAt(team, i)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--mut)", padding: 0, lineHeight: 1 }}><i className="ti ti-x" style={{ fontSize: 12 }} aria-hidden="true" /></button>
+            </span>
+          ))}
+        </div>
+      ) : <div className="mut" style={{ fontSize: 12, marginBottom: 8 }}>No players entered for this team yet.</div>}
+
+      <div className="mut" style={{ fontSize: 11, borderTop: "1px solid var(--line)", paddingTop: 8, marginTop: 6 }}>
+        {totalEntered} player{totalEntered === 1 ? "" : "s"} entered across all teams. Enter as many or as few as you like — even just your own team helps your recommendations. Positions are what the engine uses; names are for your reference.
+      </div>
+    </div>
+  );
+}
 function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
   const teamsN = cfg.teams || 12;
   const names = (cfg.teamNames && cfg.teamNames.length === teamsN) ? cfg.teamNames : TEAM_NAMES_POOL.slice(0, teamsN);
@@ -8975,7 +9089,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // a rookie QB). We only need positions here — these players aren't in the draft pool. We exclude any
   // player that's a no-cost keeper for that team (already counted) to avoid double-counting.
   useMemo(() => {
-    const er = cfg.connect && cfg.connect.existingRosters ? cfg.connect.existingRosters : null;
+    // Existing rosters can come from a connected Sleeper league OR be entered by hand (cfg.existingRosters).
+    // Both use the same shape: { teamSlot(1-based): [{ name?, pos }] }. Manual entry is how a rookie/dynasty
+    // draft that ISN'T platform-connected still gets roster-aware recommendations.
+    const er = (cfg.connect && cfg.connect.existingRosters) || cfg.existingRosters || null;
     if (!er) { setRosterAdds({}); return; }
     const POS_OK = { QB: 1, RB: 1, WR: 1, TE: 1 };
     const map = {};
@@ -9153,6 +9270,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     }
     const myCounts = { QB: 0, RB: 0, WR: 0, TE: 0 };
     picks.forEach((pk, o) => { const pl = players[pk]; if (teamAt(o) === forTeam && pl && myCounts[pl.pos] != null) myCounts[pl.pos]++; });
+    // Also count what this team ALREADY holds outside this draft — existing-roster players (rookie/dynasty/
+    // keeper drafts connected to a platform) and no-cost keepers. Without this, the recommendation for a
+    // rookie or keeper draft would ignore that you already roster, say, 3 QBs and might still push a QB.
+    seedRosterCounts(forTeam, myCounts);
+    seedKeeperCounts(players, forTeam, myCounts);
     const bestNow = { QB: null, RB: null, WR: null, TE: null };
     for (const p of sortedAdp) if (!goneSet.has(p.id) && (!bestNow[p.pos] || p.vbd > bestNow[p.pos].vbd)) bestNow[p.pos] = p;
     const waitCost = {};
@@ -10590,10 +10712,33 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   ))}
                 </tr></thead>
                 <tbody>
-                  {rows.map((p) => {
-                    const gone = draftedSet.has(p.id);
-                    const injInfo = injuryView(p);
-                    return (
+                  {(() => {
+                    // "Your pick" divider lines: for each of your upcoming picks, count how many players are
+                    // expected to be drafted before your turn (picksAway = yourOverall - picksMade). The line
+                    // sits AFTER that many AVAILABLE players, so the first player below the line is the one you
+                    // should expect to still be there for you. As real picks happen, picksAway shrinks and the
+                    // line rises. We only mark within the currently shown (available) rows.
+                    const upcomingList = [...myUpcoming].sort((a, b) => a - b);
+                    // available-index (1-based, counting only not-yet-drafted rows) → label(s) to show after it
+                    const markerAfter = new Map();
+                    upcomingList.forEach((o, idx) => {
+                      const picksAway = o - picks.length; // others' picks before your turn
+                      if (picksAway < 0) return;
+                      // You're guaranteed at least the (picksAway+1)-th best available — so the line sits AFTER
+                      // that many available players. E.g. 2 picks ahead of you ⇒ line after the 3rd player.
+                      const slot = picksAway + 1;
+                      const label = idx === 0 ? "Your next pick" : `Your pick +${idx}`;
+                      const sub = `${pickLabel(o)} · expect this or better`;
+                      if (markerAfter.has(slot)) markerAfter.get(slot).push({ label, sub });
+                      else markerAfter.set(slot, [{ label, sub }]);
+                    });
+                    let availSeen = 0;
+                    const nCols = 1 + activeCols.length;
+                    const outRows = [];
+                    rows.forEach((p) => {
+                      const gone = draftedSet.has(p.id);
+                      const injInfo = injuryView(p);
+                      outRows.push(
                       <tr key={p.id} className={gone ? "struck" : ""}>
                         <td className="frz" style={{ borderLeft: `3px solid ${gone ? "transparent" : (POS_COLOR[p.pos] || "transparent")}` }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
@@ -10604,7 +10749,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             {!gone
                               ? <button className={`btn btn-mini${onClock === userIdx ? " btn-gold" : ""}`} style={{ flexShrink: 0, border: onClock === userIdx ? "none" : "1.5px solid #fff", fontWeight: 700 }} onClick={() => draftPlayer(p.id)}>{onClock === userIdx ? "Draft" : "Pick"}</button>
                               : <span style={{ width: 38, flexShrink: 0 }} />}
-                            <span onClick={(e) => showTip(e, makeOutlook(p, sims, gone))} onClick={(e) => showTip(e, makeOutlook(p, sims, gone))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone))} onMouseLeave={hideTip} style={{ cursor: "help", whiteSpace: "nowrap" }}>
+                            <span onClick={(e) => showTip(e, makeOutlook(p, sims, gone))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone))} onMouseLeave={hideTip} style={{ cursor: "help", whiteSpace: "nowrap" }}>
                               <PosName p={p} /> <span className="mut">{p.team}</span>
                             </span>
                             {injInfo && <span onClick={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note }])} onMouseEnter={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note }])} onMouseLeave={hideTip}
@@ -10615,8 +10760,34 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         </td>
                         {activeCols.map((c) => <td key={c.key} className="num" style={sectionStart[c.key] ? { borderLeft: "2px solid var(--line)" } : undefined}>{cellFor(p, c.key, gone)}</td>)}
                       </tr>
-                    );
-                  })}
+                      );
+                      // count this row toward the available tally, then drop any marker that belongs after it
+                      if (!gone) {
+                        availSeen++;
+                        const marks = markerAfter.get(availSeen);
+                        if (marks) {
+                          outRows.push(
+                            <tr key={`mark-${availSeen}`} className="pickmarker">
+                              <td colSpan={nCols} style={{ padding: 0 }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 10px", background: "linear-gradient(90deg, rgba(242,182,60,.16), rgba(242,182,60,.03))", borderTop: "2px solid var(--gold)", borderBottom: "1px solid rgba(242,182,60,.25)" }}>
+                                  <i className="ti ti-arrow-down-to-arc" style={{ fontSize: 13, color: "var(--gold)" }} aria-hidden="true" />
+                                  {marks.map((m, mi) => (
+                                    <span key={mi} style={{ display: "inline-flex", alignItems: "baseline", gap: 6 }}>
+                                      {mi > 0 && <span className="mut" style={{ opacity: 0.5 }}>·</span>}
+                                      <b style={{ fontSize: 11.5, color: "var(--gold)", letterSpacing: ".02em" }}>{m.label}</b>
+                                      <span className="mut" style={{ fontSize: 10.5 }}>{m.sub}</span>
+                                    </span>
+                                  ))}
+                                  <span className="mut" style={{ fontSize: 10, marginLeft: "auto", opacity: 0.7 }}>players below should reach you</span>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        }
+                      }
+                    });
+                    return outRows;
+                  })()}
                 </tbody>
               </table>
               {rows.length >= rowLimit && (
