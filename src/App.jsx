@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28am";
+const BUILD_TAG = "2026.06.28an";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -9917,7 +9917,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [teamsProj, setTeamsProj] = useState(false);
   const [boardProj, setBoardProj] = useState(false);
   const [showBoardVal, setShowBoardVal] = useState(false); // toggle pick-value under each name
-  const [boardHi, setBoardHi] = useState({ steals: false, reaches: false }); // highlight steals/reaches on board
+  const [boardHi, setBoardHi] = useState({ steals: true, reaches: true }); // highlight steals/reaches on board (on by default)
   const [pastBig, setPastBig] = useState(false);
   const [futureBig, setFutureBig] = useState(false);
   const [tip, setTip] = useState(null);
@@ -10000,6 +10000,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [summaryExpand, setSummaryExpand] = useState(false); // show more steals/reaches
   const [benchExpand, setBenchExpand] = useState(false); // summary Your-team: show full bench vs top 5
   const [depthPos, setDepthPos] = useState("ALL"); // depth charts: filter to one position to shorten tiles
+  const stickyHeadRef = useRef(null);
+  const [stickyHeadH, setStickyHeadH] = useState(0); // measured height of the sticky ticker+tabbar header
   const [capWarn, setCapWarn] = useState(null);
   const connected = !!cfg.connect;
   const [clock, setClock] = useState(90);
@@ -11189,6 +11191,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
   const pastPicks = picks.slice(-(pastBig ? 12 : 1)).map((pk, i) => ({ pk, o: picks.length - Math.min(pastBig ? 12 : 1, picks.length) + i }));
 
+  // Measure the sticky ticker+tabbar header so tab-level sticky bars (e.g. the depth-chart position filter)
+  // can sit just BELOW it instead of sliding underneath. Re-measures on layout-affecting state changes.
+  useLayoutEffect(() => {
+    const el = stickyHeadRef.current;
+    if (!el) return;
+    const h = el.offsetHeight;
+    if (h && h !== stickyHeadH) setStickyHeadH(h);
+  }, [tab, done, hypoMode, pastBig, futureBig, picks.length, sleeperLive, stickyHeadH]);
+
   return (
     <div>
       <div className="hairline" style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", flexWrap: "wrap" }}>
@@ -11223,7 +11234,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         )}
       </div>
 
-      <div style={{ position: "sticky", top: 0, zIndex: 12, background: "var(--bg)" }}>
+      <div ref={stickyHeadRef} style={{ position: "sticky", top: 0, zIndex: 12, background: "var(--bg)" }}>
       {!done && hypoMode && (
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 16px", flexWrap: "wrap", background: "rgba(242,182,60,.10)", borderBottom: "1px solid var(--gold)" }}>
           {(
@@ -12915,7 +12926,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
       {tab === "depth" && (
         <div style={{ padding: 14 }}>
-          <div className="panel" style={{ padding: "9px 12px", marginBottom: 12, background: "var(--panel2)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", position: "sticky", top: 0, zIndex: 15, boxShadow: "0 4px 14px -6px rgba(0,0,0,.6)" }}>
+          <div className="panel" style={{ padding: "9px 12px", marginBottom: 12, background: "var(--panel2)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", position: "sticky", top: stickyHeadH, zIndex: 11, boxShadow: "0 4px 14px -6px rgba(0,0,0,.6)" }}>
             <i className="ti ti-info-circle" style={{ fontSize: 14, color: "var(--gold)" }} aria-hidden="true" />
             <span className="mut" style={{ fontSize: 11.5, lineHeight: 1.45, flex: "1 1 260px" }}>Depth charts are ordered by projected fantasy points from current Sleeper data. Players with no projected value and free agents are hidden.</span>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
@@ -13276,6 +13287,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 <span className="mut" style={{ fontSize: 11, alignSelf: "center", padding: "0 8px" }}>Sort</span>
                 <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "z" ? "var(--gold)" : "transparent", color: sumSort.key === "z" ? "#151002" : "var(--ink)", fontWeight: sumSort.key === "z" ? 700 : 400 }} onClick={() => setSumSort({ key: "z", dir: -1 })}>Grade</button>
                 <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "val" ? "var(--gold)" : "transparent", color: sumSort.key === "val" ? "#151002" : "var(--ink)", fontWeight: sumSort.key === "val" ? 700 : 400 }} onClick={() => setSumSort({ key: "val", dir: -1 })}>Value</button>
+                <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "rank" ? "var(--gold)" : "transparent", color: sumSort.key === "rank" ? "#151002" : "var(--ink)", fontWeight: sumSort.key === "rank" ? 700 : 400 }} onClick={() => setSumSort({ key: "rank", dir: 1 })}>Finish</button>
               </div>
             </div>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
