@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28al";
+const BUILD_TAG = "2026.06.28am";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -11035,7 +11035,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   }, [advice, sims, myCurrent]);
 
   const graded = useMemo(() => picks.map((pk, o) => { const p = players[pk]; return { p, o, t: teamAt(o), val: pickValue(p, o, cfg) }; }), [picks, players, cfg]);
-  const valByTeam = useMemo(() => Array.from({ length: TEAMS }, (_, i) => graded.filter((g) => g.t === i).reduce((s, g) => s + g.val, 0)), [graded]);
+  const valByTeamRaw = useMemo(() => Array.from({ length: TEAMS }, (_, i) => graded.filter((g) => g.t === i).reduce((s, g) => s + g.val, 0)), [graded]);
+  // The raw per-pick value model is intentionally asymmetric (reaches sting more) and early-weighted, so
+  // its LEAGUE SUM skews negative — most teams would show a negative total even in a normal draft. For the
+  // team-vs-team display we recenter on the league average, so "value" reads as "how much better or worse
+  // than the field you drafted," giving a natural, balanced spread of + and −. Per-pick tiles are untouched.
+  const valByTeam = useMemo(() => {
+    const mean = valByTeamRaw.reduce((a, b) => a + b, 0) / TEAMS;
+    return valByTeamRaw.map((v) => Math.round(v - mean));
+  }, [valByTeamRaw]);
   const grades = useMemo(() => {
     if (!proj) return null;
     const vMean = valByTeam.reduce((a, b) => a + b, 0) / TEAMS;
@@ -12765,15 +12773,25 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     const isOnClock = o === picks.length && !done;
                     // Highlight a cell as "yours" whenever you own that pick — natural or traded-for.
                     const cls = `bcell${ownedByYou ? " you" : ""}${ownedByYou && isOnClock ? " oncl" : ""}${isUpcoming ? " upcoming" : ""}${!p ? " empty" : ""}`;
-                    // Steal/reach highlight: tint the cell green (steal) or red (reach) when its toggle is on.
-                    // For YOUR picks we keep the gold "you" identity via a gold outline, and tint the fill so
-                    // you can still tell it's yours AND see the value read.
+                    // Steal/reach highlight: tint the cell green (steal) or red (reach) when its toggle is on,
+                    // in THREE shades by magnitude — deeper = a bigger steal/reach, lighter = minimal but real.
+                    // For YOUR picks we keep the gold "you" identity via a gold outline on top of the tint.
                     const isRealPick = p && !isProjected && !isKeeper;
-                    const isSteal = isRealPick && boardHi.steals && v >= 8;
-                    const isReach = isRealPick && boardHi.reaches && v <= -8;
+                    const showSteal = isRealPick && boardHi.steals && v >= 8;
+                    const showReach = isRealPick && boardHi.reaches && v <= -8;
                     let hiStyle = {};
-                    if (isSteal) hiStyle = { background: "rgba(95,208,168,.20)", ...(ownedByYou ? { outline: "2px solid var(--gold)", outlineOffset: "-2px" } : { boxShadow: "inset 0 0 0 1px rgba(95,208,168,.55)" }) };
-                    else if (isReach) hiStyle = { background: "rgba(242,101,92,.20)", ...(ownedByYou ? { outline: "2px solid var(--gold)", outlineOffset: "-2px" } : { boxShadow: "inset 0 0 0 1px rgba(242,101,92,.55)" }) };
+                    if (showSteal || showReach) {
+                      const mag = Math.abs(v);
+                      const tier = mag >= 40 ? 2 : mag >= 20 ? 1 : 0; // 0=mild, 1=medium, 2=strong
+                      // green shades (steal): light → deep;  red shades (reach): light → deep
+                      const green = ["rgba(95,208,168,.16)", "rgba(64,180,138,.34)", "rgba(46,150,112,.55)"];
+                      const red = ["rgba(242,101,92,.16)", "rgba(214,80,72,.34)", "rgba(180,54,48,.55)"];
+                      const ringG = ["rgba(95,208,168,.5)", "rgba(95,208,168,.75)", "rgba(95,208,168,.95)"];
+                      const ringR = ["rgba(242,101,92,.5)", "rgba(242,101,92,.75)", "rgba(242,101,92,.95)"];
+                      const bg = showSteal ? green[tier] : red[tier];
+                      const ring = showSteal ? ringG[tier] : ringR[tier];
+                      hiStyle = { background: bg, ...(ownedByYou ? { outline: "2px solid var(--gold)", outlineOffset: "-2px" } : { boxShadow: `inset 0 0 0 ${tier + 1}px ${ring}` }) };
+                    }
                     return (
                       <div key={`${r}-${col}`} className={cls}
                         style={{ borderLeft: p ? `3px solid ${POS_COLOR[p.pos]}` : undefined, opacity: p ? (isProjected ? 0.9 : 1) : undefined, ...hiStyle }}
@@ -12897,7 +12915,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
       {tab === "depth" && (
         <div style={{ padding: 14 }}>
-          <div className="panel" style={{ padding: "9px 12px", marginBottom: 12, background: "var(--panel2)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div className="panel" style={{ padding: "9px 12px", marginBottom: 12, background: "var(--panel2)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", position: "sticky", top: 0, zIndex: 15, boxShadow: "0 4px 14px -6px rgba(0,0,0,.6)" }}>
             <i className="ti ti-info-circle" style={{ fontSize: 14, color: "var(--gold)" }} aria-hidden="true" />
             <span className="mut" style={{ fontSize: 11.5, lineHeight: 1.45, flex: "1 1 260px" }}>Depth charts are ordered by projected fantasy points from current Sleeper data. Players with no projected value and free agents are hidden.</span>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
@@ -13310,8 +13328,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       ))}
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, paddingTop: 9, borderTop: "1px solid var(--line)" }}>
-                      <span className="mut" style={{ fontSize: 11.5 }}>Net draft value</span>
-                      <span className="num" style={{ fontSize: 16, fontWeight: 800, color: totalVal > 0 ? "#5FD0A8" : totalVal < 0 ? "#F2655C" : "var(--ink)" }}>{totalVal > 0 ? `+${totalVal}` : totalVal}</span>
+                      <span className="mut" style={{ fontSize: 11.5 }}>Net value vs. the field</span>
+                      <span className="num" style={{ fontSize: 16, fontWeight: 800, color: valByTeam[userIdx] > 0 ? "#5FD0A8" : valByTeam[userIdx] < 0 ? "#F2655C" : "var(--ink)" }}>{valByTeam[userIdx] > 0 ? `+${valByTeam[userIdx]}` : valByTeam[userIdx]}</span>
                     </div>
                   </>
                 );
