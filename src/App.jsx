@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bg";
+const BUILD_TAG = "2026.06.28bh";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1051,6 +1051,13 @@ let META = {
 // board reflects reality. The engine logic is unchanged — it just reads fresher RAW/STATS/META.
 let LIVE_LOADED = false;
 let LIVE_ADP_SPARSE = false; // true when live ADP is too thin to trust → engine ranks by VBD value
+// When true (set for Sleeper-CONNECTED live drafts), we TRUST the published Sleeper ADP as-is and skip the
+// "collapsed/degenerate" guards + VBD rebuild. Rationale: for a live connected draft the user wants the board
+// to mirror exactly what Sleeper's own draft room shows, which is Sleeper's published ADP. Even if that ADP
+// looks flat by our heuristics, it's the authoritative market for THAT draft, so we don't second-guess it.
+// Mock drafts leave this false and keep the full guard + value-rebuild machinery.
+let TRUST_LIVE_ADP = false;
+export function setTrustLiveAdp(on) { TRUST_LIVE_ADP = !!on; }
 let LIVE_PACK_FORMAT = null;     // the format key the backend actually served (for display/debug)
 let LIVE_PACK_PUB_FORMAT = null; // the PUBLISHED-ADP format bucket actually used (null if none matched)
 export function isLivePackLoaded() { return LIVE_LOADED; }
@@ -1102,7 +1109,11 @@ export function applyLivePack(pack) {
   const distinctOk = distinctAdp >= Math.min(60, adpCount * 0.4);
   const notDominated = maxFreqA <= adpCount * 0.25;
   const ADP_NOT_COLLAPSED = spreadOk && distinctOk && notDominated;
-  const ADP_HEALTHY = adpCount >= 120 && rookieShareOfAdp < 0.5 && ADP_NOT_COLLAPSED; // broad, not rookie-dominated, not collapsed
+  // Connected live drafts trust Sleeper's published ADP outright (mirror the real draft room). We still
+  // require a minimum coverage so we're not trusting an empty pack, but we skip the collapse/rookie guards.
+  const ADP_HEALTHY = TRUST_LIVE_ADP
+    ? adpCount >= 60
+    : (adpCount >= 120 && rookieShareOfAdp < 0.5 && ADP_NOT_COLLAPSED); // broad, not rookie-dominated, not collapsed
 
   const projValueAll = (p) => projValue(p.stats, normPos(p.pos));
   // Provisional ADP for players lacking a real ADP number. Rather than dumping them all AFTER the last
@@ -10406,7 +10417,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // The live-data dependency matters because the app renders instantly off built-in fallback data and the
   // real player pack streams in a beat later; without it, a draft room opened in that first moment stays
   // stuck on the sparse fallback pool (the "only 5 QBs left" bug).
-  const players = useMemo(() => buildPlayers(cfg), [cfg, adpVersion, dataVersion]);
+  const players = useMemo(() => {
+    // Connected Sleeper drafts mirror the real draft room: trust Sleeper's published ADP as-is (skip the
+    // collapse/rookie guards + VBD rebuild). Mocks keep the full guard machinery.
+    const liveConnected = connectedPlatform === "sleeper" && draftMode === "sleeper" && !!(cfg.connect && cfg.connect.leagueId);
+    setTrustLiveAdp(liveConnected);
+    return buildPlayers(cfg);
+  }, [cfg, adpVersion, dataVersion, connectedPlatform, draftMode]);
   // When the pool identity changes (fallback → live data), picks/preds stored as ids must be re-pointed.
   // CRITICAL: for CONNECTED Sleeper drafts the live sync is the source of truth and re-derives picks from
   // Sleeper BY NAME on every poll, so we must NOT touch picks here — doing so races the sync and makes the
@@ -10498,7 +10515,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     });
     return { has: true, map };
   }, [user, league]);
-  useEffect(() => { if (platRanks.has) setCols((c) => (c.edge ? c : { ...c, edge: true })); }, [platRanks.has]);
+  useEffect(() => { if (platRanks.has) setCols((c) => (c.edge && c.platAdp ? c : { ...c, edge: true, platAdp: true })); }, [platRanks.has]);
   const draftedSet = useMemo(() => { const s = new Set(picks); Object.values(noCostByTeam).flat().forEach((id) => s.add(id)); return s; }, [picks, cfg]);
   const done = picks.length >= TOTAL;
   // Demo stops after a limited number of rounds (it's not "complete" — you must purchase to continue).
@@ -10962,93 +10979,63 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   useEffect(() => {
     if (!sleeperLive || done) return;
     let alive = true;
-    const pull = async () => {
+    let draftIdCache = (cfg.connect && cfg.connect.draftId) || null; // learned on first fast poll
+    let sinceHeavy = 0; // poll counter — do a full /draft refresh occasionally for names/trades/rosters
+    // Heavy refresh: names, owners, traded picks, rosters/keepers. These change rarely, so we only do this
+    // every ~15th fast poll (~30s) instead of every tick.
+    const heavyRefresh = async () => {
       try {
         const d = await api.sleeperDraft(cfg.connect.leagueId, cfg.connect.username);
         if (!alive) return;
-        // Refresh the REAL team names from Sleeper. Names can arrive/improve after the initial connect —
-        // e.g. a league connected pre-draft (before Sleeper set the draft order) resolves proper manager/
-        // team names once drafting starts. We only adopt names that look real (not the "Team N" fallback)
-        // and only when they differ, then bump nameVersion so the UI re-renders with them.
+        if (d.draft_id) draftIdCache = d.draft_id;
         if (d.slotNames && cfg.teams) {
-          const fresh = [];
-          let realCount = 0;
-          for (let s = 1; s <= cfg.teams; s++) {
-            const nm = d.slotNames[s];
-            if (nm && !/^Team\s+\d+$/.test(nm)) { realCount++; fresh.push(nm); } else fresh.push((liveTeamNames && liveTeamNames[s - 1]) || (cfg.teamNames && cfg.teamNames[s - 1]) || `Team ${s}`);
-          }
-          // Only adopt Sleeper's names when it gave us real ones for most teams, and only when they changed.
+          const fresh = []; let realCount = 0;
+          for (let s = 1; s <= cfg.teams; s++) { const nm = d.slotNames[s]; if (nm && !/^Team\s+\d+$/.test(nm)) { realCount++; fresh.push(nm); } else fresh.push((liveTeamNames && liveTeamNames[s - 1]) || (cfg.teamNames && cfg.teamNames[s - 1]) || `Team ${s}`); }
           if (realCount >= Math.ceil(cfg.teams / 2)) {
             const prev = liveTeamNames || [];
-            if (JSON.stringify(fresh) !== JSON.stringify(prev)) {
-              setLiveTeamNames(fresh);
-              setTeamNames(fresh);
-              setNameVersion((v) => v + 1);
-            }
+            if (JSON.stringify(fresh) !== JSON.stringify(prev)) { setLiveTeamNames(fresh); setTeamNames(fresh); setNameVersion((v) => v + 1); }
           }
-          // Usernames follow the same live data — store a parallel owner array when Sleeper provides it.
-          if (d.slotOwners) {
-            const owners = []; for (let s = 1; s <= cfg.teams; s++) owners.push(d.slotOwners[s] || null);
-            if (JSON.stringify(owners) !== JSON.stringify(liveTeamOwners || [])) { setLiveTeamOwners(owners); setTeamOwners(owners); }
-          }
+          if (d.slotOwners) { const owners = []; for (let s = 1; s <= cfg.teams; s++) owners.push(d.slotOwners[s] || null); if (JSON.stringify(owners) !== JSON.stringify(liveTeamOwners || [])) { setLiveTeamOwners(owners); setTeamOwners(owners); } }
         }
-        // Build the engine pick list from Sleeper's pick order, mapping names→ids and dropping any
-        // we can't match (rare). We only grow the list; we never reorder existing picks. We also
-        // capture each pick's REAL team (draft_slot-1) so rosters match the actual draft exactly.
+        if (onSettings && Array.isArray(d.tradedPicks)) {
+          const incoming = JSON.stringify(d.tradedPicks);
+          const have = JSON.stringify(cfg.connect.tradedPicks || []);
+          if (incoming !== have) { const N = cfg.teams || 12; const pickTrades = tradesToOwnerOverrides(d.tradedPicks, N, cfg.order || "snake"); onSettings({ ...cfg, pickTrading: true, pickTrades, connect: { ...cfg.connect, tradedPicks: d.tradedPicks } }); }
+        }
+      } catch (e) { /* keep last-known context */ }
+    };
+    // Fast poll: picks + clock only. This is the near-instant path — a tiny payload and ~2 Sleeper calls
+    // (draft meta + picks), with the big player list served from the backend's in-process cache.
+    const pull = async () => {
+      try {
+        const d = await api.sleeperPicks(cfg.connect.leagueId, draftIdCache);
+        if (!alive) return;
+        if (d.draft_id) draftIdCache = d.draft_id;
         const mapped = [];
-        const slotTeam = {}; // overall pick index -> team index (draft_slot - 1)
+        const slotTeam = {};
         for (const pk of (d.picks || [])) {
           const id = nameToId[normName(pk.name)];
-          if (id != null) {
-            const o = mapped.length; // overall index in our compacted list
-            if (pk.draft_slot) slotTeam[o] = pk.draft_slot - 1;
-            mapped.push(id);
-          }
+          if (id != null) { const o = mapped.length; if (pk.draft_slot) slotTeam[o] = pk.draft_slot - 1; mapped.push(id); }
         }
         setSyncState({ status: d.status, lastAt: Date.now(), error: null });
-        // Only replace liveSlots when the mapping actually changed — otherwise a new object every poll
-        // (every 5s) would invalidate the sims useMemo and make availability % flicker with no real change.
         setLiveSlots((prev) => { const next = JSON.stringify(slotTeam); return prev && JSON.stringify(prev) === next ? prev : slotTeam; });
-        // Capture Sleeper's real clock. serverNowMs lets us correct for any difference between the
-        // server's clock and this browser's, so the countdown lines up with what Sleeper shows.
-        if (d.pickDeadlineMs && d.serverNowMs) {
-          setLiveClock({ deadlineMs: d.pickDeadlineMs, timerSec: d.pickTimerSec || 0, skewMs: Date.now() - d.serverNowMs });
-        } else {
-          setLiveClock(d.pickTimerSec ? { deadlineMs: null, timerSec: d.pickTimerSec, skewMs: 0 } : null);
-        }
+        if (d.pickDeadlineMs && d.serverNowMs) setLiveClock({ deadlineMs: d.pickDeadlineMs, timerSec: d.pickTimerSec || 0, skewMs: Date.now() - d.serverNowMs });
+        else setLiveClock(d.pickTimerSec ? { deadlineMs: null, timerSec: d.pickTimerSec, skewMs: 0 } : null);
         setPicks((prev) => {
-          // In hypothetical mode, don't clobber the user's what-if picks. Instead, if Sleeper has moved
-          // ahead of the real base we started from, stash it so we can offer to sync up.
-          if (hypoMode) {
-            if (mapped.length > hypoBase) setLivePending({ picks: mapped });
-            return prev;
-          }
-          // Sleeper is the source of truth for a connected live draft. Adopt its mapped picks whenever they
-          // DIFFER from what we hold — not only when longer. (Length-only checks left stale, wrong-id picks
-          // in place after a pool rebuild, since the count matched even though the ids pointed at the wrong
-          // players — that was the "historical picks all wrong / jumping around" bug.) We still never shrink
-          // below what Sleeper reports, and an identical list returns prev to avoid needless re-renders.
+          if (hypoMode) { if (mapped.length > hypoBase) setLivePending({ picks: mapped }); return prev; }
           if (mapped.length < prev.length) return prev;
           const same = mapped.length === prev.length && mapped.every((id, i) => id === prev[i]);
           return same ? prev : mapped;
         });
-        // If a trade happened in the league (traded picks changed), update the league settings so the
-        // board's pick ownership stays correct. Compare against what we have stored.
-        if (onSettings && Array.isArray(d.tradedPicks)) {
-          const incoming = JSON.stringify(d.tradedPicks);
-          const have = JSON.stringify(cfg.connect.tradedPicks || []);
-          if (incoming !== have) {
-            const N = cfg.teams || 12;
-            const pickTrades = tradesToOwnerOverrides(d.tradedPicks, N, cfg.order || "snake");
-            onSettings({ ...cfg, pickTrading: true, pickTrades, connect: { ...cfg.connect, tradedPicks: d.tradedPicks } });
-          }
-        }
+        // occasional heavy refresh for names / trades
+        if (sinceHeavy++ % 15 === 0 && sinceHeavy > 1) heavyRefresh();
       } catch (e) {
         if (alive) setSyncState((s) => ({ ...s, error: "Sync paused — retrying…" }));
       }
     };
-    pull(); // immediate
-    const iv = setInterval(pull, 5000);
+    heavyRefresh(); // one full context load up front (names/trades)
+    pull();          // immediate first pick pull
+    const iv = setInterval(pull, 2000); // fast: ~2s
     return () => { alive = false; clearInterval(iv); };
   }, [sleeperLive, done, cfg, nameToId, hypoMode, hypoBase]);
 
@@ -11113,6 +11100,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       case "adp": return p.adp;
       case "consensus": return p.consensus;
       case "edge": { const pAdp = platRanks.map[p.id]; if (pAdp == null) return -9999; return Math.round(p.adp - pAdp); }
+      case "platAdp": { const pAdp = platRanks.map[p.id]; return pAdp == null ? 9999 : pAdp; }
       case "pts": case "proj": return p.pts;
       case "floor": return p.floor;
       case "ceil": return p.ceil;
@@ -11289,6 +11277,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // — ADP & market —
     { key: "adp", label: "ADP", group: "draft", section: "market", num: true, sortable: true, tip: "Sleeper ADP for this league's format — the average pick across real Sleeper drafts. This is the board everyone in your league sees." },
     { key: "consensus", label: "Sleeper ADP", group: "draft", section: "market", num: true, sortable: true, hidden: true, tip: "Sleeper ADP (same source as ADP). Hidden by default since this app uses Sleeper as its single source." },
+    { key: "platAdp", label: "Platform ADP", group: "draft", section: "mine", num: true, sortable: true, needsPlat: true, tip: "The ADP you entered in Platform Ranks — your league platform's (Sleeper etc.) ADP for this player. The Edge column compares this to the market ADP on this board." },
     { key: "edge", label: "Edge", group: "draft", section: "mine", num: true, sortable: true, needsPlat: true, tip: "Your edge vs the platform: market ADP minus the platform's ADP that you entered in Platform Ranks. Positive (green) = the market lets him slide past where your platform ranks him (a value). Negative (red) = the market takes him earlier than your platform, so he's going above his platform price. Requires Platform Ranks." },
     { key: "adpTier", label: "ADP tier", group: "draft", section: "market", num: true, sortable: true, tip: "Tier from gaps in market ADP." },
     { key: "mockAdp", label: "ADP mock", group: "draft", section: "market", num: true, sortable: true, needsMocks: true, tip: "Average pick this player went at across your mock drafts for this league." },
@@ -11407,6 +11396,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       }
       case "consensus": return <span className="mut">{p.consensus.toFixed(1)}</span>;
       case "edge": return edge == null ? <span className="mut" title="Enter Platform Ranks (your platform's ADP) to see your edge vs the market">—</span> : <span style={{ color: edge > 3 ? "var(--green)" : edge < -3 ? "var(--red)" : "var(--mut)" }} title="Market ADP minus your platform's ADP for this player">{edge > 0 ? `+${edge}` : edge}</span>;
+      case "platAdp": return _pAdp == null ? <span className="mut">—</span> : <span className="num" title="Your platform's ADP for this player (from Platform Ranks)">{(+_pAdp).toFixed(1)}</span>;
       case "proj": return p.pts;
       case "floor": return <span className="mut">{p.floor}</span>;
       case "ceil": return <span className="mut">{p.ceil}</span>;

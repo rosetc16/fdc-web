@@ -128,6 +128,9 @@ export const api = {
   // ---- Sleeper connect / live sync ----
   async sleeperLeagues(username) { return call(`/api/connect/sleeper/leagues?username=${encodeURIComponent(username)}`); },
   async sleeperDraft(leagueId, username) { return call(`/api/connect/sleeper/draft?league_id=${encodeURIComponent(leagueId)}${username ? `&username=${encodeURIComponent(username)}` : ''}`); },
+  // Fast picks-only poll for live drafts — much lighter than sleeperDraft (picks + clock only). Pass draftId
+  // after the first call to skip the league→draft lookup for the quickest possible round-trip.
+  async sleeperPicks(leagueId, draftId) { return call(`/api/connect/sleeper/picks?league_id=${encodeURIComponent(leagueId)}${draftId ? `&draft_id=${encodeURIComponent(draftId)}` : ''}`); },
   // ---- persistent Sleeper account link ----
   async sleeperAccount() { return call('/api/connect/sleeper/account'); },                          // -> { linked, sleeperUserId, sleeperUsername }
   async sleeperLink(username) { return call('/api/connect/sleeper/link', { method: 'POST', body: { username } }); },
