@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bt";
+const BUILD_TAG = "2026.06.28bu";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2182,6 +2182,7 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
   const baseRecent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   const surv = [new Float64Array(players.length), new Float64Array(players.length), new Float64Array(players.length)];
   const expBest1 = { QB: 0, RB: 0, WR: 0, TE: 0 };
+  const expBestTally = { QB: {}, RB: {}, WR: {}, TE: {} }; // pos -> {playerId: timesItWasTheBestAvailable}
   const end = nexts[nexts.length - 1];
   for (let s = 0; s < nSims; s++) {
     const drafted = baseDrafted.slice();
@@ -2192,7 +2193,12 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
       const ni = nexts.indexOf(o);
       if (ni >= 0) {
         for (const p of players) if (!drafted[p.id]) surv[ni][p.id]++;
-        if (ni === 0) { const best = { QB: -999, RB: -999, WR: -999, TE: -999 }; for (const p of players) if (!drafted[p.id] && p.vbd > best[p.pos]) best[p.pos] = p.vbd; POS.forEach((pos) => { if (best[pos] > -999) expBest1[pos] += best[pos]; }); }
+        if (ni === 0) {
+          const best = { QB: -999, RB: -999, WR: -999, TE: -999 };
+          const bestId = { QB: null, RB: null, WR: null, TE: null };
+          for (const p of players) if (!drafted[p.id] && p.vbd > best[p.pos]) { best[p.pos] = p.vbd; bestId[p.pos] = p.id; }
+          POS.forEach((pos) => { if (best[pos] > -999) { expBest1[pos] += best[pos]; if (bestId[pos] != null) expBestTally[pos][bestId[pos]] = (expBestTally[pos][bestId[pos]] || 0) + 1; } });
+        }
         if (o === end) break;
         const cands = legalCands(candidatesOf(sortedAdp, drafted, 30), counts[t], cfg);
         let bc = cands[0], bs = -1e9;
@@ -2208,7 +2214,15 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
   }
   const pct = surv.map((arr) => { const m = {}; players.forEach((p) => (m[p.id] = Math.round((arr[p.id] / nSims) * 100))); return m; });
   POS.forEach((pos) => (expBest1[pos] /= nSims));
-  return { nexts, pct, expBest1 };
+  // Most-frequent "best available" player at your next pick, per position — the likely player you'd get if
+  // you wait. Picked as the mode across sims so the wait-cost line can name an actual player.
+  const expBestPlayer = {};
+  POS.forEach((pos) => {
+    let bId = null, bN = 0;
+    for (const id in expBestTally[pos]) if (expBestTally[pos][id] > bN) { bN = expBestTally[pos][id]; bId = +id; }
+    expBestPlayer[pos] = bId != null ? players.find((p) => p.id === bId) || null : null;
+  });
+  return { nexts, pct, expBest1, expBestPlayer };
 }
 
 // Survival odds for every player at an arbitrary OVERALL pick number (e.g. a pick you
@@ -11048,7 +11062,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
     let run = null;
     POS.forEach((pos) => { const c = recent.filter((x) => x === pos).length; if (c >= 3 && (!run || c > run.count)) run = { pos, count: c }; });
-    return { bestNow, waitCost, verdict, alts, impacts, run, myCounts, strat };
+    return { bestNow, waitCost, verdict, alts, impacts, run, myCounts, strat, expBestPlayer: simState.expBestPlayer || {} };
   };
   // Recommendation for the CURRENT pick on the clock (whoever it is).
   const advice = useMemo(() => adviceFor(picks.length, onClock, sims), [sims, picks, players, sortedAdp, draftedSet, onClock, cfg, strategy, done, dem]);
@@ -11953,7 +11967,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
   return (
     <div>
-      {tourOn && <CoachTour steps={TOUR_STEPS} onExit={() => setTourOn(false)} onStepTab={(t) => setTab(t)} optOut={tourOptOut} onOptOut={setTourNeverShow} />}
+      {tourOn && <CoachTour steps={TOUR_STEPS} onExit={() => { setTourOn(false); setTab("hub"); }} onStepTab={(t) => setTab(t)} optOut={tourOptOut} onOptOut={setTourNeverShow} />}
       <div className="hairline" style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", flexWrap: "wrap" }}>
         <button className="btn btn-mini" onClick={exit}>← {user ? (user.paid ? "Home" : "Library") : "Home"}</button>
         <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{league.name}</div>
@@ -12810,7 +12824,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       )}
                       {showMine && <div className="mut" style={{ fontSize: 11, marginTop: 9, fontStyle: "italic" }}>{predicting ? "Who the engine expects to fall to you — others between now and then are assumed gone." : "Best value for when your pick comes up — others between now and then are assumed gone."}</div>}
                       {!predicting && A && (<>
-                      <div className="mut" style={{ fontSize: 11.5, margin: "10px 0 4px", textTransform: "uppercase", letterSpacing: ".07em" }}>Alternatives</div>
+                      <div className="mut" style={{ fontSize: 11.5, margin: "10px 0 4px", textTransform: "uppercase", letterSpacing: ".07em" }}>
+                        <span className="info" onClick={(e) => showTip(e, [
+                          { t: "Alternatives", x: "Other strong picks for you here, beyond the top recommendation." },
+                          { t: "The %", x: "Survival odds — the simulations' estimate of the chance this player is still on the board at YOUR next pick. High % = likely to last, so you could wait; low % = grab him now or he's gone." },
+                          { t: `The place (e.g. 10th)`, x: "Where your team is projected to finish if you draft this player now — lower is better. Lets you compare how each alternative moves your projected finish." },
+                        ])} onMouseEnter={(e) => showTip(e, [
+                          { t: "Alternatives", x: "Other strong picks for you here, beyond the top recommendation." },
+                          { t: "The %", x: "Survival odds — the simulations' estimate of the chance this player is still on the board at YOUR next pick. High % = likely to last, so you could wait; low % = grab him now or he's gone." },
+                          { t: `The place (e.g. 10th)`, x: "Where your team is projected to finish if you draft this player now — lower is better. Lets you compare how each alternative moves your projected finish." },
+                        ])} onMouseLeave={hideTip}>Alternatives ⓘ</span>
+                      </div>
                       {A.alts.map((a) => (
                         <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, padding: "3px 0", borderBottom: "1px solid #16203340", fontSize: 12.5 }}>
                           <span onClick={(e) => showTip(e, makeOutlook(a, sims, false))} onMouseEnter={(e) => showTip(e, makeOutlook(a, sims, false))} onMouseLeave={hideTip} style={{ cursor: "help", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={a.pos} />{a.name}</span>
@@ -12822,21 +12846,35 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       ))}
                       <div className="mut" style={{ fontSize: 11.5, margin: "10px 0 4px", textTransform: "uppercase", letterSpacing: ".07em" }}>
                         <span className="info" onClick={(e) => showTip(e, [
-                          { t: "Take now vs. wait", x: "For each position: the best player on the board RIGHT NOW versus the best the simulations expect to survive to YOUR NEXT PICK." },
-                          { t: "Reading it", x: "\u201C+72 \u2192 ~+58 (\u221214)\u201D means waiting costs 14 points of value. \u201CSafe to wait\u201D means the pool holds its value until your turn." },
+                          { t: "Take now vs. wait", x: "For each position: the best player on the board RIGHT NOW versus the best the simulations expect to survive to YOUR NEXT PICK. Hover any row to see both players." },
+                          { t: "Reading it", x: "\u201C\u221214 pts if you wait\u201D means the drop-off from the best now to what's likely left at your pick is about 14 points of value. \u201CSafe to wait\u201D means the pool holds up — address other needs first." },
                         ])} onMouseEnter={(e) => showTip(e, [
-                          { t: "Take now vs. wait", x: "For each position: the best player on the board RIGHT NOW versus the best the simulations expect to survive to YOUR NEXT PICK." },
-                          { t: "Reading it", x: "\u201C+72 \u2192 ~+58 (\u221214)\u201D means waiting costs 14 points of value. \u201CSafe to wait\u201D means the pool holds its value until your turn." },
+                          { t: "Take now vs. wait", x: "For each position: the best player on the board RIGHT NOW versus the best the simulations expect to survive to YOUR NEXT PICK. Hover any row to see both players." },
+                          { t: "Reading it", x: "\u201C\u221214 pts if you wait\u201D means the drop-off from the best now to what's likely left at your pick is about 14 points of value. \u201CSafe to wait\u201D means the pool holds up — address other needs first." },
                         ])} onMouseLeave={hideTip}>Take now vs. wait ⓘ</span>
                       </div>
-                      {POS.map((pos) => A.bestNow[pos] && (
-                        <div key={pos} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "2.5px 0" }}>
-                          <span><Dot pos={pos} />{A.bestNow[pos].name}</span>
-                          <span className="num" style={{ color: A.waitCost[pos] > 14 ? "var(--red)" : A.waitCost[pos] < 4 ? "var(--green)" : "var(--ink)" }}>
-                            {A.waitCost[pos] >= 4 ? `+${A.bestNow[pos].vbd.toFixed(0)} → ~+${(A.bestNow[pos].vbd - A.waitCost[pos]).toFixed(0)} (−${A.waitCost[pos].toFixed(0)})` : "✓ safe to wait"}
+                      {POS.map((pos) => A.bestNow[pos] && (() => {
+                        const now = A.bestNow[pos];
+                        const later = A.expBestPlayer && A.expBestPlayer[pos];
+                        const cost = A.waitCost[pos];
+                        const safe = cost < 4;
+                        const rowTip = (e) => showTip(e, [
+                          { kind: "take", tone: safe ? "good" : cost > 14 ? "bad" : "neutral", x: `${pos}: ${safe ? "safe to wait" : `waiting costs ~${cost.toFixed(0)} pts of value`}` },
+                          { t: "Best now", tc: rankTierColor(now.pos, now.posRank), x: `${now.name} — ${now.pos}${now.posRank} · +${now.vbd.toFixed(0)} VBD · ${Math.round(now.pts)} pts` },
+                          later
+                            ? { t: "Likely at your pick", tc: rankTierColor(later.pos, later.posRank), x: `${later.name} — ${later.pos}${later.posRank} · +${later.vbd.toFixed(0)} VBD · ${Math.round(later.pts)} pts` }
+                            : { t: "Likely at your pick", x: "The simulations expect similar value to still be here." },
+                          { t: "", x: safe ? "The drop-off from now to your next pick is small — you can address other needs first." : `The best ${pos} on the board is worth about ${cost.toFixed(0)} more VBD than what the sims expect to survive to your pick. If you want this tier, now's the time.` },
+                        ]);
+                        return (
+                        <div key={pos} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "2.5px 0", cursor: "help" }} onMouseEnter={rowTip} onMouseLeave={hideTip}>
+                          <span><Dot pos={pos} />{now.name}</span>
+                          <span className="num" style={{ color: cost > 14 ? "var(--red)" : safe ? "var(--green)" : "var(--ink)" }}>
+                            {safe ? "✓ safe to wait" : `−${cost.toFixed(0)} pts if you wait`}
                           </span>
                         </div>
-                      ))}
+                        );
+                      })())}
                       </>)}
                       {/* When predicting, show a compact "what's recommended instead" hint if they differ. */}
                       {predicting && advice && advice.verdict && headP && advice.verdict.id !== headP.id && !showMine && (
@@ -13061,33 +13099,55 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <div className="panel" style={{ padding: 12 }}>
               <div className="disp" style={{ fontSize: 14, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--mut)", marginBottom: 8 }}>
                 <span className="info" onClick={(e) => showTip(e, [
-                  { t: "Position scarcity", x: "How many quality players are still available at each position, split by tier." },
-                  { t: "Elite / Strong", x: "Elite = tier 1 (true difference-makers). Strong = tiers 2–3 (clear starters)." },
-                  { t: "Why it matters", x: "When a position's elite/strong counts hit zero, the drop-off is real — that's your cue to prioritize it before the tier empties." },
+                  { t: "Position scarcity", x: "How many usable players are still on the board at each position, split by tier — so you can see which spots are drying up." },
+                  { t: "Elite / Starter / Depth", x: "Elite = true difference-makers. Starter = viable weekly starters in your format (e.g. through about WR28 or QB17 in superflex). Depth = rosterable pieces below the starter line." },
+                  { t: "Why it matters", x: "Late in a draft the elite tier is usually gone — what matters is whether a real STARTER is still available. When a position's elite + starter counts hit zero, grab one now or settle for streaming." },
                 ])} onMouseEnter={(e) => showTip(e, [
-                  { t: "Position scarcity", x: "How many quality players are still available at each position, split by tier." },
-                  { t: "Elite / Strong", x: "Elite = tier 1 (true difference-makers). Strong = tiers 2–3 (clear starters)." },
-                  { t: "Why it matters", x: "When a position's elite/strong counts hit zero, the drop-off is real — that's your cue to prioritize it before the tier empties." },
+                  { t: "Position scarcity", x: "How many usable players are still on the board at each position, split by tier — so you can see which spots are drying up." },
+                  { t: "Elite / Starter / Depth", x: "Elite = true difference-makers. Starter = viable weekly starters in your format (e.g. through about WR28 or QB17 in superflex). Depth = rosterable pieces below the starter line." },
+                  { t: "Why it matters", x: "Late in a draft the elite tier is usually gone — what matters is whether a real STARTER is still available. When a position's elite + starter counts hit zero, grab one now or settle for streaming." },
                 ])} onMouseLeave={hideTip}>Position scarcity ⓘ</span>
               </div>
               {(() => {
                 const avail = players.filter((p) => !draftedSet.has(p.id));
+                // Tier by POSITIONAL RANK (always defined), not absolute draft tier — otherwise late in a
+                // draft everything falls past the top tiers and every count reads 0. These thresholds ask a
+                // more useful question deep in a draft: is there still a startable STARTER at this position
+                // (a WR2, a QB1, a lead-ish RB), and how much falls below that into pure depth?
+                //   ELITE   = a genuine difference-maker still on the board
+                //   STARTER = a viable weekly starter in this format (roughly the last usable starting slot)
+                //   DEPTH   = rosterable bench/flex filler below the starter line
+                const sfLg = isSuperflex(cfg);
+                const nTeams = TEAMS;
+                // starter line = how many of this position realistically start across the league
+                const starterLine = (pos) => {
+                  if (pos === "QB") return sfLg ? Math.round(nTeams * 1.7) : nTeams;      // SF ≈ 1.7 QB/team
+                  if (pos === "TE") return (cfg.tePremMult || 0) > 0 ? Math.round(nTeams * 1.3) : nTeams;
+                  if (pos === "RB") return Math.round(nTeams * 2.5);                      // 2 RB + flex share
+                  if (pos === "WR") return Math.round(nTeams * 2.8);                      // 2-3 WR + flex share
+                  return nTeams;
+                };
+                const eliteLine = (pos) => (pos === "QB" || pos === "TE") ? Math.max(6, Math.round(nTeams * 0.6)) : 12;
                 const rows = POS.map((pos) => {
                   const pool = avail.filter((p) => p.pos === pos);
-                  const elite = pool.filter((p) => p.tier <= 1).length;
-                  const strong = pool.filter((p) => p.tier === 2 || p.tier === 3).length;
-                  const startable = pool.filter((p) => p.tier <= 5).length;
-                  return { pos, elite, strong, startable, total: pool.length };
+                  const eL = eliteLine(pos), sL = starterLine(pos);
+                  // rank by this position's own strength so posRank is meaningful even if the field's stale
+                  const elite = pool.filter((p) => p.posRank && p.posRank <= eL).length;
+                  const starter = pool.filter((p) => p.posRank && p.posRank > eL && p.posRank <= sL).length;
+                  const depth = pool.filter((p) => p.posRank && p.posRank > sL && (p.pts || 0) >= 20).length; // real bench pieces, not scrubs
+                  return { pos, elite, starter, depth, total: pool.length, sL };
                 });
-                const maxStartable = Math.max(1, ...rows.map((r) => r.startable));
+                const maxBar = Math.max(1, ...rows.map((r) => r.elite + r.starter + Math.min(r.depth, 10)));
                 return (
                   <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
                     {rows.map((r) => {
+                      const gone = r.elite === 0 && r.starter === 0;
                       const tip = (e) => showTip(e, [
-                        { kind: "take", tone: r.elite > 0 ? "good" : r.strong > 0 ? "neutral" : "bad", x: `${r.pos} — ${r.elite} elite, ${r.strong} strong left` },
-                        { t: "Startable (tiers 1–5)", x: `${r.startable} remain` },
-                        { t: "Total on board", x: `${r.total}` },
-                        ...(r.elite === 0 && r.strong === 0 ? [{ t: "Heads up", x: "The quality tier here is gone — expect a real drop-off in production from here." }] : []),
+                        { kind: "take", tone: r.elite > 0 ? "good" : r.starter > 0 ? "neutral" : "bad", x: `${r.pos} — ${r.elite} elite, ${r.starter} starter${r.starter === 1 ? "" : "s"} left` },
+                        { t: "Elite", x: `${r.elite} true difference-maker${r.elite === 1 ? "" : "s"} still on the board` },
+                        { t: "Starter", x: `${r.starter} viable weekly starter${r.starter === 1 ? "" : "s"} left (through roughly ${r.pos}${r.sL})` },
+                        { t: "Depth", x: `${r.depth} rosterable depth piece${r.depth === 1 ? "" : "s"} beyond that` },
+                        ...(gone ? [{ t: "Heads up", x: `No startable ${r.pos} left — from here it's bench/streaming value. If you still need one, don't wait.` }] : []),
                       ]);
                       return (
                         <div key={r.pos} style={{ cursor: "help" }} onMouseEnter={tip} onMouseLeave={hideTip}>
@@ -13095,20 +13155,21 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             <span style={{ fontWeight: 800, color: POS_COLOR[r.pos], fontSize: 13 }}>{r.pos}</span>
                             <span className="num" style={{ fontSize: 11.5 }}>
                               <b style={{ color: r.elite > 0 ? "var(--gold)" : "var(--mut)" }}>{r.elite}</b><span className="mut"> elite · </span>
-                              <b style={{ color: r.strong > 0 ? "var(--ink)" : "var(--mut)" }}>{r.strong}</b><span className="mut"> strong</span>
+                              <b style={{ color: r.starter > 0 ? "var(--ink)" : "var(--mut)" }}>{r.starter}</b><span className="mut"> starter · </span>
+                              <b style={{ color: "var(--mut)" }}>{r.depth}</b><span className="mut"> depth</span>
                             </span>
                           </div>
                           <div style={{ display: "flex", height: 8, borderRadius: 4, overflow: "hidden", background: "var(--panel2)" }}>
-                            <div style={{ width: `${(r.elite / maxStartable) * 100}%`, background: "var(--gold)" }} />
-                            <div style={{ width: `${(r.strong / maxStartable) * 100}%`, background: POS_COLOR[r.pos], opacity: 0.7 }} />
-                            <div style={{ width: `${(Math.max(0, r.startable - r.elite - r.strong) / maxStartable) * 100}%`, background: POS_COLOR[r.pos], opacity: 0.28 }} />
+                            <div style={{ width: `${(r.elite / maxBar) * 100}%`, background: "var(--gold)" }} />
+                            <div style={{ width: `${(r.starter / maxBar) * 100}%`, background: POS_COLOR[r.pos], opacity: 0.7 }} />
+                            <div style={{ width: `${(Math.min(r.depth, 10) / maxBar) * 100}%`, background: POS_COLOR[r.pos], opacity: 0.28 }} />
                           </div>
                         </div>
                       );
                     })}
                     <div style={{ display: "flex", gap: 12, marginTop: 2, fontSize: 10.5 }}>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 8, borderRadius: 2, background: "var(--gold)" }} /><span className="mut">Elite</span></span>
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 8, borderRadius: 2, background: "var(--mut)", opacity: 0.7 }} /><span className="mut">Strong</span></span>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 8, borderRadius: 2, background: "var(--mut)", opacity: 0.7 }} /><span className="mut">Starter</span></span>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 8, borderRadius: 2, background: "var(--mut)", opacity: 0.3 }} /><span className="mut">Depth</span></span>
                     </div>
                   </div>
