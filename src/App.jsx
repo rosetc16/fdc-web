@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bn";
+const BUILD_TAG = "2026.06.28bo";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13444,30 +13444,42 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     const cls = `bcell${ownedByYou ? " you" : ""}${ownedByYou && isOnClock ? " oncl" : ""}${isUpcoming ? " upcoming" : ""}${!p ? " empty" : ""}`;
                     // Steal/reach highlight: tint the cell green (steal) or red (reach) when its toggle is on,
                     // in THREE shades by magnitude — deeper = a bigger steal/reach, lighter = minimal but real.
-                    // For YOUR picks we keep the gold "you" identity via a gold outline on top of the tint.
                     const isRealPick = p && !isProjected && !isKeeper;
                     const showSteal = isRealPick && boardHi.steals && v >= 8;
                     const showReach = isRealPick && boardHi.reaches && v <= -8;
+                    // Is steal/reach highlighting active at all right now? When it is, we change how YOUR picks are
+                    // marked: instead of the gold background shade (which would fight the green/red tint), every
+                    // one of your picks gets a BRIGHT gold BORDER so it's always easy to spot — and the inside is
+                    // filled green/red if it's a steal/reach, or left plain if it's neutral. When steal/reach mode
+                    // is OFF, your picks keep the normal gold background shade (via the `.you` class).
+                    const shadeMode = boardHi.steals || boardHi.reaches;
                     let hiStyle = {};
                     if (showSteal || showReach) {
                       const mag = Math.abs(v);
                       const tier = mag >= 40 ? 2 : mag >= 20 ? 1 : 0; // 0=mild, 1=medium, 2=strong
-                      // green shades (steal): light → deep;  red shades (reach): light → deep
                       const green = ["rgba(95,208,168,.16)", "rgba(64,180,138,.34)", "rgba(46,150,112,.55)"];
                       const red = ["rgba(242,101,92,.16)", "rgba(214,80,72,.34)", "rgba(180,54,48,.55)"];
                       const ringG = ["rgba(95,208,168,.5)", "rgba(95,208,168,.75)", "rgba(95,208,168,.95)"];
                       const ringR = ["rgba(242,101,92,.5)", "rgba(242,101,92,.75)", "rgba(242,101,92,.95)"];
                       const bg = showSteal ? green[tier] : red[tier];
                       const ring = showSteal ? ringG[tier] : ringR[tier];
-                      // For YOUR picks in steal/reach mode: drop the gold "you" background tint entirely (so the
-                      // green/red steal/reach shade reads cleanly) and instead mark ownership with a BRIGHT gold
-                      // border around the cell. Others get the value-tier ring in the steal/reach color.
+                      // YOUR steal/reach pick: green/red fill + a bright gold border. We use an OUTLINE (not the
+                      // inset shadow, which the 3px left position-color border can hide) so the border is fully
+                      // visible on all four sides. Others get the value-tier ring in the steal/reach color.
                       hiStyle = ownedByYou
-                        ? { background: bg, backgroundColor: bg, boxShadow: "inset 0 0 0 2px #F2B63C" }
+                        ? { background: bg, backgroundColor: bg, outline: "2px solid #F2B63C", outlineOffset: "-2px", boxShadow: "inset 0 0 0 2px #F2B63C" }
                         : { background: bg, boxShadow: `inset 0 0 0 ${tier + 1}px ${ring}` };
+                    } else if (shadeMode && ownedByYou && isRealPick) {
+                      // YOUR neutral pick while steal/reach mode is on: no green/red fill, but still give it the
+                      // bright gold border so it's easy to find among the tinted cells. (Previously these had no
+                      // marker and were nearly invisible.)
+                      hiStyle = { background: "transparent", outline: "2px solid #F2B63C", outlineOffset: "-2px", boxShadow: "inset 0 0 0 2px #F2B63C" };
                     }
+                    // Suppress the CSS `.you` gold background shade whenever steal/reach mode is active, so the
+                    // border-based marking above reads cleanly (the class shade only applies when mode is off).
+                    const cls2 = shadeMode && ownedByYou ? cls.replace(" you", "") : cls;
                     return (
-                      <div key={`${r}-${col}`} className={cls}
+                      <div key={`${r}-${col}`} className={cls2}
                         style={{ borderLeft: p ? `3px solid ${POS_COLOR[p.pos]}` : undefined, opacity: p ? (isProjected ? 0.9 : 1) : undefined, ...hiStyle }}
                         onMouseEnter={p ? (e) => showTip(e, isKeeper ? [
                           { t: "Keeper", x: `${pickLabel(o)} — ${teamAt(o) === userIdx ? "You" : TEAM_NAMES[teamAt(o)]}` },
