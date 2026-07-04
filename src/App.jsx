@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bo";
+const BUILD_TAG = "2026.06.28bp";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3110,7 +3110,7 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .bcell.empty{opacity:.4}
 .bcell .pl{font-size:11.5px;font-weight:700;line-height:1.15;word-break:break-word}
 .bcell .lbl{font-size:9px;display:flex;align-items:center;gap:3px;opacity:.85}
-.bcell .posdot{display:inline-block;width:14px;text-align:center;font-size:8px;font-weight:800;border-radius:3px;padding:0 2px;color:#0a0a0a}
+.bcell .posdot{display:inline-flex;align-items:center;justify-content:center;min-width:16px;width:auto;height:13px;text-align:center;font-size:8.5px;font-weight:800;border-radius:3px;padding:0 3px;color:#0a0a0a;line-height:1}
 .bcell .val{font-size:9px;font-weight:700;margin-top:1px}
 /* --- Availability tab (modern) --- */
 .availrow{display:grid;align-items:center;gap:10px;padding:9px 12px;border-radius:11px;background:var(--panel2);border:1px solid var(--line);transition:border-color .12s,transform .1s}
@@ -11599,7 +11599,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       case "floor": return <span className="mut">{p.floor}</span>;
       case "ceil": return <span className="mut">{p.ceil}</span>;
       case "vbd": return <span style={{ color: p.vbd > 0 ? "var(--ink)" : "var(--mut)" }}>{p.vbd > 0 ? `+${p.vbd.toFixed(0)}` : p.vbd.toFixed(0)}</span>;
-      case "rank": return <span style={{ color: POS_COLOR[p.pos] || "var(--mut)" }}>{p.pos}{p.posRank}</span>;
+      case "rank": return <span style={{ color: rankTierColor(p.pos, p.posRank) || "var(--mut)" }}>{p.pos}{p.posRank}</span>;
       case "vbdTier": return <span className="mut">T{p.vbdTier}</span>;
       case "adpTier": return <span className="mut">T{p.adpTier}</span>;
       case "mockAdp": { const v = mockAdp.avg[p.id]; return v != null ? <span title={`across ${mockAdp.cnt[p.id]} of ${mockAdp.n} mocks`}>{v.toFixed(1)}</span> : <span className="mut">—</span>; }
@@ -12043,7 +12043,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   { kind: "stats", chips: [`${v.pos}${v.posRank}`, `+${v.vbd.toFixed(0)} VBD`, `${Math.round(v.pts)} pts`, `wait costs ${Math.max(0, adv.waitCost[v.pos]).toFixed(0)}`, ...(adv.impacts[v.id] ? [`projects you ${ordinal(adv.impacts[v.id].rank)}`] : [])] },
                   { kind: "why", x: whyPick(v, adv.waitCost, true, adv.myCounts) },
                   ...(cands.length > 1 ? [{ kind: "altheader", x: "Potential alternatives" }] : []),
-                  ...cands.slice(1).map((c) => ({ tc: POS_COLOR[c.p.pos], t: `${c.p.pos}${c.p.posRank}`, x: `${c.p.name} · ${Math.round(c.p.pts)} pts` })),
+                  ...cands.slice(1).map((c) => ({ tc: rankTierColor(c.p.pos, c.p.posRank), t: `${c.p.pos}${c.p.posRank}`, x: `${c.p.name} · ${Math.round(c.p.pts)} pts` })),
                 ];
               };
               let cardTipContent = null;
@@ -12056,7 +12056,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   const cands5 = cur && cur.cands5 && cur.cands5.length > 1 ? cur.cands5 : null;
                   if (cands5) cardTipContent = [
                     { kind: "take", tone: "neutral", x: `${pickLabel(picks.length)} · ${TEAM_NAMES[onClock]}${TEAM_OWNERS[onClock] ? ` (@${TEAM_OWNERS[onClock]})` : ""} — engine's top candidates` },
-                    ...cands5.map((c, ci) => ({ tc: ci === 0 ? "var(--gold)" : POS_COLOR[c.p.pos], t: `${c.prob != null ? c.prob + "%" : ""}`, x: `${ci === 0 ? "★ " : ""}${c.p.name} — ${c.p.pos}${c.p.posRank}${ci === 0 ? " (expected)" : ""}` })),
+                    ...cands5.map((c, ci) => ({ tc: ci === 0 ? "var(--gold)" : rankTierColor(c.p.pos, c.p.posRank), t: `${c.prob != null ? c.prob + "%" : ""}`, x: `${ci === 0 ? "★ " : ""}${c.p.name} — ${c.p.pos}${c.p.posRank}${ci === 0 ? " (expected)" : ""}` })),
                     { t: "", x: "★ = who the engine expects here. Others are the next-most-likely picks if the board breaks differently." },
                   ];
                 }
@@ -12159,7 +12159,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       { kind: "stats", chips: [`${pick.pos}${pick.posRank}`, `+${pick.vbd != null ? pick.vbd.toFixed(0) : "0"} VBD`, `${Math.round(pick.pts || 0)} pts`, `ADP ${pick.adp != null ? pick.adp.toFixed(0) : "—"}`] },
                       { kind: "why", x: whyPick(pick, advice && advice.waitCost, true, myCountsForWhy) },
                       ...(alts.length ? [{ kind: "altheader", x: "Potential alternatives" }] : []),
-                      ...alts.map((c) => ({ tc: POS_COLOR[c.p.pos], t: `${c.p.pos}${c.p.posRank}`, x: `${c.p.name} · ${Math.round(c.p.pts || 0)} pts` })),
+                      ...alts.map((c) => ({ tc: rankTierColor(c.p.pos, c.p.posRank), t: `${c.p.pos}${c.p.posRank}`, x: `${c.p.name} · ${Math.round(c.p.pts || 0)} pts` })),
                     ]);
                   };
                   const balTip = recTip(primaryLabel, balPick, selCands, "var(--gold)");
@@ -13227,8 +13227,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   })()}
                 </div>
               </div>
-              {/* Bye-week outlook — below Position depth on the hub tab */}
-              <ByeWeekWidget roster={selRoster} req={REQ_F(isSuperflex(cfg))} isDynasty={cfg.type === "dynasty" || cfg.type === "keeper"} />
             </div>
 
             {/* Row B: starting lineup (left) + [your next pick over roster profile] (right) */}
@@ -13979,15 +13977,40 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   const va = k === "val" ? valByTeam[a] : k === "pts" ? proj.pts[a] : k === "rank" ? proj.rank[a] : grades[a].z;
                   const vb = k === "val" ? valByTeam[b] : k === "pts" ? proj.pts[b] : k === "rank" ? proj.rank[b] : grades[b].z;
                   return (va - vb) * sumSort.dir;
-                }).map((i) => (
+                }).map((i) => {
+                  // Hover for VALUE and GRADE cells: this team's top 10 picks with the value we assigned each.
+                  const teamPicks = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => teamAt(x.o) === i && x.p);
+                  const valuedPicks = teamPicks.map((x) => ({ ...x, v: pickValue(x.p, x.o, cfg) }))
+                    .sort((a, b) => b.v - a.v).slice(0, 10);
+                  const gradeTip = (e) => showTip(e, [
+                    { kind: "take", tone: i === userIdx ? "good" : "neutral", x: `${i === userIdx ? "Your team" : (TEAM_NAMES[i] || `Team ${i + 1}`)} — top picks by value (grade ${grades[i].g})` },
+                    ...(valuedPicks.length ? valuedPicks.map((x) => ({
+                      t: `${x.v > 0 ? "+" : ""}${x.v}`,
+                      tc: x.v > 2 ? "var(--green)" : x.v < -2 ? "var(--red)" : "var(--mut)",
+                      x: `${pickLabel(x.o)} · ${x.p.name} — ${x.p.pos}${x.p.posRank}`,
+                    })) : [{ t: "—", x: "No picks yet" }]),
+                    { t: "", x: "Value = spots gained vs. his ADP (positive = a steal, negative = a reach)." },
+                  ]);
+                  // Hover for PROJ PTS cell: this team's full projected starting lineup.
+                  const teamRosterArr = (proj && proj.rosters && proj.rosters[i]) || teamPicks.map((x) => x.p);
+                  const ptsTip = (e) => showTip(e, [
+                    { kind: "take", tone: i === userIdx ? "good" : "neutral", x: `${i === userIdx ? "Your team" : (TEAM_NAMES[i] || `Team ${i + 1}`)} — projected starting lineup (${proj.pts[i]} pts)` },
+                    ...lineupSlots(teamRosterArr || [], cfg.sf).slots.map((s) => ({
+                      t: s.slot,
+                      tc: s.p ? rankTierColor(s.p.pos, s.p.posRank) : "var(--mut)",
+                      x: s.p ? `${s.p.name} — ${s.p.pos}${s.p.posRank} · ${Math.round(s.p.pts)} pts` : "— empty —",
+                    })),
+                  ]);
+                  return (
                   <tr key={i} style={{ color: i === userIdx ? "var(--gold)" : "var(--ink)" }}>
                     <td style={{ padding: "3px 0" }}>{i === userIdx ? `${TEAM_NAMES[i] || "Your team"}` : TEAM_NAMES[i]}{i === userIdx && <span className="mut" style={{ fontSize: 9, marginLeft: 5 }}>YOU</span>}</td>
-                    <td className="num" style={{ textAlign: "right", background: valBg(valByTeam[i]) }}>{valByTeam[i] > 0 ? `+${valByTeam[i]}` : valByTeam[i]}</td>
-                    <td className="num" style={{ textAlign: "right" }}>{proj.pts[i]}</td>
+                    <td className="num" style={{ textAlign: "right", background: valBg(valByTeam[i]), cursor: "help" }} onMouseEnter={gradeTip} onMouseLeave={hideTip}>{valByTeam[i] > 0 ? `+${valByTeam[i]}` : valByTeam[i]}</td>
+                    <td className="num" style={{ textAlign: "right", cursor: "help" }} onMouseEnter={ptsTip} onMouseLeave={hideTip}>{proj.pts[i]}</td>
                     <td className="num" style={{ textAlign: "right" }}>{ordinal(proj.rank[i])}</td>
-                    <td style={{ textAlign: "center", fontWeight: 700 }}>{grades[i].g}</td>
+                    <td style={{ textAlign: "center", fontWeight: 700, cursor: "help" }} onMouseEnter={gradeTip} onMouseLeave={hideTip}>{grades[i].g}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -14009,7 +14032,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           <span className="mut num" style={{ width: 34, flexShrink: 0, fontSize: 10.5 }}>{pickLabel(r.o)}</span>
                           <Dot pos={r.p.pos} />
                           <span style={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.p.name}</span>
-                          <span className="mut" style={{ fontSize: 10 }}>{r.p.pos}{r.p.posRank}</span>
+                          <span className="num" style={{ fontSize: 10, color: rankTierColor(r.p.pos, r.p.posRank) }}>{r.p.pos}{r.p.posRank}</span>
                           <span className="num" style={{ width: 44, textAlign: "right", fontWeight: 700, color: r.v > 2 ? "#5FD0A8" : r.v < -2 ? "#F2655C" : "var(--mut)" }}>{r.v > 0 ? `+${r.v}` : r.v}</span>
                         </div>
                       ))}
@@ -14055,7 +14078,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             const atPos = (rosterI || []).filter((pp) => pp && pp.pos === pos).sort((a, b) => (b.pts || 0) - (a.pts || 0));
                             const cellTip = (e) => showTip(e, [
                               { kind: "take", tone: lvl === 0 ? "good" : lvl === 2 ? "bad" : "neutral", x: `${mine ? "Your" : TEAM_NAMES[i]} ${pos} — ${lvl === 0 ? "top third" : lvl === 1 ? "middle" : "bottom third"} of the league` },
-                              ...(atPos.length ? atPos.map((pp) => ({ tc: POS_COLOR[pos], t: `${pp.pos}${pp.posRank || ""}`, x: `${pp.name} · ${Math.round(pp.pts || 0)} pts${pp.vbd != null ? ` · ${pp.vbd > 0 ? "+" : ""}${Math.round(pp.vbd)} VBD` : ""}` })) : [{ t: "—", x: "No players drafted here yet" }]),
+                              ...(atPos.length ? atPos.map((pp) => ({ tc: rankTierColor(pp.pos, pp.posRank), t: `${pp.pos}${pp.posRank || ""}`, x: `${pp.name} · ${Math.round(pp.pts || 0)} pts${pp.vbd != null ? ` · ${pp.vbd > 0 ? "+" : ""}${Math.round(pp.vbd)} VBD` : ""}` })) : [{ t: "—", x: "No players drafted here yet" }]),
                             ]);
                             return <td key={pos} style={{ textAlign: "center", padding: "3px 2px" }}><span onMouseEnter={cellTip} onMouseLeave={hideTip} style={{ display: "inline-block", minWidth: 22, fontSize: 10.5, fontWeight: 700, color: lvlColor(lvl), background: lvlBg(lvl), borderRadius: 5, padding: "2px 6px", cursor: "help" }}>{lvl === 0 ? "Strong" : lvl === 1 ? "OK" : "Thin"}</span></td>;
                           })}
@@ -14087,7 +14110,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   ...list.map(({ p, overall }) => {
                     const t = teamAt(overall);
                     const mine = t === userIdx;
-                    return { t: `${p.pos}${p.posRank}`, tc: mine ? "var(--gold)" : POS_COLOR[pos], x: `#${overall + 1} — ${p.name} → ${mine ? "YOUR TEAM" : (TEAM_NAMES[t] || `Team ${t + 1}`)}` };
+                    return { t: `${p.pos}${p.posRank}`, tc: mine ? "var(--gold)" : rankTierColor(p.pos, p.posRank), x: `#${overall + 1} — ${p.name} → ${mine ? "YOUR TEAM" : (TEAM_NAMES[t] || `Team ${t + 1}`)}` };
                   }),
                 ]);
                 return (
