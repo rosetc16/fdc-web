@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bp";
+const BUILD_TAG = "2026.06.28bq";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2732,6 +2732,80 @@ function posQualityTiers(rostersByTeam, cfg) {
     });
   });
   return { level, score: scoreByTeam };
+}
+// ── Guided spotlight tour ──────────────────────────────────────────────────────────────────────
+// A coach-mark tour that dims the whole screen, cuts a "spotlight" hole around one target element at a
+// time, and shows a tooltip card explaining it. Next/Back step through; Dismiss exits any time.
+//   steps: [{ sel: '[data-tour="board"]', title, body, tab? }]  — sel is a CSS selector for the target.
+//   onStepTab(tab): switch the draft-room tab a step needs before highlighting its target.
+function CoachTour({ steps, onExit, onStepTab }) {
+  const [i, setI] = useState(0);
+  const [rect, setRect] = useState(null);
+  const step = steps[i] || null;
+  useEffect(() => { if (step && step.tab && onStepTab) onStepTab(step.tab); }, [i]);
+  useLayoutEffect(() => {
+    if (!step) return;
+    let cancelled = false;
+    const measure = () => {
+      if (cancelled) return;
+      const el = document.querySelector(step.sel);
+      if (!el) { setRect(null); return; }
+      const r = el.getBoundingClientRect();
+      setRect({ x: r.left - 6, y: r.top - 6, w: r.width + 12, h: r.height + 12, cx: r.left + r.width / 2, cy: r.top + r.height / 2 });
+    };
+    const el = document.querySelector(step.sel);
+    if (el && el.scrollIntoView) { try { el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" }); } catch (e) { el.scrollIntoView(); } }
+    measure();
+    const t1 = setTimeout(measure, 120);
+    const t2 = setTimeout(measure, 400);
+    const onWin = () => measure();
+    window.addEventListener("scroll", onWin, true);
+    window.addEventListener("resize", onWin);
+    return () => { cancelled = true; clearTimeout(t1); clearTimeout(t2); window.removeEventListener("scroll", onWin, true); window.removeEventListener("resize", onWin); };
+  }, [i, step && step.sel]);
+  if (!step) return null;
+  const W = typeof window !== "undefined" ? window.innerWidth : 1400;
+  const H = typeof window !== "undefined" ? window.innerHeight : 900;
+  const isLast = i === steps.length - 1;
+  const cardW = 320, cardH = 172, M = 14;
+  let cardTop, cardLeft;
+  if (rect) {
+    if (rect.y + rect.h + cardH + M < H) cardTop = rect.y + rect.h + 12;
+    else if (rect.y - cardH - M > 0) cardTop = rect.y - cardH - 12;
+    else cardTop = Math.min(H - cardH - M, Math.max(M, rect.cy - cardH / 2));
+    cardLeft = Math.min(W - cardW - M, Math.max(M, rect.cx - cardW / 2));
+  } else { cardTop = H / 2 - cardH / 2; cardLeft = W / 2 - cardW / 2; }
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 9999 }}>
+      <svg width={W} height={H} style={{ position: "absolute", inset: 0, pointerEvents: "auto" }}>
+        <defs>
+          <mask id="tour-hole">
+            <rect x="0" y="0" width={W} height={H} fill="white" />
+            {rect && <rect x={rect.x} y={rect.y} width={rect.w} height={rect.h} rx="10" fill="black" />}
+          </mask>
+        </defs>
+        <rect x="0" y="0" width={W} height={H} fill="rgba(6,9,13,0.78)" mask="url(#tour-hole)" />
+        {rect && <rect x={rect.x} y={rect.y} width={rect.w} height={rect.h} rx="10" fill="none" stroke="var(--gold)" strokeWidth="2.5" />}
+      </svg>
+      <div style={{ position: "absolute", top: cardTop, left: cardLeft, width: cardW, background: "var(--panel)", border: "1px solid var(--gold)", borderRadius: 12, padding: 16, boxShadow: "0 10px 40px rgba(0,0,0,.5)", pointerEvents: "auto" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+          <span className="mut" style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase" }}>Step {i + 1} of {steps.length}</span>
+          <button onClick={onExit} style={{ background: "none", border: "none", color: "var(--mut)", cursor: "pointer", fontSize: 11, fontFamily: "inherit", padding: 0 }}>Dismiss ✕</button>
+        </div>
+        <div className="disp" style={{ fontSize: 16, fontWeight: 700, color: "var(--gold)", marginBottom: 5 }}>{step.title}</div>
+        <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--ink)", marginBottom: 12 }}>{step.body}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "flex", gap: 4, flex: 1 }}>
+            {steps.map((_, k) => <span key={k} style={{ width: k === i ? 14 : 6, height: 6, borderRadius: 3, background: k === i ? "var(--gold)" : "var(--line2)", transition: "width .2s" }} />)}
+          </div>
+          {i > 0 && <button className="btn btn-mini" onClick={() => setI((n) => Math.max(0, n - 1))}>Back</button>}
+          {!isLast
+            ? <button className="btn btn-mini btn-gold" onClick={() => setI((n) => Math.min(steps.length - 1, n + 1))}>Next →</button>
+            : <button className="btn btn-mini btn-gold" onClick={onExit}>Done ✓</button>}
+        </div>
+      </div>
+    </div>
+  );
 }
 // Bye-week outlook widget. Redraft-focused: shows how your roster's byes cluster, at a macro level (which
 // weeks you're most exposed) and per position (do all your RBs share a bye?), so you can weigh a complementary
@@ -10562,6 +10636,19 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const closeIntro = () => { try { if (introAuto && introDont && window.localStorage) window.localStorage.setItem(introKey, "1"); } catch (e) {} setShowIntro(false); };
   // Open the guide on demand (from the hub's "Tips" button), optionally to a specific tab.
   const openGuide = (tab) => { setIntroTab(tab || "how"); setIntroAuto(false); setShowIntro(true); };
+  // Guided spotlight tour — steps walk through the key parts of the draft room. Each step targets an element
+  // by a data-tour attribute, describes it, and (optionally) switches to the tab that element lives on.
+  const [tourOn, setTourOn] = useState(false);
+  const TOUR_STEPS = [
+    { sel: '[data-tour="tabs"]', tab: "hub", title: "The five views", body: "Everything lives under these tabs: Hub (your team + who to pick), Team analysis, Draft Board (the full player pool), Trade, and Summary (grades). We'll hit the important ones." },
+    { sel: '[data-tour="recommendation"]', tab: "hub", title: "Your recommendation", body: "The engine's top pick for you right now, with alternatives. It weighs your roster needs, value vs. ADP, positional runs, and your strategy. Toggle between the selected strategy and your build." },
+    { sel: '[data-tour="board"]', tab: "board", title: "The draft board", body: "Every available player, sortable by any column. ADP is the market; RANK is colored by strength (green = elite, red = deep). Toggle Steals/Reaches to highlight value as picks come in." },
+    { sel: '[data-tour="strategy"]', tab: "board", title: "Pick your strategy", body: "Tell the engine how to think — chase market value, build for your roster, favor upside, or follow strict ADP. The recommendation and board react instantly to what you choose." },
+    { sel: '[data-tour="myranks"]', tab: "board", title: "My Ranks & Platform Ranks", body: "Build your own board (drives the My ADP & Blend columns), or enter your platform's ADP under Platform Ranks (drives the Edge column). Two separate tools — both optional." },
+    { sel: '[data-tour="columns"]', tab: "board", title: "Customize your columns", body: "Show or hide any column — projections, VBD, team role, availability odds, your Edge, and more. Set the board up the way you draft." },
+    { sel: '[data-tour="summary"]', tab: "hub", title: "Live grades & recap", body: "The Summary tab grades every team live, projects the final standings, and recaps your pick-by-pick value. Hover any team for their top picks or full projected lineup." },
+    { sel: '[data-tour="settings"]', tab: "hub", title: "Settings anytime", body: "Adjust scoring, roster slots, teams, or your draft slot mid-draft — in a Simple or Complex view. That's the tour! Explore freely, and hover anything for a tip." },
+  ];
   const toggleQueue = (name) => setQueue((prev) => {
     const next = new Set(prev);
     if (next.has(name)) next.delete(name); else next.add(name);
@@ -11833,6 +11920,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
   return (
     <div>
+      {tourOn && <CoachTour steps={TOUR_STEPS} onExit={() => setTourOn(false)} onStepTab={(t) => setTab(t)} />}
       <div className="hairline" style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", flexWrap: "wrap" }}>
         <button className="btn btn-mini" onClick={exit}>← {user ? (user.paid ? "Home" : "Library") : "Home"}</button>
         <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{league.name}</div>
@@ -11892,7 +11980,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       )}
       {!done && (
         <div className="hairline" style={{ background: "var(--panel2)" }}>
-          <div className="ticker">
+          <div className="ticker" data-tour="recommendation">
             {(() => {
               // YOUR STATUS block — a compact "how am I doing" panel: contention lane (win-now / balanced /
               // rebuild), your biggest 2-3 positional needs, and where you're currently projected to finish.
@@ -12225,9 +12313,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         </div>
       )}
 
-      <div className="hairline tabbar" style={{ display: "flex", padding: "0 10px", overflowX: "auto", background: "var(--bg)" }}>
+      <div className="hairline tabbar" data-tour="tabs" style={{ display: "flex", padding: "0 10px", overflowX: "auto", background: "var(--bg)" }}>
         {[["hub","Hub"],["myteam","Team analysis"],["board","Draft board"],["depth","Depth charts"],["trade","Trade"],["summary","Summary"],["settings","Settings"]].map(([k, label]) => (
-          <button key={k} className={`tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>{label}</button>
+          <button key={k} className={`tab ${tab === k ? "on" : ""}`} data-tour={k === "summary" ? "summary" : k === "settings" ? "settings" : undefined} onClick={() => setTab(k)}>{label}</button>
         ))}
       </div>
       </div>
@@ -12354,12 +12442,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <button className="btn btn-mini" style={{ borderColor: "var(--gold)", color: "var(--gold)" }}
                 onClick={() => openGuide("tips")} title="How to use this Hub, plus power-user tips">
                 <i className="ti ti-bulb" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Tips</button>
+              <button className="btn btn-mini" style={{ borderColor: "var(--gold)", color: "var(--gold)" }}
+                onClick={() => { setShowIntro(false); setTourOn(true); }} title="A guided walkthrough that spotlights each part of the draft room">
+                <i className="ti ti-route" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Take a tour</button>
               {["ALL", ...POS].map((p) => (
                 <button key={p} className="btn btn-mini" style={{ borderColor: posFilter === p ? "var(--gold)" : "var(--line)" }} onClick={() => setPosFilter(p)}>{p}</button>
               ))}
               <button className="btn btn-mini" style={{ borderColor: rookieOnly ? "var(--gold)" : "var(--line)", color: rookieOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => setRookieOnly((r) => !r)}>Rookies</button>
               <button className="btn btn-mini" style={{ borderColor: queueOnly ? "var(--gold)" : "var(--line)", color: queueOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => setQueueOnly((q) => !q)} title="Show only the players you've starred for this league. Star players with the star next to their name; your queue saves automatically."><i className="ti ti-star" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Priority{queue.size ? ` (${queue.size})` : ""}</button>
-              <div style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--gold)", borderRadius: 8, padding: "3px 8px 3px 10px", background: "#1A150A" }} title="Strategy lens — reshapes the board AND your advice toward an approach. Balanced/ADP follow the market; the others tilt toward value, upside, youth, your build, or a position.">
+              <div data-tour="strategy" style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--gold)", borderRadius: 8, padding: "3px 8px 3px 10px", background: "#1A150A" }} title="Strategy lens — reshapes the board AND your advice toward an approach. Balanced/ADP follow the market; the others tilt toward value, upside, youth, your build, or a position.">
                 <i className="ti ti-adjustments" style={{ fontSize: 13, color: "var(--gold)" }} aria-hidden="true" />
                 <span className="gold" style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".03em" }}>STRATEGY</span>
                 <select className="gs" style={{ fontSize: 12.5, padding: "4px 6px", border: "none", background: "transparent", fontWeight: 600 }} value={strategy} onChange={(e) => { setStrategy(e.target.value); setManualSort(false); }}>
@@ -12386,9 +12477,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               </button>
               <button className="btn btn-mini" onClick={() => setMyTeamOpen(true)} title="See your current roster, projected points, and lineup — without leaving the board"><i className="ti ti-users" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Show my team</button>
               <button className="btn btn-mini" onClick={() => setTrendsOpen(true)} title="See how the board is moving across your other drafts in this format — who's going early, who's sliding, and positional runs by round"><i className="ti ti-chart-histogram" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trends</button>
-              <button className="btn btn-mini" onClick={() => setRanksWarn(true)} title="My Ranks (your personal board → My ADP & Blend) and Platform Ranks (your platform's ADP → the Edge column)"><i className="ti ti-list-numbers" style={{ fontSize: 13 }} aria-hidden="true" /> My ranks</button>
+              <button className="btn btn-mini" data-tour="myranks" onClick={() => setRanksWarn(true)} title="My Ranks (your personal board → My ADP & Blend) and Platform Ranks (your platform's ADP → the Edge column)"><i className="ti ti-list-numbers" style={{ fontSize: 13 }} aria-hidden="true" /> My ranks</button>
               <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — who traded which pick to whom. The board updates instantly."><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks</button>
-              <button className="btn btn-mini" onClick={() => setColMenu((m) => !m)}><i className="ti ti-columns" style={{ fontSize: 13 }} aria-hidden="true" /> Columns</button>
+              <button className="btn btn-mini" data-tour="columns" onClick={() => setColMenu((m) => !m)}><i className="ti ti-columns" style={{ fontSize: 13 }} aria-hidden="true" /> Columns</button>
               {colMenu && (
                 <div className="panel" style={{ position: "absolute", right: 10, top: 46, zIndex: 30, padding: 12, width: 252, boxShadow: "0 10px 30px #000C" }}>
                   <div className="mut" style={{ fontSize: 10.5, marginBottom: 8, lineHeight: 1.4 }}>You're editing the <b style={{ color: "var(--gold)" }}>{boardMode === "stats" ? "Stats" : "Value"}</b> view. ADP stays pinned on the left. {boardMode === "stats" ? "Switch to Value (top of board) to edit valuation & demographics." : "Switch to Stats (top of board) to choose projected-stat columns."}</div>
@@ -12447,7 +12538,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 </div>
               )}
             </div>
-            <div style={{ maxHeight: 540, overflow: "auto" }}>
+            <div data-tour="board" style={{ maxHeight: 540, overflow: "auto" }}>
               <table className="board">
                 <thead>
                   <tr className="sechead">
@@ -14435,10 +14526,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             </div>
 
             {/* Toggle: How to use ↔ Tips (deeper dive) */}
-            <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden", marginBottom: 16 }}>
-              {[["how", "How to use"], ["tips", "Tips & deeper dive"]].map(([k, l]) => (
-                <button key={k} className="btn" style={{ borderRadius: 0, border: "none", fontSize: 12.5, padding: "6px 14px", background: introTab === k ? "var(--gold)" : "transparent", color: introTab === k ? "#151002" : "var(--ink)", fontWeight: introTab === k ? 700 : 400 }} onClick={() => setIntroTab(k)}>{l}</button>
-              ))}
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+              <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }}>
+                {[["how", "How to use"], ["tips", "Tips & deeper dive"]].map(([k, l]) => (
+                  <button key={k} className="btn" style={{ borderRadius: 0, border: "none", fontSize: 12.5, padding: "6px 14px", background: introTab === k ? "var(--gold)" : "transparent", color: introTab === k ? "#151002" : "var(--ink)", fontWeight: introTab === k ? 700 : 400 }} onClick={() => setIntroTab(k)}>{l}</button>
+                ))}
+              </div>
+              <div style={{ flex: 1 }} />
+              <button className="btn btn-gold btn-mini" style={{ fontSize: 12.5, padding: "6px 14px" }} onClick={() => { closeIntro(); setTourOn(true); }} title="A guided walkthrough that spotlights each part of the draft room, one at a time">
+                <i className="ti ti-route" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Take the guided tour
+              </button>
             </div>
 
             {introTab === "how" ? (<>
