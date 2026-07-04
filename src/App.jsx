@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bm";
+const BUILD_TAG = "2026.06.28bn";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1057,7 +1057,17 @@ let LIVE_ADP_SPARSE = false; // true when live ADP is too thin to trust → engi
 // looks flat by our heuristics, it's the authoritative market for THAT draft, so we don't second-guess it.
 // Mock drafts leave this false and keep the full guard + value-rebuild machinery.
 let TRUST_LIVE_ADP = false;
-export function setTrustLiveAdp(on) { TRUST_LIVE_ADP = !!on; }
+let LAST_PACK = null; // the most recent pack passed to applyLivePack, so we can re-derive if trust changes
+export function setTrustLiveAdp(on) {
+  const next = !!on;
+  if (next === TRUST_LIVE_ADP) return false;
+  TRUST_LIVE_ADP = next;
+  // The trust flag changes whether we treat the live ADP as authoritative (vs falling back to value ranking).
+  // Because the pack may have been applied BEFORE this flag was set (the flag is set in the build memo, the
+  // pack arrives async), re-apply the last pack now so the ADP/sparse decision reflects the correct trust.
+  if (LAST_PACK) { try { applyLivePack(LAST_PACK, true); } catch (e) {} }
+  return true;
+}
 let LIVE_PACK_FORMAT = null;     // the format key the backend actually served (for display/debug)
 let LIVE_PACK_PUB_FORMAT = null; // the PUBLISHED-ADP format bucket actually used (null if none matched)
 export function isLivePackLoaded() { return LIVE_LOADED; }
@@ -1065,8 +1075,9 @@ export function isLivePackLoaded() { return LIVE_LOADED; }
 
 // Build engine structures from the backend player-pack response. Keyed by player name (the engine's
 // key). We keep only players with a usable position and (ADP or projection), already filtered server-side.
-export function applyLivePack(pack) {
+export function applyLivePack(pack, isReapply) {
   if (!pack || !Array.isArray(pack.players) || pack.players.length === 0) return false;
+  LAST_PACK = pack; // remember it so a later trust-flag change can re-derive the board
   const raw = [], stats = {}, meta = {};
   const seen = new Set();
   // Map Sleeper's granular positions into the engine's known buckets. Anything we can't place
