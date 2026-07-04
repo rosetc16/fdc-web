@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28br";
+const BUILD_TAG = "2026.06.28bs";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2741,42 +2741,44 @@ function posQualityTiers(rostersByTeam, cfg) {
 function CoachTour({ steps, onExit, onStepTab, onOpenGuide }) {
   const [i, setI] = useState(0);
   const [rect, setRect] = useState(null);
+  const [rect2, setRect2] = useState(null); // optional secondary highlight (e.g. the tab button to click)
   const step = steps[i] || null;
   useEffect(() => { if (step && step.tab && onStepTab) onStepTab(step.tab); }, [i]);
   useLayoutEffect(() => {
     if (!step) return;
     let cancelled = false;
     let tries = 0;
-    setRect(null); // clear stale highlight while the new target mounts (e.g. after a tab switch)
+    setRect(null); setRect2(null); // clear stale highlights while the new target mounts (e.g. after a tab switch)
+    const rectOf = (el) => { const r = el.getBoundingClientRect(); return { x: r.left - 6, y: r.top - 6, w: r.width + 12, h: r.height + 12, cx: r.left + r.width / 2, cy: r.top + r.height / 2 }; };
+    // Steps with no selector are intro/outro cards — just center the card, no spotlight.
+    if (!step.sel) { setRect(null); setRect2(null); return; }
     const measure = () => {
       if (cancelled) return;
       const el = document.querySelector(step.sel);
+      const el2 = step.sel2 ? document.querySelector(step.sel2) : null;
       if (!el) {
-        // target not mounted yet (tab still switching) — keep polling for a bit before giving up
         if (tries++ < 24) { setTimeout(measure, 60); }
         return;
       }
       if (el.scrollIntoView) { try { el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" }); } catch (e) { el.scrollIntoView(); } }
-      const r = el.getBoundingClientRect();
-      setRect({ x: r.left - 6, y: r.top - 6, w: r.width + 12, h: r.height + 12, cx: r.left + r.width / 2, cy: r.top + r.height / 2 });
-      // keep refining as layout settles (scroll animation, images) for the first few hundred ms
+      setRect(rectOf(el));
+      setRect2(el2 ? rectOf(el2) : null);
       if (tries++ < 10) setTimeout(measure, 90);
     };
     measure();
     const onWin = () => {
-      const el = document.querySelector(step.sel); if (!el) return;
-      const r = el.getBoundingClientRect();
-      setRect({ x: r.left - 6, y: r.top - 6, w: r.width + 12, h: r.height + 12, cx: r.left + r.width / 2, cy: r.top + r.height / 2 });
+      const el = document.querySelector(step.sel); if (el) setRect(rectOf(el));
+      const el2 = step.sel2 ? document.querySelector(step.sel2) : null; setRect2(el2 ? rectOf(el2) : null);
     };
     window.addEventListener("scroll", onWin, true);
     window.addEventListener("resize", onWin);
     return () => { cancelled = true; window.removeEventListener("scroll", onWin, true); window.removeEventListener("resize", onWin); };
-  }, [i, step && step.sel]);
+  }, [i, step && step.sel, step && step.sel2]);
   if (!step) return null;
   const W = typeof window !== "undefined" ? window.innerWidth : 1400;
   const H = typeof window !== "undefined" ? window.innerHeight : 900;
   const isLast = i === steps.length - 1;
-  const cardW = 320, cardH = 172, M = 14;
+  const cardW = 340, cardH = 184, M = 14;
   let cardTop, cardLeft;
   if (rect) {
     if (rect.y + rect.h + cardH + M < H) cardTop = rect.y + rect.h + 12;
@@ -2791,10 +2793,12 @@ function CoachTour({ steps, onExit, onStepTab, onOpenGuide }) {
           <mask id="tour-hole">
             <rect x="0" y="0" width={W} height={H} fill="white" />
             {rect && <rect x={rect.x} y={rect.y} width={rect.w} height={rect.h} rx="10" fill="black" />}
+            {rect2 && <rect x={rect2.x} y={rect2.y} width={rect2.w} height={rect2.h} rx="8" fill="black" />}
           </mask>
         </defs>
         <rect x="0" y="0" width={W} height={H} fill="rgba(6,9,13,0.78)" mask="url(#tour-hole)" />
         {rect && <rect x={rect.x} y={rect.y} width={rect.w} height={rect.h} rx="10" fill="none" stroke="var(--gold)" strokeWidth="2.5" />}
+        {rect2 && <rect x={rect2.x} y={rect2.y} width={rect2.w} height={rect2.h} rx="8" fill="none" stroke="var(--gold)" strokeWidth="2.5" strokeDasharray="5 4" />}
       </svg>
       <div style={{ position: "absolute", top: cardTop, left: cardLeft, width: cardW, background: "var(--panel)", border: "1px solid var(--gold)", borderRadius: 12, padding: 16, boxShadow: "0 10px 40px rgba(0,0,0,.5)", pointerEvents: "auto" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
@@ -2802,12 +2806,7 @@ function CoachTour({ steps, onExit, onStepTab, onOpenGuide }) {
           <button onClick={onExit} style={{ background: "none", border: "none", color: "var(--mut)", cursor: "pointer", fontSize: 11, fontFamily: "inherit", padding: 0 }}>Dismiss ✕</button>
         </div>
         <div className="disp" style={{ fontSize: 16, fontWeight: 700, color: "var(--gold)", marginBottom: 5 }}>{step.title}</div>
-        <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--ink)", marginBottom: 10 }}>{step.body}</div>
-        {onOpenGuide && (
-          <button onClick={() => { onOpenGuide(); onExit(); }} style={{ background: "none", border: "none", color: "var(--gold)", cursor: "pointer", fontSize: 11.5, fontFamily: "inherit", padding: 0, marginBottom: 10, textDecoration: "underline", display: "block" }}>
-            <i className="ti ti-book" style={{ fontSize: 12, marginRight: 4, verticalAlign: "-1px" }} aria-hidden="true" />Open the full written guide
-          </button>
-        )}
+        <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--ink)", marginBottom: 12 }}>{step.body}</div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <div style={{ display: "flex", gap: 4, flex: 1 }}>
             {steps.map((_, k) => <span key={k} style={{ width: k === i ? 14 : 6, height: 6, borderRadius: 3, background: k === i ? "var(--gold)" : "var(--line2)", transition: "width .2s" }} />)}
@@ -10658,19 +10657,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // afterward it's launched on demand from the combined "Tips & tour" button.
   const [tourOn, setTourOn] = useState(() => !seenIntro && !isDemo);
   const markIntroSeen = () => { try { if (window.localStorage) window.localStorage.setItem(introKey, "1"); } catch (e) {} };
+  const tourConnected = connectedPlatform === "sleeper" && !!(cfg.connect && cfg.connect.leagueId);
   const TOUR_STEPS = [
-    { sel: '[data-tour="howdoing"]', tab: "hub", title: "How you're doing", body: "Top-left, always in view: your build lane (win-now vs. rebuild), your biggest need, and your projected finish — an instant read on your team. Tip: hover almost anything in the app (like your biggest need) for a deeper breakdown." },
-    { sel: '[data-tour="recommendation"]', tab: "hub", title: "Who to pick", body: "The engine's recommendation for your pick, with alternatives and the picks on the clock. It weighs your roster needs, value vs. ADP, positional runs, and your chosen strategy. Hover any card for the reasoning." },
+    { sel: null, title: "Welcome to your draft room", body: tourConnected
+        ? "This league is connected to Sleeper, so picks sync automatically — you just watch the board update and make your own picks. This quick tour spotlights each part of the room; hit Next to move along, or Dismiss anytime. Tip: you can hover almost anything in the app for a deeper explanation."
+        : "Quick heads-up: this league isn't connected to a platform, so you'll enter each pick manually as they happen (click a player's Pick button, or search and hit Enter). This tour spotlights each part of the room; hit Next to move along, or Dismiss anytime. Tip: you can hover almost anything for a deeper explanation." },
+    { sel: '[data-tour="pool"]', tab: "hub", title: "The player pool", body: "Your main workspace: every available player, sortable by any column. ADP is the market; RANK is colored by strength (green = elite, red = deep). Search up top, filter by position, evaluate, and draft with the Pick button on the left." },
+    { sel: '[data-tour="howdoing"]', tab: "hub", title: "How you're doing", body: "Top-left, always in view: your build lane (win-now vs. rebuild), your biggest need, and your projected finish — an instant read on your team. Hover your biggest need (or anything here) for the full breakdown." },
+    { sel: '[data-tour="picks"]', tab: "hub", title: "Who to pick", body: "The pick on the clock and the engine's expectation, with your recommendation and alternatives. It weighs your roster needs, value vs. ADP, positional runs, and your chosen strategy. Hover any card for the reasoning." },
     { sel: '[data-tour="strategy"]', tab: "hub", title: "Pick your strategy", body: "Tell the engine how to think — chase market value, build for your roster, favor upside, or follow strict ADP. Your recommendation and the player pool below react instantly." },
-    { sel: '[data-tour="pool"]', tab: "hub", title: "The player pool", body: "Every available player, sortable by any column. ADP is the market; RANK is colored by strength (green = elite, red = deep). Search up top, filter by position, and draft with the Pick button." },
     { sel: '[data-tour="myranks"]', tab: "hub", title: "My Ranks & Platform Ranks", body: "Build your own board to drive the My ADP & Blend columns, and/or enter your platform's ADP under Platform Ranks to drive the Edge column. Both are optional — use either or both." },
-    { sel: '[data-tour="columns"]', tab: "hub", title: "Customize your columns", body: "Show or hide any column — projections, VBD, team role, availability odds, your Edge, and more. Set the pool up the way you draft." },
-    { sel: '[data-tour="draftboardtab"]', tab: "board", title: "Draft board", body: "The full draft board — every team's picks, current and projected. Flip between Current and Projected, and toggle Steals (green) and Reaches (red) to see who got value and who reached." },
-    { sel: '[data-tour="tab-myteam"]', tab: "myteam", title: "Team analysis", body: "A deep look at your roster: your starting lineup, where you rank at each position vs. the league, positional depth, and your bye-week outlook. Hover the bars and grades for the players behind them." },
-    { sel: '[data-tour="tab-depth"]', tab: "depth", title: "Depth charts", body: "Every NFL team's depth chart with your fantasy-relevant players highlighted — handy for spotting handcuffs, target competition, and who's buried behind a starter." },
-    { sel: '[data-tour="tab-trade"]', tab: "trade", title: "Trade", body: "Record draft-pick trades so the board reflects picks in their new owners' columns, and weigh pick-for-pick swaps using the value chart. Everything recalculates instantly." },
-    { sel: '[data-tour="tab-summary"]', tab: "summary", title: "Live grades & recap", body: "Every team graded live, projected final standings, biggest steals and reaches, and your pick-by-pick value. Hover a team for their top picks or full projected lineup." },
-    { sel: '[data-tour="tab-settings"]', tab: "settings", title: "Settings anytime", body: "Adjust scoring, roster slots, teams, or your draft slot mid-draft — in a Simple or Complex view. That's the tour! Explore freely, hover anything for a tip, and open Tips & tour anytime from the button up top." },
+    { sel: '[data-tour="columns"]', tab: "hub", title: "Customize your columns", body: "Show or hide any column. You can reorder columns within a section by clicking and dragging them, or use the arrows to move a whole grouping (valuation, demographics, availability) left or right. Set the pool up the way you draft." },
+    { sel: '[data-tour="tab-myteam"]', tab: "myteam", title: "Team analysis", body: "Click the Team analysis tab (highlighted) for a deep look at your roster: your starting lineup, where you rank at each position vs. the league, positional depth, and your bye-week outlook. Hover the bars and grades for the players behind them." },
+    { sel: '[data-tour="draftboardtab"]', sel2: '[data-tour="tab-board"]', tab: "board", title: "Draft board", body: "Click the Draft board tab (highlighted above) to see every team's picks, current and projected. Flip between Current and Projected, and toggle Steals (green) and Reaches (red) to see who got value and who reached." },
+    { sel: '[data-tour="tab-depth"]', tab: "depth", title: "Depth charts", body: "Click the Depth charts tab (highlighted): every NFL team's depth chart with your fantasy-relevant players highlighted — handy for spotting handcuffs, target competition, and who's buried behind a starter." },
+    { sel: '[data-tour="tab-trade"]', tab: "trade", title: "Trade", body: "Click the Trade tab (highlighted) to record draft-pick trades so the board reflects picks in their new owners' columns, and weigh pick-for-pick swaps using the value chart. Everything recalculates instantly." },
+    { sel: '[data-tour="tab-summary"]', tab: "summary", title: "Live grades & recap", body: "Click the Summary tab (highlighted): every team graded live, projected final standings, biggest steals and reaches, and your pick-by-pick value. Hover a team for their top picks or full projected lineup." },
+    { sel: '[data-tour="tab-settings"]', tab: "settings", title: "Settings anytime", body: "Click the Settings tab (highlighted) to adjust scoring, roster slots, teams, or your draft slot mid-draft — in a Simple or Complex view. That's the tour! Explore freely, hover anything for a tip, and reopen Tips & tour anytime from the button on the Hub." },
   ];
   const toggleQueue = (name) => setQueue((prev) => {
     const next = new Set(prev);
@@ -11943,7 +11946,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
   return (
     <div>
-      {tourOn && <CoachTour steps={TOUR_STEPS} onExit={() => { setTourOn(false); markIntroSeen(); }} onStepTab={(t) => setTab(t)} onOpenGuide={() => { markIntroSeen(); openGuide("how"); }} />}
+      {tourOn && <CoachTour steps={TOUR_STEPS} onExit={() => { setTourOn(false); markIntroSeen(); }} onStepTab={(t) => setTab(t)} />}
       <div className="hairline" style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", flexWrap: "wrap" }}>
         <button className="btn btn-mini" onClick={exit}>← {user ? (user.paid ? "Home" : "Library") : "Home"}</button>
         <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{league.name}</div>
@@ -12174,7 +12177,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               }
               const cardTip = cardTipContent ? (e) => showTip(e, cardTipContent) : undefined;
               return (
-            <div className="tickcard clock" style={{ borderColor: onClock === userIdx ? "var(--gold)" : "#33476B", cursor: cardTip ? "help" : "default" }}
+            <div className="tickcard clock" data-tour="picks" style={{ borderColor: onClock === userIdx ? "var(--gold)" : "#33476B", cursor: cardTip ? "help" : "default" }}
               onClick={cardTip} onMouseEnter={cardTip} onMouseLeave={cardTip ? hideTip : undefined}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                 <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".07em", color: onClock === userIdx ? "var(--gold)" : "var(--mut)" }}>On the clock</div>
@@ -12463,8 +12466,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 value={search} onChange={(e) => setSearch(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") { const hit = rows.find((p) => !draftedSet.has(p.id)); if (hit) draftPlayer(hit.id); } }} />
               <button className="btn btn-mini" style={{ borderColor: "var(--gold)", color: "var(--gold)" }}
-                onClick={() => { setShowIntro(false); setTourOn(true); }} title="A guided walkthrough that spotlights each part of the draft room — with a link to the full written guide inside">
-                <i className="ti ti-route" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Tips &amp; tour</button>
+                onClick={() => openGuide("how")} title="How to use the draft room, power-user tips, and the guided tour">
+                <i className="ti ti-book" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Tips &amp; tour</button>
               {["ALL", ...POS].map((p) => (
                 <button key={p} className="btn btn-mini" style={{ borderColor: posFilter === p ? "var(--gold)" : "var(--line)" }} onClick={() => setPosFilter(p)}>{p}</button>
               ))}
