@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bi";
+const BUILD_TAG = "2026.06.28bj";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1648,6 +1648,7 @@ function buildPlayers(cfg) {
       if (!VBD_POS.includes(p.pos)) return;
       const m = ageMult(p.pos, p.age);
       p.ageMult = m;
+      if (p.vbd0 == null) p.vbd0 = p.vbd; // preserve the pre-age-tax value for needs/strength scoring
       // Apply the age multiplier ONLY to value ABOVE replacement (positive VBD). Multiplying a NEGATIVE
       // VBD by a fractional multiplier would move it toward zero — i.e. make an old, below-replacement
       // player look BETTER than a younger one (the bug where Adrian Peterson at 0 pts outranked James
@@ -2029,6 +2030,25 @@ function marginalVbd(c, counts, sf) {
 let BB_QB_TEAMS = new Set();   // NFL teams where the user already has a QB
 let BB_PC_TEAMS = new Set();   // NFL teams where the user already has a pass-catcher (WR/TE)
 function setBBStacks(qbTeams, pcTeams) { BB_QB_TEAMS = qbTeams || new Set(); BB_PC_TEAMS = pcTeams || new Set(); }
+// Bye-week load for the drafting team (redraft): which bye weeks are already occupied per position, plus the
+// current count per position. Used for a small "don't stack byes on a complementary pick" nudge in userScore.
+let BYE_LOAD = {};        // pos -> { week: count }
+let BYE_COUNTS = {};      // pos -> how many at that position the team already has
+function setByeLoad(load, counts) { BYE_LOAD = load || {}; BYE_COUNTS = counts || {}; }
+function isDynastyCfg(cfg) { return !!(cfg && (cfg.type === "dynasty" || cfg.type === "keeper")); }
+// Small bye-stack penalty: if this candidate would land on a bye week where the team ALREADY has one or more
+// starters at his position, and the team already has real depth there, nudge his score down a touch. Talent
+// dominates — this is deliberately small and never applies to a position you still need to fill.
+function byePenalty(c) {
+  if (!c || !c.bye || c.bye <= 0) return 0;
+  const load = BYE_LOAD[c.pos]; if (!load) return 0;
+  const sharing = load[c.bye] || 0; if (sharing <= 0) return 0;
+  const have = BYE_COUNTS[c.pos] || 0;
+  const starterNeed = c.pos === "QB" || c.pos === "TE" ? 1 : 2;
+  if (have < starterNeed) return 0; // still filling starters — byes don't matter yet
+  // grows with how many already share that week; capped small so it only breaks near-ties
+  return Math.min(6, sharing * 3);
+}
 function bbBonus(c) {
   if (!BB) return 0;
   let b = 0;
@@ -2098,7 +2118,7 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build) {
   const value = mv + need - overStack - reachPenalty(c, pickNum);
   const market = c.adp != null ? 300 - c.adp * 3.0 : 0; // pure board-order score: earlier ADP = higher
   const mktW = pickNum != null ? Math.max(0, Math.min(0.92, 0.92 - (pickNum - 1) * 0.034)) : 0; // 0.92 → 0 by ~pick 28
-  return market * mktW + value * (1 - mktW) + bbBonus(c);
+  return market * mktW + value * (1 - mktW) + bbBonus(c) - byePenalty(c);
 }
 // cost of drafting a player well before the market would — grows the earlier you are
 // (a round-1 reach is far more wasteful than a round-12 reach) and with the gap size.
@@ -2628,32 +2648,48 @@ function leagueOverview(allPicks, players, teamAtFn, cfg) {
 // SHARED position-strength score (quality × quantity) used everywhere we color or rank a team's position:
 // the hub's "League needs" table, the League Overview chips, AND the Team-analysis "Where you rank" bars.
 // One formula → the color and the ranking always agree.
-//   players: array of that team's players AT this position (each with a .vbd and .pts)
+//   playersAtPos: array of that team's players AT this position (each with .vbd, .pts, and .posRankOverall)
 //   req: number of starting slots this format uses at the position
-// Method: STARTER QUALITY dominates — we sum the VBD of the players that would actually start (top `req`),
-// with empty starter slots penalized (they drag the lineup). THEN, only once the starters are filled, we
-// add a smaller "depth/insurance" credit based on the NEXT best player — this captures the drop-off: a
-// team with startable depth behind full starters is stronger than one a single injury from a hole. Bench
-// beyond that first backup barely matters. Pure function; returns a single comparable number.
+// Method: this measures how well a team can FIELD the position now AND how insulated they are — i.e. the
+// thing "needs" actually asks. It combines three parts:
+//   (1) STARTER QUALITY — the top `req` players, scored on a floor-raised value that does NOT let dynasty's
+//       age tax fully bury a productive starter (a 30-yo RB1 still fills your RB1 slot this year). Empty
+//       starter slots are replacement-level holes.
+//   (2) DEPTH / INSURANCE — the next 1-2 players beyond the starters, so a team one injury from a hole grades
+//       lower than one with real backups.
+//   (3) QUANTITY — a small credit for carrying more bodies at a scarce position (useful pieces, bye/injury
+//       cover, trade capital). Capped so hoarding scrubs can't outrank real starters.
+// Pure function; returns a single comparable number. We use a blended value = max(age-cut vbd, most of raw
+// value) so aging-but-productive starters count for the lineup while youth still gets its dynasty credit.
 function posQualityScore(playersAtPos, req) {
-  const REPLACEMENT = -35; // value of an empty/again-replacement starter slot
-  const arr = (playersAtPos || []).map((p) => (p && p.vbd != null ? p.vbd : REPLACEMENT)).sort((a, b) => b - a);
+  const REPLACEMENT = -35; // value of an empty/replacement starter slot
+  // Blended per-player value: for NEEDS/strength we care about on-field contribution, so we don't let the
+  // dynasty age discount drag a productive vet below a marginal youngster. Take the better of the age-cut
+  // VBD and a lightly-discounted RAW value (vbd0 if present, else vbd). Young players (vbd ≥ vbd0) are
+  // unaffected; aging starters keep most of their lineup value.
+  const valOf = (p) => {
+    if (!p) return REPLACEMENT;
+    const cut = p.vbd != null ? p.vbd : REPLACEMENT;
+    const raw = p.vbd0 != null ? p.vbd0 : cut; // vbd0 = pre-age-tax value when available
+    return Math.max(cut, raw * 0.85);
+  };
+  const arr = (playersAtPos || []).map(valOf).sort((a, b) => b - a);
   if (!req || req <= 0) {
-    // non-starting position in this format: light credit for any useful piece, no empty-slot penalty
     return arr.length ? Math.max(0, arr[0]) * 0.4 : 0;
   }
-  // 1) starter quality — the core of the score; missing starters count as replacement-level holes
+  // (1) starter quality
   let score = 0;
   for (let k = 0; k < req; k++) score += (arr[k] != null ? arr[k] : REPLACEMENT);
-  // 2) drop-off / insurance — only credited once every starter slot is actually filled with a real player
-  const startersFilled = arr.length >= req && (req === 0 || arr[req - 1] != null);
+  // (2) depth / insurance — best two players beyond the starters, decreasing credit
+  const startersFilled = arr.length >= req && arr[req - 1] != null;
   if (startersFilled) {
-    const backup = arr[req]; // best player beyond the starters
-    if (backup != null) {
-      // credit scales with how good the backup is relative to a replacement — i.e. how soft the drop-off is
-      score += Math.max(0, backup - REPLACEMENT) * 0.28;
-    }
+    const b1 = arr[req], b2 = arr[req + 1];
+    if (b1 != null) score += Math.max(0, b1 - REPLACEMENT) * 0.30;
+    if (b2 != null) score += Math.max(0, b2 - REPLACEMENT) * 0.12;
   }
+  // (3) quantity credit — small, capped. Rewards carrying real bodies (not scrubs) at the position.
+  const usefulBodies = arr.filter((v) => v > REPLACEMENT + 10).length;
+  score += Math.min(3, Math.max(0, usefulBodies - req)) * 4;
   return score;
 }
 // Rank every team at a position by the shared quality score, then bucket into terciles:
@@ -2676,6 +2712,71 @@ function posQualityTiers(rostersByTeam, cfg) {
     });
   });
   return { level, score: scoreByTeam };
+}
+// Bye-week outlook widget. Redraft-focused: shows how your roster's byes cluster, at a macro level (which
+// weeks you're most exposed) and per position (do all your RBs share a bye?), so you can weigh a complementary
+// pick that avoids stacking a bye. Byes come from p.bye; before the NFL announces the schedule every bye is 0,
+// so we detect that and show a friendly "not announced yet" state instead of a misleading empty chart.
+function ByeWeekWidget({ roster, req, isDynasty }) {
+  const starters = (roster || []).filter((p) => p && ["QB", "RB", "WR", "TE"].includes(p.pos));
+  const withBye = starters.filter((p) => p.bye && p.bye > 0);
+  const byesKnown = withBye.length > 0;
+  const weekCount = {}; withBye.forEach((p) => { weekCount[p.bye] = (weekCount[p.bye] || 0) + 1; });
+  const weeks = Object.keys(weekCount).map(Number).sort((a, b) => a - b);
+  const maxWeek = weeks.length ? Math.max(...weeks.map((w) => weekCount[w])) : 0;
+  const posRows = ["QB", "RB", "WR", "TE"].map((pos) => {
+    const at = withBye.filter((p) => p.pos === pos);
+    const byWeek = {}; at.forEach((p) => { byWeek[p.bye] = (byWeek[p.bye] || 0) + 1; });
+    const need = req && req[pos] ? req[pos] : (pos === "QB" || pos === "TE" ? 1 : 2);
+    let worstWeek = null, worstN = 0;
+    Object.entries(byWeek).forEach(([w, n]) => { if (n > worstN) { worstN = n; worstWeek = +w; } });
+    const exposed = worstN >= need;
+    return { pos, count: at.length, worstWeek, worstN, need, exposed };
+  });
+  return (
+    <div className="panel" style={{ padding: 16 }}>
+      <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", marginBottom: 4 }}>Bye-week outlook</div>
+      {isDynasty && <div className="mut" style={{ fontSize: 10.5, marginBottom: 10 }}>Most relevant in redraft — byes matter less in dynasty, but still worth a glance.</div>}
+      {!byesKnown ? (
+        <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.5, padding: "8px 0" }}>
+          <i className="ti ti-calendar-off" style={{ fontSize: 14, marginRight: 6, verticalAlign: "-2px" }} aria-hidden="true" />
+          Bye weeks haven't been announced yet. Once the NFL releases the schedule, this will show which weeks your roster is most exposed and whether any position has all its starters off together — so you can avoid stacking byes on your next picks.
+        </div>
+      ) : (
+        <>
+          <div style={{ marginBottom: 12 }}>
+            <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 6 }}>Players out by week</div>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 5, height: 56 }}>
+              {weeks.map((w) => {
+                const n = weekCount[w];
+                const h = maxWeek ? Math.round((n / maxWeek) * 48) + 8 : 8;
+                const heavy = n >= 3;
+                return (
+                  <div key={w} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }} title={`Week ${w}: ${n} player${n > 1 ? "s" : ""} on bye`}>
+                    <div style={{ width: 22, height: h, borderRadius: 4, background: heavy ? "var(--red)" : n === 2 ? "var(--gold)" : "var(--green)" }} />
+                    <span className="mut" style={{ fontSize: 9 }}>W{w}</span>
+                    <span style={{ fontSize: 9, fontWeight: 700, color: heavy ? "var(--red)" : "var(--ink)" }}>{n}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {posRows.filter((r) => r.count > 0).map((r) => (
+              <div key={r.pos} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                <span style={{ width: 30, fontWeight: 700, color: POS_COLOR[r.pos] }}>{r.pos}</span>
+                {r.exposed ? (
+                  <span style={{ color: "var(--red)" }}><i className="ti ti-alert-triangle" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />{r.worstN} starter{r.worstN > 1 ? "s" : ""} share Week {r.worstWeek} bye — thin that week</span>
+                ) : (
+                  <span className="mut">byes spread out{r.worstWeek ? ` (worst: ${r.worstN} in W${r.worstWeek})` : ""}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 // Draft-pick value curve. Like a trade-value chart, early picks are worth dramatically more than
 // late ones (non-linear). We score a pick position into "value points" so the WORTH of moving a
@@ -4165,7 +4266,26 @@ function HeroShowcase() {
     { key: "grades", icon: "ti-trophy", label: "Live grades", color: "#c79cff" },
   ];
   const [active, setActive] = useState("board");
+  const [autoplay, setAutoplay] = useState(true); // self-running product reel until the user interacts
+  const [fade, setFade] = useState(false);
   const t = TOPICS.find((x) => x.key === active) || TOPICS[0];
+  // Auto-advance through the topics like a looping intro video, with a quick cross-fade between scenes.
+  // Pauses the moment the visitor clicks a tab (they're now driving), so it never fights the user.
+  useEffect(() => {
+    if (!autoplay) return;
+    const iv = setInterval(() => {
+      setFade(true);
+      setTimeout(() => {
+        setActive((cur) => {
+          const i = TOPICS.findIndex((x) => x.key === cur);
+          return TOPICS[(i + 1) % TOPICS.length].key;
+        });
+        setFade(false);
+      }, 260); // fade-out duration before swapping the scene
+    }, 3200);
+    return () => clearInterval(iv);
+  }, [autoplay]);
+  const pickTopic = (key) => { setAutoplay(false); setFade(false); setActive(key); };
 
   // ---- PREDICT: upcoming picks with survival % + why-tags (team need / run / value) ----
   const PredictDemo = () => {
@@ -4375,16 +4495,27 @@ function HeroShowcase() {
     <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "stretch" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 180, flex: "1 1 180px" }}>
         {TOPICS.map((x) => (
-          <button key={x.key} onClick={() => setActive(x.key)} className="bigact" style={{ display: "flex", alignItems: "center", gap: 9, textAlign: "left", cursor: "pointer", fontFamily: "inherit", padding: "10px 12px", borderRadius: 10, border: `1px solid ${active === x.key ? x.color : "var(--line)"}`, background: active === x.key ? x.color + "1e" : "transparent", color: "var(--ink)" }}>
+          <button key={x.key} onClick={() => pickTopic(x.key)} className="bigact" style={{ display: "flex", alignItems: "center", gap: 9, textAlign: "left", cursor: "pointer", fontFamily: "inherit", padding: "10px 12px", borderRadius: 10, border: `1px solid ${active === x.key ? x.color : "var(--line)"}`, background: active === x.key ? x.color + "1e" : "transparent", color: "var(--ink)", transition: "border-color .3s, background .3s" }}>
             <i className={`ti ${x.icon}`} style={{ fontSize: 18, color: x.color }} aria-hidden="true" />
             <span className="disp" style={{ fontSize: 14, fontWeight: 700, flex: 1 }}>{x.label}</span>
             {active === x.key && <i className="ti ti-chevron-right" style={{ fontSize: 14, color: x.color }} aria-hidden="true" />}
           </button>
         ))}
-        <div className="mut" style={{ fontSize: 10.5, marginTop: 2, lineHeight: 1.4, padding: "0 2px" }}>Try them — these are live, interactive samples of the real tool.</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, padding: "0 2px" }}>
+          {/* progress dots + play/pause — signals this is a running reel you can also drive */}
+          <button onClick={() => setAutoplay((a) => !a)} className="bigact" style={{ cursor: "pointer", fontFamily: "inherit", border: "none", background: "transparent", color: "var(--mut)", padding: 0, display: "flex", alignItems: "center", gap: 6 }} title={autoplay ? "Pause the tour" : "Play the tour"}>
+            <i className={`ti ${autoplay ? "ti-player-pause-filled" : "ti-player-play-filled"}`} style={{ fontSize: 13 }} aria-hidden="true" />
+          </button>
+          <div style={{ display: "flex", gap: 4 }}>
+            {TOPICS.map((x) => <span key={x.key} style={{ width: active === x.key ? 16 : 6, height: 6, borderRadius: 3, background: active === x.key ? t.color : "var(--line2)", transition: "width .3s, background .3s" }} />)}
+          </div>
+        </div>
+        <div className="mut" style={{ fontSize: 10.5, marginTop: 2, lineHeight: 1.4, padding: "0 2px" }}>{autoplay ? "A live tour of the tool — click any feature to explore it yourself." : "Try them — these are live, interactive samples of the real tool."}</div>
       </div>
-      <div style={{ flex: "2 1 320px", border: `1px solid ${t.color}44`, borderRadius: 12, background: `linear-gradient(160deg, ${t.color}12, var(--panel))`, padding: 16, minWidth: 280 }}>
-        <Preview />
+      <div style={{ flex: "2 1 320px", border: `1px solid ${t.color}44`, borderRadius: 12, background: `linear-gradient(160deg, ${t.color}12, var(--panel))`, padding: 16, minWidth: 280, transition: "border-color .4s, background .4s" }}>
+        <div style={{ opacity: fade ? 0 : 1, transform: fade ? "translateY(6px)" : "translateY(0)", transition: "opacity .26s ease, transform .26s ease" }}>
+          <Preview />
+        </div>
       </div>
     </div>
   );
@@ -10348,7 +10479,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [boardProj, setBoardProj] = useState(false);
   const [showBoardVal, setShowBoardVal] = useState(false); // toggle pick-value under each name
   const [boardHi, setBoardHi] = useState({ steals: true, reaches: true }); // highlight steals/reaches on board (on by default)
-  const [pastBig, setPastBig] = useState(false);
+  const [pastCount, setPastCount] = useState(2); // how many past picks to show; default 2, grows by 5
   const [futureBig, setFutureBig] = useState(false);
   const [tip, setTip] = useState(null);
   const [copied, setCopied] = useState(false);
@@ -10740,6 +10871,19 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       });
       setBBStacks(qbTeams, pcTeams);
     } else setBBStacks(new Set(), new Set());
+    // BYE-WEEK consideration (redraft only). Gather, per position, which bye weeks this team's players already
+    // occupy, so a COMPLEMENTARY pick that would stack another starter on an already-crowded bye gets a small
+    // nudge down. Talent always trumps this (the penalty is tiny and only applies once you have real depth at
+    // the position). Dynasty ignores byes. Skipped when byes aren't announced yet (all 0).
+    const byeLoad = {}; // pos -> { week: count } for this team's rostered players
+    if (!isDynastyCfg(cfg)) {
+      picks.forEach((pk, o) => {
+        if (teamAt(o) !== forTeam) return;
+        const pl = players[pk]; if (!pl || !pl.bye || pl.bye <= 0) return;
+        (byeLoad[pl.pos] = byeLoad[pl.pos] || {})[pl.bye] = ((byeLoad[pl.pos] || {})[pl.bye] || 0) + 1;
+      });
+    }
+    setByeLoad(byeLoad, myCounts);
     const waitCost = {};
     POS.forEach((pos) => { waitCost[pos] = bestNow[pos] ? Math.round((bestNow[pos].vbd - simState.expBest1[pos]) * 10) / 10 : 0; });
     const pool0 = sortedAdp.filter((p) => !goneSet.has(p.id) && p.adp <= pickNum + 16).slice(0, 40);
@@ -11644,7 +11788,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     return Object.entries(byTeam).sort((a, b) => a[0].localeCompare(b[0]));
   }, [players]);
 
-  const pastPicks = picks.slice(-(pastBig ? 12 : 1)).map((pk, i) => ({ pk, o: picks.length - Math.min(pastBig ? 12 : 1, picks.length) + i }));
+  const pastShown = Math.min(pastCount, picks.length);
+  const pastPicks = picks.slice(-pastShown).map((pk, i) => ({ pk, o: picks.length - pastShown + i }));
+  const morePast = picks.length > pastShown; // are there older picks not yet shown?
 
   // Measure the sticky ticker+tabbar header so tab-level sticky bars (e.g. the depth-chart position filter)
   // can sit just BELOW it instead of sliding underneath. Re-measures on layout-affecting state changes.
@@ -11653,7 +11799,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     if (!el) return;
     const h = el.offsetHeight;
     if (h && h !== stickyHeadH) setStickyHeadH(h);
-  }, [tab, done, hypoMode, pastBig, futureBig, picks.length, sleeperLive, stickyHeadH]);
+  }, [tab, done, hypoMode, pastCount, futureBig, picks.length, sleeperLive, stickyHeadH]);
 
   return (
     <div>
@@ -11836,9 +11982,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     <span style={{ fontSize: 10, fontWeight: 700, color: valRead.c }}>{valRead.t}</span>
                     {spotGap !== 0 && p.adp != null && <span className="mut" style={{ fontSize: 9 }}>{spotGap > 0 ? `+${spotGap}` : spotGap} vs ADP</span>}
                   </div>
-                  {/* history toggle lives at the BOTTOM of the most-recent tile (the last one when collapsed) */}
-                  {isLast && (
-                    <button className="btn btn-mini" style={{ alignSelf: "flex-start", fontSize: 10, padding: "3px 8px", marginTop: 6 }} onClick={() => setPastBig((b) => !b)}>{pastBig ? "‹ less history" : "« show history"}</button>
+                  {/* history controls live at the BOTTOM of the OLDEST shown tile (idx 0): "more" reveals 5
+                       older picks, "less" collapses back down. */}
+                  {idx === 0 && (morePast || pastCount > 2) && (
+                    <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                      {morePast && <button className="btn btn-mini" style={{ fontSize: 10, padding: "3px 8px" }} onClick={() => setPastCount((n) => n + 5)}>« {pastCount === 2 ? "show history" : "more"}</button>}
+                      {pastCount > 2 && <button className="btn btn-mini" style={{ fontSize: 10, padding: "3px 8px" }} onClick={() => setPastCount(2)}>show less ›</button>}
+                    </div>
                   )}
                 </div>
               );
@@ -13041,6 +13191,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   })()}
                 </div>
               </div>
+              {/* Bye-week outlook — below Position depth on the hub tab */}
+              <ByeWeekWidget roster={selRoster} req={REQ_F(isSuperflex(cfg))} isDynasty={cfg.type === "dynasty" || cfg.type === "keeper"} />
             </div>
 
             {/* Row B: starting lineup (left) + [your next pick over roster profile] (right) */}
@@ -13181,6 +13333,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   ))}
                 </div>
               </div>
+              {/* Bye-week outlook — below the outlook panel; redraft-focused, graceful when byes unannounced */}
+              <ByeWeekWidget roster={selRoster} req={REQ_F(isSuperflex(cfg))} isDynasty={cfg.type === "dynasty" || cfg.type === "keeper"} />
             </div>
             </div>
             </>)}
@@ -13269,7 +13423,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       const ringR = ["rgba(242,101,92,.5)", "rgba(242,101,92,.75)", "rgba(242,101,92,.95)"];
                       const bg = showSteal ? green[tier] : red[tier];
                       const ring = showSteal ? ringG[tier] : ringR[tier];
-                      hiStyle = { background: bg, ...(ownedByYou ? { outline: "2px solid var(--gold)", outlineOffset: "-2px" } : { boxShadow: `inset 0 0 0 ${tier + 1}px ${ring}` }) };
+                      // For YOUR picks in steal/reach mode: drop the gold "you" background tint entirely (so the
+                      // green/red steal/reach shade reads cleanly) and instead mark ownership with a BRIGHT gold
+                      // border around the cell. Others get the value-tier ring in the steal/reach color.
+                      hiStyle = ownedByYou
+                        ? { background: bg, backgroundColor: bg, boxShadow: "inset 0 0 0 2px #F2B63C" }
+                        : { background: bg, boxShadow: `inset 0 0 0 ${tier + 1}px ${ring}` };
                     }
                     return (
                       <div key={`${r}-${col}`} className={cls}
