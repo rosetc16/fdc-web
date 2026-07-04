@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bh";
+const BUILD_TAG = "2026.06.28bi";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1624,16 +1624,18 @@ function buildPlayers(cfg) {
     // young one. Curves are intentionally steep with low floors so the dynasty board reorders by age
     // (a 40-yo QB or 30-yo RB should fall well behind ascending youth, not hover near them).
     const AGE = {
-      RB: { peak: 24, decline: 0.16, floor: 0.14 },  // steepest fall — RBs age worst in dynasty
-      WR: { peak: 25, decline: 0.09, floor: 0.24 },
-      TE: { peak: 25, decline: 0.085, floor: 0.26 },
-      QB: { peak: 27, decline: 0.07, floor: 0.22 },  // ages best, but 35+ still drops hard in dynasty
+      // Steeper than before: the dynasty market drops aging RB/WR hard. A 31-yo RB (Aaron Jones) and a 32-yo
+      // WR (Diggs) should fall to the ~200 range, not sit near 100. Lower floors + faster decline get there.
+      RB: { peak: 24, decline: 0.24, floor: 0.06 },  // steepest — RBs age worst; 30+ craters
+      WR: { peak: 25, decline: 0.15, floor: 0.10 },  // 31-32 WRs slide a long way in dynasty
+      TE: { peak: 25, decline: 0.11, floor: 0.16 },
+      QB: { peak: 28, decline: 0.085, floor: 0.16 }, // ages best, but 34+ still drops hard
     };
     const youthBump = (pos, age) => {
       // young players (below peak) get a dynasty bump for years of control ahead
       const cfgA = AGE[pos]; if (!cfgA) return 1;
       const yearsYoung = Math.max(0, cfgA.peak - age);
-      return 1 + Math.min(0.28, yearsYoung * (pos === "RB" ? 0.07 : 0.05));
+      return 1 + Math.min(0.34, yearsYoung * (pos === "RB" ? 0.085 : 0.06));
     };
     const ageMult = (pos, age) => {
       const a = AGE[pos]; if (!a || !age || age <= 0) return 1;
@@ -1737,6 +1739,24 @@ function buildPlayers(cfg) {
         const base = (isDynasty ? 30 : 26) * strength; // meaningfully below the QB-SF base (52-78)
         v += base * decay;
       }
+      // DYNASTY age tax on the WHOLE effective value. The position premiums above (SF-QB, RB, TE) can keep an
+      // aging star high even after his VBD was age-cut, because the premium rides on his positional rank. In
+      // dynasty the market discounts age almost ruthlessly for RB/WR — a 31-yo RB or 32-yo WR falls far below
+      // ascending youth regardless of last year's production. So we multiply the entire effVal by the age
+      // multiplier (for positive values), which pulls aging vets down toward where the dynasty market has them
+      // while leaving young players (mult ≥ 1) untouched or lifted. Redraft is unaffected (ageMult ≈ 1).
+      if (isDynasty && p.ageMult != null && v > 0) {
+        v *= p.ageMult;
+        // Hard age CLIFF: past a position's "dynasty sell-by" age the market nearly stops paying for current
+        // production (they want the asset, not the fading player). An extra steep multiplier here drops a
+        // 31-yo RB (Aaron Jones) and 32-yo WR (Diggs) into the ~200 range where dynasty ADP actually has them,
+        // rather than ~100. Ramps by years past the cliff so it's smooth, not a step.
+        const cliff = p.pos === "RB" ? 27 : p.pos === "WR" ? 29 : p.pos === "TE" ? 31 : 33; // QB ages best
+        if (p.age && p.age > cliff) {
+          const yearsOver = p.age - cliff;
+          v *= Math.max(0.10, Math.pow(p.pos === "RB" ? 0.64 : 0.70, yearsOver));
+        }
+      }
       return v;
     };
     const ranked = valPool.slice().sort((a, b) => effVal(b) - effVal(a));
@@ -1746,21 +1766,25 @@ function buildPlayers(cfg) {
     // of the model's value spacing (not invented market data) and reads far more naturally than integers.
     // It also stays monotonic and averages ~1 step per player so overall pick numbers remain realistic.
     if (ranked.length) {
-      // Use RAW vbd gaps (not the premium-inflated effVal) so the QB/RB premiums don't blow up the
-      // spacing. Keep the average step at ~1 pick per player so overall ADP tracks rank, with small
-      // fractional offsets that reflect how tightly players are bunched. Reads like real ADP (1.4, 2.1…).
-      const vs = ranked.map((p) => (p.vbd != null ? p.vbd : -50));
+      // Spacing source: normally RAW vbd gaps (the QB/RB/TE premiums would otherwise blow up the spacing).
+      // In DYNASTY we step by the age-taxed EFFECTIVE value instead, so the age discount translates into real
+      // ADP DISTANCE — an aging vet lands materially deeper, not just one rank lower. Redraft/other formats
+      // keep the original vbd spacing so their (already-calibrated) numbers are unchanged.
+      const spaceVal = (p) => isDynasty ? effVal(p) : (p.vbd != null ? p.vbd : -50);
+      const vs = ranked.map(spaceVal);
       const gaps = [];
       for (let i = 0; i < ranked.length - 1; i++) gaps.push(Math.max(0, vs[i] - vs[i + 1]));
       const avgGap = gaps.length ? (gaps.reduce((a, b) => a + b, 0) / gaps.length) : 1;
+      // Dynasty gets a wider step clamp so big value cliffs (young studs → aging vets) open real distance;
+      // other formats keep the tight ~1-pick step that produced the good redraft/SF numbers you approved.
+      const stepLo = isDynasty ? 0.5 : 0.7, stepHi = isDynasty ? 2.4 : 1.4, base = isDynasty ? 0.5 : 0.7, mul = isDynasty ? 0.8 : 0.35;
       let pos = 1.0;
       ranked.forEach((p, i) => {
         p.adp = Math.round(pos * 10) / 10;
         p.adpMarket = p.adp;
-        // step ~1 on average; nudged ±0.3 by how this player's gap compares to the average gap.
         const g = i < gaps.length ? gaps[i] : avgGap;
         const rel = avgGap > 0 ? g / avgGap : 1;            // 1 = average gap
-        const step = Math.max(0.7, Math.min(1.4, 0.7 + rel * 0.35)); // stays close to 1
+        const step = Math.max(stepLo, Math.min(stepHi, base + rel * mul));
         pos += step;
       });
     }
