@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bs";
+const BUILD_TAG = "2026.06.28bt";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2738,7 +2738,7 @@ function posQualityTiers(rostersByTeam, cfg) {
 // time, and shows a tooltip card explaining it. Next/Back step through; Dismiss exits any time.
 //   steps: [{ sel: '[data-tour="board"]', title, body, tab? }]  — sel is a CSS selector for the target.
 //   onStepTab(tab): switch the draft-room tab a step needs before highlighting its target.
-function CoachTour({ steps, onExit, onStepTab, onOpenGuide }) {
+function CoachTour({ steps, onExit, onStepTab, optOut, onOptOut }) {
   const [i, setI] = useState(0);
   const [rect, setRect] = useState(null);
   const [rect2, setRect2] = useState(null); // optional secondary highlight (e.g. the tab button to click)
@@ -2807,6 +2807,12 @@ function CoachTour({ steps, onExit, onStepTab, onOpenGuide }) {
         </div>
         <div className="disp" style={{ fontSize: 16, fontWeight: 700, color: "var(--gold)", marginBottom: 5 }}>{step.title}</div>
         <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--ink)", marginBottom: 12 }}>{step.body}</div>
+        {onOptOut && (i === 0 || isLast) && (
+          <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11.5, color: "var(--mut)", marginBottom: 12, cursor: "pointer" }}>
+            <input type="checkbox" checked={!!optOut} onChange={(e) => onOptOut(e.target.checked)} style={{ accentColor: "var(--gold)", cursor: "pointer" }} />
+            Don't show this tour automatically when I join a draft
+          </label>
+        )}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <div style={{ display: "flex", gap: 4, flex: 1 }}>
             {steps.map((_, k) => <span key={k} style={{ width: k === i ? 14 : 6, height: 6, borderRadius: 3, background: k === i ? "var(--gold)" : "var(--line2)", transition: "width .2s" }} />)}
@@ -10637,11 +10643,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [leagueOpen, setLeagueOpen] = useState(false);      // Team analysis: League Overview dropdown open?
   const [recPick, setRecPick] = useState("current");        // Hub recommendation: "current" pick vs "mine" (your next)
   const [recView, setRecView] = useState("rec");            // Hub recommendation lens: "rec" (best for you) vs "expect" (engine's predicted market pick)
-  // First-time onboarding. On entering a draft room for the first time (per account), we auto-launch the
-  // GUIDED TOUR (the spotlight walkthrough) instead of the old text modal. The text guide is still available
-  // on demand from the combined "Tips & tour" button. We remember completion per-account in localStorage.
+  // First-time onboarding. The GUIDED TOUR auto-launches whenever you enter a draft room, UNLESS you've
+  // ticked "don't show this again" (a permanent per-account opt-out stored in localStorage). The old text
+  // guide is still available on demand from the "Tips & tour" button.
   const introKey = "fdc-hide-intro-" + ((user && user.email) ? user.email.toLowerCase() : "guest");
-  const seenIntro = (() => { try { return window.localStorage ? window.localStorage.getItem(introKey) === "1" : false; } catch (e) { return false; } })();
+  const optedOutOfTour = (() => { try { return window.localStorage ? window.localStorage.getItem(introKey) === "1" : false; } catch (e) { return false; } })();
   const [showIntro, setShowIntro] = useState(false); // the text guide modal — no longer auto-shown
   const [introDont, setIntroDont] = useState(false);
   const [introTab, setIntroTab] = useState("how"); // "how" (how to use) | "tips" (deeper dive)
@@ -10653,10 +10659,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const openGuide = (tab) => { setIntroTab(tab || "how"); setIntroAuto(false); setShowIntro(true); };
   // Guided spotlight tour — steps walk through the key parts of the draft room. Each step targets an element
   // by a data-tour attribute, describes it, and (optionally) switches to the tab that element lives on.
-  // Guided spotlight tour. Auto-starts once per account on first entry (replacing the old auto text modal);
-  // afterward it's launched on demand from the combined "Tips & tour" button.
-  const [tourOn, setTourOn] = useState(() => !seenIntro && !isDemo);
-  const markIntroSeen = () => { try { if (window.localStorage) window.localStorage.setItem(introKey, "1"); } catch (e) {} };
+  // Guided spotlight tour. Auto-starts on every draft-room entry unless the user permanently opted out.
+  // A "don't show again" toggle in the intro step writes that opt-out.
+  const [tourOn, setTourOn] = useState(() => !optedOutOfTour && !isDemo);
+  const [tourOptOut, setTourOptOut] = useState(false); // bound to the intro step's "don't show again" checkbox
+  const setTourNeverShow = (on) => { setTourOptOut(on); try { if (window.localStorage) { if (on) window.localStorage.setItem(introKey, "1"); else window.localStorage.removeItem(introKey); } } catch (e) {} };
   const tourConnected = connectedPlatform === "sleeper" && !!(cfg.connect && cfg.connect.leagueId);
   const TOUR_STEPS = [
     { sel: null, title: "Welcome to your draft room", body: tourConnected
@@ -10664,12 +10671,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         : "Quick heads-up: this league isn't connected to a platform, so you'll enter each pick manually as they happen (click a player's Pick button, or search and hit Enter). This tour spotlights each part of the room; hit Next to move along, or Dismiss anytime. Tip: you can hover almost anything for a deeper explanation." },
     { sel: '[data-tour="pool"]', tab: "hub", title: "The player pool", body: "Your main workspace: every available player, sortable by any column. ADP is the market; RANK is colored by strength (green = elite, red = deep). Search up top, filter by position, evaluate, and draft with the Pick button on the left." },
     { sel: '[data-tour="howdoing"]', tab: "hub", title: "How you're doing", body: "Top-left, always in view: your build lane (win-now vs. rebuild), your biggest need, and your projected finish — an instant read on your team. Hover your biggest need (or anything here) for the full breakdown." },
-    { sel: '[data-tour="picks"]', tab: "hub", title: "Who to pick", body: "The pick on the clock and the engine's expectation, with your recommendation and alternatives. It weighs your roster needs, value vs. ADP, positional runs, and your chosen strategy. Hover any card for the reasoning." },
+    { sel: '[data-tour="picks"]', sel2: '[data-tour="nextpick"]', tab: "hub", title: "Who to pick", body: "The pick on the clock (solid outline) and your upcoming pick (dashed) — with the engine's recommendation and alternatives on each. It weighs your roster needs, value vs. ADP, positional runs, and your strategy. Hover any card for the reasoning." },
     { sel: '[data-tour="strategy"]', tab: "hub", title: "Pick your strategy", body: "Tell the engine how to think — chase market value, build for your roster, favor upside, or follow strict ADP. Your recommendation and the player pool below react instantly." },
     { sel: '[data-tour="myranks"]', tab: "hub", title: "My Ranks & Platform Ranks", body: "Build your own board to drive the My ADP & Blend columns, and/or enter your platform's ADP under Platform Ranks to drive the Edge column. Both are optional — use either or both." },
     { sel: '[data-tour="columns"]', tab: "hub", title: "Customize your columns", body: "Show or hide any column. You can reorder columns within a section by clicking and dragging them, or use the arrows to move a whole grouping (valuation, demographics, availability) left or right. Set the pool up the way you draft." },
     { sel: '[data-tour="tab-myteam"]', tab: "myteam", title: "Team analysis", body: "Click the Team analysis tab (highlighted) for a deep look at your roster: your starting lineup, where you rank at each position vs. the league, positional depth, and your bye-week outlook. Hover the bars and grades for the players behind them." },
-    { sel: '[data-tour="draftboardtab"]', sel2: '[data-tour="tab-board"]', tab: "board", title: "Draft board", body: "Click the Draft board tab (highlighted above) to see every team's picks, current and projected. Flip between Current and Projected, and toggle Steals (green) and Reaches (red) to see who got value and who reached." },
+    { sel: '[data-tour="tab-board"]', tab: "board", title: "Draft board", body: "Click the Draft board tab (highlighted) to see every team's picks, current and projected. Flip between Current and Projected, and toggle Steals (green) and Reaches (red) to see who got value and who reached." },
     { sel: '[data-tour="tab-depth"]', tab: "depth", title: "Depth charts", body: "Click the Depth charts tab (highlighted): every NFL team's depth chart with your fantasy-relevant players highlighted — handy for spotting handcuffs, target competition, and who's buried behind a starter." },
     { sel: '[data-tour="tab-trade"]', tab: "trade", title: "Trade", body: "Click the Trade tab (highlighted) to record draft-pick trades so the board reflects picks in their new owners' columns, and weigh pick-for-pick swaps using the value chart. Everything recalculates instantly." },
     { sel: '[data-tour="tab-summary"]', tab: "summary", title: "Live grades & recap", body: "Click the Summary tab (highlighted): every team graded live, projected final standings, biggest steals and reaches, and your pick-by-pick value. Hover a team for their top picks or full projected lineup." },
@@ -11946,7 +11953,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
   return (
     <div>
-      {tourOn && <CoachTour steps={TOUR_STEPS} onExit={() => { setTourOn(false); markIntroSeen(); }} onStepTab={(t) => setTab(t)} />}
+      {tourOn && <CoachTour steps={TOUR_STEPS} onExit={() => setTourOn(false)} onStepTab={(t) => setTab(t)} optOut={tourOptOut} onOptOut={setTourNeverShow} />}
       <div className="hairline" style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", flexWrap: "wrap" }}>
         <button className="btn btn-mini" onClick={exit}>← {user ? (user.paid ? "Home" : "Library") : "Home"}</button>
         <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{league.name}</div>
@@ -12239,8 +12246,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             </div>
               );
             })()}
-            {displayPath.map((step, di) => step.user ? (
-              <div key={step.o} className="tickcard you" style={{ ...(!futureBig && di === displayPath.length - 1 && di >= 3 ? { borderColor: "var(--gold)", borderWidth: 2, boxShadow: "0 0 0 2px rgba(242,182,60,.25)", background: "linear-gradient(180deg,rgba(242,182,60,.16),rgba(242,182,60,.04))" } : {}) }}>
+            {(() => { let firstUser = true; return displayPath.map((step, di) => step.user ? (() => { const isFirstUser = firstUser; firstUser = false; return (
+              <div key={step.o} data-tour={isFirstUser ? "nextpick" : undefined} className="tickcard you" style={{ ...(!futureBig && di === displayPath.length - 1 && di >= 3 ? { borderColor: "var(--gold)", borderWidth: 2, boxShadow: "0 0 0 2px rgba(242,182,60,.25)", background: "linear-gradient(180deg,rgba(242,182,60,.16),rgba(242,182,60,.04))" } : {}) }}>
                 {(() => {
                   // Two-section plaque for one of YOUR upcoming picks:
                   //   top  = where/when the pick is (label, overall, picks away)
@@ -12317,7 +12324,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   );
                 })()}
               </div>
-            ) : (
+            ); })() : (
               <div key={step.o} className="tickcard" style={{ cursor: step.cands5 && step.cands5.length ? "help" : "default" }}
                 onMouseEnter={step.cands5 && step.cands5.length ? (e) => showTip(e, [
                   { kind: "take", tone: "neutral", x: `${pickLabel(step.o)} · ${TEAM_NAMES[step.t]}${TEAM_OWNERS[step.t] ? ` (@${TEAM_OWNERS[step.t]})` : ""} — engine's top candidates` },
@@ -12333,7 +12340,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 <div className="meter"><div style={{ width: `${step.prob}%` }} /></div>
                 <div className="mut num" style={{ fontSize: 10, marginTop: 2 }}>{step.prob}% likely</div>
               </div>
-            ))}
+            )); })()}
             <button className="btn btn-mini" style={{ alignSelf: "center", flexShrink: 0, borderColor: "var(--gold)", color: "var(--gold)" }} onClick={() => setFutureBig((b) => !b)} title="Collapsed view shows the next 4 picks plus your next pick. Expand to see the next 15 upcoming picks instead.">{futureBig ? "« show fewer" : "expand picks »"}</button>
           </div>
         </div>
