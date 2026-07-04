@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bj";
+const BUILD_TAG = "2026.06.28bk";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1661,12 +1661,21 @@ function buildPlayers(cfg) {
   // scoring, so for an unusual league (e.g. points-per-carry) the market doesn't reflect
   // real value. We blend each player's effective ADP toward their value rank in proportion
   // to how weird the scoring is — so predictions and advice follow the reshuffled board.
+  // How far is this league's scoring from standard? Public ADP is anchored to standard scoring, so for a
+  // genuinely unusual league (e.g. points-per-carry, big-play bonuses) the market doesn't reflect real value
+  // and we blend the board toward value. But COMMON variations — 6-pt vs 4-pt passing TDs, TE premium, PPR
+  // level — are already baked into public ADP (everyone drafts with them), so they must NOT count as
+  // "weirdness" or we'd reshuffle a totally normal board. We exclude those keys from the distance.
   let scoreDist = 0;
-  Object.keys(DEFAULT_SCORING).forEach((k) => { const base = Math.abs(DEFAULT_SCORING[k]) || 1; scoreDist += Math.abs((sc[k] || 0) - DEFAULT_SCORING[k]) / base; });
+  const COMMON_KEYS = new Set(["passTD", "recTE", "rec", "rushTD", "recTD", "passYd", "rushYd", "recYd", "INT", "fum", "pass2pt", "rush2pt", "rec2pt", "fg", "fg50", "pat", "fgMiss"]);
+  Object.keys(DEFAULT_SCORING).forEach((k) => { if (COMMON_KEYS.has(k)) return; const base = Math.abs(DEFAULT_SCORING[k]) || 1; scoreDist += Math.abs((sc[k] || 0) - DEFAULT_SCORING[k]) / base; });
   const valByPts = ps.filter((p) => POS.includes(p.pos)).slice().sort((a, b) => b.pts - a.pts);
   valByPts.forEach((p, i) => (p.valueOverall = i + 1));
   const blend = Math.max(0, Math.min(0.85, scoreDist * 0.12)); // 0 at standard, grows with weirdness
-  if (blend > 0.02) {
+  // Skip the value-blend for CONNECTED live drafts: we trust Sleeper's published ADP outright there (mirror
+  // the real draft room), so we must NOT reshuffle it toward our own value ranking. The blend is only for
+  // mock/unconnected boards where reshaping toward value for weird scoring is helpful.
+  if (blend > 0.02 && !TRUST_LIVE_ADP) {
     ps.forEach((p) => { if (p.valueOverall != null) p.adp = p.adpMarket * (1 - blend) + (p.valueOverall + 0.5) * blend; });
   }
   // SPARSE LIVE ADP: when live ADP is too thin to trust (early season / mostly rookie drafts), the
