@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bk";
+const BUILD_TAG = "2026.06.28bl";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -7193,7 +7193,7 @@ function AppHeader({ user, onAdmin, onSignOut, onHome, onAccount, onApp, onHelp,
       {(user?.admin || isAdminEmail(user?.email)) && <button className="btn" onClick={onAdmin || (() => navTo("admin"))}>Admin</button>}
       {onAccount && <button className="btn" onClick={onAccount} title="Account settings"><i className="ti ti-user" style={{ fontSize: 14 }} aria-hidden="true" /> Account</button>}
       <button className="btn btn-mini" onClick={onSignOut}>Sign out</button>
-      <span className="mut" style={{ fontSize: 9, opacity: 0.5, marginLeft: 2 }} title={`App version — confirms the latest deploy is live${typeof LIVE_PACK_FORMAT !== "undefined" && LIVE_PACK_FORMAT ? ` · ADP: ${LIVE_PACK_FORMAT}${LIVE_PACK_PUB_FORMAT ? ` (published ${LIVE_PACK_PUB_FORMAT})` : " (no published ADP — using harvested)"}` : ""}`}>v{BUILD_TAG}</span>
+      <span className="mut" style={{ fontSize: 10, opacity: 0.65, marginLeft: 4, fontVariantNumeric: "tabular-nums" }} title={`App version — confirms the latest deploy is live${typeof LIVE_PACK_FORMAT !== "undefined" && LIVE_PACK_FORMAT ? ` · ADP: ${LIVE_PACK_FORMAT}${LIVE_PACK_PUB_FORMAT ? ` (published ${LIVE_PACK_PUB_FORMAT})` : " (no published ADP — using harvested)"}` : ""}`}>v{BUILD_TAG}</span>
     </div>
   );
 }
@@ -11842,6 +11842,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <i className="ti ti-flask" style={{ fontSize: 13 }} aria-hidden="true" />Scenario mode
           </button>
         )}
+        {/* Subtle build tag — confirms which deploy is live, and (on hover) which ADP dataset the board is
+            using. Invaluable for diagnosing "did my change actually ship?" and "where do these ADPs come from?" */}
+        <span className="mut" style={{ fontSize: 10, opacity: 0.6, marginLeft: 4, fontVariantNumeric: "tabular-nums", cursor: "default" }}
+          title={`Build v${BUILD_TAG}${typeof LIVE_PACK_FORMAT !== "undefined" && LIVE_PACK_FORMAT ? `\nADP data: ${LIVE_PACK_FORMAT}${LIVE_PACK_PUB_FORMAT ? ` (published ${LIVE_PACK_PUB_FORMAT})` : " — no published ADP for this format, using harvested consensus"}` : "\nADP data: built-in fallback (live pack not loaded)"}${typeof LIVE_ADP_SPARSE !== "undefined" && LIVE_ADP_SPARSE ? "\nBoard ranked by VALUE (live ADP too thin to trust)" : ""}${TRUST_LIVE_ADP ? "\nTrusting live Sleeper ADP (connected draft)" : ""}`}>
+          v{BUILD_TAG}
+        </span>
       </div>
 
       <div ref={stickyHeadRef} style={{ position: "sticky", top: 0, zIndex: 12, background: "var(--bg)" }}>
