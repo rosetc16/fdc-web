@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bl";
+const BUILD_TAG = "2026.06.28bm";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -10895,7 +10895,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     setByeLoad(byeLoad, myCounts);
     const waitCost = {};
     POS.forEach((pos) => { waitCost[pos] = bestNow[pos] ? Math.round((bestNow[pos].vbd - simState.expBest1[pos]) * 10) / 10 : 0; });
-    const pool0 = sortedAdp.filter((p) => !goneSet.has(p.id) && p.adp <= pickNum + 16).slice(0, 40);
+    // Candidate pool: players likely available around this pick. Normally we window by ADP (players going
+    // near here), but late in a draft — or in deep dynasty drafts where every remaining player's ADP is far
+    // past the current pick — that window can come up EMPTY, which would leave us with no recommendation.
+    // So we widen the window progressively and, as a final guarantee, fall back to the best available
+    // undrafted players by value so there's always a real recommendation.
+    let pool0 = sortedAdp.filter((p) => !goneSet.has(p.id) && p.adp <= pickNum + 16).slice(0, 40);
+    if (pool0.length < 8) pool0 = sortedAdp.filter((p) => !goneSet.has(p.id) && p.adp <= pickNum + 60).slice(0, 40);
+    if (pool0.length < 8) {
+      // pure best-available fallback (by value) — ignores the ADP window entirely
+      pool0 = sortedAdp.filter((p) => !goneSet.has(p.id)).slice().sort((a, b) => (b.vbd ?? -99) - (a.vbd ?? -99)).slice(0, 40);
+    }
     const pool = legalCands(pool0, myCounts, cfg);
     // The recommendation follows the given strategy (defaults to the selected one). We compute one for the
     // selected strategy AND a second for "My build", shown side by side in the tracker.
