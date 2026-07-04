@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bv";
+const BUILD_TAG = "2026.06.28bw";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2182,7 +2182,9 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
   const baseRecent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   const surv = [new Float64Array(players.length), new Float64Array(players.length), new Float64Array(players.length)];
   const expBest1 = { QB: 0, RB: 0, WR: 0, TE: 0 };
-  const expBestTally = { QB: {}, RB: {}, WR: {}, TE: {} }; // pos -> {playerId: timesItWasTheBestAvailable}
+  // Per-pick-index tally of the best-available player (by pos), for your next TWO picks (ni 0 and 1). Lets
+  // us show not just "who's likely at your next pick" but also the further drop-off to the pick after that.
+  const expBestTally = [ { QB: {}, RB: {}, WR: {}, TE: {} }, { QB: {}, RB: {}, WR: {}, TE: {} } ];
   const end = nexts[nexts.length - 1];
   for (let s = 0; s < nSims; s++) {
     const drafted = baseDrafted.slice();
@@ -2193,11 +2195,16 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
       const ni = nexts.indexOf(o);
       if (ni >= 0) {
         for (const p of players) if (!drafted[p.id]) surv[ni][p.id]++;
-        if (ni === 0) {
+        if (ni === 0 || ni === 1) {
           const best = { QB: -999, RB: -999, WR: -999, TE: -999 };
           const bestId = { QB: null, RB: null, WR: null, TE: null };
           for (const p of players) if (!drafted[p.id] && p.vbd > best[p.pos]) { best[p.pos] = p.vbd; bestId[p.pos] = p.id; }
-          POS.forEach((pos) => { if (best[pos] > -999) { expBest1[pos] += best[pos]; if (bestId[pos] != null) expBestTally[pos][bestId[pos]] = (expBestTally[pos][bestId[pos]] || 0) + 1; } });
+          POS.forEach((pos) => {
+            if (best[pos] > -999) {
+              if (ni === 0) expBest1[pos] += best[pos];
+              if (bestId[pos] != null) expBestTally[ni][pos][bestId[pos]] = (expBestTally[ni][pos][bestId[pos]] || 0) + 1;
+            }
+          });
         }
         if (o === end) break;
         const cands = legalCands(candidatesOf(sortedAdp, drafted, 30), counts[t], cfg);
@@ -2214,15 +2221,19 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
   }
   const pct = surv.map((arr) => { const m = {}; players.forEach((p) => (m[p.id] = Math.round((arr[p.id] / nSims) * 100))); return m; });
   POS.forEach((pos) => (expBest1[pos] /= nSims));
-  // Most-frequent "best available" player at your next pick, per position — the likely player you'd get if
-  // you wait. Picked as the mode across sims so the wait-cost line can name an actual player.
-  const expBestPlayer = {};
-  POS.forEach((pos) => {
+  // Most-frequent "best available" player per position at your next pick (expBestPlayer) and the pick after
+  // that (expBestPlayer2) — the mode across sims, so we can name real players and show the drop-off chain.
+  const modePlayer = (tally) => {
     let bId = null, bN = 0;
-    for (const id in expBestTally[pos]) if (expBestTally[pos][id] > bN) { bN = expBestTally[pos][id]; bId = +id; }
-    expBestPlayer[pos] = bId != null ? players.find((p) => p.id === bId) || null : null;
+    for (const id in tally) if (tally[id] > bN) { bN = tally[id]; bId = +id; }
+    return { p: bId != null ? players.find((x) => x.id === bId) || null : null, share: bN };
+  };
+  const expBestPlayer = {}, expBestPlayer2 = {};
+  POS.forEach((pos) => {
+    expBestPlayer[pos] = modePlayer(expBestTally[0][pos]).p;
+    expBestPlayer2[pos] = modePlayer(expBestTally[1][pos]).p;
   });
-  return { nexts, pct, expBest1, expBestPlayer };
+  return { nexts, pct, expBest1, expBestPlayer, expBestPlayer2 };
 }
 
 // Survival odds for every player at an arbitrary OVERALL pick number (e.g. a pick you
@@ -11039,27 +11050,27 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     }
     setByeLoad(byeLoad, myCounts);
     // "Wait cost" per position: the drop-off from the best player available NOW to the player the sims
-    // expect to still be on the board at your NEXT pick. We compute it from the two ACTUAL named players
-    // (bestNow vs. the simulation's most-likely survivor) and express it in PROJECTED POINTS, which is what
-    // people intuitively read — not VBD. If the expected survivor is missing (rare), fall back to the sim's
-    // average VBD gap so the number is never blank.
+    // expect at your NEXT pick — plus the risk picture (survival odds of the now-player) and the further
+    // drop-off to the pick AFTER that. All expressed in PROJECTED POINTS (what people intuitively read).
+    const survPct = simState.pct && simState.pct[0] ? simState.pct[0] : null;   // survival to your NEXT pick
+    const survPct2 = simState.pct && simState.pct[1] ? simState.pct[1] : null;  // survival to the pick after
     const waitCost = {};
-    const waitDetail = {}; // pos -> { now, later, deltaPts }
+    const waitDetail = {}; // pos -> { now, later, later2, deltaPts, deltaPts2, nowSurvives, nowSurvives2, sameGuy }
     POS.forEach((pos) => {
       const now = bestNow[pos];
       const later = simState.expBestPlayer && simState.expBestPlayer[pos];
-      if (now && later) {
-        const dPts = Math.max(0, Math.round((now.pts || 0) - (later.pts || 0)));
+      const later2 = simState.expBestPlayer2 && simState.expBestPlayer2[pos];
+      if (now) {
+        const nowSurvives = survPct ? (survPct[now.id] ?? null) : null;         // % chance now-player is there next pick
+        const nowSurvives2 = survPct2 ? (survPct2[now.id] ?? null) : null;      // % chance still there pick-after
+        const sameGuy = later && later.id === now.id;
+        const dPts = later ? Math.max(0, Math.round((now.pts || 0) - (later.pts || 0))) : Math.max(0, Math.round(((now.vbd || 0) - (simState.expBest1[pos] || 0))));
+        const dPts2 = later2 ? Math.max(0, Math.round((now.pts || 0) - (later2.pts || 0))) : dPts;
         waitCost[pos] = dPts;
-        waitDetail[pos] = { now, later, deltaPts: dPts };
-      } else if (now) {
-        // fallback: sims' average VBD gap, converted loosely to points is unreliable, so just use the gap
-        const gap = Math.max(0, Math.round(((now.vbd || 0) - (simState.expBest1[pos] || 0)) * 10) / 10);
-        waitCost[pos] = gap;
-        waitDetail[pos] = { now, later: null, deltaPts: gap };
+        waitDetail[pos] = { now, later, later2, deltaPts: dPts, deltaPts2: dPts2, nowSurvives, nowSurvives2, sameGuy };
       } else {
         waitCost[pos] = 0;
-        waitDetail[pos] = { now: null, later: null, deltaPts: 0 };
+        waitDetail[pos] = { now: null, later: null, later2: null, deltaPts: 0, deltaPts2: 0, nowSurvives: null, nowSurvives2: null, sameGuy: false };
       }
     });
     // Candidate pool: players likely available around this pick. Normally we window by ADP (players going
@@ -12868,39 +12879,41 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       ))}
                       <div className="mut" style={{ fontSize: 11.5, margin: "10px 0 4px", textTransform: "uppercase", letterSpacing: ".07em" }}>
                         <span className="info" onClick={(e) => showTip(e, [
-                          { t: "Take now vs. wait", x: "For each position: the best player on the board RIGHT NOW versus the player the simulations expect to still be available at YOUR NEXT PICK. Hover any row to see both players." },
-                          { t: "Reading it", x: "\u201C\u221249 pts if you wait\u201D means the best option now projects about 49 more points than the one likely to survive to your pick. \u201CSafe to wait\u201D means little or no drop-off — take another need first." },
+                          { t: "Take now vs. wait", x: "For each position: the best player available now, the odds he survives to YOUR NEXT pick, and — if he's gone — who you'd likely fall to at your next pick and the one after. Hover any row for the full chain." },
+                          { t: "Reading it", x: "\u201C62% to last\u201D = 62% chance he's still there next pick. \u201C\u221249 if gone\u201D = if he isn't, your likely replacement projects about 49 fewer points. High odds + small drop-off = safe to wait." },
                         ])} onMouseEnter={(e) => showTip(e, [
-                          { t: "Take now vs. wait", x: "For each position: the best player on the board RIGHT NOW versus the player the simulations expect to still be available at YOUR NEXT PICK. Hover any row to see both players." },
-                          { t: "Reading it", x: "\u201C\u221249 pts if you wait\u201D means the best option now projects about 49 more points than the one likely to survive to your pick. \u201CSafe to wait\u201D means little or no drop-off — take another need first." },
+                          { t: "Take now vs. wait", x: "For each position: the best player available now, the odds he survives to YOUR NEXT pick, and — if he's gone — who you'd likely fall to at your next pick and the one after. Hover any row for the full chain." },
+                          { t: "Reading it", x: "\u201C62% to last\u201D = 62% chance he's still there next pick. \u201C\u221249 if gone\u201D = if he isn't, your likely replacement projects about 49 fewer points. High odds + small drop-off = safe to wait." },
                         ])} onMouseLeave={hideTip}>Take now vs. wait ⓘ</span>
                       </div>
                       {POS.map((pos) => A.bestNow[pos] && (() => {
-                        const d = (A.waitDetail && A.waitDetail[pos]) || { now: A.bestNow[pos], later: null, deltaPts: A.waitCost[pos] };
-                        const now = d.now, later = d.later, cost = d.deltaPts;
-                        const safe = cost < 6;
-                        const sameGuy = later && now && later.id === now.id;
+                        const d = (A.waitDetail && A.waitDetail[pos]) || { now: A.bestNow[pos], later: null, later2: null, deltaPts: A.waitCost[pos], nowSurvives: null, sameGuy: false };
+                        const now = d.now, later = d.later, later2 = d.later2, cost = d.deltaPts;
+                        const surv = d.nowSurvives; // % chance now-player is still there at YOUR NEXT pick
+                        const likely = surv != null && surv >= 55;
+                        const safe = d.sameGuy || likely;
                         const rowTip = (e) => showTip(e, [
-                          { kind: "take", tone: safe ? "good" : cost > 25 ? "bad" : "neutral", x: sameGuy
-                              ? `${pos}: ${now.name} is likely to make it back to you — safe to wait`
-                              : `${pos}: ${safe ? "small drop-off — safe to wait" : `waiting likely costs ~${cost} projected pts`}` },
-                          { t: "Best now", tc: rankTierColor(now.pos, now.posRank), x: `${now.name} — ${now.pos}${now.posRank} · ${Math.round(now.pts || 0)} proj pts` },
-                          later && !sameGuy
-                            ? { t: "Likely at your next pick", tc: rankTierColor(later.pos, later.posRank), x: `${later.name} — ${later.pos}${later.posRank} · ${Math.round(later.pts || 0)} proj pts` }
-                            : (sameGuy
-                                ? { t: "Likely at your next pick", x: `The sims expect ${now.name} to still be here — no rush.` }
-                                : { t: "Likely at your next pick", x: "The sims expect similar value to still be here." }),
-                          { t: "", x: sameGuy
-                              ? "Because the same player projects to survive, you can address another need first."
-                              : (safe
-                                  ? "The drop-off from now to your next pick is small — you can address other needs first."
-                                  : `Best ${pos} now projects ~${cost} more points than the one likely to survive to your pick. If you want this tier, take it now.`) },
-                        ]);
+                          { kind: "take", tone: safe ? "good" : cost > 25 ? "bad" : "neutral", x: surv != null
+                              ? `${pos}: ${now.name} — ${surv}% chance he's still here at your next pick`
+                              : `${pos}: waiting likely costs ~${cost} projected pts` },
+                          { t: "Best now", tc: rankTierColor(now.pos, now.posRank), x: `${now.name} — ${now.pos}${now.posRank} · ${Math.round(now.pts || 0)} proj pts${surv != null ? ` · ${surv}% to last` : ""}` },
+                          (later && later.id !== now.id)
+                            ? { t: "If gone — next pick", tc: rankTierColor(later.pos, later.posRank), x: `${later.name} — ${later.pos}${later.posRank} · ${Math.round(later.pts || 0)} proj pts  (−${cost} vs now)` }
+                            : { t: "At your next pick", x: `The sims expect ${now.name} to still be your best option — low risk.` },
+                          (later2 && later2.id !== (later ? later.id : now.id))
+                            ? { t: "Then the pick after", tc: rankTierColor(later2.pos, later2.posRank), x: `${later2.name} — ${later2.pos}${later2.posRank} · ${Math.round(later2.pts || 0)} proj pts  (−${d.deltaPts2} vs now)` }
+                            : null,
+                          { t: "", x: safe
+                              ? `Likely safe to wait — address another need and circle back to ${pos}.`
+                              : `${surv != null ? `Only ${surv}% to survive to your pick. ` : ""}If you want this ${pos} tier, take it now — the drop-off is about ${cost} pts.` },
+                        ].filter(Boolean));
                         return (
                         <div key={pos} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "2.5px 0", cursor: "help" }} onMouseEnter={rowTip} onMouseLeave={hideTip}>
                           <span><Dot pos={pos} />{now.name}</span>
-                          <span className="num" style={{ color: cost > 25 ? "var(--red)" : safe ? "var(--green)" : "var(--ink)" }}>
-                            {safe ? "✓ safe to wait" : `−${cost} pts if you wait`}
+                          <span className="num" style={{ color: !safe && cost > 25 ? "var(--red)" : safe ? "var(--green)" : "var(--ink)", fontSize: 11.5 }}>
+                            {surv != null
+                              ? (safe ? `✓ ${surv}% to last` : `${surv}% to last · −${cost} if gone`)
+                              : (cost < 6 ? "✓ safe to wait" : `−${cost} pts if you wait`)}
                           </span>
                         </div>
                         );
@@ -13183,9 +13196,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 3 }}>
                             <span style={{ fontWeight: 800, color: POS_COLOR[r.pos], fontSize: 13 }}>{r.pos}</span>
                             <span className="num" style={{ fontSize: 11.5 }}>
-                              <b style={{ color: r.elite > 0 ? "var(--gold)" : "var(--mut)", cursor: "help" }} onMouseEnter={listTip("Elite", r.pos, r.eliteList, "good")} onMouseLeave={hideTip}>{r.elite}</b><span className="mut"> elite · </span>
-                              <b style={{ color: r.starter > 0 ? "var(--ink)" : "var(--mut)", cursor: "help" }} onMouseEnter={listTip("Starters (real NFL role)", r.pos, r.starterList, r.starter > 0 ? "neutral" : "bad")} onMouseLeave={hideTip}>{r.starter}</b><span className="mut"> starter · </span>
-                              <b style={{ color: "var(--mut)", cursor: "help" }} onMouseEnter={listTip("Depth", r.pos, r.depthList, "neutral")} onMouseLeave={hideTip}>{r.depth}</b><span className="mut"> depth</span>
+                              <span style={{ cursor: "help" }} onMouseEnter={listTip("Elite", r.pos, r.eliteList, "good")} onMouseLeave={hideTip}><b style={{ color: r.elite > 0 ? "var(--gold)" : "var(--mut)" }}>{r.elite}</b><span className="mut"> elite</span></span><span className="mut"> · </span>
+                              <span style={{ cursor: "help" }} onMouseEnter={listTip("Starters (real NFL role)", r.pos, r.starterList, r.starter > 0 ? "neutral" : "bad")} onMouseLeave={hideTip}><b style={{ color: r.starter > 0 ? "var(--ink)" : "var(--mut)" }}>{r.starter}</b><span className="mut"> starter</span></span><span className="mut"> · </span>
+                              <span style={{ cursor: "help" }} onMouseEnter={listTip("Depth", r.pos, r.depthList, "neutral")} onMouseLeave={hideTip}><b style={{ color: "var(--mut)" }}>{r.depth}</b><span className="mut"> depth</span></span>
                             </span>
                           </div>
                           <div style={{ display: "flex", height: 8, borderRadius: 4, overflow: "hidden", background: "var(--panel2)" }}>
