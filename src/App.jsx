@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bx";
+const BUILD_TAG = "2026.06.28by";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2185,6 +2185,7 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
   // Per-pick-index tally of the best-available player (by pos), for your next TWO picks (ni 0 and 1). Lets
   // us show not just "who's likely at your next pick" but also the further drop-off to the pick after that.
   const expBestTally = [ { QB: {}, RB: {}, WR: {}, TE: {} }, { QB: {}, RB: {}, WR: {}, TE: {} } ];
+  const expSecondTally = [ { QB: {}, RB: {}, WR: {}, TE: {} }, { QB: {}, RB: {}, WR: {}, TE: {} } ]; // 2nd-best avail = fallback if the top one is taken
   const end = nexts[nexts.length - 1];
   for (let s = 0; s < nSims; s++) {
     const drafted = baseDrafted.slice();
@@ -2196,13 +2197,23 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
       if (ni >= 0) {
         for (const p of players) if (!drafted[p.id]) surv[ni][p.id]++;
         if (ni === 0 || ni === 1) {
+          // Track the best AND second-best available per position. The second-best is the real "if you don't
+          // take him" fallback — the next player down at that position — which is what the drop-off should
+          // compare against. (Using only the single best made the fallback equal the current player whenever
+          // he survived, so it wrongly showed "no drop-off".)
           const best = { QB: -999, RB: -999, WR: -999, TE: -999 };
           const bestId = { QB: null, RB: null, WR: null, TE: null };
-          for (const p of players) if (!drafted[p.id] && p.vbd > best[p.pos]) { best[p.pos] = p.vbd; bestId[p.pos] = p.id; }
+          const b2 = { QB: -999, RB: -999, WR: -999, TE: -999 };
+          const b2Id = { QB: null, RB: null, WR: null, TE: null };
+          for (const p of players) if (!drafted[p.id]) {
+            if (p.vbd > best[p.pos]) { b2[p.pos] = best[p.pos]; b2Id[p.pos] = bestId[p.pos]; best[p.pos] = p.vbd; bestId[p.pos] = p.id; }
+            else if (p.vbd > b2[p.pos]) { b2[p.pos] = p.vbd; b2Id[p.pos] = p.id; }
+          }
           POS.forEach((pos) => {
             if (best[pos] > -999) {
               if (ni === 0) expBest1[pos] += best[pos];
               if (bestId[pos] != null) expBestTally[ni][pos][bestId[pos]] = (expBestTally[ni][pos][bestId[pos]] || 0) + 1;
+              if (b2Id[pos] != null) expSecondTally[ni][pos][b2Id[pos]] = (expSecondTally[ni][pos][b2Id[pos]] || 0) + 1;
             }
           });
         }
@@ -2228,12 +2239,14 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
     for (const id in tally) if (tally[id] > bN) { bN = tally[id]; bId = +id; }
     return { p: bId != null ? players.find((x) => x.id === bId) || null : null, share: bN };
   };
-  const expBestPlayer = {}, expBestPlayer2 = {};
+  const expBestPlayer = {}, expBestPlayer2 = {}, expFallback = {}, expFallback2 = {};
   POS.forEach((pos) => {
     expBestPlayer[pos] = modePlayer(expBestTally[0][pos]).p;
     expBestPlayer2[pos] = modePlayer(expBestTally[1][pos]).p;
+    expFallback[pos] = modePlayer(expSecondTally[0][pos]).p;   // next-best at your NEXT pick (if the top is gone/taken)
+    expFallback2[pos] = modePlayer(expSecondTally[1][pos]).p;  // next-best at the pick AFTER
   });
-  return { nexts, pct, expBest1, expBestPlayer, expBestPlayer2 };
+  return { nexts, pct, expBest1, expBestPlayer, expBestPlayer2, expFallback, expFallback2 };
 }
 
 // Survival odds for every player at an arbitrary OVERALL pick number (e.g. a pick you
@@ -11055,22 +11068,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const survPct = simState.pct && simState.pct[0] ? simState.pct[0] : null;   // survival to your NEXT pick
     const survPct2 = simState.pct && simState.pct[1] ? simState.pct[1] : null;  // survival to the pick after
     const waitCost = {};
-    const waitDetail = {}; // pos -> { now, later, later2, deltaPts, deltaPts2, nowSurvives, nowSurvives2, sameGuy }
+    const waitDetail = {}; // pos -> { now, fallback, fallback2, deltaPts, deltaPts2, nowSurvives, nowSurvives2 }
     POS.forEach((pos) => {
       const now = bestNow[pos];
-      const later = simState.expBestPlayer && simState.expBestPlayer[pos];
-      const later2 = simState.expBestPlayer2 && simState.expBestPlayer2[pos];
+      // "If he's gone" = the NEXT-BEST player at that position (the fallback), not the expected-best (which
+      // is usually the same guy when he survives). This is what actually shows the drop-off.
+      const fb = simState.expFallback && simState.expFallback[pos];
+      const fb2 = simState.expFallback2 && simState.expFallback2[pos];
       if (now) {
-        const nowSurvives = survPct ? (survPct[now.id] ?? null) : null;         // % chance now-player is there next pick
-        const nowSurvives2 = survPct2 ? (survPct2[now.id] ?? null) : null;      // % chance still there pick-after
-        const sameGuy = later && later.id === now.id;
-        const dPts = later ? Math.max(0, Math.round((now.pts || 0) - (later.pts || 0))) : Math.max(0, Math.round(((now.vbd || 0) - (simState.expBest1[pos] || 0))));
-        const dPts2 = later2 ? Math.max(0, Math.round((now.pts || 0) - (later2.pts || 0))) : dPts;
+        const nowSurvives = survPct ? (survPct[now.id] ?? null) : null;
+        const nowSurvives2 = survPct2 ? (survPct2[now.id] ?? null) : null;
+        const dPts = fb && fb.id !== now.id ? Math.max(0, Math.round((now.pts || 0) - (fb.pts || 0))) : 0;
+        const dPts2 = fb2 && fb2.id !== now.id ? Math.max(0, Math.round((now.pts || 0) - (fb2.pts || 0))) : dPts;
         waitCost[pos] = dPts;
-        waitDetail[pos] = { now, later, later2, deltaPts: dPts, deltaPts2: dPts2, nowSurvives, nowSurvives2, sameGuy };
+        waitDetail[pos] = { now, fallback: (fb && fb.id !== now.id ? fb : null), fallback2: (fb2 && fb2.id !== now.id ? fb2 : null), deltaPts: dPts, deltaPts2: dPts2, nowSurvives, nowSurvives2 };
       } else {
         waitCost[pos] = 0;
-        waitDetail[pos] = { now: null, later: null, later2: null, deltaPts: 0, deltaPts2: 0, nowSurvives: null, nowSurvives2: null, sameGuy: false };
+        waitDetail[pos] = { now: null, fallback: null, fallback2: null, deltaPts: 0, deltaPts2: 0, nowSurvives: null, nowSurvives2: null };
       }
     });
     // Candidate pool: players likely available around this pick. Normally we window by ADP (players going
@@ -12887,33 +12901,38 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         ])} onMouseLeave={hideTip}>Take now vs. wait ⓘ</span>
                       </div>
                       {POS.map((pos) => A.bestNow[pos] && (() => {
-                        const d = (A.waitDetail && A.waitDetail[pos]) || { now: A.bestNow[pos], later: null, later2: null, deltaPts: A.waitCost[pos], deltaPts2: A.waitCost[pos], nowSurvives: null, nowSurvives2: null, sameGuy: false };
-                        const now = d.now, later = d.later, later2 = d.later2;
-                        const cost = d.deltaPts;               // points lost if you wait to your NEXT pick
+                        const d = (A.waitDetail && A.waitDetail[pos]) || { now: A.bestNow[pos], fallback: null, fallback2: null, deltaPts: A.waitCost[pos], deltaPts2: A.waitCost[pos], nowSurvives: null, nowSurvives2: null };
+                        const now = d.now, fb = d.fallback, fb2 = d.fallback2;
+                        const cost = d.deltaPts;               // points lost if you fall to the next-best at your NEXT pick
                         const surv = d.nowSurvives;            // % he's there at your NEXT pick
                         const likely = surv != null && surv >= 55;
-                        const safe = d.sameGuy || likely;
-                        // Consistent 3-row hover: NOW / NEXT PICK / PICK AFTER — same shape every time so it's
-                        // scannable at a glance. Each row: a fixed label, the player, points, and (for the wait
-                        // rows) the odds he's still there and the points you'd lose vs. taking the best now.
-                        const line = (whenLabel, pl, oddsStr, dropStr, tone) => ({
-                          t: whenLabel,
+                        const safe = likely && cost < 15;      // likely to last AND small drop even if not
+                        // Consistent 3-row hover: NOW / IF GONE, NEXT PICK / IF GONE, PICK AFTER — same shape
+                        // every time so it's scannable. The fallback is the NEXT-BEST player at the position,
+                        // which is the real drop-off if the top guy is taken.
+                        const line = (label, pl, meta) => ({
+                          t: label,
                           tc: pl ? rankTierColor(pl.pos, pl.posRank) : "var(--mut)",
-                          x: pl ? `${pl.name} · ${Math.round(pl.pts || 0)} pts${oddsStr ? `  ·  ${oddsStr}` : ""}${dropStr ? `  ·  ${dropStr}` : ""}` : "—",
+                          x: pl ? `${pl.name} · ${Math.round(pl.pts || 0)} pts${meta ? `  ·  ${meta}` : ""}` : "—",
                         });
                         const rowTip = (e) => showTip(e, [
                           { kind: "take", tone: safe ? "good" : cost > 25 ? "bad" : "neutral",
-                            x: safe ? `${pos}: likely safe to wait` : `${pos}: take now — waiting costs ~${cost} pts` },
-                          line("Now", now, null, null),
-                          later ? line("Your next pick", (later.id === now.id ? now : later), surv != null ? `${surv}% he lasts` : null, later.id === now.id ? "no drop-off" : `−${cost} pts`) : { t: "Your next pick", x: "similar value expected" },
-                          later2 ? line("The pick after", (later2.id === now.id ? now : later2), d.nowSurvives2 != null ? `${d.nowSurvives2}% he lasts` : null, later2.id === now.id ? "no drop-off" : `−${d.deltaPts2} pts`) : null,
+                            x: surv != null
+                              ? `${pos}: ${now.name} — ${surv}% he lasts to your next pick${cost > 0 ? `, −${cost} pts if not` : ""}`
+                              : `${pos}: waiting costs ~${cost} pts` },
+                          line("Best now", now, now.pos + now.posRank),
+                          fb ? line("If he's gone — next pick", fb, `−${cost} pts vs now`) : { t: "If he's gone — next pick", x: "similar value expected" },
+                          fb2 ? line("If gone — pick after", fb2, `−${d.deltaPts2} pts vs now`) : null,
+                          { t: "", x: safe
+                              ? `Likely safe to wait one turn — ${surv != null ? `${surv}% he's still there` : "low risk"}.`
+                              : `${surv != null ? `${100 - surv}% chance he's gone by your pick. ` : ""}If you want him, take him now — the fall-off is ~${cost} pts.` },
                         ].filter(Boolean));
                         return (
                         <div key={pos} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, padding: "2.5px 0", cursor: "help" }} onMouseEnter={rowTip} onMouseLeave={hideTip}>
                           <span><Dot pos={pos} />{now.name}</span>
                           <span className="num" style={{ fontSize: 11, textAlign: "right", color: safe ? "var(--green)" : cost > 25 ? "var(--red)" : "var(--ink)" }}>
                             {surv != null
-                              ? <>{surv}% lasts{!safe && cost > 0 && <span className="mut"> · </span>}{!safe && cost > 0 && <span style={{ color: "var(--red)" }}>−{cost} if not</span>}</>
+                              ? <>{surv}% lasts{cost > 0 && <><span className="mut"> · </span><span style={{ color: cost > 25 ? "var(--red)" : "var(--ink)" }}>−{cost} if not</span></>}</>
                               : (cost < 6 ? "safe to wait" : `−${cost} if you wait`)}
                           </span>
                         </div>
