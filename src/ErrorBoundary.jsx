@@ -17,6 +17,22 @@ export default class ErrorBoundary extends React.Component {
     // Log for diagnostics; never rethrow (that would white-screen again).
     try { console.error('[FDC] render error caught by boundary:', error, info); } catch (e) {}
   }
+  hardReload = () => {
+    // Cache-busting reload. After a deploy, a stale cached bundle can throw a chunk/render error; a plain
+    // reload might just re-serve the same stale files. Clear the Cache Storage first (if present), then
+    // reload with a cache-busting query so the browser fetches the fresh build.
+    try {
+      if (typeof caches !== 'undefined' && caches.keys) {
+        caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k)))).finally(() => {
+          const u = new URL(window.location.href); u.searchParams.set('_r', Date.now().toString());
+          window.location.replace(u.toString());
+        });
+        return;
+      }
+    } catch (e) { /* fall through to plain reload */ }
+    const u = new URL(window.location.href); u.searchParams.set('_r', Date.now().toString());
+    window.location.replace(u.toString());
+  };
   render() {
     if (this.state.error) {
       return (
@@ -24,11 +40,10 @@ export default class ErrorBoundary extends React.Component {
           <div style={{ maxWidth: 460, textAlign: 'center' }}>
             <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 8 }}>Something hiccuped</div>
             <div style={{ fontSize: 14, lineHeight: 1.55, color: '#9AA7B5', marginBottom: 20 }}>
-              The app hit an unexpected error, but <b style={{ color: '#EEF2F6' }}>your draft is safe</b> — it's saved automatically. Reload to pick up right where you left off.
+              The app hit an unexpected error, but <b style={{ color: '#EEF2F6' }}>your draft is safe</b> — it's saved automatically. Refresh the page to pick up right where you left off.
             </div>
             <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
-              <button onClick={() => window.location.reload()} style={{ background: '#F2B63C', color: '#151002', border: 'none', borderRadius: 8, padding: '11px 20px', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>Reload the app</button>
-              <button onClick={() => this.setState({ error: null })} style={{ background: 'transparent', color: '#EEF2F6', border: '1px solid #2E3A48', borderRadius: 8, padding: '11px 20px', fontSize: 14, cursor: 'pointer' }}>Try to continue</button>
+              <button onClick={this.hardReload} style={{ background: '#F2B63C', color: '#151002', border: 'none', borderRadius: 8, padding: '11px 20px', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>Refresh the page</button>
             </div>
           </div>
         </div>

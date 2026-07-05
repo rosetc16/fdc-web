@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bz";
+const BUILD_TAG = "2026.06.28ca";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3111,6 +3111,41 @@ function OutlookCard({ content }) {
             </div>
           );
         }
+        if (l.kind === "playertable") {
+          // A compact, aligned table of players — makes multi-player hovers (league needs, scarcity, where
+          // you rank, positional depth, roster profile, summary) easy to scan: columns line up so rank,
+          // name, team, age, and projected points read down cleanly. Positional rank is color-coded by
+          // strength. Columns are opt-in via l.cols (defaults to rank/name/team/age/pts).
+          const cols = l.cols || ["rank", "name", "team", "age", "pts"];
+          const rowsP = l.players || [];
+          const headLabel = { rank: "Rk", name: "Player", team: "Tm", age: "Age", pts: "Proj", vbd: "VBD", role: "Role", bye: "Bye" };
+          const gridCols = cols.map((c) => c === "name" ? "1fr" : c === "role" ? "1.1fr" : "auto").join(" ");
+          return (
+            <div key={i} style={{ marginBottom: 2 }}>
+              {l.title && <div className="disp" style={{ fontSize: 12, fontWeight: 700, color: "var(--gold)", marginBottom: 6 }}>{l.title}</div>}
+              <div style={{ display: "grid", gridTemplateColumns: gridCols, gap: "0 10px", alignItems: "center" }}>
+                {/* header row */}
+                {cols.map((c, ci) => (
+                  <div key={"h" + ci} style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", textAlign: c === "name" || c === "role" ? "left" : c === "team" ? "left" : "right", paddingBottom: 4, borderBottom: "1px solid var(--line)" }}>{headLabel[c] || c}</div>
+                ))}
+                {/* player rows */}
+                {rowsP.map((p, ri) => cols.map((c, ci) => {
+                  const base = { fontSize: 11.5, padding: "3px 0", borderBottom: ri < rowsP.length - 1 ? "1px solid var(--line2)" : "none", lineHeight: 1.2 };
+                  if (c === "rank") return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 800, color: rankTierColor(p.pos, p.posRank), textAlign: "right" }}>{p.pos}{p.posRank}</div>;
+                  if (c === "name") return <div key={ri + "-" + ci} style={{ ...base, fontWeight: 600, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>;
+                  if (c === "team") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--mut)", textAlign: "left" }}>{p.team || "FA"}</div>;
+                  if (c === "age") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--mut)", textAlign: "right" }}>{p.age || "—"}</div>;
+                  if (c === "pts") return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 700, textAlign: "right" }}>{Math.round(p.pts || 0)}</div>;
+                  if (c === "vbd") return <div key={ri + "-" + ci} className="num" style={{ ...base, textAlign: "right", color: (p.vbd || 0) > 0 ? "var(--green)" : "var(--mut)" }}>{p.vbd != null ? (p.vbd > 0 ? "+" : "") + Math.round(p.vbd) : "—"}</div>;
+                  if (c === "role") return <div key={ri + "-" + ci} style={{ ...base, color: "var(--mut)", fontSize: 10.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.role || p.posSlot || "—"}</div>;
+                  if (c === "bye") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--mut)", textAlign: "right" }}>{p.bye || "—"}</div>;
+                  return <div key={ri + "-" + ci} style={base} />;
+                }))}
+              </div>
+              {l.note && <div style={{ fontSize: 10.5, color: "var(--mut)", marginTop: 7, lineHeight: 1.4 }}>{l.note}</div>}
+            </div>
+          );
+        }
         if (l.kind === "altheader") {
           // Underlined header introducing the list of alternative players.
           return (
@@ -3491,17 +3526,26 @@ export default function App() {
   // chooses when. This also protects against a stale cached bundle silently running old features.
   useEffect(() => {
     let alive = true;
+    let seenBuild = null, seenCount = 0;
     const check = async () => {
       try {
         const r = await fetch(`/version.json?t=${Date.now()}`, { cache: "no-store" });
         if (!r.ok) return;
         const j = await r.json();
-        if (alive && j && j.build && j.build !== BUILD_TAG) setUpdateReady(true);
+        if (!alive || !j || !j.build) return;
+        if (j.build === BUILD_TAG) { seenBuild = null; seenCount = 0; return; }
+        // A newer build is reported. But version.json can update a few seconds BEFORE the new JS bundle is
+        // actually servable behind the CDN — refreshing then would just re-serve the old bundle (or error).
+        // So we require the SAME new build to show up on two checks in a row before prompting, giving the
+        // bundle time to propagate.
+        if (j.build === seenBuild) { seenCount++; } else { seenBuild = j.build; seenCount = 1; }
+        if (seenCount >= 2) setUpdateReady(true);
       } catch { /* offline or file missing — ignore; never block the app */ }
     };
-    const t0 = setTimeout(check, 8000);          // first check shortly after load
+    const t0 = setTimeout(check, 8000);           // first check shortly after load
+    const t1 = setTimeout(check, 20000);          // a confirming check ~12s later
     const iv = setInterval(check, 5 * 60 * 1000); // then every 5 minutes
-    return () => { alive = false; clearTimeout(t0); clearInterval(iv); };
+    return () => { alive = false; clearTimeout(t0); clearTimeout(t1); clearInterval(iv); };
   }, []);
 
   useEffect(() => {
@@ -3875,7 +3919,7 @@ export default function App() {
           <i className="ti ti-sparkles" style={{ fontSize: 16 }} aria-hidden="true" />
           <span style={{ fontWeight: 700 }}>A new version of Fantasy Draft Compass is available.</span>
           <span style={{ opacity: 0.85 }}>Refresh to get the latest features.</span>
-          <button onClick={() => window.location.reload()} style={{ background: "#151002", color: "var(--gold)", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Refresh now</button>
+          <button onClick={() => { try { if (typeof caches !== "undefined" && caches.keys) { caches.keys().then((ks) => Promise.all(ks.map((k) => caches.delete(k)))).finally(() => { const u = new URL(window.location.href); u.searchParams.set("_r", Date.now().toString()); window.location.replace(u.toString()); }); return; } } catch (e) {} const u = new URL(window.location.href); u.searchParams.set("_r", Date.now().toString()); window.location.replace(u.toString()); }} style={{ background: "#151002", color: "var(--gold)", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Refresh now</button>
           <button onClick={() => setUpdateReady(false)} title="Dismiss — I'll refresh later" style={{ background: "transparent", border: "none", color: "#151002", cursor: "pointer", padding: 4, display: "flex", opacity: 0.7 }}><i className="ti ti-x" style={{ fontSize: 15 }} aria-hidden="true" /></button>
         </div>
       )}
@@ -13236,9 +13280,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const listTip = (label, pos, arr, tone) => (e) => showTip(e, [
                   { kind: "take", tone, x: `${pos} — ${label} (${arr.length})` },
                   ...(arr.length
-                    ? arr.slice(0, 12).map((p) => ({ t: `${p.pos}${p.posRank || ""}`, tc: rankTierColor(p.pos, p.posRank), x: `${p.name} — ${p.team || "FA"}${p.posSlot ? ` (${p.posSlot})` : ""} · ${Math.round(p.pts || 0)} pts` }))
+                    ? [{ kind: "playertable", cols: ["rank", "name", "team", "age", "pts"], players: arr.slice(0, 12) }, ...(arr.length > 12 ? [{ t: "", x: `+${arr.length - 12} more` }] : [])]
                     : [{ t: "—", x: "None left on the board" }]),
-                  ...(arr.length > 12 ? [{ t: "", x: `+${arr.length - 12} more` }] : []),
                 ]);
                 return (
                   <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
@@ -13257,14 +13300,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           <div style={{ display: "flex", height: 8, borderRadius: 4, overflow: "hidden", background: "var(--panel2)", cursor: "help" }}
                             onMouseEnter={(e) => showTip(e, [
                               { kind: "take", tone: r.elite > 0 ? "good" : r.starter > 0 ? "neutral" : "bad", x: `${r.pos} on the board — ${r.elite} elite · ${r.starter} starter · ${r.depth} depth` },
-                              { kind: "altheader", x: "Elite" },
-                              ...(r.eliteList.length ? r.eliteList.slice(0, 4).map((p) => ({ t: `${p.pos}${p.posRank || ""}`, tc: "var(--gold)", x: `${p.name} — ${p.team || "FA"} · ${Math.round(p.pts || 0)} pts` })) : [{ t: "—", x: "none left" }]),
-                              { kind: "altheader", x: "Starters (real NFL role)" },
-                              ...(r.starterList.length ? r.starterList.slice(0, 5).map((p) => ({ t: `${p.pos}${p.posRank || ""}`, tc: rankTierColor(p.pos, p.posRank), x: `${p.name} — ${p.team || "FA"}${p.posSlot ? ` (${p.posSlot})` : ""} · ${Math.round(p.pts || 0)} pts` })) : [{ t: "—", x: "none left" }]),
-                              ...(r.starterList.length > 5 ? [{ t: "", x: `+${r.starterList.length - 5} more starters` }] : []),
-                              { kind: "altheader", x: "Depth" },
-                              ...(r.depthList.length ? r.depthList.slice(0, 3).map((p) => ({ t: `${p.pos}${p.posRank || ""}`, tc: "var(--mut)", x: `${p.name} — ${p.team || "FA"} · ${Math.round(p.pts || 0)} pts` })) : [{ t: "—", x: "none left" }]),
-                              ...(r.depthList.length > 3 ? [{ t: "", x: `+${r.depthList.length - 3} more depth pieces` }] : []),
+                              ...(r.eliteList.length ? [{ kind: "altheader", x: "Elite" }, { kind: "playertable", cols: ["rank", "name", "team", "age", "pts"], players: r.eliteList.slice(0, 5) }] : []),
+                              ...(r.starterList.length ? [{ kind: "altheader", x: "Starters (real NFL role)" }, { kind: "playertable", cols: ["rank", "name", "team", "role", "pts"], players: r.starterList.slice(0, 6) }] : [{ kind: "altheader", x: "Starters" }, { t: "—", x: "none left" }]),
+                              ...(r.depthList.length ? [{ kind: "altheader", x: "Depth" }, { kind: "playertable", cols: ["rank", "name", "team", "pts"], players: r.depthList.slice(0, 4) }] : []),
                             ])} onMouseLeave={hideTip}>
                             <div style={{ width: `${(r.elite / maxBar) * 100}%`, background: "var(--gold)" }} />
                             <div style={{ width: `${(r.starter / maxBar) * 100}%`, background: POS_COLOR[r.pos], opacity: 0.7 }} />
@@ -13463,7 +13501,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       const tone = lvl === 0 ? "var(--green)" : lvl === 1 ? "var(--gold)" : "var(--red)";
                       const word = lvl === 0 ? "Strong" : lvl === 1 ? "Middle" : "Weak";
                       const plist = (ta.byPos[pos] && ta.byPos[pos].list) || [];
-                      const tip = plist.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `Your ${pos}s — ${ordinalOf(r.rank)} of ${r.of} in the league` }, ...plist.map((p) => ({ t: `${p.pos}${p.posRank}`, tc: rankTierColor(p.pos, p.posRank), x: `${p.name} — ${p.team || "FA"} · ${Math.round(p.pts)} pts` }))]) : undefined;
+                      const tip = plist.length ? (e) => showTip(e, [{ kind: "take", tone: lvl === 0 ? "good" : lvl === 2 ? "bad" : "neutral", x: `Your ${pos}s — ${ordinalOf(r.rank)} of ${r.of} in the league` }, { kind: "playertable", cols: ["rank", "name", "team", "age", "pts"], players: plist }]) : undefined;
                       return (
                         <div key={pos} style={{ display: "flex", alignItems: "center", gap: 9, cursor: tip ? "help" : "default" }}
                           onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
@@ -13614,7 +13652,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <div className="panel" style={{ padding: 14 }}>
                 <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 10 }}>Roster profile</div>
                 {(() => {
-                  const profTip = (label, list) => list.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: label }, ...list.map((p) => ({ t: `${p.pos}${p.posRank}`, tc: rankTierColor(p.pos, p.posRank), x: `${p.name} — ${p.team || "FA"}${p.age ? `, age ${p.age}` : ""}${p.rookie ? " (rookie)" : ""}` }))]) : undefined;
+                  const profTip = (label, list) => list.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: label }, { kind: "playertable", cols: ["rank", "name", "team", "age", "pts"], players: list }]) : undefined;
                   const cell = (val, label, color, tip, rk) => (
                     <div style={{ flex: "1 1 88px", padding: "8px 10px", borderRadius: 8, background: "var(--panel2)", border: "1px solid var(--line)", cursor: tip ? "help" : "default" }}
                       onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
@@ -13961,8 +13999,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   picks.forEach((pk, o) => { if (teamAt(o) === i) { const p = players[pk]; if (p && counts[p.pos] != null) { counts[p.pos]++; tot++; } } });
                   if (tot >= 4) { const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]; const share = top[1] / tot; if (!zealot || share > zealot.share) zealot = { i, pos: top[0], share, n: top[1] }; }
                 }
-                const award = (icon, label, who, detail, color, mine) => (
-                  <div style={{ flex: "1 1 200px", minWidth: 190, display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", borderRadius: 9, background: mine ? "rgba(242,182,60,.12)" : "var(--panel2)", border: `1px solid ${mine ? "var(--gold)" : "var(--line)"}`, boxShadow: mine ? "0 0 0 1px rgba(242,182,60,.3)" : "none", position: "relative" }}>
+                const award = (icon, label, who, detail, color, mine, why) => (
+                  <div style={{ flex: "1 1 200px", minWidth: 190, display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", borderRadius: 9, background: mine ? "rgba(242,182,60,.12)" : "var(--panel2)", border: `1px solid ${mine ? "var(--gold)" : "var(--line)"}`, boxShadow: mine ? "0 0 0 1px rgba(242,182,60,.3)" : "none", position: "relative", cursor: why ? "help" : "default" }}
+                    onMouseEnter={why ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `${label}: ${who}` }, { t: "Why", x: why }]) : undefined} onMouseLeave={why ? hideTip : undefined}>
                     {mine && <span style={{ position: "absolute", top: 6, right: 8, fontSize: 8.5, fontWeight: 800, color: "#151002", background: "var(--gold)", borderRadius: 4, padding: "1px 5px", letterSpacing: ".04em" }}>YOU</span>}
                     <i className={`ti ${icon}`} style={{ fontSize: 20, color, marginTop: 1 }} aria-hidden="true" />
                     <div style={{ minWidth: 0 }}>
@@ -14000,16 +14039,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 }
                 return (
                   <div className="superlative-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 }}>
-                    {steal && steal.val > 0 && award("ti-diamond", "Best value", steal.p.name, `${steal.p.pos}${steal.p.posRank} to ${steal.t === userIdx ? "you" : TEAM_NAMES[steal.t]} — ${steal.val.toFixed(0)} spots past ADP`, "var(--green)", steal.t === userIdx)}
-                    {reach && reach.val < 0 && award("ti-flame", "Biggest reach", reach.p.name, `${reach.p.pos}${reach.p.posRank} by ${reach.t === userIdx ? "you" : TEAM_NAMES[reach.t]} — ${Math.abs(reach.val).toFixed(0)} spots early`, "var(--red)", reach.t === userIdx)}
-                    {valKing && valKing.v > 0 && award("ti-coins", "Value champ", nm(valKing.i), `Most total draft value — +${valKing.v.toFixed(0)} spots across the board`, "var(--green)", valKing.i === userIdx)}
-                    {lineupKing && award("ti-crown", "Best on paper", nm(lineupKing.i), `Top projected starting lineup — ${Math.round(lineupKing.v)} pts`, "var(--gold)", lineupKing.i === userIdx)}
-                    {powerhouse && award("ti-bolt", `${powerhouse.pos} powerhouse`, nm(powerhouse.i), `Loaded at ${powerhouse.pos} — ${powerhouse.names}`, POS_COLOR[powerhouse.pos], powerhouse.i === userIdx)}
-                    {youngest && award("ti-seedling", "Youth movement", nm(youngest.i), `Youngest core — ${youngest.avg.toFixed(1)} avg age`, "var(--green)", youngest.i === userIdx)}
-                    {oldest && award("ti-trophy", "Win-now mode", nm(oldest.i), `Oldest core — ${oldest.avg.toFixed(1)} avg age`, "var(--gold)", oldest.i === userIdx)}
-                    {rookieKing && rookieKing.n >= 2 && award("ti-baby-carriage", "Rookie hauler", nm(rookieKing.i), `Most rookies — ${rookieKing.n} first-years`, "var(--green)", rookieKing.i === userIdx)}
-                    {balanced && balanced.share <= 0.4 && award("ti-scale", "Best balance", nm(balanced.i), `Most even roster build across positions`, "var(--ink)", balanced.i === userIdx)}
-                    {zealot && zealot.share >= 0.45 && award("ti-target", "One-track mind", nm(zealot.i), `${Math.round(zealot.share * 100)}% ${zealot.pos} — ${zealot.n} of them`, "var(--blue)", zealot.i === userIdx)}
+                    {steal && steal.val > 0 && award("ti-diamond", "Best value", steal.p.name, `${steal.p.pos}${steal.p.posRank} to ${steal.t === userIdx ? "you" : TEAM_NAMES[steal.t]} — ${steal.val.toFixed(0)} spots past ADP`, "var(--green)", steal.t === userIdx, `This was the single biggest steal of the draft — ${steal.p.name} went ${steal.val.toFixed(0)} picks later than his average draft position, the largest such gap of any pick so far.`)}
+                    {reach && reach.val < 0 && award("ti-flame", "Biggest reach", reach.p.name, `${reach.p.pos}${reach.p.posRank} by ${reach.t === userIdx ? "you" : TEAM_NAMES[reach.t]} — ${Math.abs(reach.val).toFixed(0)} spots early`, "var(--red)", reach.t === userIdx, `The biggest reach of the draft — ${reach.p.name} was taken ${Math.abs(reach.val).toFixed(0)} picks earlier than his ADP, the furthest ahead of market anyone has drafted.`)}
+                    {valKing && valKing.v > 0 && award("ti-coins", "Value champ", nm(valKing.i), `Most total draft value — +${valKing.v.toFixed(0)} spots across the board`, "var(--green)", valKing.i === userIdx, `Adding up every pick's value vs. ADP, this team came out furthest ahead of the market (+${valKing.v.toFixed(0)} round-weighted spots) — the best pure value drafter.`)}
+                    {lineupKing && award("ti-crown", "Best on paper", nm(lineupKing.i), `Top projected starting lineup — ${Math.round(lineupKing.v)} pts`, "var(--gold)", lineupKing.i === userIdx, `Their best possible starting lineup projects for the most points in the league (${Math.round(lineupKing.v)}), regardless of how the value fell — the highest raw talent on paper.`)}
+                    {powerhouse && award("ti-bolt", `${powerhouse.pos} powerhouse`, nm(powerhouse.i), `Loaded at ${powerhouse.pos} — ${powerhouse.names}`, POS_COLOR[powerhouse.pos], powerhouse.i === userIdx, `Their top two ${powerhouse.pos}s (${powerhouse.names}) combine for the highest value-over-replacement of any position group in the league — the deepest single-position core.`)}
+                    {youngest && award("ti-seedling", "Youth movement", nm(youngest.i), `Youngest core — ${youngest.avg.toFixed(1)} avg age`, "var(--green)", youngest.i === userIdx, `Averaging just ${youngest.avg.toFixed(1)} years old across their skill players — the youngest roster in the league, built for the long haul.`)}
+                    {oldest && award("ti-trophy", "Win-now mode", nm(oldest.i), `Oldest core — ${oldest.avg.toFixed(1)} avg age`, "var(--gold)", oldest.i === userIdx, `The oldest core in the league at ${oldest.avg.toFixed(1)} avg age — leaning on proven veterans to win now rather than building for later.`)}
+                    {rookieKing && rookieKing.n >= 2 && award("ti-baby-carriage", "Rookie hauler", nm(rookieKing.i), `Most rookies — ${rookieKing.n} first-years`, "var(--green)", rookieKing.i === userIdx, `Drafted more first-year players (${rookieKing.n}) than anyone — betting heavily on incoming talent and upside.`)}
+                    {balanced && balanced.share <= 0.4 && award("ti-scale", "Best balance", nm(balanced.i), `Most even roster build across positions`, "var(--ink)", balanced.i === userIdx, `No single position makes up more than ${Math.round(balanced.share * 100)}% of their picks — the most evenly distributed roster build in the league.`)}
+                    {zealot && zealot.share >= 0.45 && award("ti-target", "One-track mind", nm(zealot.i), `${Math.round(zealot.share * 100)}% ${zealot.pos} — ${zealot.n} of them`, "var(--blue)", zealot.i === userIdx, `${Math.round(zealot.share * 100)}% of their picks (${zealot.n}) were ${zealot.pos}s — by far the most single-position-focused draft in the league.`)}
                   </div>
                 );
               })()}
@@ -14110,7 +14149,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           {gradeOrder.map((i) => (
                             <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 12, padding: "1px 0", color: i === userIdx ? "var(--gold)" : "var(--ink)" }}>
                               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{nm(i)}{i === userIdx ? " ★" : ""}</span>
-                              <b style={{ flexShrink: 0, marginLeft: 6 }}>{grades[i].g}</b>
+                              <span style={{ flexShrink: 0, marginLeft: 6, display: "inline-flex", alignItems: "baseline", gap: 5 }}>
+                                <b>{grades[i].g}</b>
+                                <span className="num" style={{ fontSize: 10.5, fontWeight: 700, color: valByTeam[i] > 0 ? "var(--green)" : valByTeam[i] < 0 ? "var(--red)" : "var(--mut)" }}>({valByTeam[i] > 0 ? "+" : ""}{valByTeam[i]})</span>
+                              </span>
                             </div>
                           ))}
                         </div>
@@ -14288,11 +14330,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   const teamRosterArr = (proj && proj.rosters && proj.rosters[i]) || teamPicks.map((x) => x.p);
                   const ptsTip = (e) => showTip(e, [
                     { kind: "take", tone: i === userIdx ? "good" : "neutral", x: `${i === userIdx ? "Your team" : (TEAM_NAMES[i] || `Team ${i + 1}`)} — projected starting lineup (${proj.pts[i]} pts)` },
-                    ...lineupSlots(teamRosterArr || [], cfg.sf).slots.map((s) => ({
-                      t: s.slot,
-                      tc: s.p ? rankTierColor(s.p.pos, s.p.posRank) : "var(--mut)",
-                      x: s.p ? `${s.p.name} — ${s.p.pos}${s.p.posRank} · ${Math.round(s.p.pts)} pts` : "— empty —",
-                    })),
+                    { kind: "playertable", cols: ["rank", "name", "team", "age", "pts"], players: lineupSlots(teamRosterArr || [], cfg.sf).slots.filter((s) => s.p).map((s) => ({ ...s.p, slot: s.slot })) },
                   ]);
                   return (
                   <tr key={i} style={{ color: i === userIdx ? "var(--gold)" : "var(--ink)" }}>
@@ -14371,7 +14409,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             const atPos = (rosterI || []).filter((pp) => pp && pp.pos === pos).sort((a, b) => (b.pts || 0) - (a.pts || 0));
                             const cellTip = (e) => showTip(e, [
                               { kind: "take", tone: lvl === 0 ? "good" : lvl === 2 ? "bad" : "neutral", x: `${mine ? "Your" : TEAM_NAMES[i]} ${pos} — ${lvl === 0 ? "top third" : lvl === 1 ? "middle" : "bottom third"} of the league` },
-                              ...(atPos.length ? atPos.map((pp) => ({ tc: rankTierColor(pp.pos, pp.posRank), t: `${pp.pos}${pp.posRank || ""}`, x: `${pp.name} · ${Math.round(pp.pts || 0)} pts${pp.vbd != null ? ` · ${pp.vbd > 0 ? "+" : ""}${Math.round(pp.vbd)} VBD` : ""}` })) : [{ t: "—", x: "No players drafted here yet" }]),
+                              ...(atPos.length ? [{ kind: "playertable", cols: ["rank", "name", "team", "age", "pts", "vbd"], players: atPos.slice(0, 8) }] : [{ t: "—", x: "No players drafted here yet" }]),
                             ]);
                             return <td key={pos} style={{ textAlign: "center", padding: "3px 2px" }}><span onMouseEnter={cellTip} onMouseLeave={hideTip} style={{ display: "inline-block", minWidth: 22, fontSize: 10.5, fontWeight: 700, color: lvlColor(lvl), background: lvlBg(lvl), borderRadius: 5, padding: "2px 6px", cursor: "help" }}>{lvl === 0 ? "Strong" : lvl === 1 ? "OK" : "Thin"}</span></td>;
                           })}
