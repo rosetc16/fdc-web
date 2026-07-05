@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28bw";
+const BUILD_TAG = "2026.06.28bx";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -12879,41 +12879,42 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       ))}
                       <div className="mut" style={{ fontSize: 11.5, margin: "10px 0 4px", textTransform: "uppercase", letterSpacing: ".07em" }}>
                         <span className="info" onClick={(e) => showTip(e, [
-                          { t: "Take now vs. wait", x: "For each position: the best player available now, the odds he survives to YOUR NEXT pick, and — if he's gone — who you'd likely fall to at your next pick and the one after. Hover any row for the full chain." },
-                          { t: "Reading it", x: "\u201C62% to last\u201D = 62% chance he's still there next pick. \u201C\u221249 if gone\u201D = if he isn't, your likely replacement projects about 49 fewer points. High odds + small drop-off = safe to wait." },
+                          { t: "Take now vs. wait", x: "For each position: the best player now, and — if you pass — the odds he lasts to your next pick and the points you'd lose if he doesn't. Hover a row to see the drop-off across your next two picks." },
+                          { t: "The row", x: "\u201C78% lasts\u201D = 78% chance he's still there at your next pick. \u201C\u221249 if not\u201D = if he's gone, your likely replacement projects ~49 fewer points. High % + small drop = safe to wait." },
                         ])} onMouseEnter={(e) => showTip(e, [
-                          { t: "Take now vs. wait", x: "For each position: the best player available now, the odds he survives to YOUR NEXT pick, and — if he's gone — who you'd likely fall to at your next pick and the one after. Hover any row for the full chain." },
-                          { t: "Reading it", x: "\u201C62% to last\u201D = 62% chance he's still there next pick. \u201C\u221249 if gone\u201D = if he isn't, your likely replacement projects about 49 fewer points. High odds + small drop-off = safe to wait." },
+                          { t: "Take now vs. wait", x: "For each position: the best player now, and — if you pass — the odds he lasts to your next pick and the points you'd lose if he doesn't. Hover a row to see the drop-off across your next two picks." },
+                          { t: "The row", x: "\u201C78% lasts\u201D = 78% chance he's still there at your next pick. \u201C\u221249 if not\u201D = if he's gone, your likely replacement projects ~49 fewer points. High % + small drop = safe to wait." },
                         ])} onMouseLeave={hideTip}>Take now vs. wait ⓘ</span>
                       </div>
                       {POS.map((pos) => A.bestNow[pos] && (() => {
-                        const d = (A.waitDetail && A.waitDetail[pos]) || { now: A.bestNow[pos], later: null, later2: null, deltaPts: A.waitCost[pos], nowSurvives: null, sameGuy: false };
-                        const now = d.now, later = d.later, later2 = d.later2, cost = d.deltaPts;
-                        const surv = d.nowSurvives; // % chance now-player is still there at YOUR NEXT pick
+                        const d = (A.waitDetail && A.waitDetail[pos]) || { now: A.bestNow[pos], later: null, later2: null, deltaPts: A.waitCost[pos], deltaPts2: A.waitCost[pos], nowSurvives: null, nowSurvives2: null, sameGuy: false };
+                        const now = d.now, later = d.later, later2 = d.later2;
+                        const cost = d.deltaPts;               // points lost if you wait to your NEXT pick
+                        const surv = d.nowSurvives;            // % he's there at your NEXT pick
                         const likely = surv != null && surv >= 55;
                         const safe = d.sameGuy || likely;
+                        // Consistent 3-row hover: NOW / NEXT PICK / PICK AFTER — same shape every time so it's
+                        // scannable at a glance. Each row: a fixed label, the player, points, and (for the wait
+                        // rows) the odds he's still there and the points you'd lose vs. taking the best now.
+                        const line = (whenLabel, pl, oddsStr, dropStr, tone) => ({
+                          t: whenLabel,
+                          tc: pl ? rankTierColor(pl.pos, pl.posRank) : "var(--mut)",
+                          x: pl ? `${pl.name} · ${Math.round(pl.pts || 0)} pts${oddsStr ? `  ·  ${oddsStr}` : ""}${dropStr ? `  ·  ${dropStr}` : ""}` : "—",
+                        });
                         const rowTip = (e) => showTip(e, [
-                          { kind: "take", tone: safe ? "good" : cost > 25 ? "bad" : "neutral", x: surv != null
-                              ? `${pos}: ${now.name} — ${surv}% chance he's still here at your next pick`
-                              : `${pos}: waiting likely costs ~${cost} projected pts` },
-                          { t: "Best now", tc: rankTierColor(now.pos, now.posRank), x: `${now.name} — ${now.pos}${now.posRank} · ${Math.round(now.pts || 0)} proj pts${surv != null ? ` · ${surv}% to last` : ""}` },
-                          (later && later.id !== now.id)
-                            ? { t: "If gone — next pick", tc: rankTierColor(later.pos, later.posRank), x: `${later.name} — ${later.pos}${later.posRank} · ${Math.round(later.pts || 0)} proj pts  (−${cost} vs now)` }
-                            : { t: "At your next pick", x: `The sims expect ${now.name} to still be your best option — low risk.` },
-                          (later2 && later2.id !== (later ? later.id : now.id))
-                            ? { t: "Then the pick after", tc: rankTierColor(later2.pos, later2.posRank), x: `${later2.name} — ${later2.pos}${later2.posRank} · ${Math.round(later2.pts || 0)} proj pts  (−${d.deltaPts2} vs now)` }
-                            : null,
-                          { t: "", x: safe
-                              ? `Likely safe to wait — address another need and circle back to ${pos}.`
-                              : `${surv != null ? `Only ${surv}% to survive to your pick. ` : ""}If you want this ${pos} tier, take it now — the drop-off is about ${cost} pts.` },
+                          { kind: "take", tone: safe ? "good" : cost > 25 ? "bad" : "neutral",
+                            x: safe ? `${pos}: likely safe to wait` : `${pos}: take now — waiting costs ~${cost} pts` },
+                          line("Now", now, null, null),
+                          later ? line("Your next pick", (later.id === now.id ? now : later), surv != null ? `${surv}% he lasts` : null, later.id === now.id ? "no drop-off" : `−${cost} pts`) : { t: "Your next pick", x: "similar value expected" },
+                          later2 ? line("The pick after", (later2.id === now.id ? now : later2), d.nowSurvives2 != null ? `${d.nowSurvives2}% he lasts` : null, later2.id === now.id ? "no drop-off" : `−${d.deltaPts2} pts`) : null,
                         ].filter(Boolean));
                         return (
-                        <div key={pos} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "2.5px 0", cursor: "help" }} onMouseEnter={rowTip} onMouseLeave={hideTip}>
+                        <div key={pos} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, padding: "2.5px 0", cursor: "help" }} onMouseEnter={rowTip} onMouseLeave={hideTip}>
                           <span><Dot pos={pos} />{now.name}</span>
-                          <span className="num" style={{ color: !safe && cost > 25 ? "var(--red)" : safe ? "var(--green)" : "var(--ink)", fontSize: 11.5 }}>
+                          <span className="num" style={{ fontSize: 11, textAlign: "right", color: safe ? "var(--green)" : cost > 25 ? "var(--red)" : "var(--ink)" }}>
                             {surv != null
-                              ? (safe ? `✓ ${surv}% to last` : `${surv}% to last · −${cost} if gone`)
-                              : (cost < 6 ? "✓ safe to wait" : `−${cost} pts if you wait`)}
+                              ? <>{surv}% lasts{!safe && cost > 0 && <span className="mut"> · </span>}{!safe && cost > 0 && <span style={{ color: "var(--red)" }}>−{cost} if not</span>}</>
+                              : (cost < 6 ? "safe to wait" : `−${cost} if you wait`)}
                           </span>
                         </div>
                         );
@@ -13201,7 +13202,18 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               <span style={{ cursor: "help" }} onMouseEnter={listTip("Depth", r.pos, r.depthList, "neutral")} onMouseLeave={hideTip}><b style={{ color: "var(--mut)" }}>{r.depth}</b><span className="mut"> depth</span></span>
                             </span>
                           </div>
-                          <div style={{ display: "flex", height: 8, borderRadius: 4, overflow: "hidden", background: "var(--panel2)" }}>
+                          <div style={{ display: "flex", height: 8, borderRadius: 4, overflow: "hidden", background: "var(--panel2)", cursor: "help" }}
+                            onMouseEnter={(e) => showTip(e, [
+                              { kind: "take", tone: r.elite > 0 ? "good" : r.starter > 0 ? "neutral" : "bad", x: `${r.pos} on the board — ${r.elite} elite · ${r.starter} starter · ${r.depth} depth` },
+                              { kind: "altheader", x: "Elite" },
+                              ...(r.eliteList.length ? r.eliteList.slice(0, 4).map((p) => ({ t: `${p.pos}${p.posRank || ""}`, tc: "var(--gold)", x: `${p.name} — ${p.team || "FA"} · ${Math.round(p.pts || 0)} pts` })) : [{ t: "—", x: "none left" }]),
+                              { kind: "altheader", x: "Starters (real NFL role)" },
+                              ...(r.starterList.length ? r.starterList.slice(0, 5).map((p) => ({ t: `${p.pos}${p.posRank || ""}`, tc: rankTierColor(p.pos, p.posRank), x: `${p.name} — ${p.team || "FA"}${p.posSlot ? ` (${p.posSlot})` : ""} · ${Math.round(p.pts || 0)} pts` })) : [{ t: "—", x: "none left" }]),
+                              ...(r.starterList.length > 5 ? [{ t: "", x: `+${r.starterList.length - 5} more starters` }] : []),
+                              { kind: "altheader", x: "Depth" },
+                              ...(r.depthList.length ? r.depthList.slice(0, 3).map((p) => ({ t: `${p.pos}${p.posRank || ""}`, tc: "var(--mut)", x: `${p.name} — ${p.team || "FA"} · ${Math.round(p.pts || 0)} pts` })) : [{ t: "—", x: "none left" }]),
+                              ...(r.depthList.length > 3 ? [{ t: "", x: `+${r.depthList.length - 3} more depth pieces` }] : []),
+                            ])} onMouseLeave={hideTip}>
                             <div style={{ width: `${(r.elite / maxBar) * 100}%`, background: "var(--gold)" }} />
                             <div style={{ width: `${(r.starter / maxBar) * 100}%`, background: POS_COLOR[r.pos], opacity: 0.7 }} />
                             <div style={{ width: `${(Math.min(r.depth, 10) / maxBar) * 100}%`, background: POS_COLOR[r.pos], opacity: 0.28 }} />
