@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28by";
+const BUILD_TAG = "2026.06.28bz";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3077,6 +3077,37 @@ function OutlookCard({ content }) {
               <div style={{ fontSize: 12, lineHeight: 1.45, padding: "7px 9px", background: "rgba(242,182,60,.08)", borderLeft: "2px solid var(--gold)", borderRadius: "0 6px 6px 0" }}>
                 <span style={{ color: "var(--gold)", fontWeight: 700 }}>Why: </span><span style={{ color: "var(--ink)" }}>{l.x}</span>
               </div>
+            </div>
+          );
+        }
+        if (l.kind === "waitchain") {
+          // A clean, aligned "runway" for the take-now-vs-wait decision: the player now, then two rows —
+          // your next pick and the pick after — each showing the % chance he's still there and, if he's
+          // gone, who you'd fall to and how many points you'd lose. Built as a small grid so the numbers
+          // line up in columns and the reader can draw a conclusion instantly.
+          const rows = l.rows || [];
+          return (
+            <div key={i} style={{ marginBottom: 2 }}>
+              {/* header: the player available NOW */}
+              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 8, paddingBottom: 8, borderBottom: "1px solid var(--line)" }}>
+                <span className="disp" style={{ fontSize: 13.5, fontWeight: 700, color: l.nowColor || "var(--ink)" }}>{l.nowName}</span>
+                <span className="num" style={{ fontSize: 11.5, color: "var(--mut)" }}>{l.nowPts} pts · best {l.pos} now</span>
+              </div>
+              {/* column headers */}
+              <div style={{ display: "grid", gridTemplateColumns: "78px 1fr auto", gap: 8, fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", marginBottom: 4 }}>
+                <span>Will he last?</span><span>If gone, you get</span><span style={{ textAlign: "right" }}>Drop</span>
+              </div>
+              {rows.map((r, j) => (
+                <div key={j} style={{ display: "grid", gridTemplateColumns: "78px 1fr auto", gap: 8, alignItems: "center", padding: "5px 0", borderTop: j > 0 ? "1px solid var(--line2)" : "none" }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: "var(--mut)", lineHeight: 1.1 }}>{r.when}</div>
+                    <div className="num" style={{ fontSize: 15, fontWeight: 800, color: r.pctColor, lineHeight: 1.15 }}>{r.pct != null ? `${r.pct}%` : "—"}</div>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: r.fbColor || "var(--ink)", lineHeight: 1.25 }}>{r.fbText}</div>
+                  <div className="num" style={{ fontSize: 12.5, fontWeight: 700, textAlign: "right", color: r.drop > 0 ? "var(--red)" : "var(--mut)" }}>{r.drop > 0 ? `−${r.drop}` : "—"}</div>
+                </div>
+              ))}
+              {l.footer && <div style={{ fontSize: 11, color: "var(--mut)", marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--line)", lineHeight: 1.4 }}>{l.footer}</div>}
             </div>
           );
         }
@@ -12910,23 +12941,25 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         // Consistent 3-row hover: NOW / IF GONE, NEXT PICK / IF GONE, PICK AFTER — same shape
                         // every time so it's scannable. The fallback is the NEXT-BEST player at the position,
                         // which is the real drop-off if the top guy is taken.
-                        const line = (label, pl, meta) => ({
-                          t: label,
-                          tc: pl ? rankTierColor(pl.pos, pl.posRank) : "var(--mut)",
-                          x: pl ? `${pl.name} · ${Math.round(pl.pts || 0)} pts${meta ? `  ·  ${meta}` : ""}` : "—",
-                        });
+                        const pctColor = (p) => p == null ? "var(--mut)" : p >= 65 ? "var(--green)" : p >= 40 ? "var(--gold)" : "var(--red)";
                         const rowTip = (e) => showTip(e, [
-                          { kind: "take", tone: safe ? "good" : cost > 25 ? "bad" : "neutral",
-                            x: surv != null
-                              ? `${pos}: ${now.name} — ${surv}% he lasts to your next pick${cost > 0 ? `, −${cost} pts if not` : ""}`
-                              : `${pos}: waiting costs ~${cost} pts` },
-                          line("Best now", now, now.pos + now.posRank),
-                          fb ? line("If he's gone — next pick", fb, `−${cost} pts vs now`) : { t: "If he's gone — next pick", x: "similar value expected" },
-                          fb2 ? line("If gone — pick after", fb2, `−${d.deltaPts2} pts vs now`) : null,
-                          { t: "", x: safe
-                              ? `Likely safe to wait one turn — ${surv != null ? `${surv}% he's still there` : "low risk"}.`
-                              : `${surv != null ? `${100 - surv}% chance he's gone by your pick. ` : ""}If you want him, take him now — the fall-off is ~${cost} pts.` },
-                        ].filter(Boolean));
+                          {
+                            kind: "waitchain",
+                            pos,
+                            nowName: now.name,
+                            nowPts: Math.round(now.pts || 0),
+                            nowColor: rankTierColor(now.pos, now.posRank),
+                            rows: [
+                              { when: "By next pick", pct: surv, pctColor: pctColor(surv),
+                                fbText: fb ? `${fb.name} (${Math.round(fb.pts || 0)} pts)` : "similar value expected", fbColor: fb ? rankTierColor(fb.pos, fb.posRank) : "var(--mut)", drop: cost },
+                              { when: "Pick after", pct: d.nowSurvives2, pctColor: pctColor(d.nowSurvives2),
+                                fbText: fb2 ? `${fb2.name} (${Math.round(fb2.pts || 0)} pts)` : (fb ? `${fb.name} (${Math.round(fb.pts || 0)} pts)` : "similar value expected"), fbColor: fb2 ? rankTierColor(fb2.pos, fb2.posRank) : (fb ? rankTierColor(fb.pos, fb.posRank) : "var(--mut)"), drop: d.deltaPts2 },
+                            ],
+                            footer: safe
+                              ? `Likely safe to wait a turn — good odds he's still there, and only a ${cost}-pt fall-off if not.`
+                              : `${surv != null ? `${100 - surv}% chance he's gone by your next pick. ` : ""}If you want him, taking him now avoids a ~${cost}-pt drop.`,
+                          },
+                        ]);
                         return (
                         <div key={pos} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, padding: "2.5px 0", cursor: "help" }} onMouseEnter={rowTip} onMouseLeave={hideTip}>
                           <span><Dot pos={pos} />{now.name}</span>
