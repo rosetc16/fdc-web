@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28cf";
+const BUILD_TAG = "2026.06.28cg";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3053,6 +3053,8 @@ function makeOutlook(p, sims, drafted, ctx) {
   ctx = ctx || {};
   const pickNow = ctx.pickNow != null ? ctx.pickNow : null;
   const dynasty = !!ctx.dynasty;
+  const run = ctx.run || null;          // { pos, count } — a positional run underway
+  const needShort = ctx.needShort;      // how many starters short you are at his position (if known)
   const out = [];
   const tierWord = p.tier <= 1 ? "elite" : p.tier === 2 ? "strong" : p.tier === 3 ? "solid" : p.tier <= 5 ? "upside/depth" : "late-round";
   const posLabel = { QB: "QB", RB: "RB", WR: "WR", TE: "TE", DL: "DL", LB: "LB", DB: "DB", K: "K", DST: "DST" }[p.pos] || p.pos;
@@ -3096,31 +3098,45 @@ function makeOutlook(p, sims, drafted, ctx) {
   out.push({ kind: "kvtable", items: kv });
   if (p.role) out.push({ t: "NFL role", x: p.role });
 
-  // 3) STANDS OUT — just the opportunity signals; demographics are already in the grid above.
+  // 3) BOTTOM LINE — the one-stop synthesis: weaves together his value vs. the market (ADP/VBD), his role,
+  // your roster need, any positional run, and (in dynasty) his age/upside. This is the "should I take him"
+  // read, not just an ADP comment.
+  const line = [];
+  // value vs market
+  if (slip != null && slip >= 18) line.push(`he's fallen ~${slip} picks past his ADP, so he's a value here`);
+  else if (gap > 8) line.push(`he's worth more than his draft cost (projects like pick ${Math.round(p.valueRank)})`);
+  else if (gap < -8 && !(dynasty && p.age && p.age <= 24)) line.push(`he's going ahead of this season's projection`);
+  // production value
+  if (p.vbd != null && p.vbd > 20) line.push(`strong projected value (+${Math.round(p.vbd)} VBD over replacement)`);
+  else if (p.vbd != null && p.vbd <= 0) line.push(`replacement-level production on paper`);
+  // role
+  if (p.role) line.push(`he profiles as a ${p.role.toLowerCase()}`);
+  // roster fit
+  if (needShort != null && needShort >= 1) line.push(`and fills an open ${p.pos} spot on your roster`);
+  else if (needShort != null && needShort <= 0) line.push(`though you're already set at ${p.pos}`);
+  // positional run
+  if (run && run.pos === p.pos && run.count >= 3) line.push(`— and with a ${p.pos} run underway (${run.count} of the last 8), the tier is thinning fast`);
+  // dynasty upside
+  if (dynasty && p.age && p.age <= 23) line.push(`. At just ${p.age}, he carries long-term dynasty upside`);
+  else if (dynasty && p.age && p.age >= 30) line.push(`. At ${p.age}, his dynasty window is shorter`);
+  // availability nudge
+  if (surv != null && surv <= 25) line.push(`. He likely won't last to your next pick`);
+  else if (surv != null && surv >= 70) line.push(`. You could reasonably wait — good odds he's still here next turn`);
+  if (line.length) {
+    let txt = line.join(", ").replace(/, —/g, " —").replace(/, \./g, ".").replace(/, though/g, ", though").replace(/, and/g, " and");
+    txt = txt.charAt(0).toUpperCase() + txt.slice(1);
+    if (!/[.!?]$/.test(txt)) txt += ".";
+    out.push({ t: "Bottom line", x: txt });
+  }
+  // Opportunity flags that aren't already covered — kept short.
   const opp = [];
-  if (p.rookie && p.posDepth === 1) opp.push("rookie already atop his position group");
-  else if (p.posDepth === 1 && p.age && p.age <= 24) opp.push("young and already atop his depth chart");
-  if (gap > 12) opp.push("market is sleeping on his projection");
-  if (p.ceil != null && p.pts && p.ceil - p.pts > p.pts * 0.30) opp.push("high ceiling if his situation breaks right");
+  if (p.ceil != null && p.pts && p.ceil - p.pts > p.pts * 0.30) opp.push("high weekly ceiling if his situation breaks right");
   if (iv) opp.push(`working back from ${iv.label.toLowerCase()}`);
-  if (opp.length) out.push({ t: "Stands out", x: opp.join("; ") + "." });
-
-  // 4) VALUE — one concise line, aware of where he's slipped to and dynasty upside pricing.
-  let why;
-  if (slip != null && slip >= 18) why = `His ADP is ~${Math.round(p.adp)}, but he's still here at pick ${pickNow} — a chance to get him below market.`;
-  else if (gap > 8) why = `Projects like a pick-${Math.round(p.valueRank)} player but goes around pick ${Math.round(p.adp)} — more than you pay for.`;
-  else if (gap < -8) why = dynasty && p.age && p.age <= 24
-    ? `Goes around pick ${Math.round(p.adp)}, ahead of this season's projection (~pick ${Math.round(p.valueRank)}) — the market is buying his long-term upside, not just this year.`
-    : `Goes around pick ${Math.round(p.adp)}, earlier than this season's projection (~pick ${Math.round(p.valueRank)}) — a premium on this year alone.`;
-  else why = `Draft cost (~pick ${Math.round(p.adp)}) matches his projected value.`;
-  out.push({ t: "Value", x: why });
+  if (opp.length) out.push({ t: "Also", x: opp.join("; ") + "." });
 
   // 5) AVAILABILITY — only when meaningful, in one concise line.
-  if (surv != null) {
-    const avail = surv <= 20 ? `Only ~${surv}% he's still there next pick — take him now if you want him.`
-      : surv <= 55 ? `Coin flip (${surv}%) he makes it back to your next pick.`
-      : `Good odds (${surv}%) he's still there next pick — you can wait.`;
-    out.push({ t: "Will he last?", x: avail });
+  if (surv != null && surv > 25 && surv < 70) {
+    out.push({ t: "Will he last?", x: `Roughly a coin flip (${surv}%) he makes it back to your next pick.` });
   }
 
   // 6) SUPPORTING
@@ -3224,7 +3240,7 @@ function OutlookCard({ content }) {
           // strength. Columns are opt-in via l.cols (defaults to rank/name/team/age/pts).
           const cols = l.cols || ["rank", "name", "team", "age", "pts"];
           const rowsP = l.players || [];
-          const headLabel = { rank: "Rk", name: "Player", team: "Tm", age: "Age", pts: "Proj", vbd: "VBD", role: "Role", bye: "Bye", value: "Value", slot: "Slot", prob: "Avail", adp: "ADP" };
+          const headLabel = { rank: "Rk", name: "Player", team: "Tm", age: "Age", pts: "Proj", vbd: "VBD", role: "Role", bye: "Bye", value: "Value", slot: "Slot", prob: "Avail", adp: "ADP", pick: "Pick" };
           const gridCols = cols.map((c) => c === "name" ? "1fr" : c === "role" ? "1.1fr" : "auto").join(" ");
           return (
             <div key={i} style={{ marginBottom: 2 }}>
@@ -3251,6 +3267,7 @@ function OutlookCard({ content }) {
                   if (c === "bye") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--mut)", textAlign: "right" }}>{p.bye || "—"}</div>;
                   if (c === "value") return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 700, textAlign: "right", color: (p.v || 0) > 2 ? "var(--green)" : (p.v || 0) < -2 ? "var(--red)" : "var(--mut)" }}>{p.v != null ? (p.v > 0 ? "+" : "") + Math.round(p.v) : "—"}</div>;
                   if (c === "slot") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--gold)", textAlign: "left", fontSize: 10 }}>{p.slot || "—"}</div>;
+                  if (c === "pick") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--mut)", textAlign: "right" }}>{p.pickNo != null ? p.pickNo : "—"}</div>;
                   return <div key={ri + "-" + ci} style={base} />;
                 }))}
               </div>
@@ -3259,16 +3276,18 @@ function OutlookCard({ content }) {
           );
         }
         if (l.kind === "kvtable") {
-          // Compact 2-column key/value grid for a single player's demographics/metrics — much easier to scan
-          // than a wrapping chip strip. Each item: { k, v, c? (value color) }.
+          // Compact metric table for a single player — a bordered 2-up grid so keys and values line up in
+          // neat columns, much easier to scan than a wrapping chip strip.
+          const items = l.items || [];
           return (
-            <div key={i} style={{ display: "grid", gridTemplateColumns: "auto 1fr auto 1fr", gap: "3px 10px", marginBottom: 10, alignItems: "baseline" }}>
-              {(l.items || []).map((it, j) => (
-                <React.Fragment key={j}>
+            <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1, marginBottom: 10, background: "var(--line)", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }}>
+              {items.map((it, j) => (
+                <div key={j} style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, padding: "4px 9px", background: "var(--panel)" }}>
                   <span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", whiteSpace: "nowrap" }}>{it.k}</span>
                   <span className="num" style={{ fontSize: 12, fontWeight: 700, color: it.c || "var(--ink)", whiteSpace: "nowrap" }}>{it.v}</span>
-                </React.Fragment>
+                </div>
               ))}
+              {items.length % 2 === 1 && <div style={{ background: "var(--panel)" }} />}
             </div>
           );
         }
@@ -3336,17 +3355,22 @@ function boardPickOutlook(p, o, cfg, ownerLabel, roster, req) {
   else { take = `Fair value at market (ADP ${p.adp.toFixed(1)}).`; tone = "neutral"; }
   out.push({ kind: "take", tone, x: take });
 
-  // 2) STAT STRIP
-  out.push({ kind: "stats", chips: [`${p.pos}${p.posRank}`, `Tier ${p.tier}`, `${p.pts} pts`, `${p.vbd > 0 ? "+" : ""}${p.vbd.toFixed(0)} VBD`, `${v > 0 ? "+" : ""}${v} curve`] });
+  // 2) METRICS — the same compact table as the hub player card.
+  const kv = [
+    { k: "Pos rank", v: `${p.pos}${p.posRank}`, c: p.posRank != null ? undefined : "var(--mut)" },
+    { k: "Fantasy", v: p.fantasyTier || "—" },
+    { k: "Proj pts", v: `${p.pts}` },
+    { k: "ADP", v: p.adp != null ? p.adp.toFixed(1) : "—" },
+    { k: "VBD", v: `${p.vbd > 0 ? "+" : ""}${Math.round(p.vbd)}`, c: p.vbd > 0 ? "var(--green)" : "var(--mut)" },
+    { k: "Value", v: `${v > 0 ? "+" : ""}${v}`, c: v > 2 ? "var(--green)" : v < -2 ? "var(--red)" : "var(--mut)" },
+  ];
+  if (p.age) kv.push({ k: "Age", v: `${p.age}` });
+  if (p.bye) kv.push({ k: "Bye", v: `${p.bye}` });
+  out.push({ kind: "kvtable", items: kv });
+  if (p.role) out.push({ t: "NFL role", x: `${p.role}${p.fantasyTier ? ` — ${p.fantasyTier.toLowerCase()} ${p.pos} in fantasy` : ""}` });
 
-  // 3) PICK / PLAYER
+  // 3) PICK
   out.push({ t: "Pick", x: `${pickLabel(o)} — ${ownerLabel}` });
-
-  // 4) PLAYER OUTLOOK — a short read on the player himself, like the hub hover.
-  const tierWord = p.tier <= 1 ? "elite" : p.tier === 2 ? "strong" : p.tier === 3 ? "solid" : p.tier <= 5 ? "upside/depth" : "late-round";
-  const bits = [`${p.name} is a ${tierWord} ${p.pos}${p.team ? ` for ${p.team}` : ""}${p.age ? `, age ${p.age}` : ""}${p.rookie ? " (rookie)" : ""}.`];
-  if (p.posSlot && p.role) bits.push(`His team's ${p.posSlot} — ${p.role.toLowerCase()}${p.fantasyTier ? `; ${p.fantasyTier.toLowerCase()} ${p.pos} for you` : ""}.`);
-  out.push({ t: "Player", x: bits.join(" ") });
 
   // 5) NEED — only when it's NOT obvious. Early-round picks are always "needs", so skip the fit note
   // there; only flag genuinely informative cases (a clear luxury/redundant pick, or a real hole filled
@@ -12630,12 +12654,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <div key={step.o} className="tickcard" style={{ cursor: step.cands5 && step.cands5.length ? "help" : "default" }}
                 onMouseEnter={step.cands5 && step.cands5.length ? (e) => showTip(e, [
                   { kind: "take", tone: "neutral", x: `${pickLabel(step.o)} · ${TEAM_NAMES[step.t]}${TEAM_OWNERS[step.t] ? ` (@${TEAM_OWNERS[step.t]})` : ""} — engine's top candidates` },
-                  ...step.cands5.map((c, ci) => ({
-                    t: `${c.prob}%`,
-                    tc: ci === 0 ? "var(--gold)" : POS_COLOR[c.p.pos],
-                    x: `${ci === 0 ? "★ " : ""}${c.p.name} — ${c.p.pos}${c.p.posRank}${ci === 0 ? " (expected)" : ""}`,
-                  })),
-                  { t: "", x: "★ = who the engine expects here. Others are the next-most-likely picks if the board breaks differently." },
+                  { kind: "playertable", cols: ["prob", "name", "rank", "adp", "pts", "vbd"], players: step.cands5.map((c, ci) => ({ ...c.p, prob: c.prob, star: ci === 0, rec: ci === 0 })) },
+                  { t: "", x: "★ = who the engine expects here. Others are the next-most-likely if the board breaks differently." },
                 ]) : undefined} onMouseLeave={hideTip}>
                 <div className="mut" style={{ fontSize: 11 }}>{pickLabel(step.o)} <span style={{ opacity: 0.7 }}>({step.o + 1})</span> • {TEAM_NAMES[step.t].split(" ")[0]}</div>
                 <div style={{ fontWeight: 600, fontSize: 13 }}><Dot pos={step.p.pos} />{step.p.name}</div>
@@ -12979,7 +12999,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             {!gone
                               ? <button className={`btn btn-mini${onClock === userIdx ? " btn-gold" : ""}`} style={{ flexShrink: 0, border: onClock === userIdx ? "none" : "1.5px solid #fff", fontWeight: 700 }} onClick={() => draftPlayer(p.id)}>{onClock === userIdx ? "Draft" : "Pick"}</button>
                               : <span style={{ width: 38, flexShrink: 0 }} />}
-                            <span onClick={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: cfg.type === "dynasty" || cfg.type === "keeper" }))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: cfg.type === "dynasty" || cfg.type === "keeper" }))} onMouseLeave={hideTip} style={{ cursor: "help", whiteSpace: "nowrap" }}>
+                            <span onClick={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: cfg.type === "dynasty" || cfg.type === "keeper", run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined }))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: cfg.type === "dynasty" || cfg.type === "keeper", run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined }))} onMouseLeave={hideTip} style={{ cursor: "help", whiteSpace: "nowrap" }}>
                               <PosName p={p} /> <span className="mut">{p.team}</span>
                             </span>
                             {injInfo && <span onClick={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note }])} onMouseEnter={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note }])} onMouseLeave={hideTip}
@@ -14506,13 +14526,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   const valuedPicks = teamPicks.map((x) => ({ ...x, v: pickValue(x.p, x.o, cfg) }))
                     .sort((a, b) => b.v - a.v).slice(0, 10);
                   const gradeTip = (e) => showTip(e, [
-                    { kind: "take", tone: i === userIdx ? "good" : "neutral", x: `${i === userIdx ? "Your team" : (TEAM_NAMES[i] || `Team ${i + 1}`)} — top picks by value (grade ${grades[i].g})` },
-                    ...(valuedPicks.length ? valuedPicks.map((x) => ({
-                      t: `${x.v > 0 ? "+" : ""}${x.v}`,
-                      tc: x.v > 2 ? "var(--green)" : x.v < -2 ? "var(--red)" : "var(--mut)",
-                      x: `${pickLabel(x.o)} · ${x.p.name} — ${x.p.pos}${x.p.posRank}`,
-                    })) : [{ t: "—", x: "No picks yet" }]),
-                    { t: "", x: "Value = spots gained vs. his ADP (positive = a steal, negative = a reach)." },
+                    { kind: "take", tone: i === userIdx ? "good" : "neutral", x: `${i === userIdx ? "Your team" : (TEAM_NAMES[i] || `Team ${i + 1}`)} — grade ${grades[i].g} (${valByTeam[i] > 0 ? "+" : ""}${valByTeam[i]})` },
+                    ...(valuedPicks.length
+                      ? [{ kind: "playertable", cols: ["pick", "name", "rank", "adp", "value"], players: valuedPicks.map((x) => ({ ...x.p, v: x.v, pickNo: x.o + 1 })) }]
+                      : [{ t: "—", x: "No picks yet" }]),
+                    { t: "", x: "Value = spots gained vs. ADP (green = steal, red = reach)." },
                   ]);
                   // Hover for PROJ PTS cell: this team's full projected starting lineup.
                   const teamRosterArr = (proj && proj.rosters && proj.rosters[i]) || teamPicks.map((x) => x.p);
