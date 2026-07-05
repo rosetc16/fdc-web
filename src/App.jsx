@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28cc";
+const BUILD_TAG = "2026.06.28cd";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1931,6 +1931,37 @@ function buildPlayers(cfg) {
     if (r <= 54) return "Bench/upside";
     return "Deep depth";
   };
+  // Pre-pass for QB backup "upside" detection. A backup QB only has real dynasty/bench upside if the
+  // signals support it: he's being drafted ahead of other backup QBs (market sees a path), he's young, AND
+  // the starter ahead of him looks vulnerable (older, or a weak QB1 projection). Most backups have no path
+  // and shouldn't be labeled with upside. We compute, per team, the starter's age/points, then flag backups.
+  const qbByTeam = {};
+  ps.forEach((p) => { if (p.pos === "QB" && p.team && p.team !== "FA") { (qbByTeam[p.team] = qbByTeam[p.team] || []).push(p); } });
+  const qb2s = ps.filter((p) => p.pos === "QB" && p.posDepth === 2);
+  const qb2Adps = qb2s.map((p) => p.adp).filter((a) => a != null).sort((a, b) => a - b);
+  const qb2MedAdp = qb2Adps.length ? qb2Adps[Math.floor(qb2Adps.length / 2)] : 250;
+  const qbUpside = {}; // id -> true when a backup has a credible path to the job
+  qb2s.forEach((p) => {
+    const mates = (qbByTeam[p.team] || []).filter((q) => q.posDepth === 1);
+    const starter = mates.sort((a, b) => (a.posDepth || 9) - (b.posDepth || 9))[0];
+    const younger = p.age && (!starter || !starter.age || p.age <= starter.age - 3);
+    const draftedAhead = p.adp != null && p.adp <= qb2MedAdp - 12;
+    const starterOld = starter && starter.age && starter.age >= 33;
+    const starterWeak = starter && starter.pts != null && starter.pts < 250;
+    const starterVulnerable = starterOld || starterWeak || !starter;
+    qbUpside[p.id] = !!(draftedAhead && younger && starterVulnerable);
+  });
+  // General backup-upside signal for RB/WR/TE: a non-starter (depth >= 2) drafted notably ahead of the
+  // field of same-position backups means the market sees a path to volume (injury handcuff, ascending role).
+  const backupUpside = {};
+  ["RB", "WR", "TE"].forEach((pos) => {
+    // Only genuine depth pieces qualify: depth-chart 3rd+ OR a modest fantasy rank. A high-value WR2/RB2
+    // (e.g. a clear WR2 on a good offense) is already a starter, not a "sleeper" — don't tag those.
+    const backs = ps.filter((p) => p.pos === pos && p.posDepth != null && p.posDepth >= 3 && p.adp != null);
+    const adps = backs.map((p) => p.adp).sort((a, b) => a - b);
+    const med = adps.length ? adps[Math.floor(adps.length / 2)] : 250;
+    backs.forEach((p) => { if (p.adp <= med - 15 && (!p.age || p.age <= 27)) backupUpside[p.id] = true; });
+  });
   ps.forEach((p) => {
     p.role = null; p.fantasyTier = null; p.usage = null;
     const s = p.stats || {};
@@ -1969,13 +2000,17 @@ function buildPlayers(cfg) {
       const ry = s.rushYd || 0;
       if (dep != null) {
         if (dep <= 1) usage = ry >= 350 ? "Dual-threat starter" : "Starter";
-        else if (dep === 2) usage = "Backup — upside if he wins the job";
+        else if (dep === 2) usage = qbUpside[p.id] ? "Backup — sleeper upside" : "Backup";
         else usage = "Depth / 3rd string";
       } else usage = r <= 16 ? "Starter" : r <= 26 ? "Low-end starter / streamer" : "Backup";
     }
     p.role = usage || null;
+    // For RB/WR/TE backups the market has drafted ahead of the pack, note the sleeper upside on the usage
+    // (the role column stays clean; the combined `usage` line carries it).
+    const hasUpside = backupUpside[p.id] && p.posDepth != null && p.posDepth >= 3 && p.pos !== "QB" && !/Elite|Strong|Startable/.test(ft);
+    if (hasUpside && p.role && !/upside/i.test(p.role)) p.role = `${p.role} — sleeper upside`;
     // Combined one-liner: NFL usage + fantasy expectation (skip the tier when it's redundant, e.g. deep depth).
-    p.usage = usage ? `${usage} · ${ft} ${p.pos}` : `${ft} ${p.pos}`;
+    p.usage = p.role ? `${p.role} · ${ft} ${p.pos}` : `${ft} ${p.pos}`;
   });
   return ps;
 }
@@ -3024,8 +3059,11 @@ function makeOutlook(p, sims, drafted) {
   else { take = `Fairly priced — about where he should go.`; takeTone = "neutral"; }
   out.push({ kind: "take", tone: takeTone, x: take });
 
-  // 2) STAT STRIP — the numbers at a glance.
-  const chips = [`${p.pos}${p.posRank}`, `Tier ${p.tier}`, `proj ${p.pts} pts`, `ADP ${p.adp.toFixed(1)}`];
+  // 2) STAT STRIP — the numbers at a glance, plus the fantasy tier + NFL usage as quick chips.
+  const chips = [`${p.pos}${p.posRank}`];
+  if (p.fantasyTier) chips.push(p.fantasyTier);
+  chips.push(`proj ${p.pts} pts`, `ADP ${p.adp.toFixed(1)}`);
+  if (p.role) chips.push(p.role);
   if (surv != null) chips.push(`${surv}% still there at your pick`);
   out.push({ kind: "stats", chips });
 
@@ -3033,8 +3071,6 @@ function makeOutlook(p, sims, drafted) {
   // the header and stat strip already carry the key numbers.
   const bits = [];
   bits.push(`${tierWord.charAt(0).toUpperCase() + tierWord.slice(1)} ${posLabel}${p.team ? `, ${p.team}` : ""}${p.age ? ` · age ${p.age}` : ""}${p.rookie ? " · rookie" : ""}.`);
-  if (p.posSlot && p.role) bits.push(`His team's ${p.posSlot} — ${p.role.toLowerCase()}. For your team: ${(p.fantasyTier || "").toLowerCase()} ${posLabel}.`);
-  else if (p.role) bits.push(`${p.role}. For your team: ${(p.fantasyTier || "").toLowerCase()} ${posLabel}.`);
   const opp = [];
   if (p.rookie && p.posDepth === 1) opp.push("rookie already atop his position group");
   else if (p.posDepth === 1 && p.age && p.age <= 24) opp.push("young and already atop his depth chart");
@@ -13580,7 +13616,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       const tone = lvl === 0 ? "var(--green)" : lvl === 1 ? "var(--gold)" : "var(--red)";
                       const word = lvl === 0 ? "Strong" : lvl === 1 ? "Middle" : "Weak";
                       const plist = (ta.byPos[pos] && ta.byPos[pos].list) || [];
-                      const tip = plist.length ? (e) => showTip(e, [{ kind: "take", tone: lvl === 0 ? "good" : lvl === 2 ? "bad" : "neutral", x: `Your ${pos}s — ${ordinalOf(r.rank)} of ${r.of} in the league` }, { kind: "playertable", cols: ["rank", "name", "team", "age", "pts"], players: plist }]) : undefined;
+                      const tip = plist.length ? (e) => showTip(e, [{ kind: "take", tone: lvl === 0 ? "good" : lvl === 2 ? "bad" : "neutral", x: `Your ${pos}s — ${ordinalOf(r.rank)} of ${r.of} in the league` }, { kind: "playertable", cols: ["rank", "name", "team", "role", "pts"], players: plist }]) : undefined;
                       return (
                         <div key={pos} style={{ display: "flex", alignItems: "center", gap: 9, cursor: tip ? "help" : "default" }}
                           onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
@@ -14091,7 +14127,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   </div>
                 );
                 // Helpers to build the "players behind the award" hover content.
-                const teamRoster = (ti) => (proj && proj.rosters && proj.rosters[ti]) || picks.map((pk, o) => (teamAt(o) === ti ? players[pk] : null)).filter(Boolean);
+                // teamDrafted = ONLY players this team has actually drafted (what the count-based awards use).
+                // teamRoster  = projected full roster incl. future picks (only for lineup-based awards).
+                const teamDrafted = (ti) => picks.map((pk, o) => (teamAt(o) === ti ? players[pk] : null)).filter(Boolean);
+                const teamRoster = (ti) => (proj && proj.rosters && proj.rosters[ti]) || teamDrafted(ti);
                 const teamStarters = (ti) => lineupSlots(teamRoster(ti), cfg.sf).slots.filter((s) => s.p).map((s) => ({ ...s.p, slot: s.slot }));
                 const teamValuePicks = (ti) => picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => teamAt(x.o) === ti && x.p).map((x) => ({ ...x.p, v: pickValue(x.p, x.o, cfg) })).sort((a, b) => b.v - a.v);
                 const tt = (title, players, cols) => [{ kind: "take", tone: "neutral", x: title }, { kind: "playertable", cols: cols || ["rank", "name", "team", "age", "pts"], players }];
@@ -14127,12 +14166,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     {reach && reach.val < 0 && award("ti-flame", "Biggest reach", reach.p.name, `${reach.p.pos}${reach.p.posRank} by ${reach.t === userIdx ? "you" : TEAM_NAMES[reach.t]} — ${Math.abs(reach.val).toFixed(0)} spots early`, "var(--red)", reach.t === userIdx, [{ kind: "take", tone: "bad", x: `Biggest reach — ${reach.p.name}` }, { kind: "playercard", p: reach.p, extraChips: [`${Math.abs(reach.val).toFixed(0)} spots early`] }])}
                     {valKing && valKing.v > 0 && award("ti-coins", "Value champ", nm(valKing.i), `Most total draft value — +${valKing.v.toFixed(0)} spots across the board`, "var(--green)", valKing.i === userIdx, tt(`${nm(valKing.i)} — best value picks`, teamValuePicks(valKing.i).slice(0, 8), ["rank", "name", "team", "pts", "value"]))}
                     {lineupKing && award("ti-crown", "Best on paper", nm(lineupKing.i), `Top projected starting lineup — ${Math.round(lineupKing.v)} pts`, "var(--gold)", lineupKing.i === userIdx, tt(`${nm(lineupKing.i)} — starting lineup (${Math.round(lineupKing.v)} pts)`, teamStarters(lineupKing.i), ["slot", "rank", "name", "team", "pts"]))}
-                    {powerhouse && award("ti-bolt", `${powerhouse.pos} powerhouse`, nm(powerhouse.i), `Loaded at ${powerhouse.pos} — ${powerhouse.names}`, POS_COLOR[powerhouse.pos], powerhouse.i === userIdx, tt(`${nm(powerhouse.i)} — ${powerhouse.pos} corps`, teamRoster(powerhouse.i).filter((p) => p.pos === powerhouse.pos).sort((a, b) => (b.vbd || 0) - (a.vbd || 0)), ["rank", "name", "team", "age", "pts", "vbd"]))}
-                    {youngest && award("ti-seedling", "Youth movement", nm(youngest.i), `Youngest core — ${youngest.avg.toFixed(1)} avg age`, "var(--green)", youngest.i === userIdx, tt(`${nm(youngest.i)} — youngest players`, teamRoster(youngest.i).filter((p) => p.age).sort((a, b) => a.age - b.age).slice(0, 8), ["rank", "name", "team", "age", "pts"]))}
-                    {oldest && award("ti-trophy", "Win-now mode", nm(oldest.i), `Oldest core — ${oldest.avg.toFixed(1)} avg age`, "var(--gold)", oldest.i === userIdx, tt(`${nm(oldest.i)} — oldest players`, teamRoster(oldest.i).filter((p) => p.age).sort((a, b) => b.age - a.age).slice(0, 8), ["rank", "name", "team", "age", "pts"]))}
-                    {rookieKing && rookieKing.n >= 2 && award("ti-baby-carriage", "Rookie hauler", nm(rookieKing.i), `Most rookies — ${rookieKing.n} first-years`, "var(--green)", rookieKing.i === userIdx, tt(`${nm(rookieKing.i)} — rookies`, teamRoster(rookieKing.i).filter((p) => p.rookie).sort((a, b) => (b.pts || 0) - (a.pts || 0)), ["rank", "name", "team", "age", "pts"]))}
+                    {powerhouse && award("ti-bolt", `${powerhouse.pos} powerhouse`, nm(powerhouse.i), `Loaded at ${powerhouse.pos} — ${powerhouse.names}`, POS_COLOR[powerhouse.pos], powerhouse.i === userIdx, tt(`${nm(powerhouse.i)} — ${powerhouse.pos} corps`, teamDrafted(powerhouse.i).filter((p) => p.pos === powerhouse.pos).sort((a, b) => (b.vbd || 0) - (a.vbd || 0)), ["rank", "name", "team", "age", "pts", "vbd"]))}
+                    {youngest && award("ti-seedling", "Youth movement", nm(youngest.i), `Youngest core — ${youngest.avg.toFixed(1)} avg age`, "var(--green)", youngest.i === userIdx, tt(`${nm(youngest.i)} — youngest players`, teamDrafted(youngest.i).filter((p) => p.age).sort((a, b) => a.age - b.age).slice(0, 8), ["rank", "name", "team", "age", "pts"]))}
+                    {oldest && award("ti-trophy", "Win-now mode", nm(oldest.i), `Oldest core — ${oldest.avg.toFixed(1)} avg age`, "var(--gold)", oldest.i === userIdx, tt(`${nm(oldest.i)} — oldest players`, teamDrafted(oldest.i).filter((p) => p.age).sort((a, b) => b.age - a.age).slice(0, 8), ["rank", "name", "team", "age", "pts"]))}
+                    {rookieKing && rookieKing.n >= 2 && award("ti-baby-carriage", "Rookie hauler", nm(rookieKing.i), `Most rookies — ${rookieKing.n} first-years`, "var(--green)", rookieKing.i === userIdx, tt(`${nm(rookieKing.i)} — rookies`, teamDrafted(rookieKing.i).filter((p) => p.rookie).sort((a, b) => (b.pts || 0) - (a.pts || 0)), ["rank", "name", "team", "age", "pts"]))}
                     {balanced && balanced.share <= 0.4 && award("ti-scale", "Best balance", nm(balanced.i), `Most even roster build across positions`, "var(--ink)", balanced.i === userIdx, tt(`${nm(balanced.i)} — starting lineup`, teamStarters(balanced.i), ["slot", "rank", "name", "team", "pts"]))}
-                    {zealot && zealot.share >= 0.45 && award("ti-target", "One-track mind", nm(zealot.i), `${Math.round(zealot.share * 100)}% ${zealot.pos} — ${zealot.n} of them`, "var(--blue)", zealot.i === userIdx, tt(`${nm(zealot.i)} — ${zealot.pos}s drafted`, teamRoster(zealot.i).filter((p) => p.pos === zealot.pos).sort((a, b) => (b.pts || 0) - (a.pts || 0)), ["rank", "name", "team", "age", "pts"]))}
+                    {zealot && zealot.share >= 0.45 && award("ti-target", "One-track mind", nm(zealot.i), `${Math.round(zealot.share * 100)}% ${zealot.pos} — ${zealot.n} of them`, "var(--blue)", zealot.i === userIdx, tt(`${nm(zealot.i)} — ${zealot.pos}s drafted`, teamDrafted(zealot.i).filter((p) => p.pos === zealot.pos).sort((a, b) => (b.pts || 0) - (a.pts || 0)), ["rank", "name", "team", "age", "pts"]))}
                   </div>
                 );
               })()}
