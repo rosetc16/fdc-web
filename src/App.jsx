@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ci";
+const BUILD_TAG = "2026.06.28cj";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3060,6 +3060,7 @@ function makeOutlook(p, sims, drafted, ctx) {
   const dynasty = !!ctx.dynasty;
   const run = ctx.run || null;          // { pos, count } — a positional run underway
   const needShort = ctx.needShort;      // how many starters short you are at his position (if known)
+  const scarcity = ctx.scarcity || null; // { availRank, next, drop, startersLeft, isLastStarter }
   const out = [];
   const tierWord = p.tier <= 1 ? "elite" : p.tier === 2 ? "strong" : p.tier === 3 ? "solid" : p.tier <= 5 ? "upside/depth" : "late-round";
   const posLabel = { QB: "QB", RB: "RB", WR: "WR", TE: "TE", DL: "DL", LB: "LB", DB: "DB", K: "K", DST: "DST" }[p.pos] || p.pos;
@@ -3091,7 +3092,10 @@ function makeOutlook(p, sims, drafted, ctx) {
   const support = [];
   if (p.role && p.fantasyTier) support.push(`A ${lowerKeepPos(p.role)} — ${lowerKeepPos(p.fantasyTier)} ${p.pos} for your team`);
   else if (p.fantasyTier) support.push(`${p.fantasyTier} ${p.pos} for your team`);
-  if (needShort != null && needShort >= 1) support.push(`fills an open ${p.pos} spot`);
+  // Scarcity is the most decision-relevant note when it applies, so it leads the situational clause.
+  if (scarcity && scarcity.isLastStarter) support.push(`the last startable-tier ${p.pos} left${scarcity.drop != null && scarcity.drop >= 15 ? ` (steep drop after him)` : ""}`);
+  else if (scarcity && scarcity.drop != null && scarcity.drop >= 20) support.push(`with a steep VBD drop to the next ${p.pos}`);
+  else if (needShort != null && needShort >= 1) support.push(`fills an open ${p.pos} spot`);
   else if (run && run.pos === p.pos && run.count >= 3) support.push(`and there's a ${p.pos} run on (${run.count} of the last 8)`);
   else if (dynasty && p.age && p.age <= 23) support.push(`with long-term upside at just ${p.age}`);
   if (support.length) take += ` ${support.join(", ")}.`;
@@ -3124,19 +3128,28 @@ function makeOutlook(p, sims, drafted, ctx) {
   else if (p.vbd != null && p.vbd <= 0) line.push(`replacement-level production on paper`);
   // role
   if (p.role) line.push(`he profiles as a ${lowerKeepPos(p.role)}`);
+  // board scarcity vs. the rest of the available pool at his position
+  if (scarcity) {
+    if (scarcity.isLastStarter) line.push(`he's the last startable-tier ${p.pos} on the board`);
+    else if (scarcity.startersLeft <= 3 && scarcity.startersLeft >= 1) line.push(`only ${scarcity.startersLeft} startable-tier ${p.pos}${scarcity.startersLeft === 1 ? "" : "s"} remain`);
+    if (scarcity.drop != null && scarcity.drop >= 15) line.push(`with a steep drop after him (next ${p.pos} up is ${scarcity.next.name}, ${scarcity.drop} VBD lower)`);
+  }
   // roster fit
-  if (needShort != null && needShort >= 1) line.push(`and fills an open ${p.pos} spot on your roster`);
+  if (needShort != null && needShort >= 1) line.push(`he fills an open ${p.pos} spot on your roster`);
   else if (needShort != null && needShort <= 0) line.push(`though you're already set at ${p.pos}`);
   // positional run
-  if (run && run.pos === p.pos && run.count >= 3) line.push(`— and with a ${p.pos} run underway (${run.count} of the last 8), the tier is thinning fast`);
+  if (run && run.pos === p.pos && run.count >= 3) line.push(`a ${p.pos} run is underway (${run.count} of the last 8), so the tier is thinning fast`);
   // dynasty upside
-  if (dynasty && p.age && p.age <= 23) line.push(`. At just ${p.age}, he carries long-term dynasty upside`);
-  else if (dynasty && p.age && p.age >= 30) line.push(`. At ${p.age}, his dynasty window is shorter`);
+  if (dynasty && p.age && p.age <= 23) line.push(`at just ${p.age}, he carries long-term dynasty upside`);
+  else if (dynasty && p.age && p.age >= 30) line.push(`at ${p.age}, his dynasty window is shorter`);
   // availability nudge
-  if (surv != null && surv <= 25) line.push(`. He likely won't last to your next pick`);
-  else if (surv != null && surv >= 70) line.push(`. You could reasonably wait — good odds he's still here next turn`);
+  if (surv != null && surv <= 25) line.push(`he likely won't last to your next pick`);
+  else if (surv != null && surv >= 70) line.push(`you could reasonably wait — good odds he's still here next turn`);
   if (line.length) {
-    let txt = line.join(", ").replace(/, —/g, " —").replace(/, \./g, ".").replace(/, though/g, ", though").replace(/, and/g, " and");
+    // Join into readable prose: comma-separate the clauses, with "and" before the last one.
+    let txt;
+    if (line.length === 1) txt = line[0];
+    else txt = line.slice(0, -1).join(", ") + ", and " + line[line.length - 1];
     txt = txt.charAt(0).toUpperCase() + txt.slice(1);
     if (!/[.!?]$/.test(txt)) txt += ".";
     out.push({ t: "Bottom line", x: txt });
@@ -11116,6 +11129,28 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   }, [user, league]);
   useEffect(() => { if (platRanks.has) setCols((c) => (c.edge && c.platAdp ? c : { ...c, edge: true, platAdp: true })); }, [platRanks.has]);
   const draftedSet = useMemo(() => { const s = new Set(picks); Object.values(noCostByTeam).flat().forEach((id) => s.add(id)); return s; }, [picks, cfg]);
+  // Available players per position, best-first by VBD — powers the "scarcity" note in player blurbs (last
+  // startable-tier guy on the board, steep drop to the next, etc.).
+  const availByPos = useMemo(() => {
+    const m = { QB: [], RB: [], WR: [], TE: [] };
+    players.forEach((p) => { if (m[p.pos] && !draftedSet.has(p.id)) m[p.pos].push(p); });
+    Object.keys(m).forEach((pos) => m[pos].sort((a, b) => (b.vbd || 0) - (a.vbd || 0)));
+    return m;
+  }, [players, draftedSet]);
+  // Build a scarcity note for a player vs. the rest of the available board at his position: his rank among
+  // available, the VBD drop to the next man up, and whether he's the last of a startable tier.
+  const scarcityFor = (p) => {
+    const pool = availByPos[p.pos]; if (!pool || !pool.length) return null;
+    const idx = pool.findIndex((x) => x.id === p.id);
+    if (idx < 0) return null;
+    const next = pool[idx + 1] || null;
+    const drop = next ? Math.round((p.vbd || 0) - (next.vbd || 0)) : null;
+    // "Startable" cutoff by position/format — how many are realistically starter-worthy at this spot.
+    const starterLine = { QB: isSuperflex(cfg) ? 18 : 12, RB: 30, WR: 36, TE: (cfg.tePremMult || 0) > 0 ? 12 : 10 }[p.pos] || 24;
+    // How many available players at this position are still above the startable line by fantasy rank.
+    const startersLeft = pool.filter((x) => (x.posRank || 99) <= starterLine).length;
+    return { availRank: idx + 1, next, drop, startersLeft, starterLine, isLastStarter: (p.posRank || 99) <= starterLine && startersLeft <= 1 };
+  };
   const done = picks.length >= TOTAL;
   // Demo stops after a limited number of rounds (it's not "complete" — you must purchase to continue).
   const demoCap = isDemo && cfg.demoRounds ? cfg.demoRounds * TEAMS : null;
@@ -11278,9 +11313,19 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       else if (have != null && have >= (req[p.pos] || 0)) bbNote = "adds spike-week depth, which best ball rewards";
     }
 
+    // 3b) SCARCITY vs. the available board at his position — the last startable-tier guy / steep drop-off.
+    let scarNote = "";
+    const sc = scarcityFor(p);
+    if (sc) {
+      if (sc.isLastStarter) scarNote = `he's the last startable-tier ${p.pos} on the board${sc.drop != null && sc.drop >= 15 ? `, with a steep drop after him (next up ${sc.next.name}, ${sc.drop} VBD lower)` : ""}`;
+      else if (sc.drop != null && sc.drop >= 20) scarNote = `there's a steep drop after him at ${p.pos} (next up ${sc.next.name}, ${sc.drop} VBD lower)`;
+      else if (sc.startersLeft <= 3 && sc.startersLeft >= 1 && (p.posRank || 99) <= sc.starterLine) scarNote = `only ${sc.startersLeft} startable-tier ${p.pos}${sc.startersLeft === 1 ? "" : "s"} remain on the board`;
+    }
+
     let out = who;
     if (fit) out += ` — ${fit}`;
-    if (bbNote) out += `${fit ? "; " : " — "}${bbNote}`;
+    if (scarNote) out += `${fit || bbNote ? "; " : " — "}${scarNote}`;
+    if (bbNote) out += `${fit || scarNote ? "; " : " — "}${bbNote}`;
     out = out.trim();
     if (!out) out = `a strong value on the board for you here`;
     return out.charAt(0).toUpperCase() + out.slice(1) + (/[.!?]$/.test(out) ? "" : ".");
@@ -13010,7 +13055,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             {!gone
                               ? <button className={`btn btn-mini${onClock === userIdx ? " btn-gold" : ""}`} style={{ flexShrink: 0, border: onClock === userIdx ? "none" : "1.5px solid #fff", fontWeight: 700 }} onClick={() => draftPlayer(p.id)}>{onClock === userIdx ? "Draft" : "Pick"}</button>
                               : <span style={{ width: 38, flexShrink: 0 }} />}
-                            <span onClick={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: cfg.type === "dynasty" || cfg.type === "keeper", run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined }))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: cfg.type === "dynasty" || cfg.type === "keeper", run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined }))} onMouseLeave={hideTip} style={{ cursor: "help", whiteSpace: "nowrap" }}>
+                            <span onClick={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: cfg.type === "dynasty" || cfg.type === "keeper", run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: cfg.type === "dynasty" || cfg.type === "keeper", run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseLeave={hideTip} style={{ cursor: "help", whiteSpace: "nowrap" }}>
                               <PosName p={p} /> <span className="mut">{p.team}</span>
                             </span>
                             {injInfo && <span onClick={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note }])} onMouseEnter={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note }])} onMouseLeave={hideTip}
