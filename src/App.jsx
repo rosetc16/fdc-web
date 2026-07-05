@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28cd";
+const BUILD_TAG = "2026.06.28ce";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1973,29 +1973,39 @@ function buildPlayers(cfg) {
     if (p.pos === "RB") {
       const att = s.rushAtt || 0, tgt = s.tgt || 0, rec = s.rec || 0;
       const touches = att + rec;
-      const passHeavy = (tgt >= 55 || rec >= 45) || (touches > 0 && rec / Math.max(1, touches) >= 0.40);
-      const someRush = att >= 120;
-      if (dep != null && dep <= 1) {
-        if (passHeavy && !someRush) usage = "Passing-down back";
-        else if (passHeavy) usage = "Everydown back (3-down)";
-        else usage = "Everydown back";
-      } else if (dep === 2) {
-        usage = passHeavy ? "Passing-down/change-of-pace" : (someRush ? "Split carries" : "Backup / handcuff");
-      } else {
-        usage = r <= 40 ? "Committee back" : "Depth / handcuff";
-      }
+      // Volume tiers from projected carries (a true workhorse gets ~240+; a lead back ~180-240; a committee
+      // back ~110-180; below that is a change-of-pace/handcuff). Receiving work flags pass-down specialists.
+      const passHeavy = (rec >= 50 || tgt >= 62) && att < 170;         // clear passing-down lean
+      const passDown = (rec >= 38 || tgt >= 48) && att < 120;          // primarily on 3rd downs
+      const workhorse = att >= 240;
+      const leadRush = att >= 175;
+      const committee = att >= 110;                                    // meaningful but shared carries
+      if (workhorse) usage = (rec >= 40) ? "Bellcow (3-down)" : "Workhorse rusher";
+      else if (leadRush) usage = (rec >= 40) ? "Lead 3-down back" : "Lead rusher";
+      else if (passDown && !committee) usage = "Passing-down back";
+      else if (committee) usage = passHeavy ? "Committee — pass-down lean" : "Committee / split carries";
+      else if (dep != null && dep <= 1) usage = "Timeshare starter";  // nominal starter but light projected load
+      else usage = r <= 48 ? "Change-of-pace / depth" : "Depth / handcuff";
     } else if (p.pos === "WR") {
-      const tgt = s.tgt || 0, ypc = (s.recYd || 0) / Math.max(1, s.rec || 1);
-      const deepThreat = ypc >= 15 && (s.rec || 0) < 60;
-      if (dep != null && dep <= 1) usage = "Clear WR1";
-      else if (dep === 2) usage = deepThreat ? "WR2 / deep threat" : "Clear WR2";
-      else if (dep === 3) usage = deepThreat ? "Deep threat / WR3" : "Slot / WR3";
-      else usage = tgt >= 55 ? "Rotational target" : "Depth";
+      const tgt = s.tgt || 0, rec = s.rec || 0, ypc = (s.recYd || 0) / Math.max(1, rec), td = s.recTD || 0;
+      const deepThreat = ypc >= 15.5 && rec < 65;
+      // Volume tiers from projected targets: a true alpha sees ~140+; a strong starter ~110-140; a solid
+      // WR2/3 ~80-110; a rotational piece ~50-80; below that is depth. Blend with the depth-chart slot so a
+      // low-volume "WR1" on a run-heavy team isn't overstated, and a high-volume WR2 gets credit.
+      const alpha = tgt >= 140, hiVol = tgt >= 110, midVol = tgt >= 80, rotational = tgt >= 50;
+      if (alpha) usage = "Alpha target";
+      else if (hiVol) usage = deepThreat ? "High-volume field-stretcher" : "Every-week WR1";
+      else if (midVol) usage = deepThreat ? "Big-play WR2" : (dep != null && dep <= 1 ? "Team's top target" : "Steady WR2/3");
+      else if (rotational) usage = deepThreat ? "Deep threat / boom-bust" : "Rotational / complementary";
+      else usage = "Depth / dart throw";
     } else if (p.pos === "TE") {
-      const tgt = s.tgt || 0;
-      if (dep != null && dep <= 1) usage = tgt >= 100 ? "Featured — WR-level volume" : (tgt >= 75 ? "Featured target" : "Every-down TE");
-      else if (dep === 2) usage = "Backup / rotational TE";
-      else usage = "Depth / blocking TE";
+      const tgt = s.tgt || 0, rec = s.rec || 0;
+      // TEs live and die by target volume. Featured TEs see WR-level looks (100+); every-down starters ~70+;
+      // secondary options ~45-70; below that is a blocking/depth role.
+      if (tgt >= 100) usage = "Featured — WR-level volume";
+      else if (tgt >= 70) usage = "Every-down TE";
+      else if (tgt >= 45) usage = dep != null && dep <= 1 ? "Team's starting TE" : "Secondary receiving TE";
+      else usage = dep != null && dep <= 1 ? "Low-volume starter" : "Blocking / depth TE";
     } else if (p.pos === "QB") {
       const ry = s.rushYd || 0;
       if (dep != null) {
@@ -3196,7 +3206,7 @@ function OutlookCard({ content }) {
           // strength. Columns are opt-in via l.cols (defaults to rank/name/team/age/pts).
           const cols = l.cols || ["rank", "name", "team", "age", "pts"];
           const rowsP = l.players || [];
-          const headLabel = { rank: "Rk", name: "Player", team: "Tm", age: "Age", pts: "Proj", vbd: "VBD", role: "Role", bye: "Bye", value: "Value", slot: "Slot" };
+          const headLabel = { rank: "Rk", name: "Player", team: "Tm", age: "Age", pts: "Proj", vbd: "VBD", role: "Role", bye: "Bye", value: "Value", slot: "Slot", prob: "Avail", adp: "ADP" };
           const gridCols = cols.map((c) => c === "name" ? "1fr" : c === "role" ? "1.1fr" : "auto").join(" ");          return (
             <div key={i} style={{ marginBottom: 2 }}>
               {l.title && <div className="disp" style={{ fontSize: 12, fontWeight: 700, color: "var(--gold)", marginBottom: 6 }}>{l.title}</div>}
@@ -3209,7 +3219,9 @@ function OutlookCard({ content }) {
                 {rowsP.map((p, ri) => cols.map((c, ci) => {
                   const base = { fontSize: 11.5, padding: "3px 0", borderBottom: ri < rowsP.length - 1 ? "1px solid var(--line2)" : "none", lineHeight: 1.2 };
                   if (c === "rank") return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 800, color: rankTierColor(p.pos, p.posRank), textAlign: "right" }}>{p.pos}{p.posRank}</div>;
-                  if (c === "name") return <div key={ri + "-" + ci} style={{ ...base, fontWeight: 600, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>;
+                  if (c === "name") return <div key={ri + "-" + ci} style={{ ...base, fontWeight: 600, color: p.star ? "var(--gold)" : "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.star ? "★ " : ""}{p.name}</div>;
+                  if (c === "prob") return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 700, textAlign: "right", color: p.prob == null ? "var(--mut)" : p.prob >= 65 ? "var(--green)" : p.prob >= 35 ? "var(--gold)" : "var(--red)" }}>{p.prob != null ? `${p.prob}%` : "—"}</div>;
+                  if (c === "adp") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--mut)", textAlign: "right" }}>{p.adp != null ? (Math.round(p.adp * 10) / 10).toFixed(1) : "—"}</div>;
                   if (c === "team") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--mut)", textAlign: "left" }}>{p.team || "FA"}</div>;
                   if (c === "age") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--mut)", textAlign: "right" }}>{p.age || "—"}</div>;
                   if (c === "pts") return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 700, textAlign: "right" }}>{Math.round(p.pts || 0)}</div>;
@@ -12411,8 +12423,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   { kind: "take", tone: "good", x: `${label} pick — ${v.name}` },
                   { kind: "stats", chips: [`${v.pos}${v.posRank}`, `+${v.vbd.toFixed(0)} VBD`, `${Math.round(v.pts)} pts`, `wait costs ${Math.max(0, adv.waitCost[v.pos]).toFixed(0)}`, ...(adv.impacts[v.id] ? [`projects you ${ordinal(adv.impacts[v.id].rank)}`] : [])] },
                   { kind: "why", x: whyPick(v, adv.waitCost, true, adv.myCounts) },
-                  ...(cands.length > 1 ? [{ kind: "altheader", x: "Potential alternatives" }] : []),
-                  ...cands.slice(1).map((c) => ({ tc: rankTierColor(c.p.pos, c.p.posRank), t: `${c.p.pos}${c.p.posRank}`, x: `${c.p.name} · ${Math.round(c.p.pts)} pts` })),
+                  ...(cands.length > 1 ? [{ kind: "altheader", x: "Potential alternatives" }, { kind: "playertable", cols: ["rank", "name", "team", "pts", "vbd"], players: cands.slice(1).map((c) => c.p) }] : []),
                 ];
               };
               let cardTipContent = null;
@@ -12425,8 +12436,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   const cands5 = cur && cur.cands5 && cur.cands5.length > 1 ? cur.cands5 : null;
                   if (cands5) cardTipContent = [
                     { kind: "take", tone: "neutral", x: `${pickLabel(picks.length)} · ${TEAM_NAMES[onClock]}${TEAM_OWNERS[onClock] ? ` (@${TEAM_OWNERS[onClock]})` : ""} — engine's top candidates` },
-                    ...cands5.map((c, ci) => ({ tc: ci === 0 ? "var(--gold)" : rankTierColor(c.p.pos, c.p.posRank), t: `${c.prob != null ? c.prob + "%" : ""}`, x: `${ci === 0 ? "★ " : ""}${c.p.name} — ${c.p.pos}${c.p.posRank}${ci === 0 ? " (expected)" : ""}` })),
-                    { t: "", x: "★ = who the engine expects here. Others are the next-most-likely picks if the board breaks differently." },
+                    { kind: "playertable", cols: ["prob", "name", "rank", "adp", "pts", "vbd"], players: cands5.map((c, ci) => ({ ...c.p, prob: c.prob, star: ci === 0 })) },
+                    { t: "", x: "★ = who the engine expects here. Others are the next-most-likely if the board breaks differently." },
                   ];
                 }
               }
@@ -12527,8 +12538,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       { kind: "take", tone: "good", x: `${label} — ${pick.name}` },
                       { kind: "stats", chips: [`${pick.pos}${pick.posRank}`, `+${pick.vbd != null ? pick.vbd.toFixed(0) : "0"} VBD`, `${Math.round(pick.pts || 0)} pts`, `ADP ${pick.adp != null ? pick.adp.toFixed(0) : "—"}`] },
                       { kind: "why", x: whyPick(pick, advice && advice.waitCost, true, myCountsForWhy) },
-                      ...(alts.length ? [{ kind: "altheader", x: "Potential alternatives" }] : []),
-                      ...alts.map((c) => ({ tc: rankTierColor(c.p.pos, c.p.posRank), t: `${c.p.pos}${c.p.posRank}`, x: `${c.p.name} · ${Math.round(c.p.pts || 0)} pts` })),
+                      ...(alts.length ? [{ kind: "altheader", x: "Potential alternatives" }, { kind: "playertable", cols: ["rank", "name", "team", "pts", "vbd"], players: alts.map((c) => c.p) }] : []),
                     ]);
                   };
                   const balTip = recTip(primaryLabel, balPick, selCands, "var(--gold)");
