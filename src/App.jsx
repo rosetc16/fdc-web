@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28co";
+const BUILD_TAG = "2026.06.28cp";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1621,29 +1621,24 @@ function buildPlayers(cfg) {
   const idpCounts = { DL: 24, LB: 30, DB: 24 };
   if (useIdp) IDP_POS.forEach((pos) => { const s = ps.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts); repl[pos] = s.length ? s[Math.min(idpCounts[pos] - 1, s.length - 1)].pts : 0; });
   const VBD_POS = useIdp ? [...POS, ...IDP_POS] : POS;
-  ps.forEach((p) => { p.vbd = VBD_POS.includes(p.pos) ? Math.round((p.pts - repl[p.pos]) * 10) / 10 : -50; });
-  // ---- DYNASTY AGE ADJUSTMENT ----------------------------------------------------------------
-  // In dynasty/keeper leagues, a player's long-term value depends heavily on age, and it ages very
-  // differently by position: RBs fall off a cliff in their late 20s, WRs decline more gently, TEs and
-  // especially QBs hold value into their 30s. We compute an age multiplier per player and apply it to
-  // their VBD so the dynasty board slides aging players (e.g. a 29-yo RB) down toward where the dynasty
-  // market actually has them, while young ascending players hold or rise. Redraft is unaffected.
+  // TRUE VBD — points above the positional replacement level. This is the textbook definition and is the
+  // SAME in redraft and dynasty (Derek Henry's 234-pt season is worth more raw VBD than a 169-pt rookie's,
+  // period). We keep p.vbd as this raw number so the "VBD" column always means what people expect. The
+  // dynasty-specific re-weighting lives in p.value (below), not in VBD.
+  ps.forEach((p) => { p.vbd = VBD_POS.includes(p.pos) ? Math.round((p.pts - repl[p.pos]) * 10) / 10 : -50; p.vbd0 = p.vbd; });
+  // ---- DYNASTY VALUE ADJUSTMENT --------------------------------------------------------------
+  // "Value" is the composite ranking number. In REDRAFT, value === VBD (you're just trying to win now). In
+  // DYNASTY, value weighs age / long-term outlook on top of VBD, because you're also banking future seasons.
+  // We store the multiplier on p.ageMult and the composite on p.value; p.vbd stays RAW.
   const isDynasty = cfg.type === "dynasty" || cfg.type === "keeper";
   if (isDynasty) {
-    // peak age (full value at/below this) and yearly decline rate past peak, by position. Dynasty values
-    // future seasons of production, so age matters a LOT — an old star has far fewer years left than a
-    // young one. Curves are intentionally steep with low floors so the dynasty board reorders by age
-    // (a 40-yo QB or 30-yo RB should fall well behind ascending youth, not hover near them).
     const AGE = {
-      // Steeper than before: the dynasty market drops aging RB/WR hard. A 31-yo RB (Aaron Jones) and a 32-yo
-      // WR (Diggs) should fall to the ~200 range, not sit near 100. Lower floors + faster decline get there.
       RB: { peak: 24, decline: 0.24, floor: 0.06 },  // steepest — RBs age worst; 30+ craters
       WR: { peak: 25, decline: 0.15, floor: 0.10 },  // 31-32 WRs slide a long way in dynasty
       TE: { peak: 25, decline: 0.11, floor: 0.16 },
       QB: { peak: 28, decline: 0.085, floor: 0.16 }, // ages best, but 34+ still drops hard
     };
     const youthBump = (pos, age) => {
-      // young players (below peak) get a dynasty bump for years of control ahead
       const cfgA = AGE[pos]; if (!cfgA) return 1;
       const yearsYoung = Math.max(0, cfgA.peak - age);
       return 1 + Math.min(0.34, yearsYoung * (pos === "RB" ? 0.085 : 0.06));
@@ -1652,20 +1647,19 @@ function buildPlayers(cfg) {
       const a = AGE[pos]; if (!a || !age || age <= 0) return 1;
       if (age <= a.peak) return youthBump(pos, age);
       const yearsPast = age - a.peak;
-      // exponential decline, clamped to a floor so a great old player isn't fully zeroed out
       return Math.max(a.floor, Math.pow(1 - a.decline, yearsPast));
     };
     ps.forEach((p) => {
-      if (!VBD_POS.includes(p.pos)) return;
+      if (!VBD_POS.includes(p.pos)) { p.value = p.vbd; return; }
       const m = ageMult(p.pos, p.age);
       p.ageMult = m;
-      if (p.vbd0 == null) p.vbd0 = p.vbd; // preserve the pre-age-tax value for needs/strength scoring
-      // Apply the age multiplier ONLY to value ABOVE replacement (positive VBD). Multiplying a NEGATIVE
-      // VBD by a fractional multiplier would move it toward zero — i.e. make an old, below-replacement
-      // player look BETTER than a younger one (the bug where Adrian Peterson at 0 pts outranked James
-      // Conner at 54). Below-replacement players get no age "help"; aging only discounts real value.
-      if (p.vbd > 0) p.vbd = Math.round(p.vbd * m * 10) / 10;
+      // Composite dynasty value = age-adjusted VBD (only discount/boost value ABOVE replacement, so an
+      // old below-replacement player never looks better than a productive one).
+      p.value = p.vbd > 0 ? Math.round(p.vbd * m * 10) / 10 : p.vbd;
     });
+  } else {
+    // Redraft: value is simply VBD.
+    ps.forEach((p) => { p.value = p.vbd; p.ageMult = 1; });
   }
   [...POS, "K", "DST", ...IDP_POS].forEach((pos) => { const s = ps.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts); s.forEach((p, i) => (p.posRank = i + 1)); });
   // How far is this league's scoring from standard? Public ADP is anchored to standard
@@ -1831,16 +1825,16 @@ function buildPlayers(cfg) {
       qbOrder.forEach((p, i) => { p.adp = qbSlot(i); p.adpMarket = p.adp; });
     }
   }
-  // OVERALL value tiers across positions (VBD-based). Walk players in VBD order; a tier
-  // breaks at an elbow — a drop clearly bigger than the local average — for chunky tiers.
-  const byV = ps.filter((p) => POS.includes(p.pos)).sort((a, b) => b.vbd - a.vbd);
+  // OVERALL value tiers across positions. Walk players in VALUE order (composite: VBD in redraft, age-weighted
+  // in dynasty); a tier breaks at an elbow — a drop clearly bigger than the local average — for chunky tiers.
+  const byV = ps.filter((p) => POS.includes(p.pos)).sort((a, b) => (b.value ?? b.vbd) - (a.value ?? a.vbd));
   byV.forEach((p, i) => (p.valueRank = i + 1));
   let vt = 1, sinceBreak = 0;
   for (let i = 0; i < byV.length; i++) {
     if (i > 0) {
-      const drop = byV[i - 1].vbd - byV[i].vbd;
+      const drop = (byV[i - 1].value ?? byV[i - 1].vbd) - (byV[i].value ?? byV[i].vbd);
       const w = byV.slice(Math.max(0, i - 6), i);
-      let avg = 0; for (let j = 1; j < w.length; j++) avg += w[j - 1].vbd - w[j].vbd;
+      let avg = 0; for (let j = 1; j < w.length; j++) avg += (w[j - 1].value ?? w[j - 1].vbd) - (w[j].value ?? w[j].vbd);
       avg = w.length > 1 ? avg / (w.length - 1) : drop;
       if ((drop > Math.max(8, avg * 2.1) && sinceBreak >= 2) || sinceBreak >= 8) { vt++; sinceBreak = 0; }
     }
@@ -3211,6 +3205,7 @@ function makeOutlook(p, sims, drafted, ctx) {
   if (p.bye) kv.push({ k: "Bye", v: `${p.bye}` });
   if (surv != null) kv.push({ k: "Lasts to you", v: `${surv}%`, c: surv >= 65 ? "var(--green)" : surv >= 35 ? "var(--gold)" : "var(--red)" });
   if (p.vbd != null) kv.push({ k: "VBD", v: `${p.vbd > 0 ? "+" : ""}${Math.round(p.vbd)}`, c: p.vbd > 0 ? "var(--green)" : "var(--mut)" });
+  if (dynasty && p.value != null && Math.round(p.value) !== Math.round(p.vbd)) kv.push({ k: "Dyn value", v: `${p.value > 0 ? "+" : ""}${Math.round(p.value)}`, c: p.value > 0 ? "var(--gold)" : "var(--mut)" });
   out.push({ kind: "kvtable", items: kv });
   if (p.role) out.push({ t: "NFL role", x: p.role });
 
@@ -3365,7 +3360,7 @@ function OutlookCard({ content }) {
           // strength. Columns are opt-in via l.cols (defaults to rank/name/team/age/pts).
           const cols = l.cols || ["rank", "name", "team", "age", "pts"];
           const rowsP = l.players || [];
-          const headLabel = { rank: "Rk", name: "Player", team: "Tm", age: "Age", pts: "Proj", vbd: "VBD", role: "Role", bye: "Bye", value: "Value", slot: "Slot", prob: l.probLabel || "Avail", adp: "ADP", pick: "Pick" };
+          const headLabel = { rank: "Rk", name: "Player", team: "Tm", age: "Age", pts: "Proj", vbd: "VBD", role: "Role", bye: "Bye", value: "Value", dval: "Value", slot: "Slot", prob: l.probLabel || "Avail", adp: "ADP", pick: "Pick" };
           const gridCols = cols.map((c) => c === "name" ? "1fr" : c === "role" ? "1.1fr" : "auto").join(" ");
           return (
             <div key={i} style={{ marginBottom: 2 }}>
@@ -3391,6 +3386,7 @@ function OutlookCard({ content }) {
                   if (c === "role") return <div key={ri + "-" + ci} style={{ ...base, color: "var(--mut)", fontSize: 10.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.role || p.posSlot || "—"}</div>;
                   if (c === "bye") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--mut)", textAlign: "right" }}>{p.bye || "—"}</div>;
                   if (c === "value") return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 700, textAlign: "right", color: (p.v || 0) > 2 ? "var(--green)" : (p.v || 0) < -2 ? "var(--red)" : "var(--mut)" }}>{p.v != null ? (p.v > 0 ? "+" : "") + Math.round(p.v) : "—"}</div>;
+                  if (c === "dval") { const dv = p.value != null ? p.value : p.vbd; return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 700, textAlign: "right", color: (dv || 0) > 0 ? "var(--gold)" : "var(--mut)" }}>{dv != null ? (dv > 0 ? "+" : "") + Math.round(dv) : "—"}</div>; }
                   if (c === "slot") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--gold)", textAlign: "left", fontSize: 10 }}>{p.slot || "—"}</div>;
                   if (c === "pick") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--mut)", textAlign: "right" }}>{p.pickNo != null ? p.pickNo : "—"}</div>;
                   return <div key={ri + "-" + ci} style={base} />;
@@ -10992,7 +10988,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [manualSort, setManualSort] = useState(false); // true once the user clicks a column header
   const [showDrafted, setShowDrafted] = useState(false); // default: show best AVAILABLE; toggle to include drafted
   const [rookieOnly, setRookieOnly] = useState(false);
-  const DEFAULT_COLS = { adp: true, consensus: false, edge: true, proj: true, floor: false, ceil: false, vbd: true, rank: true, vbdTier: true, adpTier: false, mockAdp: false, myRank: false, blendAdp: false, role: true, roleDesc: true, age: true, bye: true, avail: true, passYd: true, passTD: true, rushYd: true, rushTD: true, rec: true, recYd: true, recTD: true, tgt: false };
+  const DEFAULT_COLS = { adp: true, consensus: false, edge: true, proj: true, floor: false, ceil: false, vbd: true, value: true, rank: true, vbdTier: true, adpTier: false, mockAdp: false, myRank: false, blendAdp: false, role: true, roleDesc: true, age: true, bye: true, avail: true, passYd: true, passTD: true, rushYd: true, rushTD: true, rec: true, recYd: true, recTD: true, tgt: false };
   const DEFAULT_SECTION_ORDER = ["market", "mine", "value", "demo", "avail", "stat"];
   const savedPrefs = user?.colPrefs || null;
   const [cols, setCols] = useState({ ...DEFAULT_COLS, ...(savedPrefs?.cols || {}) });
@@ -11909,6 +11905,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       case "floor": return p.floor;
       case "ceil": return p.ceil;
       case "vbd": return p.vbd;
+      case "value": return p.value != null ? p.value : p.vbd;
       case "rank": return p.posRank;
       case "vbdTier": return p.vbdTier;
       case "adpTier": return p.adpTier;
@@ -12029,13 +12026,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       return (p.age || prime) < prime;
     };
     const scoreFor = (p) => {
-      const vbd = p.vbd ?? -50;
+      const rawVbd = p.vbd ?? -50;                                    // true VBD (raw), for the Max-VBD strategy
+      const vbd = (p.value != null ? p.value : p.vbd) ?? -50;         // composite value for balanced/build/upside
       const pts = p.pts || 0;
       const ceilGap = (p.ceil != null && pts) ? Math.max(0, p.ceil - pts) : 0; // room above projection
       const age = p.age || 27;
       switch (strategy) {
         case "adp": return adpScore(p);
-        case "value": return vbd;
+        case "value": return rawVbd;
         case "build": {
           // Roster-aware board. In a rebuild we PENALIZE age hard (old vets shouldn't headline a rebuild),
           // reward youth/rookies, and apply the positional-need tilt. Win-now inverts the age preference.
@@ -12092,7 +12090,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     { key: "proj", label: "Proj", group: "draft", section: "value", num: true, sortable: true, sortKey: "pts", tip: "Projected season points in this scoring." },
     { key: "floor", label: "Floor", group: "draft", section: "value", num: true, sortable: true, tip: "Realistic low-end outcome." },
     { key: "ceil", label: "Ceil", group: "draft", section: "value", num: true, sortable: true, tip: "Realistic high-end outcome." },
-    { key: "vbd", label: "VBD", group: "draft", section: "value", num: true, sortable: true },
+    { key: "vbd", label: "VBD", group: "draft", section: "value", num: true, sortable: true, tip: "Value Based Drafting — projected points above the last startable player at the position (replacement level). Raw production value; the same in redraft and dynasty." },
+    { key: "value", label: "Value", group: "draft", section: "value", num: true, sortable: true, tip: "Composite draft value. In redraft this equals VBD (win now). In dynasty it also weighs age and long-term outlook, so ascending youth rises and aging vets slide." },
     { key: "rank", label: "Rank", group: "draft", section: "value", num: true, sortable: true, tip: "Position rank by projected points." },
     { key: "vbdTier", label: "VBD tier", group: "draft", section: "value", num: true, sortable: true, tip: "Overall value tier from gaps in VBD." },
     // — Demographics —
@@ -12205,6 +12204,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       case "floor": return <span className="mut">{p.floor}</span>;
       case "ceil": return <span className="mut">{p.ceil}</span>;
       case "vbd": return <span style={{ color: p.vbd > 0 ? "var(--ink)" : "var(--mut)" }}>{p.vbd > 0 ? `+${p.vbd.toFixed(0)}` : p.vbd.toFixed(0)}</span>;
+      case "value": { const v = p.value != null ? p.value : p.vbd; return <span style={{ color: v > 0 ? "var(--gold)" : "var(--mut)", fontWeight: 600 }}>{v > 0 ? `+${v.toFixed(0)}` : v.toFixed(0)}</span>; }
       case "rank": return <span style={{ color: rankTierColor(p.pos, p.posRank) || "var(--mut)" }}>{p.pos}{p.posRank}</span>;
       case "vbdTier": return <span className="mut">T{p.vbdTier}</span>;
       case "adpTier": return <span className="mut">T{p.adpTier}</span>;
@@ -15466,7 +15466,7 @@ function PosRankGrid({ grid, userIdx, teamNames, posColor, showTip, hideTip, ran
                 {POSS.map((pos) => {
                   const rank = row.pos[pos];
                   const players = row.players[pos] || [];
-                  const tip = players.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `${mine ? "Your" : teamNames[row.team]} ${pos}s — ${rank === 1 ? "1st" : rank + "th"} of ${n}` }, { kind: "playertable", cols: ["rank", "name", "team", "age", "pts", "vbd"], players }]) : undefined;
+                  const tip = players.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `${mine ? "Your" : teamNames[row.team]} ${pos}s — ${rank === 1 ? "1st" : rank + "th"} of ${n}` }, { kind: "playertable", cols: ["rank", "name", "team", "age", "pts", "vbd", "dval"], players }]) : undefined;
                   return (
                     <td key={pos} className="num" onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}
                       style={{ textAlign: "center", padding: "3px 4px", fontWeight: 700, color: rankColor(rank), cursor: tip ? "help" : "default", background: sortPos === pos ? "rgba(255,255,255,.03)" : "transparent" }}>
