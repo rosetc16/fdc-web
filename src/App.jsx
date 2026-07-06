@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28cv";
+const BUILD_TAG = "2026.06.28cw";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -12607,6 +12607,31 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       ))}
                     </div>
                   </div>
+                  {/* FOCUS — the single most impactful move right now */}
+                  {(() => {
+                    // Rank positions by pressure: unfilled need first (by deficit), then weakest league rank.
+                    const scored = rows.map((d) => ({ d, pressure: (d.deficit > 0 ? 100 + d.deficit * 10 : 0) + (d.frac != null ? d.frac * 30 : 0) })).sort((a, b) => b.pressure - a.pressure);
+                    const focus = scored[0] && scored[0].pressure > 0 ? scored[0].d : null;
+                    const bestAtFocus = focus ? ((availByPos[focus.pos] || [])[0] || null) : null;
+                    if (!focus || !bestAtFocus) {
+                      return <div style={{ display: "flex", alignItems: "center", gap: 5, borderTop: "1px solid rgba(242,182,60,.22)", paddingTop: 6, marginTop: 6, fontSize: 10 }}><i className="ti ti-circle-check" style={{ fontSize: 12, color: "#5FD0A8" }} aria-hidden="true" /><span style={{ color: "#5FD0A8", fontWeight: 700 }}>Roster's in good shape</span><span className="mut">— draft best available.</span></div>;
+                    }
+                    const scar = scarcityFor(bestAtFocus);
+                    const focusTip = (e) => showTip(e, makeOutlook(bestAtFocus, sims, false, { pickNow: picks.length + 1, dynasty: cfg.type === "dynasty" || cfg.type === "keeper", scarcity: scar, needShort: 1 }));
+                    return (
+                      <div onMouseEnter={focusTip} onMouseLeave={hideTip} style={{ borderTop: "1px solid rgba(242,182,60,.22)", paddingTop: 6, marginTop: 6, cursor: "help" }}>
+                        <div style={{ fontSize: 8, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--gold)", fontWeight: 800, marginBottom: 2, display: "flex", alignItems: "center", gap: 3 }}><i className="ti ti-target-arrow" style={{ fontSize: 10 }} aria-hidden="true" />Focus</div>
+                        <div style={{ fontSize: 10.5, lineHeight: 1.35 }}>
+                          {focus.deficit > 0
+                            ? <>Fill <b style={{ color: POS_COLOR[focus.pos] }}>{focus.pos}</b> — you're {focus.has}/{focus.need}. </>
+                            : <>Upgrade <b style={{ color: POS_COLOR[focus.pos] }}>{focus.pos}</b> — {focus.rk ? `${ordinal(focus.rk.rank)} of ${focus.rk.of}` : "thin"}. </>}
+                          <span className="mut">Best available: </span><Dot pos={bestAtFocus.pos} /><b>{bestAtFocus.name}</b>
+                          <span className="num" style={{ marginLeft: 4, color: vbdColor(bestAtFocus.vbd) }}>{(bestAtFocus.vbd > 0 ? "+" : "") + Math.round(bestAtFocus.vbd)}</span>
+                          {scar && scar.isLastStarter && <span style={{ color: "#F2655C", fontWeight: 700 }}> · last of tier!</span>}
+                        </div>
+                      </div>
+                    );
+                  })()}
                   {(flexSlots > 0 || superSlots > 0 || kSlots > 0 || dstSlots > 0) && (
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 4, borderTop: "1px solid rgba(242,182,60,.22)", paddingTop: 5, marginTop: "auto" }}>
                       {[["FLX", flexFilled, flexSlots], ["SFL", superFilled, superSlots], ["K", kHave, kSlots], ["DST", dstHave, dstSlots]].map(([label, filled, total]) => total > 0 ? (
@@ -12623,42 +12648,57 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             {(() => {
               const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
               const run = (advice && advice.run) || null;
-              // best available at each position + scarcity read (how many startable-tier left)
-              const posRows = ["QB", "RB", "WR", "TE"].filter((pos) => (SPEC[pos] || 0) > 0 || pos === "RB" || pos === "WR" || pos === "TE" || pos === "QB").map((pos) => {
+              // recent picks by position (last 8) for run detail
+              const recent8 = picks.slice(-8).map((id, i) => ({ p: players[id], o: picks.length - Math.min(8, picks.length) + i })).filter((x) => x.p);
+              const posRows = ["QB", "RB", "WR", "TE"].map((pos) => {
                 const pool = availByPos[pos] || [];
                 const best = pool[0] || null;
                 if (!best) return null;
                 const scar = scarcityFor(best);
                 const startersLeft = scar ? scar.startersLeft : null;
                 const drop = scar ? scar.drop : null;
-                // scarcity tone: fewer startable-tier left = hotter
-                const tone = startersLeft == null ? { c: "var(--mut)", t: "—" } : startersLeft <= 2 ? { c: "#F2655C", t: "scarce" } : startersLeft <= 5 ? { c: "var(--gold)", t: "thinning" } : { c: "#5FD0A8", t: "deep" };
+                const tone = startersLeft == null ? { c: "var(--mut)", t: "—" } : startersLeft <= 2 ? { c: "#F2655C", t: "Scarce" } : startersLeft <= 5 ? { c: "var(--gold)", t: "Thinning" } : { c: "#5FD0A8", t: "Deep" };
                 const isRun = run && run.pos === pos && run.count >= 3;
-                return { pos, best, startersLeft, drop, tone, isRun };
+                // next few comparable available players at this position (for the hover)
+                const comps = pool.slice(1, 5);
+                const runPicks = isRun ? recent8.filter((x) => x.p.pos === pos) : [];
+                return { pos, best, startersLeft, drop, tone, isRun, comps, runPicks, starterLine: scar ? scar.starterLine : null };
               }).filter(Boolean);
               return (
                 <div style={{ display: "flex", flexDirection: "column", gap: 5, padding: "9px 11px", borderRadius: 10, border: "1px solid var(--line)", background: "var(--panel2)", height: "100%", boxSizing: "border-box" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-activity-heartbeat" style={{ fontSize: 11, color: "var(--blue)" }} aria-hidden="true" /><span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--blue)", fontWeight: 800 }}>Draft pulse</span></div>
-                    {run && run.count >= 3 && <span style={{ fontSize: 8.5, fontWeight: 700, color: "#F2655C", background: "rgba(242,101,92,.12)", padding: "1px 6px", borderRadius: 4 }}>{run.pos} run · {run.count}/8</span>}
+                    <span className="mut" style={{ fontSize: 8 }}>best available by position</span>
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: "0 8px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line)", paddingBottom: 3 }}>
-                    <span>Pos</span><span>Best available</span><span title="Startable-tier players left" style={{ textAlign: "right" }}>Left</span><span style={{ textAlign: "right" }}>Board</span>
+                  <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 34px 30px auto", gap: "0 7px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line)", paddingBottom: 3 }}>
+                    <span>Pos</span><span>Best available</span><span title={dynasty ? "Value (age-weighted)" : "Value over replacement"} style={{ textAlign: "right" }}>{dynasty ? "Val" : "VBD"}</span><span title="Average draft position" style={{ textAlign: "right" }}>ADP</span><span title="Depth of startable-tier talent left at this position" style={{ textAlign: "right" }}>Supply</span>
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1 }}>
                     {posRows.map((r) => {
-                      const openTip = (e) => showTip(e, makeOutlook(r.best, sims, false, { pickNow: picks.length + 1, dynasty, scarcity: scarcityFor(r.best) }));
+                      const bestTip = (e) => showTip(e, makeOutlook(r.best, sims, false, { pickNow: picks.length + 1, dynasty, scarcity: scarcityFor(r.best), run: r.isRun ? run : null }));
+                      // scarcity/run detail hover
+                      const supplyTip = (e) => showTip(e, [
+                        { kind: "take", tone: r.tone.t === "Scarce" ? "bad" : r.tone.t === "Deep" ? "good" : "neutral", x: r.isRun ? `${r.pos} RUN — ${r.runPicks.length} taken in the last ${Math.min(8, picks.length)} picks` : `${r.pos} supply — ${r.tone.t.toLowerCase()}` },
+                        ...(r.isRun && r.runPicks.length ? [{ kind: "playertable", cols: ["pick", "pos", "name", "drafter"], players: r.runPicks.map((x) => ({ ...x.p, pickNo: x.o + 1, drafter: teamAt(x.o) === userIdx ? "You" : TEAM_NAMES[teamAt(x.o)] })).reverse() }] : []),
+                        { t: r.isRun ? "Why it matters" : "Startable-tier left", x: r.startersLeft != null ? `${r.startersLeft} ${r.pos}${r.startersLeft === 1 ? "" : "s"} left inside the top ${r.starterLine} at the position — after those, you're reaching into backup tier.${r.isRun ? " A run thins this fast." : ""}` : "—" },
+                        ...(r.comps.length ? [{ kind: "altheader", x: `Next ${r.pos}s on the board` }, { kind: "playertable", cols: ["rank", "name", "team", dynasty ? "dval" : "vbd", "adp"], players: r.comps }] : []),
+                      ]);
                       return (
-                        <div key={r.pos} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: "0 8px", alignItems: "center", cursor: "help", padding: "1px 0" }}>
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 800, color: POS_COLOR[r.pos] }}><Dot pos={r.pos} />{r.pos}</span>
-                          <span style={{ fontSize: 10.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.best.name} <span className="num" style={{ fontSize: 9, color: vbdColor(dynasty ? (r.best.value ?? r.best.vbd) : r.best.vbd) }}>{(() => { const v = dynasty ? (r.best.value ?? r.best.vbd) : r.best.vbd; return (v > 0 ? "+" : "") + Math.round(v); })()}</span></span>
-                          <span className="num" style={{ fontSize: 10, fontWeight: 700, color: r.tone.c, textAlign: "right" }}>{r.startersLeft != null ? r.startersLeft : "—"}</span>
-                          <span style={{ fontSize: 8.5, fontWeight: 800, color: r.isRun ? "#F2655C" : r.tone.c, textAlign: "right" }}>{r.isRun ? "run!" : r.tone.t}</span>
+                        <div key={r.pos} style={{ display: "grid", gridTemplateColumns: "auto 1fr 34px 30px auto", gap: "0 7px", alignItems: "center", padding: "1px 0" }}>
+                          <span onMouseEnter={bestTip} onMouseLeave={hideTip} style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 800, color: POS_COLOR[r.pos], cursor: "help" }}><Dot pos={r.pos} />{r.pos}</span>
+                          <span onMouseEnter={bestTip} onMouseLeave={hideTip} style={{ fontSize: 10.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "help" }}>{r.best.name} <span className="mut" style={{ fontSize: 8.5 }}>{r.best.pos}{r.best.posRank}</span></span>
+                          <span onMouseEnter={bestTip} onMouseLeave={hideTip} className="num" style={{ fontSize: 10, fontWeight: 700, textAlign: "right", cursor: "help", color: vbdColor(dynasty ? (r.best.value ?? r.best.vbd) : r.best.vbd) }}>{(() => { const v = dynasty ? (r.best.value ?? r.best.vbd) : r.best.vbd; return (v > 0 ? "+" : "") + Math.round(v); })()}</span>
+                          <span className="num mut" style={{ fontSize: 9.5, textAlign: "right" }}>{r.best.adp != null ? r.best.adp.toFixed(0) : "—"}</span>
+                          <span onMouseEnter={supplyTip} onMouseLeave={hideTip} style={{ display: "inline-flex", alignItems: "center", justifyContent: "flex-end", gap: 3, cursor: "help", textAlign: "right" }}>
+                            {r.isRun && <i className="ti ti-flame" style={{ fontSize: 9, color: "#F2655C" }} aria-hidden="true" />}
+                            <span style={{ fontSize: 9, fontWeight: 800, color: r.isRun ? "#F2655C" : r.tone.c }}>{r.isRun ? "run" : r.tone.t}</span>
+                            <span className="num" style={{ fontSize: 8.5, color: r.tone.c, background: r.tone.c + "1c", borderRadius: 3, padding: "0 3px", minWidth: 13, textAlign: "center" }}>{r.startersLeft != null ? r.startersLeft : "—"}</span>
+                          </span>
                         </div>
                       );
                     })}
                   </div>
-                  <div className="mut" style={{ fontSize: 8, marginTop: "auto" }}>"Left" = startable-tier players remaining. Hover for the full read.</div>
+                  <div className="mut" style={{ fontSize: 8, marginTop: "auto", lineHeight: 1.35 }}>Supply = startable-tier players still on the board (the small number). Hover it for who's left and any run in progress.</div>
                 </div>
               );
             })()}
@@ -12733,15 +12773,21 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   {/* top-3 likely / recommended, inline — fills the space with useful reads */}
                   <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 2, flex: 1 }}>
                     <div className="mut" style={{ fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 700 }}>{isYou ? "Top recommendations" : "Most likely"}</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "30px 1fr 30px 26px 30px", gap: "0 5px", fontSize: 7.5, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line2)", paddingBottom: 2 }}>
+                      <span>Rk</span><span>Player</span><span title={cfg.type === "dynasty" || cfg.type === "keeper" ? "Value" : "VBD"} style={{ textAlign: "right" }}>{cfg.type === "dynasty" || cfg.type === "keeper" ? "Val" : "VBD"}</span><span title="ADP" style={{ textAlign: "right" }}>ADP</span><span title={isYou ? "Chance still available" : "Chance this team takes him"} style={{ textAlign: "right" }}>{isYou ? "Avail" : "Take"}</span>
+                    </div>
                     {cands ? cands.map((c, ci) => {
                       const p = c.p;
-                      const openTip = (e) => { e.stopPropagation(); showTip(e, makeOutlook(p, sims, false, { pickNow: picks.length + 1, dynasty: cfg.type === "dynasty" || cfg.type === "keeper", scarcity: scarcityFor(p) })); };
+                      const dyn = cfg.type === "dynasty" || cfg.type === "keeper";
+                      const vShow = dyn ? (p.value ?? p.vbd) : p.vbd;
+                      const openTip = (e) => { e.stopPropagation(); showTip(e, makeOutlook(p, sims, false, { pickNow: picks.length + 1, dynasty: dyn, scarcity: scarcityFor(p) })); };
                       return (
-                        <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: 5, alignItems: "center", fontSize: 11, padding: "2px 3px", borderRadius: 5, background: ci === 0 ? "rgba(242,182,60,.12)" : "transparent", cursor: "help" }}>
+                        <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "30px 1fr 30px 26px 30px", gap: "0 5px", alignItems: "center", fontSize: 11, padding: "2px 3px", borderRadius: 5, background: ci === 0 ? "rgba(242,182,60,.12)" : "transparent", cursor: "help" }}>
                           <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank), fontSize: 9.5 }}>{p.pos}{p.posRank}</span>
                           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: ci === 0 ? 700 : 500 }}>{ci === 0 ? "★ " : ""}{p.name}</span>
-                          <span className="num" style={{ fontSize: 9.5, color: vbdColor(p.vbd) }}>{(p.vbd > 0 ? "+" : "") + Math.round(p.vbd)}</span>
-                          <span className="num mut" style={{ fontSize: 9, width: 30, textAlign: "right" }}>{c.prob != null ? `${c.prob}%` : ""}</span>
+                          <span className="num" style={{ fontSize: 9.5, textAlign: "right", color: vbdColor(vShow) }}>{(vShow > 0 ? "+" : "") + Math.round(vShow)}</span>
+                          <span className="num mut" style={{ fontSize: 9, textAlign: "right" }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
+                          <span className="num mut" style={{ fontSize: 9, textAlign: "right" }}>{c.prob != null ? `${c.prob}%` : ""}</span>
                         </div>
                       );
                     }) : <span className="mut" style={{ fontSize: 10 }}>—</span>}
@@ -12752,6 +12798,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             })()}
             {/* ===== ZONE 4: NEXT PICKS ===== */}
             {(() => {
+              const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
               const upcoming = displayPath.filter((s) => s && s.o > picks.length && s.p).slice(0, 6);
               const moreTip = (e) => showTip(e, [
                 { kind: "take", tone: "neutral", x: "Upcoming picks — engine projection" },
@@ -12760,19 +12807,24 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               return (
                 <div className="tickcard" style={{ padding: "7px 9px", minWidth: 0, height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }}>
                   <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 4, fontWeight: 700 }}>Next picks</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "30px 1fr 30px 32px", gap: "0 6px", fontSize: 7.5, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line2)", paddingBottom: 2, marginBottom: 2 }}>
+                    <span>Pick</span><span>Proj · team</span><span title={dynasty ? "Value" : "VBD"} style={{ textAlign: "right" }}>{dynasty ? "Val" : "VBD"}</span><span title="Average draft position" style={{ textAlign: "right" }}>ADP</span>
+                  </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
                     {upcoming.length ? upcoming.map((step) => {
                       const p = step.p, mine = step.user;
                       const cands = step.cands5 && step.cands5.length ? step.cands5 : null;
+                      const vShow = dynasty ? (p.value ?? p.vbd) : p.vbd;
                       const tip = (e) => showTip(e, [
                         { kind: "take", tone: mine ? "good" : "neutral", x: `${pickLabel(step.o)} · ${mine ? "YOUR PICK" : TEAM_NAMES[step.t]}${cands ? " — likely options" : ""}` },
                         ...(cands ? [{ kind: "playertable", probLabel: "Picked", cols: ["prob", "name", "rank", "adp", "pts", "vbd"], players: cands.map((c, ci) => ({ ...c.p, prob: c.prob, star: ci === 0, rec: ci === 0 })) }] : [{ kind: "playercard", p }]),
                       ]);
                       return (
-                        <div key={step.o} onMouseEnter={tip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "26px 1fr auto", gap: 5, alignItems: "center", fontSize: 11, cursor: "help", padding: "1px 0", background: mine ? "rgba(242,182,60,.10)" : "transparent", borderRadius: 4 }}>
-                          <span className="num mut" style={{ fontSize: 9 }}>{pickLabel(step.o)}</span>
-                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={p.pos} /><span style={{ fontSize: 11, fontWeight: mine ? 700 : 400 }}>{p.name}</span> <span className="mut" style={{ fontSize: 9 }}>{mine ? "You" : TEAM_NAMES[step.t].split(" ")[0]}</span></span>
-                          <span className="num mut" style={{ fontSize: 8.5 }}>{step.prob != null ? `${step.prob}%` : ""}</span>
+                        <div key={step.o} onMouseEnter={tip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "30px 1fr 30px 32px", gap: "0 6px", alignItems: "center", fontSize: 11, cursor: "help", padding: "1px 2px", background: mine ? "rgba(242,182,60,.10)" : "transparent", borderRadius: 4 }}>
+                          <span className="num mut" style={{ fontSize: 8.5 }}>{pickLabel(step.o)}</span>
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={p.pos} /><span style={{ fontSize: 10.5, fontWeight: mine ? 700 : 400 }}>{p.name}</span> <span className="mut" style={{ fontSize: 8.5 }}>{mine ? "You" : TEAM_NAMES[step.t].split(" ")[0]}</span></span>
+                          <span className="num" style={{ fontSize: 9, fontWeight: 700, textAlign: "right", color: vbdColor(vShow) }}>{(vShow > 0 ? "+" : "") + Math.round(vShow)}</span>
+                          <span className="num mut" style={{ fontSize: 9, textAlign: "right" }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
                         </div>
                       );
                     }) : <span className="mut" style={{ fontSize: 10 }}>No upcoming picks</span>}
