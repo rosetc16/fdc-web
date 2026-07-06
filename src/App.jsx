@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28cx";
+const BUILD_TAG = "2026.06.28cy";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3647,9 +3647,9 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .team-row:hover{border-color:var(--gold)!important;background:var(--panel3)!important;transform:translateX(2px);box-shadow:-3px 0 0 0 var(--gold)}
 .team-row:hover .team-arrow{opacity:1;transform:translateX(0)}
 .team-arrow{opacity:0;transform:translateX(-4px);transition:opacity .15s, transform .15s}
-@media(max-width:1280px){.decision-grid{grid-template-columns:repeat(3,1fr)!important}.decision-grid>[aria-hidden]{display:none!important}}
-@media(max-width:980px){.cols{flex-direction:column}.rail{width:100%!important}.hero-h{font-size:38px}.myteam-grid{grid-template-columns:1fr!important;flex-direction:column!important}.needteam-row{grid-template-columns:1fr!important}.recap-row{grid-template-columns:1fr!important}.superlative-grid{grid-template-columns:repeat(2,1fr)!important}.decision-grid{grid-template-columns:1fr 1fr!important}.decision-grid>[aria-hidden]{display:none!important}}
-@media(max-width:640px){.decision-grid{grid-template-columns:1fr!important}}
+@media(max-width:1280px){.decision-grid{flex-direction:column!important}.decision-group-a,.decision-group-b{flex:1 1 auto!important}}
+@media(max-width:980px){.cols{flex-direction:column}.rail{width:100%!important}.hero-h{font-size:38px}.myteam-grid{grid-template-columns:1fr!important;flex-direction:column!important}.needteam-row{grid-template-columns:1fr!important}.recap-row{grid-template-columns:1fr!important}.superlative-grid{grid-template-columns:repeat(2,1fr)!important}.decision-group-b{grid-template-columns:1fr 1fr!important}}
+@media(max-width:640px){.decision-group-a,.decision-group-b{grid-template-columns:1fr!important}}
 @media(max-width:640px){
   .hero-h{font-size:30px!important}
   .statline{font-size:30px}
@@ -12537,7 +12537,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       )}
       {!done && (
         <div className="hairline" style={{ background: "var(--panel2)" }}>
-          <div className="decision-grid" style={{ display: "grid", gridTemplateColumns: "minmax(200px,1fr) minmax(160px,0.85fr) minmax(210px,1.05fr) 0px minmax(160px,0.82fr) minmax(175px,0.92fr) minmax(180px,0.95fr)", gap: 9, padding: "8px 12px", alignItems: "stretch" }}>
+          <div className="decision-grid" style={{ display: "flex", gap: 10, padding: "8px 12px", alignItems: "stretch" }}>
+            {/* ---- GROUP A: decisions & outlook ---- */}
+            <div className="decision-group-a" style={{ display: "grid", gridTemplateColumns: "minmax(190px,0.9fr) minmax(210px,1.05fr)", gap: 8, flex: "1.05 1 0", minWidth: 0, padding: 8, borderRadius: 12, border: "1px solid var(--line)", background: "rgba(255,255,255,.015)" }}>
             {/* ===== ZONE 1: HOW YOU'RE DOING (table) ===== */}
             {(() => {
               const laneMap = { rebuild: { t: "Rebuild", c: "#5FD0A8", i: "ti-seedling" }, winnow: { t: "Win-now", c: "#F2655C", i: "ti-flame" }, balanced: { t: "Balanced", c: "var(--gold)", i: "ti-scale" }, undecided: { t: "Forming…", c: "var(--mut)", i: "ti-loader" } };
@@ -12562,6 +12564,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 { kind: "playertable", cols: ["rank", "name", "pts"], players: standings.map((s) => ({ posRank: s.rank, pos: "", name: s.i === userIdx ? "YOUR TEAM" : TEAM_NAMES[s.i], pts: Math.round(s.pts), rec: s.i === userIdx, star: s.i === userIdx })) },
               ]) : undefined;
               // one row per position: quantity vs required, league rank, and a strength/weakness read BY RANK
+              const dynastyH = cfg.type === "dynasty" || cfg.type === "keeper";
               const rows = ["QB", "RB", "WR", "TE"].map((pos) => {
                 const rk = posRankByPos && posRankByPos[pos] ? posRankByPos[pos] : null;
                 const need = req[pos] || 0, has = have[pos] || 0;
@@ -12570,17 +12573,25 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const frac = rk ? (rk.rank - 1) / Math.max(1, rk.of - 1) : null;
                 // read purely by league rank (not deficit) so a filled position never looks like a weakness
                 const read = frac == null ? { t: "—", c: "var(--mut)" } : frac <= 0.33 ? { t: "Strong", c: "#5FD0A8" } : frac <= 0.66 ? { t: "Middle", c: "var(--gold)" } : { t: "Thin", c: "#F2655C" };
-                return { pos, rk, need, has, deficit, filled, frac, read };
+                // focus pressure: unfilled need first (by deficit), then weakest league rank
+                const pressure = (deficit > 0 ? 100 + deficit * 10 : 0) + (frac != null ? frac * 40 : 0);
+                const bestAvail = (availByPos[pos] || [])[0] || null;
+                return { pos, rk, need, has, deficit, filled, frac, read, pressure, bestAvail };
               });
+              const focusPos = (() => { const s = rows.slice().sort((a, b) => b.pressure - a.pressure)[0]; return s && s.pressure > 5 ? s.pos : null; })();
               const posTip = (d) => (e) => {
                 const plist = (byPosMine && byPosMine[d.pos]) || [];
+                const best = d.bestAvail;
+                const scar = best ? scarcityFor(best) : null;
                 showTip(e, [
-                  { kind: "take", tone: d.frac == null ? "neutral" : d.frac <= 0.33 ? "good" : d.frac > 0.66 ? "bad" : "neutral", x: `${d.pos} — ${d.rk ? `${ordinal(d.rk.rank)} of ${d.rk.of} in the league` : "unranked"} · ${d.has}/${d.need || 0} starter${(d.need || 0) === 1 ? "" : "s"}${d.deficit > 0 ? ` · need ${Math.round(d.deficit)} more` : d.filled ? " · filled ✓" : ""}` },
+                  { kind: "take", tone: d.frac == null ? "neutral" : d.frac <= 0.33 ? "good" : d.frac > 0.66 ? "bad" : "neutral", x: `${d.pos} — ${d.rk ? `${ordinal(d.rk.rank)} of ${d.rk.of} in the league` : "unranked"} · ${d.has}/${d.need || 0} starter${(d.need || 0) === 1 ? "" : "s"}${d.deficit > 0 ? ` · need ${Math.round(d.deficit)} more` : d.filled ? " · filled ✓" : ""}${d.pos === focusPos ? " · YOUR FOCUS" : ""}` },
+                  ...(best ? [{ kind: "altheader", x: `Best ${d.pos} available` }, { kind: "playercard", p: best }, ...(scar && scar.isLastStarter ? [{ t: "Scarcity", x: `${best.name.split(" ").slice(-1)} may be the last startable-tier ${d.pos} — steep drop after him.` }] : [])] : []),
+                  { kind: "altheader", x: `Your ${d.pos}s` },
                   ...(plist.length ? [{ kind: "playertable", cols: ["rank", "name", "team", "age", "pts", "vbd"], players: plist }] : [{ t: "—", x: "No players here yet" }]),
                 ]);
               };
               return (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "9px 11px", borderRadius: 10, border: "1.5px solid var(--gold)", background: "linear-gradient(160deg,rgba(46,40,22,1),rgba(24,31,40,1))", height: "100%", boxSizing: "border-box" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "9px 11px", borderRadius: 9, border: "1px solid rgba(242,182,60,.5)", background: "linear-gradient(160deg,rgba(46,40,22,1),rgba(24,31,40,1))", height: "100%", boxSizing: "border-box" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-gauge" style={{ fontSize: 11, color: "var(--gold)" }} aria-hidden="true" /><span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--gold)", fontWeight: 800 }}>How you're doing</span></div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -12590,23 +12601,39 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   </div>
                   {/* position table */}
                   <div style={{ borderTop: "1px solid rgba(242,182,60,.22)", paddingTop: 5 }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: "0 8px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", fontWeight: 700, paddingBottom: 3 }}>
-                      <span>Pos</span><span>Starters</span><span style={{ textAlign: "right" }}>Rank</span><span style={{ textAlign: "right" }}>Read</span>
+                    <div style={{ display: "grid", gridTemplateColumns: "26px 66px 1fr auto", gap: "0 6px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", fontWeight: 700, paddingBottom: 3 }}>
+                      <span>Pos</span><span>Start</span><span style={{ textAlign: "right" }}>Rank</span><span style={{ textAlign: "right" }}>Read</span>
                     </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                      {rows.map((d) => (
-                        <div key={d.pos} onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: "0 8px", alignItems: "center", cursor: "help", padding: "1px 0" }}>
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 800, color: POS_COLOR[d.pos] }}><Dot pos={d.pos} />{d.pos}</span>
-                          <span style={{ fontSize: 10.5, display: "inline-flex", alignItems: "center", gap: 4 }}>
-                            <span style={{ fontWeight: 700 }}>{d.has}</span><span className="mut" style={{ fontSize: 9 }}>/{d.need || 0}</span>
-                            {d.filled ? <i className="ti ti-circle-check-filled" style={{ fontSize: 11, color: "#5FD0A8" }} aria-hidden="true" /> : d.deficit > 0 ? <span style={{ fontSize: 9, color: "#F2655C", fontWeight: 700 }}>need {Math.round(d.deficit)}</span> : null}
-                          </span>
-                          <span style={{ textAlign: "right", fontSize: 10.5, fontWeight: 700, color: d.rk ? d.read.c : "var(--mut)" }}>{d.rk ? `${d.rk.rank}/${d.rk.of}` : "—"}</span>
-                          <span style={{ textAlign: "right", fontSize: 10, fontWeight: 800, color: d.read.c }}>{d.read.t}</span>
-                        </div>
-                      ))}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                      {rows.map((d) => {
+                        const isFocus = d.pos === focusPos;
+                        return (
+                          <div key={d.pos} onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "26px 66px 1fr auto", gap: "0 6px", alignItems: "center", cursor: "help", padding: "1px 4px", margin: "0 -4px", borderRadius: 5, background: isFocus ? "rgba(242,182,60,.13)" : "transparent" }}>
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 11, fontWeight: 800, color: POS_COLOR[d.pos] }}>{isFocus ? <i className="ti ti-target-arrow" style={{ fontSize: 10, color: "var(--gold)" }} aria-hidden="true" /> : <Dot pos={d.pos} />}{d.pos}</span>
+                            <span style={{ fontSize: 10.5, display: "inline-flex", alignItems: "center", gap: 3 }}>
+                              <span style={{ fontWeight: 700 }}>{d.has}</span><span className="mut" style={{ fontSize: 9 }}>/{d.need || 0}</span>
+                              {d.filled ? <i className="ti ti-circle-check-filled" style={{ fontSize: 10, color: "#5FD0A8" }} aria-hidden="true" /> : d.deficit > 0 ? <i className="ti ti-alert-circle-filled" style={{ fontSize: 10, color: "#F2655C" }} aria-hidden="true" /> : null}
+                            </span>
+                            <span style={{ textAlign: "right", fontSize: 10.5, fontWeight: 700, color: d.rk ? d.read.c : "var(--mut)" }}>{d.rk ? `${d.rk.rank}/${d.rk.of}` : "—"}</span>
+                            <span style={{ textAlign: "right", fontSize: 10, fontWeight: 800, color: d.read.c }}>{d.read.t}</span>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
+                  {focusPos && (() => {
+                    const d = rows.find((r) => r.pos === focusPos);
+                    return (
+                      <div onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ display: "flex", alignItems: "center", gap: 5, borderTop: "1px solid rgba(242,182,60,.22)", paddingTop: 5, cursor: "help", fontSize: 10 }}>
+                        <i className="ti ti-target-arrow" style={{ fontSize: 11, color: "var(--gold)" }} aria-hidden="true" />
+                        <span style={{ color: "var(--gold)", fontWeight: 800, fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em" }}>Focus</span>
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {d.deficit > 0 ? <>Fill <b style={{ color: POS_COLOR[d.pos] }}>{d.pos}</b></> : <>Upgrade <b style={{ color: POS_COLOR[d.pos] }}>{d.pos}</b></>}
+                          {d.bestAvail ? <> — <b>{d.bestAvail.name}</b> <span className="num" style={{ color: vbdColor(dynastyH ? (d.bestAvail.value ?? d.bestAvail.vbd) : d.bestAvail.vbd) }}>{(() => { const v = dynastyH ? (d.bestAvail.value ?? d.bestAvail.vbd) : d.bestAvail.vbd; return (v > 0 ? "+" : "") + Math.round(v); })()}</span></> : null}
+                        </span>
+                      </div>
+                    );
+                  })()}
                   {(flexSlots > 0 || superSlots > 0 || kSlots > 0 || dstSlots > 0) && (
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 4, borderTop: "1px solid rgba(242,182,60,.22)", paddingTop: 5, marginTop: "auto" }}>
                       {[["FLX", flexFilled, flexSlots], ["SFL", superFilled, superSlots], ["K", kHave, kSlots], ["DST", dstHave, dstSlots]].map(([label, filled, total]) => total > 0 ? (
@@ -12614,60 +12641,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           {label} {filled}/{total}{filled >= total ? " ✓" : ""}
                         </span>
                       ) : null)}
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-            {/* ===== ZONE: FOCUS (most impactful moves) ===== */}
-            {(() => {
-              const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
-              const req = myWindow.req || REQ_F(cfg.sf);
-              const have = myWindow.have || {};
-              // rank positions by pressure: unfilled need first (by deficit), then weakest league rank
-              const rows = ["QB", "RB", "WR", "TE"].map((pos) => {
-                const rk = posRankMine && posRankMine[pos] ? posRankMine[pos] : null;
-                const need = req[pos] || 0, has = have[pos] || 0;
-                const deficit = Math.max(0, need - has);
-                const frac = rk ? (rk.rank - 1) / Math.max(1, rk.of - 1) : null;
-                const pressure = (deficit > 0 ? 100 + deficit * 10 : 0) + (frac != null ? frac * 40 : 0);
-                return { pos, rk, need, has, deficit, frac, pressure };
-              }).sort((a, b) => b.pressure - a.pressure);
-              const picksList = rows.filter((d) => d.pressure > 5).slice(0, 2);
-              return (
-                <div style={{ display: "flex", flexDirection: "column", gap: 5, padding: "9px 11px", borderRadius: 10, border: "1px solid var(--gold)", background: "linear-gradient(160deg,rgba(46,40,22,0.55),rgba(24,31,40,0.9))", height: "100%", boxSizing: "border-box" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-target-arrow" style={{ fontSize: 11, color: "var(--gold)" }} aria-hidden="true" /><span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--gold)", fontWeight: 800 }}>Focus</span><span className="mut" style={{ fontSize: 8, marginLeft: "auto" }}>most impactful moves</span></div>
-                  {picksList.length === 0 ? (
-                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 3, flex: 1, justifyContent: "center" }}>
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "#5FD0A8", fontWeight: 700, fontSize: 11 }}><i className="ti ti-circle-check-filled" style={{ fontSize: 13 }} aria-hidden="true" />Roster's in good shape</span>
-                      <span className="mut" style={{ fontSize: 10 }}>No glaring holes — draft the best value on the board.</span>
-                    </div>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1 }}>
-                      {picksList.map((d, i) => {
-                        const best = (availByPos[d.pos] || [])[0] || null;
-                        const scar = best ? scarcityFor(best) : null;
-                        const tip = best ? (e) => showTip(e, makeOutlook(best, sims, false, { pickNow: picks.length + 1, dynasty, scarcity: scar, needShort: d.deficit > 0 ? 1 : 0 })) : undefined;
-                        return (
-                          <div key={d.pos} onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined} style={{ cursor: tip ? "help" : "default", borderLeft: `2px solid ${i === 0 ? "var(--gold)" : "var(--line)"}`, paddingLeft: 7 }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5 }}>
-                              <span style={{ fontSize: 8, fontWeight: 800, color: i === 0 ? "var(--gold)" : "var(--mut)", textTransform: "uppercase", letterSpacing: ".04em" }}>{i === 0 ? "1st" : "2nd"}</span>
-                              {d.deficit > 0
-                                ? <span>Fill <b style={{ color: POS_COLOR[d.pos] }}>{d.pos}</b> <span className="mut">({d.has}/{d.need})</span></span>
-                                : <span>Upgrade <b style={{ color: POS_COLOR[d.pos] }}>{d.pos}</b> <span className="mut">({d.rk ? `${ordinal(d.rk.rank)}/${d.rk.of}` : "thin"})</span></span>}
-                            </div>
-                            {best ? (
-                              <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10.5, marginTop: 2 }}>
-                                <PlayerPhoto sid={best.sid} pos={best.pos} size={20} />
-                                <b style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{best.name}</b>
-                                <span className="num" style={{ fontSize: 9, color: rankTierColor(best.pos, best.posRank), fontWeight: 700 }}>{best.pos}{best.posRank}</span>
-                                <span className="num" style={{ fontSize: 9.5, marginLeft: "auto", color: vbdColor(dynasty ? (best.value ?? best.vbd) : best.vbd) }}>{(() => { const v = dynasty ? (best.value ?? best.vbd) : best.vbd; return (v > 0 ? "+" : "") + Math.round(v); })()}</span>
-                                {scar && scar.isLastStarter && <span style={{ fontSize: 8, color: "#F2655C", fontWeight: 800 }}>last!</span>}
-                              </div>
-                            ) : <div className="mut" style={{ fontSize: 9.5, marginTop: 2 }}>None left on the board</div>}
-                          </div>
-                        );
-                      })}
                     </div>
                   )}
                 </div>
@@ -12751,10 +12724,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               );
             })()}
 
-            {/* ===== DIVIDER: decisions/outlook | picks ===== */}
-            <div aria-hidden="true" style={{ position: "relative", width: 0 }}>
-              <div style={{ position: "absolute", left: -5, top: 4, bottom: 4, width: 1, background: "linear-gradient(180deg,transparent,var(--line) 12%,var(--line) 88%,transparent)" }} />
+            {/* ---- end GROUP A ---- */}
             </div>
+
+            {/* ---- GROUP B: the picks ---- */}
+            <div className="decision-group-b" style={{ display: "grid", gridTemplateColumns: "minmax(155px,0.8fr) minmax(170px,0.9fr) minmax(175px,0.92fr)", gap: 8, flex: "1.4 1 0", minWidth: 0 }}>
 
             {/* ===== ZONE 2: LAST PICKS ===== */}
             {(() => {
@@ -12856,12 +12830,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             {/* ===== ZONE 4: NEXT PICKS ===== */}
             {(() => {
               const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
-              const upcoming = displayPath.filter((s) => s && s.o > picks.length && s.p).slice(0, 8);
+              // Use the full projected path (path[0] is the on-clock pick shown separately), so we can show a
+              // deep look-ahead here regardless of the compact displayPath used elsewhere.
+              const upSource = path.slice(1).filter((s) => s && s.o > picks.length && s.p);
+              const upcoming = upSource.slice(0, 8);
               const untilMine = myNextOverall != null ? Math.max(0, myNextOverall - picks.length) : null;
               const untilColor = untilMine == null ? "var(--mut)" : untilMine <= 1 ? "#F2655C" : untilMine <= 3 ? "var(--gold)" : "#5FD0A8";
               const moreTip = (e) => showTip(e, [
                 { kind: "take", tone: "neutral", x: "Upcoming picks — engine projection" },
-                { kind: "playertable", probLabel: "Picked", cols: ["pick", "prob", "name", "rank", "team", "pts"], players: displayPath.filter((s) => s && s.o > picks.length && s.p).slice(0, 20).map((s) => ({ ...s.p, pickNo: s.o + 1, prob: s.prob, rec: s.user, star: s.user })) },
+                { kind: "playertable", probLabel: "Picked", cols: ["pick", "prob", "name", "rank", "team", "pts"], players: upSource.slice(0, 20).map((s) => ({ ...s.p, pickNo: s.o + 1, prob: s.prob, rec: s.user, star: s.user })) },
               ]);
               return (
                 <div className="tickcard" style={{ padding: "7px 9px", minWidth: 0, height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }}>
@@ -12900,11 +12877,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 </div>
               );
             })()}
+            {/* ---- end GROUP B ---- */}
+            </div>
           </div>
         </div>
       )}
 
-      <div className="hairline tabbar" data-tour="tabs" style={{ display: "flex", padding: "0 10px", overflowX: "auto", background: "var(--bg)" }}>
+      <div className="hairline tabbar" data-tour="tabs" style={{ display: "flex", padding: "0 10px", overflowX: "auto", background: "var(--panel2)", borderTop: "1px solid var(--line)", borderBottom: "1px solid var(--line)" }}>
         {[["hub","Hub"],["myteam","Team analysis"],["board","Draft board"],["depth","Depth charts"],["trade","Trade"],["summary","Summary"],["settings","Settings"]].map(([k, label]) => (
           <button key={k} className={`tab ${tab === k ? "on" : ""}`} data-tour={`tab-${k}`} onClick={() => setTab(k)}>{label}</button>
         ))}
@@ -13356,25 +13335,25 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const recTable = (adv, accent, label, sub) => {
                   if (!adv || !adv.verdict) return <div className="mut" style={{ fontSize: 11, padding: "4px 0" }}>Computing…</div>;
                   const list = [adv.verdict, ...(adv.alts || [])].filter(Boolean).slice(0, 5);
-                  const cols = onClockNow ? "34px 1fr 46px auto auto 34px auto" : "34px 1fr 46px auto auto 34px";
+                  const cols = onClockNow ? "30px minmax(0,1fr) 74px 34px 30px 32px 44px" : "30px minmax(0,1fr) 78px 34px 30px 32px";
                   return (
                     <div>
                       <div style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".05em", color: accent, marginBottom: 2, display: "flex", alignItems: "center", gap: 5 }}>{label}{sub && <span className="mut" style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, fontSize: 9 }}>· {sub}</span>}</div>
                       {/* header row */}
-                      <div style={{ display: "grid", gridTemplateColumns: cols, gap: 7, alignItems: "center", fontSize: 7.5, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, padding: "0 4px 2px" }}>
-                        <span>Rank</span><span>Player · role</span><span title="Team role">Role</span><span title={dynasty ? "Value (age-weighted) / VBD" : "Value above replacement"} style={{ textAlign: "right" }}>{dynasty ? "Val" : "VBD"}</span><span title="Average draft position" style={{ textAlign: "right" }}>ADP</span><span title="Chance still available at this pick" style={{ textAlign: "right" }}>Avail</span>{onClockNow && <span />}
+                      <div style={{ display: "grid", gridTemplateColumns: cols, gap: 6, alignItems: "center", fontSize: 7.5, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, padding: "0 4px 2px" }}>
+                        <span>Rank</span><span>Player</span><span title="Team role">Role</span><span title={dynasty ? "Value (age-weighted)" : "Value above replacement"} style={{ textAlign: "right" }}>{dynasty ? "Val" : "VBD"}</span><span title="Average draft position" style={{ textAlign: "right" }}>ADP</span><span title="Chance still available at this pick" style={{ textAlign: "right" }}>Avail</span>{onClockNow && <span />}
                       </div>
                       <div style={{ display: "flex", flexDirection: "column" }}>
                         {list.map((p, i) => {
                           const surv = survOf(p);
                           const openTip = (e) => showTip(e, makeOutlook(p, sims, false, { pickNow: pickNowN, dynasty, run, needShort: need.includes(p.pos) ? 1 : 0, scarcity: scarcityFor(p) }));
-                          const roleShort = p.role ? lowerKeepPos(p.role).replace(/\b(back|receiver)\b/gi, "").trim().split(" ").slice(0, 2).join(" ") : "—";
+                          const roleShort = p.role ? lowerKeepPos(p.role).replace(/[\/·].*$/, "").trim() : "—";
                           const vShow = dynasty ? (p.value ?? p.vbd) : p.vbd;
                           return (
-                            <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: cols, gap: 7, alignItems: "center", fontSize: 11, padding: "3px 4px", borderRadius: 5, background: i === 0 ? "rgba(242,182,60,.10)" : "transparent", borderBottom: i < list.length - 1 ? "1px solid var(--line2)" : "none", cursor: "help" }}>
+                            <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: cols, gap: 6, alignItems: "center", fontSize: 11, padding: "3px 4px", borderRadius: 5, background: i === 0 ? "rgba(242,182,60,.10)" : "transparent", borderBottom: i < list.length - 1 ? "1px solid var(--line2)" : "none", cursor: "help" }}>
                               <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
-                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><b style={{ color: i === 0 ? accent : "var(--ink)" }}>{i === 0 ? "★ " : ""}{p.name}</b></span>
-                              <span className="mut" style={{ fontSize: 8.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{roleShort}</span>
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}><b style={{ color: i === 0 ? accent : "var(--ink)" }}>{i === 0 ? "★ " : ""}{p.name}</b></span>
+                              <span className="mut" style={{ fontSize: 8.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textTransform: "capitalize" }}>{roleShort}</span>
                               <span className="num" style={{ fontWeight: 700, color: vbdColor(vShow), fontSize: 10.5, textAlign: "right" }}>{(vShow > 0 ? "+" : "") + Math.round(vShow)}</span>
                               <span className="num mut" style={{ fontSize: 9.5, textAlign: "right" }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
                               <span className="num" style={{ fontSize: 9.5, color: surv == null ? "var(--mut)" : surv >= 65 ? "#5FD0A8" : surv >= 35 ? "var(--gold)" : "#F2655C", textAlign: "right" }}>{surv != null ? `${surv}%` : "—"}</span>
@@ -13435,10 +13414,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   let verdict, vcolor, vwhy;
                   if (vbdRead === "Cliff" && !adpSafe) { verdict = "Take now"; vcolor = "#F2655C"; vwhy = "value cliff and he won't slide"; }
                   else if (vbdUrgent && adpUrgent) { verdict = "Take now"; vcolor = "#F2655C"; vwhy = "value drop + market pressure"; }
-                  else if (vbdUrgent && adpSafe) { verdict = "Can wait"; vcolor = "var(--gold)"; vwhy = "value drops, but ADP says he slides — grab him later"; }
-                  else if (!vbdUrgent && adpUrgent) { verdict = "Now or lose him"; vcolor = "var(--gold)"; vwhy = "no big drop, but he's about to go"; }
+                  else if (!vbdUrgent && adpUrgent) { verdict = "Now or lose him"; vcolor = "#F59E42"; vwhy = "no big drop, but he's about to go"; }
+                  else if (vbdUrgent && adpSafe) { verdict = "Wait — slides"; vcolor = "#4FA9E0"; vwhy = "value drops, but ADP says he slides — grab him later"; }
                   else if (!vbdUrgent && adpSafe) { verdict = "Can wait"; vcolor = "#5FD0A8"; vwhy = "no urgency on either read"; }
-                  else { verdict = "Your call"; vcolor = "var(--gold)"; vwhy = "mixed signals"; }
+                  else { verdict = "Your call"; vcolor = "#E7C24B"; vwhy = "mixed signals"; }
                   return { pos, bestNow, wc, verdict, vcolor, vwhy, vbdRead, vbdColorR, vbdWhy, adpRead, adpColorR, adpWhy, surv, isNeed: need.includes(pos) };
                 }).filter(Boolean);
 
