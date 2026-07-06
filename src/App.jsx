@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28cu";
+const BUILD_TAG = "2026.06.28cv";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3647,7 +3647,7 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .team-row:hover{border-color:var(--gold)!important;background:var(--panel3)!important;transform:translateX(2px);box-shadow:-3px 0 0 0 var(--gold)}
 .team-row:hover .team-arrow{opacity:1;transform:translateX(0)}
 .team-arrow{opacity:0;transform:translateX(-4px);transition:opacity .15s, transform .15s}
-@media(max-width:1200px){.decision-grid{grid-template-columns:1fr 1fr!important}}
+@media(max-width:1280px){.decision-grid{grid-template-columns:repeat(3,1fr)!important}}
 @media(max-width:980px){.cols{flex-direction:column}.rail{width:100%!important}.hero-h{font-size:38px}.myteam-grid{grid-template-columns:1fr!important;flex-direction:column!important}.needteam-row{grid-template-columns:1fr!important}.recap-row{grid-template-columns:1fr!important}.superlative-grid{grid-template-columns:repeat(2,1fr)!important}.decision-grid{grid-template-columns:1fr 1fr!important}}
 @media(max-width:640px){.decision-grid{grid-template-columns:1fr!important}}
 @media(max-width:640px){
@@ -12537,8 +12537,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       )}
       {!done && (
         <div className="hairline" style={{ background: "var(--panel2)" }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "8px 12px" }}>
-            <div className="decision-grid" style={{ display: "grid", gridTemplateColumns: "minmax(240px,1.1fr) minmax(230px,1.1fr) minmax(200px,1fr)", gap: 10, alignItems: "stretch" }}>
+          <div className="decision-grid" style={{ display: "grid", gridTemplateColumns: "minmax(210px,1.05fr) minmax(215px,1.05fr) minmax(165px,0.85fr) minmax(180px,0.95fr) minmax(165px,0.85fr)", gap: 9, padding: "8px 12px", alignItems: "stretch" }}>
             {/* ===== ZONE 1: HOW YOU'RE DOING (table) ===== */}
             {(() => {
               const laneMap = { rebuild: { t: "Rebuild", c: "#5FD0A8", i: "ti-seedling" }, winnow: { t: "Win-now", c: "#F2655C", i: "ti-flame" }, balanced: { t: "Balanced", c: "var(--gold)", i: "ti-scale" }, undecided: { t: "Forming…", c: "var(--mut)", i: "ti-loader" } };
@@ -12664,52 +12663,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               );
             })()}
 
-            {/* ===== ZONE 3: ON THE CLOCK (enriched) ===== */}
-            {(() => {
-              const isYou = onClock === userIdx;
-              const cur = path && path[0] ? path[0] : null;
-              const cands = cur && cur.cands5 && cur.cands5.length ? cur.cands5.slice(0, 3) : null;
-              const curTip = currentPred ? (e) => showTip(e, (() => {
-                const cAll = cur && cur.cands5 && cur.cands5.length ? cur.cands5 : null;
-                return [
-                  { kind: "take", tone: isYou ? "good" : "neutral", x: `${pickLabel(picks.length)} · ${isYou ? "YOUR PICK" : TEAM_NAMES[onClock]} — ${isYou ? "recommendation" : "engine expects"}` },
-                  ...(cAll ? [{ kind: "playertable", probLabel: "Picked", cols: ["prob", "name", "rank", "adp", "pts", "vbd"], players: cAll.map((c, ci) => ({ ...c.p, prob: c.prob, star: ci === 0, rec: ci === 0 })) }] : [{ kind: "playercard", p: currentPred }]),
-                ];
-              })()) : undefined;
-              return (
-                <div className="tickcard clock" style={{ borderColor: isYou ? "var(--gold)" : "#33476B", padding: "8px 10px", cursor: curTip ? "help" : "default", height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }} onMouseEnter={curTip} onMouseLeave={curTip ? hideTip : undefined}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-                    <span style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: isYou ? "var(--gold)" : "var(--mut)", fontWeight: 700 }}>On the clock · {pickLabel(picks.length)}</span>
-                    {connected && (liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? <span className="num mut" style={{ fontSize: 9 }}>no timer</span> : clock <= 0 ? <span className="num" style={{ fontSize: 9, color: "var(--red)", fontWeight: 700 }}>overdue</span> : <span className="num" style={{ fontSize: 10.5, color: clock <= 15 ? "var(--red)" : "var(--ink)", fontWeight: 700, background: clock <= 15 ? "rgba(242,101,92,.14)" : "rgba(255,255,255,.05)", padding: "0px 5px", borderRadius: 4 }}>{fmtClock(clock)}</span>)}
-                  </div>
-                  <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 3 }}>
-                    <span style={{ fontSize: 14, fontWeight: 800, color: isYou ? "var(--gold)" : "var(--ink)" }}>{isYou ? "YOU" : TEAM_NAMES[onClock].split(" ")[0]}</span>
-                    <span className="mut" style={{ fontSize: 9 }}>overall {picks.length + 1}</span>
-                    {isYou && <span style={{ marginLeft: "auto", fontSize: 8.5, fontWeight: 700, color: "var(--gold)", background: "rgba(242,182,60,.14)", padding: "1px 6px", borderRadius: 4, textTransform: "uppercase", letterSpacing: ".04em" }}>Your pick</span>}
-                  </div>
-                  {/* top-3 likely / recommended, inline — fills the space with useful reads */}
-                  <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 2, flex: 1 }}>
-                    <div className="mut" style={{ fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 700 }}>{isYou ? "Top recommendations" : "Most likely"}</div>
-                    {cands ? cands.map((c, ci) => {
-                      const p = c.p;
-                      const openTip = (e) => { e.stopPropagation(); showTip(e, makeOutlook(p, sims, false, { pickNow: picks.length + 1, dynasty: cfg.type === "dynasty" || cfg.type === "keeper", scarcity: scarcityFor(p) })); };
-                      return (
-                        <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: 5, alignItems: "center", fontSize: 11, padding: "2px 3px", borderRadius: 5, background: ci === 0 ? "rgba(242,182,60,.12)" : "transparent", cursor: "help" }}>
-                          <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank), fontSize: 9.5 }}>{p.pos}{p.posRank}</span>
-                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: ci === 0 ? 700 : 500 }}>{ci === 0 ? "★ " : ""}{p.name}</span>
-                          <span className="num" style={{ fontSize: 9.5, color: vbdColor(p.vbd) }}>{(p.vbd > 0 ? "+" : "") + Math.round(p.vbd)}</span>
-                          <span className="num mut" style={{ fontSize: 9, width: 30, textAlign: "right" }}>{c.prob != null ? `${c.prob}%` : ""}</span>
-                        </div>
-                      );
-                    }) : <span className="mut" style={{ fontSize: 10 }}>—</span>}
-                  </div>
-                  {isYou && !gated && currentPred && <button className="btn btn-gold btn-mini" style={{ marginTop: 6, width: "100%", padding: "4px 0", fontSize: 11 }} onClick={(e) => { e.stopPropagation(); draftPlayer(currentPred.id); }}>Draft {currentPred.name.split(" ").slice(-1)}</button>}
-                </div>
-              );
-            })()}
-
-            </div>
-            <div className="decision-grid decision-grid-b" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, alignItems: "stretch" }}>
             {/* ===== ZONE 2: LAST PICKS ===== */}
             {(() => {
               const recent = picks.slice(-6).map((pk, i) => ({ pk, o: picks.length - Math.min(6, picks.length) + i })).reverse();
@@ -12754,6 +12707,49 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 </div>
               );
             })()}
+            {/* ===== ZONE 3: ON THE CLOCK (enriched) ===== */}
+            {(() => {
+              const isYou = onClock === userIdx;
+              const cur = path && path[0] ? path[0] : null;
+              const cands = cur && cur.cands5 && cur.cands5.length ? cur.cands5.slice(0, 3) : null;
+              const curTip = currentPred ? (e) => showTip(e, (() => {
+                const cAll = cur && cur.cands5 && cur.cands5.length ? cur.cands5 : null;
+                return [
+                  { kind: "take", tone: isYou ? "good" : "neutral", x: `${pickLabel(picks.length)} · ${isYou ? "YOUR PICK" : TEAM_NAMES[onClock]} — ${isYou ? "recommendation" : "engine expects"}` },
+                  ...(cAll ? [{ kind: "playertable", probLabel: "Picked", cols: ["prob", "name", "rank", "adp", "pts", "vbd"], players: cAll.map((c, ci) => ({ ...c.p, prob: c.prob, star: ci === 0, rec: ci === 0 })) }] : [{ kind: "playercard", p: currentPred }]),
+                ];
+              })()) : undefined;
+              return (
+                <div className="tickcard clock" style={{ borderColor: isYou ? "var(--gold)" : "#33476B", padding: "8px 10px", cursor: curTip ? "help" : "default", height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }} onMouseEnter={curTip} onMouseLeave={curTip ? hideTip : undefined}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                    <span style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: isYou ? "var(--gold)" : "var(--mut)", fontWeight: 700 }}>On the clock · {pickLabel(picks.length)}</span>
+                    {connected && (liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? <span className="num mut" style={{ fontSize: 9 }}>no timer</span> : clock <= 0 ? <span className="num" style={{ fontSize: 9, color: "var(--red)", fontWeight: 700 }}>overdue</span> : <span className="num" style={{ fontSize: 10.5, color: clock <= 15 ? "var(--red)" : "var(--ink)", fontWeight: 700, background: clock <= 15 ? "rgba(242,101,92,.14)" : "rgba(255,255,255,.05)", padding: "0px 5px", borderRadius: 4 }}>{fmtClock(clock)}</span>)}
+                  </div>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 3 }}>
+                    <span style={{ fontSize: 14, fontWeight: 800, color: isYou ? "var(--gold)" : "var(--ink)" }}>{isYou ? "YOU" : TEAM_NAMES[onClock].split(" ")[0]}</span>
+                    <span className="mut" style={{ fontSize: 9 }}>overall {picks.length + 1}</span>
+                    {isYou && <span style={{ marginLeft: "auto", fontSize: 8.5, fontWeight: 700, color: "var(--gold)", background: "rgba(242,182,60,.14)", padding: "1px 6px", borderRadius: 4, textTransform: "uppercase", letterSpacing: ".04em" }}>Your pick</span>}
+                  </div>
+                  {/* top-3 likely / recommended, inline — fills the space with useful reads */}
+                  <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 2, flex: 1 }}>
+                    <div className="mut" style={{ fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 700 }}>{isYou ? "Top recommendations" : "Most likely"}</div>
+                    {cands ? cands.map((c, ci) => {
+                      const p = c.p;
+                      const openTip = (e) => { e.stopPropagation(); showTip(e, makeOutlook(p, sims, false, { pickNow: picks.length + 1, dynasty: cfg.type === "dynasty" || cfg.type === "keeper", scarcity: scarcityFor(p) })); };
+                      return (
+                        <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: 5, alignItems: "center", fontSize: 11, padding: "2px 3px", borderRadius: 5, background: ci === 0 ? "rgba(242,182,60,.12)" : "transparent", cursor: "help" }}>
+                          <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank), fontSize: 9.5 }}>{p.pos}{p.posRank}</span>
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: ci === 0 ? 700 : 500 }}>{ci === 0 ? "★ " : ""}{p.name}</span>
+                          <span className="num" style={{ fontSize: 9.5, color: vbdColor(p.vbd) }}>{(p.vbd > 0 ? "+" : "") + Math.round(p.vbd)}</span>
+                          <span className="num mut" style={{ fontSize: 9, width: 30, textAlign: "right" }}>{c.prob != null ? `${c.prob}%` : ""}</span>
+                        </div>
+                      );
+                    }) : <span className="mut" style={{ fontSize: 10 }}>—</span>}
+                  </div>
+                  {isYou && !gated && currentPred && <button className="btn btn-gold btn-mini" style={{ marginTop: 6, width: "100%", padding: "4px 0", fontSize: 11 }} onClick={(e) => { e.stopPropagation(); draftPlayer(currentPred.id); }}>Draft {currentPred.name.split(" ").slice(-1)}</button>}
+                </div>
+              );
+            })()}
             {/* ===== ZONE 4: NEXT PICKS ===== */}
             {(() => {
               const upcoming = displayPath.filter((s) => s && s.o > picks.length && s.p).slice(0, 6);
@@ -12785,7 +12781,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 </div>
               );
             })()}
-            </div>
           </div>
         </div>
       )}
@@ -13274,18 +13269,50 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 };
 
                 // ---- Take-now-vs-wait PER POSITION GROUP ----
-                const waitByPos = ["QB", "RB", "WR", "TE"].filter((pos) => (SPEC[pos] || 0) > 0 || pos === "RB" || pos === "WR").map((pos) => {
+                // Two independent reads per position: a VALUE read (is there a VBD cliff after the best guy?)
+                // and an ADP read (does the market actually want him soon, or will he slide to your next pick?).
+                // Take-now only really applies when BOTH pressure it; a VBD cliff on a player nobody else is
+                // reaching for means you can still wait and grab him later.
+                const myNextO = myNextOverall; // overall index of your NEXT pick
+                const picksUntilNext = myNextO != null ? Math.max(0, myNextO - picks.length) : null;
+                // survival probability at your next pick, from sims (index 0 = your upcoming pick window)
+                const survAtNext = (p) => { const pctMap = sims && sims.pct && sims.pct[0]; return pctMap && pctMap[p.id] != null ? pctMap[p.id] : null; };
+                const waitByPos = ["QB", "RB", "WR", "TE"].filter((pos) => (SPEC[pos] || 0) > 0 || pos === "RB" || pos === "WR" || pos === "TE").map((pos) => {
                   const bestNow = (availByPos[pos] || [])[0] || null;
                   if (!bestNow) return null;
                   const wc = balAdv && balAdv.waitCost && balAdv.waitCost[pos] != null ? Math.round(balAdv.waitCost[pos]) : null;
                   const scar = scarcityFor(bestNow);
-                  const nextBest = sims && sims.expBestPlayer2 && sims.expBestPlayer2[pos];
-                  let verdict, vcolor;
-                  if (scar && scar.isLastStarter) { verdict = "Take now"; vcolor = "#F2655C"; }
-                  else if (wc != null && wc >= 15) { verdict = "Take now"; vcolor = "var(--gold)"; }
-                  else if (wc != null && wc <= 4) { verdict = "Can wait"; vcolor = "#5FD0A8"; }
-                  else { verdict = "Lean wait"; vcolor = "var(--gold)"; }
-                  return { pos, bestNow, wc, nextBest, verdict, vcolor, isNeed: need.includes(pos) };
+                  // ---- VALUE (VBD) read: how steep is the drop-off if you pass here? ----
+                  let vbdRead, vbdColorR, vbdWhy;
+                  if (scar && scar.isLastStarter) { vbdRead = "Cliff"; vbdColorR = "#F2655C"; vbdWhy = `last startable-tier ${pos}`; }
+                  else if ((scar && scar.drop != null && scar.drop >= 20) || (wc != null && wc >= 15)) { vbdRead = "Steep"; vbdColorR = "var(--gold)"; vbdWhy = scar && scar.drop != null ? `~${scar.drop} VBD to next` : `~${wc} lost by waiting`; }
+                  else if (wc != null && wc <= 4 && (!scar || scar.drop == null || scar.drop < 10)) { vbdRead = "Flat"; vbdColorR = "#5FD0A8"; vbdWhy = "little drop-off"; }
+                  else { vbdRead = "Mild"; vbdColorR = "var(--gold)"; vbdWhy = scar && scar.drop != null ? `~${scar.drop} VBD to next` : "modest drop"; }
+                  // ---- ADP read: does the market take him before you pick again? ----
+                  const surv = survAtNext(bestNow);
+                  const adpGap = (bestNow.adp != null && myNextO != null) ? Math.round(bestNow.adp - (myNextO + 1)) : null; // + = ADP later than your next pick (safe to wait)
+                  let adpRead, adpColorR, adpWhy;
+                  if (surv != null) {
+                    if (surv <= 30) { adpRead = "Going soon"; adpColorR = "#F2655C"; adpWhy = `${surv}% to reach your next pick`; }
+                    else if (surv >= 70) { adpRead = "Will slide"; adpColorR = "#5FD0A8"; adpWhy = `${surv}% still there next pick`; }
+                    else { adpRead = "Coin flip"; adpColorR = "var(--gold)"; adpWhy = `${surv}% to survive`; }
+                  } else if (adpGap != null) {
+                    if (adpGap <= -3) { adpRead = "Going soon"; adpColorR = "#F2655C"; adpWhy = `ADP ${bestNow.adp.toFixed(0)} — before your next pick`; }
+                    else if (adpGap >= 6) { adpRead = "Will slide"; adpColorR = "#5FD0A8"; adpWhy = `ADP ${bestNow.adp.toFixed(0)} — well after your next pick`; }
+                    else { adpRead = "Borderline"; adpColorR = "var(--gold)"; adpWhy = `ADP ${bestNow.adp.toFixed(0)} near your next pick`; }
+                  } else { adpRead = "—"; adpColorR = "var(--mut)"; adpWhy = "no ADP signal"; }
+                  const adpUrgent = adpRead === "Going soon";
+                  const adpSafe = adpRead === "Will slide";
+                  const vbdUrgent = vbdRead === "Cliff" || vbdRead === "Steep";
+                  // ---- Combined verdict ----
+                  let verdict, vcolor, vwhy;
+                  if (vbdRead === "Cliff" && !adpSafe) { verdict = "Take now"; vcolor = "#F2655C"; vwhy = "value cliff and he won't slide"; }
+                  else if (vbdUrgent && adpUrgent) { verdict = "Take now"; vcolor = "#F2655C"; vwhy = "value drop + market pressure"; }
+                  else if (vbdUrgent && adpSafe) { verdict = "Can wait"; vcolor = "var(--gold)"; vwhy = "value drops, but ADP says he slides — grab him later"; }
+                  else if (!vbdUrgent && adpUrgent) { verdict = "Now or lose him"; vcolor = "var(--gold)"; vwhy = "no big drop, but he's about to go"; }
+                  else if (!vbdUrgent && adpSafe) { verdict = "Can wait"; vcolor = "#5FD0A8"; vwhy = "no urgency on either read"; }
+                  else { verdict = "Your call"; vcolor = "var(--gold)"; vwhy = "mixed signals"; }
+                  return { pos, bestNow, wc, verdict, vcolor, vwhy, vbdRead, vbdColorR, vbdWhy, adpRead, adpColorR, adpWhy, surv, isNeed: need.includes(pos) };
                 }).filter(Boolean);
 
                 return (
@@ -13332,23 +13359,47 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       <div style={{ borderTop: "1px solid var(--line)", margin: "11px 0" }} />
                       {recTable(bldAdv, "var(--blue)", "My build", "roster-tilted")}
                     </div>
-                    {/* take now vs wait — per position (below My build) */}
+                    {/* take now vs wait — per position (below My build): two reads side by side */}
                     {waitByPos.length > 0 && (
                       <>
                         <div style={{ borderTop: "1px solid var(--line)", margin: "11px 0 10px" }} />
                         <div>
-                          <div style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, marginBottom: 4, display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-clock-hour-4" style={{ fontSize: 11 }} aria-hidden="true" />Take now vs. wait — by position</div>
-                          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: "3px 8px", alignItems: "center" }}>
-                            {waitByPos.map((w) => (
-                              <React.Fragment key={w.pos}>
-                                <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10.5, fontWeight: 800, color: POS_COLOR[w.pos] }}><Dot pos={w.pos} />{w.pos}{w.isNeed ? <span style={{ fontSize: 8, color: "#F2655C" }}>need</span> : ""}</span>
-                                <span style={{ fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} className="mut">{w.bestNow.name}</span>
-                                <span className="num mut" style={{ fontSize: 9, textAlign: "right" }} title="Value lost by waiting to your pick-after">{w.wc != null ? `−${w.wc}` : "—"}</span>
-                                <span style={{ fontSize: 9.5, fontWeight: 800, color: w.vcolor, textAlign: "right" }}>{w.verdict}</span>
-                              </React.Fragment>
-                            ))}
+                          <div style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, marginBottom: 5, display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-clock-hour-4" style={{ fontSize: 11 }} aria-hidden="true" />Take now vs. wait — value & market</div>
+                          {/* column headers */}
+                          <div style={{ display: "grid", gridTemplateColumns: "58px 1fr 1fr 74px", gap: "0 8px", alignItems: "center", fontSize: 7.5, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, paddingBottom: 3, borderBottom: "1px solid var(--line2)" }}>
+                            <span>Pos · best</span><span title="Is there a VBD drop-off if you pass?">Value read</span><span title="Does the market take him before your next pick?">Market read</span><span style={{ textAlign: "right" }}>Verdict</span>
                           </div>
-                          <div className="mut" style={{ fontSize: 8, marginTop: 3 }}>−N = value lost by waiting to your pick after this one.</div>
+                          <div style={{ display: "flex", flexDirection: "column" }}>
+                            {waitByPos.map((w) => {
+                              const tip = (e) => showTip(e, [
+                                { kind: "take", tone: w.verdict.startsWith("Take") || w.verdict.startsWith("Now") ? "bad" : w.verdict === "Can wait" ? "good" : "neutral", x: `${w.pos} — ${w.bestNow.name}: ${w.verdict}` },
+                                { kind: "kvtable", items: [
+                                  { k: "Value read", v: w.vbdRead, c: w.vbdColorR }, { k: "— why", v: w.vbdWhy },
+                                  { k: "Market read", v: w.adpRead, c: w.adpColorR }, { k: "— why", v: w.adpWhy },
+                                  { k: "ADP", v: w.bestNow.adp != null ? w.bestNow.adp.toFixed(0) : "—" }, { k: "Survives to next", v: w.surv != null ? `${w.surv}%` : "—" },
+                                ] },
+                                { t: "Bottom line", x: w.vwhy },
+                              ]);
+                              return (
+                                <div key={w.pos} onMouseEnter={tip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "58px 1fr 1fr 74px", gap: "0 8px", alignItems: "center", padding: "3px 0", borderBottom: "1px solid var(--line2)", cursor: "help" }}>
+                                  <span style={{ minWidth: 0 }}>
+                                    <span style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 10.5, fontWeight: 800, color: POS_COLOR[w.pos] }}><Dot pos={w.pos} />{w.pos}{w.isNeed ? <i className="ti ti-alert-circle-filled" style={{ fontSize: 8, color: "#F2655C" }} title="roster need" aria-hidden="true" /> : null}</span>
+                                    <span className="mut" style={{ fontSize: 8.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{w.bestNow.name.split(" ").slice(-1)}</span>
+                                  </span>
+                                  <span style={{ minWidth: 0 }}>
+                                    <span style={{ fontSize: 10, fontWeight: 800, color: w.vbdColorR, display: "block" }}>{w.vbdRead}</span>
+                                    <span className="mut" style={{ fontSize: 8, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{w.vbdWhy}</span>
+                                  </span>
+                                  <span style={{ minWidth: 0 }}>
+                                    <span style={{ fontSize: 10, fontWeight: 800, color: w.adpColorR, display: "block" }}>{w.adpRead}</span>
+                                    <span className="mut" style={{ fontSize: 8, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{w.adpWhy}</span>
+                                  </span>
+                                  <span style={{ fontSize: 9.5, fontWeight: 800, color: w.vcolor, textAlign: "right", lineHeight: 1.15 }}>{w.verdict}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <div className="mut" style={{ fontSize: 8, marginTop: 4, lineHeight: 1.4 }}>Value = VBD drop-off if you pass. Market = whether ADP/sims expect him gone before your next pick. "Take now" needs both; a value cliff on someone who'll slide anyway is still a wait. Hover a row for the full read.</div>
                         </div>
                       </>
                     )}
