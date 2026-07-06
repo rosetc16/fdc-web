@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28dc";
+const BUILD_TAG = "2026.06.28dd";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -11573,16 +11573,18 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         waitDetail[pos] = { now: null, fallback: null, fallback2: null, deltaPts: 0, deltaPts2: 0, nowSurvives: null, nowSurvives2: null };
       }
     });
-    // Candidate pool: players likely available around this pick. Normally we window by ADP (players going
-    // near here), but late in a draft — or in deep dynasty drafts where every remaining player's ADP is far
-    // past the current pick — that window can come up EMPTY, which would leave us with no recommendation.
-    // So we widen the window progressively and, as a final guarantee, fall back to the best available
-    // undrafted players by value so there's always a real recommendation.
-    let pool0 = sortedAdp.filter((p) => !goneSet.has(p.id) && p.adp <= pickNum + 16).slice(0, 40);
-    if (pool0.length < 8) pool0 = sortedAdp.filter((p) => !goneSet.has(p.id) && p.adp <= pickNum + 60).slice(0, 40);
-    if (pool0.length < 8) {
+    // Candidate pool: rank among players ACTUALLY still on the board — NOT filtered by who we *project* will
+    // be gone by this pick. Excluding projected-gone players would blind the recommendation to exactly the
+    // best opportunities: a big-value faller (e.g. an ADP-138 player still there at pick 194) is the pick you
+    // most want to be told about. Survival odds are handled separately (the Avail% column / waitCost), so the
+    // pool should include every real, undrafted, legal option. We still window loosely by ADP so we don't rank
+    // 300 deep-bench names, widening progressively, with a best-available fallback so there's always a pick.
+    const realGone = draftedSet; // only players actually taken so far
+    let pool0 = sortedAdp.filter((p) => !realGone.has(p.id) && p.adp <= pickNum + 16).slice(0, 40);
+    if (pool0.length < 12) pool0 = sortedAdp.filter((p) => !realGone.has(p.id) && p.adp <= pickNum + 60).slice(0, 44);
+    if (pool0.length < 12) {
       // pure best-available fallback (by value) — ignores the ADP window entirely
-      pool0 = sortedAdp.filter((p) => !goneSet.has(p.id)).slice().sort((a, b) => (b.vbd ?? -99) - (a.vbd ?? -99)).slice(0, 40);
+      pool0 = sortedAdp.filter((p) => !realGone.has(p.id)).slice().sort((a, b) => (b.vbd ?? -99) - (a.vbd ?? -99)).slice(0, 44);
     }
     const pool = legalCands(pool0, myCounts, cfg);
     // The recommendation follows the given strategy (defaults to the selected one). We compute one for the
@@ -11712,7 +11714,28 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     for (let o = picks.length; o < TOTAL && n < 3; o++) { if (teamAt(o) === userIdx) { set.add(o); n++; } }
     return set;
   }, [picks.length, TOTAL, userIdx, cfg, liveSlots]);
-  const path = useMemo(() => (!done ? projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, advice?.verdict?.id ?? null, true) : []), [players, sortedAdp, picks, userIdx, cfg, strategy, advice, done, liveSlots]);
+  const rawPath = useMemo(() => (!done ? projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, advice?.verdict?.id ?? null, true) : []), [players, sortedAdp, picks, userIdx, cfg, strategy, advice, done, liveSlots]);
+  // Reconcile: the "projected pick" shown for YOUR NEXT pick must equal what the "Your decision" panel
+  // recommends — otherwise the tracker and the recommendation disagree for the SAME pick. projectPath and
+  // adviceFor build their who's-gone-before-your-pick sets slightly differently, so their top survivor can
+  // diverge. We trust adviceFor (the recommendation surface) and overwrite the FIRST user step in the path
+  // with its verdict, keeping the projected board internally consistent with the advice the user acts on.
+  const path = useMemo(() => {
+    if (!rawPath.length) return rawPath;
+    const selId = mySelAdvice?.verdict?.id ?? null;
+    if (selId == null) return rawPath;
+    const idx = rawPath.findIndex((s) => s && s.user);
+    if (idx < 0) return rawPath;
+    const cur = rawPath[idx];
+    if (cur.p && cur.p.id === selId) return rawPath; // already consistent
+    const selPlayer = players[selId];
+    if (!selPlayer) return rawPath;
+    const next = rawPath.slice();
+    // put the recommended player first in the candidate list too, so hover alternatives stay coherent
+    const cands5 = [{ p: selPlayer }, ...((cur.cands5 || []).filter((x) => x.p && x.p.id !== selId))].slice(0, 5);
+    next[idx] = { ...cur, p: selPlayer, cands5 };
+    return next;
+  }, [rawPath, mySelAdvice, players]);
   // What the draft tracker actually shows. Collapsed (default): the next 4 upcoming picks, then YOUR next
   // pick as a 5th highlighted card (with its real pick number — it won't always be the literal 5th). If
   // your next pick falls within those first 4, we just show the natural sequence (no appended 5th). When
