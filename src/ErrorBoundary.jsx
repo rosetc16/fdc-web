@@ -14,8 +14,16 @@ export default class ErrorBoundary extends React.Component {
     return { error };
   }
   componentDidCatch(error, info) {
-    // Log for diagnostics; never rethrow (that would white-screen again).
+    // Log for diagnostics; never rethrow (that would white-screen again). Also stash the message + stack in
+    // localStorage and in component state so it can be surfaced to the user — turning "it hiccuped" into an
+    // actual, reportable error string. Keep a small ring of the last few so an intermittent bug is traceable.
     try { console.error('[FDC] render error caught by boundary:', error, info); } catch (e) {}
+    try {
+      const rec = { t: new Date().toISOString(), msg: String(error && error.message || error), stack: String((error && error.stack) || '').split('\n').slice(0, 6).join('\n'), comp: String((info && info.componentStack) || '').split('\n').slice(0, 6).join('\n') };
+      const prev = JSON.parse(localStorage.getItem('fdc:errlog') || '[]');
+      prev.unshift(rec); localStorage.setItem('fdc:errlog', JSON.stringify(prev.slice(0, 5)));
+      this.setState({ detail: rec });
+    } catch (e) {}
   }
   hardReload = () => {
     // Cache-busting reload. After a deploy, a stale cached bundle can throw a chunk/render error; a plain
@@ -45,6 +53,12 @@ export default class ErrorBoundary extends React.Component {
             <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
               <button onClick={this.hardReload} style={{ background: '#F2B63C', color: '#151002', border: 'none', borderRadius: 8, padding: '11px 20px', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>Refresh the page</button>
             </div>
+            {this.state.detail && (
+              <details style={{ marginTop: 18, textAlign: 'left', fontSize: 11, color: '#6b7683' }}>
+                <summary style={{ cursor: 'pointer', color: '#9AA7B5' }}>Error details (for support)</summary>
+                <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: 8, fontSize: 10.5, lineHeight: 1.4 }}>{this.state.detail.msg}{'\n'}{this.state.detail.comp}</pre>
+              </details>
+            )}
           </div>
         </div>
       );

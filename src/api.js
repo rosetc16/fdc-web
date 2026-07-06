@@ -14,17 +14,40 @@ let _lastStateUpdatedAt = null;
 export const getToken = () => { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } };
 export const setToken = (t) => { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch {} };
 
-async function call(path, { method = 'GET', body, auth = true } = {}) {
+async function call(path, { method = 'GET', body, auth = true, retries = 2 } = {}) {
   if (!API) throw new Error('NO_BACKEND');
   const headers = { 'Content-Type': 'application/json' };
   const token = auth ? getToken() : null;
   if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`${API}${path}`, {
-    method, headers, body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(data.error || `HTTP ${res.status}`), { status: res.status, data });
-  return data;
+  let lastErr = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const ctrl = new AbortController();
+      // Render free/starter dynos can cold-start slowly; give the FIRST attempt a long leash (45s) so a
+      // waking server isn't reported as a hard failure, then shorter timeouts on retries.
+      const timeoutMs = attempt === 0 ? 45000 : 20000;
+      const to = setTimeout(() => ctrl.abort(), timeoutMs);
+      let res;
+      try {
+        res = await fetch(`${API}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined, signal: ctrl.signal });
+      } finally { clearTimeout(to); }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // 5xx from a still-booting backend is worth a retry; 4xx (bad credentials etc.) is not.
+        if (res.status >= 500 && attempt < retries) { lastErr = Object.assign(new Error(data.error || `HTTP ${res.status}`), { status: res.status, data }); await new Promise((r) => setTimeout(r, 1500 * (attempt + 1))); continue; }
+        throw Object.assign(new Error(data.error || `HTTP ${res.status}`), { status: res.status, data });
+      }
+      return data;
+    } catch (e) {
+      // Network-level failure ("Failed to fetch") or timeout (AbortError) — the backend is likely cold-starting
+      // or briefly unreachable. Retry with backoff before giving up so users aren't locked out by a cold dyno.
+      const transient = e.name === 'AbortError' || e.message === 'Failed to fetch' || /NetworkError|network|fetch/i.test(e.message || '');
+      if (transient && attempt < retries) { lastErr = e; await new Promise((r) => setTimeout(r, 1500 * (attempt + 1))); continue; }
+      if (transient) throw new Error('BACKEND_WAKING');
+      throw e;
+    }
+  }
+  throw lastErr || new Error('BACKEND_WAKING');
 }
 
 export const api = {

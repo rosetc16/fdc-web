@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28cs";
+const BUILD_TAG = "2026.06.28ct";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3120,6 +3120,7 @@ function pickCurve(overallPick) {
   return 1000 * Math.pow(0.955, x - 1);
 }
 function pickValue(p, overall, cfg) {
+  if (!p) return 0;                       // stale/unknown pick id — no value contribution
   const actual = overall + 1;            // where he was actually taken (1-based)
   const adp = Math.max(1, p.adp);        // where he should have gone
   // Value = how much draft-capital value the pick gained or lost vs. his market price, on the curve.
@@ -3643,7 +3644,9 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .team-row:hover{border-color:var(--gold)!important;background:var(--panel3)!important;transform:translateX(2px);box-shadow:-3px 0 0 0 var(--gold)}
 .team-row:hover .team-arrow{opacity:1;transform:translateX(0)}
 .team-arrow{opacity:0;transform:translateX(-4px);transition:opacity .15s, transform .15s}
-@media(max-width:980px){.cols{flex-direction:column}.rail{width:100%!important}.hero-h{font-size:38px}.myteam-grid{grid-template-columns:1fr!important;flex-direction:column!important}.needteam-row{grid-template-columns:1fr!important}.recap-row{grid-template-columns:1fr!important}.superlative-grid{grid-template-columns:repeat(2,1fr)!important}.decision-grid{grid-template-columns:1fr!important}}
+@media(max-width:1200px){.decision-grid{grid-template-columns:1fr 1fr!important}}
+@media(max-width:980px){.cols{flex-direction:column}.rail{width:100%!important}.hero-h{font-size:38px}.myteam-grid{grid-template-columns:1fr!important;flex-direction:column!important}.needteam-row{grid-template-columns:1fr!important}.recap-row{grid-template-columns:1fr!important}.superlative-grid{grid-template-columns:repeat(2,1fr)!important}.decision-grid{grid-template-columns:1fr 1fr!important}}
+@media(max-width:640px){.decision-grid{grid-template-columns:1fr!important}}
 @media(max-width:640px){
   .hero-h{font-size:30px!important}
   .statline{font-size:30px}
@@ -4054,7 +4057,7 @@ export default function App() {
         persist({ user: merged });
         return merged;
       } catch (e) {
-        setAuthError(e.message === "NO_BACKEND" ? "Backend not reachable" : (e.data?.error || e.message || "Sign-in failed"));
+        setAuthError(e.message === "NO_BACKEND" ? "Backend not reachable" : e.message === "BACKEND_WAKING" ? "The server is waking up (it sleeps when idle). Give it a few seconds and try again." : (e.data?.error || e.message || "Sign-in failed"));
         throw e;
       }
     }
@@ -11871,7 +11874,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const p = players[id];
     // enforce EXPLICIT per-position caps on manual picks (engine already enforces them in sims)
     if (cfg.caps && cfg.caps[p.pos] != null && cfg.caps[p.pos] !== "" && +cfg.caps[p.pos] > 0) {
-      const teamCount = picks.filter((pk, o) => teamAt(o) === onClock && players[pk].pos === p.pos).length;
+      const teamCount = picks.filter((pk, o) => teamAt(o) === onClock && players[pk] && players[pk].pos === p.pos).length;
       if (teamCount >= +cfg.caps[p.pos]) {
         setCapWarn({ pos: p.pos, cap: +cfg.caps[p.pos], team: onClock === userIdx ? "Your team" : TEAM_NAMES[onClock] });
         setTimeout(() => setCapWarn(null), 3200);
@@ -11918,7 +11921,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const exit = () => { onSave(picks, preds); onExit(); };
 
   const hits = preds.filter((pr, i) => pr != null && pr === picks[i]).length;
-  const posHits = preds.filter((pr, i) => pr != null && picks[i] != null && players[pr].pos === players[picks[i]].pos).length;
+  const posHits = preds.filter((pr, i) => pr != null && picks[i] != null && players[pr] && players[picks[i]] && players[pr].pos === players[picks[i]].pos).length;
 
   // value accessor per sortable column key
   const colVal = (p, key) => {
@@ -11954,7 +11957,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const defaultDir = (key) => (["adp", "consensus", "rank", "vbdTier", "adpTier", "age", "bye", "name"].includes(key) ? 1 : -1);
   const setSort = (key) => { setManualSort(true); setSortState((s) => (s.key === key ? { key, dir: -s.dir } : { key, dir: defaultDir(key) })); };
 
-  const myCurrent = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => teamAt(x.o) === userIdx).map((x) => x.p);
+  const myCurrent = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => x.p && teamAt(x.o) === userIdx).map((x) => x.p);
 
   // ---- CONTENTION WINDOW ("Your build" demographics) -----------------------------------------
   // Reads YOUR roster's age lean to infer your window: rebuild (young) / balanced / win-now (old).
@@ -12333,8 +12336,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     let seed = picks.reduce((a, id, i) => (a + id * (i + 7)) % 2147483647, picks.length * 13 + TEAMS);
     const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
     const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
-    const steals = graded.slice().sort((a, b) => b.val - a.val);
-    const reaches = graded.slice().sort((a, b) => a.val - b.val);
+    const steals = graded.filter((g) => g.p).slice().sort((a, b) => b.val - a.val);
+    const reaches = graded.filter((g) => g.p).slice().sort((a, b) => a.val - b.val);
     const bestVal = valByTeam.indexOf(Math.max(...valByTeam));
     const worstVal = valByTeam.indexOf(Math.min(...valByTeam));
     const leader = proj.rank.indexOf(1);
@@ -12389,8 +12392,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const recapHead = useMemo(() => {
     if (!proj || !grades || picks.length < 6) return null;
     const nm = (i) => (i === userIdx ? "You" : TEAM_NAMES[i]);
-    const steals = graded.slice().sort((a, b) => b.val - a.val);
-    const reaches = graded.slice().sort((a, b) => a.val - b.val);
+    const steals = graded.filter((g) => g.p).slice().sort((a, b) => b.val - a.val);
+    const reaches = graded.filter((g) => g.p).slice().sort((a, b) => a.val - b.val);
     const bestVal = valByTeam.indexOf(Math.max(...valByTeam));
     const worstVal = valByTeam.indexOf(Math.min(...valByTeam));
     const leader = proj.rank.indexOf(1);
@@ -12531,9 +12534,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       )}
       {!done && (
         <div className="hairline" style={{ background: "var(--panel2)" }}>
-          <div className="decision-grid" style={{ display: "grid", gridTemplateColumns: "222px minmax(220px, 1fr) minmax(220px, 1fr)", gap: 10, padding: "8px 12px", alignItems: "start" }}>
+          <div className="decision-grid" style={{ display: "grid", gridTemplateColumns: "minmax(240px,1.15fr) minmax(190px,1fr) minmax(170px,0.9fr) minmax(190px,1fr)", gap: 10, padding: "8px 12px", alignItems: "stretch" }}>
 
-            {/* ===== ZONE 1: HOW YOU'RE DOING (compact) ===== */}
+            {/* ===== ZONE 1: HOW YOU'RE DOING (table) ===== */}
             {(() => {
               const laneMap = { rebuild: { t: "Rebuild", c: "#5FD0A8", i: "ti-seedling" }, winnow: { t: "Win-now", c: "#F2655C", i: "ti-flame" }, balanced: { t: "Balanced", c: "var(--gold)", i: "ti-scale" }, undecided: { t: "Forming…", c: "var(--mut)", i: "ti-loader" } };
               const isReDraft = !(cfg.type === "dynasty" || cfg.type === "keeper");
@@ -12551,39 +12554,31 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               const flexFilled = Math.min(flexSlots, flexFillers), superFilled = Math.min(superSlots, superFillers);
               const kHave = (have.K || 0), dstHave = (have.DST || 0);
               const posRankByPos = posRankMine;
-              // strength / weakness split by league rank tercile
-              const posData = ["QB", "RB", "WR", "TE"].map((pos) => {
-                const rk = posRankByPos && posRankByPos[pos] ? posRankByPos[pos] : null;
-                const deficit = Math.max(0, (req[pos] || 0) - (have[pos] || 0));
-                const frac = rk ? (rk.rank - 1) / Math.max(1, rk.of - 1) : 0.5;
-                return { pos, rk, deficit, frac };
-              });
-              const strengths = posData.filter((d) => d.frac <= 0.4 && d.deficit === 0).sort((a, b) => a.frac - b.frac);
-              const weaknesses = posData.filter((d) => d.frac > 0.4 || d.deficit > 0).sort((a, b) => (b.deficit - a.deficit) || (b.frac - a.frac));
               const standings = (proj && proj.rank) ? Array.from({ length: TEAMS }, (_, i) => ({ i, rank: proj.rank[i], pts: proj.pts ? proj.pts[i] : 0 })).sort((a, b) => a.rank - b.rank) : [];
               const finishTip = standings.length ? (e) => showTip(e, [
                 { kind: "take", tone: finish <= 3 ? "good" : finish <= Math.ceil(TEAMS / 2) ? "neutral" : "bad", x: `Projected finish — ${finish != null ? ordinal(finish) : "—"} of ${TEAMS}` },
                 { kind: "playertable", cols: ["rank", "name", "pts"], players: standings.map((s) => ({ posRank: s.rank, pos: "", name: s.i === userIdx ? "YOUR TEAM" : TEAM_NAMES[s.i], pts: Math.round(s.pts), rec: s.i === userIdx, star: s.i === userIdx })) },
               ]) : undefined;
+              // one row per position: quantity vs required, league rank, and a strength/weakness read BY RANK
+              const rows = ["QB", "RB", "WR", "TE"].map((pos) => {
+                const rk = posRankByPos && posRankByPos[pos] ? posRankByPos[pos] : null;
+                const need = req[pos] || 0, has = have[pos] || 0;
+                const deficit = Math.max(0, need - has);
+                const filled = has >= need && need > 0;
+                const frac = rk ? (rk.rank - 1) / Math.max(1, rk.of - 1) : null;
+                // read purely by league rank (not deficit) so a filled position never looks like a weakness
+                const read = frac == null ? { t: "—", c: "var(--mut)" } : frac <= 0.33 ? { t: "Strong", c: "#5FD0A8" } : frac <= 0.66 ? { t: "Middle", c: "var(--gold)" } : { t: "Thin", c: "#F2655C" };
+                return { pos, rk, need, has, deficit, filled, frac, read };
+              });
               const posTip = (d) => (e) => {
                 const plist = (byPosMine && byPosMine[d.pos]) || [];
                 showTip(e, [
-                  { kind: "take", tone: d.frac <= 0.4 ? "good" : d.frac > 0.66 ? "bad" : "neutral", x: `${d.pos} — ${d.rk ? `${ordinal(d.rk.rank)} of ${d.rk.of} in the league` : "unranked"}${d.deficit > 0 ? ` · need ${Math.round(d.deficit)} starter${d.deficit >= 2 ? "s" : ""}` : ""}` },
+                  { kind: "take", tone: d.frac == null ? "neutral" : d.frac <= 0.33 ? "good" : d.frac > 0.66 ? "bad" : "neutral", x: `${d.pos} — ${d.rk ? `${ordinal(d.rk.rank)} of ${d.rk.of} in the league` : "unranked"} · ${d.has}/${d.need || 0} starter${(d.need || 0) === 1 ? "" : "s"}${d.deficit > 0 ? ` · need ${Math.round(d.deficit)} more` : d.filled ? " · filled ✓" : ""}` },
                   ...(plist.length ? [{ kind: "playertable", cols: ["rank", "name", "team", "age", "pts", "vbd"], players: plist }] : [{ t: "—", x: "No players here yet" }]),
                 ]);
               };
-              const chip = (d, tone) => (
-                <span key={d.pos} onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10.5, fontWeight: 700, padding: "1px 6px", borderRadius: 5, cursor: "help", background: (POS_COLOR[d.pos] || "#888") + "1e", color: POS_COLOR[d.pos] || "#ccc", border: `1px solid ${(POS_COLOR[d.pos] || "#888")}55` }}>
-                  {d.pos}{d.rk ? <span style={{ opacity: 0.75, fontSize: 9 }}>{d.rk.rank}</span> : ""}{d.deficit > 0 ? <span style={{ color: "#F2655C" }}>−{Math.round(d.deficit)}</span> : ""}
-                </span>
-              );
-              const fillPill = (label, filled, total) => total > 0 ? (
-                <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9.5, fontWeight: 700, padding: "1px 5px", borderRadius: 4, background: filled >= total ? "rgba(95,208,168,.12)" : "rgba(242,101,92,.10)", color: filled >= total ? "#5FD0A8" : "#F2655C", border: `1px solid ${filled >= total ? "rgba(95,208,168,.35)" : "rgba(242,101,92,.3)"}` }}>
-                  {label} {filled}/{total}
-                </span>
-              ) : null;
               return (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "9px 11px", borderRadius: 10, border: "1.5px solid var(--gold)", background: "linear-gradient(160deg,rgba(46,40,22,1),rgba(24,31,40,1))" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "9px 11px", borderRadius: 10, border: "1.5px solid var(--gold)", background: "linear-gradient(160deg,rgba(46,40,22,1),rgba(24,31,40,1))", height: "100%", boxSizing: "border-box" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-gauge" style={{ fontSize: 11, color: "var(--gold)" }} aria-hidden="true" /><span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--gold)", fontWeight: 800 }}>How you're doing</span></div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -12591,123 +12586,147 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       <span onMouseEnter={finishTip} onMouseLeave={finishTip ? hideTip : undefined} style={{ display: "inline-flex", alignItems: "baseline", gap: 2, cursor: finishTip ? "help" : "default" }}><span style={{ fontSize: 14, fontWeight: 800, color: finishColor, lineHeight: 1 }}>{finish != null ? ordinal(finish) : "—"}</span><span className="mut" style={{ fontSize: 8.5 }}>/{TEAMS}</span></span>
                     </div>
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, borderTop: "1px solid rgba(242,182,60,.22)", paddingTop: 6 }}>
-                    <div>
-                      <div style={{ fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: "#5FD0A8", fontWeight: 700, marginBottom: 3 }}>Strengths</div>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>{strengths.length ? strengths.map((d) => chip(d)) : <span className="mut" style={{ fontSize: 9.5 }}>—</span>}</div>
+                  {/* position table */}
+                  <div style={{ borderTop: "1px solid rgba(242,182,60,.22)", paddingTop: 5 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: "0 8px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", fontWeight: 700, paddingBottom: 3 }}>
+                      <span>Pos</span><span>Starters</span><span style={{ textAlign: "right" }}>Rank</span><span style={{ textAlign: "right" }}>Read</span>
                     </div>
-                    <div>
-                      <div style={{ fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: "#F2655C", fontWeight: 700, marginBottom: 3 }}>Needs</div>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>{weaknesses.length ? weaknesses.map((d) => chip(d)) : <span className="mut" style={{ fontSize: 9.5 }}>balanced ✓</span>}</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      {rows.map((d) => (
+                        <div key={d.pos} onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: "0 8px", alignItems: "center", cursor: "help", padding: "1px 0" }}>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 800, color: POS_COLOR[d.pos] }}><Dot pos={d.pos} />{d.pos}</span>
+                          <span style={{ fontSize: 10.5, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                            <span style={{ fontWeight: 700 }}>{d.has}</span><span className="mut" style={{ fontSize: 9 }}>/{d.need || 0}</span>
+                            {d.filled ? <i className="ti ti-circle-check-filled" style={{ fontSize: 11, color: "#5FD0A8" }} aria-hidden="true" /> : d.deficit > 0 ? <span style={{ fontSize: 9, color: "#F2655C", fontWeight: 700 }}>need {Math.round(d.deficit)}</span> : null}
+                          </span>
+                          <span style={{ textAlign: "right", fontSize: 10.5, fontWeight: 700, color: d.rk ? d.read.c : "var(--mut)" }}>{d.rk ? `${d.rk.rank}/${d.rk.of}` : "—"}</span>
+                          <span style={{ textAlign: "right", fontSize: 10, fontWeight: 800, color: d.read.c }}>{d.read.t}</span>
+                        </div>
+                      ))}
                     </div>
                   </div>
                   {(flexSlots > 0 || superSlots > 0 || kSlots > 0 || dstSlots > 0) && (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, borderTop: "1px solid rgba(242,182,60,.22)", paddingTop: 5 }}>
-                      {fillPill("FLX", flexFilled, flexSlots)}
-                      {fillPill("SFL", superFilled, superSlots)}
-                      {fillPill("K", kHave, kSlots)}
-                      {fillPill("DST", dstHave, dstSlots)}
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, borderTop: "1px solid rgba(242,182,60,.22)", paddingTop: 5, marginTop: "auto" }}>
+                      {[["FLX", flexFilled, flexSlots], ["SFL", superFilled, superSlots], ["K", kHave, kSlots], ["DST", dstHave, dstSlots]].map(([label, filled, total]) => total > 0 ? (
+                        <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9.5, fontWeight: 700, padding: "1px 5px", borderRadius: 4, background: filled >= total ? "rgba(95,208,168,.12)" : "rgba(242,101,92,.10)", color: filled >= total ? "#5FD0A8" : "#F2655C", border: `1px solid ${filled >= total ? "rgba(95,208,168,.35)" : "rgba(242,101,92,.3)"}` }}>
+                          {label} {filled}/{total}{filled >= total ? " ✓" : ""}
+                        </span>
+                      ) : null)}
                     </div>
                   )}
                 </div>
               );
             })()}
 
-            {/* ===== ZONE 2a: LAST PICKS (compact) ===== */}
+            {/* ===== ZONE 2: LAST PICKS ===== */}
             {(() => {
-              const recent = picks.slice(-4).map((pk, i) => ({ pk, o: picks.length - Math.min(4, picks.length) + i })).reverse();
+              const recent = picks.slice(-5).map((pk, i) => ({ pk, o: picks.length - Math.min(5, picks.length) + i })).reverse();
               const moreTip = (e) => showTip(e, [
                 { kind: "take", tone: "neutral", x: `Recent picks — value read (steal / reach)` },
-                { kind: "playertable", cols: ["pick", "name", "team", "adp", "vbd"], players: picks.slice(-22).map((pk, i) => { const oo = Math.max(0, picks.length - Math.min(22, picks.length)) + i; const pp = players[pk]; return { ...pp, pickNo: oo + 1, rec: teamAt(oo) === userIdx, star: teamAt(oo) === userIdx }; }).reverse() },
+                { kind: "playertable", cols: ["pick", "name", "team", "adp", "vbd"], players: picks.slice(-22).map((pk, i) => { const oo = Math.max(0, picks.length - Math.min(22, picks.length)) + i; const pp = players[pk]; if (!pp) return null; return { ...pp, pickNo: oo + 1, rec: teamAt(oo) === userIdx, star: teamAt(oo) === userIdx }; }).filter(Boolean).reverse() },
               ]);
               return (
-                <div className="tickcard" style={{ padding: "7px 9px", display: "flex", flexDirection: "column", minWidth: 0 }}>
+                <div className="tickcard" style={{ padding: "7px 9px", display: "flex", flexDirection: "column", minWidth: 0, height: "100%", boxSizing: "border-box" }}>
                   <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 4, fontWeight: 700 }}>Last picks</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
                     {recent.length ? recent.map(({ pk, o }) => {
                       const p = players[pk]; if (!p) return null;
                       const spotGap = p.adp != null ? Math.round((o + 1) - p.adp) : 0;
                       const val = spotGap >= 8 ? { t: "steal", c: "#5FD0A8" } : spotGap <= -8 ? { t: "reach", c: "#F2655C" } : { t: "fair", c: "var(--mut)" };
+                      const forTeam = teamAt(o);
+                      const mine = forTeam === userIdx;
+                      // why THIS team took him: their need at the position + the value read
+                      const teamNeed = (() => {
+                        const tc = { QB: 0, RB: 0, WR: 0, TE: 0 };
+                        picks.forEach((qk, qo) => { if (teamAt(qo) === forTeam) { const qp = players[qk]; if (qp && tc[qp.pos] != null) tc[qp.pos]++; } });
+                        const rq = REQ_F(cfg.sf);
+                        return Math.max(0, (rq[p.pos] || 0) - ((tc[p.pos] || 0) - (mine ? 0 : 0)));
+                      })();
+                      const rationale = val.t === "steal" ? "fell past ADP — value grab" : val.t === "reach" ? "reached ahead of ADP" : teamNeed > 0 ? `filled a ${p.pos} need` : `added ${p.pos} depth`;
+                      const demo = `${p.age ? `age ${p.age}` : ""}${p.age && p.role ? " · " : ""}${p.role ? lowerKeepPos(p.role) : ""}`;
                       const tip = (e) => showTip(e, [
-                        { kind: "take", tone: val.t === "steal" ? "good" : val.t === "reach" ? "bad" : "neutral", x: `${pickLabel(o)} · ${teamAt(o) === userIdx ? "You" : TEAM_NAMES[teamAt(o)]} — ${p.name}` },
-                        { kind: "kvtable", items: [{ k: "Pos rank", v: `${p.pos}${p.posRank}`, c: rankTierColor(p.pos, p.posRank) }, { k: "Proj", v: `${Math.round(p.pts || 0)}` }, { k: "VBD", v: `${p.vbd > 0 ? "+" : ""}${Math.round(p.vbd)}`, c: vbdColor(p.vbd) }, { k: "ADP", v: p.adp != null ? p.adp.toFixed(0) : "—" }, { k: "vs ADP", v: `${spotGap > 0 ? "+" : ""}${spotGap}`, c: val.c }, { k: "Value read", v: val.t, c: val.c }] },
+                        { kind: "photo", sid: p.sid || null, name: p.name, team: p.team, pos: p.pos, posRank: p.posRank },
+                        { kind: "take", tone: val.t === "steal" ? "good" : val.t === "reach" ? "bad" : "neutral", x: `${pickLabel(o)} · ${mine ? "You" : TEAM_NAMES[forTeam]} — ${rationale}${demo ? ` (${demo})` : ""}` },
+                        { kind: "kvtable", items: [{ k: "Pos rank", v: `${p.pos}${p.posRank}`, c: rankTierColor(p.pos, p.posRank) }, { k: "Proj pts", v: `${Math.round(p.pts || 0)}` }, { k: "VBD", v: `${p.vbd > 0 ? "+" : ""}${Math.round(p.vbd)}`, c: vbdColor(p.vbd) }, ...(dynasty ? [{ k: "Value", v: `${(p.value ?? p.vbd) > 0 ? "+" : ""}${Math.round(p.value ?? p.vbd)}`, c: vbdColor(p.value ?? p.vbd) }] : []), { k: "ADP", v: p.adp != null ? p.adp.toFixed(0) : "—" }, { k: "vs ADP", v: `${spotGap > 0 ? "+" : ""}${spotGap}`, c: val.c }, { k: "Value read", v: val.t, c: val.c }] },
                       ]);
                       return (
                         <div key={o} onMouseEnter={tip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "26px 1fr auto", gap: 5, alignItems: "center", fontSize: 11, cursor: "help", padding: "1px 0" }}>
                           <span className="num mut" style={{ fontSize: 9 }}>{pickLabel(o)}</span>
-                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={p.pos} /><b style={{ fontSize: 11 }}>{p.name}</b> <span className="mut" style={{ fontSize: 9 }}>{teamAt(o) === userIdx ? "You" : TEAM_NAMES[teamAt(o)].split(" ")[0]}</span></span>
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={p.pos} /><b style={{ fontSize: 11 }}>{p.name}</b> <span className="mut" style={{ fontSize: 9 }}>{mine ? "You" : TEAM_NAMES[forTeam].split(" ")[0]}</span></span>
                           <span style={{ fontSize: 8.5, fontWeight: 700, color: val.c }}>{val.t}</span>
                         </div>
                       );
                     }) : <span className="mut" style={{ fontSize: 10 }}>No picks yet</span>}
                   </div>
-                  {picks.length > 0 && <div onMouseEnter={moreTip} onMouseLeave={hideTip} style={{ marginTop: 4, fontSize: 9.5, color: "var(--gold)", cursor: "help", textAlign: "center", borderTop: "1px solid var(--line2)", paddingTop: 3 }}>see more picks ⌄</div>}
+                  {picks.length > 0 && <div onMouseEnter={moreTip} onMouseLeave={hideTip} style={{ marginTop: "auto", fontSize: 9.5, color: "var(--gold)", cursor: "help", textAlign: "center", borderTop: "1px solid var(--line2)", paddingTop: 3 }}>see more picks ⌄</div>}
                 </div>
               );
             })()}
 
-            {/* ===== ZONE 2b: CURRENT + NEXT (stacked) ===== */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-              {(() => {
-                const isYou = onClock === userIdx;
-                const curTip = currentPred ? (e) => showTip(e, (() => {
-                  const cur = path && path[0] ? path[0] : null;
-                  const cands = cur && cur.cands5 && cur.cands5.length ? cur.cands5 : null;
-                  return [
-                    { kind: "take", tone: isYou ? "good" : "neutral", x: `${pickLabel(picks.length)} · ${isYou ? "YOUR PICK" : TEAM_NAMES[onClock]} — ${isYou ? "recommendation" : "engine expects"}` },
-                    ...(cands ? [{ kind: "playertable", probLabel: "Picked", cols: ["prob", "name", "rank", "adp", "pts", "vbd"], players: cands.map((c, ci) => ({ ...c.p, prob: c.prob, star: ci === 0, rec: ci === 0 })) }] : [{ kind: "playercard", p: currentPred }]),
-                  ];
-                })()) : undefined;
-                return (
-                  <div className="tickcard clock" style={{ borderColor: isYou ? "var(--gold)" : "#33476B", padding: "7px 10px", cursor: curTip ? "help" : "default" }} onMouseEnter={curTip} onMouseLeave={curTip ? hideTip : undefined}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-                      <span style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: isYou ? "var(--gold)" : "var(--mut)", fontWeight: 700 }}>On the clock · {pickLabel(picks.length)} ({picks.length + 1})</span>
-                      {connected && (liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? <span className="num mut" style={{ fontSize: 9 }}>no timer</span> : clock <= 0 ? <span className="num" style={{ fontSize: 9, color: "var(--red)", fontWeight: 700 }}>overdue</span> : <span className="num" style={{ fontSize: 10.5, color: clock <= 15 ? "var(--red)" : "var(--ink)", fontWeight: 700, background: clock <= 15 ? "rgba(242,101,92,.14)" : "rgba(255,255,255,.05)", padding: "0px 5px", borderRadius: 4 }}>{fmtClock(clock)}</span>)}
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3 }}>
-                      <span style={{ fontSize: 12.5, fontWeight: 800, color: isYou ? "var(--gold)" : "var(--ink)" }}>{isYou ? "YOU" : TEAM_NAMES[onClock].split(" ")[0]}</span>
-                      {currentPred && (<>
-                        <span className="mut" style={{ fontSize: 9 }}>{isYou ? "rec:" : "expects:"}</span>
-                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11.5, fontWeight: 700 }}><Dot pos={currentPred.pos} />{currentPred.name}</span>
-                        {currentProb != null && !isYou && <span className="num" style={{ fontSize: 10, fontWeight: 700, color: "var(--gold)", marginLeft: "auto" }}>{currentProb}%</span>}
-                      </>)}
-                    </div>
-                    {isYou && !gated && currentPred && <button className="btn btn-gold btn-mini" style={{ marginTop: 5, width: "100%", padding: "3px 0", fontSize: 11 }} onClick={(e) => { e.stopPropagation(); draftPlayer(currentPred.id); }}>Draft {currentPred.name.split(" ").slice(-1)}</button>}
+            {/* ===== ZONE 3: ON THE CLOCK ===== */}
+            {(() => {
+              const isYou = onClock === userIdx;
+              const curTip = currentPred ? (e) => showTip(e, (() => {
+                const cur = path && path[0] ? path[0] : null;
+                const cands = cur && cur.cands5 && cur.cands5.length ? cur.cands5 : null;
+                return [
+                  { kind: "take", tone: isYou ? "good" : "neutral", x: `${pickLabel(picks.length)} · ${isYou ? "YOUR PICK" : TEAM_NAMES[onClock]} — ${isYou ? "recommendation" : "engine expects"}` },
+                  ...(cands ? [{ kind: "playertable", probLabel: "Picked", cols: ["prob", "name", "rank", "adp", "pts", "vbd"], players: cands.map((c, ci) => ({ ...c.p, prob: c.prob, star: ci === 0, rec: ci === 0 })) }] : [{ kind: "playercard", p: currentPred }]),
+                ];
+              })()) : undefined;
+              return (
+                <div className="tickcard clock" style={{ borderColor: isYou ? "var(--gold)" : "#33476B", padding: "7px 10px", cursor: curTip ? "help" : "default", height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }} onMouseEnter={curTip} onMouseLeave={curTip ? hideTip : undefined}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                    <span style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: isYou ? "var(--gold)" : "var(--mut)", fontWeight: 700 }}>On the clock</span>
+                    {connected && (liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? <span className="num mut" style={{ fontSize: 9 }}>no timer</span> : clock <= 0 ? <span className="num" style={{ fontSize: 9, color: "var(--red)", fontWeight: 700 }}>overdue</span> : <span className="num" style={{ fontSize: 10.5, color: clock <= 15 ? "var(--red)" : "var(--ink)", fontWeight: 700, background: clock <= 15 ? "rgba(242,101,92,.14)" : "rgba(255,255,255,.05)", padding: "0px 5px", borderRadius: 4 }}>{fmtClock(clock)}</span>)}
                   </div>
-                );
-              })()}
-              {(() => {
-                const upcoming = displayPath.filter((s) => s && s.o > picks.length && s.p).slice(0, 4);
-                if (!upcoming.length) return null;
-                const moreTip = (e) => showTip(e, [
-                  { kind: "take", tone: "neutral", x: "Upcoming picks — engine projection" },
-                  { kind: "playertable", probLabel: "Picked", cols: ["pick", "prob", "name", "rank", "team", "pts"], players: displayPath.filter((s) => s && s.o > picks.length && s.p).slice(0, 20).map((s) => ({ ...s.p, pickNo: s.o + 1, prob: s.prob, rec: s.user, star: s.user })) },
-                ]);
-                return (
-                  <div className="tickcard" style={{ padding: "7px 9px", minWidth: 0 }}>
-                    <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 4, fontWeight: 700 }}>Next picks</div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-                      {upcoming.map((step) => {
-                        const p = step.p, mine = step.user;
-                        const cands = step.cands5 && step.cands5.length ? step.cands5 : null;
-                        const tip = (e) => showTip(e, [
-                          { kind: "take", tone: mine ? "good" : "neutral", x: `${pickLabel(step.o)} · ${mine ? "YOUR PICK" : TEAM_NAMES[step.t]}${cands ? " — likely options" : ""}` },
-                          ...(cands ? [{ kind: "playertable", probLabel: "Picked", cols: ["prob", "name", "rank", "adp", "pts", "vbd"], players: cands.map((c, ci) => ({ ...c.p, prob: c.prob, star: ci === 0, rec: ci === 0 })) }] : [{ kind: "playercard", p }]),
-                        ]);
-                        return (
-                          <div key={step.o} onMouseEnter={tip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "26px 1fr auto", gap: 5, alignItems: "center", fontSize: 11, cursor: "help", padding: "1px 0", background: mine ? "rgba(242,182,60,.10)" : "transparent", borderRadius: 4 }}>
-                            <span className="num mut" style={{ fontSize: 9 }}>{pickLabel(step.o)}</span>
-                            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={p.pos} /><span style={{ fontSize: 11, fontWeight: mine ? 700 : 400 }}>{p.name}</span> <span className="mut" style={{ fontSize: 9 }}>{mine ? "You" : TEAM_NAMES[step.t].split(" ")[0]}</span></span>
-                            <span className="num mut" style={{ fontSize: 8.5 }}>{step.prob != null ? `${step.prob}%` : ""}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <div onMouseEnter={moreTip} onMouseLeave={hideTip} style={{ marginTop: 4, fontSize: 9.5, color: "var(--gold)", cursor: "help", textAlign: "center", borderTop: "1px solid var(--line2)", paddingTop: 3 }}>see more picks ⌄</div>
+                  <div className="mut" style={{ fontSize: 8.5, marginTop: 1 }}>{pickLabel(picks.length)} · overall {picks.length + 1}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 800, color: isYou ? "var(--gold)" : "var(--ink)" }}>{isYou ? "YOU" : TEAM_NAMES[onClock].split(" ")[0]}</span>
                   </div>
-                );
-              })()}
-            </div>
+                  {currentPred && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4 }}>
+                      <span className="mut" style={{ fontSize: 9 }}>{isYou ? "rec:" : "expects:"}</span>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11.5, fontWeight: 700 }}><Dot pos={currentPred.pos} />{currentPred.name}</span>
+                      {currentProb != null && !isYou && <span className="num" style={{ fontSize: 10, fontWeight: 700, color: "var(--gold)", marginLeft: "auto" }}>{currentProb}%</span>}
+                    </div>
+                  )}
+                  {isYou && !gated && currentPred && <button className="btn btn-gold btn-mini" style={{ marginTop: "auto", width: "100%", padding: "3px 0", fontSize: 11 }} onClick={(e) => { e.stopPropagation(); draftPlayer(currentPred.id); }}>Draft {currentPred.name.split(" ").slice(-1)}</button>}
+                </div>
+              );
+            })()}
+
+            {/* ===== ZONE 4: NEXT PICKS ===== */}
+            {(() => {
+              const upcoming = displayPath.filter((s) => s && s.o > picks.length && s.p).slice(0, 5);
+              const moreTip = (e) => showTip(e, [
+                { kind: "take", tone: "neutral", x: "Upcoming picks — engine projection" },
+                { kind: "playertable", probLabel: "Picked", cols: ["pick", "prob", "name", "rank", "team", "pts"], players: displayPath.filter((s) => s && s.o > picks.length && s.p).slice(0, 20).map((s) => ({ ...s.p, pickNo: s.o + 1, prob: s.prob, rec: s.user, star: s.user })) },
+              ]);
+              return (
+                <div className="tickcard" style={{ padding: "7px 9px", minWidth: 0, height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }}>
+                  <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 4, fontWeight: 700 }}>Next picks</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                    {upcoming.length ? upcoming.map((step) => {
+                      const p = step.p, mine = step.user;
+                      const cands = step.cands5 && step.cands5.length ? step.cands5 : null;
+                      const tip = (e) => showTip(e, [
+                        { kind: "take", tone: mine ? "good" : "neutral", x: `${pickLabel(step.o)} · ${mine ? "YOUR PICK" : TEAM_NAMES[step.t]}${cands ? " — likely options" : ""}` },
+                        ...(cands ? [{ kind: "playertable", probLabel: "Picked", cols: ["prob", "name", "rank", "adp", "pts", "vbd"], players: cands.map((c, ci) => ({ ...c.p, prob: c.prob, star: ci === 0, rec: ci === 0 })) }] : [{ kind: "playercard", p }]),
+                      ]);
+                      return (
+                        <div key={step.o} onMouseEnter={tip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "26px 1fr auto", gap: 5, alignItems: "center", fontSize: 11, cursor: "help", padding: "1px 0", background: mine ? "rgba(242,182,60,.10)" : "transparent", borderRadius: 4 }}>
+                          <span className="num mut" style={{ fontSize: 9 }}>{pickLabel(step.o)}</span>
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={p.pos} /><span style={{ fontSize: 11, fontWeight: mine ? 700 : 400 }}>{p.name}</span> <span className="mut" style={{ fontSize: 9 }}>{mine ? "You" : TEAM_NAMES[step.t].split(" ")[0]}</span></span>
+                          <span className="num mut" style={{ fontSize: 8.5 }}>{step.prob != null ? `${step.prob}%` : ""}</span>
+                        </div>
+                      );
+                    }) : <span className="mut" style={{ fontSize: 10 }}>No upcoming picks</span>}
+                  </div>
+                  {upcoming.length > 0 && <div onMouseEnter={moreTip} onMouseLeave={hideTip} style={{ marginTop: "auto", fontSize: 9.5, color: "var(--gold)", cursor: "help", textAlign: "center", borderTop: "1px solid var(--line2)", paddingTop: 3 }}>see more picks ⌄</div>}
+                </div>
+              );
+            })()}
 
           </div>
         </div>
@@ -13101,56 +13120,93 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             {/* DECISION HUB — moved here from the top strip; the primary decision surface. */}
               {(() => {
                 // ===== DECISION HUB — the money maker. Pick which upcoming pick to analyze, then see the
-                // Balanced and My-build recommendations stacked, with take-now-vs-wait, position-run flags,
-                // and a Draft button on each. A short blurb up top frames the decision.
+                // Balanced and My-build recommendations stacked, with take-now-vs-wait per position, a
+                // recommendation duo (headshots), and a trend/needs/value-gap summary up top.
+                const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
                 // Which pick are we analyzing? Default = your next pick (or the current pick if you're up).
                 const myUpNext = onClock === userIdx ? picks.length : myNextOverall;
-                const upcomingMine = remainingPicks.filter((p) => p.mine).slice(0, 3); // this, next, after
-                const selOverall = recPickSel != null ? recPickSel : (myUpNext != null ? myUpNext : (upcomingMine[0] ? upcomingMine[0].o : null));
+                const myUpcoming = remainingPicks.filter((p) => p.mine); // all my remaining picks
+                const selOverall = recPickSel != null ? recPickSel : (myUpNext != null ? myUpNext : (myUpcoming[0] ? myUpcoming[0].o : null));
                 if (selOverall == null) return <div className="tickcard" style={{ padding: 12 }}><span className="mut" style={{ fontSize: 12 }}>No upcoming picks to analyze.</span></div>;
                 const onClockNow = selOverall === picks.length && onClock === userIdx;
+                const isBoardPick = selOverall === picks.length; // the pick currently ON THE BOARD
                 // Advice for the selected pick, both strategies.
                 const balAdv = (selOverall === myPickOverall && myBalancedAdvice) ? myBalancedAdvice : adviceFor(selOverall, userIdx, sims, "balanced");
                 const bldAdv = (selOverall === myPickOverall && myBuildAdvice) ? myBuildAdvice : adviceFor(selOverall, userIdx, sims, "build");
-                const survOf = (p) => { if (selOverall === picks.length) return 100; const idx = upcomingMine.findIndex((x) => x.o === selOverall); const pctMap = sims && sims.pct && sims.pct[idx] ? sims.pct[idx] : (sims && sims.pct && sims.pct[0]); return pctMap && pctMap[p.id] != null ? pctMap[p.id] : null; };
+                const survOf = (p) => { if (selOverall === picks.length) return 100; const idx = myUpcoming.findIndex((x) => x.o === selOverall); const pctMap = sims && sims.pct && sims.pct[idx] ? sims.pct[idx] : (sims && sims.pct && sims.pct[0]); return pctMap && pctMap[p.id] != null ? pctMap[p.id] : null; };
                 const pickNowN = selOverall + 1;
-                // Position-run flag from recent picks.
                 const run = (balAdv && balAdv.run) || (advice && advice.run) || null;
-                // Summary blurb — the key decision factors right now.
                 const topBal = balAdv && balAdv.verdict ? balAdv.verdict : null;
                 const topBld = bldAdv && bldAdv.verdict ? bldAdv.verdict : null;
-                const need = (() => { const r = myWindow.req || REQ_F(cfg.sf); const h = myWindow.have || {}; const short = ["QB","RB","WR","TE"].filter((p)=>(r[p]||0)-(h[p]||0) >= 1); return short; })();
-                const blurbBits = [];
-                if (onClockNow) blurbBits.push("You're on the clock.");
-                else if (selOverall === myUpNext) blurbBits.push(`Your next pick is ${pickLabel(selOverall)}.`);
-                else blurbBits.push(`Looking ahead to ${pickLabel(selOverall)}.`);
-                if (topBal) { const scar = scarcityFor(topBal); if (scar && scar.isLastStarter) blurbBits.push(`${topBal.pos} is thinning — ${topBal.name} may be the last startable-tier ${topBal.pos}.`); }
-                if (run && run.count >= 3) blurbBits.push(`${run.pos} run underway (${run.count} of the last 8).`);
-                if (need.length) blurbBits.push(`Still need a starter at ${need.join(", ")}.`);
-                if (topBal && topBld && topBal.id !== topBld.id) blurbBits.push(`Balanced likes ${topBal.name.split(" ").slice(-1)}, your build leans ${topBld.name.split(" ").slice(-1)}.`);
-                else if (topBal) blurbBits.push(`Both value and your build point to ${topBal.name.split(" ").slice(-1)}.`);
+                const need = (() => { const r = myWindow.req || REQ_F(cfg.sf); const h = myWindow.have || {}; return ["QB","RB","WR","TE"].filter((p)=>(r[p]||0)-(h[p]||0) >= 1); })();
 
-                // One recommendation table (5 rows), with a Draft button when it's your current pick.
-                const recTable = (adv, accent, label) => {
+                // ---- Summary: trends, runs, upcoming, needs, value gaps ----
+                const summaryBits = [];
+                if (onClockNow) summaryBits.push({ i: "ti-player-play", c: "var(--gold)", t: `You're on the clock at ${pickLabel(selOverall)}.` });
+                else if (isBoardPick) summaryBits.push({ i: "ti-player-play", c: "var(--blue)", t: `${TEAM_NAMES[onClock].split(" ")[0]} is on the clock; your next pick is ${myUpNext != null ? pickLabel(myUpNext) : "—"}.` });
+                else summaryBits.push({ i: "ti-eye", c: "var(--blue)", t: `Looking ahead to ${pickLabel(selOverall)} (${myUpcoming.findIndex((x)=>x.o===selOverall) >= 0 ? ordinal(myUpcoming.findIndex((x)=>x.o===selOverall)+1)+" of your remaining picks" : "upcoming"}).` });
+                if (run && run.count >= 3) summaryBits.push({ i: "ti-flame", c: "#F2655C", t: `${run.pos} run underway — ${run.count} of the last 8 picks. Tier is thinning.` });
+                // value gap: biggest VBD drop-off among the positions you might target
+                const gapNote = (() => {
+                  if (!topBal) return null; const scar = scarcityFor(topBal);
+                  if (scar && scar.isLastStarter) return { i: "ti-alert-triangle", c: "#F2655C", t: `${topBal.name.split(" ").slice(-1)} may be the last startable-tier ${topBal.pos} — steep drop after him.` };
+                  if (scar && scar.drop != null && scar.drop >= 20) return { i: "ti-stairs-down", c: "var(--gold)", t: `Big value cliff at ${topBal.pos}: ~${scar.drop} VBD drop to the next one.` };
+                  return null;
+                })();
+                if (gapNote) summaryBits.push(gapNote);
+                if (need.length) summaryBits.push({ i: "ti-clipboard-list", c: "var(--gold)", t: `Still need a starter at ${need.join(", ")}.` });
+                if (topBal && topBld && topBal.id !== topBld.id) summaryBits.push({ i: "ti-arrows-split", c: "var(--ink)", t: `Value leans ${topBal.name.split(" ").slice(-1)} (${topBal.pos}); your build leans ${topBld.name.split(" ").slice(-1)} (${topBld.pos}).` });
+                else if (topBal) summaryBits.push({ i: "ti-check", c: "#5FD0A8", t: `Value and your build agree: ${topBal.name.split(" ").slice(-1)}.` });
+
+                // ---- Recommendation duo (headshots): balanced + my-build top pick ----
+                const recCard = (p, label, accent) => {
+                  if (!p) return null;
+                  const surv = survOf(p);
+                  const openTip = (e) => showTip(e, makeOutlook(p, sims, false, { pickNow: pickNowN, dynasty, run, needShort: need.includes(p.pos) ? 1 : 0, scarcity: scarcityFor(p) }));
+                  return (
+                    <div onMouseEnter={openTip} onMouseLeave={hideTip} style={{ flex: 1, minWidth: 0, display: "flex", gap: 8, alignItems: "center", padding: "7px 9px", borderRadius: 8, border: `1px solid ${accent}`, background: "rgba(255,255,255,.03)", cursor: "help" }}>
+                      <PlayerPhoto sid={p.sid} pos={p.pos} size={38} />
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".04em", color: accent, fontWeight: 800 }}>{label}</div>
+                        <div style={{ fontSize: 12, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 9.5 }}>
+                          <span style={{ fontWeight: 700, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
+                          <span className="num" style={{ color: vbdColor(dynasty ? (p.value ?? p.vbd) : p.vbd) }}>{(() => { const v = dynasty ? (p.value ?? p.vbd) : p.vbd; return (v > 0 ? "+" : "") + Math.round(v); })()}</span>
+                          {surv != null && !isBoardPick && <span className="mut">{surv}% avail</span>}
+                        </div>
+                      </div>
+                      {onClockNow && !gated && <button className="btn btn-mini" style={{ fontSize: 9.5, padding: "3px 8px", borderColor: accent, color: accent, flexShrink: 0 }} onClick={(e) => { e.stopPropagation(); draftPlayer(p.id); }}>Draft</button>}
+                    </div>
+                  );
+                };
+
+                // ---- Recommendation table (expanded columns + headers) ----
+                const recTable = (adv, accent, label, sub) => {
                   if (!adv || !adv.verdict) return <div className="mut" style={{ fontSize: 11, padding: "4px 0" }}>Computing…</div>;
                   const list = [adv.verdict, ...(adv.alts || [])].filter(Boolean).slice(0, 5);
+                  const cols = onClockNow ? "34px 1fr 46px auto auto 34px auto" : "34px 1fr 46px auto auto 34px";
                   return (
                     <div>
-                      <div style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".05em", color: accent, marginBottom: 5, display: "flex", alignItems: "center", gap: 5 }}>{label}</div>
+                      <div style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".05em", color: accent, marginBottom: 2, display: "flex", alignItems: "center", gap: 5 }}>{label}{sub && <span className="mut" style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, fontSize: 9 }}>· {sub}</span>}</div>
+                      {/* header row */}
+                      <div style={{ display: "grid", gridTemplateColumns: cols, gap: 7, alignItems: "center", fontSize: 7.5, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, padding: "0 4px 2px" }}>
+                        <span>Rank</span><span>Player · role</span><span title="Team role">Role</span><span title={dynasty ? "Value (age-weighted) / VBD" : "Value above replacement"} style={{ textAlign: "right" }}>{dynasty ? "Val" : "VBD"}</span><span title="Average draft position" style={{ textAlign: "right" }}>ADP</span><span title="Chance still available at this pick" style={{ textAlign: "right" }}>Avail</span>{onClockNow && <span />}
+                      </div>
                       <div style={{ display: "flex", flexDirection: "column" }}>
                         {list.map((p, i) => {
                           const surv = survOf(p);
-                          const waitCost = adv.waitCost && adv.waitCost[p.pos] != null ? Math.max(0, Math.round(adv.waitCost[p.pos])) : null;
-                          const openTip = (e) => showTip(e, makeOutlook(p, sims, false, { pickNow: pickNowN, dynasty: cfg.type === "dynasty" || cfg.type === "keeper", run, needShort: need.includes(p.pos) ? 1 : 0, scarcity: scarcityFor(p) }));
+                          const openTip = (e) => showTip(e, makeOutlook(p, sims, false, { pickNow: pickNowN, dynasty, run, needShort: need.includes(p.pos) ? 1 : 0, scarcity: scarcityFor(p) }));
+                          const roleShort = p.role ? lowerKeepPos(p.role).replace(/\b(back|receiver)\b/gi, "").trim().split(" ").slice(0, 2).join(" ") : "—";
+                          const vShow = dynasty ? (p.value ?? p.vbd) : p.vbd;
                           return (
-                            <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto auto", gap: 7, alignItems: "center", fontSize: 11.5, padding: "3px 4px", borderRadius: 5, background: i === 0 ? "rgba(242,182,60,.10)" : "transparent", borderBottom: i < list.length - 1 ? "1px solid var(--line2)" : "none", cursor: "help" }}>
-                              <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank), width: 34 }}>{p.pos}{p.posRank}</span>
+                            <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: cols, gap: 7, alignItems: "center", fontSize: 11, padding: "3px 4px", borderRadius: 5, background: i === 0 ? "rgba(242,182,60,.10)" : "transparent", borderBottom: i < list.length - 1 ? "1px solid var(--line2)" : "none", cursor: "help" }}>
+                              <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
                               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><b style={{ color: i === 0 ? accent : "var(--ink)" }}>{i === 0 ? "★ " : ""}{p.name}</b></span>
-                              <span className="num" title="Value (VBD in redraft, age-weighted in dynasty)" style={{ fontWeight: 700, color: vbdColor(p.value != null ? p.value : p.vbd), fontSize: 10.5 }}>{(() => { const v = p.value != null ? p.value : p.vbd; return (v > 0 ? "+" : "") + Math.round(v); })()}</span>
-                              <span className="num" title="Chance he's still available at this pick" style={{ fontSize: 10, color: surv == null ? "var(--mut)" : surv >= 65 ? "#5FD0A8" : surv >= 35 ? "var(--gold)" : "#F2655C", width: 32, textAlign: "right" }}>{surv != null ? `${surv}%` : "—"}</span>
-                              {onClockNow ? (
-                                <button className="btn btn-mini" style={{ fontSize: 9.5, padding: "2px 7px", borderColor: accent, color: accent }} onClick={(e) => { e.stopPropagation(); draftPlayer(p.id); }}>Draft</button>
-                              ) : <span style={{ width: 40 }} />}
+                              <span className="mut" style={{ fontSize: 8.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{roleShort}</span>
+                              <span className="num" style={{ fontWeight: 700, color: vbdColor(vShow), fontSize: 10.5, textAlign: "right" }}>{(vShow > 0 ? "+" : "") + Math.round(vShow)}</span>
+                              <span className="num mut" style={{ fontSize: 9.5, textAlign: "right" }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
+                              <span className="num" style={{ fontSize: 9.5, color: surv == null ? "var(--mut)" : surv >= 65 ? "#5FD0A8" : surv >= 35 ? "var(--gold)" : "#F2655C", textAlign: "right" }}>{surv != null ? `${surv}%` : "—"}</span>
+                              {onClockNow && (!gated ? <button className="btn btn-mini" style={{ fontSize: 9, padding: "2px 6px", borderColor: accent, color: accent }} onClick={(e) => { e.stopPropagation(); draftPlayer(p.id); }}>Draft</button> : <span />)}
                             </div>
                           );
                         })}
@@ -13159,47 +13215,79 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   );
                 };
 
-                // Take-now vs wait: compare the best available now vs the expected best at your pick-after.
-                const waitRow = (() => {
-                  if (!topBal) return null;
-                  const scar = scarcityFor(topBal);
-                  const wc = balAdv.waitCost && balAdv.waitCost[topBal.pos] != null ? Math.round(balAdv.waitCost[topBal.pos]) : null;
-                  const nextBest = sims && sims.expBestPlayer2 && sims.expBestPlayer2[topBal.pos];
+                // ---- Take-now-vs-wait PER POSITION GROUP ----
+                const waitByPos = ["QB", "RB", "WR", "TE"].filter((pos) => (SPEC[pos] || 0) > 0 || pos === "RB" || pos === "WR").map((pos) => {
+                  const bestNow = (availByPos[pos] || [])[0] || null;
+                  if (!bestNow) return null;
+                  const wc = balAdv && balAdv.waitCost && balAdv.waitCost[pos] != null ? Math.round(balAdv.waitCost[pos]) : null;
+                  const scar = scarcityFor(bestNow);
+                  const nextBest = sims && sims.expBestPlayer2 && sims.expBestPlayer2[pos];
                   let verdict, vcolor;
-                  if (scar && scar.isLastStarter) { verdict = "Take now — last startable tier"; vcolor = "#F2655C"; }
-                  else if (wc != null && wc >= 15) { verdict = `Take now — waiting costs ~${wc} value`; vcolor = "var(--gold)"; }
-                  else if (wc != null && wc <= 4) { verdict = "Can wait — similar value later"; vcolor = "#5FD0A8"; }
-                  else { verdict = wc != null ? `Moderate wait cost (~${wc})` : "Value holds roughly steady"; vcolor = "var(--gold)"; }
-                  return (
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, padding: "5px 8px", borderRadius: 6, background: "rgba(255,255,255,.03)", border: "1px solid var(--line)" }}>
-                      <i className="ti ti-clock-hour-4" style={{ fontSize: 12, color: vcolor }} aria-hidden="true" />
-                      <span style={{ fontWeight: 700, color: vcolor }}>{verdict}</span>
-                      {nextBest && <span className="mut" style={{ marginLeft: "auto", fontSize: 9.5 }}>next-pick best: {nextBest.name.split(" ").slice(-1)}</span>}
-                    </div>
-                  );
-                })();
+                  if (scar && scar.isLastStarter) { verdict = "Take now"; vcolor = "#F2655C"; }
+                  else if (wc != null && wc >= 15) { verdict = "Take now"; vcolor = "var(--gold)"; }
+                  else if (wc != null && wc <= 4) { verdict = "Can wait"; vcolor = "#5FD0A8"; }
+                  else { verdict = "Lean wait"; vcolor = "var(--gold)"; }
+                  return { pos, bestNow, wc, nextBest, verdict, vcolor, isNeed: need.includes(pos) };
+                }).filter(Boolean);
 
                 return (
                   <div className="tickcard" style={{ padding: "11px 13px", border: "1.5px solid var(--gold)", background: "linear-gradient(165deg,rgba(30,34,44,1),rgba(22,26,34,1))" }}>
-                    {/* header + pick selector */}
+                    {/* header + pick selector dropdown */}
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 7, flexWrap: "wrap" }}>
                       <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", fontWeight: 800, display: "flex", alignItems: "center", gap: 5 }}><i className="ti ti-bulb" style={{ fontSize: 13 }} aria-hidden="true" />Your decision</div>
-                      {upcomingMine.length > 1 && (
-                        <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }}>
-                          {upcomingMine.map((up, i) => (
-                            <button key={up.o} onClick={() => setRecPickSel(up.o)} style={{ border: "none", background: selOverall === up.o ? "var(--gold)" : "transparent", color: selOverall === up.o ? "#151002" : "var(--ink)", fontWeight: selOverall === up.o ? 700 : 500, fontSize: 10, padding: "3px 9px", cursor: "pointer" }} title={pickLabel(up.o)}>{i === 0 ? "This pick" : i === 1 ? "Next" : "+2"}</button>
+                      {myUpcoming.length > 0 && (
+                        <select value={selOverall} onChange={(e) => setRecPickSel(+e.target.value)} style={{ background: "var(--panel3)", color: "var(--ink)", border: "1px solid var(--line)", borderRadius: 7, fontSize: 10.5, padding: "3px 7px", fontWeight: 600, cursor: "pointer", maxWidth: 180 }}>
+                          {myUpcoming.map((up, i) => (
+                            <option key={up.o} value={up.o}>{i === 0 ? (onClock === userIdx ? "Your pick (on clock)" : "Your next pick") : `+${i} → ${up.label}`} · {up.label}</option>
                           ))}
-                        </div>
+                        </select>
                       )}
                     </div>
-                    {/* decision blurb */}
-                    <div style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--ink)", marginBottom: 9, background: "rgba(242,182,60,.06)", borderLeft: "2px solid var(--gold)", padding: "6px 9px", borderRadius: "0 6px 6px 0" }}>{blurbBits.join(" ")}</div>
-                    {/* take now vs wait */}
-                    {waitRow && <div style={{ marginBottom: 9 }}>{waitRow}</div>}
-                    {/* two stacked recommendation lists */}
+                    {/* what "this pick" means */}
+                    <div className="mut" style={{ fontSize: 9, marginBottom: 7, display: "flex", alignItems: "center", gap: 4 }}>
+                      <i className="ti ti-info-circle" style={{ fontSize: 10 }} aria-hidden="true" />
+                      {isBoardPick ? (onClockNow ? "Analyzing the pick on the clock — yours right now." : "Analyzing the pick on the clock.") : `Analyzing your upcoming pick at ${pickLabel(selOverall)} — not the pick currently on the board.`}
+                    </div>
+                    {/* summary */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 9, background: "rgba(242,182,60,.05)", borderLeft: "2px solid var(--gold)", padding: "7px 9px", borderRadius: "0 6px 6px 0" }}>
+                      {summaryBits.map((b, i) => (
+                        <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 11, lineHeight: 1.4 }}>
+                          <i className={`ti ${b.i}`} style={{ fontSize: 12, color: b.c, marginTop: 1, flexShrink: 0 }} aria-hidden="true" />
+                          <span>{b.t}</span>
+                        </div>
+                      ))}
+                    </div>
+                    {/* recommendation duo — headshots */}
+                    {(topBal || topBld) && (
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, marginBottom: 4 }}>Recommended {onClockNow ? "— draft one" : "for this pick"}</div>
+                        <div style={{ display: "flex", gap: 7 }}>
+                          {recCard(topBal, "Balanced", "var(--gold)")}
+                          {topBld && topBld.id !== (topBal && topBal.id) && recCard(topBld, "My build", "var(--blue)")}
+                        </div>
+                      </div>
+                    )}
+                    {/* take now vs wait — per position */}
+                    {waitByPos.length > 0 && (
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, marginBottom: 4, display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-clock-hour-4" style={{ fontSize: 11 }} aria-hidden="true" />Take now vs. wait — by position</div>
+                        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: "3px 8px", alignItems: "center" }}>
+                          {waitByPos.map((w) => (
+                            <React.Fragment key={w.pos}>
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10.5, fontWeight: 800, color: POS_COLOR[w.pos] }}><Dot pos={w.pos} />{w.pos}{w.isNeed ? <span style={{ fontSize: 8, color: "#F2655C" }}>need</span> : ""}</span>
+                              <span style={{ fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} className="mut">{w.bestNow.name}</span>
+                              <span className="num mut" style={{ fontSize: 9, textAlign: "right" }} title="Value lost by waiting to your pick-after">{w.wc != null ? `−${w.wc}` : "—"}</span>
+                              <span style={{ fontSize: 9.5, fontWeight: 800, color: w.vcolor, textAlign: "right" }}>{w.verdict}</span>
+                            </React.Fragment>
+                          ))}
+                        </div>
+                        <div className="mut" style={{ fontSize: 8, marginTop: 3 }}>−N = value lost by waiting to your pick after this one.</div>
+                      </div>
+                    )}
+                    {/* two recommendation lists */}
                     <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
-                      {recTable(balAdv, "var(--gold)", "Balanced — best value")}
-                      {recTable(bldAdv, "var(--blue)", "My build — roster-tilted")}
+                      {recTable(balAdv, "var(--gold)", "Balanced", "best value")}
+                      {recTable(bldAdv, "var(--blue)", "My build", "roster-tilted")}
                     </div>
                     <div className="mut" style={{ fontSize: 9.5, lineHeight: 1.4, marginTop: 9 }}>Balanced maximizes value for a well-rounded roster; My build tilts toward your contention window and positional needs. Hover any player for the full breakdown{onClockNow ? "; Draft to make the pick" : ""}.</div>
                   </div>
@@ -13283,7 +13371,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               </div>
               {proj && (() => {
                 const ti = teamView === -1 ? userIdx : teamView;
-                const current = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => teamAt(x.o) === ti).map((x) => x.p);
+                const current = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => x.p && teamAt(x.o) === ti).map((x) => x.p);
                 const roster = railProj ? proj.rosters[ti] : current;
                 const { slots, bench } = lineupSlots(roster, cfg.sf);
                 const curSet = new Set(current.map((p) => p.id));
@@ -13374,7 +13462,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     const best = { QB: null, RB: null, WR: null, TE: null };
                     const posPlayersRow = { QB: [], RB: [], WR: [], TE: [] };
                     const drafted = picks.filter((pk, o) => teamAt(o) === i).length;
-                    picks.forEach((pk, o) => { if (teamAt(o) === i) { const p = players[pk]; if (counts[p.pos] != null) { counts[p.pos]++; if (best[p.pos] == null || p.vbd > best[p.pos]) best[p.pos] = p.vbd; posPlayersRow[p.pos].push(p); } } });
+                    picks.forEach((pk, o) => { if (teamAt(o) === i) { const p = players[pk]; if (p && counts[p.pos] != null) { counts[p.pos]++; if (best[p.pos] == null || p.vbd > best[p.pos]) best[p.pos] = p.vbd; posPlayersRow[p.pos].push(p); } } });
                     POS.forEach((pos) => posPlayersRow[pos].sort((a, b) => (b.pts || 0) - (a.pts || 0)));
                     const remaining = ROUNDS - drafted;
                     return (
@@ -15848,10 +15936,10 @@ function TradeToolsPage({ user, onBack, onHome, onSignOut }) {
 
 function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, showTip, hideTip, isMock, onExecuteTrade, tradingOn }) {
   const [mode, setMode] = useState("values"); // values | evaluate
-  const myRoster = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => teamAt(x.o) === userIdx).map((x) => x.p);
+  const myRoster = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => x.p && teamAt(x.o) === userIdx).map((x) => x.p);
   const teamRosters = useMemo(() => {
     const r = Array.from({ length: TEAMS }, () => []);
-    picks.forEach((pk, o) => r[teamAt(o)].push(players[pk]));
+    picks.forEach((pk, o) => { const pl = players[pk]; if (pl) r[teamAt(o)].push(pl); });
     return r;
   }, [picks, players]);
   const myPicks = useMemo(() => pickAssets(cfg), [cfg]);
