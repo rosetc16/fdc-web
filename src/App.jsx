@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28db";
+const BUILD_TAG = "2026.06.28dc";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2239,6 +2239,7 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build) {
     if (lane === "rebuild") { s += Math.max(0, 28 - (c.age || 27)) * 7; if (c.rookie) s += 25; s += Math.max(0, (c.value != null && c.vbd != null ? c.value - c.vbd : 0)) * 0.6; }
     else if (lane === "winnow") { s += Math.max(0, (c.age || 27) - 24) * 3; if (c.rookie) s -= 15; }
     s -= reachPenalty(c, pickNum) * 0.4;
+    s += Math.min(45, Math.max(0, (c.adp != null && pickNum != null ? pickNum - c.adp : 0)) * 0.7); // faller/value bonus
     return s + bbBonus(c);
   }
   if (strategy === "upside") {
@@ -2283,7 +2284,14 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build) {
     const mvComposite = mv + (c.value - c.vbd); // shift mv by the age premium/discount baked into value
     mvUse = mv * (1 - blend) + mvComposite * blend;
   }
-  const value = mvUse + need - overStack - reachPenalty(c, pickNum) + emptyStarterPremium(c, counts, sf) + windowFit(c, BUILD_LANE, isDynastyGlobal);
+  // ADP VALUE (faller bonus): a player still available well PAST his ADP is a market bargain at any stage of
+  // the draft. `mktW` above only rewards early-ADP players early; this rewards the *gap* between where the
+  // market expected him gone and where you're actually picking, so a big faller (e.g. an ADP-138 player still
+  // there at pick 196) gets credit even in the late rounds when mktW has decayed to 0. Capped so it nudges,
+  // never dominates, and only counts genuine fallers (gap beyond a few picks of noise).
+  const adpFall = (c.adp != null && pickNum != null) ? Math.max(0, pickNum - c.adp) : 0;
+  const adpValue = Math.min(45, adpFall * 0.7);
+  const value = mvUse + need - overStack - reachPenalty(c, pickNum) + emptyStarterPremium(c, counts, sf) + windowFit(c, BUILD_LANE, isDynastyGlobal) + adpValue;
   const market = c.adp != null ? 300 - c.adp * 3.0 : 0; // pure board-order score: earlier ADP = higher
   const mktW = pickNum != null ? Math.max(0, Math.min(0.92, 0.92 - (pickNum - 1) * 0.034)) : 0; // 0.92 → 0 by ~pick 28
   return market * mktW + value * (1 - mktW) + bbBonus(c) - byePenalty(c);
@@ -2533,7 +2541,11 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
       const scored = legal
         .map((c) => ({ p: c, s: userScore(c, counts[t], dem, strategy, sf, pickNum) }))
         .sort((a, b) => b.s - a.s);
-      if (!passedUser && forcedId != null && !drafted[forcedId]) choice = players[forcedId];
+      // Only FORCE the pick that is literally on the clock right now (o === picks.length). `forcedId` is the
+      // current recommendation, which is only "yours" when it's actually your turn. For any FUTURE pick of
+      // yours, use the honest best-score so the projection reflects what you'd really take THEN — otherwise a
+      // future slot would show the current-clock rec, then "flip" to the real pick once that player is gone.
+      if (!passedUser && o === picks.length && forcedId != null && !drafted[forcedId]) choice = players[forcedId];
       else { choice = scored.length ? scored[0].p : null; }
       // Top-5 candidates for YOUR pick, by your value score. If a specific pick is forced (the current
       // recommendation), surface it first so the expected pick and the alternatives stay consistent.
@@ -3424,7 +3436,7 @@ function OutlookCard({ content }) {
                   const firstCell = ci === 0, lastCell = ci === cols.length - 1;
                   const base = { fontSize: 11.5, padding: p.rec ? "5px 0" : "3px 0", borderBottom: ri < rowsP.length - 1 ? "1px solid var(--line2)" : "none", lineHeight: 1.2, ...recBg, ...(p.rec && firstCell ? { borderTopLeftRadius: 6, borderBottomLeftRadius: 6, paddingLeft: 5 } : {}), ...(p.rec && lastCell ? { borderTopRightRadius: 6, borderBottomRightRadius: 6, paddingRight: 5 } : {}) };
                   if (c === "rank") return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 800, color: rankTierColor(p.pos, p.posRank), textAlign: "right" }}>{p.pos}{p.posRank}</div>;
-                  if (c === "name") return <div key={ri + "-" + ci} style={{ ...base, fontWeight: 600, color: p.star ? "var(--gold)" : "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.star ? "★ " : ""}{p.name}</div>;
+                  if (c === "name") return <div key={ri + "-" + ci} style={{ ...base, fontWeight: 600, color: p.star ? "var(--gold)" : "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.star ? "★ " : ""}{p.pos ? <Dot pos={p.pos} /> : null}{p.name}</div>;
                   if (c === "prob") return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 700, textAlign: "right", color: p.prob == null ? "var(--mut)" : p.prob >= 65 ? "var(--green)" : p.prob >= 35 ? "var(--gold)" : "var(--red)" }}>{p.prob != null ? `${p.prob}%` : "—"}</div>;
                   if (c === "adp") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--mut)", textAlign: "right" }}>{p.adp != null ? (Math.round(p.adp * 10) / 10).toFixed(1) : "—"}</div>;
                   if (c === "team") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--mut)", textAlign: "left" }}>{p.team || "FA"}</div>;
