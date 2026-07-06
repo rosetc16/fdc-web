@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28cm";
+const BUILD_TAG = "2026.06.28cn";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2080,6 +2080,17 @@ const demand = (sf) => {
   };
 };
 const REQ_F = (sf) => ({ QB: SPEC.QB, RB: SPEC.RB, WR: SPEC.WR, TE: SPEC.TE });
+// Effective starter requirement for POSITION-STRENGTH scoring. The dedicated REQ_F counts only fixed slots,
+// but a superflex/OP slot is realistically a second QB slot (most managers start two QBs), and the FLEX slot
+// is a shared RB/WR/TE spot. So for "how strong is this team at QB", superflex should count TWO QB starters —
+// which is exactly why a team starting the QB3 & QB20 can outrank one starting the QB6 & QB10. We fold the
+// SUPER slot into QB and split the FLEX slot lightly across RB/WR/TE so their starter counts reflect reality.
+const EFF_REQ = (cfg) => {
+  const sf = isSuperflex(cfg);
+  const base = { QB: SPEC.QB, RB: SPEC.RB, WR: SPEC.WR, TE: SPEC.TE };
+  if (sf || (SPEC.SUPER || 0) > 0) base.QB += Math.max(1, SPEC.SUPER || 1); // superflex → count a 2nd QB starter
+  return base;
+};
 function capsOf(cfg) {
   const d = Math.max(0, cfg.rounds - 8);
   if (isBestBallCfg(cfg)) {
@@ -2548,6 +2559,8 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
   const { slots, bench } = lineupSlots(roster, sf);
   const startersPts = slots.reduce((s, x) => s + (x.p ? x.p.pts || 0 : 0), 0);
   const req = REQ_F(sf);
+  const effReq = EFF_REQ(cfg);
+  const taDynasty = cfg.type === "dynasty" || cfg.type === "keeper";
   // per-position breakdown (own roster)
   const byPos = {};
   ["QB", "RB", "WR", "TE"].forEach((pos) => {
@@ -2566,8 +2579,8 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
     // position strength per team = SHARED quality score (quality × quantity, starter-focused with drop-off
     // credit) so this ranking matches the hub/overview coloring exactly.
     ["QB", "RB", "WR", "TE"].forEach((pos) => {
-      const reqN = req[pos] || 0;
-      const scoreOfTeam = (rosterArr) => posQualityScore(rosterArr.filter((p) => p.pos === pos), reqN);
+      const reqN = effReq[pos] || 0;
+      const scoreOfTeam = (rosterArr) => posQualityScore(rosterArr.filter((p) => p.pos === pos), reqN, { dynasty: taDynasty });
       const mine = scoreOfTeam(rosters[userIdxOf(ctx)]);
       const all = rosters.map((r, i) => ({ i, v: scoreOfTeam(r) })).sort((a, b) => b.v - a.v);
       const rank = all.findIndex((x) => x.i === userIdxOf(ctx)) + 1;
@@ -2586,8 +2599,8 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
     const posRankGrid = { teams: [], leagueSize: n };
     const gridScores = {}; // pos -> sorted [{i, v}]
     ["QB", "RB", "WR", "TE"].forEach((pos) => {
-      const reqN = req[pos] || 0;
-      gridScores[pos] = rosters.map((r, i) => ({ i, v: posQualityScore(r.filter((p) => p.pos === pos), reqN) })).sort((a, b) => b.v - a.v);
+      const reqN = effReq[pos] || 0;
+      gridScores[pos] = rosters.map((r, i) => ({ i, v: posQualityScore(r.filter((p) => p.pos === pos), reqN, { dynasty: taDynasty }) })).sort((a, b) => b.v - a.v);
     });
     const rankOf = (pos, ti) => gridScores[pos].findIndex((x) => x.i === ti) + 1;
     for (let ti = 0; ti < n; ti++) {
@@ -2839,49 +2852,66 @@ function leagueOverview(allPicks, players, teamAtFn, cfg) {
 //       cover, trade capital). Capped so hoarding scrubs can't outrank real starters.
 // Pure function; returns a single comparable number. We use a blended value = max(age-cut vbd, most of raw
 // value) so aging-but-productive starters count for the lineup while youth still gets its dynasty credit.
-function posQualityScore(playersAtPos, req) {
+function posQualityScore(playersAtPos, req, opts) {
+  opts = opts || {};
+  const dynasty = !!opts.dynasty;
   const REPLACEMENT = -35; // value of an empty/replacement starter slot
-  // Blended per-player value: for NEEDS/strength we care about on-field contribution, so we don't let the
-  // dynasty age discount drag a productive vet below a marginal youngster. Take the better of the age-cut
-  // VBD and a lightly-discounted RAW value (vbd0 if present, else vbd). Young players (vbd ≥ vbd0) are
-  // unaffected; aging starters keep most of their lineup value.
+  // Per-player lineup value. Two lenses:
+  //   win  = win-now starting power (age-cut VBD — what he scores THIS season)
+  //   keep = long-term/keeper value (pre-age-tax VBD when available)
+  // Redraft leans entirely on `win`. Dynasty blends in `keep` but STILL leads with starting power, because
+  // even a dynasty roster has to field a starting lineup. This keeps a team starting the QB3 & QB20 ahead of
+  // one starting the QB6 & QB10 only when its actual starters are better — quality at the slots that play.
   const valOf = (p) => {
     if (!p) return REPLACEMENT;
-    const cut = p.vbd != null ? p.vbd : REPLACEMENT;
-    const raw = p.vbd0 != null ? p.vbd0 : cut; // vbd0 = pre-age-tax value when available
-    return Math.max(cut, raw * 0.85);
+    const win = p.vbd != null ? p.vbd : REPLACEMENT;
+    const keep = p.vbd0 != null ? p.vbd0 : win;
+    return dynasty ? Math.max(win, 0.72 * win + 0.28 * keep) : win;
   };
   const arr = (playersAtPos || []).map(valOf).sort((a, b) => b - a);
   if (!req || req <= 0) {
-    return arr.length ? Math.max(0, arr[0]) * 0.4 : 0;
+    // No dedicated starter slots (e.g. a position only used via FLEX) — value the top one or two bodies.
+    if (!arr.length) return 0;
+    return Math.max(0, arr[0]) * 0.5 + (arr[1] != null ? Math.max(0, arr[1]) * 0.2 : 0);
   }
-  // (1) starter quality
-  let score = 0;
-  for (let k = 0; k < req; k++) score += (arr[k] != null ? arr[k] : REPLACEMENT);
-  // (2) depth / insurance — best two players beyond the starters, decreasing credit
-  const startersFilled = arr.length >= req && arr[req - 1] != null;
+  // (1) STARTER QUALITY — the dominant term. Sum the players who actually fill the required starter slots,
+  //     each measured above replacement so filling a slot with a real starter is heavily rewarded and an
+  //     empty slot is a real penalty. Weighted up so quality-at-the-slots clearly outweighs raw accumulation.
+  let starterScore = 0;
+  for (let k = 0; k < req; k++) {
+    const v = arr[k] != null ? arr[k] : REPLACEMENT;
+    starterScore += (v - REPLACEMENT); // points above a replacement starter
+  }
+  starterScore *= 1.6; // starters matter far more than depth — amplify the slot term
+  // (2) DEPTH / INSURANCE — the next couple of bodies beyond the starters, small decreasing credit. Real
+  //     depth matters (byes, injuries, trades) but must not overtake a better starting duo.
+  let depthScore = 0;
+  const startersFilled = arr.length >= req && arr[req - 1] != null && arr[req - 1] > REPLACEMENT;
   if (startersFilled) {
-    const b1 = arr[req], b2 = arr[req + 1];
-    if (b1 != null) score += Math.max(0, b1 - REPLACEMENT) * 0.30;
-    if (b2 != null) score += Math.max(0, b2 - REPLACEMENT) * 0.12;
+    const b1 = arr[req], b2 = arr[req + 1], b3 = arr[req + 2];
+    if (b1 != null) depthScore += Math.max(0, b1 - REPLACEMENT) * 0.22;
+    if (b2 != null) depthScore += Math.max(0, b2 - REPLACEMENT) * 0.10;
+    if (b3 != null) depthScore += Math.max(0, b3 - REPLACEMENT) * 0.04;
   }
-  // (3) quantity credit — small, capped. Rewards carrying real bodies (not scrubs) at the position.
-  const usefulBodies = arr.filter((v) => v > REPLACEMENT + 10).length;
-  score += Math.min(3, Math.max(0, usefulBodies - req)) * 4;
-  return score;
+  // (3) QUANTITY of genuinely useful bodies (well above replacement) — a small, capped bonus so a team that
+  //     is simply deeper edges one that isn't, all else equal — but never enough to flip a starter-quality gap.
+  const usefulBodies = arr.filter((v) => v > REPLACEMENT + 12).length;
+  const quantityBonus = Math.min(3, Math.max(0, usefulBodies - req)) * 2.5;
+  return starterScore + depthScore + quantityBonus;
 }
 // Rank every team at a position by the shared quality score, then bucket into terciles:
 // 0 = top third (green/strong), 1 = middle (amber), 2 = bottom third (red/weak). This is the single
 // source of truth for position coloring across the hub and the team-analysis tab.
 function posQualityTiers(rostersByTeam, cfg) {
   const n = rostersByTeam.length;
-  const req = REQ_F(cfg.sf);
+  const req = EFF_REQ(cfg);
+  const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
   const level = {}; for (let i = 0; i < n; i++) level[i] = {};
   const scoreByTeam = {}; for (let i = 0; i < n; i++) scoreByTeam[i] = {};
   ["QB", "RB", "WR", "TE"].forEach((pos) => {
     for (let i = 0; i < n; i++) {
       const atPos = (rostersByTeam[i] || []).filter((p) => p && p.pos === pos);
-      scoreByTeam[i][pos] = posQualityScore(atPos, req[pos] || 0);
+      scoreByTeam[i][pos] = posQualityScore(atPos, req[pos] || 0, { dynasty });
     }
     const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => scoreByTeam[b][pos] - scoreByTeam[a][pos]);
     order.forEach((teamIdx, rank) => {
@@ -3577,7 +3607,7 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .team-row:hover{border-color:var(--gold)!important;background:var(--panel3)!important;transform:translateX(2px);box-shadow:-3px 0 0 0 var(--gold)}
 .team-row:hover .team-arrow{opacity:1;transform:translateX(0)}
 .team-arrow{opacity:0;transform:translateX(-4px);transition:opacity .15s, transform .15s}
-@media(max-width:980px){.cols{flex-direction:column}.rail{width:100%!important}.hero-h{font-size:38px}.myteam-grid{grid-template-columns:1fr!important}.needteam-row{grid-template-columns:1fr!important}.recap-row{grid-template-columns:1fr!important}.superlative-grid{grid-template-columns:repeat(2,1fr)!important}}
+@media(max-width:980px){.cols{flex-direction:column}.rail{width:100%!important}.hero-h{font-size:38px}.myteam-grid{grid-template-columns:1fr!important;flex-direction:column!important}.needteam-row{grid-template-columns:1fr!important}.recap-row{grid-template-columns:1fr!important}.superlative-grid{grid-template-columns:repeat(2,1fr)!important}}
 @media(max-width:640px){
   .hero-h{font-size:30px!important}
   .statline{font-size:30px}
@@ -10455,8 +10485,9 @@ function TradePickModal({ teams, rounds, teamNames, userIdx, ownerOf, naturalOwn
   const nextA = nextPickOf(teamA), nextB = nextPickOf(teamB);
   const PickChip = ({ o, checked, onToggle, soon }) => (
     <button className="btn btn-mini" onClick={onToggle} title={soon ? "Closest upcoming pick for this team" : undefined}
-      style={{ borderColor: checked ? "var(--gold)" : soon ? "var(--gold)" : "var(--line)", background: checked ? "rgba(242,182,60,.14)" : soon ? "rgba(242,182,60,.10)" : "transparent", color: checked || soon ? "var(--gold)" : "var(--ink)", fontWeight: checked || soon ? 700 : 400, padding: "3px 8px", boxShadow: soon && !checked ? "0 0 0 1px var(--gold)" : "none" }}>
-      {checked ? "✓ " : soon ? "★ " : ""}{pickLabelOf(o)}
+      style={{ position: "relative", borderColor: checked ? "var(--gold)" : soon ? "#5AA9E6" : "var(--line)", background: checked ? "rgba(242,182,60,.14)" : soon ? "rgba(90,169,230,.10)" : "transparent", color: checked ? "var(--gold)" : soon ? "#7Fc0F0" : "var(--ink)", fontWeight: checked || soon ? 700 : 400, padding: "3px 8px" }}>
+      {checked ? "✓ " : ""}{pickLabelOf(o)}
+      {soon && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 800, letterSpacing: ".03em", color: "#0b0f14", background: "#5AA9E6", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>NEXT</span>}
     </button>
   );
 
@@ -13783,7 +13814,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             )}
 
             {!leagueOpen && (<>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, alignItems: "start" }} className="myteam-grid">
+            <div className="myteam-grid" style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+              <div className="ta-colL" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
               <div className="panel" style={{ padding: 14 }}>
                 <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 10 }}>Position depth</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -13825,45 +13857,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   })()}
                 </div>
               </div>
-              {ta.posRankByPos && Object.keys(ta.posRankByPos).length > 0 ? (
-                <div className="panel" style={{ padding: 14 }}>
-                  <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 4 }}>Where you rank in the league</div>
-                  <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Each position — and your whole roster (ALL) — vs the other {ta.leagueSize - 1} teams.</div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {["ALL", "QB", "RB", "WR", "TE"].map((pos) => {
-                      const r = ta.posRankByPos[pos]; if (!r) return null;
-                      const pctile = 1 - (r.rank - 1) / Math.max(1, r.of - 1);
-                      const frac = (r.rank - 1) / Math.max(1, r.of - 1); // 0 = best
-                      const lvl = frac <= 0.33 ? 0 : frac <= 0.66 ? 1 : 2;
-                      const tone = lvl === 0 ? "var(--green)" : lvl === 1 ? "var(--gold)" : "var(--red)";
-                      const word = lvl === 0 ? "Strong" : lvl === 1 ? "Middle" : "Weak";
-                      const isAll = pos === "ALL";
-                      const plist = isAll ? null : (ta.byPos[pos] && ta.byPos[pos].list) || [];
-                      const tip = isAll
-                        ? (e) => showTip(e, [{ kind: "take", tone: lvl === 0 ? "good" : lvl === 2 ? "bad" : "neutral", x: `Your roster overall — ${ordinalOf(r.rank)} of ${r.of} by projected starting lineup` }, { kind: "playertable", cols: ["slot", "rank", "name", "team", "pts"], players: ta.slots.filter((s) => s.p).map((s) => ({ ...s.p, slot: s.slot })) }])
-                        : (plist && plist.length ? (e) => showTip(e, [{ kind: "take", tone: lvl === 0 ? "good" : lvl === 2 ? "bad" : "neutral", x: `Your ${pos}s — ${ordinalOf(r.rank)} of ${r.of} in the league` }, { kind: "playertable", cols: ["rank", "name", "team", "role", "pts"], players: plist }]) : undefined);
-                      return (
-                        <div key={pos} style={{ display: "flex", alignItems: "center", gap: 9, cursor: tip ? "help" : "default", ...(isAll ? { paddingBottom: 8, marginBottom: 2, borderBottom: "1px solid var(--line)" } : {}) }}
-                          onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
-                          <span style={{ width: 26, fontWeight: 800, color: isAll ? "var(--ink)" : posColor[pos] }}>{pos}</span>
-                          <div style={{ flex: 1, height: 9, background: "var(--panel2)", borderRadius: 5, overflow: "hidden" }}>
-                            <div style={{ width: `${Math.max(6, pctile * 100)}%`, height: "100%", background: tone, opacity: 0.85 }} />
-                          </div>
-                          <span className="num" style={{ fontSize: 11.5, width: 74, textAlign: "right" }}>{ordinalOf(r.rank)} of {r.of}</span>
-                          <span style={{ fontSize: 10, fontWeight: 700, color: tone, width: 44, textAlign: "right" }}>{word}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {ta.posRankGrid && ta.posRankGrid.teams && ta.posRankGrid.teams.length > 0 && (
-                    <PosRankGrid grid={ta.posRankGrid} userIdx={selTeam} teamNames={TEAM_NAMES} posColor={posColor} showTip={showTip} hideTip={hideTip} rankTierColor={rankTierColor} />
-                  )}
-                </div>
-              ) : <div />}
-            </div>
-
-            {/* Row B: starting lineup (left) + [your next pick over roster profile] (right) */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, alignItems: "start" }} className="myteam-grid">
             <div className="panel" style={{ padding: 14 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
                 <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)" }}>{myProjView && isMe ? "Projected" : "Current"} starting lineup</div>
@@ -13922,8 +13915,43 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 </>
               )}
             </div>
-
-            {/* Right column: next pick (top) + roster profile (bottom) */}
+              </div>
+              <div className="ta-colR" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
+              {ta.posRankByPos && Object.keys(ta.posRankByPos).length > 0 ? (
+                <div className="panel" style={{ padding: 14 }}>
+                  <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 4 }}>Where you rank in the league</div>
+                  <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Each position — and your whole roster (ALL) — vs the other {ta.leagueSize - 1} teams.</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {["ALL", "QB", "RB", "WR", "TE"].map((pos) => {
+                      const r = ta.posRankByPos[pos]; if (!r) return null;
+                      const pctile = 1 - (r.rank - 1) / Math.max(1, r.of - 1);
+                      const frac = (r.rank - 1) / Math.max(1, r.of - 1); // 0 = best
+                      const lvl = frac <= 0.33 ? 0 : frac <= 0.66 ? 1 : 2;
+                      const tone = lvl === 0 ? "var(--green)" : lvl === 1 ? "var(--gold)" : "var(--red)";
+                      const word = lvl === 0 ? "Strong" : lvl === 1 ? "Middle" : "Weak";
+                      const isAll = pos === "ALL";
+                      const plist = isAll ? null : (ta.byPos[pos] && ta.byPos[pos].list) || [];
+                      const tip = isAll
+                        ? (e) => showTip(e, [{ kind: "take", tone: lvl === 0 ? "good" : lvl === 2 ? "bad" : "neutral", x: `Your roster overall — ${ordinalOf(r.rank)} of ${r.of} by projected starting lineup` }, { kind: "playertable", cols: ["slot", "rank", "name", "team", "pts"], players: ta.slots.filter((s) => s.p).map((s) => ({ ...s.p, slot: s.slot })) }])
+                        : (plist && plist.length ? (e) => showTip(e, [{ kind: "take", tone: lvl === 0 ? "good" : lvl === 2 ? "bad" : "neutral", x: `Your ${pos}s — ${ordinalOf(r.rank)} of ${r.of} in the league` }, { kind: "playertable", cols: ["rank", "name", "team", "role", "pts"], players: plist }]) : undefined);
+                      return (
+                        <div key={pos} style={{ display: "flex", alignItems: "center", gap: 9, cursor: tip ? "help" : "default", ...(isAll ? { paddingBottom: 8, marginBottom: 2, borderBottom: "1px solid var(--line)" } : {}) }}
+                          onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
+                          <span style={{ width: 26, fontWeight: 800, color: isAll ? "var(--ink)" : posColor[pos] }}>{pos}</span>
+                          <div style={{ flex: 1, height: 9, background: "var(--panel2)", borderRadius: 5, overflow: "hidden" }}>
+                            <div style={{ width: `${Math.max(6, pctile * 100)}%`, height: "100%", background: tone, opacity: 0.85 }} />
+                          </div>
+                          <span className="num" style={{ fontSize: 11.5, width: 74, textAlign: "right" }}>{ordinalOf(r.rank)} of {r.of}</span>
+                          <span style={{ fontSize: 10, fontWeight: 700, color: tone, width: 44, textAlign: "right" }}>{word}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {ta.posRankGrid && ta.posRankGrid.teams && ta.posRankGrid.teams.length > 0 && (
+                    <PosRankGrid grid={ta.posRankGrid} userIdx={selTeam} teamNames={TEAM_NAMES} posColor={posColor} showTip={showTip} hideTip={hideTip} rankTierColor={rankTierColor} />
+                  )}
+                </div>
+              ) : <div />}
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               {!done && (myNextOv != null) && (
                 <div className="panel" style={{ padding: 16, borderLeft: "3px solid var(--gold)" }}>
@@ -14043,6 +14071,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               {/* Bye-week outlook — below the outlook panel; redraft-focused, graceful when byes unannounced */}
               <ByeWeekWidget roster={selRoster} req={REQ_F(isSuperflex(cfg))} isDynasty={cfg.type === "dynasty" || cfg.type === "keeper"} />
             </div>
+              </div>
             </div>
             </>)}
           </div>
@@ -14309,7 +14338,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
       {tab === "summary" && proj && grades && (() => { const focusIdx = summaryTeam == null ? userIdx : summaryTeam; return (
         <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(310px,1fr))", gap: 12, maxWidth: 1250 }}>
-          <div className="panel" style={{ padding: "10px 14px", gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div className="panel" style={{ padding: "10px 14px", gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", position: "sticky", top: 0, zIndex: 20, boxShadow: "0 4px 14px rgba(0,0,0,.35)" }}>
             <span className="mut" style={{ fontSize: 12.5 }}>Focus on</span>
             <select className="gs" style={{ minWidth: 220 }} value={summaryTeam == null ? "" : String(summaryTeam)} onChange={(e) => setSummaryTeam(e.target.value === "" ? null : +e.target.value)}>
               <option value="">Your team + league-wide trends</option>
@@ -14497,8 +14526,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         <div className="disp" style={{ fontSize: 11, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--mut)", marginBottom: 5 }}>Draft grades</div>
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: "3px 12px" }}>
                           {gradeOrder.map((i) => (
-                            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 12, padding: "1px 0", color: i === userIdx ? "var(--gold)" : "var(--ink)" }}>
-                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{nm(i)}{i === userIdx ? " ★" : ""}</span>
+                            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 12, padding: "1px 0", color: i === focusIdx ? "var(--gold)" : "var(--ink)", fontWeight: i === focusIdx ? 700 : 400 }}>
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{nm(i)}{i === userIdx ? " ★" : i === focusIdx ? " ◄" : ""}</span>
                               <span style={{ flexShrink: 0, marginLeft: 6, display: "inline-flex", alignItems: "baseline", gap: 5 }}>
                                 <b>{grades[i].g}</b>
                                 <span className="num" style={{ fontSize: 10.5, fontWeight: 700, color: valByTeam[i] > 0 ? "var(--green)" : valByTeam[i] < 0 ? "var(--red)" : "var(--mut)" }}>({valByTeam[i] > 0 ? "+" : ""}{valByTeam[i]})</span>
@@ -14787,11 +14816,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 }
                 const segTip = (pos, list) => (e) => showTip(e, [
                   { kind: "take", tone: "neutral", x: `${pos} taken this round (${list.length})` },
-                  ...list.map(({ p, overall }) => {
-                    const t = teamAt(overall);
-                    const mine = t === userIdx;
-                    return { t: `${p.pos}${p.posRank}`, tc: mine ? "var(--gold)" : rankTierColor(p.pos, p.posRank), x: `#${overall + 1} — ${p.name} → ${mine ? "YOUR TEAM" : (TEAM_NAMES[t] || `Team ${t + 1}`)}` };
-                  }),
+                  { kind: "playertable", cols: ["pick", "rank", "name", "team", "pts"], players: list.map(({ p, overall }) => ({ ...p, pickNo: overall + 1, rec: teamAt(overall) === focusIdx, star: teamAt(overall) === focusIdx })) },
+                  ...(list.some(({ overall }) => teamAt(overall) === focusIdx) ? [{ t: "", x: `★ = ${focusIdx === userIdx ? "your" : (TEAM_NAMES[focusIdx] || "the focused team") + "'s"} pick` }] : []),
                 ]);
                 return (
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -14800,12 +14826,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         <div key={row.r} style={{ display: "flex", alignItems: "center", gap: 9 }}>
                           <span className="num mut" style={{ width: 42, fontSize: 11, textAlign: "right" }}>R{row.r}</span>
                           <div style={{ flex: 1, display: "flex", height: 22, borderRadius: 5, overflow: "hidden", background: "var(--panel2)", border: "1px solid var(--line)" }}>
-                            {["QB", "RB", "WR", "TE"].map((pos) => row.counts[pos] > 0 && (
+                            {["QB", "RB", "WR", "TE"].map((pos) => row.counts[pos] > 0 && (() => {
+                              const isFocus = row.byPos[pos].some((x) => teamAt(x.overall) === focusIdx);
+                              return (
                               <div key={pos} onMouseEnter={segTip(pos, row.byPos[pos])} onMouseLeave={hideTip}
-                                style={{ width: `${(row.counts[pos] / row.total) * 100}%`, background: POS_COLOR[pos], display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10.5, fontWeight: 800, color: "#0b0f14", cursor: "help", borderRight: "1px solid rgba(0,0,0,.25)", boxShadow: row.byPos[pos].some((x) => teamAt(x.overall) === focusIdx) ? "inset 0 0 0 2px var(--gold)" : "none" }}>
-                                {row.counts[pos]} {pos}
+                                style={{ position: "relative", width: `${(row.counts[pos] / row.total) * 100}%`, background: POS_COLOR[pos], display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10.5, fontWeight: 800, color: "#0b0f14", cursor: "help", borderRight: "1px solid rgba(0,0,0,.25)", boxShadow: isFocus ? "inset 0 0 0 3px var(--gold)" : "none", zIndex: isFocus ? 2 : 1, borderRadius: isFocus ? 4 : 0 }}>
+                                {row.counts[pos]} {pos}{isFocus && <span style={{ marginLeft: 3, fontSize: 9 }}>★</span>}
                               </div>
-                            ))}
+                              );
+                            })())}
                           </div>
                         </div>
                       );
@@ -14835,9 +14864,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               {(() => {
                 const myRoster = (proj.rosters[userIdx] || []).filter(Boolean);
                 const req = REQ_F(cfg.sf);
+                const effReq = EFF_REQ(cfg);
+                const dyn = cfg.type === "dynasty" || cfg.type === "keeper";
                 // 1) Weakest starting spot — the position where your best starter is thinnest vs the league.
                 const posScore = {};
-                POS.forEach((pos) => { posScore[pos] = posQualityScore(myRoster.filter((p) => p && p.pos === pos), req[pos] || 0); });
+                POS.forEach((pos) => { posScore[pos] = posQualityScore(myRoster.filter((p) => p && p.pos === pos), effReq[pos] || 0, { dynasty: dyn }); });
                 const weakest = POS.filter((p) => (req[p] || 0) > 0).sort((a, b) => posScore[a] - posScore[b])[0] || "RB";
                 // 2) Bye-week clusters — weeks where you're thin because too many starters are off.
                 const byeCount = {};
