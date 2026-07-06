@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28cn";
+const BUILD_TAG = "2026.06.28co";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2091,6 +2091,21 @@ const EFF_REQ = (cfg) => {
   if (sf || (SPEC.SUPER || 0) > 0) base.QB += Math.max(1, SPEC.SUPER || 1); // superflex → count a 2nd QB starter
   return base;
 };
+// How much extra starter capacity each position draws from shared FLEX/SUPER slots. FLEX is RB/WR/TE-eligible
+// (weighted toward RB/WR, where flex is usually filled); SUPER/OP is QB-eligible in superflex (already folded
+// into EFF_REQ, so not double-counted here). Returns per-position fractional shares so a deep RB room gets
+// credit for the extra RBs it can realistically start via FLEX.
+const flexShareOf = (cfg) => {
+  const flex = (SPEC.FLEX || 0);
+  const share = { QB: 0, RB: 0, WR: 0, TE: 0 };
+  if (flex > 0) {
+    // Typical FLEX usage skews RB/WR over TE. Split each FLEX slot ~ 42% RB, 42% WR, 16% TE.
+    share.RB += flex * 0.42;
+    share.WR += flex * 0.42;
+    share.TE += flex * 0.16;
+  }
+  return share;
+};
 function capsOf(cfg) {
   const d = Math.max(0, cfg.rounds - 8);
   if (isBestBallCfg(cfg)) {
@@ -2560,6 +2575,7 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
   const startersPts = slots.reduce((s, x) => s + (x.p ? x.p.pts || 0 : 0), 0);
   const req = REQ_F(sf);
   const effReq = EFF_REQ(cfg);
+  const taFlexShare = flexShareOf(cfg);
   const taDynasty = cfg.type === "dynasty" || cfg.type === "keeper";
   // per-position breakdown (own roster)
   const byPos = {};
@@ -2580,7 +2596,7 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
     // credit) so this ranking matches the hub/overview coloring exactly.
     ["QB", "RB", "WR", "TE"].forEach((pos) => {
       const reqN = effReq[pos] || 0;
-      const scoreOfTeam = (rosterArr) => posQualityScore(rosterArr.filter((p) => p.pos === pos), reqN, { dynasty: taDynasty });
+      const scoreOfTeam = (rosterArr) => posQualityScore(rosterArr.filter((p) => p.pos === pos), reqN, { dynasty: taDynasty, flexShare: taFlexShare[pos] || 0 });
       const mine = scoreOfTeam(rosters[userIdxOf(ctx)]);
       const all = rosters.map((r, i) => ({ i, v: scoreOfTeam(r) })).sort((a, b) => b.v - a.v);
       const rank = all.findIndex((x) => x.i === userIdxOf(ctx)) + 1;
@@ -2600,14 +2616,14 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
     const gridScores = {}; // pos -> sorted [{i, v}]
     ["QB", "RB", "WR", "TE"].forEach((pos) => {
       const reqN = effReq[pos] || 0;
-      gridScores[pos] = rosters.map((r, i) => ({ i, v: posQualityScore(r.filter((p) => p.pos === pos), reqN, { dynasty: taDynasty }) })).sort((a, b) => b.v - a.v);
+      gridScores[pos] = rosters.map((r, i) => ({ i, v: posQualityScore(r.filter((p) => p.pos === pos), reqN, { dynasty: taDynasty, flexShare: taFlexShare[pos] || 0 }) })).sort((a, b) => b.v - a.v);
     });
     const rankOf = (pos, ti) => gridScores[pos].findIndex((x) => x.i === ti) + 1;
     for (let ti = 0; ti < n; ti++) {
       const row = { team: ti, overall: overallByTeam[ti] || n, pos: {}, players: {} };
       ["QB", "RB", "WR", "TE"].forEach((pos) => {
         row.pos[pos] = rankOf(pos, ti);
-        row.players[pos] = rosters[ti].filter((p) => p.pos === pos).sort((a, b) => (b.vbd || 0) - (a.vbd || 0));
+        row.players[pos] = rosters[ti].filter((p) => p.pos === pos).sort((a, b) => ((b.vbd0 != null ? b.vbd0 : b.vbd) || 0) - ((a.vbd0 != null ? a.vbd0 : a.vbd) || 0));
       });
       posRankGrid.teams.push(row);
     }
@@ -2850,53 +2866,72 @@ function leagueOverview(allPicks, players, teamAtFn, cfg) {
 //       lower than one with real backups.
 //   (3) QUANTITY — a small credit for carrying more bodies at a scarce position (useful pieces, bye/injury
 //       cover, trade capital). Capped so hoarding scrubs can't outrank real starters.
-// Pure function; returns a single comparable number. We use a blended value = max(age-cut vbd, most of raw
-// value) so aging-but-productive starters count for the lineup while youth still gets its dynasty credit.
+// Pure function; returns a single comparable number for a team's strength at one position.
+// Philosophy (revised): a position group's strength is FIRST about win-now starting production — the raw
+// points the starters actually put up — because every roster, dynasty or not, has to field a lineup. Dynasty
+// youth is layered on as a MODEST bonus (long-term upside), never enough to rank a top-heavy young team above
+// a genuinely deeper, more productive one. Depth of real starters is credited meaningfully.
 function posQualityScore(playersAtPos, req, opts) {
   opts = opts || {};
   const dynasty = !!opts.dynasty;
-  const REPLACEMENT = -35; // value of an empty/replacement starter slot
-  // Per-player lineup value. Two lenses:
-  //   win  = win-now starting power (age-cut VBD — what he scores THIS season)
-  //   keep = long-term/keeper value (pre-age-tax VBD when available)
-  // Redraft leans entirely on `win`. Dynasty blends in `keep` but STILL leads with starting power, because
-  // even a dynasty roster has to field a starting lineup. This keeps a team starting the QB3 & QB20 ahead of
-  // one starting the QB6 & QB10 only when its actual starters are better — quality at the slots that play.
-  const valOf = (p) => {
+  const flexShare = opts.flexShare || 0; // extra starter capacity this position draws from FLEX/SUPER slots
+  const REPLACEMENT = -35;
+  // WIN-NOW value = pre-age-tax VBD (vbd0) — this tracks actual projected points, so it matches the posRank
+  // a manager sees (RB7 really is more productive than RB23). We do NOT lead with the age-adjusted vbd,
+  // because that inflates youth and would rank a young RB23 above a productive RB7, which is the bug.
+  const winOf = (p) => {
     if (!p) return REPLACEMENT;
-    const win = p.vbd != null ? p.vbd : REPLACEMENT;
-    const keep = p.vbd0 != null ? p.vbd0 : win;
-    return dynasty ? Math.max(win, 0.72 * win + 0.28 * keep) : win;
+    const raw = p.vbd0 != null ? p.vbd0 : (p.vbd != null ? p.vbd : REPLACEMENT);
+    return raw;
   };
-  const arr = (playersAtPos || []).map(valOf).sort((a, b) => b - a);
-  if (!req || req <= 0) {
-    // No dedicated starter slots (e.g. a position only used via FLEX) — value the top one or two bodies.
+  // Dynasty youth bonus: a small positive nudge for young, valuable players (and a small ding for old ones),
+  // applied on top of win-now value so upside is rewarded WITHOUT overturning production order.
+  const dynAdj = (p, base) => {
+    if (!dynasty || !p || base <= 0) return base;
+    const m = p.ageMult != null ? p.ageMult : 1; // >1 young, <1 aging
+    // dampened: only 35% of the age multiplier's effect, so youth is a tiebreaker-plus, not the driver.
+    const factor = 1 + (m - 1) * 0.35;
+    return base * factor;
+  };
+  const scored = (playersAtPos || []).map((p) => ({ p, v: dynAdj(p, winOf(p)) })).sort((a, b) => b.v - a.v);
+  const arr = scored.map((x) => x.v);
+  // Effective number of starter slots this position fills: its dedicated slots PLUS the share of FLEX/SUPER
+  // slots it typically absorbs. In a 2RB+2FLEX league a team can start 3-4 RBs, so a deep RB room should be
+  // rewarded for those extra startable bodies — not treated as mere bench.
+  const effStarters = Math.max(0, (req || 0)) + flexShare;
+  if (effStarters <= 0) {
     if (!arr.length) return 0;
     return Math.max(0, arr[0]) * 0.5 + (arr[1] != null ? Math.max(0, arr[1]) * 0.2 : 0);
   }
-  // (1) STARTER QUALITY — the dominant term. Sum the players who actually fill the required starter slots,
-  //     each measured above replacement so filling a slot with a real starter is heavily rewarded and an
-  //     empty slot is a real penalty. Weighted up so quality-at-the-slots clearly outweighs raw accumulation.
+  const fullStarters = Math.floor(effStarters);
+  const partial = effStarters - fullStarters; // fractional FLEX share for the next body
+  // (1) STARTER QUALITY — the dominant term: production the starting lineup actually gets, above replacement.
   let starterScore = 0;
-  for (let k = 0; k < req; k++) {
+  for (let k = 0; k < fullStarters; k++) {
     const v = arr[k] != null ? arr[k] : REPLACEMENT;
-    starterScore += (v - REPLACEMENT); // points above a replacement starter
+    starterScore += (v - REPLACEMENT);
   }
-  starterScore *= 1.6; // starters matter far more than depth — amplify the slot term
-  // (2) DEPTH / INSURANCE — the next couple of bodies beyond the starters, small decreasing credit. Real
-  //     depth matters (byes, injuries, trades) but must not overtake a better starting duo.
+  // fractional FLEX slot — credit the next body proportionally (a 4th RB in a 2RB+2FLEX league is a real,
+  // if shared, starter).
+  if (partial > 0 && arr[fullStarters] != null) {
+    starterScore += Math.max(0, arr[fullStarters] - REPLACEMENT) * partial;
+  }
+  starterScore *= 1.5;
+  // (2) DEPTH / INSURANCE — remaining bodies beyond the (effective) starters, decreasing but non-trivial
+  //     credit, so a genuinely deep room (Henry+Kyren+Judkins+Pollard+…) clearly beats a top-heavy one.
   let depthScore = 0;
-  const startersFilled = arr.length >= req && arr[req - 1] != null && arr[req - 1] > REPLACEMENT;
-  if (startersFilled) {
-    const b1 = arr[req], b2 = arr[req + 1], b3 = arr[req + 2];
-    if (b1 != null) depthScore += Math.max(0, b1 - REPLACEMENT) * 0.22;
-    if (b2 != null) depthScore += Math.max(0, b2 - REPLACEMENT) * 0.10;
-    if (b3 != null) depthScore += Math.max(0, b3 - REPLACEMENT) * 0.04;
+  const startIdx = Math.ceil(effStarters);
+  if (arr.length > startIdx && arr[Math.min(startIdx, arr.length) - 1] != null) {
+    const weights = [0.32, 0.20, 0.11, 0.06, 0.03];
+    for (let j = 0; j < weights.length; j++) {
+      const v = arr[startIdx + j];
+      if (v == null) break;
+      depthScore += Math.max(0, v - REPLACEMENT) * weights[j];
+    }
   }
-  // (3) QUANTITY of genuinely useful bodies (well above replacement) — a small, capped bonus so a team that
-  //     is simply deeper edges one that isn't, all else equal — but never enough to flip a starter-quality gap.
-  const usefulBodies = arr.filter((v) => v > REPLACEMENT + 12).length;
-  const quantityBonus = Math.min(3, Math.max(0, usefulBodies - req)) * 2.5;
+  // (3) QUANTITY of genuinely useful bodies — capped bonus rewarding real depth of startable-quality players.
+  const usefulBodies = arr.filter((v) => v > REPLACEMENT + 15).length;
+  const quantityBonus = Math.min(4, Math.max(0, usefulBodies - Math.round(effStarters))) * 3;
   return starterScore + depthScore + quantityBonus;
 }
 // Rank every team at a position by the shared quality score, then bucket into terciles:
@@ -2905,13 +2940,14 @@ function posQualityScore(playersAtPos, req, opts) {
 function posQualityTiers(rostersByTeam, cfg) {
   const n = rostersByTeam.length;
   const req = EFF_REQ(cfg);
+  const fShare = flexShareOf(cfg);
   const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
   const level = {}; for (let i = 0; i < n; i++) level[i] = {};
   const scoreByTeam = {}; for (let i = 0; i < n; i++) scoreByTeam[i] = {};
   ["QB", "RB", "WR", "TE"].forEach((pos) => {
     for (let i = 0; i < n; i++) {
       const atPos = (rostersByTeam[i] || []).filter((p) => p && p.pos === pos);
-      scoreByTeam[i][pos] = posQualityScore(atPos, req[pos] || 0, { dynasty });
+      scoreByTeam[i][pos] = posQualityScore(atPos, req[pos] || 0, { dynasty, flexShare: fShare[pos] || 0 });
     }
     const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => scoreByTeam[b][pos] - scoreByTeam[a][pos]);
     order.forEach((teamIdx, rank) => {
@@ -14338,7 +14374,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
       {tab === "summary" && proj && grades && (() => { const focusIdx = summaryTeam == null ? userIdx : summaryTeam; return (
         <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(310px,1fr))", gap: 12, maxWidth: 1250 }}>
-          <div className="panel" style={{ padding: "10px 14px", gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", position: "sticky", top: 0, zIndex: 20, boxShadow: "0 4px 14px rgba(0,0,0,.35)" }}>
+          <div className="panel" style={{ padding: "10px 14px", gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", position: "sticky", top: stickyHeadH, zIndex: 20, boxShadow: "0 4px 14px rgba(0,0,0,.35)" }}>
             <span className="mut" style={{ fontSize: 12.5 }}>Focus on</span>
             <select className="gs" style={{ minWidth: 220 }} value={summaryTeam == null ? "" : String(summaryTeam)} onChange={(e) => setSummaryTeam(e.target.value === "" ? null : +e.target.value)}>
               <option value="">Your team + league-wide trends</option>
