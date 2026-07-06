@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28da";
+const BUILD_TAG = "2026.06.28db";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -11827,6 +11827,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // each pick inside Sleeper; the compass reads them in and keeps your board current.
   const nameToId = useMemo(() => { const m = {}; players.forEach((p) => { m[normName(p.name)] = p.id; }); return m; }, [players]);
   const [syncState, setSyncState] = useState({ status: null, lastAt: null, error: null });
+  const firstLiveSyncDone = useRef(false); // first live pull after load trusts Sleeper's authoritative pick count
   const sleeperLive = connectedPlatform === "sleeper" && draftMode === "sleeper" && !!(cfg.connect && cfg.connect.leagueId) && hasBackend;
   // One-time fetch of team names + Sleeper usernames — runs even when the draft is COMPLETE (the live
   // sync below stops once `done`, so without this a finished league would never load owner names).
@@ -11899,7 +11900,26 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         else setLiveClock(d.pickTimerSec ? { deadlineMs: null, timerSec: d.pickTimerSec, skewMs: 0 } : null);
         setPicks((prev) => {
           if (hypoMode) { if (mapped.length > hypoBase) setLivePending({ picks: mapped }); return prev; }
-          if (mapped.length < prev.length) return prev;
+          // FIRST successful live pull after a (re)load: Sleeper is authoritative. A saved/restored local board
+          // can be a couple picks ahead of the live draft (e.g. picks were undone or re-ordered on Sleeper while
+          // our saved copy kept them), which would otherwise leave the on-clock pick number reading too high.
+          // As long as this pull looks like a real draft state (non-trivially populated, or genuinely empty at
+          // the very start), take it verbatim so we start from the true board position.
+          if (!firstLiveSyncDone.current) {
+            firstLiveSyncDone.current = true;
+            if (mapped.length !== prev.length || !mapped.every((id, i) => id === prev[i])) return mapped;
+            return prev;
+          }
+          if (mapped.length < prev.length) {
+            // A shorter pull is usually a transient glitch (a slow/partial Sleeper response) — ignore it to
+            // avoid flicker. BUT a genuine commissioner undo / re-order can legitimately REMOVE picks, and if
+            // we always keep the longer array we'd lock in a phantom over-count. Accept a shrink when the new
+            // list is a clean PREFIX of what we had and isn't a near-empty drop-out — a real correction.
+            const isPrefix = mapped.every((id, i) => id === prev[i]);
+            const notGlitch = mapped.length >= prev.length - 5; // real undos remove a few picks; big drops are network glitches
+            if (isPrefix && notGlitch) return mapped; // real correction — trust Sleeper
+            return prev; // transient — keep last known
+          }
           const same = mapped.length === prev.length && mapped.every((id, i) => id === prev[i]);
           return same ? prev : mapped;
         });
@@ -13404,20 +13424,21 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 else if (topBal) summaryBits.push({ i: "ti-check", c: "#5FD0A8", t: `Value and your build agree: ${topBal.name.split(" ").slice(-1)}.` });
 
                 // ---- Recommendation duo (headshots): balanced + my-build top pick ----
-                const recCard = (p, label, accent) => {
+                const recCard = (p, label, accent, both) => {
                   if (!p) return null;
                   const surv = survOf(p);
                   const openTip = (e) => showTip(e, makeOutlook(p, sims, false, { pickNow: pickNowN, dynasty, run, needShort: need.includes(p.pos) ? 1 : 0, scarcity: scarcityFor(p) }));
                   return (
-                    <div onMouseEnter={openTip} onMouseLeave={hideTip} style={{ flex: 1, minWidth: 0, display: "flex", gap: 8, alignItems: "center", padding: "7px 9px", borderRadius: 8, border: `1px solid ${accent}`, background: "rgba(255,255,255,.03)", cursor: "help" }}>
+                    <div onMouseEnter={openTip} onMouseLeave={hideTip} style={{ flex: 1, minWidth: 0, display: "flex", gap: 8, alignItems: "center", padding: "7px 9px", borderRadius: 8, border: `1px solid ${accent}`, background: both ? "linear-gradient(90deg,rgba(242,182,60,.10),rgba(107,168,229,.10))" : "rgba(255,255,255,.03)", cursor: "help" }}>
                       <PlayerPhoto sid={p.sid} pos={p.pos} size={38} />
                       <div style={{ minWidth: 0, flex: 1 }}>
-                        <div style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".04em", color: accent, fontWeight: 800 }}>{label}</div>
+                        <div style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".04em", color: accent, fontWeight: 800, display: "flex", alignItems: "center", gap: 4 }}>{both && <i className="ti ti-check" style={{ fontSize: 10 }} aria-hidden="true" />}{label}</div>
                         <div style={{ fontSize: 12, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
                         <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 9.5 }}>
                           <span style={{ fontWeight: 700, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
                           <span className="num" style={{ color: vbdColor(dynasty ? (p.value ?? p.vbd) : p.vbd) }}>{(() => { const v = dynasty ? (p.value ?? p.vbd) : p.vbd; return (v > 0 ? "+" : "") + Math.round(v); })()}</span>
                           {surv != null && !isBoardPick && <span className="mut">{surv}% avail</span>}
+                          {both && <span style={{ fontSize: 8, fontWeight: 700, color: "var(--blue)", background: "rgba(107,168,229,.15)", borderRadius: 3, padding: "0 4px" }}>both agree</span>}
                         </div>
                       </div>
                       {onClockNow && !gated && <button className="btn btn-mini" style={{ fontSize: 9.5, padding: "3px 8px", borderColor: accent, color: accent, flexShrink: 0 }} onClick={(e) => { e.stopPropagation(); draftPlayer(p.id); }}>Draft</button>}
@@ -13553,8 +13574,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       <div style={{ marginBottom: 10 }}>
                         <div style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, marginBottom: 4 }}>Recommended {onClockNow ? "— draft one" : "for this pick"}</div>
                         <div style={{ display: "flex", gap: 7 }}>
-                          {recCard(topBal, "Balanced", "var(--gold)")}
-                          {topBld && topBld.id !== (topBal && topBal.id) && recCard(topBld, "My build", "var(--blue)")}
+                          {topBal && topBld && topBal.id === topBld.id
+                            ? recCard(topBal, "Balanced + My build", "var(--gold)", true)
+                            : <>
+                                {recCard(topBal, "Balanced", "var(--gold)")}
+                                {topBld && topBld.id !== (topBal && topBal.id) && recCard(topBld, "My build", "var(--blue)")}
+                              </>}
                         </div>
                       </div>
                     )}
