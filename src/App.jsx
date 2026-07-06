@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28cz";
+const BUILD_TAG = "2026.06.28da";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2190,6 +2190,38 @@ function bbBonus(c) {
   }
   return b;
 }
+// EMPTY-STARTER PREMIUM: locking a genuinely unfilled REQUIRED starter slot (not a flex/bench body) is worth
+// more than marginal depth — especially at a scarce position (TE/QB). This is the "fill your starting lineup
+// before flex" pressure the model needs: a candidate at a position where you still owe a required starter gets
+// a bonus that FADES as fixed starter slots fill, so early picks favor completing the core, then flex/depth
+// take over. Flex-eligible positions (RB/WR) get only a light bump once their fixed slots are met — you can
+// still take flex value, but it won't outrank filling an empty TE/QB. Scaled so it can overcome a moderate VBD
+// gap between a needed-but-lower-value starter and a redundant higher-value flex body, without ignoring value
+// entirely (a truly elite flex player still wins).
+function emptyStarterPremium(c, counts, sf) {
+  const req = REQ_F(sf);
+  const owed = Math.max(0, (req[c.pos] || 0) - (counts[c.pos] || 0)); // required starters still unfilled at c.pos
+  if (owed <= 0) return 0;
+  // scarcer positions (QB in SF, TE) get a bigger premium since replacements are harder to find later
+  const scarce = c.pos === "TE" ? 34 : (c.pos === "QB" && (sf || (SPEC.SUPER || 0) > 0)) ? 30 : 22;
+  return scarce * Math.min(owed, 2);
+}
+// Contention-window fit: in a dynasty REBUILD, an old replacement-level vet does nothing for you even if his
+// VBD (win-now points) looks less-negative than a young player's — you want the youth/asset. In a WIN-NOW lane
+// the reverse. Returns a points adjustment applied in dynasty for balanced (build has its own, stronger term).
+function windowFit(c, lane, dynasty) {
+  if (!dynasty) return 0;
+  const age = c.age || 27;
+  // In dynasty, a player's composite `value` bakes in age (young players keep more, old vets are discounted).
+  // The win-now `vbd` ignores age. The gap (value - vbd) is therefore the "youth/asset premium" the market
+  // pays. In a REBUILD we want to CHASE that premium (favor the young asset even at lower win-now points); in
+  // WIN-NOW we lean the other way (take the proven producer). We add a fraction of that gap so a 21-yo at a
+  // premium spot can overtake a 30-yo with better raw VBD.
+  const assetGap = (c.value != null && c.vbd != null) ? (c.value - c.vbd) : 0;
+  if (lane === "rebuild") return Math.max(0, 27 - age) * 4 + (c.rookie ? 14 : 0) - Math.max(0, age - 29) * 5 + Math.max(0, assetGap) * 0.55;
+  if (lane === "winnow") return Math.max(0, age - 24) * 2 - (c.rookie ? 8 : 0) - Math.max(0, assetGap) * 0.25;
+  return 0;
+}
 function userScore(c, counts, dem, strategy, sf, pickNum, build) {
   if (strategy === "adp") return -c.adp;
   const mv = marginalVbd(c, counts, sf);
@@ -2203,7 +2235,8 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build) {
     let s = mv;
     if (need > 0) s += 16 * Math.min(need, 2);
     else s += need * 22; // over-stacked positions get heavily penalized
-    if (lane === "rebuild") { s += Math.max(0, 28 - (c.age || 27)) * 7; if (c.rookie) s += 25; }
+    s += emptyStarterPremium(c, counts, sf); // fill required starters before flex/depth
+    if (lane === "rebuild") { s += Math.max(0, 28 - (c.age || 27)) * 7; if (c.rookie) s += 25; s += Math.max(0, (c.value != null && c.vbd != null ? c.value - c.vbd : 0)) * 0.6; }
     else if (lane === "winnow") { s += Math.max(0, (c.age || 27) - 24) * 3; if (c.rookie) s -= 15; }
     s -= reachPenalty(c, pickNum) * 0.4;
     return s + bbBonus(c);
@@ -2242,7 +2275,15 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build) {
   // market dominates, so balanced takes the consensus board in order (ADP-1 at 1.1, even over a higher-VBD
   // ADP-2 player). As the draft develops, the blend shifts toward value + need, so your roster construction
   // and the real edges take over. `mktW` goes from ~0.9 at pick 1 to 0 by ~pick 28.
-  const value = mv + need - overStack - reachPenalty(c, pickNum);
+  // In a dynasty rebuild, win-now VBD (mv) over-values old producers; blend it toward the age-aware composite
+  // `value` so the young asset isn't buried by a proven vet's raw points. Redraft/win-now keep raw mv.
+  let mvUse = mv;
+  if (isDynastyGlobal && c.value != null && c.vbd != null) {
+    const blend = BUILD_LANE === "rebuild" ? 0.6 : BUILD_LANE === "winnow" ? 0.15 : 0.35; // weight toward composite value
+    const mvComposite = mv + (c.value - c.vbd); // shift mv by the age premium/discount baked into value
+    mvUse = mv * (1 - blend) + mvComposite * blend;
+  }
+  const value = mvUse + need - overStack - reachPenalty(c, pickNum) + emptyStarterPremium(c, counts, sf) + windowFit(c, BUILD_LANE, isDynastyGlobal);
   const market = c.adp != null ? 300 - c.adp * 3.0 : 0; // pure board-order score: earlier ADP = higher
   const mktW = pickNum != null ? Math.max(0, Math.min(0.92, 0.92 - (pickNum - 1) * 0.034)) : 0; // 0.92 → 0 by ~pick 28
   return market * mktW + value * (1 - mktW) + bbBonus(c) - byePenalty(c);
@@ -2269,7 +2310,9 @@ function candidatesOf(sortedAdp, drafted, limit) { const out = []; for (const p 
 // state (pick count) at the start of each sim run, so results only change when picks actually change.
 let _rngState = 123456789;
 let BUILD_LANE = "balanced"; // set from myWindow before advice/sims so "My build" userScore can read it
+let isDynastyGlobal = false; // set from cfg before advice/sims so balanced's windowFit can read dynasty
 function setBuildLane(l) { BUILD_LANE = l || "balanced"; }
+function setDynastyGlobal(v) { isDynastyGlobal = !!v; }
 function seedRng(seed) { _rngState = (seed >>> 0) || 1; }
 function rng() { _rngState |= 0; _rngState = (_rngState + 0x6D2B79F5) | 0; let t = Math.imul(_rngState ^ (_rngState >>> 15), 1 | _rngState); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
 function sample(cands, ws) { const sum = ws.reduce((a, b) => a + b, 0); let r = rng() * sum; for (let i = 0; i < cands.length; i++) { r -= ws[i]; if (r <= 0) return i; } return cands.length - 1; }
@@ -12033,6 +12076,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // Feed the detected contention lane to the advice engine's "My build" scorer (module global read by
   // userScore). Set synchronously during render so the next advice/path computation uses the right lane.
   setBuildLane(myWindow && myWindow.decided ? myWindow.lane : "balanced");
+  setDynastyGlobal(isDynastyCfg(cfg));
 
   const rows = useMemo(() => {
     let list = players.slice();
@@ -12745,7 +12789,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             </div>
 
             {/* ---- vertical divider between the two groups ---- */}
-            <div aria-hidden="true" className="decision-divider" style={{ flex: "0 0 auto", width: 1, alignSelf: "stretch", margin: "2px 3px", background: "linear-gradient(180deg,transparent,var(--line2) 10%,var(--line2) 90%,transparent)" }} />
+            <div aria-hidden="true" className="decision-divider" style={{ flex: "0 0 auto", width: 2, alignSelf: "stretch", margin: "2px 3px", borderRadius: 2, background: "linear-gradient(180deg,transparent,var(--gold) 10%,var(--gold) 90%,transparent)" }} />
 
             {/* ---- GROUP B: the picks ---- */}
             <div className="decision-group-b" style={{ display: "grid", gridTemplateColumns: "minmax(155px,0.8fr) minmax(170px,0.9fr) minmax(175px,0.92fr)", gap: 8, flex: "1.4 1 0", minWidth: 0 }}>
