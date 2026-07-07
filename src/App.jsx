@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28dn";
+const BUILD_TAG = "2026.06.28do";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2247,7 +2247,21 @@ function windowFit(c, lane, dynasty) {
   return 0;
 }
 function userScore(c, counts, dem, strategy, sf, pickNum, build) {
-  if (strategy === "adp") return -c.adp;
+  if (strategy === "adp") {
+    // "Strict ADP" = follow the board order (best available by ADP). But it still shouldn't hand you a player
+    // at a position you literally can't use — e.g. a 6th QB in a superflex league where you already start your
+    // max. Rank by ADP, but push DOWN players past a position's usable capacity. QB in a non-2QB/SF league (and
+    // any position past a hard depth ceiling) can't be flexed, so its surplus is penalized much harder than a
+    // flex-eligible RB/WR whose extra bodies still have bye/injury/flex utility.
+    const over = (counts[c.pos] || 0) - (dem[c.pos] || 0);
+    let overPenalty = 0;
+    if (over > 0) {
+      const flexable = (c.pos === "RB" || c.pos === "WR" || (c.pos === "TE" && (SPEC.FLEX || 0) > 0));
+      const per = flexable ? 60 : 200; // non-flexable surplus (extra QB/TE) is far more wasted
+      overPenalty = over * per;
+    }
+    return -c.adp - overPenalty;
+  }
   const mv = marginalVbd(c, counts, sf);
   if (strategy === "value") return mv + bbBonus(c);
   if (strategy === "upside") {
@@ -13631,9 +13645,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 if (selOverall == null) return <div className="tickcard" style={{ padding: 12 }}><span className="mut" style={{ fontSize: 12 }}>No upcoming picks to analyze.</span></div>;
                 const onClockNow = selOverall === picks.length && onClock === userIdx;
                 const isBoardPick = selOverall === picks.length; // the pick currently ON THE BOARD
-                // Advice for the selected pick, both strategies.
-                const balAdv = (selOverall === myPickOverall && myBalancedAdvice) ? myBalancedAdvice : adviceFor(selOverall, userIdx, sims, "balanced");
-                const bldAdv = (selOverall === myPickOverall && myBuildAdvice) ? myBuildAdvice : adviceFor(selOverall, userIdx, sims, "build");
+                // Advice for the selected pick, using the STRATEGY the user has chosen (Smart / Max VBD /
+                // Upside / Strict ADP). mySelAdvice already tracks `strategy` for your next pick; for other
+                // picks compute fresh with the selected strategy.
+                const balAdv = (selOverall === myPickOverall && mySelAdvice) ? mySelAdvice : adviceFor(selOverall, userIdx, sims, strategy);
+                const bldAdv = balAdv; // one unified model — the list follows the selected strategy
                 const survOf = (p) => { if (selOverall === picks.length) return 100; const idx = myUpcoming.findIndex((x) => x.o === selOverall); const pctMap = sims && sims.pct && sims.pct[idx] ? sims.pct[idx] : (sims && sims.pct && sims.pct[0]); return pctMap && pctMap[p.id] != null ? pctMap[p.id] : null; };
                 const pickNowN = selOverall + 1;
                 const run = (balAdv && balAdv.run) || (advice && advice.run) || null;
@@ -13694,11 +13710,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const recTable = (adv, accent, label, sub) => {
                   if (!adv || !adv.verdict) return <div className="mut" style={{ fontSize: 11, padding: "4px 0" }}>Computing…</div>;
                   const full = [adv.verdict, ...(adv.alts || [])].filter(Boolean);
-                  const list = full.slice(0, 5); // top 5 — gold line splits the top 3 recommended from the next 2
+                  const expanded = !!recExpanded[label];
+                  const list = full.slice(0, expanded ? 10 : 5); // top 5, expandable to 10
+                  const canExpand = full.length > 5;
                   const cols = onClockNow ? "30px minmax(0,1fr) 74px 34px 30px 32px 44px" : "30px minmax(0,1fr) 78px 34px 30px 32px";
+                  const toggle = () => setRecExpanded((m) => ({ ...m, [label]: !m[label] }));
                   return (
                     <div>
-                      <div style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".05em", color: accent, marginBottom: 2, display: "flex", alignItems: "center", gap: 5 }}>{label}{sub && <span className="mut" style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, fontSize: 9 }}>· {sub}</span>}</div>
+                      <div style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".05em", color: accent, marginBottom: 2, display: "flex", alignItems: "center", gap: 5 }}>{label}{sub && <span className="mut" style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, fontSize: 9 }}>· {sub}</span>}{canExpand && <span onClick={toggle} style={{ marginLeft: "auto", fontSize: 8.5, color: "var(--gold)", cursor: "pointer", fontWeight: 700, textTransform: "none", letterSpacing: 0 }}>{expanded ? "Show top 5 ⌃" : "Show top 10 ⌄"}</span>}</div>
                       {/* header row */}
                       <div style={{ display: "grid", gridTemplateColumns: cols, gap: 6, alignItems: "center", fontSize: 7.5, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, padding: "0 4px 2px" }}>
                         <span>Rank</span><span>Player</span><span title="Team role">Role</span><span title={dynasty ? "Value (age-weighted)" : "Value above replacement"} style={{ textAlign: "right" }}>{dynasty ? "Val" : "VBD"}</span><span title="Average draft position" style={{ textAlign: "right" }}>ADP</span><span title="Chance still available at this pick" style={{ textAlign: "right" }}>Avail</span>{onClockNow && <span />}
@@ -13709,10 +13728,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           const openTip = (e) => showTip(e, makeOutlook(p, sims, false, { pickNow: pickNowN, dynasty, run, needShort: need.includes(p.pos) ? 1 : 0, scarcity: scarcityFor(p) }));
                           const roleShort = p.role ? lowerKeepPos(p.role).replace(/[\/·].*$/, "").trim() : "—";
                           const vShow = dynasty ? (p.value ?? p.vbd) : p.vbd;
-                          // A gold divider between the top 3 (recommended) and the rest, when expanded.
-                          const dividerAfter = i === 2 && list.length > 3;
                           return (
-                            <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: cols, gap: 6, alignItems: "center", fontSize: 11, padding: "3px 4px", borderRadius: 5, background: i === 0 ? "rgba(242,182,60,.10)" : "transparent", borderBottom: dividerAfter ? "2px solid var(--gold)" : i < list.length - 1 ? "1px solid var(--line2)" : "none", cursor: "help" }}>
+                            <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: cols, gap: 6, alignItems: "center", fontSize: 11, padding: "3px 4px", borderRadius: 5, background: i === 0 ? "rgba(242,182,60,.10)" : "transparent", borderBottom: i < list.length - 1 ? "1px solid var(--line2)" : "none", cursor: "help" }}>
                               <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
                               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}><Dot pos={p.pos} /><b style={{ color: i === 0 ? accent : "var(--ink)" }}>{i === 0 ? "★ " : ""}{p.name}</b></span>
                               <span className="mut" style={{ fontSize: 8.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textTransform: "capitalize" }}>{roleShort}</span>
@@ -13724,7 +13741,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           );
                         })}
                       </div>
-                      {list.length > 3 && <div style={{ fontSize: 8, color: "var(--mut)", textAlign: "center", paddingTop: 3 }}>Above the gold line: top 3 · below: next {list.length - 3}</div>}
                     </div>
                   );
                 };
@@ -13823,7 +13839,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     <div style={{ borderTop: "1px solid var(--line)", margin: "0 0 10px" }} />
                     {/* single recommendation list — full top 10, market → build blended */}
                     <div>
-                      {recTable(balAdv, "var(--gold)", "Top 10 for this pick", "market early → your build by round 5")}
+                      {recTable(balAdv, "var(--gold)", "For this pick", strategy === "adp" ? "strict ADP order" : strategy === "value" ? "max VBD" : strategy === "upside" ? "upside / breakout" : "smart · market early → your build by round 5")}
                     </div>
                     {/* take now vs wait — per position (below My build): two reads side by side */}
                     {waitByPos.length > 0 && (
