@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28dt";
+const BUILD_TAG = "2026.06.28du";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -11221,7 +11221,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     { sel: null, title: "Welcome to your draft room", body: tourConnected
         ? "This league is connected to Sleeper, so picks sync automatically — you watch the board update and make your picks in Sleeper. This quick tour walks through the room top to bottom; hit Next to move along, or Dismiss anytime. Tip: you can hover almost anything for a deeper explanation."
         : "Quick heads-up: this league isn't connected to a platform, so you'll enter each pick manually as they happen (a player's Pick button, or search + Enter). This tour walks through the room top to bottom; hit Next to move along, or Dismiss anytime. Tip: you can hover almost anything for a deeper explanation." },
-    { sel: '[data-tour="decision"]', tab: "hub", scrollTop: true, title: "Your decision — start here", body: "The heart of the room. For the pick you select (top-right dropdown), it gives you a Balanced (best value) and a My-build (roster-tilted) recommendation with alternatives, plus a short read on runs, value cliffs, and fallers. Hover any player for the full reasoning; the Draft button makes the pick." },
+    { sel: '[data-tour="decision"]', tab: "hub", scrollTop: true, title: "Your decision — start here", body: "The heart of the room. Pick which upcoming pick to analyze (top-right dropdown), and the Smart model — which follows ADP early, then shifts to your roster build by round 5, with ADP always anchoring against reaches — gives you one clear recommendation plus the top players to consider. Up top you get a quick read on positional runs, value cliffs, and fallers. Use the Strategy menu on the board to switch lenses (Smart, Max VBD, Upside, Strict ADP) and this panel updates to match. Hover any player for the full reasoning; the Draft button makes the pick." },
     { sel: '[data-tour="pool"]', tab: "hub", scrollTop: true, title: "The player list", body: "Every available player, sortable by any column. ADP is the market; RANK is colored by strength (green = elite, red = deep). Search up top, filter by position, and draft with the Pick button on the left." },
     { sel: '[data-tour="picks"]', tab: "hub", title: "Past, current & upcoming picks", body: "This group tracks the flow of the draft: Last picks (with steal/reach reads), who's On the clock now with the projected pick, and your Next picks. Hover any of them for player detail and the engine's expected board." },
     { sel: '[data-tour="howdoing"]', tab: "hub", title: "How you're doing + Draft pulse", body: "How you're doing: your build lane, position-by-position rank, and your Focus (biggest move). Draft pulse: the best available at each position with a live read on supply — who's scarce, who's deep, and any run in progress." },
@@ -13060,7 +13060,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             </div>
 
             {/* ---- vertical divider between the two groups ---- */}
-            {/* groups are now individually outlined — no divider needed */}
+            <div aria-hidden="true" className="decision-divider" style={{ flex: "0 0 auto", width: 2, alignSelf: "stretch", margin: "2px 5px", borderRadius: 2, background: "linear-gradient(180deg,transparent,var(--gold) 10%,var(--gold) 90%,transparent)" }} />
 
             {/* ---- GROUP B: the picks ---- */}
             <div data-tour="picks" className="decision-group-b" style={{ display: "grid", gridTemplateColumns: "minmax(155px,0.8fr) minmax(170px,0.9fr) minmax(175px,0.92fr)", gap: 8, flex: "1.4 1 0", minWidth: 0, padding: 6, borderRadius: 12, border: "1.5px solid rgba(255,255,255,.55)", boxShadow: "0 0 12px rgba(255,255,255,.08)" }}>
@@ -13161,24 +13161,26 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                 {projPick.prob != null && <span className="mut">· {isYou ? "avail" : "take"} {projPick.prob}%</span>}
                               </div>
                             </div>
+                            {isYou && !gated && <button className="btn btn-gold btn-mini" style={{ padding: "3px 9px", fontSize: 10, flexShrink: 0 }} onClick={(e) => { e.stopPropagation(); draftPlayer(pp.id); }}>Draft</button>}
                           </div>
                           {/* 3 alternatives */}
                           {alts && alts.length > 0 && (
                             <div>
-                              <div style={{ display: "grid", gridTemplateColumns: "30px 1fr 30px 26px 28px", gap: "0 5px", fontSize: 7, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line2)", paddingBottom: 2, marginBottom: 1 }}>
-                                <span>Rk</span><span>Alternatives</span><span title={dyn ? "Value" : "VBD"} style={{ textAlign: "right" }}>{dyn ? "Val" : "VBD"}</span><span title="ADP" style={{ textAlign: "right" }}>ADP</span><span title={isYou ? "Chance still available" : "Chance taken"} style={{ textAlign: "right" }}>{isYou ? "Avl" : "Tk"}</span>
+                              <div style={{ display: "grid", gridTemplateColumns: isYou && !gated ? "30px 1fr 30px 26px 28px 40px" : "30px 1fr 30px 26px 28px", gap: "0 5px", fontSize: 7, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line2)", paddingBottom: 2, marginBottom: 1 }}>
+                                <span>Rk</span><span>Alternatives</span><span title={dyn ? "Value" : "VBD"} style={{ textAlign: "right" }}>{dyn ? "Val" : "VBD"}</span><span title="ADP" style={{ textAlign: "right" }}>ADP</span><span title={isYou ? "Chance still available" : "Chance taken"} style={{ textAlign: "right" }}>{isYou ? "Avl" : "Tk"}</span>{isYou && !gated && <span />}
                               </div>
                               {alts.map((c) => {
                                 const p = c.p;
                                 const vShow = dyn ? (p.value ?? p.vbd) : p.vbd;
                                 const openTip = (e) => { e.stopPropagation(); showTip(e, makeOutlook(p, sims, false, { pickNow: picks.length + 1, dynasty: dyn, scarcity: scarcityFor(p) })); };
                                 return (
-                                  <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "30px 1fr 30px 26px 28px", gap: "0 5px", alignItems: "center", fontSize: 10.5, padding: "1px 3px", cursor: "help" }}>
+                                  <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: isYou && !gated ? "30px 1fr 30px 26px 28px 40px" : "30px 1fr 30px 26px 28px", gap: "0 5px", alignItems: "center", fontSize: 10.5, padding: "1px 3px", cursor: "help" }}>
                                     <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank), fontSize: 9 }}>{p.pos}{p.posRank}</span>
                                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
                                     <span className="num" style={{ fontSize: 9, textAlign: "right", color: vbdColor(vShow) }}>{(vShow > 0 ? "+" : "") + Math.round(vShow)}</span>
                                     <span className="num mut" style={{ fontSize: 8.5, textAlign: "right" }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
                                     <span className="num mut" style={{ fontSize: 8.5, textAlign: "right" }}>{c.prob != null ? `${c.prob}%` : ""}</span>
+                                    {isYou && !gated && <button className="btn btn-mini" style={{ fontSize: 8.5, padding: "1px 5px", borderColor: "var(--gold)", color: "var(--gold)" }} onClick={(e) => { e.stopPropagation(); draftPlayer(p.id); }}>Draft</button>}
                                   </div>
                                 );
                               })}
@@ -14619,10 +14621,18 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     const survOf = (p) => (sims && sims.pct && sims.pct[0] && sims.pct[0][p.id] != null) ? sims.pct[0][p.id] : null;
                     const openTip = (p) => (e) => showTip(e, makeOutlook(p, sims, false, { pickNow: (myNextOv != null ? myNextOv + 1 : picks.length + 1), dynasty: dyn, scarcity: scarcityFor(p) }));
                     const pickNo = (myNextOv != null ? myNextOv + 1 : picks.length + 1);
-                    // board summary bits
-                    const bestValue = list.slice().sort((a, b) => (dyn ? (b.value ?? b.vbd) - (a.value ?? a.vbd) : (b.vbd || 0) - (a.vbd || 0)))[0];
-                    const bestAdp = list.slice().sort((a, b) => (a.adp || 999) - (b.adp || 999))[0];
-                    const bestFaller = list.slice().map((p) => ({ p, gap: (p.adp != null ? pickNo - p.adp : -999) })).sort((a, b) => b.gap - a.gap)[0];
+                    // board summary bits — drawn from the TRUE available pool (not just the recommendation
+                    // shortlist), so "best value" / "best ADP" reflect the actual board. We still weight toward
+                    // players with a real chance of reaching your pick (survival ≥ ~15%) so we don't tout a guy
+                    // who'll certainly be gone. `availByPos` is each position's available players sorted by VBD.
+                    const allAvail = ["QB", "RB", "WR", "TE"].flatMap((pos) => availByPos[pos] || []);
+                    const survOfRaw = (p) => (sims && sims.pct && sims.pct[0] && sims.pct[0][p.id] != null) ? sims.pct[0][p.id] : null;
+                    // reachable = decent chance to still be there at your pick (or unknown survival = keep it)
+                    const reachable = allAvail.filter((p) => { const s = survOfRaw(p); return s == null || s >= 15; });
+                    const poolForSummary = reachable.length ? reachable : allAvail;
+                    const bestValue = poolForSummary.slice().sort((a, b) => (dyn ? (b.value ?? b.vbd ?? -999) - (a.value ?? a.vbd ?? -999) : (b.vbd ?? -999) - (a.vbd ?? -999)))[0];
+                    const bestAdp = poolForSummary.slice().sort((a, b) => (a.adp || 999) - (b.adp || 999))[0];
+                    const bestFaller = poolForSummary.slice().map((p) => ({ p, gap: (p.adp != null ? pickNo - p.adp : -999) })).sort((a, b) => b.gap - a.gap)[0];
                     const bestFit = adv.verdict; // the model's #1 is the best fit for your build
                     const run = (adv.run || (advice && advice.run)) || null;
                     // expected value drop-off: gap between the best available now and the projected best at your NEXT pick
