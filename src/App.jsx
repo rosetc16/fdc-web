@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28dw";
+const BUILD_TAG = "2026.06.28dx";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2040,7 +2040,11 @@ const baseW = (p, pick) => {
   const fallen = -z; // how many sigmas past ADP he's slipped
   // pedigree: elite (low ADP) players get a steeper magnet
   const pedigree = p.adp <= 12 ? 3.4 : p.adp <= 24 ? 2.5 : p.adp <= 48 ? 1.8 : 1.25;
-  return 1 + fallen * pedigree; // value magnet grows the longer he slides
+  // In the DEEP part of the draft (roughly pick 130+), nearly everyone still on the board has "fallen" past
+  // a stale ADP, so a raw fallen-magnet just rewards whoever slipped furthest — which clumps one position.
+  // Fade the magnet as picks get deep so late selection tracks board order (ADP) rather than fall distance.
+  const deepFade = pick > 130 ? Math.max(0.25, 1 - (pick - 130) / 120) : 1;
+  return 1 + fallen * pedigree * deepFade; // value magnet grows the longer he slides (tempered when deep)
 };
 // Active roster spec for the current league (set per league before engine calls).
 // start: dedicated starters per position; FLEX (RB/WR/TE) and SUPER (any) are generic slots.
@@ -2366,11 +2370,38 @@ function reachPenalty(c, pickNum) {
 }
 function needMult(counts, pos, round, dem, R) {
   const need = Math.max(0, dem[pos] - counts[pos]);
+  // Late in the draft, starting demand is long since filled and real drafters take best-available / upside
+  // rather than chasing positional need — so the need signal fades out over the back third of the draft.
+  const lateFade = Math.max(0.25, Math.min(1, (R - round + 1) / (R * 0.6)));
   if (need <= 0.05) return pos === "QB" || pos === "TE" ? 0.4 : 0.8;
-  return 1 + 0.5 * Math.min(need, 2) * (0.7 + 0.5 * (round / R));
+  return 1 + 0.5 * Math.min(need, 2) * (0.7 + 0.5 * (round / R)) * lateFade;
 }
-function runMultF(recent, pos) { const c = recent.filter((x) => x === pos).length; return c >= 3 ? Math.min(1.5, 1 + 0.18 * (c - 2)) : 1; }
-function weightFor(p, pickNum, counts, round, recent, dem, R) { return baseW(p, pickNum) * needMult(counts, p.pos, round, dem, R) * runMultF(recent, p.pos) + 1e-7; }
+// Position "run" detection: when a position is going hot, real drafters pile on — but this effect is strong
+// EARLY (a WR run in round 3 is real herd behavior) and weak LATE (round 20 is best-available lottery tickets,
+// not runs). We fade the run multiplier by round so it can't snowball into an unrealistic 7-deep late-round run.
+function runMultF(recent, pos, round, R) {
+  const c = recent.filter((x) => x === pos).length;
+  if (c < 3) return 1;
+  const rd = round || 1, rounds = R || 15;
+  const lateFade = Math.max(0, Math.min(1, (rounds - rd + 1) / (rounds * 0.5))); // ~1 early → 0 in the back half
+  const rawBoost = Math.min(0.5, 0.18 * (c - 2)); // capped run boost (max +0.5 → 1.5x)
+  return 1 + rawBoost * lateFade;
+}
+function weightFor(p, pickNum, counts, round, recent, dem, R, adpRank) {
+  // baseW is the ADP magnet. Late in the draft ADP sigma grows so wide that the magnet goes flat across a huge
+  // band of players, AND everyone still available has "fallen" past a stale ADP — so raw baseW just rewards
+  // whoever slipped furthest, clumping one position. Late, we instead follow the FIELD'S ADP ORDER: the best
+  // available player by ADP is the most likely next pick, the 2nd-best next, etc. `adpRank` (0 = best available
+  // by ADP) is supplied by the caller; we convert it into a decaying weight that dominates in the back half.
+  const round0 = round || 1, R0 = R || 15;
+  const lateWeight = Math.max(0, Math.min(1, (round0 - R0 * 0.4) / (R0 * 0.6))); // 0 early → ~1 late
+  let orderTerm = 1;
+  if (adpRank != null && lateWeight > 0) {
+    const rankWeight = Math.exp(-adpRank / 5); // best-available-by-ADP = 1, decaying over the next several
+    orderTerm = 1 + rankWeight * 6 * lateWeight;
+  }
+  return baseW(p, pickNum) * needMult(counts, p.pos, round, dem, R) * runMultF(recent, p.pos, round, R) * orderTerm + 1e-7;
+}
 function candidatesOf(sortedAdp, drafted, limit) { const out = []; for (const p of sortedAdp) { if (!drafted[p.id]) { out.push(p); if (out.length >= limit) break; } } return out; }
 // Seeded PRNG (mulberry32) so Monte Carlo sims are STABLE for a given draft state — the availability
 // percentages shouldn't flicker between renders when nothing has changed. We reseed from the draft
@@ -2452,7 +2483,7 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
         continue;
       }
       const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts[t], cfg);
-      const ws = cands.map((c) => weightFor(c, pickNum, counts[t], round, recent, dem, R));
+      const ws = cands.map((c, ri) => weightFor(c, pickNum, counts[t], round, recent, dem, R, ri));
       const i = sample(cands, ws);
       drafted[cands[i].id] = 1; counts[t][cands[i].pos]++; recent = [...recent.slice(-7), cands[i].pos];
     }
@@ -2500,7 +2531,7 @@ function survivalAtPick(players, sortedAdp, picks, targetOverall, cfg, nSims) {
     for (let o = picks.length; o < target; o++) {
       const t = teamAt(o), round = Math.floor(o / TEAMS) + 1, pickNum = o + 1;
       const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts[t], cfg);
-      const ws = cands.map((c) => weightFor(c, pickNum, counts[t], round, recent, dem, R));
+      const ws = cands.map((c, ri) => weightFor(c, pickNum, counts[t], round, recent, dem, R, ri));
       const c = cands[sample(cands, ws)];
       if (!c) break;
       drafted[c.id] = 1; counts[t][c.pos]++; recent = [...recent.slice(-7), c.pos];
@@ -2532,7 +2563,7 @@ function projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId)
       userFirstDone = true;
     } else {
       const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts, cfg);
-      let bs = -1e9; for (const c of cands) { const w = weightFor(c, pickNum, counts, round, recent, dem, R); if (w > bs) { bs = w; choice = c; } }
+      let bs = -1e9; for (let ri = 0; ri < cands.length; ri++) { const c = cands[ri]; const w = weightFor(c, pickNum, counts, round, recent, dem, R, ri); if (w > bs) { bs = w; choice = c; } }
     }
     if (!choice) break;
     drafted[choice.id] = 1; rosters[t].push(choice); recent = [...recent.slice(-7), choice.pos];
@@ -2569,7 +2600,7 @@ function projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, forcedI
       userFirstDone = true;
     } else {
       const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts[t], cfg);
-      let bs = -1e9; for (const c of cands) { const w = weightFor(c, pickNum, counts[t], round, recent, dem, R); if (w > bs) { bs = w; choice = c; } }
+      let bs = -1e9; for (let ri = 0; ri < cands.length; ri++) { const c = cands[ri]; const w = weightFor(c, pickNum, counts[t], round, recent, dem, R, ri); if (w > bs) { bs = w; choice = c; } }
     }
     // Fallback: if the ranked window produced nothing (deep draft, thin pool), take the best
     // remaining undrafted player by ADP so the projected board still completes all rounds.
@@ -2626,7 +2657,7 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
     } else {
       const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts[t], cfg);
       if (!cands.length) { continue; } // nothing legal/left to project at this slot — skip it
-      const ws = cands.map((c) => weightFor(c, pickNum, counts[t], round, recent, dem, R));
+      const ws = cands.map((c, ri) => weightFor(c, pickNum, counts[t], round, recent, dem, R, ri));
       const sum = ws.reduce((a, b) => a + b, 0);
       let bi = 0; for (let i = 1; i < ws.length; i++) if (ws[i] > ws[bi]) bi = i;
       const c = cands[bi];
@@ -11946,7 +11977,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       const cands0 = []; for (const p of sortedAdp) { if (!drafted.has(p.id)) { cands0.push(p); if (cands0.length >= 34) break; } }
       const cands = legalCands(cands0, counts, cfg);
       if (cands.length) {
-        const ws = cands.map((c) => weightFor(c, pickNum, counts, rd, recent, dem, ROUNDS));
+        const ws = cands.map((c, ri) => weightFor(c, pickNum, counts, rd, recent, dem, ROUNDS, ri));
         let bi = 0; for (let i = 1; i < ws.length; i++) if (ws[i] > ws[bi]) bi = i;
         filled[o] = cands[bi] ? cands[bi].id : null;
       } else filled[o] = null;
@@ -11975,7 +12006,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         const pickNum = prev.length + 1, rd = Math.floor(prev.length / TEAMS) + 1;
         const cands0 = []; for (const p of sortedAdp) { if (!drafted.has(p.id)) { cands0.push(p); if (cands0.length >= 34) break; } }
         const cands = legalCands(cands0, counts, cfg);
-        let ws = cands.map((c) => weightFor(c, pickNum, counts, rd, recent, dem, ROUNDS));
+        let ws = cands.map((c, ri) => weightFor(c, pickNum, counts, rd, recent, dem, ROUNDS, ri));
         // MOCK VARIANCE: in a mock, seed a per-mock RNG and apply a MILD temperature to the weights so each
         // mock plays out a little differently (different runs, an occasional slide) — good practice reps.
         // Bounded on purpose: a small exponent flattening + a light per-candidate jitter, so opponents still
