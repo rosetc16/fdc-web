@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28dj";
+const BUILD_TAG = "2026.06.28dk";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1653,9 +1653,13 @@ function buildPlayers(cfg) {
       if (!VBD_POS.includes(p.pos)) { p.value = p.vbd; return; }
       const m = ageMult(p.pos, p.age);
       p.ageMult = m;
-      // Composite dynasty value = age-adjusted VBD (only discount/boost value ABOVE replacement, so an
-      // old below-replacement player never looks better than a productive one).
-      p.value = p.vbd > 0 ? Math.round(p.vbd * m * 10) / 10 : p.vbd;
+      // Composite dynasty value = age-adjusted VBD. For ABOVE-replacement players we scale their surplus by the
+      // age multiplier (young studs worth more, aging ones less). For BELOW-replacement players (most of the
+      // late pool), a YOUNG one is still a more valuable dynasty asset than an OLD one at the same VBD, so we
+      // LIFT a young negative toward 0 and push an old negative further down — otherwise Value == VBD for the
+      // whole back half of the board (which made the Value view look identical to VBD).
+      if (p.vbd > 0) p.value = Math.round(p.vbd * m * 10) / 10;
+      else p.value = Math.round(p.vbd * (2 - m) * 10) / 10; // m>1 (young) → shrinks the negative; m<1 (old) → deepens it
     });
   } else {
     // Redraft: value is simply VBD.
@@ -11662,7 +11666,21 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // The recommendation follows the given strategy (defaults to the selected one). We compute one for the
     // selected strategy AND a second for "My build", shown side by side in the tracker.
     const scoreOf = (p) => userScore(p, myCounts, dem, strat, cfg.sf, pickNum) + 0.6 * Math.max(0, waitCost[p.pos]);
-    const ranked = pool.slice().sort((a, b) => scoreOf(b) - scoreOf(a));
+    let ranked = pool.slice().sort((a, b) => scoreOf(b) - scoreOf(a));
+    // HEADLINE guard (future picks only): the #1 recommendation shouldn't be a player who's very unlikely to
+    // still be on the board at this pick. If the top-scored guy has low survival AND a near-equal-scored
+    // alternative is clearly more available, promote the available one to the verdict. Fallers still surface as
+    // alternatives; this only protects the single headline pick from being someone you almost certainly can't get.
+    if (isFuture && survMap && ranked.length > 1) {
+      const survOfId = (p) => (survMap[p.id] != null ? survMap[p.id] : 50);
+      const top = ranked[0];
+      if (survOfId(top) < 40) {
+        const topScore = scoreOf(top);
+        // among the next few, find one with a solid chance to be there whose score is within ~12% of the top
+        const better = ranked.slice(1, 6).find((p) => survOfId(p) >= 55 && scoreOf(p) >= topScore - Math.abs(topScore) * 0.12 - 6);
+        if (better) { ranked = [better, ...ranked.filter((p) => p.id !== better.id)]; }
+      }
+    }
     const verdict = ranked[0]; const alts = ranked.slice(1, 10);
     const impacts = {};
     [verdict, ...alts].forEach((c) => { if (!c) return; const pr = projectAll(players, sortedAdp, picks, userIdx, cfg, strat, c.id); impacts[c.id] = { pts: pr.pts[userIdx], rank: pr.rank[userIdx] }; });
@@ -11795,31 +11813,50 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const path = useMemo(() => {
     if (!rawPath.length) return rawPath;
     const selId = mySelAdvice?.verdict?.id ?? null;
-    if (selId == null) return rawPath;
     const idx = rawPath.findIndex((s) => s && s.user);
-    if (idx < 0) return rawPath;
-    const cur = rawPath[idx];
     let next = rawPath;
-    if (!cur.p || cur.p.id !== selId) {
-      const selPlayer = players[selId];
-      if (!selPlayer) return rawPath;
-      next = rawPath.slice();
-      const cands5 = [{ p: selPlayer }, ...((cur.cands5 || []).filter((x) => x.p && x.p.id !== selId))].slice(0, 5);
-      next[idx] = { ...cur, p: selPlayer, cands5 };
-    }
-    // De-dupe: a player projected at your reconciled pick must not also appear at a LATER pick (he's taken).
-    // If a later step shows the same player, fall it back to that step's next-best candidate.
-    const seen = new Set();
-    next = next.map((s, i) => {
-      if (!s || !s.p) return s;
-      if (seen.has(s.p.id)) {
-        const alt = (s.cands5 || []).map((x) => x.p).find((p) => p && !seen.has(p.id));
-        if (alt) { seen.add(alt.id); return { ...s, p: alt }; }
-        return s;
+    if (selId != null && idx >= 0) {
+      const cur = rawPath[idx];
+      if (!cur.p || cur.p.id !== selId) {
+        const selPlayer = players[selId];
+        if (selPlayer) {
+          next = rawPath.slice();
+          const cands5 = [{ p: selPlayer }, ...((cur.cands5 || []).filter((x) => x.p && x.p.id !== selId))].slice(0, 5);
+          next[idx] = { ...cur, p: selPlayer, cands5 };
+        }
       }
-      seen.add(s.p.id);
-      return s;
-    });
+    }
+    // De-dupe: a player can't be taken twice. The reconciled FIRST user pick (idx) is authoritative — the panel
+    // recommends him and he's genuinely available — so if an EARLIER projected step (another team) shows the
+    // same player, fix THAT earlier step, not your pick. For all other collisions, fall the later step to its
+    // next-best candidate.
+    if (next !== rawPath || true) {
+      const yourId = idx >= 0 && next[idx] && next[idx].p ? next[idx].p.id : null;
+      const seen = new Set();
+      // First pass: reserve your pick so earlier duplicates yield to it.
+      next = next.map((s, i) => {
+        if (!s || !s.p) return s;
+        if (i !== idx && s.p.id === yourId) {
+          // an earlier/other step collides with YOUR reconciled pick — swap that step to its next-best instead
+          const alt = (s.cands5 || []).map((x) => x.p).find((p) => p && p.id !== yourId && !seen.has(p.id));
+          if (alt) { seen.add(alt.id); return { ...s, p: alt }; }
+        }
+        return s;
+      });
+      // Second pass: general de-dupe (leave the protected user pick as-is).
+      const seen2 = new Set();
+      next = next.map((s, i) => {
+        if (!s || !s.p) return s;
+        if (i === idx) { seen2.add(s.p.id); return s; } // never override your reconciled pick
+        if (seen2.has(s.p.id)) {
+          const alt = (s.cands5 || []).map((x) => x.p).find((p) => p && p.id !== yourId && !seen2.has(p.id));
+          if (alt) { seen2.add(alt.id); return { ...s, p: alt }; }
+          return s;
+        }
+        seen2.add(s.p.id);
+        return s;
+      });
+    }
     return next;
   }, [rawPath, mySelAdvice, players]);
   // What the draft tracker actually shows. Collapsed (default): the next 4 upcoming picks, then YOUR next
@@ -12853,39 +12890,30 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   </div>
                   {/* position table */}
                   <div style={{ borderTop: "1px solid rgba(242,182,60,.22)", paddingTop: 5 }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "26px 66px 1fr auto", gap: "0 6px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", fontWeight: 700, paddingBottom: 3 }}>
-                      <span>Pos</span><span>Start</span><span style={{ textAlign: "right" }}>Rank</span><span style={{ textAlign: "right" }}>Read</span>
+                    <div style={{ display: "grid", gridTemplateColumns: "24px 52px 44px 52px 1fr", gap: "0 6px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", fontWeight: 700, paddingBottom: 3 }}>
+                      <span>Pos</span><span>Start</span><span style={{ textAlign: "center" }}>Rank</span><span style={{ textAlign: "center" }}>Read</span><span style={{ textAlign: "right" }}>Best avail</span>
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
                       {rows.map((d) => {
-                        const isFocus = d.pos === focusPos;
+                        const ba = d.bestAvail;
+                        const baV = ba ? (dynastyH ? (ba.value ?? ba.vbd) : ba.vbd) : null;
                         return (
-                          <div key={d.pos} onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "26px 66px 1fr auto", gap: "0 6px", alignItems: "center", cursor: "help", padding: "1px 4px", margin: "0 -4px", borderRadius: 5, background: isFocus ? "rgba(242,182,60,.13)" : "transparent" }}>
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 11, fontWeight: 800, color: POS_COLOR[d.pos] }}>{isFocus ? <i className="ti ti-target-arrow" style={{ fontSize: 10, color: "var(--gold)" }} aria-hidden="true" /> : <Dot pos={d.pos} />}{d.pos}</span>
+                          <div key={d.pos} onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "24px 52px 44px 52px 1fr", gap: "0 6px", alignItems: "center", cursor: "help", padding: "1.5px 4px", margin: "0 -4px", borderRadius: 5 }}>
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 11, fontWeight: 800, color: POS_COLOR[d.pos] }}><Dot pos={d.pos} />{d.pos}</span>
                             <span style={{ fontSize: 10.5, display: "inline-flex", alignItems: "center", gap: 3 }}>
                               <span style={{ fontWeight: 700 }}>{d.has}</span><span className="mut" style={{ fontSize: 9 }}>/{d.need || 0}</span>
                               {d.filled ? <i className="ti ti-circle-check-filled" style={{ fontSize: 10, color: "#5FD0A8" }} aria-hidden="true" /> : d.deficit > 0 ? <i className="ti ti-alert-circle-filled" style={{ fontSize: 10, color: "#F2655C" }} aria-hidden="true" /> : null}
                             </span>
-                            <span style={{ textAlign: "right", fontSize: 10.5, fontWeight: 700, color: d.rk ? d.read.c : "var(--mut)" }}>{d.rk ? `${d.rk.rank}/${d.rk.of}` : "—"}</span>
-                            <span style={{ textAlign: "right", fontSize: 10, fontWeight: 800, color: d.read.c }}>{d.read.t}</span>
+                            <span style={{ textAlign: "center", fontSize: 10.5, fontWeight: 700, color: d.rk ? d.read.c : "var(--mut)" }}>{d.rk ? `${d.rk.rank}/${d.rk.of}` : "—"}</span>
+                            <span style={{ textAlign: "center", fontSize: 10, fontWeight: 800, color: d.read.c }}>{d.read.t}</span>
+                            <span style={{ textAlign: "right", fontSize: 9.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {ba ? <>{ba.name.split(" ").slice(-1)[0]} <span className="num" style={{ fontWeight: 700, color: vbdColor(baV) }}>{(baV > 0 ? "+" : "") + Math.round(baV)}</span></> : <span className="mut">—</span>}
+                            </span>
                           </div>
                         );
                       })}
                     </div>
                   </div>
-                  {focusPos && (() => {
-                    const d = rows.find((r) => r.pos === focusPos);
-                    return (
-                      <div onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ display: "flex", alignItems: "center", gap: 5, borderTop: "1px solid rgba(242,182,60,.22)", paddingTop: 5, cursor: "help", fontSize: 10 }}>
-                        <i className="ti ti-target-arrow" style={{ fontSize: 11, color: "var(--gold)" }} aria-hidden="true" />
-                        <span style={{ color: "var(--gold)", fontWeight: 800, fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em" }}>Focus</span>
-                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {d.deficit > 0 ? <>Fill <b style={{ color: POS_COLOR[d.pos] }}>{d.pos}</b></> : <>Upgrade <b style={{ color: POS_COLOR[d.pos] }}>{d.pos}</b></>}
-                          {d.bestAvail ? <> — <b>{d.bestAvail.name}</b> <span className="num" style={{ color: vbdColor(dynastyH ? (d.bestAvail.value ?? d.bestAvail.vbd) : d.bestAvail.vbd) }}>{(() => { const v = dynastyH ? (d.bestAvail.value ?? d.bestAvail.vbd) : d.bestAvail.vbd; return (v > 0 ? "+" : "") + Math.round(v); })()}</span></> : null}
-                        </span>
-                      </div>
-                    );
-                  })()}
                   {(flexSlots > 0 || superSlots > 0 || kSlots > 0 || dstSlots > 0) && (
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 4, borderTop: "1px solid rgba(242,182,60,.22)", paddingTop: 5, marginTop: "auto" }}>
                       {[["FLX", flexFilled, flexSlots], ["SFL", superFilled, superSlots], ["K", kHave, kSlots], ["DST", dstHave, dstSlots]].map(([label, filled, total]) => total > 0 ? (
@@ -12904,7 +12932,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               // Which metric ranks "best available" at each position (and the best-value footer). Defaults to
               // Value in dynasty (age-weighted, what matters long-term) and VBD in redraft (pure this-year points
               // over replacement); the user can override via the toggle. ADP ranks by market draft position.
-              const metric = pulseMetric || (dynasty ? "value" : "vbd");
+              const metric = (() => { const m = pulseMetric || (dynasty ? "value" : "vbd"); return (!dynasty && m === "value") ? "vbd" : m; })();
               const metricLabel = metric === "adp" ? "ADP" : metric === "value" ? "Val" : "VBD";
               const metricVal = (p) => metric === "adp" ? (p.adp != null ? p.adp : 9999) : metric === "value" ? (p.value ?? p.vbd ?? -999) : (p.vbd ?? -999);
               // higher is better for vbd/value; for ADP lower is better (earlier pick = more valued)
@@ -12912,7 +12940,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               const run = (advice && advice.run) || null;
               const roundNow = Math.floor(picks.length / TEAMS) + 1;
               const lateDraft = roundNow >= 11; // supply lens shifts once starters are basically set
-              const GCOLS = "auto 1fr 32px 28px 62px";
+              const GCOLS = dynasty ? "auto 1fr 30px 30px 26px 58px" : "auto 1fr 32px 28px 62px";
               const recent8 = picks.slice(-8).map((id, i) => ({ p: players[id], o: picks.length - Math.min(8, picks.length) + i })).filter((x) => x.p);
               const posRows = ["QB", "RB", "WR", "TE"].map((pos) => {
                 const pool = (availByPos[pos] || []).slice().sort(betterFirst);
@@ -12954,13 +12982,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-activity-heartbeat" style={{ fontSize: 11, color: "var(--blue)" }} aria-hidden="true" /><span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--blue)", fontWeight: 800 }}>Draft pulse</span></div>
                     <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 5, overflow: "hidden" }} title="Rank best-available by: VBD (this-year points over replacement), Value (age-weighted, dynasty), or ADP (market draft position).">
-                      {[["vbd", "VBD"], ["value", "Val"], ["adp", "ADP"]].map(([m, lbl]) => (
+                      {(dynasty ? [["vbd", "VBD"], ["value", "Val"], ["adp", "ADP"]] : [["vbd", "VBD"], ["adp", "ADP"]]).map(([m, lbl]) => (
                         <button key={m} onClick={() => setPulseMetric(m)} style={{ fontSize: 7.5, fontWeight: 700, padding: "1px 5px", border: "none", cursor: "pointer", background: metric === m ? "var(--blue)" : "transparent", color: metric === m ? "#0A0E13" : "var(--mut)", textTransform: "uppercase", letterSpacing: ".03em" }}>{lbl}</button>
                       ))}
                     </div>
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: GCOLS, gap: "0 7px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line)", paddingBottom: 3 }}>
-                    <span>Pos</span><span>Best avail</span><span title={dynasty ? "Value (age-weighted)" : "Value over replacement"} style={{ textAlign: "right", color: (metric === "vbd" || metric === "value") ? "var(--blue)" : "var(--mut)" }}>{dynasty ? "Val" : "VBD"}{(metric === "vbd" || metric === "value") ? " ▾" : ""}</span><span title="Average draft position" style={{ textAlign: "right", color: metric === "adp" ? "var(--blue)" : "var(--mut)" }}>ADP{metric === "adp" ? " ▾" : ""}</span><span title={lateDraft ? "How much better the best guy is than the next few — a big gap means grab him" : "How many startable-tier players remain"} style={{ textAlign: "right" }}>Supply</span>
+                    <span>Pos</span><span>Best avail</span>
+                    <span title="Value over replacement (this-year points)" style={{ textAlign: "right", color: metric === "vbd" ? "var(--blue)" : "var(--mut)" }}>VBD{metric === "vbd" ? " ▾" : ""}</span>
+                    {dynasty && <span title="Value (age-weighted dynasty asset)" style={{ textAlign: "right", color: metric === "value" ? "var(--blue)" : "var(--mut)" }}>Val{metric === "value" ? " ▾" : ""}</span>}
+                    <span title="Average draft position" style={{ textAlign: "right", color: metric === "adp" ? "var(--blue)" : "var(--mut)" }}>ADP{metric === "adp" ? " ▾" : ""}</span>
+                    <span title={lateDraft ? "How much better the best guy is than the next few — a big gap means grab him" : "How many startable-tier players remain"} style={{ textAlign: "right" }}>Supply</span>
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1 }}>
                     {posRows.map((r) => {
@@ -12977,7 +13009,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         <div key={r.pos} style={{ display: "grid", gridTemplateColumns: GCOLS, gap: "0 7px", alignItems: "center", padding: "1px 0" }}>
                           <span onMouseEnter={bestTip} onMouseLeave={hideTip} style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 800, color: POS_COLOR[r.pos], cursor: "help" }}><Dot pos={r.pos} />{r.pos}</span>
                           <span onMouseEnter={bestTip} onMouseLeave={hideTip} style={{ fontSize: 10.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "help" }}>{r.best.name} <span className="mut" style={{ fontSize: 8.5 }}>{r.best.pos}{r.best.posRank}</span></span>
-                          <span onMouseEnter={bestTip} onMouseLeave={hideTip} className="num" style={{ fontSize: 10, fontWeight: 700, textAlign: "right", cursor: "help", color: vbdColor(dynasty ? (r.best.value ?? r.best.vbd) : r.best.vbd) }}>{(() => { const v = dynasty ? (r.best.value ?? r.best.vbd) : r.best.vbd; return (v > 0 ? "+" : "") + Math.round(v); })()}</span>
+                          <span onMouseEnter={bestTip} onMouseLeave={hideTip} className="num" style={{ fontSize: 10, fontWeight: 700, textAlign: "right", cursor: "help", color: vbdColor(r.best.vbd) }}>{(r.best.vbd > 0 ? "+" : "") + Math.round(r.best.vbd)}</span>
+                          {dynasty && <span onMouseEnter={bestTip} onMouseLeave={hideTip} className="num" style={{ fontSize: 10, fontWeight: 700, textAlign: "right", cursor: "help", color: vbdColor(r.best.value ?? r.best.vbd) }}>{(() => { const v = r.best.value ?? r.best.vbd; return (v > 0 ? "+" : "") + Math.round(v); })()}</span>}
                           <span className="num mut" style={{ fontSize: 9.5, textAlign: "right" }}>{r.best.adp != null ? r.best.adp.toFixed(0) : "—"}</span>
                           <span onMouseEnter={supplyTip} onMouseLeave={hideTip} style={{ display: "inline-flex", alignItems: "center", justifyContent: "flex-end", gap: 3, cursor: "help" }}>
                             {r.isRun && <i className="ti ti-flame" style={{ fontSize: 9, color: "#F2655C" }} aria-hidden="true" />}
