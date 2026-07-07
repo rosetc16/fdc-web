@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28dp";
+const BUILD_TAG = "2026.06.28dq";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -12840,7 +12840,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         <div className="hairline" style={{ background: "var(--panel2)" }}>
           <div className="decision-grid" style={{ display: "flex", gap: 10, padding: "8px 12px", alignItems: "stretch" }}>
             {/* ---- GROUP A: decisions & outlook ---- */}
-            <div data-tour="howdoing" className="decision-group-a" style={{ display: "grid", gridTemplateColumns: "minmax(190px,0.9fr) minmax(210px,1.05fr)", gap: 8, flex: "1.05 1 0", minWidth: 0, padding: 6, borderRadius: 12, border: "1px solid rgba(255,255,255,.22)", boxShadow: "0 0 0 1px rgba(255,255,255,.04)" }}>
+            <div data-tour="howdoing" className="decision-group-a" style={{ display: "grid", gridTemplateColumns: "minmax(190px,0.9fr) minmax(210px,1.05fr)", gap: 8, flex: "1.05 1 0", minWidth: 0, padding: 6, borderRadius: 12, border: "1.5px solid rgba(255,255,255,.55)", boxShadow: "0 0 12px rgba(255,255,255,.08)" }}>
             {/* ===== ZONE 1: HOW YOU'RE DOING (table) ===== */}
             {(() => {
               const laneMap = { rebuild: { t: "Rebuild", c: "#5FD0A8", i: "ti-seedling" }, winnow: { t: "Win-now", c: "#F2655C", i: "ti-flame" }, balanced: { t: "Balanced", c: "var(--gold)", i: "ti-scale" }, undecided: { t: "Forming…", c: "var(--mut)", i: "ti-loader" } };
@@ -13062,7 +13062,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             {/* groups are now individually outlined — no divider needed */}
 
             {/* ---- GROUP B: the picks ---- */}
-            <div data-tour="picks" className="decision-group-b" style={{ display: "grid", gridTemplateColumns: "minmax(155px,0.8fr) minmax(170px,0.9fr) minmax(175px,0.92fr)", gap: 8, flex: "1.4 1 0", minWidth: 0, padding: 6, borderRadius: 12, border: "1px solid rgba(255,255,255,.22)", boxShadow: "0 0 0 1px rgba(255,255,255,.04)" }}>
+            <div data-tour="picks" className="decision-group-b" style={{ display: "grid", gridTemplateColumns: "minmax(155px,0.8fr) minmax(170px,0.9fr) minmax(175px,0.92fr)", gap: 8, flex: "1.4 1 0", minWidth: 0, padding: 6, borderRadius: 12, border: "1.5px solid rgba(255,255,255,.55)", boxShadow: "0 0 12px rgba(255,255,255,.08)" }}>
 
             {/* ===== ZONE 2: LAST PICKS ===== */}
             {(() => {
@@ -14590,65 +14590,66 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               {!done && (myNextOv != null) && (
                 <div className="panel" style={{ padding: 16, borderLeft: "3px solid var(--gold)" }}>
-                  <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", marginBottom: 4 }}>Your next pick — {pickLabel(myNextOv)} <span className="mut">(#{myNextOv + 1})</span></div>
-                  <div style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 10 }}>
-                    {ta.emptyStarters.length ? <>Focus: lock in a starter at <b style={{ color: "var(--gold)" }}>{ta.emptyStarters[0].replace(/[0-9]/g, "")}</b> — it's your most pressing hole. </> : <>Focus: best value for your build; <b style={{ color: "var(--gold)" }}>{ta.thinnest}</b> is your thinnest spot. </>}
-                    {myWindow && myWindow.decided && (myWindow.lane === "rebuild" ? "Favor youth and upside." : myWindow.lane === "winnow" ? "Favor proven production." : "Take the best value.")}
-                  </div>
+                  <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", marginBottom: 8 }}>Your next pick — {pickLabel(myNextOv)} <span className="mut">(#{myNextOv + 1})</span></div>
                   {(() => {
-                    // Two target lists, matching the draft tracker's "Your next pick": Balanced build and My
-                    // build. Each = that strategy's top verdict + its alternatives, projected to your next pick,
-                    // shown in the same rich table format as the hovers (rank, name, team, ADP, proj, VBD).
-                    const balList = myBalancedAdvice && myBalancedAdvice.verdict ? [myBalancedAdvice.verdict, ...(myBalancedAdvice.alts || [])].filter(Boolean).slice(0, 5) : [];
-                    const bldList = myBuildAdvice && myBuildAdvice.verdict ? [myBuildAdvice.verdict, ...(myBuildAdvice.alts || [])].filter(Boolean).slice(0, 5) : [];
-                    if (!balList.length && !bldList.length) return null;
+                    // Single unified "Smart" list — the top 10 players to consider at your next pick, plus a
+                    // board summary: best value, best ADP, best fit, any run, and expected value drop-offs before
+                    // your pick. One model (no Balanced/My-build split).
+                    const adv = mySelAdvice && mySelAdvice.verdict ? mySelAdvice : (myBalancedAdvice || null);
+                    const list = adv && adv.verdict ? [adv.verdict, ...(adv.alts || [])].filter(Boolean).slice(0, 10) : [];
+                    if (!list.length) return null;
+                    const dyn = cfg.type === "dynasty" || cfg.type === "keeper";
                     const survOf = (p) => (sims && sims.pct && sims.pct[0] && sims.pct[0][p.id] != null) ? sims.pct[0][p.id] : null;
-                    const mkRows = (list) => list.map((p, i) => ({ ...p, rec: i === 0, star: i === 0, prob: survOf(p) }));
-                    const openTip = (p) => (e) => showTip(e, makeOutlook(p, sims, false, { pickNow: (myNextOv != null ? myNextOv + 1 : picks.length + 1), dynasty: cfg.type === "dynasty" || cfg.type === "keeper", scarcity: scarcityFor(p) }));
-                    // A small table with a clickable name column (opens the full player card).
-                    const tbl = (list, accent) => (
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
-                        <thead><tr className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".04em", borderBottom: "1px solid var(--line)" }}>
-                          <th style={{ textAlign: "left", padding: "0 4px 4px 0" }}>Player</th>
-                          <th style={{ textAlign: "left", paddingBottom: 4 }}>Tm</th>
-                          <th className="num" style={{ paddingBottom: 4 }}>ADP</th>
-                          <th className="num" style={{ paddingBottom: 4 }}>Proj</th>
-                          <th className="num" style={{ paddingBottom: 4 }}>VBD</th>
-                          <th className="num" style={{ paddingBottom: 4 }}>Avail</th>
-                        </tr></thead>
-                        <tbody>
-                          {mkRows(list).map((p, i) => (
-                            <tr key={p.id} onMouseEnter={openTip(p)} onMouseLeave={hideTip} onClick={openTip(p)}
-                              style={{ cursor: "help", background: p.rec ? "rgba(242,182,60,.10)" : "transparent", borderBottom: i < list.length - 1 ? "1px solid var(--line2)" : "none" }}>
-                              <td style={{ padding: "4px 6px 4px 4px", whiteSpace: "nowrap" }}>
-                                <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank), marginRight: 5 }}>{p.pos}{p.posRank}</span>
-                                <b style={{ color: p.rec ? "var(--gold)" : "var(--ink)" }}>{p.star ? "★ " : ""}{p.name}</b>
-                              </td>
-                              <td className="num mut" style={{ paddingRight: 6 }}>{p.team || "FA"}</td>
-                              <td className="num" style={{ textAlign: "right", paddingRight: 6 }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</td>
-                              <td className="num" style={{ textAlign: "right", paddingRight: 6, fontWeight: 700 }}>{Math.round(p.pts || 0)}</td>
-                              <td className="num" style={{ textAlign: "right", paddingRight: 6, color: (p.vbd || 0) > 0 ? "var(--green)" : "var(--mut)" }}>{p.vbd != null ? (p.vbd > 0 ? "+" : "") + Math.round(p.vbd) : "—"}</td>
-                              <td className="num" style={{ textAlign: "right", color: p.prob == null ? "var(--mut)" : p.prob >= 65 ? "var(--green)" : p.prob >= 35 ? "var(--gold)" : "var(--red)" }}>{p.prob != null ? `${p.prob}%` : "—"}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    );
+                    const openTip = (p) => (e) => showTip(e, makeOutlook(p, sims, false, { pickNow: (myNextOv != null ? myNextOv + 1 : picks.length + 1), dynasty: dyn, scarcity: scarcityFor(p) }));
+                    const pickNo = (myNextOv != null ? myNextOv + 1 : picks.length + 1);
+                    // board summary bits
+                    const bestValue = list.slice().sort((a, b) => (dyn ? (b.value ?? b.vbd) - (a.value ?? a.vbd) : (b.vbd || 0) - (a.vbd || 0)))[0];
+                    const bestAdp = list.slice().sort((a, b) => (a.adp || 999) - (b.adp || 999))[0];
+                    const bestFaller = list.slice().map((p) => ({ p, gap: (p.adp != null ? pickNo - p.adp : -999) })).sort((a, b) => b.gap - a.gap)[0];
+                    const bestFit = adv.verdict; // the model's #1 is the best fit for your build
+                    const run = (adv.run || (advice && advice.run)) || null;
+                    // expected value drop-off: gap between the best available now and the projected best at your NEXT pick
+                    const cols = "minmax(0,1fr) 30px 34px 34px 40px 40px";
                     return (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                        {balList.length > 0 && (
-                          <div>
-                            <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--gold)", marginBottom: 6 }}>Balanced build — top targets</div>
-                            {tbl(balList, "var(--gold)")}
-                          </div>
-                        )}
-                        {bldList.length > 0 && (
-                          <div>
-                            <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--blue)", marginBottom: 6 }}>My build — top targets</div>
-                            {tbl(bldList, "var(--blue)")}
-                          </div>
-                        )}
-                        <div className="mut" style={{ fontSize: 10, lineHeight: 1.4 }}>Balanced build takes the best value for a well-rounded roster; My build tilts toward your team's contention window and needs. ★ = top target. Avail = chance he's still there at your pick. Hover a row for the full breakdown.</div>
+                      <div>
+                        {/* board summary */}
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 7, marginBottom: 10 }}>
+                          {[
+                            { lbl: "Best fit", v: bestFit, c: "var(--gold)", note: "your build" },
+                            { lbl: "Best value", v: bestValue, c: "#5FD0A8", note: dyn ? "age-adj" : "VBD" },
+                            { lbl: "Best ADP", v: bestAdp, c: "#4FA9E0", note: `ADP ${bestAdp && bestAdp.adp != null ? bestAdp.adp.toFixed(0) : "—"}` },
+                            ...(bestFaller && bestFaller.gap >= 8 ? [{ lbl: "Faller", v: bestFaller.p, c: "#C99BF5", note: `${Math.round(bestFaller.gap)} past ADP` }] : []),
+                          ].map((s, k) => s.v ? (
+                            <div key={k} onMouseEnter={openTip(s.v)} onMouseLeave={hideTip} style={{ padding: "6px 8px", borderRadius: 8, background: "var(--panel2)", border: "1px solid var(--line)", cursor: "help" }}>
+                              <div style={{ fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: s.c, fontWeight: 800 }}>{s.lbl}</div>
+                              <div style={{ fontSize: 11.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={s.v.pos} />{s.v.name}</div>
+                              <div className="mut" style={{ fontSize: 8.5 }}>{s.note}</div>
+                            </div>
+                          ) : null)}
+                        </div>
+                        {run && <div style={{ fontSize: 11, color: "#F2655C", marginBottom: 8, display: "flex", alignItems: "center", gap: 5 }}><i className="ti ti-flame" style={{ fontSize: 12 }} aria-hidden="true" /><b>{run.pos} run</b> — {run.count} of the last 8 picks; that tier is thinning before your pick.</div>}
+                        {/* top 10 list — aligned columns */}
+                        <div style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--gold)", marginBottom: 4 }}>Top 10 to consider</div>
+                        <div style={{ display: "grid", gridTemplateColumns: cols, gap: "0 6px", alignItems: "center", fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line)", padding: "0 4px 3px" }}>
+                          <span>Player</span><span style={{ textAlign: "right" }}>Tm</span><span style={{ textAlign: "right" }}>ADP</span><span style={{ textAlign: "right" }}>Proj</span><span style={{ textAlign: "right" }}>{dyn ? "Val" : "VBD"}</span><span style={{ textAlign: "right" }}>Avail</span>
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column" }}>
+                          {list.map((p, i) => {
+                            const prob = survOf(p); const vShow = dyn ? (p.value ?? p.vbd) : p.vbd;
+                            return (
+                              <div key={p.id} onMouseEnter={openTip(p)} onMouseLeave={hideTip} onClick={openTip(p)}
+                                style={{ display: "grid", gridTemplateColumns: cols, gap: "0 6px", alignItems: "center", cursor: "help", fontSize: 11.5, padding: "3px 4px", borderRadius: 4, background: i === 0 ? "rgba(242,182,60,.10)" : "transparent", borderBottom: i < list.length - 1 ? "1px solid var(--line2)" : "none" }}>
+                                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}><span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank), marginRight: 4, fontSize: 10 }}>{p.pos}{p.posRank}</span><b style={{ color: i === 0 ? "var(--gold)" : "var(--ink)" }}>{i === 0 ? "★ " : ""}{p.name}</b></span>
+                                <span className="num mut" style={{ textAlign: "right", fontSize: 10 }}>{p.team || "FA"}</span>
+                                <span className="num" style={{ textAlign: "right", fontSize: 10 }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
+                                <span className="num" style={{ textAlign: "right", fontWeight: 700, fontSize: 10.5 }}>{Math.round(p.pts || 0)}</span>
+                                <span className="num" style={{ textAlign: "right", fontSize: 10.5, color: vbdColor(vShow) }}>{vShow != null ? (vShow > 0 ? "+" : "") + Math.round(vShow) : "—"}</span>
+                                <span className="num" style={{ textAlign: "right", fontSize: 10, color: prob == null ? "var(--mut)" : prob >= 65 ? "#5FD0A8" : prob >= 35 ? "var(--gold)" : "#F2655C" }}>{prob != null ? `${prob}%` : "—"}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="mut" style={{ fontSize: 9.5, lineHeight: 1.4, marginTop: 6 }}>★ = the Smart model's top pick for your build. Avail = chance he's still on the board at your pick. Hover any row for the full breakdown.</div>
                       </div>
                     );
                   })()}
@@ -14688,9 +14689,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 )}
               </div>
 
-              {/* Outlook — sits under roster profile, to the right of the lineup */}
+              {/* Outlook — only for OTHER teams; your own team's outlook is in the Team Summary at the top. */}
+              {!isMe && (
               <div className="panel" style={{ padding: 16 }}>
-                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", marginBottom: 12 }}>{isMe ? "Your outlook & what to focus on" : `${teamName} — outlook`}</div>
+                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", marginBottom: 12 }}>{teamName} — outlook</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
                   {ta.insights.map((it, i) => (
                     <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
@@ -14703,6 +14705,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   ))}
                 </div>
               </div>
+              )}
               {/* Bye-week outlook — below the outlook panel; redraft-focused, graceful when byes unannounced */}
               <ByeWeekWidget roster={selRoster} req={REQ_F(isSuperflex(cfg))} isDynasty={cfg.type === "dynasty" || cfg.type === "keeper"} />
             </div>
@@ -14977,14 +14980,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               // Clear top-tier fantasy starters by GLOBAL rank always qualify.
               if (p.pos === "QB") { if (SF ? r <= 20 : r <= 12) return true; }
               if (p.pos === "RB") { if (r <= 24) return true; }   // ~RB1-2 range across the league
-              if (p.pos === "WR") { if (r <= 24) return true; }   // ~WR1-2 range
-              if (p.pos === "TE") { if (r <= (cfg.tePremMult ? 12 : 10)) return true; }
-              // Their NFL team's clear starter at the position (slot 1) is startable if he's fantasy-relevant.
+              if (p.pos === "WR") { if (r <= 30) return true; }   // ~WR1-2 range (start 2-3 WR)
+              if (p.pos === "TE") { if (r <= (cfg.tePremMult ? 14 : 12)) return true; }
+              // Their NFL team's clear STARTER at the position (slot 1) qualifies — a real-life starter gets the
+              // volume that makes him fantasy-startable, even if he's a weak one (e.g. a struggling QB1 or a WR1
+              // in a run-heavy offense). Floors here are LENIENT — just enough to exclude a truly empty projection.
               if (slot === 1) {
-                if (p.pos === "QB") return pts >= (SF ? 230 : 265);
-                if (p.pos === "RB") return pts >= 130;
-                if (p.pos === "WR") return pts >= 120;
-                if (p.pos === "TE") return pts >= 95;
+                if (p.pos === "QB") return pts >= (SF ? 150 : 170);  // any real starting QB clears this on volume
+                if (p.pos === "RB") return pts >= 90;                // a lead/committee back
+                if (p.pos === "WR") return pts >= 85;                // a real WR1 even in a weak offense
+                if (p.pos === "TE") return pts >= 70;                // a starting TE with a route share
               }
               // Deeper pieces (team RB2 / WR2-3 / TE2, committee/rotation) — highlight ONLY if they clear a real
               // startable-points threshold (a backup who's genuinely usable, like a committee back).
@@ -15087,12 +15092,21 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 // most rookies drafted
                 const rookieCounts = Array.from({ length: TEAMS }, (_, i) => ({ i, n: picks.filter((pk, o) => teamAt(o) === i && players[pk] && players[pk].rookie).length }));
                 const rookieKing = rookieCounts.slice().sort((a, b) => b.n - a.n)[0];
-                // most balanced roster (lowest max single-position share, min 5 picks)
+                // "Best balance" — an EVEN build across positions, but only counts as an award if the roster is
+                // also legitimately competitive. A last-place team can have the most even positional split yet
+                // clearly isn't the "best" anything, so we require a middle-or-better projected finish before the
+                // award is handed out (otherwise it reads as absurd). Ties break toward the better-projected team.
                 let balanced = null;
                 for (let i = 0; i < TEAMS; i++) {
                   const counts = { QB: 0, RB: 0, WR: 0, TE: 0 }; let tot = 0;
                   picks.forEach((pk, o) => { if (teamAt(o) === i) { const p = players[pk]; if (p && counts[p.pos] != null) { counts[p.pos]++; tot++; } } });
-                  if (tot >= 5) { const share = Math.max(...Object.values(counts)) / tot; if (!balanced || share < balanced.share) balanced = { i, share }; }
+                  if (tot < 5) continue;
+                  const share = Math.max(...Object.values(counts)) / tot;
+                  const finishRk = (proj && proj.rank && proj.rank[i] != null) ? proj.rank[i] : null;
+                  // must be even (share ≤ 0.4) AND projected in the top ~60% of the league to earn "best balance"
+                  const competitive = finishRk == null || finishRk <= Math.ceil(TEAMS * 0.6);
+                  if (!competitive) continue;
+                  if (!balanced || share < balanced.share - 0.001 || (Math.abs(share - balanced.share) <= 0.001 && finishRk != null && balanced.finishRk != null && finishRk < balanced.finishRk)) balanced = { i, share, finishRk };
                 }
                 // best single WR / RB / QB corps (by summed top-2 vbd) — "position powerhouse"
                 let powerhouse = null;
@@ -15112,7 +15126,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     {youngest && award("ti-seedling", "Youth movement", nm(youngest.i), `Youngest core — ${youngest.avg.toFixed(1)} avg age`, "var(--green)", youngest.i === focusIdx, tt(`${nm(youngest.i)} — youngest players`, teamDrafted(youngest.i).filter((p) => p.age).sort((a, b) => a.age - b.age).slice(0, 8), ["rank", "name", "team", "age", "pts"]))}
                     {oldest && award("ti-trophy", "Win-now mode", nm(oldest.i), `Oldest core — ${oldest.avg.toFixed(1)} avg age`, "var(--gold)", oldest.i === focusIdx, tt(`${nm(oldest.i)} — oldest players`, teamDrafted(oldest.i).filter((p) => p.age).sort((a, b) => b.age - a.age).slice(0, 8), ["rank", "name", "team", "age", "pts"]))}
                     {rookieKing && rookieKing.n >= 2 && award("ti-baby-carriage", "Rookie hauler", nm(rookieKing.i), `Most rookies — ${rookieKing.n} first-years`, "var(--green)", rookieKing.i === focusIdx, tt(`${nm(rookieKing.i)} — rookies`, teamDrafted(rookieKing.i).filter((p) => p.rookie).sort((a, b) => (b.pts || 0) - (a.pts || 0)), ["rank", "name", "team", "age", "pts"]))}
-                    {balanced && balanced.share <= 0.4 && award("ti-scale", "Best balance", nm(balanced.i), `Most even roster build across positions`, "var(--ink)", balanced.i === focusIdx, tt(`${nm(balanced.i)} — starting lineup`, teamStarters(balanced.i), ["slot", "rank", "name", "team", "pts"]))}
+                    {balanced && balanced.share <= 0.4 && award("ti-scale", "Best balance", nm(balanced.i), `Even build across positions — no single spot over-stacked`, "var(--ink)", balanced.i === focusIdx, tt(`${nm(balanced.i)} — starting lineup`, teamStarters(balanced.i), ["slot", "rank", "name", "team", "pts"]))}
                     {zealot && zealot.share >= 0.45 && award("ti-target", "One-track mind", nm(zealot.i), `${Math.round(zealot.share * 100)}% ${zealot.pos} — ${zealot.n} of them`, "var(--blue)", zealot.i === focusIdx, tt(`${nm(zealot.i)} — ${zealot.pos}s drafted`, teamDrafted(zealot.i).filter((p) => p.pos === zealot.pos).sort((a, b) => (b.pts || 0) - (a.pts || 0)), ["rank", "name", "team", "age", "pts"]))}
                   </div>
                 );
