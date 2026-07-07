@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28dl";
+const BUILD_TAG = "2026.06.28dm";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2250,94 +2250,92 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build) {
   if (strategy === "adp") return -c.adp;
   const mv = marginalVbd(c, counts, sf);
   if (strategy === "value") return mv + bbBonus(c);
-  if (strategy === "build") {
-    // "My build" — roster-aware: weight your contention window (youth in a rebuild) and TRUE positional
-    // need, and penalize positions you've already filled. This is what makes it NOT recommend a 3rd TE
-    // when you're a young rebuild with two already. BUILD_LANE is set from myWindow before advice runs.
-    const lane = BUILD_LANE;
-    const need = dem[c.pos] - counts[c.pos]; // >0 = still need starters; <0 = over-stacked
-    let s = mv;
-    if (need > 0) s += 16 * Math.min(need, 2);
-    else s += need * 22; // over-stacked positions get heavily penalized
-    // A surplus QB in a 1-QB (non-superflex) league is near-useless in a SHALLOW league — you can't flex or
-    // bye-cover with him. Pile on so build won't take a 3rd QB over a real need or faller — but relax this a lot
-    // in DEEP rosters (room to stockpile) and DYNASTY (QBs carry asset value), where extra QBs are legitimate.
-    if (c.pos === "QB" && !sf && (SPEC.SUPER || 0) === 0 && counts.QB >= 1) {
-      const startersTotal = (SPEC.QB || 0) + (SPEC.RB || 0) + (SPEC.WR || 0) + (SPEC.TE || 0) + (SPEC.FLEX || 0) + (SPEC.SUPER || 0) + (SPEC.DST || 0) + (SPEC.K || 0);
-      const deep = Math.max(0, ROSTER_ROUNDS - startersTotal) >= 12;
-      const soft = deep || isDynastyGlobal;
-      s -= counts.QB >= 2 ? (soft ? 16 : 60) : (soft ? 6 : 22);
-    }
-    s += emptyStarterPremium(c, counts, sf); // fill required starters before flex/depth
-    if (lane === "rebuild") { s += Math.max(0, 28 - (c.age || 27)) * 7; if (c.rookie) s += 25; s += Math.max(0, (c.value != null && c.vbd != null ? c.value - c.vbd : 0)) * 0.6; }
-    else if (lane === "winnow") { s += Math.max(0, (c.age || 27) - 24) * 3; if (c.rookie) s -= 15; }
-    s -= reachPenalty(c, pickNum) * 0.4;
-    // faller/value bonus — but NOT for a surplus QB you'll never start in a SHALLOW 1-QB league (a "falling"
-    // 3rd QB there is still dead weight). In deep/dynasty leagues a falling QB is a fine value, so keep it.
-    const qbStartersTotal = (SPEC.QB || 0) + (SPEC.RB || 0) + (SPEC.WR || 0) + (SPEC.TE || 0) + (SPEC.FLEX || 0) + (SPEC.SUPER || 0) + (SPEC.DST || 0) + (SPEC.K || 0);
-    const qbDeep = Math.max(0, ROSTER_ROUNDS - qbStartersTotal) >= 12;
-    const surplusQB = c.pos === "QB" && !sf && (SPEC.SUPER || 0) === 0 && counts.QB >= 2 && !qbDeep && !isDynastyGlobal;
-    if (!surplusQB) s += Math.min(45, Math.max(0, (c.adp != null && pickNum != null ? pickNum - c.adp : 0)) * 0.7);
-    return s + bbBonus(c);
-  }
   if (strategy === "upside") {
     // UPSIDE / BREAKOUT — still anchored to the market (ADP) so it won't wildly reach, but it pushes
-    // younger, ascending, higher-variance players UP the board. The base is value + a softened reach
-    // penalty (so ADP trends still matter), then we add a breakout bonus for youth / rookies / boom
-    // positions and lightly penalize aging vets. Net effect: among similarly-valued players near the
-    // current pick, the younger/breakout guy wins — without drafting someone 40 picks early.
-    const youngBonus = Math.max(0, 27 - (c.age || 27)) * 6;   // ramps up under age 27
-    const agePenalty = Math.max(0, (c.age || 27) - 28) * 9;    // fades in over age 28
+    // younger, ascending, higher-variance players UP the board.
+    const youngBonus = Math.max(0, 27 - (c.age || 27)) * 6;
+    const agePenalty = Math.max(0, (c.age || 27) - 28) * 9;
     const rookieBonus = c.rookie ? 22 : 0;
-    const ceilBonus = c.ceil != null && c.pts != null && c.pts > 0 ? Math.max(0, (c.ceil - c.pts)) * 0.25 : 0; // wide ceiling = boom potential
+    const ceilBonus = c.ceil != null && c.pts != null && c.pts > 0 ? Math.max(0, (c.ceil - c.pts)) * 0.25 : 0;
     const posVar = c.pos === "WR" || c.pos === "RB" ? 10 : c.pos === "TE" ? 5 : 3;
     return mv + youngBonus + rookieBonus + ceilBonus + posVar
       + 5 * Math.max(0, dem[c.pos] - counts[c.pos]) - agePenalty - reachPenalty(c, pickNum) * 0.7 + bbBonus(c);
   }
-  // BALANCED: early in the draft this should essentially FOLLOW the market — with an empty roster there's
-  // no construction pressure yet, so the consensus board order should win (a balanced drafter takes the
-  // ADP-1 player at 1.1, not the guy who's 4 VBD points higher but ADP-3). We add an ADP-anchor bonus that
-  // is strong in round 1-2 and DECAYS as the draft develops, so value + positional need + strategy
-  // gradually take over and pull the pick away from pure ADP later — which is where real edges are found.
-  const need = (BB ? 10 : 7) * Math.max(0, dem[c.pos] - counts[c.pos]);
-  // Over-stack penalty: once you've filled a position beyond what the lineup can use (a 3rd QB in a 1QB
-  // league, a 2nd TE with no TE-flex value, etc.), balanced should stop valuing more of it — a balanced
-  // drafter pivots to depth at positions that actually start. `dem[pos]` already bakes in flex/superflex
-  // share, so a surplus over it is genuinely wasted. Grows the further past demand you are. In BEST BALL,
-  // extra bodies at spike-week positions aren't wasted (the platform auto-starts the best score each week),
-  // so the penalty is much gentler — a 3rd QB / 3rd TE is a legitimate best-ball move.
+
+  // ================= UNIFIED MODEL (default; "balanced" and "build" both route here) =================
+  // ONE model that marries the team build with ADP, VBD, value, and roster trends. The philosophy:
+  //   • EARLY (rounds 1-4): follow the market. With little roster built, the consensus board order should win
+  //     so you don't reach — take the best player available near his ADP.
+  //   • BY ~ROUND 5: your build is established, so roster construction (need, scarcity, contention window)
+  //     takes over and it's reasonable to prioritize fit over pure market order.
+  //   • ALWAYS: ADP stays an anchor via a reach penalty — never reach a ton for a guy you could get later,
+  //     whether you're rebuilding or winning now. And a genuine FALLER (available past his ADP) is a bargain.
+  //   • FLEXIBILITY: don't over-stack a flex-eligible position early (e.g. a 3rd RB in the first 3 rounds)
+  //     unless the value is absurd — that spends flexibility you'd rather keep open.
+  //   • FORMAT: demand already scales with your start requirements (start-3-WR lifts WR; TE-prem lifts TE) and
+  //     scoring (PPR/half bakes into VBD). Superflex/2QB lift QB demand; a surplus QB in a shallow 1-QB league
+  //     is dead weight. Dynasty adds an age/window layer that shifts with your rebuild/win-now lane.
+  const R = Math.max(1, TEAMS || 12);
+  const round = pickNum != null ? Math.ceil(pickNum / R) : 1;
+  const dynasty = isDynastyGlobal;
+  const lane = BUILD_LANE; // "rebuild" | "winnow" | "balanced"
+
+  // ---- BUILD score: roster-construction value ----
+  // marginal VBD, blended toward age-aware composite value in a dynasty rebuild so youth isn't buried.
+  let mvUse = mv;
+  if (dynasty && c.value != null && c.vbd != null) {
+    const blend = lane === "rebuild" ? 0.6 : lane === "winnow" ? 0.15 : 0.35;
+    mvUse = mv * (1 - blend) + (mv + (c.value - c.vbd)) * blend;
+  }
+  const needRaw = dem[c.pos] - counts[c.pos]; // >0 = still need starters here; <0 = over-stacked
+  const needBonus = (BB ? 10 : 8) * Math.max(0, needRaw);
+  // Over-stack: past your usable demand, more of a position is wasted (gentle in best ball).
   const surplus = counts[c.pos] - dem[c.pos];
   const overStack = surplus > 0
-    ? surplus * (BB ? (c.pos === "QB" || c.pos === "TE" ? 6 : 4) : (c.pos === "QB" || c.pos === "TE" ? 26 : 14))
+    ? surplus * (BB ? (c.pos === "QB" || c.pos === "TE" ? 6 : 4) : (c.pos === "QB" || c.pos === "TE" ? 24 : 15))
     : 0;
-  // Balanced blends a MARKET score (follow ADP) with a VALUE score (VBD + need). Early in the draft the
-  // market dominates, so balanced takes the consensus board in order (ADP-1 at 1.1, even over a higher-VBD
-  // ADP-2 player). As the draft develops, the blend shifts toward value + need, so your roster construction
-  // and the real edges take over. `mktW` goes from ~0.9 at pick 1 to 0 by ~pick 28.
-  // In a dynasty rebuild, win-now VBD (mv) over-values old producers; blend it toward the age-aware composite
-  // `value` so the young asset isn't buried by a proven vet's raw points. Redraft/win-now keep raw mv.
-  let mvUse = mv;
-  if (isDynastyGlobal && c.value != null && c.vbd != null) {
-    const blend = BUILD_LANE === "rebuild" ? 0.6 : BUILD_LANE === "winnow" ? 0.15 : 0.35; // weight toward composite value
-    const mvComposite = mv + (c.value - c.vbd); // shift mv by the age premium/discount baked into value
-    mvUse = mv * (1 - blend) + mvComposite * blend;
+  // FLEXIBILITY guard: taking a 3rd+ flex-eligible body (RB/WR/TE) in the first ~3 rounds spends roster
+  // flexibility you'd rather keep. Penalize it EARLY unless the raw value is absurd (a true top-tier faller).
+  let flexEarly = 0;
+  if (round <= 3 && ["RB", "WR", "TE"].includes(c.pos)) {
+    const already = counts[c.pos] || 0;
+    const absurdValue = (c.adp != null && pickNum != null && (pickNum - c.adp) >= 18); // a big faller is still worth it
+    if (already >= 2 && !absurdValue) flexEarly = 30 * (already - 1);
   }
-  // ADP VALUE (faller bonus): a player still available well PAST his ADP is a market bargain at any stage of
-  // the draft. `mktW` above only rewards early-ADP players early; this rewards the *gap* between where the
-  // market expected him gone and where you're actually picking, so a big faller (e.g. an ADP-138 player still
-  // there at pick 196) gets credit even in the late rounds when mktW has decayed to 0. Capped so it nudges,
-  // never dominates, and only counts genuine fallers (gap beyond a few picks of noise).
+  // Surplus-QB dead weight in a shallow 1-QB league (relaxes for deep rosters / dynasty).
+  let qbDead = 0;
+  if (c.pos === "QB" && !sf && (SPEC.SUPER || 0) === 0 && counts.QB >= 1) {
+    const startersTotal = (SPEC.QB || 0) + (SPEC.RB || 0) + (SPEC.WR || 0) + (SPEC.TE || 0) + (SPEC.FLEX || 0) + (SPEC.SUPER || 0) + (SPEC.DST || 0) + (SPEC.K || 0);
+    const soft = Math.max(0, ROSTER_ROUNDS - startersTotal) >= 12 || dynasty;
+    qbDead = counts.QB >= 2 ? (soft ? 16 : 60) : (soft ? 6 : 22);
+  }
+  // Faller bonus (ADP value) — a bargain available past his ADP, capped so it nudges. Suppressed only for a
+  // dead-weight surplus QB in a shallow 1-QB league.
   const adpFall = (c.adp != null && pickNum != null) ? Math.max(0, pickNum - c.adp) : 0;
-  // A "falling" 3rd QB in a SHALLOW 1-QB league is still dead weight — don't let the faller bonus rescue him.
-  // In deep/dynasty leagues a falling QB is a legitimate value, so keep the bonus there.
-  const balStartersTotal = (SPEC.QB || 0) + (SPEC.RB || 0) + (SPEC.WR || 0) + (SPEC.TE || 0) + (SPEC.FLEX || 0) + (SPEC.SUPER || 0) + (SPEC.DST || 0) + (SPEC.K || 0);
-  const balDeep = Math.max(0, ROSTER_ROUNDS - balStartersTotal) >= 12;
-  const surplusDeadQB = c.pos === "QB" && !sf && (SPEC.SUPER || 0) === 0 && counts.QB >= 2 && !balDeep && !isDynastyGlobal;
-  const adpValue = surplusDeadQB ? 0 : Math.min(45, adpFall * 0.7);
-  const value = mvUse + need - overStack - reachPenalty(c, pickNum) + emptyStarterPremium(c, counts, sf) + windowFit(c, BUILD_LANE, isDynastyGlobal) + adpValue;
-  const market = c.adp != null ? 300 - c.adp * 3.0 : 0; // pure board-order score: earlier ADP = higher
-  const mktW = pickNum != null ? Math.max(0, Math.min(0.92, 0.92 - (pickNum - 1) * 0.034)) : 0; // 0.92 → 0 by ~pick 28
-  return market * mktW + value * (1 - mktW) + bbBonus(c) - byePenalty(c);
+  const startersTot = (SPEC.QB || 0) + (SPEC.RB || 0) + (SPEC.WR || 0) + (SPEC.TE || 0) + (SPEC.FLEX || 0) + (SPEC.SUPER || 0) + (SPEC.DST || 0) + (SPEC.K || 0);
+  const deadQB = c.pos === "QB" && !sf && (SPEC.SUPER || 0) === 0 && counts.QB >= 2 && !(Math.max(0, ROSTER_ROUNDS - startersTot) >= 12) && !dynasty;
+  const adpValue = deadQB ? 0 : Math.min(45, adpFall * 0.7);
+
+  let buildScore = mvUse + needBonus - overStack - flexEarly - qbDead
+    + emptyStarterPremium(c, counts, sf)
+    + windowFit(c, lane, dynasty)
+    + adpValue
+    - reachPenalty(c, pickNum);
+  // dynasty rebuild/win-now youth-or-vet tilt (on top of windowFit's gentler nudge)
+  if (dynasty) {
+    if (lane === "rebuild") { buildScore += Math.max(0, 28 - (c.age || 27)) * 5; if (c.rookie) buildScore += 18; }
+    else if (lane === "winnow") { buildScore += Math.max(0, (c.age || 27) - 24) * 2; if (c.rookie) buildScore -= 8; }
+  }
+  buildScore += bbBonus(c) - byePenalty(c);
+
+  // ---- MARKET score: pure board order (earlier ADP = higher) ----
+  const market = c.adp != null ? 300 - c.adp * 3.0 : 0;
+
+  // ---- BLEND: follow the market early, hand off to build by ~round 5, ADP stays an anchor via reachPenalty
+  // (already inside `build`). Market weight ~0.85 in round 1 → ~0.5 at round 3 → ~0 by round 6-7. Redraft and
+  // dynasty share the SAME handoff shape; dynasty's extra complexity lives inside `build` (window/age/lane).
+  const mktW = pickNum != null ? Math.max(0, Math.min(0.85, 0.85 - (round - 1) * 0.17)) : 0;
+  return market * mktW + buildScore * (1 - mktW);
 }
 // cost of drafting a player well before the market would — grows the earlier you are
 // (a round-1 reach is far more wasteful than a round-12 reach) and with the gap size.
@@ -13372,9 +13370,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 <i className="ti ti-adjustments" style={{ fontSize: 13, color: "var(--gold)" }} aria-hidden="true" />
                 <span className="gold" style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".03em" }}>STRATEGY</span>
                 <select className="gs" style={{ fontSize: 12.5, padding: "4px 6px", border: "none", background: "transparent", fontWeight: 600 }} value={strategy} onChange={(e) => { setStrategy(e.target.value); setManualSort(false); }}>
-                  <option value="balanced">Balanced (market)</option>
+                  <option value="balanced">Smart (market + your build)</option>
                   <option value="value">Max VBD</option>
-                  <option value="build">My build (need + window)</option>
                   <option value="upside">Upside / breakout</option>
                   <option value="adp">Strict ADP</option>
                 </select>
@@ -13697,14 +13694,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const recTable = (adv, accent, label, sub) => {
                   if (!adv || !adv.verdict) return <div className="mut" style={{ fontSize: 11, padding: "4px 0" }}>Computing…</div>;
                   const full = [adv.verdict, ...(adv.alts || [])].filter(Boolean);
-                  const expanded = !!recExpanded[label];
-                  const list = expanded ? full.slice(0, 10) : full.slice(0, 3); // top 3, or full top-10 when expanded
-                  const canExpand = full.length > 3;
+                  const list = full.slice(0, 10); // always show the full top 10 — one model, no expand
                   const cols = onClockNow ? "30px minmax(0,1fr) 74px 34px 30px 32px 44px" : "30px minmax(0,1fr) 78px 34px 30px 32px";
-                  const toggle = () => setRecExpanded((m) => ({ ...m, [label]: !m[label] }));
                   return (
                     <div>
-                      <div style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".05em", color: accent, marginBottom: 2, display: "flex", alignItems: "center", gap: 5 }}>{label}{sub && <span className="mut" style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, fontSize: 9 }}>· {sub}</span>}{canExpand && <span onClick={toggle} style={{ marginLeft: "auto", fontSize: 8.5, color: "var(--gold)", cursor: "pointer", fontWeight: 700, textTransform: "none", letterSpacing: 0 }}>{expanded ? "Show top 3 ⌃" : "Show top 10 ⌄"}</span>}</div>
+                      <div style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".05em", color: accent, marginBottom: 2, display: "flex", alignItems: "center", gap: 5 }}>{label}{sub && <span className="mut" style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, fontSize: 9 }}>· {sub}</span>}</div>
                       {/* header row */}
                       <div style={{ display: "grid", gridTemplateColumns: cols, gap: 6, alignItems: "center", fontSize: 7.5, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, padding: "0 4px 2px" }}>
                         <span>Rank</span><span>Player</span><span title="Team role">Role</span><span title={dynasty ? "Value (age-weighted)" : "Value above replacement"} style={{ textAlign: "right" }}>{dynasty ? "Val" : "VBD"}</span><span title="Average draft position" style={{ textAlign: "right" }}>ADP</span><span title="Chance still available at this pick" style={{ textAlign: "right" }}>Avail</span>{onClockNow && <span />}
@@ -13716,7 +13710,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           const roleShort = p.role ? lowerKeepPos(p.role).replace(/[\/·].*$/, "").trim() : "—";
                           const vShow = dynasty ? (p.value ?? p.vbd) : p.vbd;
                           // A gold divider between the top 3 (recommended) and the rest, when expanded.
-                          const dividerAfter = expanded && i === 2 && list.length > 3;
+                          const dividerAfter = i === 2 && list.length > 3;
                           return (
                             <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: cols, gap: 6, alignItems: "center", fontSize: 11, padding: "3px 4px", borderRadius: 5, background: i === 0 ? "rgba(242,182,60,.10)" : "transparent", borderBottom: dividerAfter ? "2px solid var(--gold)" : i < list.length - 1 ? "1px solid var(--line2)" : "none", cursor: "help" }}>
                               <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
@@ -13730,7 +13724,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           );
                         })}
                       </div>
-                      {expanded && list.length > 3 && <div style={{ fontSize: 8, color: "var(--mut)", textAlign: "center", paddingTop: 3 }}>Above the gold line: top 3 recommended · below: next {list.length - 3}</div>}
+                      {list.length > 3 && <div style={{ fontSize: 8, color: "var(--mut)", textAlign: "center", paddingTop: 3 }}>Above the gold line: top 3 · below: next {list.length - 3}</div>}
                     </div>
                   );
                 };
@@ -13817,26 +13811,19 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         </div>
                       ))}
                     </div>
-                    {/* recommendation duo — headshots */}
-                    {(topBal || topBld) && (
+                    {/* recommendation — single unified model, headshot */}
+                    {topBal && (
                       <div style={{ marginBottom: 10 }}>
-                        <div style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, marginBottom: 4 }}>Recommended {onClockNow ? "— draft one" : "for this pick"}</div>
+                        <div style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, marginBottom: 4 }}>Recommended {onClockNow ? "— draft" : "for this pick"}</div>
                         <div style={{ display: "flex", gap: 7 }}>
-                          {topBal && topBld && topBal.id === topBld.id
-                            ? recCard(topBal, "Balanced + My build", "var(--gold)", true)
-                            : <>
-                                {recCard(topBal, "Balanced", "var(--gold)")}
-                                {topBld && topBld.id !== (topBal && topBal.id) && recCard(topBld, "My build", "var(--blue)")}
-                              </>}
+                          {recCard(topBal, "The pick", "var(--gold)")}
                         </div>
                       </div>
                     )}
                     <div style={{ borderTop: "1px solid var(--line)", margin: "0 0 10px" }} />
-                    {/* two recommendation lists */}
-                    <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-                      {recTable(balAdv, "var(--gold)", "Balanced", "best value")}
-                      <div style={{ borderTop: "1px solid var(--line)", margin: "11px 0" }} />
-                      {recTable(bldAdv, "var(--blue)", "My build", "roster-tilted")}
+                    {/* single recommendation list — full top 10, market → build blended */}
+                    <div>
+                      {recTable(balAdv, "var(--gold)", "Top 10 for this pick", "market early → your build by round 5")}
                     </div>
                     {/* take now vs wait — per position (below My build): two reads side by side */}
                     {waitByPos.length > 0 && (
