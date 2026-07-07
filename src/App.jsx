@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28dv";
+const BUILD_TAG = "2026.06.28dw";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -14231,9 +14231,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         const draftedIdSet = new Set(selRoster.map((p) => p.id));
         const projectedAdds = projRosterFull ? projRosterFull.filter((p) => !draftedIdSet.has(p.id)) : [];
         const taShown = teamAnalysis(shownRoster, cfg, isMe ? myWindow : null, isMe ? advice : null, path, { allPicks: picks, players, teamAtFn: teamAt, userIdx: selTeam });
-        // Next-pick targets (only meaningful for your own team).
+        // Next-pick targets (only meaningful for your own team). Use YOUR next-pick advice (mySelAdvice) — which
+        // is computed with YOUR roster counts and cap-filters positions you've maxed — NOT the generic on-clock
+        // `advice` (that's for whoever is currently on the board and uses THEIR counts, so it can surface a
+        // player you can't roster, e.g. a QB when you're already at your QB max).
         const myNextOv = isMe ? (() => { for (let o = picks.length; o < totalOf(cfg); o++) if (teamAt(o) === userIdx) return o; return null; })() : null;
-        const targets = (isMe && advice) ? [advice.verdict, ...(advice.alts || [])].filter(Boolean).slice(0, 5) : [];
+        const myAdviceForSummary = isMe ? (mySelAdvice && mySelAdvice.verdict ? mySelAdvice : (myBalancedAdvice && myBalancedAdvice.verdict ? myBalancedAdvice : advice)) : null;
+        const targets = (isMe && myAdviceForSummary) ? [myAdviceForSummary.verdict, ...(myAdviceForSummary.alts || [])].filter(Boolean).slice(0, 5) : [];
         const windowExplain = { rebuild: "Building for the future — favor young, ascending players who'll be even better next year.", winnow: "Competing now — favor proven, established production over long-term upside.", balanced: "No strong lean yet — take the best value available and let your roster commit you one way or the other." };
         const teamName = isMe ? (TEAM_NAMES[userIdx] || "Your team") : (TEAM_NAMES[selTeam] || `Team ${selTeam + 1}`);
         return (
@@ -14443,7 +14447,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         {(() => {
                           // scarcity call: which needed position is drying up
                           const scarce = posStand.find((p) => (p.short > 0 || strengths.indexOf(p.pos) < 0));
-                          const best = advice && advice.verdict;
+                          const best = myAdviceForSummary && myAdviceForSummary.verdict;
                           if (best && best.adp != null && (picks.length + 1) - best.adp >= 12) return <>Value on the board: <b>{best.name}</b> is falling well past his ADP.</>;
                           if (scarce) return <>Keep an eye on <b>{scarce.pos}</b> supply as the board moves.</>;
                           return <>Board is moving at market pace — no major runs right now.</>;
