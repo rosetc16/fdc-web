@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28dg";
+const BUILD_TAG = "2026.06.28di";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2142,6 +2142,26 @@ function marginalVbd(c, counts, sf) {
   if (superOnly > 0) surplus += Math.max(0, counts.QB - req.QB);
   const eligible = c.pos !== "QB" || superOnly > 0 || sf;
   if (surplus < G && eligible) return c.vbd;
+  // SPECIAL CASE — surplus QB in a 1-QB (non-superflex) league. A QB past your starter can't fill FLEX or a
+  // bye the way a surplus RB/WR/TE can, so in a SHALLOW league his real roster value is tiny. BUT the size of
+  // that discount depends on the league:
+  //   • DEEP rosters (lots of bench room) and DYNASTY (QBs carry long-term asset/trade value) leave real room
+  //     to stockpile QBs, so we discount far less there.
+  //   • SHALLOW redraft (e.g. a 15-round 1-QB league) has no room for a 3rd QB — discount hard.
+  // We scale by bench depth: starters vs. total roster rounds gives how many pure bench spots exist.
+  if (c.pos === "QB" && !sf && superOnly === 0) {
+    const already = counts.QB; // QBs already rostered (starter + any backups)
+    const startersTotal = (SPEC.QB || 0) + (SPEC.RB || 0) + (SPEC.WR || 0) + (SPEC.TE || 0) + (SPEC.FLEX || 0) + (SPEC.SUPER || 0) + (SPEC.DST || 0) + (SPEC.K || 0);
+    const benchSpots = Math.max(0, ROSTER_ROUNDS - startersTotal); // pure bench depth
+    // "deep" only once there's substantial bench room (≈12+ spots, i.e. ~25+ round rosters) — that's where
+    // stockpiling a QB no longer costs you needed depth elsewhere. A standard 15-round league is NOT deep.
+    const deep = benchSpots >= 12;
+    // base discount for a 3rd+ QB vs a 2nd QB, then relax for deep/dynasty leagues.
+    let mult = already >= 2 ? 0.04 : 0.18;
+    if (deep) mult = already >= 2 ? 0.35 : 0.55;          // deep roster: real room to hold extra QBs
+    if (isDynastyGlobal) mult = Math.max(mult, already >= 2 ? 0.5 : 0.7); // dynasty QBs hold asset value
+    return c.vbd * mult;
+  }
   // Past the generic slots: in best ball, depth still scores (the platform auto-starts spike weeks), so the
   // falloff is gentle — a strong bench piece keeps most of its value. In redraft a surplus body is mostly
   // wasted, so it's discounted hard.
@@ -2235,11 +2255,25 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build) {
     let s = mv;
     if (need > 0) s += 16 * Math.min(need, 2);
     else s += need * 22; // over-stacked positions get heavily penalized
+    // A surplus QB in a 1-QB (non-superflex) league is near-useless in a SHALLOW league — you can't flex or
+    // bye-cover with him. Pile on so build won't take a 3rd QB over a real need or faller — but relax this a lot
+    // in DEEP rosters (room to stockpile) and DYNASTY (QBs carry asset value), where extra QBs are legitimate.
+    if (c.pos === "QB" && !sf && (SPEC.SUPER || 0) === 0 && counts.QB >= 1) {
+      const startersTotal = (SPEC.QB || 0) + (SPEC.RB || 0) + (SPEC.WR || 0) + (SPEC.TE || 0) + (SPEC.FLEX || 0) + (SPEC.SUPER || 0) + (SPEC.DST || 0) + (SPEC.K || 0);
+      const deep = Math.max(0, ROSTER_ROUNDS - startersTotal) >= 12;
+      const soft = deep || isDynastyGlobal;
+      s -= counts.QB >= 2 ? (soft ? 16 : 60) : (soft ? 6 : 22);
+    }
     s += emptyStarterPremium(c, counts, sf); // fill required starters before flex/depth
     if (lane === "rebuild") { s += Math.max(0, 28 - (c.age || 27)) * 7; if (c.rookie) s += 25; s += Math.max(0, (c.value != null && c.vbd != null ? c.value - c.vbd : 0)) * 0.6; }
     else if (lane === "winnow") { s += Math.max(0, (c.age || 27) - 24) * 3; if (c.rookie) s -= 15; }
     s -= reachPenalty(c, pickNum) * 0.4;
-    s += Math.min(45, Math.max(0, (c.adp != null && pickNum != null ? pickNum - c.adp : 0)) * 0.7); // faller/value bonus
+    // faller/value bonus — but NOT for a surplus QB you'll never start in a SHALLOW 1-QB league (a "falling"
+    // 3rd QB there is still dead weight). In deep/dynasty leagues a falling QB is a fine value, so keep it.
+    const qbStartersTotal = (SPEC.QB || 0) + (SPEC.RB || 0) + (SPEC.WR || 0) + (SPEC.TE || 0) + (SPEC.FLEX || 0) + (SPEC.SUPER || 0) + (SPEC.DST || 0) + (SPEC.K || 0);
+    const qbDeep = Math.max(0, ROSTER_ROUNDS - qbStartersTotal) >= 12;
+    const surplusQB = c.pos === "QB" && !sf && (SPEC.SUPER || 0) === 0 && counts.QB >= 2 && !qbDeep && !isDynastyGlobal;
+    if (!surplusQB) s += Math.min(45, Math.max(0, (c.adp != null && pickNum != null ? pickNum - c.adp : 0)) * 0.7);
     return s + bbBonus(c);
   }
   if (strategy === "upside") {
@@ -2290,7 +2324,12 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build) {
   // there at pick 196) gets credit even in the late rounds when mktW has decayed to 0. Capped so it nudges,
   // never dominates, and only counts genuine fallers (gap beyond a few picks of noise).
   const adpFall = (c.adp != null && pickNum != null) ? Math.max(0, pickNum - c.adp) : 0;
-  const adpValue = Math.min(45, adpFall * 0.7);
+  // A "falling" 3rd QB in a SHALLOW 1-QB league is still dead weight — don't let the faller bonus rescue him.
+  // In deep/dynasty leagues a falling QB is a legitimate value, so keep the bonus there.
+  const balStartersTotal = (SPEC.QB || 0) + (SPEC.RB || 0) + (SPEC.WR || 0) + (SPEC.TE || 0) + (SPEC.FLEX || 0) + (SPEC.SUPER || 0) + (SPEC.DST || 0) + (SPEC.K || 0);
+  const balDeep = Math.max(0, ROSTER_ROUNDS - balStartersTotal) >= 12;
+  const surplusDeadQB = c.pos === "QB" && !sf && (SPEC.SUPER || 0) === 0 && counts.QB >= 2 && !balDeep && !isDynastyGlobal;
+  const adpValue = surplusDeadQB ? 0 : Math.min(45, adpFall * 0.7);
   const value = mvUse + need - overStack - reachPenalty(c, pickNum) + emptyStarterPremium(c, counts, sf) + windowFit(c, BUILD_LANE, isDynastyGlobal) + adpValue;
   const market = c.adp != null ? 300 - c.adp * 3.0 : 0; // pure board-order score: earlier ADP = higher
   const mktW = pickNum != null ? Math.max(0, Math.min(0.92, 0.92 - (pickNum - 1) * 0.034)) : 0; // 0.92 → 0 by ~pick 28
@@ -2319,8 +2358,10 @@ function candidatesOf(sortedAdp, drafted, limit) { const out = []; for (const p 
 let _rngState = 123456789;
 let BUILD_LANE = "balanced"; // set from myWindow before advice/sims so "My build" userScore can read it
 let isDynastyGlobal = false; // set from cfg before advice/sims so balanced's windowFit can read dynasty
+let ROSTER_ROUNDS = 15; // total draft rounds (= roster size); set from cfg so marginalVbd knows bench depth
 function setBuildLane(l) { BUILD_LANE = l || "balanced"; }
 function setDynastyGlobal(v) { isDynastyGlobal = !!v; }
+function setRosterRounds(n) { ROSTER_ROUNDS = Math.max(1, +n || 15); }
 function seedRng(seed) { _rngState = (seed >>> 0) || 1; }
 function rng() { _rngState |= 0; _rngState = (_rngState + 0x6D2B79F5) | 0; let t = Math.imul(_rngState ^ (_rngState >>> 15), 1 | _rngState); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
 function sample(cands, ws) { const sum = ws.reduce((a, b) => a + b, 0); let r = rng() * sum; for (let i = 0; i < cands.length; i++) { r -= ws[i]; if (r <= 0) return i; } return cands.length - 1; }
@@ -11198,6 +11239,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [depthPos, setDepthPos] = useState("ALL"); // depth charts: filter to one position to shorten tiles
   const [depthHiStarters, setDepthHiStarters] = useState(true); // depth charts: highlight available startable-caliber players inline
   const [recExpanded, setRecExpanded] = useState({}); // "Your decision" rec tables expanded to top-10 (keyed by label)
+  const [pulseMetric, setPulseMetric] = useState(null); // Draft Pulse ranking basis: "vbd" | "value" | "adp"; null = auto (value for dynasty, vbd for redraft)
   const stickyHeadRef = useRef(null);
   const [stickyHeadH, setStickyHeadH] = useState(0); // measured height of the sticky ticker+tabbar header
   const [capWarn, setCapWarn] = useState(null);
@@ -12205,6 +12247,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // userScore). Set synchronously during render so the next advice/path computation uses the right lane.
   setBuildLane(myWindow && myWindow.decided ? myWindow.lane : "balanced");
   setDynastyGlobal(isDynastyCfg(cfg));
+  setRosterRounds(cfg.rounds || 15);
 
   const rows = useMemo(() => {
     let list = players.slice();
@@ -12849,13 +12892,21 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             {/* ===== ZONE: DRAFT PULSE (best available + dynamic supply by position) ===== */}
             {(() => {
               const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
+              // Which metric ranks "best available" at each position (and the best-value footer). Defaults to
+              // Value in dynasty (age-weighted, what matters long-term) and VBD in redraft (pure this-year points
+              // over replacement); the user can override via the toggle. ADP ranks by market draft position.
+              const metric = pulseMetric || (dynasty ? "value" : "vbd");
+              const metricLabel = metric === "adp" ? "ADP" : metric === "value" ? "Val" : "VBD";
+              const metricVal = (p) => metric === "adp" ? (p.adp != null ? p.adp : 9999) : metric === "value" ? (p.value ?? p.vbd ?? -999) : (p.vbd ?? -999);
+              // higher is better for vbd/value; for ADP lower is better (earlier pick = more valued)
+              const betterFirst = (a, b) => metric === "adp" ? metricVal(a) - metricVal(b) : metricVal(b) - metricVal(a);
               const run = (advice && advice.run) || null;
               const roundNow = Math.floor(picks.length / TEAMS) + 1;
               const lateDraft = roundNow >= 11; // supply lens shifts once starters are basically set
               const GCOLS = "auto 1fr 32px 28px 62px";
               const recent8 = picks.slice(-8).map((id, i) => ({ p: players[id], o: picks.length - Math.min(8, picks.length) + i })).filter((x) => x.p);
               const posRows = ["QB", "RB", "WR", "TE"].map((pos) => {
-                const pool = availByPos[pos] || [];
+                const pool = (availByPos[pos] || []).slice().sort(betterFirst);
                 const best = pool[0] || null;
                 if (!best) return null;
                 const scar = scarcityFor(best);
@@ -12870,32 +12921,37 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   const t = startersLeft == null ? { c: "var(--mut)", t: "—" } : startersLeft <= 2 ? { c: "#F2655C", t: "Scarce" } : startersLeft <= 5 ? { c: "var(--gold)", t: "Thinning" } : { c: "#5FD0A8", t: "Deep" };
                   supply = { label: t.t, c: t.c, num: startersLeft, numTitle: `${startersLeft ?? 0} startable-tier ${pos}${startersLeft === 1 ? "" : "s"} still on the board`, metric: "starters" };
                 } else {
-                  // gap from best to the average of the next 3 available at the position
-                  const nextVals = comps.slice(0, 3).map((x) => (dynasty ? (x.value ?? x.vbd) : x.vbd));
-                  const bestVal = dynasty ? (best.value ?? best.vbd) : best.vbd;
+                  // gap from best to the average of the next 3 available at the position — measured on the
+                  // SELECTED metric (so an ADP-based view reads gaps in draft-position terms, etc.)
+                  const gapMetric = (p) => metric === "adp" ? (p.adp != null ? p.adp : 9999) : metric === "value" ? (p.value ?? p.vbd ?? 0) : (p.vbd ?? 0);
+                  const nextVals = comps.slice(0, 3).map(gapMetric);
+                  const bestVal = gapMetric(best);
                   const avgNext = nextVals.length ? nextVals.reduce((a, b) => a + b, 0) / nextVals.length : bestVal;
-                  const gap = Math.round(bestVal - avgNext);
+                  // for ADP, a "better" gap means the best guy's ADP is much EARLIER than the next few (they fall later)
+                  const gap = Math.round(metric === "adp" ? (avgNext - bestVal) : (bestVal - avgNext));
                   let t;
-                  if (bestVal <= 0 && avgNext <= 0) t = { c: "var(--mut)", t: "Bare" };
+                  if (metric !== "adp" && bestVal <= 0 && avgNext <= 0) t = { c: "var(--mut)", t: "Bare" };
                   else if (gap >= 12) t = { c: "#F2655C", t: "Top guy" };   // one clear standout — grab him
                   else if (gap >= 5) t = { c: "var(--gold)", t: "Slight edge" };
                   else t = { c: "#5FD0A8", t: "Even" };                     // interchangeable — no rush
-                  // number = value gap from the best guy to the next few; meaningless when the pool is "Bare"
-                  supply = { label: t.t, c: t.c, num: t.t === "Bare" ? null : (gap > 0 ? "+" + gap : String(gap)), numTitle: `Value gap: the best ${pos} is ${gap > 0 ? gap : 0} ahead of the next few`, metric: "gap" };
+                  supply = { label: t.t, c: t.c, num: t.t === "Bare" ? null : (gap > 0 ? "+" + gap : String(gap)), numTitle: `${metricLabel} gap: the best ${pos} is ${gap > 0 ? gap : 0} ahead of the next few`, metric: "gap" };
                 }
                 return { pos, best, startersLeft, supply, isRun, comps, runPicks, starterLine: scar ? scar.starterLine : null, drop: scar ? scar.drop : null };
               }).filter(Boolean);
-              // Best overall value on the board — the single highest-value available player across all positions,
-              // as a quick "just take the best guy" anchor for the empty footer space.
-              const bestOverall = posRows.map((r) => r.best).filter(Boolean).sort((a, b) => (dynasty ? (b.value ?? b.vbd) - (a.value ?? a.vbd) : b.vbd - a.vbd))[0] || null;
+              // Best overall on the board by the SELECTED metric — a quick "just take the best guy" anchor.
+              const bestOverall = posRows.map((r) => r.best).filter(Boolean).slice().sort(betterFirst)[0] || null;
               return (
                 <div data-tour="pulse" style={{ display: "flex", flexDirection: "column", gap: 5, padding: "9px 11px", borderRadius: 10, border: "1px solid var(--line)", background: "var(--panel2)", height: "100%", boxSizing: "border-box" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-activity-heartbeat" style={{ fontSize: 11, color: "var(--blue)" }} aria-hidden="true" /><span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--blue)", fontWeight: 800 }}>Draft pulse</span></div>
-                    <span className="mut" style={{ fontSize: 8 }}>best available · Rd {roundNow}</span>
+                    <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 5, overflow: "hidden" }} title="Rank best-available by: VBD (this-year points over replacement), Value (age-weighted, dynasty), or ADP (market draft position).">
+                      {[["vbd", "VBD"], ["value", "Val"], ["adp", "ADP"]].map(([m, lbl]) => (
+                        <button key={m} onClick={() => setPulseMetric(m)} style={{ fontSize: 7.5, fontWeight: 700, padding: "1px 5px", border: "none", cursor: "pointer", background: metric === m ? "var(--blue)" : "transparent", color: metric === m ? "#0A0E13" : "var(--mut)", textTransform: "uppercase", letterSpacing: ".03em" }}>{lbl}</button>
+                      ))}
+                    </div>
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: GCOLS, gap: "0 7px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line)", paddingBottom: 3 }}>
-                    <span>Pos</span><span>Best avail</span><span title={dynasty ? "Value (age-weighted)" : "Value over replacement"} style={{ textAlign: "right" }}>{dynasty ? "Val" : "VBD"}</span><span title="Average draft position" style={{ textAlign: "right" }}>ADP</span><span title={lateDraft ? "How much better the best guy is than the next few — a big gap means grab him" : "How many startable-tier players remain"} style={{ textAlign: "right" }}>Supply</span>
+                    <span>Pos</span><span>Best avail</span><span title={dynasty ? "Value (age-weighted)" : "Value over replacement"} style={{ textAlign: "right", color: (metric === "vbd" || metric === "value") ? "var(--blue)" : "var(--mut)" }}>{dynasty ? "Val" : "VBD"}{(metric === "vbd" || metric === "value") ? " ▾" : ""}</span><span title="Average draft position" style={{ textAlign: "right", color: metric === "adp" ? "var(--blue)" : "var(--mut)" }}>ADP{metric === "adp" ? " ▾" : ""}</span><span title={lateDraft ? "How much better the best guy is than the next few — a big gap means grab him" : "How many startable-tier players remain"} style={{ textAlign: "right" }}>Supply</span>
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1 }}>
                     {posRows.map((r) => {
@@ -12924,16 +12980,19 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     })}
                   </div>
                   {bestOverall && (() => {
-                    const v = dynasty ? (bestOverall.value ?? bestOverall.vbd) : bestOverall.vbd;
+                    const showVal = metric === "adp";
+                    const v = metric === "value" ? (bestOverall.value ?? bestOverall.vbd) : bestOverall.vbd;
                     const tip = (e) => showTip(e, makeOutlook(bestOverall, sims, false, { pickNow: picks.length + 1, dynasty, scarcity: scarcityFor(bestOverall) }));
                     return (
                       <div onMouseEnter={tip} onMouseLeave={hideTip} style={{ display: "flex", alignItems: "center", gap: 6, marginTop: "auto", borderTop: "1px solid var(--line)", paddingTop: 6, cursor: "help" }}>
                         <PlayerPhoto sid={bestOverall.sid} pos={bestOverall.pos} size={22} />
                         <div style={{ minWidth: 0, flex: 1 }}>
-                          <div style={{ fontSize: 7.5, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--blue)", fontWeight: 800 }}>Best value on the board</div>
+                          <div style={{ fontSize: 7.5, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--blue)", fontWeight: 800 }}>Best on the board · by {metricLabel}</div>
                           <div style={{ fontSize: 10.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bestOverall.name} <span className="num" style={{ fontSize: 9, fontWeight: 700, color: rankTierColor(bestOverall.pos, bestOverall.posRank) }}>{bestOverall.pos}{bestOverall.posRank}</span></div>
                         </div>
-                        <span className="num" style={{ fontSize: 11, fontWeight: 800, color: vbdColor(v) }}>{(v > 0 ? "+" : "") + Math.round(v)}</span>
+                        {metric === "adp"
+                          ? <span className="num mut" style={{ fontSize: 10.5, fontWeight: 800 }}>ADP {bestOverall.adp != null ? bestOverall.adp.toFixed(0) : "—"}</span>
+                          : <span className="num" style={{ fontSize: 11, fontWeight: 800, color: vbdColor(v) }}>{(v > 0 ? "+" : "") + Math.round(v)}</span>}
                       </div>
                     );
                   })()}
