@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28dq";
+const BUILD_TAG = "2026.06.28dr";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -11254,6 +11254,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [benchExpand, setBenchExpand] = useState(false); // summary Your-team: show full bench vs top 5
   const [depthPos, setDepthPos] = useState("ALL"); // depth charts: filter to one position to shorten tiles
   const [depthHiStarters, setDepthHiStarters] = useState(true); // depth charts: highlight available startable-caliber players inline
+  const [depthShowStarters, setDepthShowStarters] = useState(false); // depth charts: filter to ONLY available starters
   const [recExpanded, setRecExpanded] = useState({}); // "Your decision" rec tables expanded to top-10 (keyed by label)
   const [pulseMetric, setPulseMetric] = useState(null); // Draft Pulse ranking basis: "vbd" | "value" | "adp"; null = auto (value for dynasty, vbd for redraft)
   const stickyHeadRef = useRef(null);
@@ -14451,47 +14452,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             {!leagueOpen && (<>
             <div className="myteam-grid" style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
               <div className="ta-colL" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
-              <div className="panel" style={{ padding: 14 }}>
-                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 10 }}>Position depth</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {["QB", "RB", "WR", "TE"].map((pos) => {
-                    const b = ta.byPos[pos];
-                    // Bar fills fully once the dedicated starting requirement is met (e.g. 2/2 RB = 100%);
-                    // proportional below that. Extra depth beyond starters keeps it full (capped at 100%).
-                    const fillPct = b.starters > 0 ? Math.min(100, (b.count / b.starters) * 100) : (b.count > 0 ? 100 : 0);
-                    const tip = b.list.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `Your ${pos}s (${b.count})` }, { kind: "playertable", cols: ["rank", "name", "team", "age", "pts", "vbd"], players: b.list }]) : undefined;
-                    return (
-                      <div key={pos} style={{ display: "flex", alignItems: "center", gap: 9, cursor: tip ? "help" : "default", padding: "2px 0" }}
-                        onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
-                        <span style={{ width: 26, fontWeight: 800, color: posColor[pos] }}>{pos}</span>
-                        <div style={{ flex: 1, height: 8, background: "var(--panel2)", borderRadius: 4, overflow: "hidden" }}>
-                          <div style={{ width: `${fillPct}%`, height: "100%", background: posColor[pos], opacity: 0.8 }} />
-                        </div>
-                        <span className="mut num" style={{ fontSize: 11, width: 50, textAlign: "right" }}>{b.count}/{b.starters}</span>
-                      </div>
-                    );
-                  })}
-                  {/* FLEX / SUPERFLEX — all on one row, just filled/empty pills (no player name). */}
-                  {(() => {
-                    const flexRows = ta.slots.filter((s) => /FLEX|SUPER|SF|OP/i.test(s.slot));
-                    if (!flexRows.length) return null;
-                    return (
-                      <div style={{ marginTop: 4, paddingTop: 8, borderTop: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                        {flexRows.map((s, i) => {
-                          const filled = !!s.p;
-                          const tip = filled ? (e) => showTip(e, [{ kind: "take", tone: "good", x: `${s.slot} — filled` }, { t: s.p.pos + s.p.posRank, tc: rankTierColor(s.p.pos, s.p.posRank), x: `${s.p.name} — ${s.p.team || "FA"} · ${Math.round(s.p.pts)} pts` }]) : undefined;
-                          return (
-                            <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 9px", borderRadius: 7, fontSize: 11, fontWeight: 700, cursor: tip ? "help" : "default", background: filled ? "rgba(95,208,168,.12)" : "rgba(242,101,92,.10)", border: `1px solid ${filled ? "rgba(95,208,168,.4)" : "rgba(242,101,92,.35)"}`, color: filled ? "var(--green)" : "var(--red)" }}
-                              onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
-                              <span style={{ color: "var(--mut)" }}>{s.slot}</span>{filled ? "✓" : "empty"}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    );
-                  })()}
-                </div>
-              </div>
             <div className="panel" style={{ padding: 14 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
                 <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)" }}>{myProjView && isMe ? "Projected" : "Current"} starting lineup</div>
@@ -14504,56 +14464,103 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 )}
               </div>
               {myProjView && <div className="mut" style={{ fontSize: 11.5, marginBottom: 8 }}>Includes your {projectedAdds.length} most-likely future pick{projectedAdds.length !== 1 ? "s" : ""} (shown in gold) based on the engine's projection.</div>}
-              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                {taShown.slots.map((s, i) => {
-                  const isProj = myProjView && s.p && projectedAdds.includes(s.p);
+              {(() => {
+                const dynH = cfg.type === "dynasty" || cfg.type === "keeper";
+                const LCOLS = "34px 30px minmax(0,1fr) 30px 26px 26px 34px 38px";
+                return (
+                  <div>
+                    <div style={{ display: "grid", gridTemplateColumns: LCOLS, gap: "0 6px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line)", padding: "0 4px 3px" }}>
+                      <span>Slot</span><span /><span>Player</span><span>Tm</span><span style={{ textAlign: "center" }}>Bye</span><span style={{ textAlign: "center" }}>Age</span><span style={{ textAlign: "center" }}>Rank</span><span style={{ textAlign: "right" }}>Proj</span>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column" }}>
+                      {taShown.slots.map((s, i) => {
+                        const isProj = myProjView && s.p && projectedAdds.includes(s.p);
+                        const p = s.p;
+                        return (
+                          <div key={i} onClick={p ? (e) => showTip(e, makeOutlook(p, sims, true)) : undefined} onMouseEnter={p ? (e) => showTip(e, makeOutlook(p, sims, true)) : undefined} onMouseLeave={hideTip}
+                            style={{ display: "grid", gridTemplateColumns: LCOLS, gap: "0 6px", alignItems: "center", fontSize: 11, padding: "3px 4px", borderRadius: 5, cursor: p ? "help" : "default", background: p ? (isProj ? "rgba(242,182,60,.08)" : "transparent") : "rgba(242,101,92,.08)", borderBottom: i < taShown.slots.length - 1 ? "1px solid var(--line2)" : "none" }}>
+                            <span style={{ fontSize: 8.5, fontWeight: 700, color: "var(--mut)" }}>{s.slot}</span>
+                            {p ? <PlayerPhoto sid={p.sid} pos={p.pos} size={20} /> : <span />}
+                            {p ? (
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}><b style={{ fontSize: 11.5 }}>{p.name}</b>{isProj && <span className="gold" style={{ fontSize: 7.5, fontWeight: 700, marginLeft: 3 }}>PROJ</span>}</span>
+                            ) : <span className="mut" style={{ fontStyle: "italic", fontSize: 10.5, gridColumn: "3 / span 5" }}>empty starter</span>}
+                            {p && <><span className="num mut" style={{ fontSize: 9.5 }}>{p.team || "FA"}</span>
+                            <span className="num mut" style={{ fontSize: 9.5, textAlign: "center" }}>{p.bye || "—"}</span>
+                            <span className="num mut" style={{ fontSize: 9.5, textAlign: "center" }}>{p.age || "—"}</span>
+                            <span className="num" style={{ fontSize: 9.5, textAlign: "center", fontWeight: 700, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
+                            <span className="num" style={{ fontSize: 10.5, textAlign: "right", fontWeight: 700 }}>{Math.round(p.pts || 0)}</span></>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {taShown.bench.length > 0 && (
+                      <>
+                        <div className="disp" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", margin: "10px 0 4px" }}>Bench ({taShown.bench.length})</div>
+                        <div style={{ display: "flex", flexDirection: "column" }}>
+                          {taShown.bench.slice().sort((a, b) => { const order = { QB: 0, RB: 1, WR: 2, TE: 3, K: 4, DST: 5 }; const oa = order[a.pos] != null ? order[a.pos] : 9, ob = order[b.pos] != null ? order[b.pos] : 9; return oa !== ob ? oa - ob : (b.pts || 0) - (a.pts || 0); }).map((p, i, a2) => {
+                            const isProj = myProjView && projectedAdds.includes(p);
+                            return (
+                              <div key={i} onClick={(e) => showTip(e, makeOutlook(p, sims, true))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, true))} onMouseLeave={hideTip}
+                                style={{ display: "grid", gridTemplateColumns: LCOLS, gap: "0 6px", alignItems: "center", fontSize: 11, padding: "3px 4px", borderRadius: 5, cursor: "help", opacity: 0.9, background: isProj ? "rgba(242,182,60,.08)" : "transparent", borderBottom: i < a2.length - 1 ? "1px solid var(--line2)" : "none" }}>
+                                <span style={{ fontSize: 8, fontWeight: 700, color: "var(--mut)" }}>BN</span>
+                                <PlayerPhoto sid={p.sid} pos={p.pos} size={20} />
+                                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}><b style={{ fontSize: 11.5 }}>{p.name}</b>{isProj && <span className="gold" style={{ fontSize: 7.5, fontWeight: 700, marginLeft: 3 }}>PROJ</span>}</span>
+                                <span className="num mut" style={{ fontSize: 9.5 }}>{p.team || "FA"}</span>
+                                <span className="num mut" style={{ fontSize: 9.5, textAlign: "center" }}>{p.bye || "—"}</span>
+                                <span className="num mut" style={{ fontSize: 9.5, textAlign: "center" }}>{p.age || "—"}</span>
+                                <span className="num" style={{ fontSize: 9.5, textAlign: "center", fontWeight: 700, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
+                                <span className="num mut" style={{ fontSize: 10.5, textAlign: "right", fontWeight: 700 }}>{Math.round(p.pts || 0)}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+            {/* Position depth — moved below the current lineup */}
+            <div className="panel" style={{ padding: 14 }}>
+              <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 10 }}>Position depth</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {["QB", "RB", "WR", "TE"].map((pos) => {
+                  const b = ta.byPos[pos];
+                  const fillPct = b.starters > 0 ? Math.min(100, (b.count / b.starters) * 100) : (b.count > 0 ? 100 : 0);
+                  const tip = b.list.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `Your ${pos}s (${b.count})` }, { kind: "playertable", cols: ["rank", "name", "team", "age", "pts", "vbd"], players: b.list }]) : undefined;
                   return (
-                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 8px", borderRadius: 7, background: s.p ? (isProj ? "rgba(242,182,60,.08)" : "var(--panel2)") : "rgba(255,90,90,.08)", border: s.p ? (isProj ? "1px dashed var(--gold)" : "1px solid var(--line)") : "1px dashed var(--red)", cursor: s.p ? "help" : "default" }}
-                      onClick={s.p ? (e) => showTip(e, makeOutlook(s.p, sims, true)) : undefined} onMouseEnter={s.p ? (e) => showTip(e, makeOutlook(s.p, sims, true)) : undefined} onMouseLeave={hideTip}>
-                      <span style={{ width: 38, fontSize: 10.5, fontWeight: 700, color: "var(--mut)", flexShrink: 0 }}>{s.slot}</span>
-                      {s.p ? <>
-                        <PlayerPhoto sid={s.p.sid} pos={s.p.pos} size={22} />
-                        <span style={{ minWidth: 0, flex: 1 }}>
-                          <span style={{ fontWeight: 600, fontSize: 12.5, display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.p.name}{isProj && <span className="gold" style={{ fontSize: 8.5, fontWeight: 700, marginLeft: 4 }}>PROJ</span>}</span>
-                          <span className="mut" style={{ fontSize: 10 }}>{s.p.team} · {s.p.pos}{s.p.posRank} · {Math.round(s.p.pts)} pts</span>
-                        </span>
-                      </> : <span className="mut" style={{ fontSize: 11.5, fontStyle: "italic" }}>empty starter</span>}
+                    <div key={pos} style={{ display: "flex", alignItems: "center", gap: 9, cursor: tip ? "help" : "default", padding: "2px 0" }} onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
+                      <span style={{ width: 26, fontWeight: 800, color: posColor[pos] }}>{pos}</span>
+                      <div style={{ flex: 1, height: 8, background: "var(--panel2)", borderRadius: 4, overflow: "hidden" }}>
+                        <div style={{ width: `${fillPct}%`, height: "100%", background: posColor[pos], opacity: 0.8 }} />
+                      </div>
+                      <span className="mut num" style={{ fontSize: 11, width: 50, textAlign: "right" }}>{b.count}/{b.starters}</span>
                     </div>
                   );
                 })}
-              </div>
-              {taShown.bench.length > 0 && (
-                <>
-                  <div className="disp" style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", margin: "12px 0 6px" }}>Bench ({taShown.bench.length})</div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    {taShown.bench.slice().sort((a, b) => {
-                      // rank by position (QB, RB, WR, TE, K, DST) then by projected points within the group
-                      const order = { QB: 0, RB: 1, WR: 2, TE: 3, K: 4, DST: 5 };
-                      const oa = order[a.pos] != null ? order[a.pos] : 9, ob = order[b.pos] != null ? order[b.pos] : 9;
-                      if (oa !== ob) return oa - ob;
-                      return (b.pts || 0) - (a.pts || 0);
-                    }).map((p, i) => {
-                      const isProj = myProjView && projectedAdds.includes(p);
-                      return (
-                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 8px", borderRadius: 7, background: isProj ? "rgba(242,182,60,.08)" : "var(--panel2)", border: isProj ? "1px dashed var(--gold)" : "1px solid var(--line)", cursor: "help", opacity: 0.92 }}
-                          onClick={(e) => showTip(e, makeOutlook(p, sims, true))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, true))} onMouseLeave={hideTip}>
-                          <Dot pos={p.pos} />
-                          <span style={{ minWidth: 0, flex: 1 }}>
-                            <span style={{ fontWeight: 600, fontSize: 12.5, display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}{isProj && <span className="gold" style={{ fontSize: 8.5, fontWeight: 700, marginLeft: 4 }}>PROJ</span>}</span>
-                            <span className="mut" style={{ fontSize: 10 }}>{p.team} · {p.pos}{p.posRank}</span>
+                {(() => {
+                  const flexRows = ta.slots.filter((s) => /FLEX|SUPER|SF|OP/i.test(s.slot));
+                  if (!flexRows.length) return null;
+                  return (
+                    <div style={{ marginTop: 4, paddingTop: 8, borderTop: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      {flexRows.map((s, i) => {
+                        const filled = !!s.p;
+                        const tip = filled ? (e) => showTip(e, [{ kind: "take", tone: "good", x: `${s.slot} — filled` }, { t: s.p.pos + s.p.posRank, tc: rankTierColor(s.p.pos, s.p.posRank), x: `${s.p.name} — ${s.p.team || "FA"} · ${Math.round(s.p.pts)} pts` }]) : undefined;
+                        return (
+                          <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 9px", borderRadius: 7, fontSize: 11, fontWeight: 700, cursor: tip ? "help" : "default", background: filled ? "rgba(95,208,168,.12)" : "rgba(242,101,92,.10)", border: `1px solid ${filled ? "rgba(95,208,168,.4)" : "rgba(242,101,92,.35)"}`, color: filled ? "var(--green)" : "var(--red)" }} onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
+                            <span style={{ color: "var(--mut)" }}>{s.slot}</span>{filled ? "✓" : "empty"}
                           </span>
-                          <span className="num" style={{ fontWeight: 700, fontSize: 12, flexShrink: 0, color: "var(--mut)" }}>{Math.round(p.pts || 0)}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
             </div>
               </div>
               <div className="ta-colR" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
               {ta.posRankByPos && Object.keys(ta.posRankByPos).length > 0 ? (
-                <div className="panel" style={{ padding: 14 }}>
+                <div className="panel" style={{ padding: 14, order: 2 }}>
                   <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 4 }}>Where you rank in the league</div>
                   <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Each position — and your whole roster (ALL) — vs the other {ta.leagueSize - 1} teams.</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -14587,7 +14594,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   )}
                 </div>
               ) : <div />}
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 14, order: 1 }}>
               {!done && (myNextOv != null) && (
                 <div className="panel" style={{ padding: 16, borderLeft: "3px solid var(--gold)" }}>
                   <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", marginBottom: 8 }}>Your next pick — {pickLabel(myNextOv)} <span className="mut">(#{myNextOv + 1})</span></div>
@@ -14948,24 +14955,25 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             </label>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <span className="mut" style={{ fontSize: 11.5 }}>Show</span>
-              <select className="gs" style={{ minWidth: 120 }} value={depthPos} onChange={(e) => setDepthPos(e.target.value)}>
+              <select className="gs" style={{ minWidth: 130 }} value={depthShowStarters ? "STARTERS" : depthPos} onChange={(e) => { if (e.target.value === "STARTERS") { setDepthShowStarters(true); } else { setDepthShowStarters(false); setDepthPos(e.target.value); } }}>
                 <option value="ALL">All positions</option>
+                <option value="STARTERS">Available starters only</option>
                 {["QB", "RB", "WR", "TE", "K", "DST"].map((pos) => <option key={pos} value={pos}>{pos} only</option>)}
               </select>
             </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(225px,1fr))", gap: 10, alignItems: "start" }}>
           {(() => {
-            // "Available starter" highlight. The intent is DEPTH-CHART aware: the clear fantasy starters at each
-            // position always highlight if they're still on the board, and deeper pieces (a team's RB2, WR3, TE2)
-            // highlight ONLY if their projected points clear a real starter threshold — capturing committee backs
-            // (e.g. an RB2 splitting carries), strong WR rooms, and pass-catching TE2s. We combine two signals:
-            //   1) GLOBAL fantasy rank (posRank) — a top-tier player is startable regardless of team slot.
-            //   2) TEAM depth slot (rank within their own NFL team at that position) + a points floor — this is
-            //      what catches the "backup who's actually startable" that pure global rank alone would miss.
+            // "Available starter" highlight, DEPTH-CHART aware:
+            //   • A team's clear STARTER at each position (its QB1 / RB1 / WR1 / TE1 by projected points) ALWAYS
+            //     highlights when available — no points floor. If he's the top guy at his position on his NFL
+            //     team, he's a startable-caliber option, full stop.
+            //   • A top-tier fantasy player by GLOBAL rank also always qualifies (covers WR2s who are studs).
+            //   • Deeper pieces (a team's RB2 / WR2-3 / TE2) highlight ONLY if their projected points clear a real
+            //     starter threshold — committee backs, strong WR rooms, pass-catching TE2s.
             const SF = cfg.sf || (SPEC.SUPER || 0) > 0;
-            // team depth slot for each player: index within (team, pos), ordered by projected pts (already how
-            // `depth` is built). Map player.id -> slot (1 = that team's top guy at the position).
+            // team depth slot for each player: index within (team, pos), ordered by projected pts. slot 1 = that
+            // NFL team's top player at the position (its QB1/RB1/WR1/TE1).
             const teamSlot = {};
             depth.forEach(([, arr0]) => {
               const byPos = {};
@@ -14977,22 +14985,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             const startable = (p) => {
               if (draftedSet.has(p.id)) return false;
               const r = p.posRank || 999, pts = p.pts || 0, slot = teamSlot[p.id] || 9;
-              // Clear top-tier fantasy starters by GLOBAL rank always qualify.
+              // Their NFL team's #1 at the position ALWAYS qualifies (QB1/RB1/WR1/TE1) — no floor.
+              if (slot === 1) return true;
+              // Top-tier fantasy players by GLOBAL rank always qualify even if they're a team's #2.
               if (p.pos === "QB") { if (SF ? r <= 20 : r <= 12) return true; }
-              if (p.pos === "RB") { if (r <= 24) return true; }   // ~RB1-2 range across the league
-              if (p.pos === "WR") { if (r <= 30) return true; }   // ~WR1-2 range (start 2-3 WR)
+              if (p.pos === "RB") { if (r <= 24) return true; }
+              if (p.pos === "WR") { if (r <= 30) return true; }
               if (p.pos === "TE") { if (r <= (cfg.tePremMult ? 14 : 12)) return true; }
-              // Their NFL team's clear STARTER at the position (slot 1) qualifies — a real-life starter gets the
-              // volume that makes him fantasy-startable, even if he's a weak one (e.g. a struggling QB1 or a WR1
-              // in a run-heavy offense). Floors here are LENIENT — just enough to exclude a truly empty projection.
-              if (slot === 1) {
-                if (p.pos === "QB") return pts >= (SF ? 150 : 170);  // any real starting QB clears this on volume
-                if (p.pos === "RB") return pts >= 90;                // a lead/committee back
-                if (p.pos === "WR") return pts >= 85;                // a real WR1 even in a weak offense
-                if (p.pos === "TE") return pts >= 70;                // a starting TE with a route share
-              }
-              // Deeper pieces (team RB2 / WR2-3 / TE2, committee/rotation) — highlight ONLY if they clear a real
-              // startable-points threshold (a backup who's genuinely usable, like a committee back).
+              // Deeper pieces (team RB2 / WR2-3 / TE2) — highlight only if they clear a real startable threshold.
               if (slot === 2) {
                 if (p.pos === "RB") return pts >= 150; // committee back splitting a backfield
                 if (p.pos === "WR") return pts >= 145; // strong WR room's #2-3
@@ -15001,10 +15001,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               return false;
             };
             return depth.map(([team, arr0]) => {
-            const arr = depthPos === "ALL" ? arr0 : arr0.filter((p) => p.pos === depthPos);
-            if (depthPos !== "ALL" && arr.length === 0) return null;
+            let arr = depthPos === "ALL" ? arr0 : arr0.filter((p) => p.pos === depthPos);
+            if (depthShowStarters) arr = arr.filter(startable); // "Available starters only" mode
+            if ((depthPos !== "ALL" || depthShowStarters) && arr.length === 0) return null;
             const avail = arr.filter((p) => !draftedSet.has(p.id)).length;
-            const starterCount = depthHiStarters ? arr.filter(startable).length : 0;
+            const starterCount = (depthHiStarters || depthShowStarters) ? arr.filter(startable).length : 0;
             return (
               <div key={team} className="panel" style={{ padding: 10, alignSelf: "start" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
@@ -15012,7 +15013,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   <div className="mut" style={{ fontSize: 11 }}>{depthHiStarters && starterCount > 0 ? <span style={{ color: "#5FD0A8", fontWeight: 700 }}>{starterCount} startable</span> : `${avail} available`}</div>
                 </div>
                 {arr.map((p) => {
-                  const isStarter = depthHiStarters && startable(p);
+                  const isStarter = (depthHiStarters && !depthShowStarters) && startable(p);
                   return (
                     <div key={p.id} className={draftedSet.has(p.id) ? "struck" : ""} style={{ fontSize: 12, padding: "1.5px 4px", borderRadius: 5, background: isStarter ? "rgba(95,208,168,.13)" : "transparent", boxShadow: isStarter ? "inset 2px 0 0 #5FD0A8" : "none", cursor: "help" }}
                       onClick={(e) => showTip(e, makeOutlook(p, sims, draftedSet.has(p.id)))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, draftedSet.has(p.id)))} onMouseLeave={hideTip}>
