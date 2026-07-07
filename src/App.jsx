@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28du";
+const BUILD_TAG = "2026.06.28dv";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2118,9 +2118,13 @@ function capsOf(cfg) {
     POS.forEach((p) => { const x = cfg.caps && cfg.caps[p]; if (x != null && x !== "" && +x > 0) base[p] = +x; });
     return base;
   }
+  // Default per-position maximums when the league doesn't specify them. QB/TE caps are deliberately conservative
+  // — even in a deep superflex league you rarely roster more than ~4 QB, and stacking a 5th/6th is dead weight —
+  // so the engine won't recommend piling onto a position you've effectively maxed. Leagues that DO allow more can
+  // set an explicit cap in Settings (or it syncs from the connected platform), which overrides these below.
   const base = cfg.sf
-    ? { QB: 3 + Math.floor(d / 6), RB: 4 + Math.ceil(d / 2), WR: 4 + Math.ceil(d / 2), TE: 2 + Math.floor(d / 6) }
-    : { QB: 2 + Math.floor(d / 6), RB: 4 + Math.ceil(d / 2), WR: 4 + Math.ceil(d / 2), TE: 2 + Math.floor(d / 6) };
+    ? { QB: Math.min(4, 3 + Math.floor(d / 12)), RB: 4 + Math.ceil(d / 2), WR: 4 + Math.ceil(d / 2), TE: Math.min(3, 2 + Math.floor(d / 12)) }
+    : { QB: Math.min(3, 2 + Math.floor(d / 10)), RB: 4 + Math.ceil(d / 2), WR: 4 + Math.ceil(d / 2), TE: Math.min(3, 2 + Math.floor(d / 10)) };
   POS.forEach((p) => { const x = cfg.caps && cfg.caps[p]; if (x != null && x !== "" && +x > 0) base[p] = +x; });
   return base;
 }
@@ -14635,8 +14639,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     const bestFaller = poolForSummary.slice().map((p) => ({ p, gap: (p.adp != null ? pickNo - p.adp : -999) })).sort((a, b) => b.gap - a.gap)[0];
                     const bestFit = adv.verdict; // the model's #1 is the best fit for your build
                     const run = (adv.run || (advice && advice.run)) || null;
-                    // expected value drop-off: gap between the best available now and the projected best at your NEXT pick
-                    const cols = "minmax(0,1fr) 30px 34px 34px 40px 40px";
                     return (
                       <div>
                         {/* board summary */}
@@ -14657,25 +14659,36 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         {run && <div style={{ fontSize: 11, color: "#F2655C", marginBottom: 8, display: "flex", alignItems: "center", gap: 5 }}><i className="ti ti-flame" style={{ fontSize: 12 }} aria-hidden="true" /><b>{run.pos} run</b> — {run.count} of the last 8 picks; that tier is thinning before your pick.</div>}
                         {/* top 10 list — aligned columns */}
                         <div style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--gold)", marginBottom: 4 }}>Top 10 to consider</div>
-                        <div style={{ display: "grid", gridTemplateColumns: cols, gap: "0 6px", alignItems: "center", fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line)", padding: "0 4px 3px" }}>
-                          <span>Player</span><span style={{ textAlign: "right" }}>Tm</span><span style={{ textAlign: "right" }}>ADP</span><span style={{ textAlign: "right" }}>Proj</span><span style={{ textAlign: "right" }}>{dyn ? "Val" : "VBD"}</span><span style={{ textAlign: "right" }}>Avail</span>
-                        </div>
-                        <div style={{ display: "flex", flexDirection: "column" }}>
-                          {list.map((p, i) => {
-                            const prob = survOf(p); const vShow = dyn ? (p.value ?? p.vbd) : p.vbd;
-                            return (
-                              <div key={p.id} onMouseEnter={openTip(p)} onMouseLeave={hideTip} onClick={openTip(p)}
-                                style={{ display: "grid", gridTemplateColumns: cols, gap: "0 6px", alignItems: "center", cursor: "help", fontSize: 11.5, padding: "3px 4px", borderRadius: 4, background: i === 0 ? "rgba(242,182,60,.10)" : "transparent", borderBottom: i < list.length - 1 ? "1px solid var(--line2)" : "none" }}>
-                                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}><span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank), marginRight: 4, fontSize: 10 }}>{p.pos}{p.posRank}</span><b style={{ color: i === 0 ? "var(--gold)" : "var(--ink)" }}>{i === 0 ? "★ " : ""}{p.name}</b></span>
-                                <span className="num mut" style={{ textAlign: "right", fontSize: 10 }}>{p.team || "FA"}</span>
-                                <span className="num" style={{ textAlign: "right", fontSize: 10 }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
-                                <span className="num" style={{ textAlign: "right", fontWeight: 700, fontSize: 10.5 }}>{Math.round(p.pts || 0)}</span>
-                                <span className="num" style={{ textAlign: "right", fontSize: 10.5, color: vbdColor(vShow) }}>{vShow != null ? (vShow > 0 ? "+" : "") + Math.round(vShow) : "—"}</span>
-                                <span className="num" style={{ textAlign: "right", fontSize: 10, color: prob == null ? "var(--mut)" : prob >= 65 ? "#5FD0A8" : prob >= 35 ? "var(--gold)" : "#F2655C" }}>{prob != null ? `${prob}%` : "—"}</span>
+                        {(() => {
+                          const TCOLS = "42px minmax(0,1fr) 30px 28px 28px 36px 40px 40px 58px 38px";
+                          return (
+                            <>
+                              <div style={{ display: "grid", gridTemplateColumns: TCOLS, gap: "0 6px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line)", padding: "0 4px 3px" }}>
+                                <span>Rank</span><span>Player</span><span style={{ textAlign: "right" }}>Tm</span><span style={{ textAlign: "center" }}>Bye</span><span style={{ textAlign: "center" }}>Age</span><span style={{ textAlign: "right" }}>ADP</span><span style={{ textAlign: "right" }} title="Value over replacement">{dyn ? "Val" : "VBD"}</span><span style={{ textAlign: "right" }}>Proj</span><span style={{ textAlign: "center" }} title="Floor–ceiling">Fl–Cl</span><span style={{ textAlign: "right" }} title="Chance available at your pick">Avail</span>
                               </div>
-                            );
-                          })}
-                        </div>
+                              <div style={{ display: "flex", flexDirection: "column" }}>
+                                {list.map((p, i) => {
+                                  const prob = survOf(p); const vShow = dyn ? (p.value ?? p.vbd) : p.vbd;
+                                  return (
+                                    <div key={p.id} onMouseEnter={openTip(p)} onMouseLeave={hideTip} onClick={openTip(p)}
+                                      style={{ display: "grid", gridTemplateColumns: TCOLS, gap: "0 6px", alignItems: "center", cursor: "help", fontSize: 11, padding: "3.5px 4px", borderRadius: 4, background: i === 0 ? "rgba(242,182,60,.10)" : "transparent", borderBottom: i < list.length - 1 ? "1px solid var(--line2)" : "none" }}>
+                                      <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank), fontSize: 9.5 }}>{p.pos}{p.posRank}</span>
+                                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}><Dot pos={p.pos} /><b style={{ color: i === 0 ? "var(--gold)" : "var(--ink)", fontSize: 11.5 }}>{i === 0 ? "★ " : ""}{p.name}</b>{p.rookie ? <span style={{ fontSize: 7.5, fontWeight: 700, color: "#5FD0A8", marginLeft: 3 }}>R</span> : null}</span>
+                                      <span className="num mut" style={{ textAlign: "right", fontSize: 9.5 }}>{p.team || "FA"}</span>
+                                      <span className="num mut" style={{ textAlign: "center", fontSize: 9.5 }}>{p.bye || "—"}</span>
+                                      <span className="num mut" style={{ textAlign: "center", fontSize: 9.5 }}>{p.age || "—"}</span>
+                                      <span className="num" style={{ textAlign: "right", fontSize: 9.5 }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
+                                      <span className="num" style={{ textAlign: "right", fontSize: 10, color: vbdColor(vShow) }}>{vShow != null ? (vShow > 0 ? "+" : "") + Math.round(vShow) : "—"}</span>
+                                      <span className="num" style={{ textAlign: "right", fontWeight: 700, fontSize: 10.5 }}>{Math.round(p.pts || 0)}</span>
+                                      <span className="num mut" style={{ textAlign: "center", fontSize: 8.5 }}>{p.floor != null && p.ceil != null ? `${Math.round(p.floor)}–${Math.round(p.ceil)}` : "—"}</span>
+                                      <span className="num" style={{ textAlign: "right", fontSize: 9.5, color: prob == null ? "var(--mut)" : prob >= 65 ? "#5FD0A8" : prob >= 35 ? "var(--gold)" : "#F2655C" }}>{prob != null ? `${prob}%` : "—"}</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </>
+                          );
+                        })()}
                         <div className="mut" style={{ fontSize: 9.5, lineHeight: 1.4, marginTop: 6 }}>★ = the Smart model's top pick for your build. Avail = chance he's still on the board at your pick. Hover any row for the full breakdown.</div>
                       </div>
                     );
