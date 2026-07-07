@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28di";
+const BUILD_TAG = "2026.06.28dj";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -12540,13 +12540,22 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const vSd = Math.sqrt(valByTeam.reduce((a, b) => a + (b - vMean) ** 2, 0) / TEAMS) || 1;
     const pMean = proj.pts.reduce((a, b) => a + b, 0) / TEAMS;
     const pSd = Math.sqrt(proj.pts.reduce((a, b) => a + (b - pMean) ** 2, 0) / TEAMS) || 1;
+    // Grade = a blend of ADP VALUE (did you draft efficiently vs. the market?) and PROJECTED POINTS (the
+    // outcome that actually wins the league). The weight is FORMAT-AWARE:
+    //   • REDRAFT is win-or-go-home — projected finish is what matters, so points dominate (65/35 toward pts).
+    //   • DYNASTY/KEEPER accumulates long-term assets, so ADP value/efficiency matters more, but win-now still
+    //     counts — a lighter tilt toward value (60/40 toward value).
+    // This stops an "immense ADP value but middling projected finish" redraft team from grading out as an A+.
+    const dyn = cfg.type === "dynasty" || cfg.type === "keeper";
+    const wVal = dyn ? 0.60 : 0.35;
+    const wPts = 1 - wVal;
     return Array.from({ length: TEAMS }, (_, i) => {
-      const z = 0.55 * ((valByTeam[i] - vMean) / vSd) + 0.45 * ((proj.pts[i] - pMean) / pSd);
+      const z = wVal * ((valByTeam[i] - vMean) / vSd) + wPts * ((proj.pts[i] - pMean) / pSd);
       // full A–F spread so a genuinely bad draft reads as a bad draft
       const g = z >= 1.5 ? "A+" : z >= 1.05 ? "A" : z >= 0.7 ? "A−" : z >= 0.4 ? "B+" : z >= 0.12 ? "B" : z >= -0.15 ? "B−" : z >= -0.45 ? "C+" : z >= -0.75 ? "C" : z >= -1.05 ? "C−" : z >= -1.4 ? "D" : "F";
       return { z, g };
     });
-  }, [valByTeam, proj]);
+  }, [valByTeam, proj, cfg]);
 
   const recap = useMemo(() => {
     if (!proj || !grades || picks.length < 6) return null;
@@ -15196,7 +15205,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
           <div className="panel" style={{ padding: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
-              <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{done ? "Final grades" : "Live grades"} <span className="mut" style={{ fontSize: 12 }}>value + projected finish</span></div>
+              <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{done ? "Final grades" : "Live grades"} <span className="mut" style={{ fontSize: 12 }} title={(cfg.type === "dynasty" || cfg.type === "keeper") ? "Dynasty leans on ADP value (long-term asset efficiency), with some weight on projected finish." : "Redraft leans on projected finish (win-now), with some weight on ADP value."}>{(cfg.type === "dynasty" || cfg.type === "keeper") ? "value-weighted · win-now aware" : "projected finish · value aware"}</span></div>
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }}>
                 <span className="mut" style={{ fontSize: 11, alignSelf: "center", padding: "0 8px" }}>Sort</span>
                 <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "z" ? "var(--gold)" : "transparent", color: sumSort.key === "z" ? "#151002" : "var(--ink)", fontWeight: sumSort.key === "z" ? 700 : 400 }} onClick={() => setSumSort({ key: "z", dir: -1 })}>Grade</button>
