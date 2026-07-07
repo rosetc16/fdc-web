@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28do";
+const BUILD_TAG = "2026.06.28dp";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3662,7 +3662,7 @@ select.gs:hover{border-color:var(--gold)}
 .btn-mini{padding:3px 10px;font-size:11px;border-radius:6px;background:var(--panel3)}
 .btn-gold,.btn-mini.btn-gold{background:var(--gold);color:#151002;border:none;font-weight:700}
 .btn-mini:hover{transform:none;box-shadow:none;background:#262017;border-color:var(--gold)}
-.tab{padding:8px 14px;cursor:pointer;border:none;background:none;color:var(--mut);font-family:'Barlow Condensed';font-size:16px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;border-bottom:2px solid transparent;transition:color .15s,border-color .15s}
+.tab{padding:8px 14px;cursor:pointer;border:none;background:none;color:#AEB9C7;font-family:'Barlow Condensed';font-size:16px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;border-bottom:2px solid transparent;transition:color .15s,border-color .15s}
 .tab:hover{color:var(--ink);border-bottom-color:var(--line2)}
 .tab.on{color:var(--ink);border-bottom-color:var(--gold)}
 .hubtile:hover{transform:translateY(-2px);border-color:var(--gold)!important;box-shadow:0 6px 20px #0008}
@@ -12840,7 +12840,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         <div className="hairline" style={{ background: "var(--panel2)" }}>
           <div className="decision-grid" style={{ display: "flex", gap: 10, padding: "8px 12px", alignItems: "stretch" }}>
             {/* ---- GROUP A: decisions & outlook ---- */}
-            <div data-tour="howdoing" className="decision-group-a" style={{ display: "grid", gridTemplateColumns: "minmax(190px,0.9fr) minmax(210px,1.05fr)", gap: 8, flex: "1.05 1 0", minWidth: 0 }}>
+            <div data-tour="howdoing" className="decision-group-a" style={{ display: "grid", gridTemplateColumns: "minmax(190px,0.9fr) minmax(210px,1.05fr)", gap: 8, flex: "1.05 1 0", minWidth: 0, padding: 6, borderRadius: 12, border: "1px solid rgba(255,255,255,.22)", boxShadow: "0 0 0 1px rgba(255,255,255,.04)" }}>
             {/* ===== ZONE 1: HOW YOU'RE DOING (table) ===== */}
             {(() => {
               const laneMap = { rebuild: { t: "Rebuild", c: "#5FD0A8", i: "ti-seedling" }, winnow: { t: "Win-now", c: "#F2655C", i: "ti-flame" }, balanced: { t: "Balanced", c: "var(--gold)", i: "ti-scale" }, undecided: { t: "Forming…", c: "var(--mut)", i: "ti-loader" } };
@@ -12894,7 +12894,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               return (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "9px 11px", borderRadius: 9, border: "1px solid rgba(242,182,60,.5)", background: "linear-gradient(160deg,rgba(46,40,22,1),rgba(24,31,40,1))", height: "100%", boxSizing: "border-box" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-gauge" style={{ fontSize: 11, color: "var(--gold)" }} aria-hidden="true" /><span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--gold)", fontWeight: 800 }}>How you're doing</span></div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-gauge" style={{ fontSize: 11, color: "var(--gold)" }} aria-hidden="true" /><span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--gold)", fontWeight: 800 }}>How you're doing</span><i className="ti ti-info-circle" style={{ fontSize: 10, color: "var(--mut)", cursor: "help" }} aria-hidden="true" onMouseEnter={(e) => showTip(e, [{ kind: "take", tone: "neutral", x: "How you're doing" }, { t: "What this shows", x: "A per-position read on your roster: how many starters you have vs. need (red = unfilled), where you rank at that position in the league, a quick strength Read, and the best player still available there. Up top: your build lane (win-now vs. rebuild) and projected finish." }, { t: "Tip", x: "Hover any position row for its full breakdown and your players there." }])} onMouseLeave={hideTip} /></div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}><i className={`ti ${lane.i}`} style={{ fontSize: 11, color: lane.c }} aria-hidden="true" /><span style={{ fontSize: 10.5, fontWeight: 700, color: lane.c }}>{showBuild ? lane.t : "…"}</span></span>
                       <span onMouseEnter={finishTip} onMouseLeave={finishTip ? hideTip : undefined} style={{ display: "inline-flex", alignItems: "baseline", gap: 2, cursor: finishTip ? "help" : "default" }}><span style={{ fontSize: 14, fontWeight: 800, color: finishColor, lineHeight: 1 }}>{finish != null ? ordinal(finish) : "—"}</span><span className="mut" style={{ fontSize: 8.5 }}>/{TEAMS}</span></span>
@@ -12911,10 +12911,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         const baV = ba ? (dynastyH ? (ba.value ?? ba.vbd) : ba.vbd) : null;
                         return (
                           <div key={d.pos} onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "24px 52px 44px 52px 1fr", gap: "0 6px", alignItems: "center", cursor: "help", padding: "1.5px 4px", margin: "0 -4px", borderRadius: 5 }}>
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 11, fontWeight: 800, color: POS_COLOR[d.pos] }}><Dot pos={d.pos} />{d.pos}</span>
-                            <span style={{ fontSize: 10.5, display: "inline-flex", alignItems: "center", gap: 3 }}>
-                              <span style={{ fontWeight: 700 }}>{d.has}</span><span className="mut" style={{ fontSize: 9 }}>/{d.need || 0}</span>
-                              {d.filled ? <i className="ti ti-circle-check-filled" style={{ fontSize: 10, color: "#5FD0A8" }} aria-hidden="true" /> : d.deficit > 0 ? <i className="ti ti-alert-circle-filled" style={{ fontSize: 10, color: "#F2655C" }} aria-hidden="true" /> : null}
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 800, color: POS_COLOR[d.pos] }}><Dot pos={d.pos} />{d.pos}</span>
+                            <span style={{ fontSize: 10.5, display: "inline-flex", alignItems: "center", gap: 2 }} title={d.deficit > 0 ? `Need ${Math.round(d.deficit)} more starter${Math.round(d.deficit) === 1 ? "" : "s"} at ${d.pos}` : d.filled ? `${d.pos} starters filled` : ""}>
+                              <span style={{ fontWeight: 800, color: d.deficit > 0 ? "#F2655C" : "var(--ink)" }}>{d.has}</span>
+                              <span className="mut" style={{ fontSize: 9 }}>/{d.need || 0}</span>
+                              {d.filled ? <i className="ti ti-circle-check-filled" style={{ fontSize: 10, color: "#5FD0A8", marginLeft: 1 }} aria-hidden="true" /> : d.deficit > 0 ? <i className="ti ti-alert-circle-filled" style={{ fontSize: 10, color: "#F2655C", marginLeft: 1 }} aria-hidden="true" /> : null}
                             </span>
                             <span style={{ textAlign: "center", fontSize: 10.5, fontWeight: 700, color: d.rk ? d.read.c : "var(--mut)" }}>{d.rk ? `${d.rk.rank}/${d.rk.of}` : "—"}</span>
                             <span style={{ textAlign: "center", fontSize: 10, fontWeight: 800, color: d.read.c }}>{d.read.t}</span>
@@ -12992,7 +12993,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               return (
                 <div data-tour="pulse" style={{ display: "flex", flexDirection: "column", gap: 5, padding: "9px 11px", borderRadius: 10, border: "1px solid var(--line)", background: "var(--panel2)", height: "100%", boxSizing: "border-box" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-activity-heartbeat" style={{ fontSize: 11, color: "var(--blue)" }} aria-hidden="true" /><span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--blue)", fontWeight: 800 }}>Draft pulse</span></div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-activity-heartbeat" style={{ fontSize: 11, color: "var(--blue)" }} aria-hidden="true" /><span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--blue)", fontWeight: 800 }}>Draft pulse</span><i className="ti ti-info-circle" style={{ fontSize: 10, color: "var(--mut)", cursor: "help" }} aria-hidden="true" onMouseEnter={(e) => showTip(e, [{ kind: "take", tone: "neutral", x: "Draft pulse" }, { t: "What this shows", x: "The best player still available at each position, plus a live read on Supply — early on, how many startable-tier players remain (Deep / Thinning / Scarce); late, how big the drop-off is to the next guy. Toggle VBD / Val / ADP to rank by whichever value lens you want." }, { t: "Best on the board", x: "The single highest-value player left across all positions — a quick 'just take the best guy' anchor." }])} onMouseLeave={hideTip} /></div>
                     <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 5, overflow: "hidden" }} title="Rank best-available by: VBD (this-year points over replacement), Value (age-weighted, dynasty), or ADP (market draft position).">
                       {(dynasty ? [["vbd", "VBD"], ["value", "Val"], ["adp", "ADP"]] : [["vbd", "VBD"], ["adp", "ADP"]]).map(([m, lbl]) => (
                         <button key={m} onClick={() => setPulseMetric(m)} style={{ fontSize: 7.5, fontWeight: 700, padding: "1px 5px", border: "none", cursor: "pointer", background: metric === m ? "var(--blue)" : "transparent", color: metric === m ? "#0A0E13" : "var(--mut)", textTransform: "uppercase", letterSpacing: ".03em" }}>{lbl}</button>
@@ -13058,10 +13059,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             </div>
 
             {/* ---- vertical divider between the two groups ---- */}
-            <div aria-hidden="true" className="decision-divider" style={{ flex: "0 0 auto", width: 2, alignSelf: "stretch", margin: "2px 3px", borderRadius: 2, background: "linear-gradient(180deg,transparent,var(--gold) 10%,var(--gold) 90%,transparent)" }} />
+            {/* groups are now individually outlined — no divider needed */}
 
             {/* ---- GROUP B: the picks ---- */}
-            <div data-tour="picks" className="decision-group-b" style={{ display: "grid", gridTemplateColumns: "minmax(155px,0.8fr) minmax(170px,0.9fr) minmax(175px,0.92fr)", gap: 8, flex: "1.4 1 0", minWidth: 0 }}>
+            <div data-tour="picks" className="decision-group-b" style={{ display: "grid", gridTemplateColumns: "minmax(155px,0.8fr) minmax(170px,0.9fr) minmax(175px,0.92fr)", gap: 8, flex: "1.4 1 0", minWidth: 0, padding: 6, borderRadius: 12, border: "1px solid rgba(255,255,255,.22)", boxShadow: "0 0 0 1px rgba(255,255,255,.04)" }}>
 
             {/* ===== ZONE 2: LAST PICKS ===== */}
             {(() => {
@@ -14361,6 +14362,92 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             </div>
             )}
 
+            {!leagueOpen && isMe && (() => {
+              // ===== STRUCTURED TEAM SUMMARY — a plain-language read of where you stand, what to do next,
+              // how to think about strategy, and the key trends. Built from the same analysis the rest of the
+              // tab uses so it stays consistent.
+              const laneKey = (myWindow && myWindow.decided) ? myWindow.lane : "balanced";
+              const laneLabel = { rebuild: "Rebuild / youth", winnow: "Win-now", balanced: "Balanced" }[laneKey];
+              const finishRank = (proj && proj.rank && proj.rank[selTeam] != null) ? proj.rank[selTeam] : null;
+              const dyn = cfg.type === "dynasty" || cfg.type === "keeper";
+              // per-position standing (from this team's byPos + the league position tiers)
+              const loSum = leagueOverview(picks, players, teamAt, cfg);
+              const leagueTiers = (loSum && loSum.posTiers && loSum.posTiers[selTeam]) ? loSum.posTiers[selTeam] : null;
+              const posStand = ["QB", "RB", "WR", "TE"].map((pos) => {
+                const b = ta.byPos[pos]; if (!b) return null;
+                const req = (REQ_F(cfg.sf)[pos] || 0);
+                const have = b.count != null ? b.count : 0;
+                const tier = leagueTiers && leagueTiers[pos] ? leagueTiers[pos].tier : null; // 0 top third,1 mid,2 bottom
+                return { pos, req, have, short: Math.max(0, req - have), strong: tier === 0, weak: tier === 2 };
+              }).filter(Boolean);
+              const needs = posStand.filter((p) => p.short > 0).map((p) => p.pos);
+              const strengths = posStand.filter((p) => p.strong).map((p) => p.pos);
+              const weaknesses = posStand.filter((p) => p.weak && p.short === 0).map((p) => p.pos);
+              const nextTargets = targets.slice(0, 3);
+              const rd = Math.floor(picks.length / TEAMS) + 1;
+              // strategy guidance
+              const stratLine = dyn
+                ? (laneKey === "rebuild" ? "You're building for the future. Favor young, ascending players and draft picks; it's fine to pass on aging production even at a value." : laneKey === "winnow" ? "You're in a win-now window. Prioritize proven, established production over long-term upside — cash in on this year." : "Your lane isn't locked yet. Take the best value and let a couple more picks commit you toward youth or win-now.")
+                : "Redraft is win-or-go-home: chase the best projected points and fill your starting lineup before adding depth or upside.";
+              const chip = (txt, c) => <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999, border: `1px solid ${c}`, color: c }}>{txt}</span>;
+              return (
+                <div className="panel" style={{ padding: 16, border: "1px solid rgba(255,255,255,.18)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                    <i className="ti ti-clipboard-text" style={{ fontSize: 16, color: "var(--gold)" }} aria-hidden="true" />
+                    <span className="disp" style={{ fontSize: 16, fontWeight: 700 }}>Team summary</span>
+                    <div style={{ flex: 1 }} />
+                    {chip(laneLabel, laneKey === "rebuild" ? "#4FA9E0" : laneKey === "winnow" ? "#F2655C" : "#E7C24B")}
+                    {finishRank != null && chip(`Proj ${ordinal(finishRank)}/${TEAMS}`, finishRank <= Math.ceil(TEAMS * 0.33) ? "#5FD0A8" : finishRank > Math.ceil(TEAMS * 0.66) ? "#F2655C" : "#E7C24B")}
+                    <span className="mut" style={{ fontSize: 11 }}>Round {rd}</span>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 12 }}>
+                    {/* Where you stand */}
+                    <div>
+                      <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--blue)", fontWeight: 800, marginBottom: 4 }}>Where you stand</div>
+                      <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--ink)" }}>
+                        {strengths.length > 0 ? <>Strong at <b>{strengths.join(", ")}</b>. </> : null}
+                        {weaknesses.length > 0 ? <>Thin at <b style={{ color: "#F2655C" }}>{weaknesses.join(", ")}</b>. </> : null}
+                        {strengths.length === 0 && weaknesses.length === 0 ? <>Your roster is balanced across positions so far. </> : null}
+                        {needs.length > 0 ? <>You still need to fill starting <b style={{ color: "#F2655C" }}>{needs.join(", ")}</b>.</> : <>All starting slots are filled — you're onto depth and upside.</>}
+                      </div>
+                    </div>
+                    {/* Focus next */}
+                    <div>
+                      <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--gold)", fontWeight: 800, marginBottom: 4 }}>Focus next</div>
+                      <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--ink)" }}>
+                        {needs.length > 0
+                          ? <>Prioritize <b>{needs[0]}</b>{needs.length > 1 ? <> (then {needs.slice(1).join(", ")})</> : null} to complete your lineup.</>
+                          : weaknesses.length > 0
+                            ? <>Upgrade your weakest spot, <b>{weaknesses[0]}</b>, where you rank low in the league.</>
+                            : <>No urgent hole — take the best available and add upside.</>}
+                        {nextTargets.length > 0 ? <> Top targets at your next pick: {nextTargets.map((p, i) => <React.Fragment key={p.id}>{i > 0 ? ", " : " "}<b style={{ color: POS_COLOR[p.pos] }}>{p.name}</b></React.Fragment>)}.</> : null}
+                      </div>
+                    </div>
+                    {/* Strategy */}
+                    <div>
+                      <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", color: "#5FD0A8", fontWeight: 800, marginBottom: 4 }}>How to think about it</div>
+                      <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--ink)" }}>{stratLine}</div>
+                    </div>
+                    {/* Trends */}
+                    <div>
+                      <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", color: "#C99BF5", fontWeight: 800, marginBottom: 4 }}>Key trends</div>
+                      <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--ink)" }}>
+                        {(advice && advice.run) ? <>There's a <b>{advice.run.pos}</b> run on ({advice.run.count} of the last 8 picks) — that tier is thinning. </> : null}
+                        {(() => {
+                          // scarcity call: which needed position is drying up
+                          const scarce = posStand.find((p) => (p.short > 0 || strengths.indexOf(p.pos) < 0));
+                          const best = advice && advice.verdict;
+                          if (best && best.adp != null && (picks.length + 1) - best.adp >= 12) return <>Value on the board: <b>{best.name}</b> is falling well past his ADP.</>;
+                          if (scarce) return <>Keep an eye on <b>{scarce.pos}</b> supply as the board moves.</>;
+                          return <>Board is moving at market pace — no major runs right now.</>;
+                        })()}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
             {!leagueOpen && (<>
             <div className="myteam-grid" style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
               <div className="ta-colL" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
@@ -14866,19 +14953,46 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(225px,1fr))", gap: 10, alignItems: "start" }}>
           {(() => {
-            // "Available starter" = still on the board AND genuinely startable: clear starters by positional
-            // rank (QB1 / RB1-2 / WR1-2 / TE1 caliber) PLUS deeper pieces (RB2 / WR3 / TE2) that clear a real
-            // starter-points threshold (committee backs, strong WR corps, etc.). We HIGHLIGHT these inline —
-            // in place among the crossed-out drafted names — so you see who's still gettable without losing the
-            // depth-chart context.
+            // "Available starter" highlight. The intent is DEPTH-CHART aware: the clear fantasy starters at each
+            // position always highlight if they're still on the board, and deeper pieces (a team's RB2, WR3, TE2)
+            // highlight ONLY if their projected points clear a real starter threshold — capturing committee backs
+            // (e.g. an RB2 splitting carries), strong WR rooms, and pass-catching TE2s. We combine two signals:
+            //   1) GLOBAL fantasy rank (posRank) — a top-tier player is startable regardless of team slot.
+            //   2) TEAM depth slot (rank within their own NFL team at that position) + a points floor — this is
+            //      what catches the "backup who's actually startable" that pure global rank alone would miss.
             const SF = cfg.sf || (SPEC.SUPER || 0) > 0;
+            // team depth slot for each player: index within (team, pos), ordered by projected pts (already how
+            // `depth` is built). Map player.id -> slot (1 = that team's top guy at the position).
+            const teamSlot = {};
+            depth.forEach(([, arr0]) => {
+              const byPos = {};
+              arr0.slice().sort((a, b) => (b.pts || 0) - (a.pts || 0)).forEach((p) => {
+                byPos[p.pos] = (byPos[p.pos] || 0) + 1;
+                teamSlot[p.id] = byPos[p.pos];
+              });
+            });
             const startable = (p) => {
               if (draftedSet.has(p.id)) return false;
-              const r = p.posRank || 999, pts = p.pts || 0;
-              if (p.pos === "QB") return SF ? (r <= 24 || pts >= 260) : (r <= 12 || pts >= 285);
-              if (p.pos === "RB") return r <= 24 || pts >= 150;
-              if (p.pos === "WR") return r <= 36 || pts >= 145;
-              if (p.pos === "TE") return r <= (cfg.tePremMult ? 14 : 12) || pts >= 110;
+              const r = p.posRank || 999, pts = p.pts || 0, slot = teamSlot[p.id] || 9;
+              // Clear top-tier fantasy starters by GLOBAL rank always qualify.
+              if (p.pos === "QB") { if (SF ? r <= 20 : r <= 12) return true; }
+              if (p.pos === "RB") { if (r <= 24) return true; }   // ~RB1-2 range across the league
+              if (p.pos === "WR") { if (r <= 24) return true; }   // ~WR1-2 range
+              if (p.pos === "TE") { if (r <= (cfg.tePremMult ? 12 : 10)) return true; }
+              // Their NFL team's clear starter at the position (slot 1) is startable if he's fantasy-relevant.
+              if (slot === 1) {
+                if (p.pos === "QB") return pts >= (SF ? 230 : 265);
+                if (p.pos === "RB") return pts >= 130;
+                if (p.pos === "WR") return pts >= 120;
+                if (p.pos === "TE") return pts >= 95;
+              }
+              // Deeper pieces (team RB2 / WR2-3 / TE2, committee/rotation) — highlight ONLY if they clear a real
+              // startable-points threshold (a backup who's genuinely usable, like a committee back).
+              if (slot === 2) {
+                if (p.pos === "RB") return pts >= 150; // committee back splitting a backfield
+                if (p.pos === "WR") return pts >= 145; // strong WR room's #2-3
+                if (p.pos === "TE") return pts >= 110;
+              }
               return false;
             };
             return depth.map(([team, arr0]) => {
