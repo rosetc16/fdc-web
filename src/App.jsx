@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28dr";
+const BUILD_TAG = "2026.06.28ds";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -14466,53 +14466,58 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               {myProjView && <div className="mut" style={{ fontSize: 11.5, marginBottom: 8 }}>Includes your {projectedAdds.length} most-likely future pick{projectedAdds.length !== 1 ? "s" : ""} (shown in gold) based on the engine's projection.</div>}
               {(() => {
                 const dynH = cfg.type === "dynasty" || cfg.type === "keeper";
-                const LCOLS = "34px 30px minmax(0,1fr) 30px 26px 26px 34px 38px";
+                // Slot | photo | Player(+role) | Tm | Bye | Age | Rank | ADP | VBD | [Val] | Floor–Ceil | Proj
+                const LCOLS = dynH
+                  ? "40px 28px minmax(0,1fr) 32px 30px 30px 44px 40px 40px 40px 74px 42px"
+                  : "40px 28px minmax(0,1fr) 32px 30px 30px 44px 40px 40px 74px 42px";
+                const header = (
+                  <div style={{ display: "grid", gridTemplateColumns: LCOLS, gap: "0 6px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line)", padding: "0 4px 4px" }}>
+                    <span>Slot</span><span /><span>Player</span><span>Tm</span><span style={{ textAlign: "center" }}>Bye</span><span style={{ textAlign: "center" }}>Age</span><span style={{ textAlign: "center" }}>Rank</span><span style={{ textAlign: "right" }} title="Average draft position">ADP</span><span style={{ textAlign: "right" }} title="Value over replacement">VBD</span>{dynH && <span style={{ textAlign: "right" }} title="Age-weighted dynasty value">Val</span>}<span style={{ textAlign: "center" }} title="Projected floor–ceiling range">Floor–Ceil</span><span style={{ textAlign: "right" }} title="Projected points">Proj</span>
+                  </div>
+                );
+                const row = (p, slotLabel, isProj, isBench, key, lastRow) => (
+                  <div key={key} onClick={p ? (e) => showTip(e, makeOutlook(p, sims, true)) : undefined} onMouseEnter={p ? (e) => showTip(e, makeOutlook(p, sims, true)) : undefined} onMouseLeave={hideTip}
+                    style={{ display: "grid", gridTemplateColumns: LCOLS, gap: "0 6px", alignItems: "center", fontSize: 11, padding: "4px 4px", borderRadius: 5, cursor: p ? "help" : "default", opacity: isBench ? 0.92 : 1, background: p ? (isProj ? "rgba(242,182,60,.08)" : "transparent") : "rgba(242,101,92,.08)", borderBottom: !lastRow ? "1px solid var(--line2)" : "none" }}>
+                    <span style={{ fontSize: 8.5, fontWeight: 700, color: "var(--mut)" }}>{slotLabel}</span>
+                    {p ? <PlayerPhoto sid={p.sid} pos={p.pos} size={22} /> : <span />}
+                    {p ? (
+                      <span style={{ minWidth: 0, overflow: "hidden" }}>
+                        <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><b style={{ fontSize: 11.5 }}>{p.name}</b>{p.rookie && <span style={{ fontSize: 7.5, fontWeight: 700, color: "#5FD0A8", marginLeft: 4 }}>R</span>}{p.inj && <span style={{ fontSize: 7.5, fontWeight: 700, color: "#F2655C", marginLeft: 4 }}>{p.inj}</span>{isProj && <span className="gold" style={{ fontSize: 7.5, fontWeight: 700, marginLeft: 4 }}>PROJ</span>}</span>
+                        {p.role && <span className="mut" style={{ fontSize: 8.5, display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lowerKeepPos(p.role)}</span>}
+                      </span>
+                    ) : <span className="mut" style={{ fontStyle: "italic", fontSize: 10.5, gridColumn: dynH ? "3 / span 9" : "3 / span 8" }}>empty starter</span>}
+                    {p && <>
+                      <span className="num mut" style={{ fontSize: 9.5 }}>{p.team || "FA"}</span>
+                      <span className="num mut" style={{ fontSize: 9.5, textAlign: "center" }}>{p.bye || "—"}</span>
+                      <span className="num mut" style={{ fontSize: 9.5, textAlign: "center" }}>{p.age || "—"}</span>
+                      <span className="num" style={{ fontSize: 9.5, textAlign: "center", fontWeight: 700, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
+                      <span className="num mut" style={{ fontSize: 9.5, textAlign: "right" }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
+                      <span className="num" style={{ fontSize: 9.5, textAlign: "right", color: vbdColor(p.vbd) }}>{p.vbd != null ? (p.vbd > 0 ? "+" : "") + Math.round(p.vbd) : "—"}</span>
+                      {dynH && <span className="num" style={{ fontSize: 9.5, textAlign: "right", color: vbdColor(p.value ?? p.vbd) }}>{(p.value ?? p.vbd) != null ? ((p.value ?? p.vbd) > 0 ? "+" : "") + Math.round(p.value ?? p.vbd) : "—"}</span>}
+                      <span className="num mut" style={{ fontSize: 9, textAlign: "center" }}>{p.floor != null && p.ceil != null ? `${Math.round(p.floor)}–${Math.round(p.ceil)}` : "—"}</span>
+                      <span className="num" style={{ fontSize: 11, textAlign: "right", fontWeight: 800 }}>{Math.round(p.pts || 0)}</span>
+                    </>}
+                  </div>
+                );
+                const benchSorted = taShown.bench.slice().sort((a, b) => { const order = { QB: 0, RB: 1, WR: 2, TE: 3, K: 4, DST: 5 }; const oa = order[a.pos] != null ? order[a.pos] : 9, ob = order[b.pos] != null ? order[b.pos] : 9; return oa !== ob ? oa - ob : (b.pts || 0) - (a.pts || 0); });
+                // starter totals for a footer
+                const starterPtsSum = taShown.slots.reduce((s, x) => s + (x.p ? (x.p.pts || 0) : 0), 0);
                 return (
                   <div>
-                    <div style={{ display: "grid", gridTemplateColumns: LCOLS, gap: "0 6px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line)", padding: "0 4px 3px" }}>
-                      <span>Slot</span><span /><span>Player</span><span>Tm</span><span style={{ textAlign: "center" }}>Bye</span><span style={{ textAlign: "center" }}>Age</span><span style={{ textAlign: "center" }}>Rank</span><span style={{ textAlign: "right" }}>Proj</span>
-                    </div>
+                    {header}
                     <div style={{ display: "flex", flexDirection: "column" }}>
-                      {taShown.slots.map((s, i) => {
-                        const isProj = myProjView && s.p && projectedAdds.includes(s.p);
-                        const p = s.p;
-                        return (
-                          <div key={i} onClick={p ? (e) => showTip(e, makeOutlook(p, sims, true)) : undefined} onMouseEnter={p ? (e) => showTip(e, makeOutlook(p, sims, true)) : undefined} onMouseLeave={hideTip}
-                            style={{ display: "grid", gridTemplateColumns: LCOLS, gap: "0 6px", alignItems: "center", fontSize: 11, padding: "3px 4px", borderRadius: 5, cursor: p ? "help" : "default", background: p ? (isProj ? "rgba(242,182,60,.08)" : "transparent") : "rgba(242,101,92,.08)", borderBottom: i < taShown.slots.length - 1 ? "1px solid var(--line2)" : "none" }}>
-                            <span style={{ fontSize: 8.5, fontWeight: 700, color: "var(--mut)" }}>{s.slot}</span>
-                            {p ? <PlayerPhoto sid={p.sid} pos={p.pos} size={20} /> : <span />}
-                            {p ? (
-                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}><b style={{ fontSize: 11.5 }}>{p.name}</b>{isProj && <span className="gold" style={{ fontSize: 7.5, fontWeight: 700, marginLeft: 3 }}>PROJ</span>}</span>
-                            ) : <span className="mut" style={{ fontStyle: "italic", fontSize: 10.5, gridColumn: "3 / span 5" }}>empty starter</span>}
-                            {p && <><span className="num mut" style={{ fontSize: 9.5 }}>{p.team || "FA"}</span>
-                            <span className="num mut" style={{ fontSize: 9.5, textAlign: "center" }}>{p.bye || "—"}</span>
-                            <span className="num mut" style={{ fontSize: 9.5, textAlign: "center" }}>{p.age || "—"}</span>
-                            <span className="num" style={{ fontSize: 9.5, textAlign: "center", fontWeight: 700, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
-                            <span className="num" style={{ fontSize: 10.5, textAlign: "right", fontWeight: 700 }}>{Math.round(p.pts || 0)}</span></>}
-                          </div>
-                        );
-                      })}
+                      {taShown.slots.map((s, i) => row(s.p, s.slot, myProjView && s.p && projectedAdds.includes(s.p), false, "s" + i, i === taShown.slots.length - 1))}
                     </div>
-                    {taShown.bench.length > 0 && (
+                    <div style={{ display: "grid", gridTemplateColumns: LCOLS, gap: "0 6px", alignItems: "center", padding: "5px 4px 0", borderTop: "1px solid var(--line)", marginTop: 2 }}>
+                      <span style={{ gridColumn: dynH ? "1 / span 11" : "1 / span 10", fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, textAlign: "right", paddingRight: 6 }}>Starter total</span>
+                      <span className="num" style={{ fontSize: 12, textAlign: "right", fontWeight: 800, color: "var(--gold)" }}>{Math.round(starterPtsSum)}</span>
+                    </div>
+                    {benchSorted.length > 0 && (
                       <>
-                        <div className="disp" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", margin: "10px 0 4px" }}>Bench ({taShown.bench.length})</div>
+                        <div className="disp" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", margin: "12px 0 4px" }}>Bench ({benchSorted.length})</div>
+                        {header}
                         <div style={{ display: "flex", flexDirection: "column" }}>
-                          {taShown.bench.slice().sort((a, b) => { const order = { QB: 0, RB: 1, WR: 2, TE: 3, K: 4, DST: 5 }; const oa = order[a.pos] != null ? order[a.pos] : 9, ob = order[b.pos] != null ? order[b.pos] : 9; return oa !== ob ? oa - ob : (b.pts || 0) - (a.pts || 0); }).map((p, i, a2) => {
-                            const isProj = myProjView && projectedAdds.includes(p);
-                            return (
-                              <div key={i} onClick={(e) => showTip(e, makeOutlook(p, sims, true))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, true))} onMouseLeave={hideTip}
-                                style={{ display: "grid", gridTemplateColumns: LCOLS, gap: "0 6px", alignItems: "center", fontSize: 11, padding: "3px 4px", borderRadius: 5, cursor: "help", opacity: 0.9, background: isProj ? "rgba(242,182,60,.08)" : "transparent", borderBottom: i < a2.length - 1 ? "1px solid var(--line2)" : "none" }}>
-                                <span style={{ fontSize: 8, fontWeight: 700, color: "var(--mut)" }}>BN</span>
-                                <PlayerPhoto sid={p.sid} pos={p.pos} size={20} />
-                                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}><b style={{ fontSize: 11.5 }}>{p.name}</b>{isProj && <span className="gold" style={{ fontSize: 7.5, fontWeight: 700, marginLeft: 3 }}>PROJ</span>}</span>
-                                <span className="num mut" style={{ fontSize: 9.5 }}>{p.team || "FA"}</span>
-                                <span className="num mut" style={{ fontSize: 9.5, textAlign: "center" }}>{p.bye || "—"}</span>
-                                <span className="num mut" style={{ fontSize: 9.5, textAlign: "center" }}>{p.age || "—"}</span>
-                                <span className="num" style={{ fontSize: 9.5, textAlign: "center", fontWeight: 700, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
-                                <span className="num mut" style={{ fontSize: 10.5, textAlign: "right", fontWeight: 700 }}>{Math.round(p.pts || 0)}</span>
-                              </div>
-                            );
-                          })}
+                          {benchSorted.map((p, i) => row(p, "BN", myProjView && projectedAdds.includes(p), true, "b" + i, i === benchSorted.length - 1))}
                         </div>
                       </>
                     )}
