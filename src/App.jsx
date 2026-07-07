@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ds";
+const BUILD_TAG = "2026.06.28dt";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -14482,7 +14482,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     {p ? <PlayerPhoto sid={p.sid} pos={p.pos} size={22} /> : <span />}
                     {p ? (
                       <span style={{ minWidth: 0, overflow: "hidden" }}>
-                        <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><b style={{ fontSize: 11.5 }}>{p.name}</b>{p.rookie && <span style={{ fontSize: 7.5, fontWeight: 700, color: "#5FD0A8", marginLeft: 4 }}>R</span>}{p.inj && <span style={{ fontSize: 7.5, fontWeight: 700, color: "#F2655C", marginLeft: 4 }}>{p.inj}</span>{isProj && <span className="gold" style={{ fontSize: 7.5, fontWeight: 700, marginLeft: 4 }}>PROJ</span>}</span>
+                        <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <b style={{ fontSize: 11.5 }}>{p.name}</b>
+                          {p.rookie ? <span style={{ fontSize: 7.5, fontWeight: 700, color: "#5FD0A8", marginLeft: 4 }}>R</span> : null}
+                          {p.inj ? <span style={{ fontSize: 7.5, fontWeight: 700, color: "#F2655C", marginLeft: 4 }}>{p.inj}</span> : null}
+                          {isProj ? <span className="gold" style={{ fontSize: 7.5, fontWeight: 700, marginLeft: 4 }}>PROJ</span> : null}
+                        </span>
                         {p.role && <span className="mut" style={{ fontSize: 8.5, display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lowerKeepPos(p.role)}</span>}
                       </span>
                     ) : <span className="mut" style={{ fontStyle: "italic", fontSize: 10.5, gridColumn: dynH ? "3 / span 9" : "3 / span 8" }}>empty starter</span>}
