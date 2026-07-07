@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28dk";
+const BUILD_TAG = "2026.06.28dl";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -11812,51 +11812,51 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // with its verdict, keeping the projected board internally consistent with the advice the user acts on.
   const path = useMemo(() => {
     if (!rawPath.length) return rawPath;
-    const selId = mySelAdvice?.verdict?.id ?? null;
     const idx = rawPath.findIndex((s) => s && s.user);
     let next = rawPath;
-    if (selId != null && idx >= 0) {
+    if (idx >= 0) {
+      // Players already projected TAKEN before your pick (earlier steps in the path) — your pick can't be any
+      // of these, no matter what the recommendation says.
+      const goneBefore = new Set();
+      for (let i = 0; i < idx; i++) { if (rawPath[i] && rawPath[i].p) goneBefore.add(rawPath[i].p.id); }
+      // Your recommendation list, best-first: the selected-strategy verdict then its alternatives. We pick the
+      // FIRST one that isn't already projected gone — so if your top rec (e.g. Benson) is projected to go on the
+      // clock before you, your projected pick correctly falls to the next rec that can actually reach you,
+      // instead of showing the same player at two picks.
+      const recList = [mySelAdvice?.verdict, ...((mySelAdvice?.alts) || [])].filter(Boolean);
+      const chosen = recList.find((p) => p && !goneBefore.has(p.id)) || null;
       const cur = rawPath[idx];
-      if (!cur.p || cur.p.id !== selId) {
-        const selPlayer = players[selId];
-        if (selPlayer) {
-          next = rawPath.slice();
-          const cands5 = [{ p: selPlayer }, ...((cur.cands5 || []).filter((x) => x.p && x.p.id !== selId))].slice(0, 5);
-          next[idx] = { ...cur, p: selPlayer, cands5 };
-        }
+      if (chosen && (!cur.p || cur.p.id !== chosen.id)) {
+        next = rawPath.slice();
+        const cands5 = [{ p: chosen }, ...((cur.cands5 || []).filter((x) => x.p && x.p.id !== chosen.id))].slice(0, 5);
+        next[idx] = { ...cur, p: chosen, cands5 };
       }
     }
-    // De-dupe: a player can't be taken twice. The reconciled FIRST user pick (idx) is authoritative — the panel
-    // recommends him and he's genuinely available — so if an EARLIER projected step (another team) shows the
-    // same player, fix THAT earlier step, not your pick. For all other collisions, fall the later step to its
-    // next-best candidate.
-    if (next !== rawPath || true) {
-      const yourId = idx >= 0 && next[idx] && next[idx].p ? next[idx].p.id : null;
-      const seen = new Set();
-      // First pass: reserve your pick so earlier duplicates yield to it.
-      next = next.map((s, i) => {
-        if (!s || !s.p) return s;
-        if (i !== idx && s.p.id === yourId) {
-          // an earlier/other step collides with YOUR reconciled pick — swap that step to its next-best instead
-          const alt = (s.cands5 || []).map((x) => x.p).find((p) => p && p.id !== yourId && !seen.has(p.id));
-          if (alt) { seen.add(alt.id); return { ...s, p: alt }; }
-        }
+    // De-dupe the rest: no player appears twice. The reconciled user pick (idx) is authoritative — if an earlier
+    // OTHER-team step somehow shares that player, fix that earlier step; for any other collision, fall the later
+    // step to its next-best candidate.
+    const yourId = idx >= 0 && next[idx] && next[idx].p ? next[idx].p.id : null;
+    const seen = new Set();
+    next = next.map((s, i) => {
+      if (!s || !s.p) return s;
+      if (i !== idx && s.p.id === yourId) {
+        const alt = (s.cands5 || []).map((x) => x.p).find((p) => p && p.id !== yourId && !seen.has(p.id));
+        if (alt) { seen.add(alt.id); return { ...s, p: alt }; }
+      }
+      return s;
+    });
+    const seen2 = new Set();
+    next = next.map((s, i) => {
+      if (!s || !s.p) return s;
+      if (i === idx) { seen2.add(s.p.id); return s; }
+      if (seen2.has(s.p.id)) {
+        const alt = (s.cands5 || []).map((x) => x.p).find((p) => p && p.id !== yourId && !seen2.has(p.id));
+        if (alt) { seen2.add(alt.id); return { ...s, p: alt }; }
         return s;
-      });
-      // Second pass: general de-dupe (leave the protected user pick as-is).
-      const seen2 = new Set();
-      next = next.map((s, i) => {
-        if (!s || !s.p) return s;
-        if (i === idx) { seen2.add(s.p.id); return s; } // never override your reconciled pick
-        if (seen2.has(s.p.id)) {
-          const alt = (s.cands5 || []).map((x) => x.p).find((p) => p && p.id !== yourId && !seen2.has(p.id));
-          if (alt) { seen2.add(alt.id); return { ...s, p: alt }; }
-          return s;
-        }
-        seen2.add(s.p.id);
-        return s;
-      });
-    }
+      }
+      seen2.add(s.p.id);
+      return s;
+    });
     return next;
   }, [rawPath, mySelAdvice, players]);
   // What the draft tracker actually shows. Collapsed (default): the next 4 upcoming picks, then YOUR next
