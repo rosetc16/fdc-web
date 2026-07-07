@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28dd";
+const BUILD_TAG = "2026.06.28de";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3421,6 +3421,7 @@ function OutlookCard({ content }) {
           const rowsP = l.players || [];
           const headLabel = { rank: "Rk", name: "Player", team: "Tm", age: "Age", pts: "Proj", vbd: "VBD", role: "Role", bye: "Bye", value: "Value", dval: "Value", slot: "Slot", prob: l.probLabel || "Avail", adp: "ADP", pick: "Pick", pos: "Pos", drafter: "Drafted by", valread: "Read" };
           const gridCols = cols.map((c) => c === "name" ? "1fr" : c === "role" ? "1.1fr" : "auto").join(" ");
+          const hasPosCol = cols.includes("pos"); // if a dedicated Pos column shows the icon, don't double it on the name
           const vColor = vbdColor;
           return (
             <div key={i} style={{ marginBottom: 2 }}>
@@ -3436,7 +3437,7 @@ function OutlookCard({ content }) {
                   const firstCell = ci === 0, lastCell = ci === cols.length - 1;
                   const base = { fontSize: 11.5, padding: p.rec ? "5px 0" : "3px 0", borderBottom: ri < rowsP.length - 1 ? "1px solid var(--line2)" : "none", lineHeight: 1.2, ...recBg, ...(p.rec && firstCell ? { borderTopLeftRadius: 6, borderBottomLeftRadius: 6, paddingLeft: 5 } : {}), ...(p.rec && lastCell ? { borderTopRightRadius: 6, borderBottomRightRadius: 6, paddingRight: 5 } : {}) };
                   if (c === "rank") return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 800, color: rankTierColor(p.pos, p.posRank), textAlign: "right" }}>{p.pos}{p.posRank}</div>;
-                  if (c === "name") return <div key={ri + "-" + ci} style={{ ...base, fontWeight: 600, color: p.star ? "var(--gold)" : "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.star ? "★ " : ""}{p.pos ? <Dot pos={p.pos} /> : null}{p.name}</div>;
+                  if (c === "name") return <div key={ri + "-" + ci} style={{ ...base, fontWeight: 600, color: p.star ? "var(--gold)" : "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.star ? "★ " : ""}{p.pos && !hasPosCol ? <Dot pos={p.pos} /> : null}{p.name}</div>;
                   if (c === "prob") return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 700, textAlign: "right", color: p.prob == null ? "var(--mut)" : p.prob >= 65 ? "var(--green)" : p.prob >= 35 ? "var(--gold)" : "var(--red)" }}>{p.prob != null ? `${p.prob}%` : "—"}</div>;
                   if (c === "adp") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--mut)", textAlign: "right" }}>{p.adp != null ? (Math.round(p.adp * 10) / 10).toFixed(1) : "—"}</div>;
                   if (c === "team") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--mut)", textAlign: "left" }}>{p.team || "FA"}</div>;
@@ -11506,13 +11507,28 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     if (!simState || done || atOverall == null) return null;
     const strat = strategyOverride || strategy;
     const pickNum = atOverall + 1;
-    // players assumed off the board by the time of this pick = everything drafted so far, PLUS the engine's
-    // projected picks between now and atOverall (so "your next pick" reflects who'll likely be gone).
+    const isFuture = atOverall > picks.length;
+    // players already OFF the board (actually drafted). We do NOT hard-exclude players we merely PROJECT will
+    // be taken — that would blind us to fallers. Instead, for a FUTURE pick we down-gate by SURVIVAL ODDS:
+    // a player with a near-zero chance of reaching this pick (e.g. the guy on the clock now) shouldn't be
+    // recommended for a pick 4 slots away, while a genuine faller (high survival) stays eligible.
     const goneSet = new Set(draftedSet);
-    if (atOverall > picks.length) {
+    let survMap = null;
+    if (isFuture) {
       const proj = projectPath(players, sortedAdp, picks, userIdx, cfg, strat, null, true);
       for (const step of proj) { if (step.o < atOverall && step.p) goneSet.add(step.p.id); }
+      // survival probabilities to THIS pick, if the sims cover it (else a focused sim)
+      if (simState.nexts) { const si = simState.nexts.indexOf(atOverall); if (si >= 0 && simState.pct[si]) survMap = simState.pct[si]; }
+      if (!survMap) survMap = survivalAtPick(players, sortedAdp, picks, atOverall + 1, cfg, 400);
     }
+    // A player is a viable candidate for THIS pick if they're truly undrafted AND (for a future pick) have a
+    // non-trivial chance of still being there. Threshold is low so we keep real fallers but drop near-certain-
+    // gone players. If survival data is missing, fall back to the projection gate so we never over-recommend.
+    const survivesToPick = (id) => {
+      if (!isFuture) return true;
+      if (survMap && survMap[id] != null) return survMap[id] >= 8; // ≥8% chance to reach your pick
+      return !goneSet.has(id); // no sim data → use projection as the gate
+    };
     const myCounts = { QB: 0, RB: 0, WR: 0, TE: 0 };
     picks.forEach((pk, o) => { const pl = players[pk]; if (teamAt(o) === forTeam && pl && myCounts[pl.pos] != null) myCounts[pl.pos]++; });
     // Also count what this team ALREADY holds outside this draft — existing-roster players (rookie/dynasty/
@@ -11573,18 +11589,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         waitDetail[pos] = { now: null, fallback: null, fallback2: null, deltaPts: 0, deltaPts2: 0, nowSurvives: null, nowSurvives2: null };
       }
     });
-    // Candidate pool: rank among players ACTUALLY still on the board — NOT filtered by who we *project* will
-    // be gone by this pick. Excluding projected-gone players would blind the recommendation to exactly the
-    // best opportunities: a big-value faller (e.g. an ADP-138 player still there at pick 194) is the pick you
-    // most want to be told about. Survival odds are handled separately (the Avail% column / waitCost), so the
-    // pool should include every real, undrafted, legal option. We still window loosely by ADP so we don't rank
-    // 300 deep-bench names, widening progressively, with a best-available fallback so there's always a pick.
-    const realGone = draftedSet; // only players actually taken so far
-    let pool0 = sortedAdp.filter((p) => !realGone.has(p.id) && p.adp <= pickNum + 16).slice(0, 40);
-    if (pool0.length < 12) pool0 = sortedAdp.filter((p) => !realGone.has(p.id) && p.adp <= pickNum + 60).slice(0, 44);
+    // Candidate pool: rank among players ACTUALLY still on the board and — for a future pick — with a real
+    // chance of surviving to it (survivesToPick). This keeps big-value fallers eligible while dropping the
+    // player about to be taken on the clock, so we don't recommend the same guy for the current pick AND a
+    // later one. We still window loosely by ADP so we don't rank 300 deep-bench names.
+    const avail = (p) => !draftedSet.has(p.id) && survivesToPick(p.id);
+    let pool0 = sortedAdp.filter((p) => avail(p) && p.adp <= pickNum + 16).slice(0, 40);
+    if (pool0.length < 12) pool0 = sortedAdp.filter((p) => avail(p) && p.adp <= pickNum + 60).slice(0, 44);
     if (pool0.length < 12) {
       // pure best-available fallback (by value) — ignores the ADP window entirely
-      pool0 = sortedAdp.filter((p) => !realGone.has(p.id)).slice().sort((a, b) => (b.vbd ?? -99) - (a.vbd ?? -99)).slice(0, 44);
+      pool0 = sortedAdp.filter((p) => avail(p)).slice().sort((a, b) => (b.vbd ?? -99) - (a.vbd ?? -99)).slice(0, 44);
     }
     const pool = legalCands(pool0, myCounts, cfg);
     // The recommendation follows the given strategy (defaults to the selected one). We compute one for the
@@ -11727,13 +11741,27 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const idx = rawPath.findIndex((s) => s && s.user);
     if (idx < 0) return rawPath;
     const cur = rawPath[idx];
-    if (cur.p && cur.p.id === selId) return rawPath; // already consistent
-    const selPlayer = players[selId];
-    if (!selPlayer) return rawPath;
-    const next = rawPath.slice();
-    // put the recommended player first in the candidate list too, so hover alternatives stay coherent
-    const cands5 = [{ p: selPlayer }, ...((cur.cands5 || []).filter((x) => x.p && x.p.id !== selId))].slice(0, 5);
-    next[idx] = { ...cur, p: selPlayer, cands5 };
+    let next = rawPath;
+    if (!cur.p || cur.p.id !== selId) {
+      const selPlayer = players[selId];
+      if (!selPlayer) return rawPath;
+      next = rawPath.slice();
+      const cands5 = [{ p: selPlayer }, ...((cur.cands5 || []).filter((x) => x.p && x.p.id !== selId))].slice(0, 5);
+      next[idx] = { ...cur, p: selPlayer, cands5 };
+    }
+    // De-dupe: a player projected at your reconciled pick must not also appear at a LATER pick (he's taken).
+    // If a later step shows the same player, fall it back to that step's next-best candidate.
+    const seen = new Set();
+    next = next.map((s, i) => {
+      if (!s || !s.p) return s;
+      if (seen.has(s.p.id)) {
+        const alt = (s.cands5 || []).map((x) => x.p).find((p) => p && !seen.has(p.id));
+        if (alt) { seen.add(alt.id); return { ...s, p: alt }; }
+        return s;
+      }
+      seen.add(s.p.id);
+      return s;
+    });
     return next;
   }, [rawPath, mySelAdvice, players]);
   // What the draft tracker actually shows. Collapsed (default): the next 4 upcoming picks, then YOUR next
@@ -12686,7 +12714,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   { kind: "take", tone: d.frac == null ? "neutral" : d.frac <= 0.33 ? "good" : d.frac > 0.66 ? "bad" : "neutral", x: `${d.pos} — ${d.rk ? `${ordinal(d.rk.rank)} of ${d.rk.of} in the league` : "unranked"} · ${d.has}/${d.need || 0} starter${(d.need || 0) === 1 ? "" : "s"}${d.deficit > 0 ? ` · need ${Math.round(d.deficit)} more` : d.filled ? " · filled ✓" : ""}${d.pos === focusPos ? " · YOUR FOCUS" : ""}` },
                   ...(best ? [{ kind: "altheader", x: `Best ${d.pos} available` }, { kind: "playercard", p: best }, ...(scar && scar.isLastStarter ? [{ t: "Scarcity", x: `${best.name.split(" ").slice(-1)} may be the last startable-tier ${d.pos} — steep drop after him.` }] : [])] : []),
                   { kind: "altheader", x: `Your ${d.pos}s` },
-                  ...(plist.length ? [{ kind: "playertable", cols: ["rank", "name", "team", "age", "pts", "vbd"], players: plist }] : [{ t: "—", x: "No players here yet" }]),
+                  ...(plist.length ? [{ kind: "playertable", cols: ["rank", "name", "role", "age", "vbd"], players: plist }] : [{ t: "—", x: "No players here yet" }]),
                 ]);
               };
               return (
@@ -12987,7 +13015,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               const untilColor = untilMine == null ? "var(--mut)" : untilMine <= 1 ? "#F2655C" : untilMine <= 3 ? "var(--gold)" : "#5FD0A8";
               const moreTip = (e) => showTip(e, [
                 { kind: "take", tone: "neutral", x: "Upcoming picks — engine projection" },
-                { kind: "playertable", probLabel: "Picked", cols: ["pick", "prob", "name", "rank", "team", "pts"], players: upSource.slice(0, 20).map((s) => ({ ...s.p, pickNo: s.o + 1, prob: s.prob, rec: s.user, star: s.user })) },
+                { kind: "playertable", probLabel: "Picked", cols: ["pick", "pos", "name", "drafter", "adp", "vbd", "prob"], players: upSource.slice(0, 20).map((s) => ({ ...s.p, pickNo: s.o + 1, prob: s.prob, drafter: s.user ? "You" : (TEAM_NAMES[s.t] || "").split(" ")[0], rec: s.user, star: s.user })) },
               ]);
               return (
                 <div className="tickcard" style={{ padding: "7px 9px", minWidth: 0, height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }}>
@@ -13442,21 +13470,29 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
                 // ---- Summary: trends, runs, upcoming, needs, value gaps ----
                 const summaryBits = [];
-                if (onClockNow) summaryBits.push({ i: "ti-player-play", c: "var(--gold)", t: `You're on the clock at ${pickLabel(selOverall)}.` });
-                else if (isBoardPick) summaryBits.push({ i: "ti-player-play", c: "var(--blue)", t: `${TEAM_NAMES[onClock].split(" ")[0]} is on the clock; your next pick is ${myUpNext != null ? pickLabel(myUpNext) : "—"}.` });
-                else summaryBits.push({ i: "ti-eye", c: "var(--blue)", t: `Looking ahead to ${pickLabel(selOverall)} (${myUpcoming.findIndex((x)=>x.o===selOverall) >= 0 ? ordinal(myUpcoming.findIndex((x)=>x.o===selOverall)+1)+" of your remaining picks" : "upcoming"}).` });
-                if (run && run.count >= 3) summaryBits.push({ i: "ti-flame", c: "#F2655C", t: `${run.pos} run underway — ${run.count} of the last 8 picks. Tier is thinning.` });
-                // value gap: biggest VBD drop-off among the positions you might target
+                // Only surface NON-OBVIOUS reads (the pick number is already in the selector; the two recs are
+                // right below). Priority order — we cap at 3.
+                // 1) Positional run in progress (actionable: tiers thinning at a position).
+                if (run && run.count >= 3) summaryBits.push({ i: "ti-flame", c: "#F2655C", t: `${run.pos} run underway — ${run.count} of the last 8 picks. That tier is thinning.` });
+                // 2) A value cliff / last-of-tier at the recommended position.
                 const gapNote = (() => {
                   if (!topBal) return null; const scar = scarcityFor(topBal);
                   if (scar && scar.isLastStarter) return { i: "ti-alert-triangle", c: "#F2655C", t: `${topBal.name.split(" ").slice(-1)} may be the last startable-tier ${topBal.pos} — steep drop after him.` };
-                  if (scar && scar.drop != null && scar.drop >= 20) return { i: "ti-stairs-down", c: "var(--gold)", t: `Big value cliff at ${topBal.pos}: ~${scar.drop} VBD drop to the next one.` };
+                  if (scar && scar.drop != null && scar.drop >= 20) return { i: "ti-stairs-down", c: "var(--gold)", t: `Value cliff at ${topBal.pos}: ~${scar.drop} drop to the next one.` };
                   return null;
                 })();
                 if (gapNote) summaryBits.push(gapNote);
-                if (need.length) summaryBits.push({ i: "ti-clipboard-list", c: "var(--gold)", t: `Still need a starter at ${need.join(", ")}.` });
-                if (topBal && topBld && topBal.id !== topBld.id) summaryBits.push({ i: "ti-arrows-split", c: "var(--ink)", t: `Value leans ${topBal.name.split(" ").slice(-1)} (${topBal.pos}); your build leans ${topBld.name.split(" ").slice(-1)} (${topBld.pos}).` });
-                else if (topBal) summaryBits.push({ i: "ti-check", c: "#5FD0A8", t: `Value and your build agree: ${topBal.name.split(" ").slice(-1)}.` });
+                // 3) A genuine ADP faller sitting on the board (great value vs. where the market drafts him).
+                const fallerNote = (() => {
+                  const cand = [topBal, topBld, ...((balAdv && balAdv.alts) || [])].filter(Boolean);
+                  let best = null;
+                  for (const p of cand) { if (p.adp != null) { const fall = Math.round((selOverall + 1) - p.adp); if (fall >= 20 && (!best || fall > best.fall)) best = { p, fall }; } }
+                  return best ? { i: "ti-trending-down", c: "#5FD0A8", t: `${best.p.name.split(" ").slice(-1)} is a value here — ~${best.fall} picks past his ADP (${best.p.adp.toFixed(0)}).` } : null;
+                })();
+                if (fallerNote && summaryBits.length < 3) summaryBits.push(fallerNote);
+                // 4) Fallback if we somehow have room and nothing above fired: the biggest roster need.
+                if (summaryBits.length < 2 && need.length) summaryBits.push({ i: "ti-clipboard-list", c: "var(--gold)", t: `Biggest hole: still need a starter at ${need.join(", ")}.` });
+                const summaryBitsCapped = summaryBits.slice(0, 3);
 
                 // ---- Recommendation duo (headshots): balanced + my-build top pick ----
                 const recCard = (p, label, accent, both) => {
@@ -13597,7 +13633,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     </div>
                     {/* summary */}
                     <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 10, background: "rgba(242,182,60,.05)", borderLeft: "2px solid var(--gold)", padding: "7px 9px", borderRadius: "0 6px 6px 0" }}>
-                      {summaryBits.map((b, i) => (
+                      {summaryBitsCapped.map((b, i) => (
                         <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 11, lineHeight: 1.4 }}>
                           <i className={`ti ${b.i}`} style={{ fontSize: 12, color: b.c, marginTop: 1, flexShrink: 0 }} aria-hidden="true" />
                           <span>{b.t}</span>
