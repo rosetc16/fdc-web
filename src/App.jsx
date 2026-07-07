@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28dm";
+const BUILD_TAG = "2026.06.28dn";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13694,7 +13694,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const recTable = (adv, accent, label, sub) => {
                   if (!adv || !adv.verdict) return <div className="mut" style={{ fontSize: 11, padding: "4px 0" }}>Computing…</div>;
                   const full = [adv.verdict, ...(adv.alts || [])].filter(Boolean);
-                  const list = full.slice(0, 10); // always show the full top 10 — one model, no expand
+                  const list = full.slice(0, 5); // top 5 — gold line splits the top 3 recommended from the next 2
                   const cols = onClockNow ? "30px minmax(0,1fr) 74px 34px 30px 32px 44px" : "30px minmax(0,1fr) 78px 34px 30px 32px";
                   return (
                     <div>
@@ -13714,7 +13714,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           return (
                             <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: cols, gap: 6, alignItems: "center", fontSize: 11, padding: "3px 4px", borderRadius: 5, background: i === 0 ? "rgba(242,182,60,.10)" : "transparent", borderBottom: dividerAfter ? "2px solid var(--gold)" : i < list.length - 1 ? "1px solid var(--line2)" : "none", cursor: "help" }}>
                               <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
-                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}><b style={{ color: i === 0 ? accent : "var(--ink)" }}>{i === 0 ? "★ " : ""}{p.name}</b></span>
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}><Dot pos={p.pos} /><b style={{ color: i === 0 ? accent : "var(--ink)" }}>{i === 0 ? "★ " : ""}{p.name}</b></span>
                               <span className="mut" style={{ fontSize: 8.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textTransform: "capitalize" }}>{roleShort}</span>
                               <span className="num" style={{ fontWeight: 700, color: vbdColor(vShow), fontSize: 10.5, textAlign: "right" }}>{(vShow > 0 ? "+" : "") + Math.round(vShow)}</span>
                               <span className="num mut" style={{ fontSize: 9.5, textAlign: "right" }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
