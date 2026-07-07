@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28df";
+const BUILD_TAG = "2026.06.28dg";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3033,7 +3033,10 @@ function CoachTour({ steps, onExit, onStepTab, optOut, onOptOut }) {
         if (tries++ < 24) { setTimeout(measure, 60); }
         return;
       }
-      if (el.scrollIntoView) { try { el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" }); } catch (e) { el.scrollIntoView(); } }
+      if (el.scrollIntoView) { try { el.scrollIntoView({ behavior: "smooth", block: step.scrollTop ? "start" : "center", inline: "center" }); } catch (e) { el.scrollIntoView(); } }
+      // For steps that want the page pinned to the very top (so the highlighted element and everything above it
+      // is visible), also scroll the window itself up.
+      if (step.scrollTop) { try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch (e) { window.scrollTo(0, 0); } }
       setRect(rectOf(el));
       setRect2(el2 ? rectOf(el2) : null);
       if (tries++ < 10) setTimeout(measure, 90);
@@ -11161,10 +11164,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     { sel: null, title: "Welcome to your draft room", body: tourConnected
         ? "This league is connected to Sleeper, so picks sync automatically — you watch the board update and make your picks in Sleeper. This quick tour walks through the room top to bottom; hit Next to move along, or Dismiss anytime. Tip: you can hover almost anything for a deeper explanation."
         : "Quick heads-up: this league isn't connected to a platform, so you'll enter each pick manually as they happen (a player's Pick button, or search + Enter). This tour walks through the room top to bottom; hit Next to move along, or Dismiss anytime. Tip: you can hover almost anything for a deeper explanation." },
-    { sel: '[data-tour="decision"]', tab: "hub", title: "Your decision — start here", body: "The heart of the room. For the pick you select (top-right dropdown), it gives you a Balanced (best value) and a My-build (roster-tilted) recommendation with alternatives, plus a short read on runs, value cliffs, and fallers. Hover any player for the full reasoning; the Draft button makes the pick." },
-    { sel: '[data-tour="pool"]', tab: "hub", title: "The player list", body: "Every available player, sortable by any column. ADP is the market; RANK is colored by strength (green = elite, red = deep). Search up top, filter by position, and draft with the Pick button on the left." },
-    { sel: '[data-tour="picks"]', sel2: '[data-tour="nextpick"]', tab: "hub", title: "Past, current & upcoming picks", body: "Across the top strip: Last picks (with steal/reach reads), who's On the clock now with the projected pick, and your Next picks. Hover any of them for player detail and the engine's expected board." },
-    { sel: '[data-tour="howdoing"]', sel2: '[data-tour="pulse"]', tab: "hub", title: "How you're doing + Draft pulse", body: "How you're doing: your build lane, position-by-position rank, and your Focus (biggest move). Draft pulse: the best available at each position with a live read on supply — who's scarce, who's deep, and any run in progress." },
+    { sel: '[data-tour="decision"]', tab: "hub", scrollTop: true, title: "Your decision — start here", body: "The heart of the room. For the pick you select (top-right dropdown), it gives you a Balanced (best value) and a My-build (roster-tilted) recommendation with alternatives, plus a short read on runs, value cliffs, and fallers. Hover any player for the full reasoning; the Draft button makes the pick." },
+    { sel: '[data-tour="pool"]', tab: "hub", scrollTop: true, title: "The player list", body: "Every available player, sortable by any column. ADP is the market; RANK is colored by strength (green = elite, red = deep). Search up top, filter by position, and draft with the Pick button on the left." },
+    { sel: '[data-tour="picks"]', tab: "hub", title: "Past, current & upcoming picks", body: "This group tracks the flow of the draft: Last picks (with steal/reach reads), who's On the clock now with the projected pick, and your Next picks. Hover any of them for player detail and the engine's expected board." },
+    { sel: '[data-tour="howdoing"]', tab: "hub", title: "How you're doing + Draft pulse", body: "How you're doing: your build lane, position-by-position rank, and your Focus (biggest move). Draft pulse: the best available at each position with a live read on supply — who's scarce, who's deep, and any run in progress." },
     { sel: '[data-tour="views"]', tab: "hub", title: "View & tool buttons", body: "Above the list: switch between Value & info and Projected stats; Available only hides drafted players; Show my team is your live roster; Trends shows how your other drafts in this format are moving (including platform ADP); My ranks lets you enter your own board and your platform's ADP; Trade picks records pick swaps; and Columns customizes what you see." },
     { sel: '[data-tour="tab-myteam"]', tab: "myteam", title: "Team analysis", body: "Click the Team analysis tab (highlighted): your starting lineup, where you rank at each position vs. the league, positional depth, and bye-week outlook. Hover the bars and grades for the players behind them." },
     { sel: '[data-tour="tab-board"]', tab: "board", title: "Draft board", body: "Click the Draft board tab (highlighted) to see every team's picks, current and projected. Flip between Current and Projected, and toggle Steals (green) and Reaches (red)." },
@@ -11194,6 +11197,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [benchExpand, setBenchExpand] = useState(false); // summary Your-team: show full bench vs top 5
   const [depthPos, setDepthPos] = useState("ALL"); // depth charts: filter to one position to shorten tiles
   const [depthHiStarters, setDepthHiStarters] = useState(true); // depth charts: highlight available startable-caliber players inline
+  const [recExpanded, setRecExpanded] = useState({}); // "Your decision" rec tables expanded to top-10 (keyed by label)
   const stickyHeadRef = useRef(null);
   const [stickyHeadH, setStickyHeadH] = useState(0); // measured height of the sticky ticker+tabbar header
   const [capWarn, setCapWarn] = useState(null);
@@ -11523,17 +11527,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     if (isFuture) {
       const proj = projectPath(players, sortedAdp, picks, userIdx, cfg, strat, null, true);
       for (const step of proj) { if (step.o < atOverall && step.p) goneSet.add(step.p.id); }
-      // survival probabilities to THIS pick, if the sims cover it (else a focused sim)
+      // Use survival probabilities ONLY if the main sims already cover this pick (free — already computed).
+      // We deliberately do NOT run a fresh survivalAtPick here: it's a 400-sim full-board run, and adviceFor is
+      // called several times per render (current pick + your build/balanced + decision panel), so a per-call
+      // sim turned the hub into a lock-up. When sims don't cover the pick we fall back to the cheap projection
+      // gate (goneSet) below instead.
       if (simState.nexts) { const si = simState.nexts.indexOf(atOverall); if (si >= 0 && simState.pct[si]) survMap = simState.pct[si]; }
-      if (!survMap) survMap = survivalAtPick(players, sortedAdp, picks, atOverall + 1, cfg, 400);
     }
     // A player is a viable candidate for THIS pick if they're truly undrafted AND (for a future pick) have a
-    // non-trivial chance of still being there. Threshold is low so we keep real fallers but drop near-certain-
-    // gone players. If survival data is missing, fall back to the projection gate so we never over-recommend.
+    // non-trivial chance of still being there. When we have survival odds, gate on those (keeps fallers, drops
+    // near-certain-gone players). Otherwise fall back to the projection: a player projected gone before this
+    // pick is excluded, EXCEPT genuine ADP-fallers (still on the board well past their ADP) which we keep.
     const survivesToPick = (id) => {
       if (!isFuture) return true;
       if (survMap && survMap[id] != null) return survMap[id] >= 8; // ≥8% chance to reach your pick
-      return !goneSet.has(id); // no sim data → use projection as the gate
+      if (!goneSet.has(id)) return true; // projection thinks he's still around
+      const pl = players[id];
+      return !!(pl && pl.adp != null && (atOverall + 1) - pl.adp >= 12); // keep clear fallers even if projected gone
     };
     const myCounts = { QB: 0, RB: 0, WR: 0, TE: 0 };
     picks.forEach((pk, o) => { const pl = players[pk]; if (teamAt(o) === forTeam && pl && myCounts[pl.pos] != null) myCounts[pl.pos]++; });
@@ -11611,7 +11621,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // selected strategy AND a second for "My build", shown side by side in the tracker.
     const scoreOf = (p) => userScore(p, myCounts, dem, strat, cfg.sf, pickNum) + 0.6 * Math.max(0, waitCost[p.pos]);
     const ranked = pool.slice().sort((a, b) => scoreOf(b) - scoreOf(a));
-    const verdict = ranked[0]; const alts = ranked.slice(1, 8);
+    const verdict = ranked[0]; const alts = ranked.slice(1, 10);
     const impacts = {};
     [verdict, ...alts].forEach((c) => { if (!c) return; const pr = projectAll(players, sortedAdp, picks, userIdx, cfg, strat, c.id); impacts[c.id] = { pts: pr.pts[userIdx], rank: pr.rank[userIdx] }; });
     const recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
@@ -11897,6 +11907,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const nameToId = useMemo(() => { const m = {}; players.forEach((p) => { m[normName(p.name)] = p.id; }); return m; }, [players]);
   const [syncState, setSyncState] = useState({ status: null, lastAt: null, error: null });
   const firstLiveSyncDone = useRef(false); // first live pull after load trusts Sleeper's authoritative pick count
+  // Refs mirror the latest picks / local-ahead so the 2s live-sync loop can read current values WITHOUT nesting
+  // state setters inside a reducer (which caused a render storm). Kept in sync on every render — cheap.
+  const picksRef = useRef(picks);
+  const localAheadRef = useRef(localAhead);
+  picksRef.current = picks;
+  localAheadRef.current = localAhead;
   const sleeperLive = connectedPlatform === "sleeper" && draftMode === "sleeper" && !!(cfg.connect && cfg.connect.leagueId) && hasBackend;
   // One-time fetch of team names + Sleeper usernames — runs even when the draft is COMPLETE (the live
   // sync below stops once `done`, so without this a finished league would never load owner names).
@@ -11967,58 +11983,49 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         setLiveSlots((prev) => { const next = JSON.stringify(slotTeam); return prev && JSON.stringify(prev) === next ? prev : slotTeam; });
         if (d.pickDeadlineMs && d.serverNowMs) setLiveClock({ deadlineMs: d.pickDeadlineMs, timerSec: d.pickTimerSec || 0, skewMs: Date.now() - d.serverNowMs });
         else setLiveClock(d.pickTimerSec ? { deadlineMs: null, timerSec: d.pickTimerSec, skewMs: 0 } : null);
-        setPicks((prev) => {
-          if (hypoMode) { if (mapped.length > hypoBase) setLivePending({ picks: mapped }); return prev; }
+        // Decide the new board (and any local-ahead/conflict changes) from the CURRENT snapshot, with NO nested
+        // state setters inside a reducer (that caused a render loop / lockup). We read the latest picks via ref,
+        // compute plain values, then call each setter once.
+        if (hypoMode) {
+          if (mapped.length > hypoBase) setLivePending({ picks: mapped });
+        } else {
+          const prev = picksRef.current || [];
           if (!firstLiveSyncDone.current) {
             firstLiveSyncDone.current = true;
-            if (mapped.length !== prev.length || !mapped.every((id, i) => id === prev[i])) { setLocalAhead(0); return mapped; }
-            return prev;
-          }
-          // ---- FAIL-SAFE for manual picks in a connected draft ----
-          // You may "Pick" locally even when connected (e.g. Sleeper is slow/unreachable). Those picks live at
-          // the END of `prev`, past Sleeper's real count (tracked by localAhead). When Sleeper catches up:
-          //   • if it CONFIRMS your local pick at that slot → it's no longer "ahead", fold it in (localAhead--)
-          //   • if it shows a DIFFERENT player at that slot → real conflict: keep Sleeper's truth, flag it so
-          //     the UI can offer "revert to live", and clear the local-ahead bookkeeping.
-          if (localAhead > 0) {
+            if (mapped.length !== prev.length || !mapped.every((id, i) => id === prev[i])) { setLocalAhead(0); setPicks(mapped); }
+          } else if (localAheadRef.current > 0) {
+            // ---- FAIL-SAFE for manual picks in a connected draft ----
+            const la = localAheadRef.current;
             const sleeperLen = mapped.length;
-            const localBase = prev.length - localAhead; // where your local picks began (Sleeper's count then)
-            // Did Sleeper reach into your locally-picked slots?
+            const localBase = prev.length - la; // where your local picks began (Sleeper's count then)
             if (sleeperLen > localBase) {
-              // compare the overlapping local slots against Sleeper
               let conflictAt = -1;
-              for (let i = localBase; i < Math.min(sleeperLen, prev.length); i++) {
-                if (mapped[i] !== prev[i]) { conflictAt = i; break; }
-              }
+              for (let i = localBase; i < Math.min(sleeperLen, prev.length); i++) { if (mapped[i] !== prev[i]) { conflictAt = i; break; } }
               if (conflictAt >= 0) {
                 const localName = players[prev[conflictAt]] ? players[prev[conflictAt]].name : "your pick";
                 const liveName = players[mapped[conflictAt]] ? players[mapped[conflictAt]].name : "a different player";
                 setLiveConflict({ slot: conflictAt, localName, liveName });
                 setLocalAhead(0);
-                return mapped; // trust Sleeper; UI shows a revert/ack control
+                setPicks(mapped);
+              } else {
+                const stillAhead = Math.max(0, prev.length - sleeperLen);
+                if (stillAhead !== la) setLocalAhead(stillAhead);
+                const merged = mapped.concat(prev.slice(sleeperLen));
+                if (!(merged.length === prev.length && merged.every((id, i) => id === prev[i]))) setPicks(merged);
               }
-              // no conflict — Sleeper confirmed (some of) your picks; recompute how many are still ahead
-              const stillAhead = Math.max(0, prev.length - sleeperLen);
-              setLocalAhead(stillAhead);
-              // keep your still-ahead local picks appended past Sleeper's confirmed list
-              const merged = mapped.concat(prev.slice(sleeperLen));
-              return merged.length === prev.length && merged.every((id, i) => id === prev[i]) ? prev : merged;
+            } else {
+              const merged = mapped.concat(prev.slice(mapped.length));
+              if (!(merged.length === prev.length && merged.every((id, i) => id === prev[i]))) setPicks(merged);
             }
-            // Sleeper still behind your local picks — keep everything (Sleeper's confirmed head + your tail)
-            const merged = mapped.concat(prev.slice(mapped.length));
-            return merged.length === prev.length && merged.every((id, i) => id === prev[i]) ? prev : merged;
-          }
-          if (mapped.length < prev.length) {
-            // A shorter pull with no local picks is usually a transient glitch — ignore to avoid flicker, but
-            // accept a clean small prefix shrink (a real commissioner undo).
+          } else if (mapped.length < prev.length) {
             const isPrefix = mapped.every((id, i) => id === prev[i]);
             const notGlitch = mapped.length >= prev.length - 5;
-            if (isPrefix && notGlitch) return mapped;
-            return prev;
+            if (isPrefix && notGlitch) setPicks(mapped);
+          } else {
+            const same = mapped.length === prev.length && mapped.every((id, i) => id === prev[i]);
+            if (!same) setPicks(mapped);
           }
-          const same = mapped.length === prev.length && mapped.every((id, i) => id === prev[i]);
-          return same ? prev : mapped;
-        });
+        }
         // occasional heavy refresh for names / trades
         if (sinceHeavy++ % 15 === 0 && sinceHeavy > 1) heavyRefresh();
       } catch (e) {
@@ -12732,7 +12739,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         <div className="hairline" style={{ background: "var(--panel2)" }}>
           <div className="decision-grid" style={{ display: "flex", gap: 10, padding: "8px 12px", alignItems: "stretch" }}>
             {/* ---- GROUP A: decisions & outlook ---- */}
-            <div className="decision-group-a" style={{ display: "grid", gridTemplateColumns: "minmax(190px,0.9fr) minmax(210px,1.05fr)", gap: 8, flex: "1.05 1 0", minWidth: 0 }}>
+            <div data-tour="howdoing" className="decision-group-a" style={{ display: "grid", gridTemplateColumns: "minmax(190px,0.9fr) minmax(210px,1.05fr)", gap: 8, flex: "1.05 1 0", minWidth: 0 }}>
             {/* ===== ZONE 1: HOW YOU'RE DOING (table) ===== */}
             {(() => {
               const laneMap = { rebuild: { t: "Rebuild", c: "#5FD0A8", i: "ti-seedling" }, winnow: { t: "Win-now", c: "#F2655C", i: "ti-flame" }, balanced: { t: "Balanced", c: "var(--gold)", i: "ti-scale" }, undecided: { t: "Forming…", c: "var(--mut)", i: "ti-loader" } };
@@ -12941,7 +12948,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <div aria-hidden="true" className="decision-divider" style={{ flex: "0 0 auto", width: 2, alignSelf: "stretch", margin: "2px 3px", borderRadius: 2, background: "linear-gradient(180deg,transparent,var(--gold) 10%,var(--gold) 90%,transparent)" }} />
 
             {/* ---- GROUP B: the picks ---- */}
-            <div className="decision-group-b" style={{ display: "grid", gridTemplateColumns: "minmax(155px,0.8fr) minmax(170px,0.9fr) minmax(175px,0.92fr)", gap: 8, flex: "1.4 1 0", minWidth: 0 }}>
+            <div data-tour="picks" className="decision-group-b" style={{ display: "grid", gridTemplateColumns: "minmax(155px,0.8fr) minmax(170px,0.9fr) minmax(175px,0.92fr)", gap: 8, flex: "1.4 1 0", minWidth: 0 }}>
 
             {/* ===== ZONE 2: LAST PICKS ===== */}
             {(() => {
@@ -13281,7 +13288,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   everything below is view & action controls. The 100%-width flex item forces a line break. */}
               <div style={{ flexBasis: "100%", height: 0 }} />
               <div style={{ flexBasis: "100%", borderTop: "1px solid var(--line)", margin: "2px 0 4px" }} />
-              <span className="mut" data-tour="views" style={{ fontSize: 9.5, letterSpacing: ".06em", textTransform: "uppercase", alignSelf: "center", marginRight: 2 }}>View</span>
+              <div data-tour="views" style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", flexBasis: "100%" }}>
+              <span className="mut" style={{ fontSize: 9.5, letterSpacing: ".06em", textTransform: "uppercase", alignSelf: "center", marginRight: 2 }}>View</span>
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }} title="ADP always shows on the left. This switches the rest of the columns between value/info (rankings, projections, demographics, availability) and projected stats.">
                 <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: boardMode === "info" ? "var(--gold)" : "transparent", color: boardMode === "info" ? "#151002" : "var(--ink)", fontWeight: boardMode === "info" ? 700 : 400 }} onClick={() => setBoardMode("info")} title="Rankings, projections, value, demographics & availability">Value &amp; info</button>
                 <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: boardMode === "stats" ? "var(--gold)" : "transparent", color: boardMode === "stats" ? "#151002" : "var(--ink)", fontWeight: boardMode === "stats" ? 700 : 400 }} onClick={() => setBoardMode("stats")} title="Projected passing / rushing / receiving stat lines">Projected stats</button>
@@ -13294,6 +13302,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <button className="btn btn-mini" data-tour="myranks" onClick={() => setRanksWarn(true)} title="My Ranks (your personal board → My ADP & Blend) and Platform Ranks (your platform's ADP → the Edge column)"><i className="ti ti-list-numbers" style={{ fontSize: 13 }} aria-hidden="true" /> My ranks</button>
               <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — who traded which pick to whom. The board updates instantly."><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks</button>
               <button className="btn btn-mini" data-tour="columns" onClick={() => setColMenu((m) => !m)}><i className="ti ti-columns" style={{ fontSize: 13 }} aria-hidden="true" /> Columns</button>
+              </div>
               {colMenu && (
                 <div onClick={() => setColMenu(false)} style={{ position: "fixed", inset: 0, zIndex: 29 }} />
               )}
@@ -13587,16 +13596,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const recTable = (adv, accent, label, sub) => {
                   if (!adv || !adv.verdict) return <div className="mut" style={{ fontSize: 11, padding: "4px 0" }}>Computing…</div>;
                   const full = [adv.verdict, ...(adv.alts || [])].filter(Boolean);
-                  const list = full.slice(0, 3); // top pick + 2 alternatives — keep it short to match the hub player list
-                  const moreN = Math.min(5, Math.max(0, full.length - list.length));
+                  const expanded = !!recExpanded[label];
+                  const list = expanded ? full.slice(0, 10) : full.slice(0, 3); // top 3, or full top-10 when expanded
+                  const canExpand = full.length > 3;
                   const cols = onClockNow ? "30px minmax(0,1fr) 74px 34px 30px 32px 44px" : "30px minmax(0,1fr) 78px 34px 30px 32px";
-                  const moreTip = moreN > 0 ? (e) => showTip(e, [
-                    { kind: "take", tone: "neutral", x: `${label} — next ${Math.min(5, moreN)} option${Math.min(5, moreN) === 1 ? "" : "s"}` },
-                    { kind: "playertable", probLabel: "Avail", cols: ["rank", "pos", "name", "role", dynasty ? "dval" : "vbd", "adp", "prob"], players: full.slice(3, 8).map((p) => ({ ...p, prob: survOf(p) })) },
-                  ]) : undefined;
+                  const toggle = () => setRecExpanded((m) => ({ ...m, [label]: !m[label] }));
                   return (
                     <div>
-                      <div style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".05em", color: accent, marginBottom: 2, display: "flex", alignItems: "center", gap: 5 }}>{label}{sub && <span className="mut" style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, fontSize: 9 }}>· {sub}</span>}{moreTip && <span onMouseEnter={moreTip} onMouseLeave={hideTip} style={{ marginLeft: "auto", fontSize: 8.5, color: "var(--gold)", cursor: "help", fontWeight: 600, textTransform: "none", letterSpacing: 0 }}>+{moreN} more ⌄</span>}</div>
+                      <div style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".05em", color: accent, marginBottom: 2, display: "flex", alignItems: "center", gap: 5 }}>{label}{sub && <span className="mut" style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, fontSize: 9 }}>· {sub}</span>}{canExpand && <span onClick={toggle} style={{ marginLeft: "auto", fontSize: 8.5, color: "var(--gold)", cursor: "pointer", fontWeight: 700, textTransform: "none", letterSpacing: 0 }}>{expanded ? "Show top 3 ⌃" : "Show top 10 ⌄"}</span>}</div>
                       {/* header row */}
                       <div style={{ display: "grid", gridTemplateColumns: cols, gap: 6, alignItems: "center", fontSize: 7.5, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, padding: "0 4px 2px" }}>
                         <span>Rank</span><span>Player</span><span title="Team role">Role</span><span title={dynasty ? "Value (age-weighted)" : "Value above replacement"} style={{ textAlign: "right" }}>{dynasty ? "Val" : "VBD"}</span><span title="Average draft position" style={{ textAlign: "right" }}>ADP</span><span title="Chance still available at this pick" style={{ textAlign: "right" }}>Avail</span>{onClockNow && <span />}
@@ -13607,8 +13614,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           const openTip = (e) => showTip(e, makeOutlook(p, sims, false, { pickNow: pickNowN, dynasty, run, needShort: need.includes(p.pos) ? 1 : 0, scarcity: scarcityFor(p) }));
                           const roleShort = p.role ? lowerKeepPos(p.role).replace(/[\/·].*$/, "").trim() : "—";
                           const vShow = dynasty ? (p.value ?? p.vbd) : p.vbd;
+                          // A gold divider between the top 3 (recommended) and the rest, when expanded.
+                          const dividerAfter = expanded && i === 2 && list.length > 3;
                           return (
-                            <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: cols, gap: 6, alignItems: "center", fontSize: 11, padding: "3px 4px", borderRadius: 5, background: i === 0 ? "rgba(242,182,60,.10)" : "transparent", borderBottom: i < list.length - 1 ? "1px solid var(--line2)" : "none", cursor: "help" }}>
+                            <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: cols, gap: 6, alignItems: "center", fontSize: 11, padding: "3px 4px", borderRadius: 5, background: i === 0 ? "rgba(242,182,60,.10)" : "transparent", borderBottom: dividerAfter ? "2px solid var(--gold)" : i < list.length - 1 ? "1px solid var(--line2)" : "none", cursor: "help" }}>
                               <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
                               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}><b style={{ color: i === 0 ? accent : "var(--ink)" }}>{i === 0 ? "★ " : ""}{p.name}</b></span>
                               <span className="mut" style={{ fontSize: 8.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textTransform: "capitalize" }}>{roleShort}</span>
@@ -13620,6 +13629,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           );
                         })}
                       </div>
+                      {expanded && list.length > 3 && <div style={{ fontSize: 8, color: "var(--mut)", textAlign: "center", paddingTop: 3 }}>Above the gold line: top 3 recommended · below: next {list.length - 3}</div>}
                     </div>
                   );
                 };
