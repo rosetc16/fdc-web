@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28eg";
+const BUILD_TAG = "2026.06.28eh";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1640,16 +1640,22 @@ function buildPlayers(cfg) {
   // We store the multiplier on p.ageMult and the composite on p.value; p.vbd stays RAW.
   const isDynasty = cfg.type === "dynasty" || cfg.type === "keeper";
   if (isDynasty) {
+    // Dynasty age curve, recalibrated against superflex-dynasty consensus (FantasyPros). The prior curve
+    // peaked too early and declined too fast, which over-taxed PRIME elite players: a 27-yo elite WR
+    // (Jefferson/Lamb) was docked ~28% and a 30-yo elite QB (Mahomes) ~16%, sinking them far below their real
+    // SF-dynasty value. QBs age especially well (real dynasty keeps them top-15 into their early 30s), and WRs
+    // hold their prime longer than the old curve assumed. So: later peaks, gentler decline, higher floors —
+    // while still rewarding genuine youth (young studs still lift) and still fading the truly old.
     const AGE = {
-      RB: { peak: 24, decline: 0.24, floor: 0.06 },  // steepest — RBs age worst; 30+ craters
-      WR: { peak: 25, decline: 0.15, floor: 0.10 },  // 31-32 WRs slide a long way in dynasty
-      TE: { peak: 25, decline: 0.11, floor: 0.16 },
-      QB: { peak: 28, decline: 0.085, floor: 0.16 }, // ages best, but 34+ still drops hard
+      RB: { peak: 24, decline: 0.20, floor: 0.07 },  // RBs still age worst, but a touch less brutal
+      WR: { peak: 26, decline: 0.10, floor: 0.14 },  // peak later, decline much gentler — prime WRs hold value
+      TE: { peak: 26, decline: 0.09, floor: 0.18 },
+      QB: { peak: 30, decline: 0.055, floor: 0.24 }, // QBs age best; prime runs to ~30, slow decline after
     };
     const youthBump = (pos, age) => {
       const cfgA = AGE[pos]; if (!cfgA) return 1;
       const yearsYoung = Math.max(0, cfgA.peak - age);
-      return 1 + Math.min(0.34, yearsYoung * (pos === "RB" ? 0.085 : 0.06));
+      return 1 + Math.min(0.30, yearsYoung * (pos === "RB" ? 0.075 : 0.05));
     };
     const ageMult = (pos, age) => {
       const a = AGE[pos]; if (!a || !age || age <= 0) return 1;
@@ -1746,7 +1752,7 @@ function buildPlayers(cfg) {
         // in dynasty, strongest for the top rookie QBs and fading down the rookie QB class.
         if (isDynasty && p.rookie) {
           const rkRank = rookieQbRankById.get(p.id) ?? 0; // 0 = the class's rookie QB1
-          v += 24 * Math.pow(0.80, rkRank); // rookie QB1 ≈ +24, fading down → top rookie QB lands ~mid-board (SF ~50-70)
+          v += 16 * Math.pow(0.78, rkRank); // rookie QB1 ≈ +16, QB2 ≈ +12, QB3 ≈ +10 — enough to clear streamers, not top-6
         }
       } else if (!sf && p.pos === "QB" && !rookieOnly) {
         // 1QB leagues: a QB's raw VBD is high but his DRAFT value is low (you start one, replacement is
