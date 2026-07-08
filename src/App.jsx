@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28eb";
+const BUILD_TAG = "2026.06.28ec";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1568,7 +1568,15 @@ function buildPlayers(cfg) {
   // synthetic SF/TE transform on top (that double-counts and overweights QBs). We only transform when the
   // loaded ADP format differs from this league's format (e.g. SF league on a 1QB-baseline pool).
   const loadedFmt = (typeof LIVE_PACK_FORMAT !== "undefined" && LIVE_PACK_FORMAT) ? LIVE_PACK_FORMAT : "";
-  const loadedIsSF = /\|SF\|/.test(loadedFmt);
+  const loadedFmtIsSF = /\|SF\|/.test(loadedFmt);
+  // A format LABEL of SF isn't enough — the loaded ADP must actually PRICE QBs like a superflex room, or the
+  // synthetic SF lift below gets wrongly suppressed and QBs stay buried at their 1QB values (the "QBs at ADP
+  // 40 in a superflex draft" bug). We treat the loaded ADP as genuinely SF-correct only when the raw board
+  // already has an early QB — i.e. some QB sits inside the first ~2 rounds. If the best QB is still going in
+  // round 3+, the loaded "SF" data is too thin to trust for QBs, so we fall through and apply the lift.
+  const bestQbRaw = qbRawSorted.length ? qbRawSorted[0] : 999;
+  const loadedSFPricesQBs = loadedFmtIsSF && bestQbRaw <= (2 * (cfg.teams || 12)); // top QB inside ~round 2
+  const loadedIsSF = loadedSFPricesQBs;
   const loadedIsTEP = /\|TEP\|/.test(loadedFmt);
   const adpTransform = (raw, pos) => {
     let a = raw;
