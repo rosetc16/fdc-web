@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28dy";
+const BUILD_TAG = "2026.06.28dz";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13123,30 +13123,52 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
                     {recent.length ? recent.map(({ pk, o }) => {
                       const p = players[pk]; if (!p) return null;
-                      const spotGap = p.adp != null ? Math.round((o + 1) - p.adp) : 0;
-                      const val = spotGap >= 8 ? { t: "steal", c: "#5FD0A8" } : spotGap <= -8 ? { t: "reach", c: "#F2655C" } : { t: "fair", c: "var(--mut)" };
+                      const spotGap = p.adp != null ? Math.round((o + 1) - p.adp) : null; // + = fell past ADP (value), − = taken early (reach)
+                      // Graded value read, five tiers, so the hover answers "what was this pick worth?" at a glance.
+                      const val = spotGap == null ? { t: "no ADP", grade: "fair", c: "var(--mut)" }
+                        : spotGap >= 20 ? { t: "big steal", grade: "steal", c: "#5FD0A8" }
+                        : spotGap >= 8 ? { t: "steal", grade: "steal", c: "#5FD0A8" }
+                        : spotGap <= -20 ? { t: "big reach", grade: "reach", c: "#F2655C" }
+                        : spotGap <= -8 ? { t: "reach", grade: "reach", c: "#F2655C" }
+                        : { t: "fair value", grade: "fair", c: "#E7C24B" };
                       const forTeam = teamAt(o);
                       const mine = forTeam === userIdx;
+                      const teamLabel = mine ? "You" : (TEAM_NAMES[forTeam] || `Team ${forTeam + 1}`);
                       // why THIS team took him: their need at the position + the value read
                       const teamNeed = (() => {
                         const tc = { QB: 0, RB: 0, WR: 0, TE: 0 };
                         picks.forEach((qk, qo) => { if (teamAt(qo) === forTeam) { const qp = players[qk]; if (qp && tc[qp.pos] != null) tc[qp.pos]++; } });
                         const rq = REQ_F(cfg.sf);
-                        return Math.max(0, (rq[p.pos] || 0) - ((tc[p.pos] || 0) - (mine ? 0 : 0)));
+                        return Math.max(0, (rq[p.pos] || 0) - (tc[p.pos] || 0));
                       })();
-                      const rationale = val.t === "steal" ? "fell past ADP — value grab" : val.t === "reach" ? "reached ahead of ADP" : teamNeed > 0 ? `filled a ${p.pos} need` : `added ${p.pos} depth`;
+                      const rationale = val.grade === "steal" ? `fell ${Math.abs(spotGap)} spots past ADP — value grab`
+                        : val.grade === "reach" ? `taken ${Math.abs(spotGap)} spots ahead of ADP`
+                        : teamNeed > 0 ? `filled a ${p.pos} need` : `added ${p.pos} depth`;
                       const demo = `${p.age ? `age ${p.age}` : ""}${p.age && p.role ? " · " : ""}${p.role ? lowerKeepPos(p.role) : ""}`;
+                      const vbdN = Math.round(p.vbd || 0);
+                      const valN = Math.round((p.value ?? p.vbd) || 0);
                       const tip = (e) => showTip(e, [
                         { kind: "photo", sid: p.sid || null, name: p.name, team: p.team, pos: p.pos, posRank: p.posRank },
-                        { kind: "take", tone: val.t === "steal" ? "good" : val.t === "reach" ? "bad" : "neutral", x: `${pickLabel(o)} · ${mine ? "You" : TEAM_NAMES[forTeam]} — ${rationale}${demo ? ` (${demo})` : ""}` },
-                        { kind: "kvtable", items: [{ k: "Pos rank", v: `${p.pos}${p.posRank}`, c: rankTierColor(p.pos, p.posRank) }, { k: "Proj pts", v: `${Math.round(p.pts || 0)}` }, { k: "VBD", v: `${p.vbd > 0 ? "+" : ""}${Math.round(p.vbd)}`, c: vbdColor(p.vbd) }, ...(dynasty ? [{ k: "Value", v: `${(p.value ?? p.vbd) > 0 ? "+" : ""}${Math.round(p.value ?? p.vbd)}`, c: vbdColor(p.value ?? p.vbd) }] : []), { k: "ADP", v: p.adp != null ? p.adp.toFixed(0) : "—" }, { k: "vs ADP", v: `${spotGap > 0 ? "+" : ""}${spotGap}`, c: val.c }, { k: "Value read", v: val.t, c: val.c }] },
+                        // Headline: the value verdict, big and color-coded — this is the "what was this pick worth?" answer.
+                        { kind: "take", tone: val.grade === "steal" ? "good" : val.grade === "reach" ? "bad" : "neutral", x: `${val.t.toUpperCase()} — ${rationale}` },
+                        // Sub-line: who took him, at what pick, and their read (need/depth).
+                        { kind: "take", tone: "neutral", x: `${pickLabel(o)} · ${teamLabel}${demo ? ` — ${demo}` : ""}` },
+                        { kind: "kvtable", items: [
+                          { k: "Pos rank", v: `${p.pos}${p.posRank ?? "—"}`, c: rankTierColor(p.pos, p.posRank) },
+                          { k: "Proj pts", v: `${Math.round(p.pts || 0)}` },
+                          { k: "VBD", v: `${vbdN > 0 ? "+" : ""}${vbdN}`, c: vbdColor(p.vbd) },
+                          ...(dynasty ? [{ k: "Dyn value", v: `${valN > 0 ? "+" : ""}${valN}`, c: vbdColor(p.value ?? p.vbd) }] : []),
+                          { k: "ADP", v: p.adp != null ? p.adp.toFixed(0) : "—" },
+                          { k: "Pick vs ADP", v: spotGap == null ? "—" : `${spotGap > 0 ? "+" : ""}${spotGap}`, c: val.c },
+                          { k: "Value read", v: val.t, c: val.c },
+                        ] },
                       ]);
                       return (
                         <div key={o} onMouseEnter={tip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "30px 1fr auto 34px", gap: "0 5px", alignItems: "center", fontSize: 11, cursor: "help", padding: "1px 0" }}>
                           <span className="num mut" style={{ fontSize: 8.5 }}>{pickLabel(o)}</span>
                           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={p.pos} /><b style={{ fontSize: 10.5 }}>{p.name}</b></span>
-                          <span className="mut" style={{ fontSize: 8.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 52, color: mine ? "var(--gold)" : "var(--mut)", fontWeight: mine ? 700 : 400 }}>{mine ? "You" : TEAM_NAMES[forTeam].split(" ")[0]}</span>
-                          <span style={{ fontSize: 8.5, fontWeight: 700, color: val.c, textAlign: "right" }}>{val.t}</span>
+                          <span className="mut" style={{ fontSize: 8.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 52, color: mine ? "var(--gold)" : "var(--mut)", fontWeight: mine ? 700 : 400 }}>{mine ? "You" : (TEAM_NAMES[forTeam] || `Team ${forTeam + 1}`).split(" ")[0]}</span>
+                          <span title={val.t} style={{ fontSize: 8.5, fontWeight: 700, color: val.c, textAlign: "right" }}>{val.grade === "steal" ? "steal" : val.grade === "reach" ? "reach" : "fair"}</span>
                         </div>
                       );
                     }) : <span className="mut" style={{ fontSize: 10 }}>No picks yet</span>}
