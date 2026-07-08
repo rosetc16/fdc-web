@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28dx";
+const BUILD_TAG = "2026.06.28dy";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2369,12 +2369,19 @@ function reachPenalty(c, pickNum) {
   return gap * 2.2 * earlyFactor;
 }
 function needMult(counts, pos, round, dem, R) {
-  const need = Math.max(0, dem[pos] - counts[pos]);
-  // Late in the draft, starting demand is long since filled and real drafters take best-available / upside
-  // rather than chasing positional need — so the need signal fades out over the back third of the draft.
+  const have = counts[pos] || 0;
+  const need = Math.max(0, dem[pos] - have);
+  // Late in the draft, base starting demand is long since filled and real drafters take best-available /
+  // upside rather than chasing starter need — so the *positive* need signal fades over the back third.
   const lateFade = Math.max(0.25, Math.min(1, (R - round + 1) / (R * 0.6)));
-  if (need <= 0.05) return pos === "QB" || pos === "TE" ? 0.4 : 0.8;
-  return 1 + 0.5 * Math.min(need, 2) * (0.7 + 0.5 * (round / R)) * lateFade;
+  if (need > 0.05) return 1 + 0.5 * Math.min(need, 2) * (0.7 + 0.5 * (round / R)) * lateFade;
+  // Need is filled at this position. Beyond that, real managers keep adding a *little* depth but sharply back
+  // off a position they're already heavily stacked at — nobody drafts their 9th WR when a positional hole is
+  // staring at them. `over` = how many bodies past demand they already carry. The multiplier decays with each
+  // extra body, and decays faster for the single-slot positions (QB/TE) where you rarely need a 4th/5th.
+  const over = have - dem[pos];
+  const perBody = pos === "QB" || pos === "TE" ? 0.30 : 0.24; // how hard each extra body is discounted
+  return Math.max(0.06, 0.9 * Math.pow(1 - perBody, Math.max(0, over)));
 }
 // Position "run" detection: when a position is going hot, real drafters pile on — but this effect is strong
 // EARLY (a WR run in round 3 is real herd behavior) and weak LATE (round 20 is best-available lottery tickets,
