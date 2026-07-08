@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ec";
+const BUILD_TAG = "2026.06.28ed";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1814,6 +1814,24 @@ function buildPlayers(cfg) {
         const step = Math.max(stepLo, Math.min(stepHi, base + rel * mul));
         pos += step;
       });
+      // SCALE NORMALIZATION. The variable step above (esp. dynasty's wider clamp) opens nice RELATIVE gaps at
+      // value cliffs, but it lets the ABSOLUTE numbers drift: the average step exceeds 1, so the Nth-ranked
+      // player ends up at ADP well beyond pick N (e.g. best-available reading ~18 at pick 9). ADP should track
+      // pick position — the #k player by market order should sit near pick k. We blend each player's spaced
+      // position with his raw ordinal rank so the board's ABSOLUTE numbers hug pick position (ordinal), while
+      // the value-gap spacing still nudges cliffs a little wider. Anchoring on the ordinal keeps pick N ≈ ADP N.
+      if (ranked.length > 1) {
+        const maxPos = ranked[ranked.length - 1].adp || ranked.length;
+        const span = maxPos - 1 || 1;
+        const GAP_INFLUENCE = 0.25; // 0 = pure ordinal (ADP==rank), 1 = pure value-gap spacing (the old drift)
+        ranked.forEach((p, i) => {
+          const ordinal = i + 1;                             // 1,2,3… = exact pick position
+          const spaced = 1 + (p.adp - 1) * ((ranked.length - 1) / span); // gap spacing rescaled to the pool length
+          const norm = ordinal * (1 - GAP_INFLUENCE) + spaced * GAP_INFLUENCE;
+          p.adp = Math.round(norm * 10) / 10;
+          p.adpMarket = p.adp;
+        });
+      }
     }
     // players outside the value pool (shouldn't be many) sink below
     ps.forEach((p) => { if (!valPool.includes(p)) { p.adp = ranked.length + 50; } });
