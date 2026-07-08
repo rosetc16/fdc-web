@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ef";
+const BUILD_TAG = "2026.06.28eg";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -11262,6 +11262,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [inRoomRanks, setInRoomRanks] = useState(null); // when set, an in-draft PERSONAL ranking editor (array of ids)
   const [platEditor, setPlatEditor] = useState(null); // when set, the Platform Ranks editor: array of {id, adp}
   const [needMode, setNeedMode] = useState("strength"); // strength | filled
+  const [needSort, setNeedSort] = useState({ key: "order", dir: 1 }); // league-needs table sort: key + direction (1 asc / -1 desc)
   const [customPick, setCustomPick] = useState("");
   // The pick (overall number) the hub "Avail" column reports survival for. Defaults to your NEXT pick;
   // a dropdown lets you choose any remaining pick (e.g. one you traded for). null = your next pick.
@@ -14226,28 +14227,61 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 </div>
               </div>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                {(() => {
+                  // Sort indicator + click handler for each header. Clicking a column sorts by it; clicking the
+                  // active column again flips direction. Default sort is by draft order (who picks next).
+                  const arrow = (key) => needSort.key === key ? (needSort.dir === 1 ? " ▲" : " ▼") : "";
+                  const onSort = (key, defDir) => setNeedSort((s) => s.key === key ? { key, dir: -s.dir } : { key, dir: defDir });
+                  const hStyle = (extra) => ({ cursor: "pointer", userSelect: "none", paddingBottom: 4, ...extra });
+                  return (
                 <thead><tr>
-                  <th style={{ textAlign: "left", color: "var(--mut)", fontWeight: 500, paddingBottom: 4 }}>Team</th>
-                  {POS.map((pos) => <th key={pos} style={{ color: POS_COLOR[pos], fontWeight: 600, width: 38, paddingBottom: 4 }}>{pos}</th>)}
-                  <th style={{ color: "var(--mut)", fontWeight: 600, width: 42, paddingBottom: 4, borderLeft: "1px solid var(--line)" }}>Total</th>
+                  <th onClick={() => onSort("team", 1)} style={hStyle({ textAlign: "left", color: needSort.key === "team" ? "var(--ink)" : "var(--mut)", fontWeight: 500 })}>Team{arrow("team")}</th>
+                  <th onClick={() => onSort("order", 1)} title="Draft order — each team's NEXT pick (overall number). Sort to see who's up soonest." style={hStyle({ color: needSort.key === "order" ? "var(--ink)" : "var(--mut)", fontWeight: 600, width: 44, borderRight: "1px solid var(--line)" })}>Next{arrow("order")}</th>
+                  {POS.map((pos) => <th key={pos} onClick={() => onSort(pos, -1)} style={hStyle({ color: POS_COLOR[pos], fontWeight: 600, width: 38 })}>{pos}{arrow(pos)}</th>)}
+                  <th onClick={() => onSort("total", -1)} style={hStyle({ color: needSort.key === "total" ? "var(--ink)" : "var(--mut)", fontWeight: 600, width: 42, borderLeft: "1px solid var(--line)" })}>Total{arrow("total")}</th>
                 </tr></thead>
+                  );
+                })()}
                 <tbody>
-                  {TEAM_NAMES.map((n, i) => {
-                    const counts = { QB: 0, RB: 0, WR: 0, TE: 0 };
-                    const best = { QB: null, RB: null, WR: null, TE: null };
-                    const posPlayersRow = { QB: [], RB: [], WR: [], TE: [] };
-                    const drafted = picks.filter((pk, o) => teamAt(o) === i).length;
-                    picks.forEach((pk, o) => { if (teamAt(o) === i) { const p = players[pk]; if (p && counts[p.pos] != null) { counts[p.pos]++; if (best[p.pos] == null || p.vbd > best[p.pos]) best[p.pos] = p.vbd; posPlayersRow[p.pos].push(p); } } });
-                    POS.forEach((pos) => posPlayersRow[pos].sort((a, b) => (b.pts || 0) - (a.pts || 0)));
-                    const remaining = ROUNDS - drafted;
-                    return (
+                  {(() => {
+                    // Build a row model per team, including sortable values, then sort by the chosen column.
+                    const totalOverall = totalOf(cfg);
+                    const nextPickOf = (ti) => { for (let o = picks.length; o < totalOverall; o++) if (teamAt(o) === ti) return o + 1; return Infinity; };
+                    const rowsModel = TEAM_NAMES.map((n, i) => {
+                      const counts = { QB: 0, RB: 0, WR: 0, TE: 0 };
+                      const posPlayersRow = { QB: [], RB: [], WR: [], TE: [] };
+                      const drafted = picks.filter((pk, o) => teamAt(o) === i).length;
+                      picks.forEach((pk, o) => { if (teamAt(o) === i) { const p = players[pk]; if (p && counts[p.pos] != null) { counts[p.pos]++; posPlayersRow[p.pos].push(p); } } });
+                      POS.forEach((pos) => posPlayersRow[pos].sort((a, b) => (b.pts || 0) - (a.pts || 0)));
+                      const totalN = counts.QB + counts.RB + counts.WR + counts.TE;
+                      const rank = (proj && proj.rank && proj.rank[i] != null) ? proj.rank[i] : null;
+                      // per-position sort value: in "strength" mode use league tercile (0 strong → 2 weak, so
+                      // invert so higher = stronger); in "filled" mode use the raw count.
+                      const posSortVal = {};
+                      POS.forEach((pos) => { posSortVal[pos] = needMode === "strength" ? (2 - (posRel[i] ? posRel[i][pos] : 1)) : counts[pos]; });
+                      return { i, n, counts, posPlayersRow, drafted, totalN, rank, next: nextPickOf(i), posSortVal };
+                    });
+                    const { key, dir } = needSort;
+                    rowsModel.sort((a, b) => {
+                      let av, bv;
+                      if (key === "team") { av = (a.n || "").toLowerCase(); bv = (b.n || "").toLowerCase(); return av < bv ? -dir : av > bv ? dir : 0; }
+                      else if (key === "order") { av = a.next; bv = b.next; }
+                      else if (key === "total") { av = a.rank != null ? -a.rank : a.totalN; bv = b.rank != null ? -b.rank : b.totalN; }
+                      else { av = a.posSortVal[key]; bv = b.posSortVal[key]; }
+                      return (av - bv) * dir || (a.next - b.next);
+                    });
+                    const remainingOf = (drafted) => ROUNDS - drafted;
+                    return rowsModel.map(({ i, n, counts, posPlayersRow, drafted, totalN, rank, next }) => {
+                      const remaining = remainingOf(drafted);
+                      return (
                       <tr key={i}>
                         <td style={{ padding: "2px 4px 2px 0", color: i === userIdx ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 110 }}>{i === userIdx ? (n || "Your team") : n}</td>
+                        <td style={{ padding: 2, borderRight: "1px solid var(--line)", textAlign: "center" }}>
+                          <span className="num" title={next === Infinity ? "No picks remaining" : `Next on the clock at overall pick ${next}`} style={{ fontSize: 11, fontWeight: 700, color: i === userIdx ? "var(--gold)" : "var(--mut)" }}>{next === Infinity ? "—" : next}</span>
+                        </td>
                         {POS.map((pos) => {
                           let lvl, tipTxt;
                           if (needMode === "strength") {
-                            // League-RELATIVE strength (same as the Teams tab): top third green, middle
-                            // amber, bottom third red — so the hub and Teams tab always agree.
                             lvl = posRel[i] ? posRel[i][pos] : 1;
                             tipTxt = lvl === 0 ? `top third of the league` : lvl === 1 ? `middle of the league` : `bottom third of the league`;
                           } else {
@@ -14259,7 +14293,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           }
                           const bg = lvl === 0 ? "rgba(124,217,178,0.18)" : lvl === 1 ? "rgba(242,182,60,0.18)" : "rgba(242,101,92,0.22)";
                           const col = lvl === 0 ? "var(--green)" : lvl === 1 ? "var(--gold)" : "var(--red)";
-                          // Rich hover: who this team has at this position (sorted best-first), with tier colors.
                           const plist = posPlayersRow[pos] || [];
                           const cellTip = (e) => showTip(e, [
                             { kind: "take", tone: lvl === 0 ? "good" : lvl === 1 ? "neutral" : "bad", x: `${i === userIdx ? "Your team" : (n || `Team ${i + 1}`)} — ${pos} (${tipTxt})` },
@@ -14268,15 +14301,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           return <td key={pos} style={{ padding: 2 }}><div className="needcell num" style={{ background: bg, color: col, cursor: "help" }} onMouseEnter={cellTip} onMouseLeave={hideTip}>{counts[pos]}</div></td>;
                         })}
                         {(() => {
-                          // Total quantity, colored by the team's OVERALL standing in the league (their projected
-                          // finish rank) rather than an average of per-position terciles — the tercile average
-                          // clusters almost everyone in the middle (all-yellow), which isn't useful. Ranking by
-                          // finish gives a true green→red spread across the field.
-                          const totalN = counts.QB + counts.RB + counts.WR + counts.TE;
-                          const rank = (proj && proj.rank && proj.rank[i] != null) ? proj.rank[i] : null;
                           let tCol, tBg, tTitle;
                           if (rank != null) {
-                            const frac = (rank - 1) / Math.max(1, TEAMS - 1); // 0 = 1st, 1 = last
+                            const frac = (rank - 1) / Math.max(1, TEAMS - 1);
                             if (frac <= 0.33) { tCol = "var(--green)"; tBg = "rgba(124,217,178,0.14)"; }
                             else if (frac <= 0.66) { tCol = "var(--gold)"; tBg = "rgba(242,182,60,0.14)"; }
                             else { tCol = "var(--red)"; tBg = "rgba(242,101,92,0.16)"; }
@@ -14287,8 +14314,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           return <td style={{ padding: 2, borderLeft: "1px solid var(--line)" }}><div className="needcell num" title={tTitle} style={{ background: tBg, color: tCol, fontWeight: 800 }}>{totalN}</div></td>;
                         })()}
                       </tr>
-                    );
-                  })}
+                      );
+                    });
+                  })()}
                 </tbody>
               </table>
               <div className="mut" style={{ fontSize: 10.5, marginTop: 6 }}>{needMode === "strength" ? "Color = quality × quantity. A full but weak position still shows amber/red." : "Color = whether starting slots are filled, regardless of quality."}</div>
