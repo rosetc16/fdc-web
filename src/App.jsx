@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28dz";
+const BUILD_TAG = "2026.06.28ea";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13109,10 +13109,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
             {/* ===== ZONE 2: LAST PICKS ===== */}
             {(() => {
+              const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
               const recent = picks.slice(-6).map((pk, i) => ({ pk, o: picks.length - Math.min(6, picks.length) + i })).reverse();
               const moreTip = (e) => showTip(e, [
                 { kind: "take", tone: "neutral", x: `Recent picks — value read (steal / reach)` },
-                { kind: "playertable", cols: ["pick", "pos", "name", "drafter", "adp", "vbd", "valread"], players: picks.slice(-22).map((pk, i) => { const oo = Math.max(0, picks.length - Math.min(22, picks.length)) + i; const pp = players[pk]; if (!pp) return null; const gap = pp.adp != null ? Math.round((oo + 1) - pp.adp) : 0; const vr = gap >= 8 ? { t: "steal", c: "#5FD0A8" } : gap <= -8 ? { t: "reach", c: "#F2655C" } : { t: "fair", c: "var(--mut)" }; const mine = teamAt(oo) === userIdx; return { ...pp, pickNo: oo + 1, drafter: mine ? "You" : TEAM_NAMES[teamAt(oo)], valRead: vr, rec: mine, star: mine }; }).filter(Boolean).reverse() },
+                { kind: "playertable", cols: ["pick", "pos", "name", "drafter", "adp", "vbd", "valread"], players: picks.slice(-22).map((pk, i) => { const oo = Math.max(0, picks.length - Math.min(22, picks.length)) + i; const pp = players[pk]; if (!pp) return null; const gap = pp.adp != null ? Math.round((oo + 1) - pp.adp) : 0; const vr = gap >= 8 ? { t: "steal", c: "#5FD0A8" } : gap <= -8 ? { t: "reach", c: "#F2655C" } : { t: "fair", c: "var(--mut)" }; const mine = teamAt(oo) === userIdx; return { ...pp, pickNo: oo + 1, drafter: mine ? "You" : (TEAM_NAMES[teamAt(oo)] || `Team ${teamAt(oo) + 1}`), valRead: vr, rec: mine, star: mine }; }).filter(Boolean).reverse() },
               ]);
               return (
                 <div className="tickcard" style={{ padding: "7px 9px", display: "flex", flexDirection: "column", minWidth: 0, height: "100%", boxSizing: "border-box" }}>
@@ -13195,10 +13196,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 <div className="tickcard clock" style={{ borderColor: isYou ? "var(--gold)" : "#33476B", padding: "8px 10px", cursor: curTip ? "help" : "default", height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }} onMouseEnter={curTip} onMouseLeave={curTip ? hideTip : undefined}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
                     <span style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: isYou ? "var(--gold)" : "var(--mut)", fontWeight: 700 }}>On the clock · {pickLabel(picks.length)}</span>
-                    {connected && (liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? <span className="num mut" style={{ fontSize: 9 }}>no timer</span> : clock <= 0 ? <span className="num" style={{ fontSize: 9, color: "var(--red)", fontWeight: 700 }}>overdue</span> : <span className="num" style={{ fontSize: 10.5, color: clock <= 15 ? "var(--red)" : "var(--ink)", fontWeight: 700, background: clock <= 15 ? "rgba(242,101,92,.14)" : "rgba(255,255,255,.05)", padding: "0px 5px", borderRadius: 4 }}>{fmtClock(clock)}</span>)}
+                    {connected && (liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? <span className="num mut" style={{ fontSize: 13 }}>no timer</span> : clock <= 0 ? <span className="num" style={{ fontSize: 20, color: "var(--red)", fontWeight: 800, letterSpacing: ".02em" }}>overdue</span> : <span className="num" style={{ fontSize: 22, lineHeight: 1, color: clock <= 15 ? "var(--red)" : "var(--ink)", fontWeight: 800, letterSpacing: ".02em", background: clock <= 15 ? "rgba(242,101,92,.16)" : "rgba(255,255,255,.06)", padding: "3px 9px", borderRadius: 6, fontVariantNumeric: "tabular-nums" }}>{fmtClock(clock)}</span>)}
                   </div>
                   <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 3 }}>
-                    <span style={{ fontSize: 14, fontWeight: 800, color: isYou ? "var(--gold)" : "var(--ink)" }}>{isYou ? "YOU" : TEAM_NAMES[onClock].split(" ")[0]}</span>
+                    <span style={{ fontSize: 14, fontWeight: 800, color: isYou ? "var(--gold)" : "var(--ink)" }}>{isYou ? "YOU" : (TEAM_NAMES[onClock] || `Team ${onClock + 1}`).split(" ")[0]}</span>
                     <span className="mut" style={{ fontSize: 9 }}>overall {picks.length + 1}</span>
                     {isYou && <span style={{ marginLeft: "auto", fontSize: 8.5, fontWeight: 700, color: "var(--gold)", background: "rgba(242,182,60,.14)", padding: "1px 6px", borderRadius: 4, textTransform: "uppercase", letterSpacing: ".04em" }}>Your pick</span>}
                   </div>
