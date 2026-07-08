@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ee";
+const BUILD_TAG = "2026.06.28ef";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1705,7 +1705,11 @@ function buildPlayers(cfg) {
     // lift must be PROPORTIONAL to the QB's own value — a flat bump makes replacement QBs leapfrog
     // elite RB/WR (e.g. Jaxson Dart over Bijan), which is wrong. Elite QBs get a real boost; marginal
     // QBs get little. Tuned so an SF board interleaves top QBs with top RB/WR like the market does.
-    const qbs = valPool.filter((p) => p.pos === "QB").sort((a, b) => (b.vbd ?? -50) - (a.vbd ?? -50));
+    // QB ordering for the SF premium. In DYNASTY, rank by the age-weighted composite `value`, NOT raw VBD —
+    // a rookie/young franchise QB's year-1 VBD understates his dynasty worth, and ranking by VBD buries him
+    // below aging streamers (the "Mendoza behind Geno/Bryce Young" bug). Redraft still ranks by VBD (win-now).
+    const qbSortVal = (p) => isDynasty ? (p.value != null ? p.value : (p.vbd ?? -50)) : (p.vbd ?? -50);
+    const qbs = valPool.filter((p) => p.pos === "QB").sort((a, b) => qbSortVal(b) - qbSortVal(a));
     const qbRankById = new Map(); qbs.forEach((p, i) => qbRankById.set(p.id, i)); // 0 = QB1
     // Position rank within RBs (by value) — used to lift elite bell-cow RBs toward where the human
     // market actually drafts them. VBD alone undervalues elite RBs vs how people really draft (a proven
@@ -1715,6 +1719,11 @@ function buildPlayers(cfg) {
     const rbRankById = new Map(); rbs.forEach((p, i) => rbRankById.set(p.id, i)); // 0 = RB1
     const tes = valPool.filter((p) => p.pos === "TE").sort((a, b) => (b.vbd ?? -50) - (a.vbd ?? -50));
     const teRankById = new Map(); tes.forEach((p, i) => teRankById.set(p.id, i)); // 0 = TE1
+    // Rookie-QB ordering (dynasty prospect lift). Rank rookie QBs among themselves by composite dynasty value
+    // (age-weighted), so the class's top rookie QB gets the biggest franchise-asset lift and it fades down.
+    const rookieQbs = valPool.filter((p) => p.pos === "QB" && p.rookie)
+      .sort((a, b) => ((b.value != null ? b.value : (b.vbd ?? -50)) - (a.value != null ? a.value : (a.vbd ?? -50))));
+    const rookieQbRankById = new Map(); rookieQbs.forEach((p, i) => rookieQbRankById.set(p.id, i)); // 0 = rookie QB1
     const effVal = (p) => {
       let v = p.vbd != null ? p.vbd : -50;
       if (sf && p.pos === "QB") {
@@ -1726,10 +1735,19 @@ function buildPlayers(cfg) {
         // TRUE 2-QB leagues push QBs even higher: every team MUST start two dedicated QBs, so the top ~24 all
         // carry hard starting value (a superflex 2nd slot could go to a RB/WR; a 2-QB slot cannot). We raise
         // the base AND flatten the decay so QB2-QB12 stay elevated deeper down the position.
-        const rank = qbRankById.get(p.id) ?? 99; // 0 = QB1
+        const rank = qbRankById.get(p.id) ?? 99; // 0 = QB1 (dynasty: by composite value, so rookies rank fairly)
         const decay = Math.pow(twoQb ? 0.90 : 0.86, rank); // 2QB decays slower → more QBs stay valuable
         const base = (isDynasty ? 78 : 52) * (twoQb ? 1.35 : 1); // 2QB lifts the whole QB tier higher
         v += base * decay;
+        // ROOKIE QB dynasty prospect lift. A rookie QB's year-1 projection (hence VBD) badly understates his
+        // dynasty worth — in SF dynasty a drafted-in rookie franchise QB goes ~50-70 overall, not ~140. The
+        // rank-based lift above already helps (we rank QBs by dynasty value in dynasty), but a rookie's raw VBD
+        // floor is so low that even a good rank leaves him short. Add an explicit prospect floor for rookie QBs
+        // in dynasty, strongest for the top rookie QBs and fading down the rookie QB class.
+        if (isDynasty && p.rookie) {
+          const rkRank = rookieQbRankById.get(p.id) ?? 0; // 0 = the class's rookie QB1
+          v += 24 * Math.pow(0.80, rkRank); // rookie QB1 ≈ +24, fading down → top rookie QB lands ~mid-board (SF ~50-70)
+        }
       } else if (!sf && p.pos === "QB" && !rookieOnly) {
         // 1QB leagues: a QB's raw VBD is high but his DRAFT value is low (you start one, replacement is
         // cheap). We do NOT try to fix that with a VBD penalty here — that distorts ordering vs RB/WR. Instead
@@ -2095,6 +2113,15 @@ const demand = (sf) => {
   };
 };
 const REQ_F = (sf) => ({ QB: SPEC.QB, RB: SPEC.RB, WR: SPEC.WR, TE: SPEC.TE });
+// SF-aware effective starter requirement, callable with just the sf flag (mirrors EFF_REQ but doesn't need a
+// full cfg). In superflex/2QB you realistically START two QBs (the QB slot + the SUPER/OP slot), so "how many
+// QB starters do I still owe" must count TWO — otherwise the engine thinks a single QB fills your needs and
+// never applies QB scarcity pressure in a superflex room (the "passed a 2-3x-VBD QB for a WR at pick 58" bug).
+const REQ_EFF = (sf) => {
+  const base = { QB: SPEC.QB, RB: SPEC.RB, WR: SPEC.WR, TE: SPEC.TE };
+  if (sf || (SPEC.SUPER || 0) > 0) base.QB += Math.max(1, SPEC.SUPER || 1);
+  return base;
+};
 // Effective starter requirement for POSITION-STRENGTH scoring. The dedicated REQ_F counts only fixed slots,
 // but a superflex/OP slot is realistically a second QB slot (most managers start two QBs), and the FLEX slot
 // is a shared RB/WR/TE spot. So for "how strong is this team at QB", superflex should count TWO QB starters —
@@ -2159,7 +2186,7 @@ function legalCands(cands, counts, cfg) {
   return ok.length ? ok : cands;
 }
 function marginalVbd(c, counts, sf) {
-  const req = REQ_F(sf);
+  const req = REQ_EFF(sf); // SF-aware: counts the superflex slot as a 2nd required QB starter
   if (counts[c.pos] < req[c.pos]) return c.vbd;
   const G = genericSlots();
   const superOnly = SPEC.SUPER || 0;
@@ -2207,6 +2234,12 @@ function setBBStacks(qbTeams, pcTeams) { BB_QB_TEAMS = qbTeams || new Set(); BB_
 let BYE_LOAD = {};        // pos -> { week: count }
 let BYE_COUNTS = {};      // pos -> how many at that position the team already has
 function setByeLoad(load, counts) { BYE_LOAD = load || {}; BYE_COUNTS = counts || {}; }
+// SCARCITY PREMIUM (per position). Set by adviceFor from the sims' wait-cost picture: when a needed, scarce
+// position (esp. QB in superflex, TE in TE-premium) is projected to largely disappear before your NEXT pick
+// — a big points drop-off to the fallback AND low survival of the best-now player — we boost that position
+// NOW so a high-leverage run doesn't freeze you out of it. Keyed by position; 0 = no scarcity pressure.
+let SCARCITY_PREM = { QB: 0, RB: 0, WR: 0, TE: 0 };
+function setScarcityPrem(m) { SCARCITY_PREM = m || { QB: 0, RB: 0, WR: 0, TE: 0 }; }
 function isDynastyCfg(cfg) { return !!(cfg && (cfg.type === "dynasty" || cfg.type === "keeper")); }
 // Small bye-stack penalty: if this candidate would land on a bye week where the team ALREADY has one or more
 // starters at his position, and the team already has real depth there, nudge his score down a touch. Talent
@@ -2244,7 +2277,7 @@ function bbBonus(c) {
 // gap between a needed-but-lower-value starter and a redundant higher-value flex body, without ignoring value
 // entirely (a truly elite flex player still wins).
 function emptyStarterPremium(c, counts, sf) {
-  const req = REQ_F(sf);
+  const req = REQ_EFF(sf); // SF-aware: an unfilled superflex QB slot counts as an owed starter
   const owed = Math.max(0, (req[c.pos] || 0) - (counts[c.pos] || 0)); // required starters still unfilled at c.pos
   if (owed <= 0) return 0;
   // scarcer positions (QB in SF, TE) get a bigger premium since replacements are harder to find later
@@ -2263,7 +2296,10 @@ function windowFit(c, lane, dynasty) {
   // WIN-NOW we lean the other way (take the proven producer). We add a fraction of that gap so a 21-yo at a
   // premium spot can overtake a 30-yo with better raw VBD.
   const assetGap = (c.value != null && c.vbd != null) ? (c.value - c.vbd) : 0;
-  if (lane === "rebuild") return Math.max(0, 27 - age) * 4 + (c.rookie ? 14 : 0) - Math.max(0, age - 29) * 5 + Math.max(0, assetGap) * 0.55;
+  // Value floor: a rebuild chases young ASSETS, not merely young bodies — fade the youth premium as a player
+  // falls below replacement so a worse-by-every-metric youngster can't leapfrog a better, barely-older one.
+  const vFloor = c.vbd != null ? Math.max(0, Math.min(1, 1 + c.vbd / 30)) : 1;
+  if (lane === "rebuild") return (Math.max(0, 27 - age) * 2.5) * vFloor + (c.rookie ? 10 : 0) - Math.max(0, age - 29) * 5 + Math.max(0, assetGap) * 0.45;
   if (lane === "winnow") return Math.max(0, age - 24) * 2 - (c.rookie ? 8 : 0) - Math.max(0, assetGap) * 0.25;
   return 0;
 }
@@ -2353,13 +2389,31 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build) {
 
   let buildScore = mvUse + needBonus - overStack - flexEarly - qbDead
     + emptyStarterPremium(c, counts, sf)
+    + (SCARCITY_PREM[c.pos] || 0)
     + windowFit(c, lane, dynasty)
     + adpValue
     - reachPenalty(c, pickNum);
-  // dynasty rebuild/win-now youth-or-vet tilt (on top of windowFit's gentler nudge)
+  // dynasty rebuild/win-now youth-or-vet tilt (on top of windowFit's gentler nudge). Two guards make this
+  // behave for a team that's YOUNG but built to WIN (the "I'm 12th only because QBs got stacked, don't bury a
+  // proven vet for a marginally-younger scrub" case):
+  //   • ROUND GATE: early rounds should follow value/market — chasing youth for its own sake is a LATE-draft
+  //     luxury once your starters are set. The tilt ramps in from ~round 4 and reaches full strength by ~round 6.
+  //   • SOFTER SLOPE + CAP: a one-year age edge must not outweigh a clear VBD gap, so the per-year value is
+  //     smaller and the whole tilt is capped. windowFit already pays a youth/asset premium; this just leans it.
   if (dynasty) {
-    if (lane === "rebuild") { buildScore += Math.max(0, 28 - (c.age || 27)) * 5; if (c.rookie) buildScore += 18; }
-    else if (lane === "winnow") { buildScore += Math.max(0, (c.age || 27) - 24) * 2; if (c.rookie) buildScore -= 8; }
+    const roundGate = Math.max(0, Math.min(1, (round - 3) / 3)); // 0 @ r≤3 → 1 @ r≥6
+    // VALUE FLOOR on the youth chase: a rebuild wants young players who are actually GOOD assets, not merely
+    // young. A below-replacement body (negative VBD) shouldn't get the full youth bonus just for being 22 —
+    // otherwise a worse-by-every-metric youngster (Makai Lemon, VBD −7) beats a barely-older, better player
+    // (Marvin Harrison Jr, VBD 0, better ADP/rank). Fade the youth reward as VBD drops below replacement.
+    const valFloor = c.vbd != null ? Math.max(0, Math.min(1, 1 + c.vbd / 30)) : 1; // 1 at VBD≥0 → 0 by VBD≤−30
+    if (lane === "rebuild") {
+      const youth = Math.min(24, Math.max(0, 28 - (c.age || 27)) * 3); // was *5 uncapped
+      buildScore += (youth * valFloor) * roundGate + (c.rookie ? 12 * roundGate : 0);
+    } else if (lane === "winnow") {
+      const vet = Math.min(14, Math.max(0, (c.age || 27) - 24) * 2);
+      buildScore += vet * roundGate - (c.rookie ? 6 * roundGate : 0);
+    }
   }
   buildScore += bbBonus(c) - byePenalty(c);
 
@@ -11529,6 +11583,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   }, [picks.length, cfg, userIdx, liveSlots]);
   // The user's NEXT pick overall (default target).
   const myNextOverall = useMemo(() => { const r = remainingPicks.find((p) => p.mine); return r ? r.o : null; }, [remainingPicks]);
+  // The user's SECOND upcoming pick (the one after next) — used for a dual "you in X / then Y" countdown so you
+  // can see how long the gap runs when a run might strip a scarce position before you're back on the clock.
+  const myNext2Overall = useMemo(() => { const mine = remainingPicks.filter((p) => p.mine); return mine.length >= 2 ? mine[1].o : null; }, [remainingPicks]);
   // Resolve the effective target overall pick number (1-based) the Avail column reports on.
   const targetOverall = targetPick != null ? targetPick : (myNextOverall != null ? myNextOverall + 1 : null);
   // Survival % map at the target pick. Reuse the main sims when the target is one of your next 3 picks
@@ -11719,10 +11776,31 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         waitDetail[pos] = { now: null, fallback: null, fallback2: null, deltaPts: 0, deltaPts2: 0, nowSurvives: null, nowSurvives2: null };
       }
     });
-    // Candidate pool: rank among players ACTUALLY still on the board and — for a future pick — with a real
-    // chance of surviving to it (survivesToPick). This keeps big-value fallers eligible while dropping the
-    // player about to be taken on the clock, so we don't recommend the same guy for the current pick AND a
-    // later one. We still window loosely by ADP so we don't rank 300 deep-bench names.
+    // SCARCITY PREMIUM from the wait-cost picture: if a position you still NEED is about to run dry before your
+    // next pick (steep drop-off to the fallback AND the best-now guy is unlikely to survive), lift that position
+    // now. This is what lets a superflex QB run — "6 QBs projected gone before pick 58" — pull a QB up a
+    // high-leverage spot without making it an absolute must. Scaled by need, drop-off, and how gone it'll be.
+    {
+      const effReq = REQ_EFF(cfg.sf);
+      const prem = { QB: 0, RB: 0, WR: 0, TE: 0 };
+      POS.forEach((pos) => {
+        const owe = Math.max(0, (effReq[pos] || 0) - (myCounts[pos] || 0)); // still-owed starters here
+        if (owe <= 0) return;
+        const wd = waitDetail[pos]; if (!wd || !wd.now) return;
+        const drop = wd.deltaPts2 || wd.deltaPts || 0;                 // pts lost waiting to your next pick(s)
+        const surv = wd.nowSurvives != null ? wd.nowSurvives : 100;    // % chance best-now survives to next pick
+        const gone = Math.max(0, 100 - surv) / 100;                     // 0 (safe) → 1 (almost certainly gone)
+        // Position scarcity weight: premium QB (SF) and TE (TEP) are hardest to replace late.
+        const scarceW = (pos === "QB" && (cfg.sf || (SPEC.SUPER || 0) > 0)) ? 1.0
+          : (pos === "TE" && SPEC.tePrem) ? 0.85
+          : (pos === "TE") ? 0.6 : 0.5;
+        // Only meaningful when there's a real drop-off AND real risk it's gone. Capped so it nudges, never
+        // dominates — a truly elite value elsewhere can still win.
+        const raw = drop * gone * scarceW * 0.55 * Math.min(2, owe);
+        prem[pos] = Math.min(pos === "QB" ? 60 : 45, raw);
+      });
+      setScarcityPrem(prem);
+    }
     const avail = (p) => !draftedSet.has(p.id) && survivesToPick(p.id);
     let pool0 = sortedAdp.filter((p) => avail(p) && p.adp <= pickNum + 16).slice(0, 40);
     if (pool0.length < 12) pool0 = sortedAdp.filter((p) => avail(p) && p.adp <= pickNum + 60).slice(0, 44);
@@ -12300,8 +12378,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     if (decided) {
       const youngCut = isDyn ? 24.5 : 25.0;
       const oldCut = isDyn ? 27.5 : 28.0;
-      if (avgAge <= youngCut) { lane = "rebuild"; label = "Young / rebuild window"; }
-      else if (avgAge >= oldCut) { lane = "winnow"; label = "Win-now window"; }
+      // A young roster isn't automatically a REBUILD — a young team full of studs is "win-now with a young
+      // core." Only call it a rebuild if it's young AND not projected to contend. Pull the projected finish (if
+      // available); a team projected in the top ~45% of the league is competitive, so a young-but-good team
+      // lands in BALANCED (take value, don't force the youth chase over a better proven player) rather than
+      // rebuild. This fixes "I was projected 1st, then got labeled rebuild the moment my avg age looked young."
+      const finishRk = (typeof proj !== "undefined" && proj && proj.rank && proj.rank[userIdx] != null) ? proj.rank[userIdx] : null;
+      const contender = finishRk != null && finishRk <= Math.ceil((TEAMS || 12) * 0.45);
+      if (avgAge <= youngCut) {
+        lane = contender ? "balanced" : "rebuild";
+        label = contender ? "Young core, competing" : "Young / rebuild window";
+      } else if (avgAge >= oldCut) { lane = "winnow"; label = "Win-now window"; }
       else { lane = "balanced"; label = "Balanced window"; }
     }
     const confidence = decided ? Math.min(1, (aged.length - DECIDE_AT + 1) / 6) : 0;
@@ -13281,6 +13368,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               const upcoming = upSource.slice(0, 6);
               const untilMine = myNextOverall != null ? Math.max(0, myNextOverall - picks.length) : null;
               const untilColor = untilMine == null ? "var(--mut)" : untilMine <= 1 ? "#F2655C" : untilMine <= 3 ? "var(--gold)" : "#5FD0A8";
+              // second upcoming user pick — "then N" — so you can see the full gap before you're back after your next
+              const untilMine2 = myNext2Overall != null ? Math.max(0, myNext2Overall - picks.length) : null;
               const moreTip = (e) => showTip(e, [
                 { kind: "take", tone: "neutral", x: "Upcoming picks — engine projection" },
                 { kind: "playertable", probLabel: "Picked", cols: ["pick", "pos", "name", "drafter", "adp", "vbd", "prob"], players: upSource.slice(0, 20).map((s) => ({ ...s.p, pickNo: s.o + 1, prob: s.prob, drafter: s.user ? "You" : (TEAM_NAMES[s.t] || "").split(" ")[0], rec: s.user, star: s.user })) },
@@ -13290,9 +13379,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 4 }}>
                     <span className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700 }}>Next picks</span>
                     {untilMine != null && (
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 8.5, fontWeight: 800, color: untilColor, background: untilColor + "1e", border: `1px solid ${untilColor}55`, borderRadius: 20, padding: "1px 7px" }}>
-                        <i className="ti ti-user-star" style={{ fontSize: 9 }} aria-hidden="true" />
-                        {untilMine === 0 ? "you're up!" : untilMine === 1 ? "you're next" : `you in ${untilMine}`}
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 8.5, fontWeight: 800, color: untilColor, background: untilColor + "1e", border: `1px solid ${untilColor}55`, borderRadius: 20, padding: "1px 7px" }}>
+                          <i className="ti ti-user-star" style={{ fontSize: 9 }} aria-hidden="true" />
+                          {untilMine === 0 ? "you're up!" : untilMine === 1 ? "you're next" : `you in ${untilMine}`}
+                        </span>
+                        {untilMine2 != null && untilMine > 0 && (
+                          <span title="Picks until your SECOND upcoming pick (the one after next)" style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 8.5, fontWeight: 700, color: "var(--mut)", background: "rgba(255,255,255,.05)", border: "1px solid var(--line2)", borderRadius: 20, padding: "1px 7px" }}>
+                            then {untilMine2}
+                          </span>
+                        )}
                       </span>
                     )}
                   </div>
@@ -13649,11 +13745,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     let availSeen = 0;
                     const nCols = 1 + activeCols.length;
                     const outRows = [];
+                    // The player the engine is recommending right now — highlight his row so it's easy to spot in
+                    // the full list. Prefer YOUR next-pick recommendation; fall back to the on-clock verdict.
+                    const recId = (mySelAdvice && mySelAdvice.verdict && mySelAdvice.verdict.id) || (advice && advice.verdict && advice.verdict.id) || null;
                     rows.forEach((p) => {
                       const gone = draftedSet.has(p.id);
+                      const isRec = !gone && p.id === recId;
                       const injInfo = injuryView(p);
                       outRows.push(
-                      <tr key={p.id} className={gone ? "struck" : ""}>
+                      <tr key={p.id} className={gone ? "struck" : ""} style={isRec ? { background: "linear-gradient(90deg, rgba(242,182,60,.22), rgba(242,182,60,.06))", boxShadow: "inset 3px 0 0 var(--gold)" } : undefined}>
                         <td className="frz" style={{ borderLeft: `3px solid ${gone ? "transparent" : (POS_COLOR[p.pos] || "transparent")}` }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
                             <button onClick={() => toggleQueue(p.name)} title={queue.has(p.name) ? "Starred — in your priority queue. Click to remove." : "Star this player to add him to your priority queue."}
@@ -13683,12 +13783,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           outRows.push(
                             <tr key={`mark-${availSeen}`} className="pickmarker">
                               <td colSpan={nCols} style={{ padding: 0 }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 10px", background: "linear-gradient(90deg, rgba(242,182,60,.16), rgba(242,182,60,.03))", borderTop: "2px solid var(--gold)", borderBottom: "1px solid rgba(242,182,60,.25)" }}>
-                                  <i className="ti ti-arrow-down-to-arc" style={{ fontSize: 13, color: "var(--gold)" }} aria-hidden="true" />
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 10px", background: "linear-gradient(90deg, rgba(91,168,245,.18), rgba(91,168,245,.03))", borderTop: "2px solid #5BA8F5", borderBottom: "1px solid rgba(91,168,245,.28)" }}>
+                                  <i className="ti ti-arrow-down-to-arc" style={{ fontSize: 13, color: "#5BA8F5" }} aria-hidden="true" />
                                   {marks.map((m, mi) => (
                                     <span key={mi} style={{ display: "inline-flex", alignItems: "baseline", gap: 6 }}>
                                       {mi > 0 && <span className="mut" style={{ opacity: 0.5 }}>·</span>}
-                                      <b style={{ fontSize: 11.5, color: "var(--gold)", letterSpacing: ".02em" }}>{m.label}</b>
+                                      <b style={{ fontSize: 11.5, color: "#5BA8F5", letterSpacing: ".02em" }}>{m.label}</b>
                                       <span className="mut" style={{ fontSize: 10.5 }}>{m.sub}</span>
                                     </span>
                                   ))}
