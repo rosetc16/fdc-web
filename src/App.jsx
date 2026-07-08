@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ea";
+const BUILD_TAG = "2026.06.28eb";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3704,7 +3704,7 @@ select.gs:hover{border-color:var(--gold)}
 .btn-mini{padding:3px 10px;font-size:11px;border-radius:6px;background:var(--panel3)}
 .btn-gold,.btn-mini.btn-gold{background:var(--gold);color:#151002;border:none;font-weight:700}
 .btn-mini:hover{transform:none;box-shadow:none;background:#262017;border-color:var(--gold)}
-.tab{padding:8px 14px;cursor:pointer;border:none;background:none;color:#AEB9C7;font-family:'Barlow Condensed';font-size:16px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;border-bottom:2px solid transparent;transition:color .15s,border-color .15s}
+.tab{padding:6px 14px;cursor:pointer;border:none;background:none;color:#AEB9C7;font-family:'Barlow Condensed';font-size:16px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;border-bottom:2px solid transparent;transition:color .15s,border-color .15s}
 .tab:hover{color:var(--ink);border-bottom-color:var(--line2)}
 .tab.on{color:var(--ink);border-bottom-color:var(--gold)}
 .hubtile:hover{transform:translateY(-2px);border-color:var(--gold)!important;box-shadow:0 6px 20px #0008}
@@ -12794,7 +12794,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   return (
     <div>
       {tourOn && <CoachTour steps={TOUR_STEPS} onExit={() => { setTourOn(false); setTab("hub"); }} onStepTab={(t) => setTab(t)} optOut={tourOptOut} onOptOut={setTourNeverShow} />}
-      <div className="hairline" style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", flexWrap: "wrap" }}>
+      <div className="hairline" style={{ display: "flex", alignItems: "center", gap: 12, padding: "6px 16px", flexWrap: "wrap" }}>
         <button className="btn btn-mini" onClick={exit}>← {user ? (user.paid ? "Home" : "Library") : "Home"}</button>
         <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{league.name}</div>
         {isMock && <div className="chip" style={{ borderColor: "var(--gold)", background: "rgba(242,182,60,.10)", color: "var(--gold)" }} title="This is a practice draft — it saves to this league's mock history and never changes your real draft."><i className="ti ti-dice" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />MOCK</div>}
@@ -12881,9 +12881,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       )}
       {!done && (
         <div className="hairline" style={{ background: "var(--panel2)" }}>
-          <div className="decision-grid" style={{ display: "flex", gap: 10, padding: "8px 12px", alignItems: "stretch" }}>
+          <div className="decision-grid" style={{ display: "flex", gap: 10, padding: "5px 12px", alignItems: "stretch" }}>
             {/* ---- GROUP A: decisions & outlook ---- */}
-            <div data-tour="howdoing" className="decision-group-a" style={{ display: "grid", gridTemplateColumns: "minmax(190px,0.9fr) minmax(210px,1.05fr)", gap: 8, flex: "1.05 1 0", minWidth: 0, padding: 6, borderRadius: 12, border: "1.5px solid rgba(255,255,255,.55)", boxShadow: "0 0 12px rgba(255,255,255,.08)" }}>
+            <div data-tour="howdoing" className="decision-group-a" style={{ display: "grid", gridTemplateColumns: "minmax(190px,0.9fr) minmax(210px,1.05fr)", gap: 8, flex: "1.05 1 0", minWidth: 0, padding: "4px 6px", borderRadius: 12, border: "1.5px solid rgba(255,255,255,.55)", boxShadow: "0 0 12px rgba(255,255,255,.08)" }}>
             {/* ===== ZONE 1: HOW YOU'RE DOING (table) ===== */}
             {(() => {
               const laneMap = { rebuild: { t: "Rebuild", c: "#5FD0A8", i: "ti-seedling" }, winnow: { t: "Win-now", c: "#F2655C", i: "ti-flame" }, balanced: { t: "Balanced", c: "var(--gold)", i: "ti-scale" }, undecided: { t: "Forming…", c: "var(--mut)", i: "ti-loader" } };
@@ -12935,7 +12935,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 ]);
               };
               return (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "9px 11px", borderRadius: 9, border: "1px solid rgba(242,182,60,.5)", background: "linear-gradient(160deg,rgba(46,40,22,1),rgba(24,31,40,1))", height: "100%", boxSizing: "border-box" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, padding: "6px 11px", borderRadius: 9, border: "1px solid rgba(242,182,60,.5)", background: "linear-gradient(160deg,rgba(46,40,22,1),rgba(24,31,40,1))", height: "100%", boxSizing: "border-box" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-gauge" style={{ fontSize: 11, color: "var(--gold)" }} aria-hidden="true" /><span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--gold)", fontWeight: 800 }}>How you're doing</span><i className="ti ti-info-circle" style={{ fontSize: 10, color: "var(--mut)", cursor: "help" }} aria-hidden="true" onMouseEnter={(e) => showTip(e, [{ kind: "take", tone: "neutral", x: "How you're doing" }, { t: "What this shows", x: "A per-position read on your roster: how many starters you have vs. need (red = unfilled), where you rank at that position in the league, a quick strength Read, and the best player still available there. Up top: your build lane (win-now vs. rebuild) and projected finish." }, { t: "Tip", x: "Hover any position row for its full breakdown and your players there." }])} onMouseLeave={hideTip} /></div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -13034,7 +13034,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               // Best overall on the board by the SELECTED metric — a quick "just take the best guy" anchor.
               const bestOverall = posRows.map((r) => r.best).filter(Boolean).slice().sort(betterFirst)[0] || null;
               return (
-                <div data-tour="pulse" style={{ display: "flex", flexDirection: "column", gap: 5, padding: "9px 11px", borderRadius: 10, border: "1px solid var(--line)", background: "var(--panel2)", height: "100%", boxSizing: "border-box" }}>
+                <div data-tour="pulse" style={{ display: "flex", flexDirection: "column", gap: 5, padding: "6px 11px", borderRadius: 10, border: "1px solid var(--line)", background: "var(--panel2)", height: "100%", boxSizing: "border-box" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-activity-heartbeat" style={{ fontSize: 11, color: "var(--blue)" }} aria-hidden="true" /><span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--blue)", fontWeight: 800 }}>Draft pulse</span><i className="ti ti-info-circle" style={{ fontSize: 10, color: "var(--mut)", cursor: "help" }} aria-hidden="true" onMouseEnter={(e) => showTip(e, [{ kind: "take", tone: "neutral", x: "Draft pulse" }, { t: "What this shows", x: "The best player still available at each position, plus a live read on Supply — early on, how many startable-tier players remain (Deep / Thinning / Scarce); late, how big the drop-off is to the next guy. Toggle VBD / Val / ADP to rank by whichever value lens you want." }, { t: "Best on the board", x: "The single highest-value player left across all positions — a quick 'just take the best guy' anchor." }])} onMouseLeave={hideTip} /></div>
                     <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 5, overflow: "hidden" }} title="Rank best-available by: VBD (this-year points over replacement), Value (age-weighted, dynasty), or ADP (market draft position).">
@@ -13105,7 +13105,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <div aria-hidden="true" className="decision-divider" style={{ flex: "0 0 auto", width: 2, alignSelf: "stretch", margin: "2px 5px", borderRadius: 2, background: "linear-gradient(180deg,transparent,var(--gold) 10%,var(--gold) 90%,transparent)" }} />
 
             {/* ---- GROUP B: the picks ---- */}
-            <div data-tour="picks" className="decision-group-b" style={{ display: "grid", gridTemplateColumns: "minmax(155px,0.8fr) minmax(170px,0.9fr) minmax(175px,0.92fr)", gap: 8, flex: "1.4 1 0", minWidth: 0, padding: 6, borderRadius: 12, border: "1.5px solid rgba(255,255,255,.55)", boxShadow: "0 0 12px rgba(255,255,255,.08)" }}>
+            <div data-tour="picks" className="decision-group-b" style={{ display: "grid", gridTemplateColumns: "minmax(155px,0.8fr) minmax(170px,0.9fr) minmax(175px,0.92fr)", gap: 8, flex: "1.4 1 0", minWidth: 0, padding: "4px 6px", borderRadius: 12, border: "1.5px solid rgba(255,255,255,.55)", boxShadow: "0 0 12px rgba(255,255,255,.08)" }}>
 
             {/* ===== ZONE 2: LAST PICKS ===== */}
             {(() => {
@@ -13116,7 +13116,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 { kind: "playertable", cols: ["pick", "pos", "name", "drafter", "adp", "vbd", "valread"], players: picks.slice(-22).map((pk, i) => { const oo = Math.max(0, picks.length - Math.min(22, picks.length)) + i; const pp = players[pk]; if (!pp) return null; const gap = pp.adp != null ? Math.round((oo + 1) - pp.adp) : 0; const vr = gap >= 8 ? { t: "steal", c: "#5FD0A8" } : gap <= -8 ? { t: "reach", c: "#F2655C" } : { t: "fair", c: "var(--mut)" }; const mine = teamAt(oo) === userIdx; return { ...pp, pickNo: oo + 1, drafter: mine ? "You" : (TEAM_NAMES[teamAt(oo)] || `Team ${teamAt(oo) + 1}`), valRead: vr, rec: mine, star: mine }; }).filter(Boolean).reverse() },
               ]);
               return (
-                <div className="tickcard" style={{ padding: "7px 9px", display: "flex", flexDirection: "column", minWidth: 0, height: "100%", boxSizing: "border-box" }}>
+                <div className="tickcard" style={{ padding: "5px 9px", display: "flex", flexDirection: "column", minWidth: 0, height: "100%", boxSizing: "border-box" }}>
                   <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 4, fontWeight: 700 }}>Last picks</div>
                   <div style={{ display: "grid", gridTemplateColumns: "30px 1fr auto 34px", gap: "0 5px", fontSize: 7.5, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line2)", paddingBottom: 2, marginBottom: 2 }}>
                     <span>Pick</span><span>Player</span><span>By</span><span title="Steal / fair / reach vs. ADP" style={{ textAlign: "right" }}>Read</span>
@@ -13193,7 +13193,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 ];
               })()) : undefined;
               return (
-                <div className="tickcard clock" style={{ borderColor: isYou ? "var(--gold)" : "#33476B", padding: "8px 10px", cursor: curTip ? "help" : "default", height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }} onMouseEnter={curTip} onMouseLeave={curTip ? hideTip : undefined}>
+                <div className="tickcard clock" style={{ borderColor: isYou ? "var(--gold)" : "#33476B", padding: "5px 10px", cursor: curTip ? "help" : "default", height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }} onMouseEnter={curTip} onMouseLeave={curTip ? hideTip : undefined}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
                     <span style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: isYou ? "var(--gold)" : "var(--mut)", fontWeight: 700 }}>On the clock · {pickLabel(picks.length)}</span>
                     {connected && (liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? <span className="num mut" style={{ fontSize: 13 }}>no timer</span> : clock <= 0 ? <span className="num" style={{ fontSize: 20, color: "var(--red)", fontWeight: 800, letterSpacing: ".02em" }}>overdue</span> : <span className="num" style={{ fontSize: 22, lineHeight: 1, color: clock <= 15 ? "var(--red)" : "var(--ink)", fontWeight: 800, letterSpacing: ".02em", background: clock <= 15 ? "rgba(242,101,92,.16)" : "rgba(255,255,255,.06)", padding: "3px 9px", borderRadius: 6, fontVariantNumeric: "tabular-nums" }}>{fmtClock(clock)}</span>)}
@@ -13273,7 +13273,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 { kind: "playertable", probLabel: "Picked", cols: ["pick", "pos", "name", "drafter", "adp", "vbd", "prob"], players: upSource.slice(0, 20).map((s) => ({ ...s.p, pickNo: s.o + 1, prob: s.prob, drafter: s.user ? "You" : (TEAM_NAMES[s.t] || "").split(" ")[0], rec: s.user, star: s.user })) },
               ]);
               return (
-                <div className="tickcard" style={{ padding: "7px 9px", minWidth: 0, height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }}>
+                <div className="tickcard" style={{ padding: "5px 9px", minWidth: 0, height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 4 }}>
                     <span className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700 }}>Next picks</span>
                     {untilMine != null && (
