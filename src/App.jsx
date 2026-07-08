@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28eh";
+const BUILD_TAG = "2026.06.28ei";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1675,6 +1675,28 @@ function buildPlayers(cfg) {
       if (p.vbd > 0) p.value = Math.round(p.vbd * m * 10) / 10;
       else p.value = Math.round(p.vbd * (2 - m) * 10) / 10; // m>1 (young) → shrinks the negative; m<1 (old) → deepens it
     });
+    // DYNASTY ELITE-TIER COMPRESSION. A pure-projection value spreads the top of a position wide — e.g. a QB6
+    // whose median projection dipped (Mahomes) falls far below the QB1, and elite WR2-6 fall well below WR1.
+    // But the dynasty MARKET compresses that top tier: proven elite producers are treated as near-interchangeable
+    // premium assets on floor + track record, not strictly by this year's projected points. So within each
+    // position we pull the top few players PARTWAY toward the tier's best value. This lifts a proven elite whose
+    // projection slipped back toward his peers (Mahomes toward the QB1-5 cluster; Jefferson/Chase/Lamb up the WR
+    // board) without hardcoding names — it keys purely off being top-of-position. Fades out fast past the elite
+    // tier so it never distorts the middle/back of the board.
+    const TIER_N = { QB: 6, RB: 6, WR: 11, TE: 5 };   // how deep the "elite tier" runs per position
+    const TIER_PULL = { QB: 0.40, RB: 0.24, WR: 0.40, TE: 0.28 }; // how hard to pull toward the tier top
+    POS.forEach((pos) => {
+      const grp = ps.filter((p) => p.pos === pos && p.value != null).sort((a, b) => b.value - a.value);
+      if (grp.length < 2) return;
+      const top = grp[0].value;
+      const n = TIER_N[pos] || 6, pull = TIER_PULL[pos] || 0.3;
+      for (let i = 1; i < Math.min(n, grp.length); i++) {
+        const p = grp[i];
+        // strength fades linearly across the tier (rank 1 gets the most pull, the last elite spot gets little)
+        const w = pull * (1 - i / n);
+        p.value = Math.round((p.value + (top - p.value) * w) * 10) / 10;
+      }
+    });
   } else {
     // Redraft: value is simply VBD.
     ps.forEach((p) => { p.value = p.vbd; p.ageMult = 1; });
@@ -1731,7 +1753,9 @@ function buildPlayers(cfg) {
       .sort((a, b) => ((b.value != null ? b.value : (b.vbd ?? -50)) - (a.value != null ? a.value : (a.vbd ?? -50))));
     const rookieQbRankById = new Map(); rookieQbs.forEach((p, i) => rookieQbRankById.set(p.id, i)); // 0 = rookie QB1
     const effVal = (p) => {
-      let v = p.vbd != null ? p.vbd : -50;
+      // In DYNASTY start from the composite `value` (age-weighted AND elite-tier-compressed above) so proven
+      // elites whose median projection dipped keep their market-level value; redraft starts from raw win-now VBD.
+      let v = isDynasty ? (p.value != null ? p.value : (p.vbd != null ? p.vbd : -50)) : (p.vbd != null ? p.vbd : -50);
       if (sf && p.pos === "QB") {
         // SuperFlex QB premium. In SF, the top ~4-5 QBs anchor the very top of the board — they're the
         // scarcest startable asset (you need 1.5-2 per team). In DYNASTY this is even stronger, because
