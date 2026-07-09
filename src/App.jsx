@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ej";
+const BUILD_TAG = "2026.06.28ek";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1126,6 +1126,32 @@ export function applyLivePack(pack, isReapply) {
     ? adpCount >= 60
     : (adpCount >= 120 && rookieShareOfAdp < 0.5 && ADP_NOT_COLLAPSED); // broad, not rookie-dominated, not collapsed
 
+  // PER-PLAYER ADP TRUST.
+  //
+  // ADP_HEALTHY above is an all-or-nothing switch: if a format's overall coverage is thin, we used to throw
+  // away EVERY player's real ADP and rebuild the whole board from projections. That's badly wrong for a niche
+  // format (SF + TE-premium + dynasty): the harvest may well have solid, well-sampled numbers for the top ~60
+  // players — the ones that actually matter — while the deep bench drags total coverage under the threshold.
+  // Discarding the good data with the bad is how a player the market drafts ~13th (because everyone knows he's
+  // elite, whatever this year's projection says) ends up ranked ~37th off a depressed post-injury projection.
+  //
+  // The market already encodes what a projection cannot: track record, pedigree, and long-term dynasty upside.
+  // Where real people have actually drafted a player enough times, that number beats anything we can infer. So
+  // we trust ADP PER PLAYER whenever HE has enough samples, and only fall back to a projection-derived
+  // provisional for players who genuinely lack data. The collapse/rookie guards still apply globally, because
+  // those detect corrupt data rather than thin data.
+  const MIN_TRUST_SAMPLES = 4;                 // matches the backend's own per-player gate
+  const dataSane = TRUST_LIVE_ADP || (ADP_NOT_COLLAPSED && rookieShareOfAdp < 0.5);
+  const trustPlayerAdp = (p) => {
+    if (p.adp == null) return false;
+    if (!dataSane) return false;               // corrupt/collapsed pack → trust nothing
+    if (TRUST_LIVE_ADP) return true;           // connected draft: mirror the room
+    const n = Number(p.sampleN != null ? p.sampleN : 0);
+    return n >= MIN_TRUST_SAMPLES;             // published ADP ships sampleN 999, so it always qualifies
+  };
+  // How much of the board ended up on real market data? Used for the "board ranked by value" indicator.
+  const trustedCount = (pack.players || []).filter((p) => normPos(p.pos) && trustPlayerAdp(p)).length;
+
   const projValueAll = (p) => projValue(p.stats, normPos(p.pos));
   // Provisional ADP for players lacking a real ADP number. Rather than dumping them all AFTER the last
   // real-ADP player (which sent, e.g., a startable QB whose published number briefly went missing down to
@@ -1133,15 +1159,20 @@ export function applyLivePack(pack, isReapply) {
   // where his value fits among the players who DO have real ADP. This keeps the board sensible and mirrors
   // how the market would actually price him, even when a single player's published number drops out.
   const provisionalAdp = new Map();
-  if (ADP_HEALTHY) {
-    // Build a value→adp ladder from the real-ADP players (sorted by value, descending), then binary-search
-    // each no-ADP player's value into it to find where he belongs, and read the ADP of the neighbor there.
-    const ladder = withRealAdp
+  // Anchor the ladder on players whose ADP we actually trust, and interleave everyone else by projection.
+  // (Previously this only ran when the whole pack cleared a global coverage bar; now a thin format still gets
+  // a real, market-anchored spine wherever the harvest has enough drafts.)
+  const trustedPlayers = draftable.filter((p) => trustPlayerAdp(p));
+  const untrustedPlayers = draftable.filter((p) => !trustPlayerAdp(p));
+  if (trustedPlayers.length >= 20) {
+    // Build a value→adp ladder from the trusted-ADP players (sorted by value, descending), then binary-search
+    // each remaining player's value into it to find where he belongs, and read the ADP of the neighbor there.
+    const ladder = trustedPlayers
       .map((p) => ({ adp: p.adp, v: projValueAll(p) }))
       .sort((a, b) => b.v - a.v); // best value first
     const vals = ladder.map((x) => x.v); // descending
     const worstAdp = ladder.length ? Math.max(...ladder.map((x) => x.adp)) : 200;
-    const noAdp = draftable.filter((p) => p.adp == null);
+    const noAdp = untrustedPlayers;
     for (const p of noAdp) {
       const v = projValueAll(p);
       // binary search: first index where ladder value < v (i.e. how many project better than him)
@@ -1164,8 +1195,9 @@ export function applyLivePack(pack, isReapply) {
     let name = p.name;
     if (seen.has(name)) { name = `${p.name} (${p.team || pos})`; if (seen.has(name)) continue; }
     seen.add(name);
-    // Use real ADP only when coverage is healthy AND not rookie-dominated; else rank by projection.
-    const useRealAdp = ADP_HEALTHY && p.adp != null;
+    // Use this player's REAL market ADP whenever he personally has enough drafts behind him; otherwise fall
+    // back to his projection-derived provisional slot. Per-player, not all-or-nothing.
+    const useRealAdp = trustPlayerAdp(p);
     const adp = useRealAdp ? p.adp : (provisionalAdp.get(p.id) || 999);
     raw.push([name, pos, p.team || "FA", p.age || 0, p.bye || 0, adp, p.adpHi || adp]);
     if (p.stats && Object.keys(p.stats).length) stats[name] = p.stats;
@@ -1184,7 +1216,11 @@ export function applyLivePack(pack, isReapply) {
   LIVE_LOADED = true;
   LIVE_PACK_FORMAT = pack.format || null;
   LIVE_PACK_PUB_FORMAT = pack.publishedFormat || null;
-  LIVE_ADP_SPARSE = !ADP_HEALTHY; // when sparse/rookie-contaminated, rank by VBD value instead
+  // Sparse == we have no real market spine to rank against. With per-player trust, a thin-but-usable format
+  // (e.g. SF/TEP dynasty early in the harvest) is NOT sparse: the top of the board is anchored on real drafts
+  // and only the deep bench is projection-filled. We only fall back to value-ranking when the trusted set is
+  // too small to order the board, or the pack looks corrupt.
+  LIVE_ADP_SPARSE = !dataSane || trustedCount < 40;
   return true;
 }
 
@@ -1198,14 +1234,23 @@ function applyAdpOverlay(pack) {
   const byName = new Map();
   let withAdp = 0;
   const adpVals = [];
+  // Only players with enough real drafts behind them are eligible to overlay. A niche format's harvest
+  // legitimately covers the top of the board well and the deep bench barely at all — we want the good numbers
+  // without letting one-draft noise overwrite a sane baseline.
+  const MIN_TRUST_SAMPLES = 4;
   for (const p of pack.players) {
     if (!p.name || p.adp == null) continue;
+    const n = Number(p.sampleN != null ? p.sampleN : 0);
+    if (n < MIN_TRUST_SAMPLES) continue;       // published ADP ships sampleN 999, so it always qualifies
     byName.set(normName(p.name), p);
     adpVals.push(Number(p.adp));
     withAdp++;
   }
-  // Only overlay when the format actually has broad real ADP coverage; otherwise keep the current board.
-  if (withAdp < 120) return false;
+  // Overlay as soon as there's a real market spine to work with. This used to demand 120 players, which meant a
+  // thin-but-correct format (SF + TE-premium dynasty) was rejected wholesale and the board silently fell back
+  // to projection-ranking — burying proven stars whose current projection is depressed. 40 well-sampled players
+  // is enough to anchor the top of the board, which is where it matters.
+  if (withAdp < 40) return false;
   // SANITY GUARD: reject a DEGENERATE pack whose ADP has collapsed — e.g. hundreds of players sharing a
   // single value (~15.9), which happens when the backend's published/consensus ADP for a format is missing
   // or malformed. Applying it flattens the whole board (every player ~identical ADP, QBs/streamers floating
@@ -1743,8 +1788,15 @@ function buildPlayers(cfg) {
     // market actually drafts them. VBD alone undervalues elite RBs vs how people really draft (a proven
     // top-3 scorer like CMC goes top-5 in nearly every redraft, recency + bell-cow scarcity). Since this
     // fallback board stands in for the MARKET (what others will pick), it should mirror that behavior.
-    const rbs = valPool.filter((p) => p.pos === "RB").sort((a, b) => (b.vbd ?? -50) - (a.vbd ?? -50));
+    const rbs = valPool.filter((p) => p.pos === "RB")
+      .sort((a, b) => ((isDynasty ? (b.value ?? b.vbd ?? -50) : (b.vbd ?? -50)) - (isDynasty ? (a.value ?? a.vbd ?? -50) : (a.vbd ?? -50))));
     const rbRankById = new Map(); rbs.forEach((p, i) => rbRankById.set(p.id, i)); // 0 = RB1
+    // WR ordering for the dynasty WR lift. Ranked by composite `value` in dynasty so an elite WR whose current
+    // projection dipped (injury year, bad QB play) isn't shoved down the position behind lesser but healthier
+    // producers — the same reasoning that fixed rookie QBs and proven elite QBs.
+    const wrs = valPool.filter((p) => p.pos === "WR")
+      .sort((a, b) => ((isDynasty ? (b.value ?? b.vbd ?? -50) : (b.vbd ?? -50)) - (isDynasty ? (a.value ?? a.vbd ?? -50) : (a.vbd ?? -50))));
+    const wrRankById = new Map(); wrs.forEach((p, i) => wrRankById.set(p.id, i)); // 0 = WR1
     const tes = valPool.filter((p) => p.pos === "TE").sort((a, b) => (b.vbd ?? -50) - (a.vbd ?? -50));
     const teRankById = new Map(); tes.forEach((p, i) => teRankById.set(p.id, i)); // 0 = TE1
     // Rookie-QB ordering (dynasty prospect lift). Rank rookie QBs among themselves by composite dynasty value
@@ -1802,6 +1854,17 @@ function buildPlayers(cfg) {
         const decay = Math.pow(0.88, rank);       // RB1 full → RB6 ~46% → RB10 ~28%
         const base = isDynasty ? 18 : 38;          // much smaller in dynasty
         v += base * decay;
+      }
+      if (isDynasty && p.pos === "WR") {
+        // DYNASTY WR lift. The fallback board had a market-realism lift for elite RBs but none for WRs, which
+        // is backwards for dynasty: WRs peak later, decline far more gently, carry less injury attrition, and
+        // hold their value year over year — so dynasty managers reliably draft elite WRs AHEAD of comparable
+        // RBs. Without this the board inflates the position that ages worst and dings the one that ages best.
+        // Mirrors the RB lift's shape (rank decay) but reaches deeper, because WR value stays real further down
+        // the position than RB value does. Redraft is untouched — there the RB lift is the correct behavior.
+        const wrRank = wrRankById.get(p.id) ?? 99;  // 0 = WR1
+        const decay = Math.pow(0.90, wrRank);       // WR1 full → WR6 ~59% → WR12 ~28%
+        v += 30 * decay;
       }
       if (teMult > 0 && p.pos === "TE") {
         // TE-PREMIUM lift. Extra points-per-reception for TEs makes the elite ones (Bowers, McBride, Kittle)
