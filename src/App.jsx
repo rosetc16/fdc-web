@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ei";
+const BUILD_TAG = "2026.06.28ej";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -10485,6 +10485,44 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
   const [trendsDiag, setTrendsDiag] = useState(null);
   const loadTrendsDiag = async () => { try { const r = await api.trendsDiag(); setTrendsDiag(r); } catch (e) { setTrendsDiag({ error: e.data?.error || e.message }); } };
   useEffect(() => { if (hasBackend && tab === "tools") loadTrendsDiag(); }, [tab]);
+
+  // ---- Player events: dated news that makes pre-event ADP samples stale for one player ----
+  const [evts, setEvts] = useState([]);
+  const [evtTypes, setEvtTypes] = useState([]);
+  const [evtQuery, setEvtQuery] = useState("");
+  const [evtHits, setEvtHits] = useState([]);
+  const [evtPlayer, setEvtPlayer] = useState(null);          // { player_id, full_name, position, team }
+  const [evtType, setEvtType] = useState("season_ending_injury");
+  const [evtDate, setEvtDate] = useState("");
+  const [evtNote, setEvtNote] = useState("");
+  const loadEvents = async () => { try { setEvts(await api.adminEvents() || []); } catch (e) { setEvts([]); } };
+  const loadEventTypes = async () => { try { setEvtTypes(await api.adminEventTypes() || []); } catch (e) { setEvtTypes([]); } };
+  useEffect(() => { if (hasBackend && tab === "events") { loadEvents(); if (!evtTypes.length) loadEventTypes(); } }, [tab]);
+  // debounced player typeahead — we never hardcode players, always look them up live
+  useEffect(() => {
+    if (!hasBackend || evtQuery.trim().length < 2) { setEvtHits([]); return; }
+    const t = setTimeout(async () => {
+      try { setEvtHits(await api.adminPlayerSearch(evtQuery.trim()) || []); } catch (e) { setEvtHits([]); }
+    }, 220);
+    return () => clearTimeout(t);
+  }, [evtQuery]);
+  const addEvent = async () => {
+    if (!evtPlayer || !evtDate) { note("Pick a player and a date."); return; }
+    setBusy(true);
+    try {
+      await api.adminAddEvent({ player_id: evtPlayer.player_id, event_type: evtType, event_date: new Date(evtDate).toISOString(), note: evtNote || null });
+      setEvtPlayer(null); setEvtQuery(""); setEvtHits([]); setEvtNote(""); setEvtDate("");
+      await loadEvents();
+      note("Event saved. Run the ADP refresh job to apply it.");
+    } catch (e) { note(e.data?.error || e.message || "Could not save event."); }
+    finally { setBusy(false); }
+  };
+  const removeEvent = async (id) => {
+    setBusy(true);
+    try { await api.adminDeleteEvent(id); await loadEvents(); note("Event removed. Run the ADP refresh job to restore the original ADP."); }
+    catch (e) { note(e.data?.error || e.message || "Could not remove event."); }
+    finally { setBusy(false); }
+  };
   const runJob = async (job) => {
     setBusy(true); setJobResult(null);
     note(job === "refresh" ? "Running full refresh — this can take a minute…" : "Pulling Sleeper ADP…");
@@ -10501,7 +10539,7 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "—";
   const statusOf = (u) => u.disabled ? { t: "Disabled", c: "var(--red)" } : u.active_paid ? { t: u.comp ? "Comped" : "Active pass", c: "var(--green)" } : { t: "Free", c: "var(--gold)" };
 
-  const TABS = [["users", "Users", users ? users.length : null], ["invites", "Free invites", null], ["feedback", "Feedback", fbNew || null], ["tools", "Stripe & analytics", null]];
+  const TABS = [["users", "Users", users ? users.length : null], ["invites", "Free invites", null], ["feedback", "Feedback", fbNew || null], ["events", "Player events", evts.length || null], ["tools", "Stripe & analytics", null]];
 
   return (
     <div>
@@ -10616,6 +10654,122 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* PLAYER EVENTS — mark the date a player's value changed so pre-event drafts stop counting */}
+        {tab === "events" && (
+          <div style={{ display: "grid", gap: 14 }}>
+            <div className="panel" style={{ padding: 16 }}>
+              <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>Add an event</div>
+              <div className="mut" style={{ fontSize: 12, lineHeight: 1.55, marginBottom: 12 }}>
+                Mark the date a player's value changed. Drafts from <b>before</b> that date were made without the news,
+                so they stop counting for that player. Drafts after it are untouched. The same event hits redraft and
+                dynasty differently — a season-ending injury guts redraft value but only dents dynasty. Nothing is
+                invented: we only reweight real drafts, so this fades out on its own as new drafts come in, and
+                deleting an event fully restores the original ADP.
+              </div>
+
+              <div style={{ display: "grid", gap: 10 }}>
+                {/* player picker — live lookup, never a hardcoded list */}
+                <div style={{ position: "relative" }}>
+                  <label className="mut" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>Player</label>
+                  {evtPlayer ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span className="chip" style={{ borderColor: "var(--gold)", color: "var(--gold)" }}>
+                        {evtPlayer.full_name} · {evtPlayer.position}{evtPlayer.team ? ` · ${evtPlayer.team}` : ""}
+                      </span>
+                      <button className="btn btn-mini" onClick={() => { setEvtPlayer(null); setEvtQuery(""); }}>Change</button>
+                    </div>
+                  ) : (
+                    <>
+                      <input className="gs" style={{ width: "100%" }} placeholder="Search a player…" value={evtQuery} onChange={(e) => setEvtQuery(e.target.value)} />
+                      {evtHits.length > 0 && (
+                        <div className="panel" style={{ position: "absolute", zIndex: 40, left: 0, right: 0, marginTop: 4, maxHeight: 240, overflowY: "auto", padding: 4 }}>
+                          {evtHits.map((h) => (
+                            <div key={h.player_id} onClick={() => { setEvtPlayer(h); setEvtHits([]); }}
+                              style={{ padding: "6px 8px", cursor: "pointer", borderRadius: 6, fontSize: 12.5 }}
+                              onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,.06)"; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
+                              <b>{h.full_name}</b> <span className="mut">{h.position}{h.team ? ` · ${h.team}` : ""}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <div>
+                    <label className="mut" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>What happened</label>
+                    <select className="gs" style={{ width: "100%" }} value={evtType} onChange={(e) => setEvtType(e.target.value)}>
+                      {(evtTypes.length ? evtTypes : [{ key: "season_ending_injury", label: "Season-ending injury" }]).map((t) => (
+                        <option key={t.key} value={t.key}>{t.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mut" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>Date it happened</label>
+                    <input className="gs" type="date" style={{ width: "100%" }} value={evtDate} onChange={(e) => setEvtDate(e.target.value)} />
+                  </div>
+                </div>
+
+                {/* show the chosen type's effect so there's no mystery about what this will do */}
+                {(() => {
+                  const t = evtTypes.find((x) => x.key === evtType);
+                  if (!t) return null;
+                  const pct = (v) => `${Math.round((1 - v) * 100)}%`;
+                  return (
+                    <div className="mut" style={{ fontSize: 11.5 }}>
+                      Pre-event drafts will be discounted <b style={{ color: "var(--red)" }}>{pct(t.redraft)}</b> in redraft
+                      and <b style={{ color: "var(--gold)" }}>{pct(t.dynasty)}</b> in dynasty.
+                    </div>
+                  );
+                })()}
+
+                <div>
+                  <label className="mut" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>Note (optional)</label>
+                  <input className="gs" style={{ width: "100%" }} placeholder="e.g. torn ACL in practice" value={evtNote} onChange={(e) => setEvtNote(e.target.value)} />
+                </div>
+
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <button className="btn btn-gold" disabled={busy || !evtPlayer || !evtDate} onClick={addEvent}>Save event</button>
+                  <span className="mut" style={{ fontSize: 11 }}>Then run <b>Refresh ADP</b> on the Stripe &amp; analytics tab to apply it.</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="panel" style={{ padding: 16 }}>
+              <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Active events</div>
+              {!evts.length ? (
+                <div className="mut" style={{ fontSize: 12.5 }}>No events yet. Add one above when news breaks.</div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                  <thead><tr>
+                    {["Player", "What happened", "Date", "Note", ""].map((h) => (
+                      <th key={h} style={{ textAlign: "left", color: "var(--mut)", fontWeight: 500, paddingBottom: 6 }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {evts.map((e) => {
+                      const t = evtTypes.find((x) => x.key === e.event_type);
+                      return (
+                        <tr key={e.id} style={{ borderTop: "1px solid var(--line)" }}>
+                          <td style={{ padding: "6px 0" }}><b>{e.full_name || e.player_id}</b> <span className="mut">{e.position}{e.team ? ` · ${e.team}` : ""}</span></td>
+                          <td style={{ padding: "6px 0" }}>{t ? t.label : e.event_type}</td>
+                          <td style={{ padding: "6px 0" }} className="num">{fmtDate(e.event_date)}</td>
+                          <td style={{ padding: "6px 0" }} className="mut">{e.note || "—"}</td>
+                          <td style={{ padding: "6px 0", textAlign: "right" }}>
+                            <button className="btn btn-mini" disabled={busy} onClick={() => removeEvent(e.id)}>Remove</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
           </div>
         )}
 

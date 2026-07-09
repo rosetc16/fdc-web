@@ -176,4 +176,11 @@ export const api = {
   // ---- admin: feedback inbox ----
   async adminFeedback() { return call('/api/admin/feedback'); },
   async adminFeedbackStatus(id, status) { return call(`/api/admin/feedback/${id}/status`, { method: 'POST', body: { status } }); },
+
+  // ---- Player events (dated value-changing news that stales out pre-event ADP samples) ----
+  async adminEventTypes() { return call('/api/admin/event-types'); },
+  async adminPlayerSearch(term) { return call(`/api/admin/player-search?q=${encodeURIComponent(term)}`); },
+  async adminEvents() { return call('/api/admin/events'); },
+  async adminAddEvent(body) { return call('/api/admin/events', { method: 'POST', body }); },
+  async adminDeleteEvent(id) { return call(`/api/admin/events/${id}`, { method: 'DELETE' }); },
 };
