@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28eo";
+const BUILD_TAG = "2026.06.28ep";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1105,7 +1105,11 @@ export function applyLivePack(pack, isReapply) {
   // it would bury veterans (Allen, Tua) and float no-name rookies to the top. Until real REDRAFT ADP
   // accumulates broadly, we rank the board by projections/VBD, which is a far more sensible default.
   const draftable = pack.players.filter((p) => normPos(p.pos));
-  const withRealAdp = draftable.filter((p) => p.adp != null);
+  // "Real" ADP for the purposes of the health guards means FORMAT-CORRECT ADP. A degraded number (pulled from
+  // a different format by the published fallback chain) is a stand-in, not this league's market — including
+  // thousands of them here would swamp the spread/distinct/domination checks with values that were never
+  // measured in this format, and hand a false verdict either way.
+  const withRealAdp = draftable.filter((p) => p.adp != null && !p.adpDegraded);
   const adpCount = withRealAdp.length;
   // Guard against rookie-contaminated samples: only trust ADP when coverage is BROAD (lots of players,
   // i.e. real redraft drafts are happening) — not just a handful of early rookie picks. A high count is
@@ -1162,8 +1166,14 @@ export function applyLivePack(pack, isReapply) {
     if (p.adp == null) return false;
     if (!dataSane) return false;               // corrupt/collapsed pack → trust nothing
     if (TRUST_LIVE_ADP) return true;           // connected draft: mirror the room
+    // A DEGRADED number came from a different format than this league (the published fallback chain will
+    // answer a superflex request with a 1QB number when the exact format doesn't cover that player). It is a
+    // rough stand-in, not this league's market — trusting it is how a QB the SF market takes ~13th sits at 40.
+    // We keep the value on the board (better than nothing deep down) but rank him by the value model instead,
+    // which knows about superflex QB scarcity and dynasty aging.
+    if (p.adpDegraded) return false;
     const n = Number(p.sampleN != null ? p.sampleN : 0);
-    return n >= MIN_TRUST_SAMPLES;             // published ADP ships sampleN 999, so it always qualifies
+    return n >= MIN_TRUST_SAMPLES;             // exact-format published ships sampleN 999, so it always qualifies
   };
   // How much of the board ended up on real market data? Used for the "board ranked by value" indicator.
   const trustedCount = (pack.players || []).filter((p) => normPos(p.pos) && trustPlayerAdp(p)).length;
@@ -1241,11 +1251,13 @@ export function applyLivePack(pack, isReapply) {
   // record where the board's ADP actually came from, for the build-chip diagnostic
   LIVE_ADP_SRC = (pack.players || []).reduce((acc, p) => {
     if (!normPos(p.pos)) return acc;
-    const k = p.adpSrc || 'none';
+    // Count a wrong-format published number as DEGRADED, not as market data — otherwise the chip reports
+    // thousands of "published" players and hides the fact that only a few dozen match this league's format.
+    const k = p.adp == null ? 'none' : (p.adpDegraded ? 'degraded' : (p.adpSrc || 'none'));
     acc[k] = (acc[k] || 0) + 1;
     if (trustPlayerAdp(p)) acc.trusted++;
     return acc;
-  }, { published: 0, harvest: 0, none: 0, trusted: 0 });
+  }, { published: 0, harvest: 0, degraded: 0, none: 0, trusted: 0 });
   return true;
 }
 
@@ -1265,8 +1277,9 @@ function applyAdpOverlay(pack) {
   const MIN_TRUST_SAMPLES = 4;
   for (const p of pack.players) {
     if (!p.name || p.adp == null) continue;
+    if (p.adpDegraded) continue;               // wrong-format stand-in — not this league's market
     const n = Number(p.sampleN != null ? p.sampleN : 0);
-    if (n < MIN_TRUST_SAMPLES) continue;       // published ADP ships sampleN 999, so it always qualifies
+    if (n < MIN_TRUST_SAMPLES) continue;       // exact-format published ships sampleN 999, so it always qualifies
     byName.set(normName(p.name), p);
     adpVals.push(Number(p.adp));
     withAdp++;
@@ -1307,11 +1320,11 @@ function applyAdpOverlay(pack) {
   // the chip kept reporting the ORIGINAL (global, 1QB-redraft) pack's numbers — which is why it could show
   // "trusted: 0" while the board was actually running on a perfectly good 48-player published SF board.
   LIVE_ADP_SRC = (pack.players || []).reduce((acc, p) => {
-    const k = p.adpSrc || (p.adp != null ? 'published' : 'none');
+    const k = p.adp == null ? 'none' : (p.adpDegraded ? 'degraded' : (p.adpSrc || 'published'));
     acc[k] = (acc[k] || 0) + 1;
-    if (p.adp != null && Number(p.sampleN || 0) >= MIN_TRUST_SAMPLES) acc.trusted++;
+    if (p.adp != null && !p.adpDegraded && Number(p.sampleN || 0) >= MIN_TRUST_SAMPLES) acc.trusted++;
     return acc;
-  }, { published: 0, harvest: 0, none: 0, trusted: 0 });
+  }, { published: 0, harvest: 0, degraded: 0, none: 0, trusted: 0 });
   return true;
 }
 
@@ -13291,9 +13304,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             if (fmt) {
               lines.push({ kind: "kvtable", items: [
                 { k: "From real drafts", v: String(src.harvest || 0), c: (src.harvest || 0) > 0 ? "var(--green)" : "var(--mut)" },
-                { k: "From published ADP", v: String(src.published || 0) },
+                { k: "Exact-format ADP", v: String(src.published || 0), c: (src.published || 0) > 0 ? "var(--green)" : "var(--mut)" },
+                { k: "Wrong-format ADP", v: String(src.degraded || 0), c: (src.degraded || 0) > 0 ? "var(--gold)" : "var(--mut)" },
                 { k: "No ADP (projected)", v: String(src.none || 0), c: "var(--mut)" },
-                { k: "Trusted by board", v: String(src.trusted || 0), c: (src.trusted || 0) >= 40 ? "var(--green)" : "var(--red)" },
+                { k: "Trusted by board", v: String(src.trusted || 0), c: (src.trusted || 0) >= 20 ? "var(--green)" : "var(--red)" },
                 { k: "Published format", v: LIVE_PACK_PUB_FORMAT || "\u2014" },
               ] });
             }
