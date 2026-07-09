@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28en";
+const BUILD_TAG = "2026.06.28eo";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1119,10 +1119,23 @@ export function applyLivePack(pack, isReapply) {
   const distinctAdp = new Set(adpNums.map((v) => Math.round(v * 10) / 10)).size;
   const freqA = {}; let maxFreqA = 0;
   for (const v of adpNums) { const k = Math.round(v * 10) / 10; freqA[k] = (freqA[k] || 0) + 1; if (freqA[k] > maxFreqA) maxFreqA = freqA[k]; }
-  const spreadOk = adpNums.length <= 30 || (adpNums[29] - adpNums[0]) >= 8; // top-30 must separate by 8+ picks
-  const distinctOk = distinctAdp >= Math.min(60, adpCount * 0.4);
-  const notDominated = maxFreqA <= adpCount * 0.25;
-  const ADP_NOT_COLLAPSED = spreadOk && distinctOk && notDominated;
+  // These guards exist to catch a CORRUPT/collapsed ADP feed (hundreds of players sharing one value), not a
+  // merely SMALL one. A niche format (SF + TE-premium + dynasty) legitimately publishes ADP for only the top
+  // few dozen players — that board is thin, but it is not corrupt, and it is exactly the market we want. The
+  // original thresholds were written for a full ~300-player redraft board and reject a valid 48-player one,
+  // which flips `dataSane` false and causes EVERY player (including 48 good published numbers matching the
+  // league format precisely) to be distrusted. So each check now scales with how many players actually have
+  // ADP, and the small-N cases are handled explicitly rather than falling through to a rejection.
+  const N = adpNums.length;
+  // (a) spread: only meaningful once we have a real top-30 to compare across
+  const spreadOk = N <= 30 || (adpNums[29] - adpNums[0]) >= 8;
+  // (b) distinctness: require most values to be distinct, but scale the bar to N. A 48-player board needs ~19
+  //     distinct values, not 60. Guard against the degenerate "everyone shares one number" case instead.
+  const distinctOk = N < 12 ? distinctAdp >= Math.max(2, Math.floor(N * 0.5)) : distinctAdp >= Math.min(60, Math.max(8, N * 0.35));
+  // (c) domination: no single ADP value may account for a large share of the board. Loosened slightly at very
+  //     small N where one repeated value is unremarkable, tightened at scale where it signals a broken feed.
+  const notDominated = maxFreqA <= Math.max(3, N * (N < 60 ? 0.34 : 0.25));
+  const ADP_NOT_COLLAPSED = N > 0 && spreadOk && distinctOk && notDominated;
   // Connected live drafts trust Sleeper's published ADP outright (mirror the real draft room). We still
   // require a minimum coverage so we're not trusting an empty pack, but we skip the collapse/rookie guards.
   const ADP_HEALTHY = TRUST_LIVE_ADP
@@ -1220,10 +1233,11 @@ export function applyLivePack(pack, isReapply) {
   LIVE_PACK_FORMAT = pack.format || null;
   LIVE_PACK_PUB_FORMAT = pack.publishedFormat || null;
   // Sparse == we have no real market spine to rank against. With per-player trust, a thin-but-usable format
-  // (e.g. SF/TEP dynasty early in the harvest) is NOT sparse: the top of the board is anchored on real drafts
-  // and only the deep bench is projection-filled. We only fall back to value-ranking when the trusted set is
-  // too small to order the board, or the pack looks corrupt.
-  LIVE_ADP_SPARSE = !dataSane || trustedCount < 40;
+  // (e.g. SF/TEP dynasty, where Sleeper publishes ADP for only the top few dozen players) is NOT sparse: the
+  // top of the board is anchored on real market data and the deep bench is projection-filled. Requiring 40
+  // trusted players was itself a bug for a format that only HAS ~48 — one bad pack shape and we'd throw the
+  // whole market away. A 20-player spine already covers the early rounds, which is where being wrong hurts.
+  LIVE_ADP_SPARSE = !dataSane || trustedCount < 20;
   // record where the board's ADP actually came from, for the build-chip diagnostic
   LIVE_ADP_SRC = (pack.players || []).reduce((acc, p) => {
     if (!normPos(p.pos)) return acc;
@@ -1259,24 +1273,25 @@ function applyAdpOverlay(pack) {
   }
   // Overlay as soon as there's a real market spine to work with. This used to demand 120 players, which meant a
   // thin-but-correct format (SF + TE-premium dynasty) was rejected wholesale and the board silently fell back
-  // to projection-ranking — burying proven stars whose current projection is depressed. 40 well-sampled players
-  // is enough to anchor the top of the board, which is where it matters.
-  if (withAdp < 40) return false;
+  // to projection-ranking — burying proven stars whose current projection is depressed. Sleeper publishes ADP
+  // for only the top few dozen players in a niche format; that's a small board, not a broken one.
+  if (withAdp < 20) return false;
   // SANITY GUARD: reject a DEGENERATE pack whose ADP has collapsed — e.g. hundreds of players sharing a
   // single value (~15.9), which happens when the backend's published/consensus ADP for a format is missing
   // or malformed. Applying it flattens the whole board (every player ~identical ADP, QBs/streamers floating
   // to the top). The static baseline is far better than a collapsed overlay, so we bail and keep it.
+  // Thresholds scale with N so a legitimately small published board isn't mistaken for a corrupt one.
   const sorted = adpVals.slice().sort((a, b) => a - b);
   const distinct = new Set(adpVals.map((v) => Math.round(v * 10) / 10)).size;
-  // (a) too few distinct values across a large pack = collapsed
-  if (distinct < Math.min(60, withAdp * 0.4)) return false;
+  // (a) too few distinct values across the pack = collapsed
+  if (distinct < Math.min(60, Math.max(8, withAdp * 0.35))) return false;
   // (b) the top of the board must actually spread out: the 30th-ranked ADP should be clearly later than the
   //     1st. If ~everyone is bunched near one number, the 1st and 30th will be nearly equal.
   if (sorted.length > 30 && (sorted[29] - sorted[0]) < 8) return false;
   // (c) a single value must not dominate the pack (e.g. >25% share one ADP)
   const freq = {}; let maxFreq = 0;
   for (const v of adpVals) { const k = Math.round(v * 10) / 10; freq[k] = (freq[k] || 0) + 1; if (freq[k] > maxFreq) maxFreq = freq[k]; }
-  if (maxFreq > withAdp * 0.25) return false;
+  if (maxFreq > Math.max(3, withAdp * (withAdp < 60 ? 0.34 : 0.25))) return false;
   for (const row of RAW) {
     const m = byName.get(normName(row[0]));
     if (m && m.adp != null) {
@@ -1288,6 +1303,15 @@ function applyAdpOverlay(pack) {
   LIVE_PACK_PUB_FORMAT = pack.publishedFormat || LIVE_PACK_PUB_FORMAT;
   LIVE_PACK_FORMAT = pack.format || LIVE_PACK_FORMAT;
   LIVE_ADP_SPARSE = false; // we now have real, format-correct ADP
+  // Keep the build-chip diagnostic honest. Previously only applyLivePack wrote this, so after a format overlay
+  // the chip kept reporting the ORIGINAL (global, 1QB-redraft) pack's numbers — which is why it could show
+  // "trusted: 0" while the board was actually running on a perfectly good 48-player published SF board.
+  LIVE_ADP_SRC = (pack.players || []).reduce((acc, p) => {
+    const k = p.adpSrc || (p.adp != null ? 'published' : 'none');
+    acc[k] = (acc[k] || 0) + 1;
+    if (p.adp != null && Number(p.sampleN || 0) >= MIN_TRUST_SAMPLES) acc.trusted++;
+    return acc;
+  }, { published: 0, harvest: 0, none: 0, trusted: 0 });
   return true;
 }
 
