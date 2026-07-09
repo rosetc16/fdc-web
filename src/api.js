@@ -14,7 +14,12 @@ let _lastStateUpdatedAt = null;
 export const getToken = () => { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } };
 export const setToken = (t) => { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch {} };
 
-async function call(path, { method = 'GET', body, auth = true, retries = 2 } = {}) {
+// `timeoutMs`   — override the per-attempt timeout. Long admin jobs (harvest, full refresh) run SYNCHRONOUSLY
+//                 on the server and can take minutes; the default 45s ceiling aborts them client-side long
+//                 before they finish, which surfaces as a bogus "BACKEND_WAKING" even though the job is fine.
+// `retries`     — set to 0 for anything NON-IDEMPOTENT. Aborting a fetch does NOT cancel the server, so a
+//                 retry can stack a second harvest/refresh on top of the first one that's still running.
+async function call(path, { method = 'GET', body, auth = true, retries = 2, timeoutMs } = {}) {
   if (!API) throw new Error('NO_BACKEND');
   const headers = { 'Content-Type': 'application/json' };
   const token = auth ? getToken() : null;
@@ -24,9 +29,11 @@ async function call(path, { method = 'GET', body, auth = true, retries = 2 } = {
     try {
       const ctrl = new AbortController();
       // Render free/starter dynos can cold-start slowly; give the FIRST attempt a long leash (45s) so a
-      // waking server isn't reported as a hard failure, then shorter timeouts on retries.
-      const timeoutMs = attempt === 0 ? 45000 : 20000;
-      const to = setTimeout(() => ctrl.abort(), timeoutMs);
+      // waking server isn't reported as a hard failure, then shorter timeouts on retries. A caller-supplied
+      // timeoutMs wins outright, and applies to EVERY attempt (a retry that's shorter than a cold start is
+      // guaranteed to fail, which is exactly what made long jobs look permanently broken).
+      const perAttempt = timeoutMs != null ? timeoutMs : (attempt === 0 ? 45000 : 20000);
+      const to = setTimeout(() => ctrl.abort(), perAttempt);
       let res;
       try {
         res = await fetch(`${API}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined, signal: ctrl.signal });
@@ -52,6 +59,34 @@ async function call(path, { method = 'GET', body, auth = true, retries = 2 } = {
 
 export const api = {
   hasBackend,
+
+  // Wake a sleeping Render dyno before issuing a slow request.
+  //
+  // The Starter tier sleeps when idle and takes ~10-40s to boot. A long admin job fired at a cold backend
+  // spends its whole timeout budget just waiting for the server to exist, then aborts — surfacing as
+  // "BACKEND_WAKING" even though nothing is actually wrong. Pinging the cheap, rate-limit-exempt /api/health
+  // first separates the two concerns: we wait for the server to come up, THEN start the job with a full,
+  // uninterrupted timeout budget. Returns true once the backend answers.
+  async wake({ maxWaitMs = 90000, onTick } = {}) {
+    if (!API) return false;
+    const started = Date.now();
+    let tries = 0;
+    while (Date.now() - started < maxWaitMs) {
+      tries++;
+      try {
+        const ctrl = new AbortController();
+        const to = setTimeout(() => ctrl.abort(), 10000);
+        try {
+          const res = await fetch(`${API}/api/health`, { signal: ctrl.signal });
+          if (res.ok) return true;
+        } finally { clearTimeout(to); }
+      } catch { /* still booting */ }
+      if (onTick) onTick(Math.round((Date.now() - started) / 1000), tries);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    return false;
+  },
+
   // ---- auth ----
   async signup(email, password) {
     const r = await call('/api/auth/signup', { method: 'POST', auth: false, body: { email, password } });
@@ -168,7 +203,14 @@ export const api = {
   async adminUsers(search) { return call(`/api/admin/users${search ? `?search=${encodeURIComponent(search)}` : ''}`); },
   async adminSetDisabled(email, disabled) { return call('/api/admin/set-disabled', { method: 'POST', body: { email, disabled } }); },
   async adminRevokeComp(email) { return call('/api/admin/revoke-comp', { method: 'POST', body: { email } }); },
-  async adminRunJob(job) { return call('/api/admin/run-job', { method: 'POST', body: { job } }); },
+  // Admin data jobs run SYNCHRONOUSLY on the server and can take minutes (a full refresh re-crawls real
+  // drafts). Two things matter here:
+  //   • a long timeout, or the client aborts a job that's working fine
+  //   • retries: 0 — a client abort does NOT cancel the server, so retrying stacks a second harvest on top
+  //     of the one still running, hammering the DB and duplicating work
+  async adminRunJob(job) {
+    return call('/api/admin/run-job', { method: 'POST', body: { job }, timeoutMs: 300000, retries: 0 });
+  },
   // ---- admin: invites ----
   async adminInvite(email, scope) { return call('/api/admin/invite', { method: 'POST', body: { email, scope } }); },
   async adminInvites() { return call('/api/admin/invites'); },

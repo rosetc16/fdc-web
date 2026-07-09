@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28el";
+const BUILD_TAG = "2026.06.28en";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2592,8 +2592,22 @@ function setBuildLane(l) { BUILD_LANE = l || "balanced"; }
 function setDynastyGlobal(v) { isDynastyGlobal = !!v; }
 function setRosterRounds(n) { ROSTER_ROUNDS = Math.max(1, +n || 15); }
 function seedRng(seed) { _rngState = (seed >>> 0) || 1; }
+// An ISOLATED seeded generator. `seedRng`/`rng` share one module-level `_rngState`, so any caller that reseeds
+// mid-render silently changes the number stream every OTHER consumer (runSims, projectPath) will draw from.
+// That's how a cosmetic toggle like Fast/Normal could reorder the recommendations: flipping it re-ran the CPU
+// pick effect, which reseeded the shared RNG, so the next sim recompute drew from a different stream. Anything
+// that needs its own reproducible randomness should take a private generator from here instead.
+function makeRng(seed) {
+  let s = (seed >>> 0) || 1;
+  return function () {
+    s |= 0; s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 function rng() { _rngState |= 0; _rngState = (_rngState + 0x6D2B79F5) | 0; let t = Math.imul(_rngState ^ (_rngState >>> 15), 1 | _rngState); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
-function sample(cands, ws) { const sum = ws.reduce((a, b) => a + b, 0); let r = rng() * sum; for (let i = 0; i < cands.length; i++) { r -= ws[i]; if (r <= 0) return i; } return cands.length - 1; }
+function sample(cands, ws, rnd) { const r0 = rnd || rng; const sum = ws.reduce((a, b) => a + b, 0); let r = r0() * sum; for (let i = 0; i < cands.length; i++) { r -= ws[i]; if (r <= 0) return i; } return cands.length - 1; }
 
 function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
   seedRng(picks.length * 2654435761 + userIdx * 40503 + (cfg.teams || 12)); // stable per draft state
@@ -3914,6 +3928,13 @@ table.board tbody tr.pickmarker:hover td{background:transparent}
 table.board tbody tr.pickmarker td{border-bottom:none;padding:0;background:transparent!important}
 table.board tbody tr.pickmarker td.frz,table.board tbody tr.pickmarker:hover td.frz{background:transparent;box-shadow:none;position:static}
 table.board th.frz,table.board td.frz{position:sticky;left:0;z-index:3;background:var(--panel)}
+/* Recommended-pick row. The frozen Player column is sticky with its own opaque background, so a background set
+   on the row gets painted over and the leftmost cell stays un-highlighted. We therefore tint every cell —
+   including .frz — and hang the gold edge marker off the frozen cell so it rides along on horizontal scroll. */
+table.board tr.recrow>td{background:rgba(242,182,60,.14)}
+table.board tr.recrow>td.frz{background:linear-gradient(90deg,rgba(242,182,60,.24),rgba(242,182,60,.14)),var(--panel);box-shadow:inset 3px 0 0 var(--gold)}
+table.board tr.recrow:hover>td{background:rgba(242,182,60,.20)}
+table.board tr.recrow:hover>td.frz{background:linear-gradient(90deg,rgba(242,182,60,.30),rgba(242,182,60,.20)),var(--panel)}
 table.board tbody tr:nth-child(even) td.frz{background:#141A22}
 table.board tbody tr:hover td.frz{background:#1A2230}
 table.board th.frz{z-index:4;box-shadow:1px 0 0 var(--line)}
@@ -10557,7 +10578,20 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
   const cancelInvite = async (email) => { setBusy(true); try { await api.adminCancelInvite(email); await loadInvites(); note(`Invite canceled for ${email}`); } catch (e) {} finally { setBusy(false); } };
   const [jobResult, setJobResult] = useState(null);
   const [trendsDiag, setTrendsDiag] = useState(null);
-  const loadTrendsDiag = async () => { try { const r = await api.trendsDiag(); setTrendsDiag(r); } catch (e) { setTrendsDiag({ error: e.data?.error || e.message }); } };
+  const loadTrendsDiag = async () => {
+    try { setTrendsDiag(await api.trendsDiag()); }
+    catch (e) {
+      if (e.message === "BACKEND_WAKING") {
+        // Not an error — just a sleeping dyno. Wake it and retry once.
+        setTrendsDiag({ waking: true });
+        const awake = await api.wake({ maxWaitMs: 90000 });
+        if (awake) { try { setTrendsDiag(await api.trendsDiag()); return; } catch (e2) { /* fall through */ } }
+        setTrendsDiag({ error: "Backend is still waking up. Give it a moment and reopen this tab." });
+      } else {
+        setTrendsDiag({ error: e.data?.error || e.message });
+      }
+    }
+  };
   useEffect(() => { if (hasBackend && tab === "tools") loadTrendsDiag(); }, [tab]);
 
   // ---- Player events: dated news that makes pre-event ADP samples stale for one player ----
@@ -10599,13 +10633,29 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
   };
   const runJob = async (job) => {
     setBusy(true); setJobResult(null);
-    note(job === "refresh" ? "Running full refresh — this can take a minute…" : "Pulling Sleeper ADP…");
     try {
+      // The backend sleeps when idle (Render Starter). Wake it BEFORE starting the job, so the job gets a
+      // full, uninterrupted timeout budget instead of spending it waiting for the server to boot — which is
+      // what made these buttons report "BACKEND_WAKING" even though nothing was actually broken.
+      note("Waking the server…");
+      const awake = await api.wake({ maxWaitMs: 90000, onTick: (secs) => note(`Waking the server… ${secs}s`) });
+      if (!awake) {
+        setJobResult({ ok: false, error: "The backend did not wake within 90 seconds. It may be redeploying — wait a moment and try again." });
+        note("Backend is still asleep — try again shortly.");
+        return;
+      }
+      note(job === "refresh" ? "Running full refresh — this re-crawls real drafts and can take a few minutes…" : "Pulling Sleeper ADP…");
       const r = await api.adminRunJob(job);
       setJobResult(r);
       const w = r?.detail?.publishedAdp?.observationsWritten ?? r?.detail?.observationsWritten;
       note(r.ok ? `Done. ${w != null ? w.toLocaleString() + " ADP rows written." : "Check the result below."}` : "Job error — see result below.");
-    } catch (e) { setJobResult({ ok: false, error: e.data?.error || e.message }); note("Job failed — see result below."); }
+    } catch (e) {
+      const msg = e.message === "BACKEND_WAKING"
+        ? "The job ran longer than the client would wait. It is probably STILL RUNNING on the server — wait a minute, then click Refresh stats to check."
+        : (e.data?.error || e.message);
+      setJobResult({ ok: false, error: msg });
+      note("Job did not return — see the note below.");
+    }
     finally { setBusy(false); }
   };
   const setFbStatus = async (id, status) => { try { await api.adminFeedbackStatus(id, status); await loadFeedback(); } catch (e) {} };
@@ -10887,6 +10937,7 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
               </div>
               <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 10 }}>This pool powers the "How the field drafts" tables. It harvests automatically — a little after each deploy if empty, and every night at 4 AM — so you never have to run it by hand. The numbers below are just a health check.</div>
               {!trendsDiag && <div className="mut" style={{ fontSize: 12 }}>Loading pool stats…</div>}
+              {trendsDiag && trendsDiag.waking && <div style={{ fontSize: 12, color: "var(--gold)" }}>Waking the server… this takes up to a minute on the first request.</div>}
               {trendsDiag && trendsDiag.error && <div style={{ fontSize: 12, color: "var(--red)" }}>Couldn't load: {trendsDiag.error}</div>}
               {trendsDiag && !trendsDiag.error && (
                 <>
@@ -11484,7 +11535,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [search, setSearch] = useState("");
   const [posFilter, setPosFilter] = useState("ALL");
   const [sortState, setSortState] = useState({ key: "adp", dir: 1 });
-  const [manualSort, setManualSort] = useState(false); // true once the user clicks a column header
+  // Start the board in an explicit ADP sort. Previously the board opened in a STRATEGY-driven order (a blend of
+  // market and build score) until you clicked a column header, which meant the default view wasn't actually
+  // "the market's board" — the thing you most want to see when a draft opens. Strategy ordering is still one
+  // click away: clear the sort by clicking the active ADP header off, or just pick a different column.
+  const [manualSort, setManualSort] = useState(true); // board opens in true ADP order
   const [showDrafted, setShowDrafted] = useState(false); // default: show best AVAILABLE; toggle to include drafted
   const [rookieOnly, setRookieOnly] = useState(false);
   const DEFAULT_COLS = { adp: true, consensus: false, edge: true, proj: true, floor: false, ceil: false, vbd: true, value: true, rank: true, vbdTier: true, adpTier: false, mockAdp: false, myRank: false, blendAdp: false, role: true, roleDesc: true, age: true, bye: true, avail: true, passYd: true, passTD: true, rushYd: true, rushTD: true, rec: true, recYd: true, recTD: true, tgt: false };
@@ -12364,19 +12419,24 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         const cands0 = []; for (const p of sortedAdp) { if (!drafted.has(p.id)) { cands0.push(p); if (cands0.length >= 34) break; } }
         const cands = legalCands(cands0, counts, cfg);
         let ws = cands.map((c, ri) => weightFor(c, pickNum, counts, rd, recent, dem, ROUNDS, ri));
-        // MOCK VARIANCE: in a mock, seed a per-mock RNG and apply a MILD temperature to the weights so each
-        // mock plays out a little differently (different runs, an occasional slide) — good practice reps.
+        // MOCK VARIANCE: in a mock, use a PRIVATE per-mock RNG and apply a MILD temperature to the weights so
+        // each mock plays out a little differently (different runs, an occasional slide) — good practice reps.
         // Bounded on purpose: a small exponent flattening + a light per-candidate jitter, so opponents still
         // track ADP closely and never reach wildly. Live/connected drafts are untouched (deterministic feed).
+        //
+        // Deliberately NOT `seedRng()`: that reseeds the module-wide RNG shared with runSims/projectPath, so
+        // re-running this effect (e.g. because the Fast/Normal toggle is in its dependency list) would shift
+        // the number stream underneath the recommendation sims and silently reorder "For this pick".
+        let mockRnd = null;
         if (mockLike && cfg.mockSeed != null) {
-          seedRng(((cfg.mockSeed >>> 0) ^ (pickNum * 2654435761)) >>> 0);
+          mockRnd = makeRng(((cfg.mockSeed >>> 0) ^ (pickNum * 2654435761)) >>> 0);
           const TEMP = 0.82;               // <1 flattens the distribution slightly (more spread, not chaos)
           ws = ws.map((w) => {
-            const jitter = 0.85 + rng() * 0.3; // ±15% per-candidate wobble
+            const jitter = 0.85 + mockRnd() * 0.3; // ±15% per-candidate wobble
             return Math.pow(Math.max(w, 1e-9), TEMP) * jitter;
           });
         }
-        const chosen = cands[sample(cands, ws)];
+        const chosen = cands[sample(cands, ws, mockRnd)];
         setPreds((pp) => [...pp, currentPred ? currentPred.id : null]);
         return [...prev, chosen.id];
       });
@@ -14043,7 +14103,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       const isRec = !gone && p.id === recId;
                       const injInfo = injuryView(p);
                       outRows.push(
-                      <tr key={p.id} className={gone ? "struck" : ""} style={isRec ? { background: "linear-gradient(90deg, rgba(242,182,60,.22), rgba(242,182,60,.06))", boxShadow: "inset 3px 0 0 var(--gold)" } : undefined}>
+                      <tr key={p.id} className={`${gone ? "struck" : ""}${isRec ? " recrow" : ""}`.trim()}>
                         <td className="frz" style={{ borderLeft: `3px solid ${gone ? "transparent" : (POS_COLOR[p.pos] || "transparent")}` }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
                             <button onClick={() => toggleQueue(p.name)} title={queue.has(p.name) ? "Starred — in your priority queue. Click to remove." : "Star this player to add him to your priority queue."}
