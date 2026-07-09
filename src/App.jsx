@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ek";
+const BUILD_TAG = "2026.06.28el";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1051,6 +1051,9 @@ let META = {
 // board reflects reality. The engine logic is unchanged — it just reads fresher RAW/STATS/META.
 let LIVE_LOADED = false;
 let LIVE_ADP_SPARSE = false; // true when live ADP is too thin to trust → engine ranks by VBD value
+// Diagnostics: how many players' ADP came from each source on the last loaded pack. Surfaced in the build chip
+// so it's obvious at a glance whether the board is running on real format-correct market data or a fallback.
+let LIVE_ADP_SRC = { published: 0, harvest: 0, none: 0, trusted: 0 };
 // When true (set for Sleeper-CONNECTED live drafts), we TRUST the published Sleeper ADP as-is and skip the
 // "collapsed/degenerate" guards + VBD rebuild. Rationale: for a live connected draft the user wants the board
 // to mirror exactly what Sleeper's own draft room shows, which is Sleeper's published ADP. Even if that ADP
@@ -1221,6 +1224,14 @@ export function applyLivePack(pack, isReapply) {
   // and only the deep bench is projection-filled. We only fall back to value-ranking when the trusted set is
   // too small to order the board, or the pack looks corrupt.
   LIVE_ADP_SPARSE = !dataSane || trustedCount < 40;
+  // record where the board's ADP actually came from, for the build-chip diagnostic
+  LIVE_ADP_SRC = (pack.players || []).reduce((acc, p) => {
+    if (!normPos(p.pos)) return acc;
+    const k = p.adpSrc || 'none';
+    acc[k] = (acc[k] || 0) + 1;
+    if (trustPlayerAdp(p)) acc.trusted++;
+    return acc;
+  }, { published: 0, harvest: 0, none: 0, trusted: 0 });
   return true;
 }
 
@@ -13179,10 +13190,35 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <i className="ti ti-flask" style={{ fontSize: 13 }} aria-hidden="true" />Scenario mode
           </button>
         )}
-        {/* Subtle build tag — confirms which deploy is live, and (on hover) which ADP dataset the board is
-            using. Invaluable for diagnosing "did my change actually ship?" and "where do these ADPs come from?" */}
-        <span className="mut" style={{ fontSize: 10, opacity: 0.6, marginLeft: 4, fontVariantNumeric: "tabular-nums", cursor: "default" }}
-          title={`Build v${BUILD_TAG}${typeof LIVE_PACK_FORMAT !== "undefined" && LIVE_PACK_FORMAT ? `\nADP data: ${LIVE_PACK_FORMAT}${LIVE_PACK_PUB_FORMAT ? ` (published ${LIVE_PACK_PUB_FORMAT})` : " — no published ADP for this format, using harvested consensus"}` : "\nADP data: built-in fallback (live pack not loaded)"}${typeof LIVE_ADP_SPARSE !== "undefined" && LIVE_ADP_SPARSE ? "\nBoard ranked by VALUE (live ADP too thin to trust)" : ""}${TRUST_LIVE_ADP ? "\nTrusting live Sleeper ADP (connected draft)" : ""}`}>
+        {/* Subtle build tag — confirms which deploy is live, and (on hover) exactly where the board's ADP came
+            from. A native `title` here proved unreliable (slow, and it never fired when the pointer landed on the
+            text node), so this uses the app's own tooltip. This is the single most useful diagnostic when a
+            player's ADP looks wrong: it says whether the board is on real format-correct market data or a
+            fallback, and how many players came from each source. */}
+        <span className="mut" style={{ fontSize: 10, opacity: 0.6, marginLeft: 4, fontVariantNumeric: "tabular-nums", cursor: "help" }}
+          onMouseEnter={(e) => {
+            const src = (typeof LIVE_ADP_SRC !== "undefined" && LIVE_ADP_SRC) ? LIVE_ADP_SRC : { published: 0, harvest: 0, none: 0, trusted: 0 };
+            const fmt = (typeof LIVE_PACK_FORMAT !== "undefined" && LIVE_PACK_FORMAT) ? LIVE_PACK_FORMAT : null;
+            const sparse = typeof LIVE_ADP_SPARSE !== "undefined" && LIVE_ADP_SPARSE;
+            const lines = [
+              { kind: "take", tone: "neutral", x: `Build v${BUILD_TAG}` },
+              { kind: "take", tone: fmt ? "good" : "bad", x: fmt ? `ADP format: ${fmt}` : "ADP: built-in fallback (live pack not loaded)" },
+            ];
+            if (fmt) {
+              lines.push({ kind: "kvtable", items: [
+                { k: "From real drafts", v: String(src.harvest || 0), c: (src.harvest || 0) > 0 ? "var(--green)" : "var(--mut)" },
+                { k: "From published ADP", v: String(src.published || 0) },
+                { k: "No ADP (projected)", v: String(src.none || 0), c: "var(--mut)" },
+                { k: "Trusted by board", v: String(src.trusted || 0), c: (src.trusted || 0) >= 40 ? "var(--green)" : "var(--red)" },
+                { k: "Published format", v: LIVE_PACK_PUB_FORMAT || "\u2014" },
+              ] });
+            }
+            lines.push({ kind: "take", tone: sparse ? "bad" : "good",
+              x: sparse ? "Board ranked by VALUE \u2014 not enough trusted market ADP" : "Board ranked by real market ADP" });
+            if (TRUST_LIVE_ADP) lines.push({ kind: "take", tone: "good", x: "Trusting live Sleeper ADP (connected draft)" });
+            showTip(e, lines);
+          }}
+          onMouseLeave={hideTip}>
           v{BUILD_TAG}
         </span>
       </div>
@@ -13995,7 +14031,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     const outRows = [];
                     // The player the engine is recommending right now — highlight his row so it's easy to spot in
                     // the full list. Prefer YOUR next-pick recommendation; fall back to the on-clock verdict.
-                    const recId = (mySelAdvice && mySelAdvice.verdict && mySelAdvice.verdict.id) || (advice && advice.verdict && advice.verdict.id) || null;
+                    // The player the engine recommends for YOUR pick — highlighted so it's easy to spot in the
+                    // full list. Deliberately NOT falling back to `advice` (the on-clock verdict): when someone
+                    // else is picking, that's a recommendation for THEIR roster, and highlighting it here looks
+                    // like a random row lighting up for no reason.
+                    const recId = (mySelAdvice && mySelAdvice.verdict && mySelAdvice.verdict.id != null)
+                      ? mySelAdvice.verdict.id
+                      : (onClock === userIdx && advice && advice.verdict && advice.verdict.id != null ? advice.verdict.id : null);
                     rows.forEach((p) => {
                       const gone = draftedSet.has(p.id);
                       const isRec = !gone && p.id === recId;
