@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28eq";
+const BUILD_TAG = "2026.06.28er";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -10668,6 +10668,20 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
   const [jobResult, setJobResult] = useState(null);
   const [runningJob, setRunningJob] = useState(null);   // which job id is currently running (for per-button UI)
   const [jobProgress, setJobProgress] = useState("");   // live progress line shown next to the buttons
+  const [dbSize, setDbSize] = useState(null);           // { total, tables[], adp_observations }
+  const [dbBusy, setDbBusy] = useState(false);
+  const loadDbSize = async () => {
+    setDbSize({ loading: true });
+    try { await api.wake({ maxWaitMs: 90000 }); setDbSize(await api.adminDbSize()); }
+    catch (e) { setDbSize({ error: e.data?.error || e.message }); }
+  };
+  const cleanupDb = async (keepDays) => {
+    if (!window.confirm(`Delete harvested draft picks older than ${keepDays} days? Your ADP numbers are unaffected — they're stored separately and recompute on the next refresh. This only frees disk space.`)) return;
+    setDbBusy(true);
+    try { await api.wake({ maxWaitMs: 90000 }); const r = await api.adminDbCleanup(keepDays); note(`Freed space: removed ${Number(r.deleted || 0).toLocaleString()} old harvest rows.`); await loadDbSize(); }
+    catch (e) { note("Cleanup failed: " + (e.data?.error || e.message)); }
+    finally { setDbBusy(false); }
+  };
   const [trendsDiag, setTrendsDiag] = useState(null);
   const loadTrendsDiag = async () => {
     try { setTrendsDiag(await api.trendsDiag()); }
@@ -10683,7 +10697,7 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
       }
     }
   };
-  useEffect(() => { if (hasBackend && tab === "tools") loadTrendsDiag(); }, [tab]);
+  useEffect(() => { if (hasBackend && tab === "tools") { loadTrendsDiag(); loadDbSize(); } }, [tab]);
 
   // ---- Player events: dated news that makes pre-event ADP samples stale for one player ----
   const [evts, setEvts] = useState([]);
@@ -11023,6 +11037,46 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
                 </div>
               )}
               <div className="mut" style={{ fontSize: 11, marginTop: 8 }}>After it finishes, hard-refresh the app and reconnect your league to see the updated board.</div>
+            </div>
+
+            {/* DATABASE STORAGE — diagnose and reclaim disk. With a few users, storage pressure is the harvest pool. */}
+            <div className="panel" style={{ padding: 16, gridColumn: "1 / -1" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
+                <div className="disp" style={{ fontSize: 16, fontWeight: 700 }}>Database storage</div>
+                <button className="btn btn-mini" disabled={dbBusy} onClick={loadDbSize}><i className="ti ti-refresh" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Check size</button>
+              </div>
+              <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 10 }}>
+                Storage pressure here is almost never about users — a few accounts take almost no space. It's the
+                <b style={{ color: "var(--ink)" }}> harvested-draft ADP pool</b>, which grows on every harvest pass. Your actual ADP numbers live in a
+                separate table and are unaffected by cleanup, so trimming old raw picks is safe and frees space without touching the board.
+              </div>
+              {dbSize && dbSize.loading && <div className="mut" style={{ fontSize: 12 }}>Reading database size…</div>}
+              {dbSize && dbSize.error && <div style={{ fontSize: 12, color: "var(--red)" }}>Couldn't read size: {dbSize.error}</div>}
+              {dbSize && dbSize.total && (
+                <>
+                  <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 10 }}>
+                    <div><div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{dbSize.total.size}</div><div className="mut" style={{ fontSize: 10.5 }}>total database size</div></div>
+                    {dbSize.adp_observations && <div><div className="num" style={{ fontSize: 22, fontWeight: 800, color: "var(--gold)" }}>{Number(dbSize.adp_observations.harvest_rows || 0).toLocaleString()}</div><div className="mut" style={{ fontSize: 10.5 }}>harvested pick rows</div></div>}
+                  </div>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 12 }}>
+                    <thead><tr>{["Table", "Size", "≈ rows"].map((h) => <th key={h} style={{ textAlign: h === "Table" ? "left" : "right", color: "var(--mut)", fontWeight: 500, paddingBottom: 5 }}>{h}</th>)}</tr></thead>
+                    <tbody>
+                      {(dbSize.tables || []).slice(0, 8).map((t) => (
+                        <tr key={t.table} style={{ borderTop: "1px solid var(--line)" }}>
+                          <td style={{ padding: "5px 0" }}>{t.table}</td>
+                          <td style={{ padding: "5px 0", textAlign: "right" }} className="num">{t.size}</td>
+                          <td style={{ padding: "5px 0", textAlign: "right" }} className="num mut">{Number(t.approx_rows || 0).toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <button className="btn btn-gold" disabled={dbBusy} onClick={() => cleanupDb(45)}>{dbBusy ? "Cleaning…" : "Free space — keep last 45 days"}</button>
+                    <button className="btn" disabled={dbBusy} onClick={() => cleanupDb(21)}>{dbBusy ? "Cleaning…" : "Aggressive — keep last 21 days"}</button>
+                    <span className="mut" style={{ fontSize: 11 }}>Deletes only old raw harvest picks. ADP numbers recompute on the next refresh.</span>
+                  </div>
+                </>
+              )}
             </div>
             <div className="panel" style={{ padding: 16, gridColumn: "1 / -1" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
