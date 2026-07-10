@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ep";
+const BUILD_TAG = "2026.06.28eq";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4028,6 +4028,7 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .spin-slow{animation:spin 22s linear infinite;transform-origin:center;transform-box:fill-box}
 .spin-needle{transform-origin:50% 50%;transition:transform 1.1s cubic-bezier(.34,1.56,.64,1)}
 @keyframes spin{to{transform:rotate(360deg)}}
+.spin{display:inline-block;animation:spin .9s linear infinite}
 @keyframes pulseGold{0%,100%{opacity:.5}50%{opacity:1}}
 .glowline{background:linear-gradient(90deg,transparent,var(--gold),transparent);height:1px;opacity:.5}
 .hover-row{transition:background .12s}.hover-row:hover{background:#16160F}
@@ -4146,6 +4147,56 @@ const PlayerPhoto = ({ sid, pos, size = 22 }) => {
 const PosName = ({ p }) => <span><Dot pos={p.pos} /><span className="mut" style={{ fontSize: "0.92em" }}>{p.pos}</span> <b>{p.name}</b></span>;
 
 /* ============================================================ APP SHELL */
+// A small, always-present build badge fixed to the top-right of the viewport. It renders on EVERY page (home,
+// library, admin, draft) because it's mounted once at the App root rather than inside any one screen. Hovering
+// it shows where the board's ADP is coming from — the key diagnostic. Self-contained (its own hover panel) so
+// it behaves identically on every page without depending on any screen's tooltip system.
+function VersionBadge() {
+  const [open, setOpen] = useState(false);
+  const src = (typeof LIVE_ADP_SRC !== "undefined" && LIVE_ADP_SRC) ? LIVE_ADP_SRC : null;
+  const fmt = (typeof LIVE_PACK_FORMAT !== "undefined" && LIVE_PACK_FORMAT) ? LIVE_PACK_FORMAT : null;
+  const sparse = typeof LIVE_ADP_SPARSE !== "undefined" && LIVE_ADP_SPARSE;
+  const Row = ({ k, v, c }) => (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 16, padding: "2px 0" }}>
+      <span style={{ color: "var(--mut)" }}>{k}</span><span style={{ color: c || "var(--ink)", fontWeight: 700 }}>{v}</span>
+    </div>
+  );
+  return (
+    <span style={{ position: "fixed", top: 6, right: 10, zIndex: 900, pointerEvents: "auto" }}
+      onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <span style={{ fontSize: 10, opacity: 0.5, color: "var(--mut)", fontFamily: "var(--mono)", fontVariantNumeric: "tabular-nums", cursor: "help", userSelect: "none" }}>
+        v{BUILD_TAG}
+      </span>
+      {open && (
+        <div style={{ position: "absolute", top: 18, right: 0, minWidth: 250, background: "var(--panel)", border: "1px solid var(--line)",
+          borderRadius: 10, padding: 12, boxShadow: "0 8px 30px #000a", fontSize: 11.5, fontFamily: "var(--mono)", lineHeight: 1.5 }}>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>Build v{BUILD_TAG}</div>
+          {fmt ? (
+            <>
+              <div style={{ color: "var(--green)", marginBottom: 6 }}>ADP format: {fmt}</div>
+              {src && (
+                <div style={{ borderTop: "1px solid var(--line)", borderBottom: "1px solid var(--line)", padding: "6px 0", margin: "6px 0" }}>
+                  <Row k="From real drafts" v={src.harvest || 0} c={(src.harvest || 0) > 0 ? "var(--green)" : "var(--mut)"} />
+                  <Row k="Exact-format ADP" v={src.published || 0} c={(src.published || 0) > 0 ? "var(--green)" : "var(--mut)"} />
+                  <Row k="Wrong-format ADP" v={src.degraded || 0} c={(src.degraded || 0) > 0 ? "var(--gold)" : "var(--mut)"} />
+                  <Row k="No ADP (projected)" v={src.none || 0} c="var(--mut)" />
+                  <Row k="Trusted by board" v={src.trusted || 0} c={(src.trusted || 0) >= 20 ? "var(--green)" : "var(--red)"} />
+                </div>
+              )}
+              <div style={{ color: sparse ? "var(--red)" : "var(--green)" }}>
+                {sparse ? "Board ranked by VALUE — thin market ADP" : "Board ranked by real market ADP"}
+              </div>
+            </>
+          ) : (
+            <div style={{ color: "var(--mut)" }}>Open a draft to see its ADP source.</div>
+          )}
+        </div>
+      )}
+    </span>
+  );
+}
+
+
 export default function App() {
   // Restore the last view on refresh (sessionStorage: survives reload, clears when the tab closes) so a
   // page refresh returns you to where you were instead of the home page. Only restore routes that are safe
@@ -4614,6 +4665,7 @@ export default function App() {
   return (
     <div className="gs-root">
       <style>{css}</style>
+      <VersionBadge />
       {updateReady && (
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 200, background: "var(--gold)", color: "#151002", padding: "9px 16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, flexWrap: "wrap", boxShadow: "0 2px 12px #0006", fontSize: 13.5 }}>
           <i className="ti ti-sparkles" style={{ fontSize: 16 }} aria-hidden="true" />
@@ -10614,6 +10666,8 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
   };
   const cancelInvite = async (email) => { setBusy(true); try { await api.adminCancelInvite(email); await loadInvites(); note(`Invite canceled for ${email}`); } catch (e) {} finally { setBusy(false); } };
   const [jobResult, setJobResult] = useState(null);
+  const [runningJob, setRunningJob] = useState(null);   // which job id is currently running (for per-button UI)
+  const [jobProgress, setJobProgress] = useState("");   // live progress line shown next to the buttons
   const [trendsDiag, setTrendsDiag] = useState(null);
   const loadTrendsDiag = async () => {
     try { setTrendsDiag(await api.trendsDiag()); }
@@ -10669,31 +10723,30 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
     finally { setBusy(false); }
   };
   const runJob = async (job) => {
-    setBusy(true); setJobResult(null);
+    setBusy(true); setJobResult(null); setRunningJob(job); setJobProgress("Waking the server…");
     try {
-      // The backend sleeps when idle (Render Starter). Wake it BEFORE starting the job, so the job gets a
-      // full, uninterrupted timeout budget instead of spending it waiting for the server to boot — which is
-      // what made these buttons report "BACKEND_WAKING" even though nothing was actually broken.
-      note("Waking the server…");
-      const awake = await api.wake({ maxWaitMs: 90000, onTick: (secs) => note(`Waking the server… ${secs}s`) });
+      // Wake the (possibly sleeping) dyno first, showing a live counter, so the button visibly does something
+      // even during the 10-40s cold start.
+      const awake = await api.wake({ maxWaitMs: 90000, onTick: (secs) => setJobProgress(`Waking the server… ${secs}s`) });
       if (!awake) {
         setJobResult({ ok: false, error: "The backend did not wake within 90 seconds. It may be redeploying — wait a moment and try again." });
-        note("Backend is still asleep — try again shortly.");
+        setJobProgress("");
         return;
       }
-      note(job === "refresh" ? "Running full refresh — this re-crawls real drafts and can take a few minutes…" : "Pulling Sleeper ADP…");
+      setJobProgress(job === "refresh" ? "Server is up. Running full refresh — re-crawling real drafts…" : "Server is up. Pulling Sleeper ADP…");
       const r = await api.adminRunJob(job);
       setJobResult(r);
       const w = r?.detail?.publishedAdp?.observationsWritten ?? r?.detail?.observationsWritten;
-      note(r.ok ? `Done. ${w != null ? w.toLocaleString() + " ADP rows written." : "Check the result below."}` : "Job error — see result below.");
+      setJobProgress(r.ok ? `Done. ${w != null ? w.toLocaleString() + " ADP rows written." : "See result below."}` : "");
+      note(r.ok ? "Job completed." : "Job error — see result below.");
     } catch (e) {
       const msg = e.message === "BACKEND_WAKING"
         ? "The job ran longer than the client would wait. It is probably STILL RUNNING on the server — wait a minute, then click Refresh stats to check."
         : (e.data?.error || e.message);
       setJobResult({ ok: false, error: msg });
-      note("Job did not return — see the note below.");
+      setJobProgress("");
     }
-    finally { setBusy(false); }
+    finally { setBusy(false); setRunningJob(null); }
   };
   const setFbStatus = async (id, status) => { try { await api.adminFeedbackStatus(id, status); await loadFeedback(); } catch (e) {} };
 
@@ -10951,9 +11004,17 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
             <div className="panel" style={{ padding: 16, gridColumn: "1 / -1" }}>
               <div className="disp" style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Data jobs — ADP & projections</div>
               <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 10 }}>Pull the latest Sleeper ADP and projections into the board. <b style={{ color: "var(--ink)" }}>Update Sleeper ADP</b> is the fast one — it fetches Sleeper's published ADP for every player and recomputes the board in seconds (run this if ADP looks wrong). <b style={{ color: "var(--ink)" }}>Full refresh</b> also re-crawls real drafts and can take a minute.</div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button className="btn btn-gold" disabled={busy} onClick={() => runJob("adp")}><i className="ti ti-refresh" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />Update Sleeper ADP</button>
-                <button className="btn" disabled={busy} onClick={() => runJob("refresh")}>Full refresh (slower)</button>
+              <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 10 }}><b style={{ color: "var(--green)" }}>These run automatically</b> — a full refresh at 4 AM, a lighter ADP refresh midday, and a harvest pass every few hours. You normally never need to touch them. The buttons below are just a manual override if you want to force an update right now.</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <button className="btn btn-gold" disabled={busy} onClick={() => runJob("adp")}>
+                  <i className={`ti ti-${runningJob === "adp" ? "loader-2 spin" : "refresh"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
+                  {runningJob === "adp" ? "Working…" : "Update Sleeper ADP"}
+                </button>
+                <button className="btn" disabled={busy} onClick={() => runJob("refresh")}>
+                  <i className={`ti ti-${runningJob === "refresh" ? "loader-2 spin" : "refresh"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
+                  {runningJob === "refresh" ? "Working…" : "Full refresh (slower)"}
+                </button>
+                {jobProgress && <span style={{ fontSize: 12, color: jobProgress.startsWith("Done") ? "var(--green)" : "var(--gold)", fontWeight: 600 }}>{jobProgress}</span>}
               </div>
               {jobResult && (
                 <div className="panel" style={{ padding: 12, marginTop: 12, background: jobResult.ok ? "#0E1606" : "#1A0E0E", borderColor: jobResult.ok ? "var(--green)" : "var(--red)" }}>
