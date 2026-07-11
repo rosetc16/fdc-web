@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ew";
+const BUILD_TAG = "2026.06.28ex";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -10714,6 +10714,114 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
     catch (e) { note("Cleanup failed: " + (e.data?.error || e.message)); }
     finally { setDbBusy(false); }
   };
+
+  // ---- Manual rankings: upload a CSV (e.g. FantasyPros) to lightly nudge / gap-fill the board ----
+  const [rankings, setRankings] = useState([]);
+  const [rkType, setRkType] = useState("dynasty");
+  const [rkPpr, setRkPpr] = useState("1");
+  const [rkTep, setRkTep] = useState("no");
+  const [rkQb, setRkQb] = useState("SF");
+  const [rkTeams, setRkTeams] = useState("12");
+  const [rkDate, setRkDate] = useState("");
+  const [rkLabel, setRkLabel] = useState("");
+  const [rkParsed, setRkParsed] = useState(null);   // { rows:[{name,pos,team,avg}], fileName }
+  const [rkBusy, setRkBusy] = useState(false);
+  const [rkProgress, setRkProgress] = useState("");
+  const loadRankings = async () => { try { setRankings(await api.adminManualRankings() || []); } catch (e) { setRankings([]); } };
+  useEffect(() => { if (hasBackend && tab === "rankings") loadRankings(); }, [tab]);
+
+  // Minimal robust CSV parse (handles quoted fields). Extracts the columns we need: PLAYER NAME, POS, TEAM, AVG.
+  const parseRankingCsv = (text, fileName) => {
+    const lines = text.split(/\r?\n/).filter((l) => l.trim().length);
+    if (!lines.length) return null;
+    const splitRow = (line) => {
+      const out = []; let cur = "", inQ = false;
+      for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        if (c === '"') { if (inQ && line[i + 1] === '"') { cur += '"'; i++; } else inQ = !inQ; }
+        else if (c === "," && !inQ) { out.push(cur); cur = ""; }
+        else cur += c;
+      }
+      out.push(cur); return out.map((s) => s.trim());
+    };
+    const header = splitRow(lines[0]).map((h) => h.replace(/"/g, "").toUpperCase().trim());
+    const idx = (names) => header.findIndex((h) => names.includes(h));
+    const iName = idx(["PLAYER NAME", "PLAYER", "NAME"]);
+    const iPos = idx(["POS", "POSITION"]);
+    const iTeam = idx(["TEAM", "TM"]);
+    const iAvg = idx(["AVG.", "AVG", "AVERAGE", "ECR", "RK", "RANK"]); // prefer AVG., fall back to RK
+    if (iName < 0 || iAvg < 0) return null;
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+      const c = splitRow(lines[i]);
+      const name = (c[iName] || "").replace(/"/g, "").trim();
+      if (!name) continue;
+      const posRaw = iPos >= 0 ? (c[iPos] || "").replace(/[0-9"]/g, "").trim() : "";
+      const team = iTeam >= 0 ? (c[iTeam] || "").replace(/"/g, "").trim() : "";
+      const avg = parseFloat((c[iAvg] || "").replace(/"/g, "").trim());
+      if (!Number.isFinite(avg)) continue;
+      rows.push({ name, pos: posRaw, team, avg });
+    }
+    return rows.length ? { rows, fileName } : null;
+  };
+
+  const onRankingFile = async (file) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = parseRankingCsv(text, file.name);
+      if (!parsed) { note("Couldn't read that CSV — expected columns like PLAYER NAME, POS, TEAM, AVG."); return; }
+      setRkParsed(parsed);
+      if (!rkLabel) setRkLabel(file.name.replace(/\.csv$/i, ""));
+      note(`Parsed ${parsed.rows.length} players from ${file.name}. Review the format, then Upload.`);
+    } catch (e) { note("Couldn't read that file."); }
+  };
+
+  const uploadRanking = async () => {
+    if (!rkParsed || !rkParsed.rows.length) { note("Pick a CSV first."); return; }
+    setRkBusy(true); setRkProgress("Matching players…");
+    try {
+      await api.wake({ maxWaitMs: 90000 });
+      // Resolve each row to a player_id via the existing admin search. Match on name; use position + team to
+      // disambiguate when the search returns several. Team is a SOFT signal (can change on a trade/FA move).
+      const resolved = [];
+      let unmatched = 0;
+      const rows = rkParsed.rows;
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        if (i % 25 === 0) setRkProgress(`Matching players… ${i}/${rows.length}`);
+        let hits = [];
+        try { hits = await api.adminPlayerSearch(r.name) || []; } catch (e) { hits = []; }
+        if (!hits.length) { unmatched++; continue; }
+        // rank candidates: exact name + pos + team > name + pos > name
+        const norm = (s) => (s || "").toLowerCase().replace(/[^a-z]/g, "");
+        const wantName = norm(r.name), wantPos = (r.pos || "").toUpperCase(), wantTeam = (r.team || "").toUpperCase();
+        let best = hits.find((h) => norm(h.full_name) === wantName && (h.position || "").toUpperCase() === wantPos && (h.team || "").toUpperCase() === wantTeam)
+          || hits.find((h) => norm(h.full_name) === wantName && (h.position || "").toUpperCase() === wantPos)
+          || hits.find((h) => norm(h.full_name) === wantName)
+          || hits[0];
+        if (best) resolved.push({ player_id: best.player_id, pos: (best.position || wantPos || "").toUpperCase(), rank: r.avg });
+        else unmatched++;
+      }
+      if (!resolved.length) { note("No players matched — check the CSV format."); setRkProgress(""); return; }
+      setRkProgress(`Uploading ${resolved.length} players…`);
+      const r = await api.adminUploadRanking({
+        players: resolved,
+        type: rkType, ppr: rkPpr, tep: rkTep === "yes", qb: rkQb, teams: rkTeams,
+        label: rkLabel || rkParsed.fileName, sourceName: rkParsed.fileName,
+        date: rkDate ? new Date(rkDate).toISOString() : new Date().toISOString(),
+      });
+      setRkParsed(null); setRkProgress("");
+      note(`Uploaded ${r.playersWritten} players for ${r.formatKey}.${unmatched ? ` ${unmatched} names didn't match and were skipped.` : ""} Run Update Sleeper ADP to fold it in.`);
+      await loadRankings();
+    } catch (e) { note("Upload failed: " + (e.data?.error || e.message)); setRkProgress(""); }
+    finally { setRkBusy(false); }
+  };
+  const deleteRanking = async (id) => {
+    if (!window.confirm("Remove this ranking? The board will drop its influence on the next refresh.")) return;
+    try { await api.adminDeleteRanking(id); await loadRankings(); note("Ranking removed."); }
+    catch (e) { note("Couldn't remove: " + (e.data?.error || e.message)); }
+  };
   const [trendsDiag, setTrendsDiag] = useState(null);
   const loadTrendsDiag = async () => {
     try { setTrendsDiag(await api.trendsDiag()); }
@@ -10799,7 +10907,7 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "—";
   const statusOf = (u) => u.disabled ? { t: "Disabled", c: "var(--red)" } : u.active_paid ? { t: u.comp ? "Comped" : "Active pass", c: "var(--green)" } : { t: "Free", c: "var(--gold)" };
 
-  const TABS = [["users", "Users", users ? users.length : null], ["invites", "Free invites", null], ["feedback", "Feedback", fbNew || null], ["events", "Player events", evts.length || null], ["tools", "Stripe & analytics", null]];
+  const TABS = [["users", "Users", users ? users.length : null], ["invites", "Free invites", null], ["feedback", "Feedback", fbNew || null], ["events", "Player events", evts.length || null], ["rankings", "Rankings", null], ["tools", "Stripe & analytics", null]];
 
   return (
     <div>
@@ -11026,6 +11134,85 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
                         </tr>
                       );
                     })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* MANUAL RANKINGS — upload a CSV (e.g. FantasyPros) to lightly nudge / gap-fill the board */}
+        {tab === "rankings" && (
+          <div style={{ display: "grid", gap: 14 }}>
+            <div className="panel" style={{ padding: 16 }}>
+              <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>Upload a rankings CSV</div>
+              <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 12 }}>
+                Export a rankings CSV (e.g. FantasyPros) and drop it here. It reads the <b>player name</b>, <b>position</b>, and the <b>AVG.</b> column.
+                Rankings are a <b>light ~10% nudge</b> where the board already has real draft ADP, and they <b>fill the gap</b> for players the market
+                hasn't drafted yet. Since a source like FantasyPros only publishes one flavor (PPR, standard TE), pick the format you want to apply it
+                to below and the values get a <b>subtle scoring adjustment</b> (small TE bump for TE-premium, light PPR shifts). Re-uploading the same
+                format replaces the old one, and only rankings within 30 days count.
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+                <label className="btn btn-gold" style={{ cursor: "pointer" }}>
+                  <i className="ti ti-upload" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />Choose CSV
+                  <input type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={(e) => onRankingFile(e.target.files?.[0])} />
+                </label>
+                {rkParsed && <span className="mut" style={{ fontSize: 12 }}>{rkParsed.fileName} — <b style={{ color: "var(--ink)" }}>{rkParsed.rows.length}</b> players parsed</span>}
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 }}>
+                <div><label className="mut" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>League type</label>
+                  <select className="gs" style={{ width: "100%" }} value={rkType} onChange={(e) => setRkType(e.target.value)}>
+                    <option value="dynasty">Dynasty</option><option value="redraft">Redraft</option><option value="rookie">Rookie</option><option value="bestball">Best ball</option>
+                  </select></div>
+                <div><label className="mut" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>PPR</label>
+                  <select className="gs" style={{ width: "100%" }} value={rkPpr} onChange={(e) => setRkPpr(e.target.value)}>
+                    <option value="1">Full (1.0)</option><option value="0.5">Half (0.5)</option><option value="0">None (0)</option>
+                  </select></div>
+                <div><label className="mut" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>TE premium</label>
+                  <select className="gs" style={{ width: "100%" }} value={rkTep} onChange={(e) => setRkTep(e.target.value)}>
+                    <option value="no">No</option><option value="yes">Yes</option>
+                  </select></div>
+                <div><label className="mut" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>QB</label>
+                  <select className="gs" style={{ width: "100%" }} value={rkQb} onChange={(e) => setRkQb(e.target.value)}>
+                    <option value="1QB">1 QB</option><option value="2QB">2 QB</option><option value="SF">Superflex</option>
+                  </select></div>
+                <div><label className="mut" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>Teams</label>
+                  <select className="gs" style={{ width: "100%" }} value={rkTeams} onChange={(e) => setRkTeams(e.target.value)}>
+                    <option value="8-10">8–10</option><option value="12">12</option><option value="14+">14+</option>
+                  </select></div>
+                <div><label className="mut" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>Ranking date</label>
+                  <input className="gs" type="date" style={{ width: "100%" }} value={rkDate} onChange={(e) => setRkDate(e.target.value)} /></div>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <button className="btn btn-gold" disabled={rkBusy || !rkParsed} onClick={uploadRanking}>
+                  {rkBusy ? <><i className="ti ti-loader-2 spin" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />Working…</> : "Upload ranking"}
+                </button>
+                {rkProgress && <span style={{ fontSize: 12, color: "var(--gold)", fontWeight: 600 }}>{rkProgress}</span>}
+                {!rkProgress && <span className="mut" style={{ fontSize: 11 }}>After upload, run <b>Update Sleeper ADP</b> to fold it into the board.</span>}
+              </div>
+            </div>
+
+            <div className="panel" style={{ padding: 16 }}>
+              <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Active rankings</div>
+              {!rankings.length ? (
+                <div className="mut" style={{ fontSize: 12.5 }}>No rankings uploaded yet.</div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                  <thead><tr>{["Format", "Players", "Source", "Uploaded", ""].map((h) => <th key={h} style={{ textAlign: "left", color: "var(--mut)", fontWeight: 500, paddingBottom: 6 }}>{h}</th>)}</tr></thead>
+                  <tbody>
+                    {rankings.map((r) => (
+                      <tr key={r.id} style={{ borderTop: "1px solid var(--line)" }}>
+                        <td style={{ padding: "6px 0" }}><span className="num">{r.format_key}</span></td>
+                        <td style={{ padding: "6px 0" }} className="num">{r.player_count}</td>
+                        <td style={{ padding: "6px 0" }} className="mut">{r.label || r.source_name || "—"}</td>
+                        <td style={{ padding: "6px 0" }} className="num mut">{fmtDate(r.created_at)}</td>
+                        <td style={{ padding: "6px 0", textAlign: "right" }}><button className="btn btn-mini" onClick={() => deleteRanking(r.id)}>Remove</button></td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               )}

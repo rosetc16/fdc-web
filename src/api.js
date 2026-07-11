@@ -213,6 +213,11 @@ export const api = {
   },
   async adminDbSize() { return call('/api/admin/db-size', { timeoutMs: 60000, retries: 0 }); },
   async adminDbCleanup(keepDays) { return call('/api/admin/db-cleanup', { method: 'POST', body: { keepDays }, timeoutMs: 600000, retries: 0 }); },
+
+  // ---- Manual rankings (uploaded expert/consensus rankings, e.g. FantasyPros CSV) ----
+  async adminManualRankings() { return call('/api/admin/manual-rankings'); },
+  async adminUploadRanking(body) { return call('/api/admin/manual-rankings', { method: 'POST', body, timeoutMs: 120000, retries: 0 }); },
+  async adminDeleteRanking(id) { return call(`/api/admin/manual-rankings/${id}`, { method: 'DELETE' }); },
   // ---- admin: invites ----
   async adminInvite(email, scope) { return call('/api/admin/invite', { method: 'POST', body: { email, scope } }); },
   async adminInvites() { return call('/api/admin/invites'); },
