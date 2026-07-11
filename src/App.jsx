@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28eu";
+const BUILD_TAG = "2026.06.28ev";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1073,6 +1073,8 @@ export function setTrustLiveAdp(on) {
 }
 let LIVE_PACK_FORMAT = null;     // the format key the backend actually served (for display/debug)
 let LIVE_PACK_PUB_FORMAT = null; // the PUBLISHED-ADP format bucket actually used (null if none matched)
+let LIVE_HARVEST_FMT = null;     // which harvested-consensus format the backend fell back to (null if none had rows)
+let LIVE_HARVEST_CHAIN = [];     // [{format, rows}] each fallback step the backend tried, for diagnosis
 export function isLivePackLoaded() { return LIVE_LOADED; }
 
 
@@ -1242,6 +1244,8 @@ export function applyLivePack(pack, isReapply) {
   LIVE_LOADED = true;
   LIVE_PACK_FORMAT = pack.format || null;
   LIVE_PACK_PUB_FORMAT = pack.publishedFormat || null;
+  LIVE_HARVEST_FMT = pack.harvestFormatUsed || null;
+  LIVE_HARVEST_CHAIN = Array.isArray(pack.harvestChainTried) ? pack.harvestChainTried : [];
   // Sparse == we have no real market spine to rank against. With per-player trust, a thin-but-usable format
   // (e.g. SF/TEP dynasty, where Sleeper publishes ADP for only the top few dozen players) is NOT sparse: the
   // top of the board is anchored on real market data and the deep bench is projection-filled. Requiring 40
@@ -4166,19 +4170,17 @@ function VersionBadge() {
     </div>
   );
   return (
-    <span style={{ position: "fixed", top: 8, right: 10, zIndex: 2147483000, pointerEvents: "auto" }}
+    <span style={{ position: "relative", display: "inline-block", pointerEvents: "auto", verticalAlign: "middle" }}
       onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
       <span
         onClick={() => setOpen((o) => !o)}
-        style={{ display: "inline-block", fontSize: 10, lineHeight: "16px", color: "var(--mut)", background: "color-mix(in srgb, var(--bg, #12120E) 82%, transparent)",
-          border: "1px solid var(--line)", borderRadius: 999, padding: "0 8px", fontFamily: "var(--mono)",
-          fontVariantNumeric: "tabular-nums", cursor: "help", userSelect: "none", backdropFilter: "blur(4px)",
-          WebkitBackdropFilter: "blur(4px)", boxShadow: "0 1px 4px #0004" }}>
+        style={{ display: "inline-block", fontSize: 10, lineHeight: "16px", color: "var(--mut)", opacity: 0.7,
+          fontFamily: "var(--mono)", fontVariantNumeric: "tabular-nums", cursor: "help", userSelect: "none" }}>
         v{BUILD_TAG}
       </span>
       {open && (
-        <div style={{ position: "absolute", top: 22, right: 0, minWidth: 250, background: "var(--panel)", border: "1px solid var(--line)",
-          borderRadius: 10, padding: 12, boxShadow: "0 8px 30px #000a", fontSize: 11.5, fontFamily: "var(--mono)", lineHeight: 1.5 }}>
+        <div style={{ position: "absolute", top: 20, right: 0, minWidth: 250, background: "var(--panel)", border: "1px solid var(--line)",
+          borderRadius: 10, padding: 12, boxShadow: "0 8px 30px #000a", fontSize: 11.5, fontFamily: "var(--mono)", lineHeight: 1.5, zIndex: 2147483000, whiteSpace: "nowrap" }}>
           <div style={{ fontWeight: 700, marginBottom: 6 }}>Build v{BUILD_TAG}</div>
           {fmt ? (
             <>
@@ -4195,6 +4197,20 @@ function VersionBadge() {
               <div style={{ color: sparse ? "var(--red)" : "var(--green)" }}>
                 {sparse ? "Board ranked by VALUE — thin market ADP" : "Board ranked by real market ADP"}
               </div>
+              {(() => {
+                const hf = (typeof LIVE_HARVEST_FMT !== "undefined") ? LIVE_HARVEST_FMT : null;
+                const chain = (typeof LIVE_HARVEST_CHAIN !== "undefined" && Array.isArray(LIVE_HARVEST_CHAIN)) ? LIVE_HARVEST_CHAIN : [];
+                if (!chain.length) return null;
+                const firstHit = chain.find((c) => c.rows > 0);
+                return (
+                  <div style={{ borderTop: "1px solid var(--line)", marginTop: 6, paddingTop: 6 }}>
+                    <div style={{ color: hf ? "var(--green)" : "var(--red)", marginBottom: 3 }}>
+                      {hf ? `Harvested drafts found: ${hf}` : "No harvested drafts found for this format"}
+                    </div>
+                    {firstHit && <div className="mut" style={{ fontSize: 10.5 }}>{firstHit.rows.toLocaleString()} players from real superflex-dynasty drafts</div>}
+                  </div>
+                );
+              })()}
             </>
           ) : (
             <div style={{ color: "var(--mut)" }}>Open a draft to see its ADP source.</div>
@@ -4674,7 +4690,6 @@ export default function App() {
   return (
     <div className="gs-root">
       <style>{css}</style>
-      <VersionBadge />
       {updateReady && (
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 200, background: "var(--gold)", color: "#151002", padding: "9px 16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, flexWrap: "wrap", boxShadow: "0 2px 12px #0006", fontSize: 13.5 }}>
           <i className="ti ti-sparkles" style={{ fontSize: 16 }} aria-hidden="true" />
@@ -6894,6 +6909,7 @@ function HubShell({ title, onBack, onHome, onSignOut, user, children }) {
         <div style={{ flex: 1 }} />
         <span className="chip" style={{ color: "var(--blue)" }}><i className="ti ti-plug-connected" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />In-season hub</span>
         <button className="btn btn-mini" onClick={onHome}>Home</button>
+        <VersionBadge />
         <button className="btn btn-mini" onClick={onSignOut}>Sign out</button>
       </div>
       {children}
@@ -7003,6 +7019,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         {(user?.admin || isAdminEmail(user?.email)) && <button className="btn btn-mini" onClick={onAdmin || (() => navTo("admin"))}>Admin</button>}
         <button className="btn btn-mini" onClick={onHelp}><i className="ti ti-help-circle" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Help</button>
         <button className="btn btn-mini" onClick={onAccount}><i className="ti ti-user" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Account</button>
+        <VersionBadge />
         <button className="btn btn-mini" onClick={onSignOut}>Sign out</button>
       </div>
 
@@ -8170,6 +8187,7 @@ function AppHeader({ user, onAdmin, onSignOut, onHome, onAccount, onApp, onHelp,
       {onHelp && <button className="btn btn-mini" onClick={onHelp} title="Help, contact & terms">Help</button>}
       {(user?.admin || isAdminEmail(user?.email)) && <button className="btn" onClick={onAdmin || (() => navTo("admin"))}>Admin</button>}
       {onAccount && <button className="btn" onClick={onAccount} title="Account settings"><i className="ti ti-user" style={{ fontSize: 14 }} aria-hidden="true" /> Account</button>}
+      <VersionBadge />
       <button className="btn btn-mini" onClick={onSignOut}>Sign out</button>
     </div>
   );
