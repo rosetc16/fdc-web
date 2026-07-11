@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28et";
+const BUILD_TAG = "2026.06.28eu";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1699,14 +1699,18 @@ function buildPlayers(cfg) {
       a = Math.max(raw, target); // never move a QB UP in a 1QB league — only down to the 1QB slot
     }
     if (teMult > 0 && pos === "TE" && !loadedIsTEP) {
-      // TE-premium nudge. Sleeper's own draft board does NOT publish a separate TE-premium ADP — owners
-      // in a TEP league still see the standard (SF-)dynasty ADP — so a big lift here makes our board
-      // diverge from what people actually see in the room (TEs flooding the top). Keep it a GENTLE nudge:
-      // only the few elite TEs move up a little, and the effect fades fast down the position.
-      const r = teRankOfRaw(raw);
-      const strength = Math.min(1, teMult / 0.5);
-      const pull = strength * Math.max(0.0, 0.16 - (r - 1) * 0.03); // was up to .46; now elite-only & small
-      a = Math.max(1.4, raw * (1 - pull));
+      // TE-PREMIUM BOOST. Sleeper publishes no separate TE-premium ADP, and TE-premium mocks are rare on
+      // Sleeper — so a TEP league's harvest is almost always STANDARD-TE data (hundreds of otherwise-identical
+      // SF-dynasty drafts, just without the premium). Rather than waste that market signal, we ride the STD
+      // board and shift TEs up to reflect the premium. In a real TEP room the top TEs jump a round or more
+      // while replacement TEs barely move, so the boost is strong at the top of the position and fades fast.
+      // Scaled by teMult: a +1.0 TE-premium league moves them roughly twice as much as a +0.5 league.
+      const r = teRankOfRaw(raw);                 // 1 = TE1
+      const strength = Math.min(1.4, teMult / 0.5); // +0.5 -> 1.0, +1.0 -> 1.4 (capped)
+      // Elite TEs get a meaningful lift (~28% earlier for TE1 at +0.5, more at +1.0), decaying across the tier
+      // and effectively gone past ~TE8, mirroring how premium reshapes only the top of the position.
+      const pull = strength * Math.max(0, 0.28 - (r - 1) * 0.035);
+      a = Math.max(1.2, raw * (1 - pull));
     }
     return a;
   };
@@ -4162,13 +4166,18 @@ function VersionBadge() {
     </div>
   );
   return (
-    <span style={{ position: "fixed", top: 6, right: 10, zIndex: 900, pointerEvents: "auto" }}
+    <span style={{ position: "fixed", top: 8, right: 10, zIndex: 2147483000, pointerEvents: "auto" }}
       onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
-      <span style={{ fontSize: 10, opacity: 0.5, color: "var(--mut)", fontFamily: "var(--mono)", fontVariantNumeric: "tabular-nums", cursor: "help", userSelect: "none" }}>
+      <span
+        onClick={() => setOpen((o) => !o)}
+        style={{ display: "inline-block", fontSize: 10, lineHeight: "16px", color: "var(--mut)", background: "color-mix(in srgb, var(--bg, #12120E) 82%, transparent)",
+          border: "1px solid var(--line)", borderRadius: 999, padding: "0 8px", fontFamily: "var(--mono)",
+          fontVariantNumeric: "tabular-nums", cursor: "help", userSelect: "none", backdropFilter: "blur(4px)",
+          WebkitBackdropFilter: "blur(4px)", boxShadow: "0 1px 4px #0004" }}>
         v{BUILD_TAG}
       </span>
       {open && (
-        <div style={{ position: "absolute", top: 18, right: 0, minWidth: 250, background: "var(--panel)", border: "1px solid var(--line)",
+        <div style={{ position: "absolute", top: 22, right: 0, minWidth: 250, background: "var(--panel)", border: "1px solid var(--line)",
           borderRadius: 10, padding: 12, boxShadow: "0 8px 30px #000a", fontSize: 11.5, fontFamily: "var(--mono)", lineHeight: 1.5 }}>
           <div style={{ fontWeight: 700, marginBottom: 6 }}>Build v{BUILD_TAG}</div>
           {fmt ? (
@@ -8162,7 +8171,6 @@ function AppHeader({ user, onAdmin, onSignOut, onHome, onAccount, onApp, onHelp,
       {(user?.admin || isAdminEmail(user?.email)) && <button className="btn" onClick={onAdmin || (() => navTo("admin"))}>Admin</button>}
       {onAccount && <button className="btn" onClick={onAccount} title="Account settings"><i className="ti ti-user" style={{ fontSize: 14 }} aria-hidden="true" /> Account</button>}
       <button className="btn btn-mini" onClick={onSignOut}>Sign out</button>
-      <span className="mut" style={{ fontSize: 10, opacity: 0.65, marginLeft: 4, fontVariantNumeric: "tabular-nums" }} title={`App version — confirms the latest deploy is live${typeof LIVE_PACK_FORMAT !== "undefined" && LIVE_PACK_FORMAT ? ` · ADP: ${LIVE_PACK_FORMAT}${LIVE_PACK_PUB_FORMAT ? ` (published ${LIVE_PACK_PUB_FORMAT})` : " (no published ADP — using harvested)"}` : ""}`}>v{BUILD_TAG}</span>
     </div>
   );
 }
