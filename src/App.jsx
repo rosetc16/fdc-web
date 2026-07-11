@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ex";
+const BUILD_TAG = "2026.06.28ey";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2847,7 +2847,7 @@ function projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, forcedI
   return board;
 }
 
-function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId, extend) {
+function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId, extend, targetOverall) {
   const TOTAL = totalOf(cfg), R = cfg.rounds, sf = cfg.sf;
   const dem = demand(sf);
   const drafted = new Uint8Array(players.length);
@@ -2859,8 +2859,13 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
   const path = []; let passedUser = false, afterUser = 0;
   // How far past YOUR next pick to keep projecting. We show a healthy look-ahead by default (the board
   // scrolls horizontally), and `extend` widens it further for the "show more" action.
-  const aheadCap = extend ? 18 : 7;
-  for (let o = picks.length; o < TOTAL && path.length < 28; o++) {
+  const aheadCap = targetOverall != null ? Math.max(18, (targetOverall - picks.length) + 2) : (extend ? 18 : 7);
+  // Depth cap. Normally 28 picks is plenty for the board look-ahead, but when we're building the "who's gone"
+  // set for a SPECIFIC far-future pick (adviceFor analyzing your +3/+4 pick), we must project at least up TO
+  // that pick — otherwise deep-ADP players in the gap never get marked taken and wrongly look available (the
+  // "201-ADP player recommended at pick 217" bug). Extend the cap to cover the target when one is given.
+  const depthCap = targetOverall != null ? Math.max(28, (targetOverall - picks.length) + 2) : 28;
+  for (let o = picks.length; o < TOTAL && path.length < depthCap; o++) {
     const t = teamAt(o), round = Math.floor(o / TEAMS) + 1, pickNum = o + 1;
     let entry;
     if (t === userIdx) {
@@ -12381,7 +12386,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const goneSet = new Set(draftedSet);
     let survMap = null;
     if (isFuture) {
-      const proj = projectPath(players, sortedAdp, picks, userIdx, cfg, strat, null, true);
+      const proj = projectPath(players, sortedAdp, picks, userIdx, cfg, strat, null, true, atOverall);
       for (const step of proj) { if (step.o < atOverall && step.p) goneSet.add(step.p.id); }
       // Use survival probabilities ONLY if the main sims already cover this pick (free — already computed).
       // We deliberately do NOT run a fresh survivalAtPick here: it's a 400-sim full-board run, and adviceFor is
@@ -12399,7 +12404,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       if (survMap && survMap[id] != null) return survMap[id] >= 8; // ≥8% chance to reach your pick
       if (!goneSet.has(id)) return true; // projection thinks he's still around
       const pl = players[id];
-      return !!(pl && pl.adp != null && (atOverall + 1) - pl.adp >= 12); // keep clear fallers even if projected gone
+      // Keep GENUINE fallers even if projected gone — but a genuine faller is an EARLY-ADP player who has slid
+      // well past his cost, not a late-ADP player sitting near his expected spot. Without the ADP ceiling, a
+      // 201-ADP player at pick ~217 counted as a "faller" (217-201 ≥ 12) and got recommended with a bogus high
+      // availability. Require the player's ADP to be meaningfully earlier than this pick to qualify.
+      if (!pl || pl.adp == null) return false;
+      const pickN = atOverall + 1;
+      const isEarlyEnough = pl.adp <= pickN * 0.6;          // his cost is well inside where we are now
+      return isEarlyEnough && (pickN - pl.adp) >= 12;        // and he's slid a clear margin past it
     };
     const myCounts = { QB: 0, RB: 0, WR: 0, TE: 0 };
     picks.forEach((pk, o) => { const pl = players[pk]; if (teamAt(o) === forTeam && pl && myCounts[pl.pos] != null) myCounts[pl.pos]++; });
@@ -14554,7 +14566,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 // picks compute fresh with the selected strategy.
                 const balAdv = (selOverall === myPickOverall && mySelAdvice) ? mySelAdvice : adviceFor(selOverall, userIdx, sims, strategy);
                 const bldAdv = balAdv; // one unified model — the list follows the selected strategy
-                const survOf = (p) => { if (selOverall === picks.length) return 100; const idx = myUpcoming.findIndex((x) => x.o === selOverall); const pctMap = sims && sims.pct && sims.pct[idx] ? sims.pct[idx] : (sims && sims.pct && sims.pct[0]); return pctMap && pctMap[p.id] != null ? pctMap[p.id] : null; };
+                const survOf = (p) => {
+                  if (selOverall === picks.length) return 100; // on the clock now — everyone's available
+                  const idx = myUpcoming.findIndex((x) => x.o === selOverall);
+                  // The sims only compute survival for your next ~3 picks. For a pick BEYOND that horizon we have
+                  // no real survival number — returning sims.pct[0] here (the old behavior) showed the odds for
+                  // your NEXT pick against a much later one, which is how a 201-ADP player looked "80% available"
+                  // three picks from now. Return null instead so the UI shows no bogus percentage.
+                  if (idx < 0 || !sims || !sims.pct || !sims.pct[idx]) return null;
+                  const pctMap = sims.pct[idx];
+                  return pctMap && pctMap[p.id] != null ? pctMap[p.id] : null;
+                };
                 const pickNowN = selOverall + 1;
                 const run = (balAdv && balAdv.run) || (advice && advice.run) || null;
                 const topBal = balAdv && balAdv.verdict ? balAdv.verdict : null;
