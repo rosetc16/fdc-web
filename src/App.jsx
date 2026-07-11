@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28es";
+const BUILD_TAG = "2026.06.28et";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -10676,9 +10676,16 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
     catch (e) { setDbSize({ error: e.data?.error || e.message }); }
   };
   const cleanupDb = async (keepDays) => {
-    if (!window.confirm(`Delete harvested draft picks older than ${keepDays} days? Your ADP numbers are unaffected — they're stored separately and recompute on the next refresh. This only frees disk space.`)) return;
+    if (!window.confirm(`Delete harvested draft picks older than ${keepDays} days and reclaim space? Your ADP numbers are unaffected — they're stored separately and recompute on the next refresh. This briefly locks the ADP tables while it compacts them (a few seconds to a couple of minutes).`)) return;
     setDbBusy(true);
-    try { await api.wake({ maxWaitMs: 90000 }); const r = await api.adminDbCleanup(keepDays); note(`Freed space: removed ${Number(r.deleted || 0).toLocaleString()} old harvest rows.`); await loadDbSize(); }
+    try {
+      await api.wake({ maxWaitMs: 90000 });
+      const r = await api.adminDbCleanup(keepDays);
+      const b = r.sizeBefore, a = r.sizeAfter;
+      const sizeMsg = (b && a) ? ` DB ${b.total} → ${a.total}.` : "";
+      note(`Cleanup done. Removed ${Number(r.deleted || 0).toLocaleString()} old harvest rows, trimmed ${Number(r.consensusSourcesTrimmed || 0).toLocaleString()} consensus blobs.${sizeMsg}`);
+      await loadDbSize();
+    }
     catch (e) { note("Cleanup failed: " + (e.data?.error || e.message)); }
     finally { setDbBusy(false); }
   };

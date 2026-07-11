@@ -212,7 +212,7 @@ export const api = {
     return call('/api/admin/run-job', { method: 'POST', body: { job }, timeoutMs: 300000, retries: 0 });
   },
   async adminDbSize() { return call('/api/admin/db-size', { timeoutMs: 60000, retries: 0 }); },
-  async adminDbCleanup(keepDays) { return call('/api/admin/db-cleanup', { method: 'POST', body: { keepDays }, timeoutMs: 180000, retries: 0 }); },
+  async adminDbCleanup(keepDays) { return call('/api/admin/db-cleanup', { method: 'POST', body: { keepDays }, timeoutMs: 600000, retries: 0 }); },
   // ---- admin: invites ----
   async adminInvite(email, scope) { return call('/api/admin/invite', { method: 'POST', body: { email, scope } }); },
   async adminInvites() { return call('/api/admin/invites'); },
