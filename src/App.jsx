@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ey";
+const BUILD_TAG = "2026.06.28ez";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -12385,14 +12385,24 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // recommended for a pick 4 slots away, while a genuine faller (high survival) stays eligible.
     const goneSet = new Set(draftedSet);
     let survMap = null;
+    // Players the user's OWN projected earlier picks would take before this analyzed pick. These must count
+    // toward roster needs below — otherwise every future pick is analyzed against your CURRENT roster and the
+    // model keeps recommending the same best-value position (e.g. WR at +1, +2, +3, +4, +5) because it never
+    // "sees" itself having already addressed it. Filling these in is what lets the sequence self-balance: take
+    // a WR at +1 → your +2 analysis knows WR is deeper → it may pivot to RB/TE.
+    const myProjectedByPos = { QB: 0, RB: 0, WR: 0, TE: 0 };
     if (isFuture) {
       const proj = projectPath(players, sortedAdp, picks, userIdx, cfg, strat, null, true, atOverall);
-      for (const step of proj) { if (step.o < atOverall && step.p) goneSet.add(step.p.id); }
+      for (const step of proj) {
+        if (step.o < atOverall && step.p) {
+          goneSet.add(step.p.id);
+          // was this an intermediate pick of the analyzing team? if so, it addresses a need
+          if (step.o >= picks.length && teamAt(step.o) === forTeam && myProjectedByPos[step.p.pos] != null) {
+            myProjectedByPos[step.p.pos]++;
+          }
+        }
+      }
       // Use survival probabilities ONLY if the main sims already cover this pick (free — already computed).
-      // We deliberately do NOT run a fresh survivalAtPick here: it's a 400-sim full-board run, and adviceFor is
-      // called several times per render (current pick + your build/balanced + decision panel), so a per-call
-      // sim turned the hub into a lock-up. When sims don't cover the pick we fall back to the cheap projection
-      // gate (goneSet) below instead.
       if (simState.nexts) { const si = simState.nexts.indexOf(atOverall); if (si >= 0 && simState.pct[si]) survMap = simState.pct[si]; }
     }
     // A player is a viable candidate for THIS pick if they're truly undrafted AND (for a future pick) have a
@@ -12415,6 +12425,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     };
     const myCounts = { QB: 0, RB: 0, WR: 0, TE: 0 };
     picks.forEach((pk, o) => { const pl = players[pk]; if (teamAt(o) === forTeam && pl && myCounts[pl.pos] != null) myCounts[pl.pos]++; });
+    // Fold in what THIS team's own projected earlier picks would add before the analyzed pick, so a future
+    // pick's needs reflect the roster you'll actually have then — not the one you have now.
+    POS.forEach((pos) => { if (myCounts[pos] != null) myCounts[pos] += (myProjectedByPos[pos] || 0); });
     // Also count what this team ALREADY holds outside this draft — existing-roster players (rookie/dynasty/
     // keeper drafts connected to a platform) and no-cost keepers. Without this, the recommendation for a
     // rookie or keeper draft would ignore that you already roster, say, 3 QBs and might still push a QB.
@@ -13773,7 +13786,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   </div>
                   {/* position table */}
                   <div style={{ borderTop: "1px solid rgba(242,182,60,.22)", paddingTop: 5 }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "24px 52px 44px 52px 1fr", gap: "0 6px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", fontWeight: 700, paddingBottom: 3 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "22px 46px 40px 46px minmax(0,1fr)", gap: "0 8px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", fontWeight: 700, paddingBottom: 3 }}>
                       <span>Pos</span><span>Start</span><span style={{ textAlign: "center" }}>Rank</span><span style={{ textAlign: "center" }}>Read</span><span style={{ textAlign: "right" }}>Best avail</span>
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
@@ -13781,16 +13794,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         const ba = d.bestAvail;
                         const baV = ba ? (dynastyH ? (ba.value ?? ba.vbd) : ba.vbd) : null;
                         return (
-                          <div key={d.pos} onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "24px 52px 44px 52px 1fr", gap: "0 6px", alignItems: "center", cursor: "help", padding: "1.5px 4px", margin: "0 -4px", borderRadius: 5 }}>
+                          <div key={d.pos} onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "22px 46px 40px 46px minmax(0,1fr)", gap: "0 8px", alignItems: "center", cursor: "help", padding: "1.5px 4px", margin: "0 -4px", borderRadius: 5 }}>
                             <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 800, color: POS_COLOR[d.pos] }}><Dot pos={d.pos} />{d.pos}</span>
-                            <span style={{ fontSize: 10.5, display: "inline-flex", alignItems: "center", gap: 2 }} title={d.deficit > 0 ? `Need ${Math.round(d.deficit)} more starter${Math.round(d.deficit) === 1 ? "" : "s"} at ${d.pos}` : d.filled ? `${d.pos} starters filled` : ""}>
+                            <span style={{ fontSize: 10.5, display: "inline-flex", alignItems: "center", gap: 1, whiteSpace: "nowrap" }} title={d.deficit > 0 ? `Need ${Math.round(d.deficit)} more starter${Math.round(d.deficit) === 1 ? "" : "s"} at ${d.pos}` : d.filled ? `${d.pos} starters filled` : ""}>
                               <span style={{ fontWeight: 800, color: d.deficit > 0 ? "#F2655C" : "var(--ink)" }}>{d.has}</span>
                               <span className="mut" style={{ fontSize: 9 }}>/{d.need || 0}</span>
-                              {d.filled ? <i className="ti ti-circle-check-filled" style={{ fontSize: 10, color: "#5FD0A8", marginLeft: 1 }} aria-hidden="true" /> : d.deficit > 0 ? <i className="ti ti-alert-circle-filled" style={{ fontSize: 10, color: "#F2655C", marginLeft: 1 }} aria-hidden="true" /> : null}
+                              {d.filled ? <i className="ti ti-circle-check-filled" style={{ fontSize: 9.5, color: "#5FD0A8", marginLeft: 1 }} aria-hidden="true" /> : d.deficit > 0 ? <i className="ti ti-alert-circle-filled" style={{ fontSize: 9.5, color: "#F2655C", marginLeft: 1 }} aria-hidden="true" /> : null}
                             </span>
                             <span style={{ textAlign: "center", fontSize: 10.5, fontWeight: 700, color: d.rk ? d.read.c : "var(--mut)" }}>{d.rk ? `${d.rk.rank}/${d.rk.of}` : "—"}</span>
                             <span style={{ textAlign: "center", fontSize: 10, fontWeight: 800, color: d.read.c }}>{d.read.t}</span>
-                            <span style={{ textAlign: "right", fontSize: 9.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            <span style={{ textAlign: "right", fontSize: 9.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
                               {ba ? <>{ba.name.split(" ").slice(-1)[0]} <span className="num" style={{ fontWeight: 700, color: vbdColor(baV) }}>{(baV > 0 ? "+" : "") + Math.round(baV)}</span></> : <span className="mut">—</span>}
                             </span>
                           </div>
