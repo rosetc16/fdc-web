@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ev";
+const BUILD_TAG = "2026.06.28ew";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1703,18 +1703,17 @@ function buildPlayers(cfg) {
       a = Math.max(raw, target); // never move a QB UP in a 1QB league — only down to the 1QB slot
     }
     if (teMult > 0 && pos === "TE" && !loadedIsTEP) {
-      // TE-PREMIUM BOOST. Sleeper publishes no separate TE-premium ADP, and TE-premium mocks are rare on
-      // Sleeper — so a TEP league's harvest is almost always STANDARD-TE data (hundreds of otherwise-identical
-      // SF-dynasty drafts, just without the premium). Rather than waste that market signal, we ride the STD
-      // board and shift TEs up to reflect the premium. In a real TEP room the top TEs jump a round or more
-      // while replacement TEs barely move, so the boost is strong at the top of the position and fades fast.
-      // Scaled by teMult: a +1.0 TE-premium league moves them roughly twice as much as a +0.5 league.
-      const r = teRankOfRaw(raw);                 // 1 = TE1
-      const strength = Math.min(1.4, teMult / 0.5); // +0.5 -> 1.0, +1.0 -> 1.4 (capped)
-      // Elite TEs get a meaningful lift (~28% earlier for TE1 at +0.5, more at +1.0), decaying across the tier
-      // and effectively gone past ~TE8, mirroring how premium reshapes only the top of the position.
-      const pull = strength * Math.max(0, 0.28 - (r - 1) * 0.035);
-      a = Math.max(1.2, raw * (1 - pull));
+      // TE-PREMIUM: intentionally NO upward boost here.
+      //
+      // This was calibrated against a real TE-premium Sleeper mock for the exact league (SF/dynasty/TEP), and
+      // the finding was counterintuitive: the STANDARD superflex-dynasty harvest ALREADY prices elite TEs
+      // earlier than they actually go in the TE-premium room. In dynasty, young stud TEs (Bowers, McBride,
+      // Loveland) go early on age + talent regardless of premium, so the harvested STD ADP already has them
+      // high — and layering a premium boost on top pushed them 5-8 picks TOO high (Bowers to 7.6 vs a real
+      // 13.2). The premium is effectively already baked into where these players land in SF-dynasty drafts.
+      // So we leave the market number as-is. (If a future league's data shows TEs going too LATE, revisit — but
+      // for TE-premium SF-dynasty, the correction was making it worse, not better.)
+      a = raw;
     }
     return a;
   };
