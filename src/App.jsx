@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ez";
+const BUILD_TAG = "2026.06.28fa";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13786,7 +13786,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   </div>
                   {/* position table */}
                   <div style={{ borderTop: "1px solid rgba(242,182,60,.22)", paddingTop: 5 }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "22px 46px 40px 46px minmax(0,1fr)", gap: "0 8px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", fontWeight: 700, paddingBottom: 3 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "30px 52px 40px 46px minmax(0,1fr)", gap: "0 10px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", fontWeight: 700, paddingBottom: 3 }}>
                       <span>Pos</span><span>Start</span><span style={{ textAlign: "center" }}>Rank</span><span style={{ textAlign: "center" }}>Read</span><span style={{ textAlign: "right" }}>Best avail</span>
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
@@ -13794,12 +13794,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         const ba = d.bestAvail;
                         const baV = ba ? (dynastyH ? (ba.value ?? ba.vbd) : ba.vbd) : null;
                         return (
-                          <div key={d.pos} onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "22px 46px 40px 46px minmax(0,1fr)", gap: "0 8px", alignItems: "center", cursor: "help", padding: "1.5px 4px", margin: "0 -4px", borderRadius: 5 }}>
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 800, color: POS_COLOR[d.pos] }}><Dot pos={d.pos} />{d.pos}</span>
-                            <span style={{ fontSize: 10.5, display: "inline-flex", alignItems: "center", gap: 1, whiteSpace: "nowrap" }} title={d.deficit > 0 ? `Need ${Math.round(d.deficit)} more starter${Math.round(d.deficit) === 1 ? "" : "s"} at ${d.pos}` : d.filled ? `${d.pos} starters filled` : ""}>
+                          <div key={d.pos} onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "30px 52px 40px 46px minmax(0,1fr)", gap: "0 10px", alignItems: "center", cursor: "help", padding: "1.5px 4px", margin: "0 -4px", borderRadius: 5 }}>
+                            <span style={{ fontSize: 11, fontWeight: 800, color: POS_COLOR[d.pos] }}>{d.pos}</span>
+                            <span style={{ fontSize: 10.5, display: "inline-flex", alignItems: "baseline", gap: 1, whiteSpace: "nowrap" }} title={d.deficit > 0 ? `Need ${Math.round(d.deficit)} more starter${Math.round(d.deficit) === 1 ? "" : "s"} at ${d.pos}` : d.filled ? `${d.pos} starters filled` : ""}>
                               <span style={{ fontWeight: 800, color: d.deficit > 0 ? "#F2655C" : "var(--ink)" }}>{d.has}</span>
                               <span className="mut" style={{ fontSize: 9 }}>/{d.need || 0}</span>
-                              {d.filled ? <i className="ti ti-circle-check-filled" style={{ fontSize: 9.5, color: "#5FD0A8", marginLeft: 1 }} aria-hidden="true" /> : d.deficit > 0 ? <i className="ti ti-alert-circle-filled" style={{ fontSize: 9.5, color: "#F2655C", marginLeft: 1 }} aria-hidden="true" /> : null}
+                              {d.filled ? <i className="ti ti-circle-check-filled" style={{ fontSize: 9.5, color: "#5FD0A8", marginLeft: 2 }} aria-hidden="true" /> : d.deficit > 0 ? <i className="ti ti-alert-circle-filled" style={{ fontSize: 9.5, color: "#F2655C", marginLeft: 2 }} aria-hidden="true" /> : null}
                             </span>
                             <span style={{ textAlign: "center", fontSize: 10.5, fontWeight: 700, color: d.rk ? d.read.c : "var(--mut)" }}>{d.rk ? `${d.rk.rank}/${d.rk.of}` : "—"}</span>
                             <span style={{ textAlign: "center", fontSize: 10, fontWeight: 800, color: d.read.c }}>{d.read.t}</span>
