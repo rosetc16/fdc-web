@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fn";
+const BUILD_TAG = "2026.06.28fo";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3595,18 +3595,21 @@ function pickCurve(overallPick) {
 // `ctx` optionally carries { need: {QB,RB,WR,TE...}, have: {...} } for the drafting team AT the time of the pick
 // so the need term reflects the actual situation. Without ctx we score market only (back-compat).
 function roundWeight(overall) {
-  // 1.0 at pick 1, smooth decay — ~0.5 by pick ~25, ~0.15 by pick ~110, ~0.06 by ~180. Early picks dominate.
-  return Math.pow(0.972, Math.max(1, overall) - 1);
+  // Early rounds dominate, but late picks keep a real floor (they shouldn't all read 0). Decays from 1.0 toward
+  // ~0.22: ~0.76 by pick 24, ~0.57 by pick 50, ~0.35 by pick 110, ~0.26 by pick 180. A R1 decision still swings
+  // ~3-4x a late-round one, but a genuine late reach/steal still registers instead of rounding to zero.
+  return 0.22 + 0.78 * Math.pow(0.984, Math.max(1, overall) - 1);
 }
 function pickValue(p, overall, cfg, ctx) {
   if (!p) return 0;                       // stale/unknown pick id — no value contribution
   const actual = overall + 1;            // where he was actually taken (1-based)
   const adp = Math.max(1, p.adp || actual); // where the market says he should have gone
   const w = roundWeight(actual);
-  // MARKET: relative miss (spots off ADP as a fraction of current draft position), round-weighted.
+  // MARKET: how far off ADP, measured relative to draft position (a 10-spot miss at pick 5 is egregious; at
+  // pick 100 it's minor) but with a softened divisor so late-round misses don't self-suppress to nothing.
   const spotGap = actual - adp;             // >0 = fell past ADP (steal), <0 = reached
-  const rel = spotGap / Math.max(8, adp);   // 8-spot floor so the very top of the draft isn't divide-by-tiny
-  let market = rel * 70 * w;
+  const rel = spotGap / Math.max(16, adp * 0.85);
+  let market = rel * 62 * w;
   if (market < 0) market *= 1.2;            // reaches sting ~20% more than equal steals reward
   // NEED: reward filling a starting hole, mildly penalize stacking a position that's already full. Scaled by
   // round weight too — a needs-based decision matters more early. Capped so it shapes, never dominates, market.
