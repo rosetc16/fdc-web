@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fd";
+const BUILD_TAG = "2026.06.28fe";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1788,46 +1788,47 @@ function buildPlayers(cfg) {
     // established studs) essentially untouched, because that top-50 is what's already dialed-in for the SF-TEP
     // dynasty league. The lift only becomes meaningful where ADP and projection DISAGREE, which is mostly the
     // mid/late board (rookies, ascenders, faded vets) — not the elite tier.
+    // DYNASTY: BLEND ADP-IMPLIED VALUE INTO PROJECTION VALUE.
+    //
+    // Projection alone under-rates young/ascending players and over-rates compiler-vets, because it can't see
+    // the multi-year upside the market prices in. The clean fix isn't a small nudge — it's to treat WHERE THE
+    // MARKET DRAFTS A PLAYER as a first-class value signal and blend it with the projection value. We convert
+    // each player's ADP into an "implied value" on the SAME scale as projection value (by mapping ADP rank onto
+    // the projection-value distribution), then blend: dynasty leans HEAVILY on ADP (that's the whole point —
+    // "heavily weigh ADP trends"), which lets a market darling like a rookie WR (ADP ~200, modest projection)
+    // rank above a journeyman the market fades (ADP ~255, higher projection). Two safety rails kept from before:
+    //   • only players with a REAL projection participate (0-proj backups can't float up), and
+    //   • the TOP of the board is damped so the dialed-in elite tier stays put.
     {
-      // Only players the projection ACTUALLY RATES can have "upside" — a 0-projection backup has no breakout to
-      // price in, and including him created the bug where deep QBs (ADP ~325, proj 0) shot to the top of Value.
-      // Require a real, positive projection and a real market ADP.
-      const projFloor = 1; // must have at least a token projection to be eligible for an upside lift
-      const withAdp = ps.filter((p) => VBD_POS.includes(p.pos) && p.adp != null && p.adp > 0 && !p.adpDegraded && (p.pts ?? 0) > projFloor);
-      if (withAdp.length >= 20) {
-        const byAdp = withAdp.slice().sort((a, b) => a.adp - b.adp);
-        const adpRankById = new Map(byAdp.map((p, i) => [p.id, i + 1]));
-        const byVal = withAdp.slice().sort((a, b) => (b.value ?? b.vbd) - (a.value ?? a.vbd));
-        const valRankById = new Map(byVal.map((p, i) => [p.id, i + 1]));
-        const N = withAdp.length;
-        const topVal = byVal[0].value ?? byVal[0].vbd;
-        const botVal = byVal[byVal.length - 1].value ?? 0;
-        const perRank = N > 1 && topVal > botVal ? (topVal - botVal) / N : 1;
-        withAdp.forEach((p) => {
-          const aR = adpRankById.get(p.id), vR = valRankById.get(p.id);
-          if (aR == null || vR == null) return;
-          let gap = vR - aR;              // >0 market ranks him ahead of his projection (upside)
-          if (gap === 0) return;
-          // CAP the gap. A single player shouldn't be able to leap 100+ ranks on ADP alone — that's what let a
-          // deep backup rocket up. Bound it to a sane climb so the effect is a tilt, not a teleport.
-          const GAP_CAP = Math.min(40, Math.round(N * 0.18));
-          gap = Math.max(-GAP_CAP, Math.min(GAP_CAP, gap));
-          // Dampen near the TOP of the board so the locked elite tier stays put; full strength in the mid/late
-          // board where upside actually lives. topDamp ~0 for ADP ranks inside ~top 24, ramps to 1.
-          const topDamp = Math.min(1, Math.max(0, (aR - 12) / 24));
+      const projFloor = 1;
+      const elig = ps.filter((p) => VBD_POS.includes(p.pos) && p.adp != null && p.adp > 0 && !p.adpDegraded && (p.pts ?? 0) > projFloor);
+      if (elig.length >= 20) {
+        const N = elig.length;
+        // The projection-value distribution, sorted best→worst, is our value "scale". We map a player's ADP rank
+        // onto this sorted array: the market's #k player inherits the value that sits at rank k in the value
+        // distribution. That's his ADP-IMPLIED value — what a player drafted that early is "worth" on our scale.
+        const valuesSortedDesc = elig.map((p) => p.value ?? p.vbd).sort((a, b) => b - a);
+        const byAdp = elig.slice().sort((a, b) => a.adp - b.adp);
+        byAdp.forEach((p, i) => {
+          const impliedValue = valuesSortedDesc[Math.min(i, valuesSortedDesc.length - 1)];
+          // Blend weight toward ADP. Heavy for dynasty (this is the request). Youth tilts it a bit more toward
+          // ADP (upside is realer for the young); age tilts back toward projection (a vet's ADP is name value).
           const a = AGE[p.pos];
           const young = a ? Math.max(0, a.peak - (p.age || a.peak)) : 0;
-          const rookieBoost = p.rookie ? 1.35 : 1;
-          const youthFactor = (1 + Math.min(0.6, young * 0.09)) * rookieBoost;
-          const dir = gap > 0 ? 1 : 0.4;  // upside counts more than fade (don't over-punish a cooled vet)
-          let lift = gap * perRank * 0.5 * dir * topDamp * (gap > 0 ? youthFactor : 1);
-          // HARD CEILING: the lift can never push a player's value above his own projection-based ceiling by more
-          // than a fraction of the board spread. Prevents a low-VBD player from ever out-valuing genuinely
-          // productive players purely on market hype. Also never let the lift exceed the player's own |vbd|+spread.
-          const maxLift = Math.max(perRank * 6, Math.abs(p.vbd) * 0.5);
-          lift = Math.max(-maxLift, Math.min(maxLift, lift));
-          p.value = Math.round((p.value + lift) * 10) / 10;
-          p.adpUpside = Math.round(lift * 10) / 10;
+          const old = a ? Math.max(0, (p.age || a.peak) - a.peak) : 0;
+          let wAdp = 0.68 + Math.min(0.18, young * 0.03) - Math.min(0.28, old * 0.04);
+          if (p.rookie) wAdp = Math.min(0.88, wAdp + 0.12);
+          wAdp = Math.max(0.3, Math.min(0.88, wAdp));
+          // TOP-OF-BOARD damping keyed off ACTUAL ADP (not rank position, which depends on set size): players
+          // going inside roughly the first ~2 rounds are the dialed-in elite tier — keep their projection value
+          // essentially as-is. The ADP blend ramps in past that. teams*2 ≈ end of round 2.
+          const eliteAdpCutoff = (cfg.teams || 12) * 2;
+          const topDamp = Math.min(1, Math.max(0, (p.adp - eliteAdpCutoff) / eliteAdpCutoff));
+          const effWAdp = wAdp * topDamp;
+          const projVal = p.value ?? p.vbd;
+          const blended = projVal * (1 - effWAdp) + impliedValue * effWAdp;
+          p.value = Math.round(blended * 10) / 10;
+          p.adpImplied = Math.round(impliedValue * 10) / 10;
         });
       }
     }
