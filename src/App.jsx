@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fl";
+const BUILD_TAG = "2026.06.28fm";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -16825,7 +16825,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       ); })()}
 
       {tab === "trade" && (
-        <TradeCenter players={players} picks={picks} userIdx={userIdx} cfg={cfg} sortedAdp={sortedAdp} draftedSet={draftedSet} showTip={showTip} hideTip={hideTip}
+        <TradeCenter players={players} picks={picks} userIdx={userIdx} cfg={cfg} sortedAdp={sortedAdp} draftedSet={draftedSet} showTip={showTip} hideTip={hideTip} proj={proj}
           isMock={isMock} tradingOn={mockTradingOn}
           onExecuteTrade={({ partner, givePlayers, getPlayers }) => {
             // Execute by swapping the contents of the involved board slots between the two teams.
@@ -17520,13 +17520,32 @@ function tradeValue(p, cfg) {
 }
 function ord(n) { return n === 1 ? "1st" : n === 2 ? "2nd" : n === 3 ? "3rd" : `${n}th`; }
 // Draft-pick asset values (round-based; next-year rookie picks discounted for uncertainty).
-function pickAssets(cfg) {
+//
+// FINISH-AWARE next-year picks. A future first from a team headed for last place is worth far more than the
+// same-round pick from the team headed for first — it'll convert into a much earlier selection. So when we know
+// the owning team's projected finish, we scale next-year pick value along a draft-slot curve: last place gets
+// the full early-pick value, first place gets the late-pick value. `finishRank` is 1=best…leagueSize=worst;
+// omit it for the generic (finish-unknown) valuation used by the standalone tools.
+function pickAssets(cfg, finishRank, leagueSize) {
   if (!cfg.pickTrading) return [];
   const rounds = Math.min(cfg.rounds, 6);
   const out = [];
-  const val = (rd, yr) => Math.round(Math.max(6, 150 / Math.pow(rd, 1.15)) * (yr === "next" ? 0.62 : 1));
+  const N = leagueSize || cfg.teams || 12;
+  // Where in the round this team is projected to pick next year: last place → slot 1 (earliest), first place →
+  // slot N (latest). Map to a multiplier around 1.0 so an average finish ≈ the old flat value. Worst finish is
+  // worth ~1.35x, best ~0.7x within a round — a meaningful but not wild swing.
+  const finishMult = (rd) => {
+    if (!finishRank || N <= 1) return 1;
+    // finishRank 1 = BEST finish → picks LATE next year (low value); finishRank N = WORST → picks EARLY (high
+    // value). So the multiplier should RISE as finishRank rises. worstFrac: 0 for the champ, 1 for last place.
+    const worstFrac = (finishRank - 1) / (N - 1);
+    // Earlier rounds swing more with finish (pick 1.01 vs 1.12 is a big gap); later rounds compress.
+    const swing = 0.35 / Math.pow(rd, 0.5);
+    return 1 - swing + worstFrac * 2 * swing;              // champ → 1−swing, last place → 1+swing
+  };
+  const val = (rd, yr) => Math.round(Math.max(6, 150 / Math.pow(rd, 1.15)) * (yr === "next" ? 0.62 : 1) * (yr === "next" ? finishMult(rd) : 1));
   for (let rd = 1; rd <= rounds; rd++) out.push({ pickAsset: true, id: `pk-${rd}`, name: `${ord(rd)}-round pick`, pos: "PICK", value: val(rd, "this") });
-  for (let rd = 1; rd <= 3; rd++) out.push({ pickAsset: true, id: `pk-next-${rd}`, name: `${ord(rd)} rookie pick (next yr)`, pos: "PICK", value: val(rd, "next") });
+  for (let rd = 1; rd <= 3; rd++) out.push({ pickAsset: true, id: `pk-next-${rd}`, name: `${ord(rd)} rookie pick (next yr)`, pos: "PICK", value: val(rd, "next"), finishScaled: !!finishRank });
   return out;
 }
 const assetVal = (a, cfg) => (a ? (a.pickAsset ? a.value : tradeValue(a, cfg)) : 0);
@@ -17886,7 +17905,7 @@ function TradeToolsPage({ user, onBack, onHome, onSignOut }) {
 }
 
 
-function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, showTip, hideTip, isMock, onExecuteTrade, tradingOn }) {
+function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, showTip, hideTip, isMock, onExecuteTrade, tradingOn, proj }) {
   const [mode, setMode] = useState("values"); // values | evaluate
   const myRoster = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => x.p && teamAt(x.o) === userIdx).map((x) => x.p);
   const teamRosters = useMemo(() => {
@@ -17894,16 +17913,22 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
     picks.forEach((pk, o) => { const pl = players[pk]; if (pl) r[teamAt(o)].push(pl); });
     return r;
   }, [picks, players]);
-  const myPicks = useMemo(() => pickAssets(cfg), [cfg]);
-  const partnerPicks = useMemo(() => pickAssets(cfg), [cfg]);
   const [partner, setPartner] = useState(userIdx === 0 ? 1 : 0);
+  const leagueSize = cfg.teams || TEAMS;
+  // Each team's projected finish drives the value of its FUTURE picks — a team headed for last place owns an
+  // early, premium next-year pick; a contender owns a late one. Pull it from the live projection when we have it.
+  const myFinish = (proj && proj.rank && proj.rank[userIdx] != null) ? proj.rank[userIdx] : null;
+  const partnerFinish = (proj && proj.rank && proj.rank[partner] != null) ? proj.rank[partner] : null;
+  const myPicks = useMemo(() => pickAssets(cfg, myFinish, leagueSize), [cfg, myFinish, leagueSize]);
+  const partnerPicks = useMemo(() => pickAssets(cfg, partnerFinish, leagueSize), [cfg, partnerFinish, leagueSize]);
   const [give, setGive] = useState([]);
   const [get, setGet] = useState([]);
   const [tradeResult, setTradeResult] = useState(null); // {ok, msg} after a mock proposal
   const toggle = (arr, set, id) => set(arr.includes(id) ? arr.filter((x) => x !== id) : [...arr, id]);
 
-  const myAssets = [...myRoster, ...myPicks];
-  const partnerAssets = [...teamRosters[partner], ...partnerPicks.map((p) => ({ ...p, id: `their-${p.id}` }))];
+  // Both sides are sorted by trade value, highest → lowest, so the most valuable assets are always on top.
+  const myAssets = [...myRoster, ...myPicks].sort((a, b) => assetVal(b, cfg) - assetVal(a, cfg));
+  const partnerAssets = [...teamRosters[partner], ...partnerPicks.map((p) => ({ ...p, id: `their-${p.id}` }))].sort((a, b) => assetVal(b, cfg) - assetVal(a, cfg));
   const giveAssets = give.map((id) => myAssets.find((a) => String(a.id) === String(id))).filter(Boolean);
   const getAssets = get.map((id) => partnerAssets.find((a) => String(a.id) === String(id))).filter(Boolean);
   const ev = evaluateTrade(giveAssets, getAssets, cfg);
@@ -18079,17 +18104,14 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
               )}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
                 <div>
-                  <div className="disp gold" style={{ fontSize: 12, letterSpacing: ".06em", marginBottom: 6 }}>YOU GIVE</div>
-                  {myRoster.map((p) => <AssetRow key={p.id} a={p} checked={give.includes(p.id)} onToggle={() => toggle(give, setGive, p.id)} />)}
-                  {cfg.pickTrading && myPicks.map((a) => <AssetRow key={a.id} a={a} checked={give.includes(a.id)} onToggle={() => toggle(give, setGive, a.id)} />)}
-                  {myRoster.length === 0 && !cfg.pickTrading && <div className="mut" style={{ fontSize: 12 }}>You haven't drafted yet.</div>}
+                  <div className="disp gold" style={{ fontSize: 12, letterSpacing: ".06em", marginBottom: 6 }}>YOU GIVE <span className="mut" style={{ fontWeight: 400, letterSpacing: 0 }}>· highest value first</span></div>
+                  {myAssets.map((a) => <AssetRow key={a.id} a={a} checked={give.includes(a.id)} onToggle={() => toggle(give, setGive, a.id)} />)}
+                  {myAssets.length === 0 && <div className="mut" style={{ fontSize: 12 }}>You haven't drafted yet.</div>}
                 </div>
                 <div>
-                  <div className="disp gold" style={{ fontSize: 12, letterSpacing: ".06em", marginBottom: 6 }}>YOU GET</div>
-                  {teamRosters[partner].length === 0 && !cfg.pickTrading ? <div className="mut" style={{ fontSize: 12 }}>This team hasn't drafted yet.</div> : <>
-                    {teamRosters[partner].map((p) => <AssetRow key={p.id} a={p} checked={get.includes(p.id)} onToggle={() => toggle(get, setGet, p.id)} />)}
-                    {cfg.pickTrading && partnerPicks.map((a) => { const id = `their-${a.id}`; return <AssetRow key={id} a={{ ...a, id }} checked={get.includes(id)} onToggle={() => toggle(get, setGet, id)} />; })}
-                  </>}
+                  <div className="disp gold" style={{ fontSize: 12, letterSpacing: ".06em", marginBottom: 6 }}>YOU GET <span className="mut" style={{ fontWeight: 400, letterSpacing: 0 }}>· highest value first</span></div>
+                  {partnerAssets.length === 0 ? <div className="mut" style={{ fontSize: 12 }}>This team hasn't drafted yet.</div>
+                    : partnerAssets.map((a) => <AssetRow key={a.id} a={a} checked={get.includes(a.id)} onToggle={() => toggle(get, setGet, a.id)} />)}
                 </div>
               </div>
               <div className="panel" style={{ padding: 12, marginTop: 14, background: "var(--panel2)" }}>
