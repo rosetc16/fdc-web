@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fq";
+const BUILD_TAG = "2026.06.28fr";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -15125,37 +15125,46 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     if (cnt[tt] && pl.pos && cnt[tt][pl.pos] != null) cnt[tt][pl.pos]++;
                   });
                 })();
+                // Exact league rank (1 = best) at each position for the VIEWED team, using the same shared quality
+                // scorer as everywhere else. This replaces the vague "strong/upgrade" tags with a real "3rd of 10"
+                // read the user asked for.
+                const rostersAll = [];
+                for (let k = 0; k < TEAMS; k++) rostersAll.push(railProj && proj ? (proj.rosters[k] || []) : picks.map((pk, o) => (teamAt(o) === k ? players[pk] : null)).filter(Boolean));
+                const effReq = EFF_REQ(cfg); const flexSh = flexShareOf(cfg);
                 const posAssess = ["QB", "RB", "WR", "TE"].map((pos) => {
+                  const scored = rostersAll.map((r, k) => ({ k, v: posQualityScore((r || []).filter((p) => p && p.pos === pos), effReq[pos] || 0, { dynasty: dynastyRail, flexShare: flexSh[pos] || 0 }) })).sort((a, b) => b.v - a.v);
+                  const rank = scored.findIndex((x) => x.k === ti) + 1;
                   const haveN = roster.filter((p) => p.pos === pos).length;
                   const short = Math.max(0, (req[pos] || 0) - haveN);
-                  const lvl = relI[pos];
-                  // League-relative read from the strength level we already have (0 best → 2 upgrade-needed).
-                  const lr = null;
-                  let tag, color;
-                  if (short > 0) { tag = short >= 1 ? `need ${short}` : "thin"; color = "#F2655C"; }
-                  else if (lvl === 2) { tag = "upgrade"; color = "var(--gold)"; }
-                  else if (lvl === 0) { tag = "strong"; color = "#5FD0A8"; }
-                  else { tag = "solid"; color = "var(--ink)"; }
-                  return { pos, tag, color, haveN, lr };
+                  // Color by where you rank: top third green, bottom third red, middle grey. A real starter shortage
+                  // always flags red regardless of quality rank.
+                  const third = Math.max(1, Math.round(TEAMS / 3));
+                  let color = rank <= third ? "#5FD0A8" : rank > TEAMS - third ? "#F2655C" : "var(--gold)";
+                  if (short > 0) color = "#F2655C";
+                  return { pos, rank, of: TEAMS, haveN, short, color };
                 });
                 return (
                   <>
-                    <div className="mut" style={{ fontSize: 12, marginBottom: 6 }}>
+                    <div className="mut" style={{ fontSize: 12, marginBottom: 8 }}>
                       {railProj ? "Projected final" : "Drafted so far"} • <b style={{ color: "var(--ink)" }}>{lineupPts(roster, cfg.sf)} pts</b>
-                      {railProj && <> • projected <b style={{ color: "var(--gold)" }}>{ordinal(proj.rank[ti])}</b></>}
+                      {railProj && <> • projected <b style={{ color: "var(--gold)" }}>{ordinal(proj.rank[ti])}</b> of {TEAMS}</>}
                     </div>
-                    {/* position strength strip — count + league read per position */}
-                    <div style={{ display: "flex", gap: 4, marginBottom: 9, flexWrap: "wrap" }}>
-                      {posAssess.map((a) => (
-                        <div key={a.pos} style={{ flex: "1 1 60px", background: a.color + "1c", border: `1px solid ${a.color}40`, borderRadius: 6, padding: "4px 5px", textAlign: "center" }} title={`${a.pos}: ${a.haveN} rostered — ${a.tag === "strong" ? "one of the best in the league" : a.tag === "upgrade" ? "below the league's better teams — an upgrade spot" : a.tag === "solid" ? "middle of the pack" : a.tag}`}>
-                          <div style={{ fontSize: 10, fontWeight: 800, color: POS_COLOR[a.pos] }}>{a.pos} <span style={{ color: "var(--mut)", fontWeight: 600 }}>·{a.haveN}</span></div>
-                          <div style={{ fontSize: 9, fontWeight: 700, color: a.color, textTransform: "capitalize" }}>{a.tag}</div>
-                        </div>
-                      ))}
+                    {/* WHERE YOU RANK IN THE LEAGUE — one clear rank per position (1 = best of the league). */}
+                    <div style={{ background: "var(--panel2)", border: "1px solid var(--line2)", borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
+                      <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700, marginBottom: 6 }}>Where this team ranks · {TEAMS}-team league</div>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        {posAssess.map((a) => (
+                          <div key={a.pos} style={{ flex: "1 1 56px", textAlign: "center" }} title={`${a.pos}: ${ordinal(a.rank)} of ${a.of} in the league${a.short > 0 ? ` — still need ${a.short} starter${a.short === 1 ? "" : "s"}` : ""}`}>
+                            <div style={{ fontSize: 10, fontWeight: 800, color: POS_COLOR[a.pos], marginBottom: 2 }}>{a.pos}</div>
+                            <div style={{ fontSize: 15, fontWeight: 800, color: a.color, lineHeight: 1 }}>{ordinal(a.rank)}</div>
+                            <div className="mut" style={{ fontSize: 8 }}>{a.short > 0 ? `need ${a.short}` : `of ${a.of}`}</div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                     {/* column header for the enriched roster rows */}
-                    <div style={{ display: "grid", gridTemplateColumns: "42px minmax(0,1fr) 34px 40px 40px", gap: "0 6px", fontSize: 7.5, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line2)", paddingBottom: 3, marginBottom: 2 }}>
-                      <span>Slot</span><span>Player</span><span title={dynastyRail ? "Dynasty value (age-weighted)" : "Value over replacement"} style={{ textAlign: "right" }}>{dynastyRail ? "Val" : "VBD"}</span><span title="Draft decision score — value vs. where he was taken" style={{ textAlign: "right" }}>Score</span><span title="Projected points" style={{ textAlign: "right" }}>Pts</span>
+                    <div style={{ display: "grid", gridTemplateColumns: "36px minmax(0,1fr) 30px 26px 38px 38px 34px", gap: "0 5px", fontSize: 7.5, textTransform: "uppercase", letterSpacing: ".02em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line2)", paddingBottom: 3, marginBottom: 2 }}>
+                      <span>Slot</span><span>Player</span><span title="Positional rank (his rank among all players at his position)" style={{ textAlign: "right" }}>Rk</span><span title="Age" style={{ textAlign: "right" }}>Age</span><span title={dynastyRail ? "Dynasty value (age-weighted, over replacement)" : "Value over replacement (this-year points)"} style={{ textAlign: "right" }}>{dynastyRail ? "Val" : "VBD"}</span><span className="info" style={{ textAlign: "right", cursor: "help" }} onMouseEnter={(e) => showTip(e, [{ kind: "take", tone: "neutral", x: "Score — draft decision quality" }, { t: "What it is", x: "How good the DECISION to draft this player was: his value versus where he was actually taken (ADP), weighted so early-round picks matter most, and adjusted for whether he filled a roster need." }, { t: "Reading it", x: "Green + = got him below his market cost (a steal / smart pick). Red − = reached, paying a premium pick for a cheaper asset. Near 0 = fair-market pick." }, { t: "Note", x: "Only shows for players this team drafted in this draft — a projected or synced-in player has no pick to grade." }])} onMouseLeave={hideTip}>Score</span><span title="Projected points" style={{ textAlign: "right" }}>Pts</span>
                     </div>
                     {slots.map((s, i) => {
                       const p = s.p;
@@ -15164,22 +15173,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       const sc = p ? scoreById[p.id] : null;
                       const rowTip = p ? (e) => showTip(e, makeOutlook(p, sims, false, { dynasty: dynastyRail, scarcity: scarcityFor(p) })) : undefined;
                       return (
-                        <div key={i} onMouseEnter={rowTip} onMouseLeave={p ? hideTip : undefined} style={{ display: "grid", gridTemplateColumns: "42px minmax(0,1fr) 34px 40px 40px", gap: "0 6px", alignItems: "center", fontSize: 12.5, padding: "2.5px 0", cursor: p ? "help" : "default", borderRadius: 4 }}>
+                        <div key={i} onMouseEnter={rowTip} onMouseLeave={p ? hideTip : undefined} style={{ display: "grid", gridTemplateColumns: "36px minmax(0,1fr) 30px 26px 38px 38px 34px", gap: "0 5px", alignItems: "center", fontSize: 12, padding: "2.5px 0", cursor: p ? "help" : "default" }}>
                           <span className="slotlbl">{s.slot}</span>
                           {p ? (
                             <>
                               <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", opacity: isProj ? 0.65 : 1 }}>
-                                <Dot pos={p.pos} />
-                                <span style={{ color: isProj ? "var(--gold)" : "var(--ink)" }}>{p.name}</span>
-                                <span className="num" style={{ fontSize: 8.5, fontWeight: 700, color: rankTierColor(p.pos, p.posRank), marginLeft: 4 }}>{p.pos}{p.posRank}</span>
-                                {dynastyRail && p.age != null && <span className="mut" style={{ fontSize: 8, marginLeft: 3 }}>{p.age}y</span>}
-                                {isProj && <span className="mut" style={{ fontSize: 8 }}> (proj)</span>}
+                                <Dot pos={p.pos} /><span style={{ color: isProj ? "var(--gold)" : "var(--ink)" }}>{p.name}</span>{isProj && <span className="mut" style={{ fontSize: 8 }}> (proj)</span>}
                               </span>
+                              <span className="num" style={{ fontSize: 9, fontWeight: 700, textAlign: "right", color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
+                              <span className="num mut" style={{ fontSize: 9.5, textAlign: "right" }}>{p.age != null ? p.age : "—"}</span>
                               <span className="num" style={{ fontSize: 10, fontWeight: 700, textAlign: "right", color: vbdColor(vShow) }}>{vShow != null ? (vShow > 0 ? "+" : "") + Math.round(vShow) : "—"}</span>
                               <span className="num" style={{ fontSize: 10, fontWeight: 700, textAlign: "right", color: sc == null ? "var(--mut)" : sc > 0 ? "#5FD0A8" : sc < 0 ? "#F2655C" : "var(--mut)" }}>{sc != null ? (sc > 0 ? "+" : "") + sc : "—"}</span>
-                              <span className="num" style={{ fontWeight: 700, fontSize: 11.5, textAlign: "right" }}>{Math.round(p.pts || 0)}</span>
+                              <span className="num" style={{ fontWeight: 700, fontSize: 11, textAlign: "right" }}>{Math.round(p.pts || 0)}</span>
                             </>
-                          ) : <><span className="mut" style={{ gridColumn: "2 / -1" }}>—</span></>}
+                          ) : <span className="mut" style={{ gridColumn: "2 / -1" }}>—</span>}
                         </div>
                       );
                     })}
@@ -15189,18 +15196,19 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         {bench.map((b, i) => {
                           const isProjB = railProj && !curSet.has(b.id);
                           const vB = dynastyRail ? (b.value ?? b.vbd) : b.vbd;
+                          const scB = scoreById[b.id];
                           const bTip = (e) => showTip(e, makeOutlook(b, sims, false, { dynasty: dynastyRail, scarcity: scarcityFor(b) }));
                           return (
-                            <div key={i} onMouseEnter={bTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 34px 40px", gap: "0 6px", alignItems: "center", fontSize: 12, padding: "2px 0", opacity: isProjB ? 0.6 : 0.92, cursor: "help" }}>
+                            <div key={i} onMouseEnter={bTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "36px minmax(0,1fr) 30px 26px 38px 38px 34px", gap: "0 5px", alignItems: "center", fontSize: 11.5, padding: "2px 0", opacity: isProjB ? 0.6 : 0.92, cursor: "help" }}>
+                              <span className="slotlbl" style={{ fontSize: 8 }}>BN</span>
                               <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                <Dot pos={b.pos} />
-                                <span style={{ color: isProjB ? "var(--gold)" : "var(--ink)" }}>{b.name}</span>
-                                <span className="num" style={{ fontSize: 8, fontWeight: 700, color: rankTierColor(b.pos, b.posRank), marginLeft: 4 }}>{b.pos}{b.posRank}</span>
-                                {dynastyRail && b.age != null && <span className="mut" style={{ fontSize: 8, marginLeft: 3 }}>{b.age}y</span>}
-                                {isProjB && <span className="mut" style={{ fontSize: 8 }}> (proj)</span>}
+                                <Dot pos={b.pos} /><span style={{ color: isProjB ? "var(--gold)" : "var(--ink)" }}>{b.name}</span>{isProjB && <span className="mut" style={{ fontSize: 8 }}> (proj)</span>}
                               </span>
+                              <span className="num" style={{ fontSize: 8.5, fontWeight: 700, textAlign: "right", color: rankTierColor(b.pos, b.posRank) }}>{b.pos}{b.posRank}</span>
+                              <span className="num mut" style={{ fontSize: 9, textAlign: "right" }}>{b.age != null ? b.age : "—"}</span>
                               <span className="num" style={{ fontSize: 9.5, fontWeight: 700, textAlign: "right", color: vbdColor(vB) }}>{vB != null ? (vB > 0 ? "+" : "") + Math.round(vB) : "—"}</span>
-                              <span className="num mut" style={{ fontSize: 11, textAlign: "right" }}>{Math.round(b.pts || 0)}</span>
+                              <span className="num" style={{ fontSize: 9.5, fontWeight: 700, textAlign: "right", color: scB == null ? "var(--mut)" : scB > 0 ? "#5FD0A8" : scB < 0 ? "#F2655C" : "var(--mut)" }}>{scB != null ? (scB > 0 ? "+" : "") + scB : "—"}</span>
+                              <span className="num mut" style={{ fontSize: 10, textAlign: "right" }}>{Math.round(b.pts || 0)}</span>
                             </div>
                           );
                         })}
