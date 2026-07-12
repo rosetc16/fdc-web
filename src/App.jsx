@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fp";
+const BUILD_TAG = "2026.06.28fq";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -15111,16 +15111,32 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 // position strength strip (same read as the Show-my-team popup): combine quantity + quality
                 const req = REQ_F(cfg.sf);
                 const relI = posRel[ti] || {};
+                const dynastyRail = cfg.type === "dynasty" || cfg.type === "keeper";
+                // Draft score per player (for THIS team's picks) — the same decision-quality score as the
+                // scorecard, so the roster view can show how well each pick was made vs. the market.
+                const scoreById = {};
+                (() => {
+                  const reqS = REQ_F ? REQ_F(cfg.sf) : { QB: 1, RB: 2, WR: 2, TE: 1 };
+                  const cnt = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
+                  picks.forEach((pk, o) => {
+                    const pl = players[pk]; const tt = teamAt(o);
+                    if (!pl) return;
+                    if (tt === ti && pl.pos) { const nd = {}; ["QB","RB","WR","TE"].forEach((ps)=>{nd[ps]=(reqS[ps]||0)-(cnt[tt][ps]||0);}); scoreById[pl.id] = pickValue(pl, o, cfg, { need: nd }); }
+                    if (cnt[tt] && pl.pos && cnt[tt][pl.pos] != null) cnt[tt][pl.pos]++;
+                  });
+                })();
                 const posAssess = ["QB", "RB", "WR", "TE"].map((pos) => {
                   const haveN = roster.filter((p) => p.pos === pos).length;
                   const short = Math.max(0, (req[pos] || 0) - haveN);
                   const lvl = relI[pos];
+                  // League-relative read from the strength level we already have (0 best → 2 upgrade-needed).
+                  const lr = null;
                   let tag, color;
                   if (short > 0) { tag = short >= 1 ? `need ${short}` : "thin"; color = "#F2655C"; }
                   else if (lvl === 2) { tag = "upgrade"; color = "var(--gold)"; }
                   else if (lvl === 0) { tag = "strong"; color = "#5FD0A8"; }
                   else { tag = "solid"; color = "var(--ink)"; }
-                  return { pos, tag, color, haveN };
+                  return { pos, tag, color, haveN, lr };
                 });
                 return (
                   <>
@@ -15128,30 +15144,66 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       {railProj ? "Projected final" : "Drafted so far"} • <b style={{ color: "var(--ink)" }}>{lineupPts(roster, cfg.sf)} pts</b>
                       {railProj && <> • projected <b style={{ color: "var(--gold)" }}>{ordinal(proj.rank[ti])}</b></>}
                     </div>
-                    {/* position strength strip */}
+                    {/* position strength strip — count + league read per position */}
                     <div style={{ display: "flex", gap: 4, marginBottom: 9, flexWrap: "wrap" }}>
                       {posAssess.map((a) => (
-                        <div key={a.pos} style={{ flex: "1 1 60px", background: a.color + "1c", border: `1px solid ${a.color}40`, borderRadius: 6, padding: "3px 5px", textAlign: "center" }} title={`${a.pos}: ${a.haveN} rostered — ${a.tag}`}>
-                          <div style={{ fontSize: 10, fontWeight: 700, color: POS_COLOR[a.pos] }}>{a.pos}</div>
-                          <div style={{ fontSize: 9, fontWeight: 600, color: a.color }}>{a.tag}</div>
+                        <div key={a.pos} style={{ flex: "1 1 60px", background: a.color + "1c", border: `1px solid ${a.color}40`, borderRadius: 6, padding: "4px 5px", textAlign: "center" }} title={`${a.pos}: ${a.haveN} rostered — ${a.tag === "strong" ? "one of the best in the league" : a.tag === "upgrade" ? "below the league's better teams — an upgrade spot" : a.tag === "solid" ? "middle of the pack" : a.tag}`}>
+                          <div style={{ fontSize: 10, fontWeight: 800, color: POS_COLOR[a.pos] }}>{a.pos} <span style={{ color: "var(--mut)", fontWeight: 600 }}>·{a.haveN}</span></div>
+                          <div style={{ fontSize: 9, fontWeight: 700, color: a.color, textTransform: "capitalize" }}>{a.tag}</div>
                         </div>
                       ))}
                     </div>
-                    {slots.map((s, i) => (
-                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, padding: "2.5px 0" }}>
-                        <span className="slotlbl">{s.slot}</span>
-                        {s.p ? <><span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", opacity: railProj && !curSet.has(s.p.id) ? 0.6 : 1, color: railProj && !curSet.has(s.p.id) ? "var(--gold)" : "var(--ink)" }}><Dot pos={s.p.pos} />{s.p.name}{railProj && !curSet.has(s.p.id) && <span className="mut"> (proj)</span>}</span><span className="num" style={{ fontWeight: 700, fontSize: 11.5, flexShrink: 0 }}>{Math.round(s.p.pts || 0)}</span></> : <span className="mut" style={{ flex: 1 }}>—</span>}
-                      </div>
-                    ))}
+                    {/* column header for the enriched roster rows */}
+                    <div style={{ display: "grid", gridTemplateColumns: "42px minmax(0,1fr) 34px 40px 40px", gap: "0 6px", fontSize: 7.5, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line2)", paddingBottom: 3, marginBottom: 2 }}>
+                      <span>Slot</span><span>Player</span><span title={dynastyRail ? "Dynasty value (age-weighted)" : "Value over replacement"} style={{ textAlign: "right" }}>{dynastyRail ? "Val" : "VBD"}</span><span title="Draft decision score — value vs. where he was taken" style={{ textAlign: "right" }}>Score</span><span title="Projected points" style={{ textAlign: "right" }}>Pts</span>
+                    </div>
+                    {slots.map((s, i) => {
+                      const p = s.p;
+                      const isProj = railProj && p && !curSet.has(p.id);
+                      const vShow = p ? (dynastyRail ? (p.value ?? p.vbd) : p.vbd) : null;
+                      const sc = p ? scoreById[p.id] : null;
+                      const rowTip = p ? (e) => showTip(e, makeOutlook(p, sims, false, { dynasty: dynastyRail, scarcity: scarcityFor(p) })) : undefined;
+                      return (
+                        <div key={i} onMouseEnter={rowTip} onMouseLeave={p ? hideTip : undefined} style={{ display: "grid", gridTemplateColumns: "42px minmax(0,1fr) 34px 40px 40px", gap: "0 6px", alignItems: "center", fontSize: 12.5, padding: "2.5px 0", cursor: p ? "help" : "default", borderRadius: 4 }}>
+                          <span className="slotlbl">{s.slot}</span>
+                          {p ? (
+                            <>
+                              <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", opacity: isProj ? 0.65 : 1 }}>
+                                <Dot pos={p.pos} />
+                                <span style={{ color: isProj ? "var(--gold)" : "var(--ink)" }}>{p.name}</span>
+                                <span className="num" style={{ fontSize: 8.5, fontWeight: 700, color: rankTierColor(p.pos, p.posRank), marginLeft: 4 }}>{p.pos}{p.posRank}</span>
+                                {dynastyRail && p.age != null && <span className="mut" style={{ fontSize: 8, marginLeft: 3 }}>{p.age}y</span>}
+                                {isProj && <span className="mut" style={{ fontSize: 8 }}> (proj)</span>}
+                              </span>
+                              <span className="num" style={{ fontSize: 10, fontWeight: 700, textAlign: "right", color: vbdColor(vShow) }}>{vShow != null ? (vShow > 0 ? "+" : "") + Math.round(vShow) : "—"}</span>
+                              <span className="num" style={{ fontSize: 10, fontWeight: 700, textAlign: "right", color: sc == null ? "var(--mut)" : sc > 0 ? "#5FD0A8" : sc < 0 ? "#F2655C" : "var(--mut)" }}>{sc != null ? (sc > 0 ? "+" : "") + sc : "—"}</span>
+                              <span className="num" style={{ fontWeight: 700, fontSize: 11.5, textAlign: "right" }}>{Math.round(p.pts || 0)}</span>
+                            </>
+                          ) : <><span className="mut" style={{ gridColumn: "2 / -1" }}>—</span></>}
+                        </div>
+                      );
+                    })}
                     {bench.length > 0 && (
                       <div style={{ marginTop: 7, paddingTop: 7, borderTop: "1px solid var(--line)" }}>
                         <div className="mut" style={{ fontSize: 10, letterSpacing: ".06em", marginBottom: 3 }}>BENCH ({bench.length})</div>
-                        {bench.map((b, i) => (
-                          <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "2px 0", opacity: railProj && !curSet.has(b.id) ? 0.6 : 0.92 }}>
-                            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: railProj && !curSet.has(b.id) ? "var(--gold)" : "var(--ink)" }}><Dot pos={b.pos} />{b.name}{railProj && !curSet.has(b.id) && <span className="mut"> (proj)</span>}</span>
-                            <span className="num mut" style={{ fontSize: 11, flexShrink: 0 }}>{Math.round(b.pts || 0)}</span>
-                          </div>
-                        ))}
+                        {bench.map((b, i) => {
+                          const isProjB = railProj && !curSet.has(b.id);
+                          const vB = dynastyRail ? (b.value ?? b.vbd) : b.vbd;
+                          const bTip = (e) => showTip(e, makeOutlook(b, sims, false, { dynasty: dynastyRail, scarcity: scarcityFor(b) }));
+                          return (
+                            <div key={i} onMouseEnter={bTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 34px 40px", gap: "0 6px", alignItems: "center", fontSize: 12, padding: "2px 0", opacity: isProjB ? 0.6 : 0.92, cursor: "help" }}>
+                              <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                <Dot pos={b.pos} />
+                                <span style={{ color: isProjB ? "var(--gold)" : "var(--ink)" }}>{b.name}</span>
+                                <span className="num" style={{ fontSize: 8, fontWeight: 700, color: rankTierColor(b.pos, b.posRank), marginLeft: 4 }}>{b.pos}{b.posRank}</span>
+                                {dynastyRail && b.age != null && <span className="mut" style={{ fontSize: 8, marginLeft: 3 }}>{b.age}y</span>}
+                                {isProjB && <span className="mut" style={{ fontSize: 8 }}> (proj)</span>}
+                              </span>
+                              <span className="num" style={{ fontSize: 9.5, fontWeight: 700, textAlign: "right", color: vbdColor(vB) }}>{vB != null ? (vB > 0 ? "+" : "") + Math.round(vB) : "—"}</span>
+                              <span className="num mut" style={{ fontSize: 11, textAlign: "right" }}>{Math.round(b.pts || 0)}</span>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </>
