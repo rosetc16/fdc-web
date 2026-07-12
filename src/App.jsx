@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fg";
+const BUILD_TAG = "2026.06.28fh";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3833,7 +3833,7 @@ function OutlookCard({ content }) {
           // strength. Columns are opt-in via l.cols (defaults to rank/name/team/age/pts).
           const cols = l.cols || ["rank", "name", "team", "age", "pts"];
           const rowsP = l.players || [];
-          const headLabel = { rank: "Rk", name: "Player", team: "Tm", age: "Age", pts: "Proj", vbd: "VBD", role: "Role", bye: "Bye", value: "Value", dval: "Value", slot: "Slot", prob: l.probLabel || "Avail", adp: "ADP", pick: "Pick", pos: "Pos", drafter: "Drafted by", valread: "Read" };
+          const headLabel = { rank: "Rk", name: "Player", team: "Tm", age: "Age", pts: "Proj", vbd: "VBD", role: "Role", bye: "Bye", value: "Value", dval: "Value", slot: "Slot", prob: l.probLabel || "Avail", adp: "ADP", pick: "Pick", pos: "Pos", drafter: "Drafted by", valread: "Read", score: "Score" };
           const gridCols = cols.map((c) => c === "name" ? "1fr" : c === "role" ? "1.1fr" : "auto").join(" ");
           const hasPosCol = cols.includes("pos"); // if a dedicated Pos column shows the icon, don't double it on the name
           const vColor = vbdColor;
@@ -3867,6 +3867,7 @@ function OutlookCard({ content }) {
                   if (c === "pos") return <div key={ri + "-" + ci} style={{ ...base, textAlign: "left", fontWeight: 700, color: POS_COLOR[p.pos] || "var(--ink)" }}><Dot pos={p.pos} />{p.pos}</div>;
                   if (c === "drafter") return <div key={ri + "-" + ci} style={{ ...base, color: p.rec ? "var(--gold)" : "var(--mut)", textAlign: "left", fontSize: 10.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: p.rec ? 700 : 400 }}>{p.drafter || "—"}</div>;
                   if (c === "valread") { const vr = p.valRead; return <div key={ri + "-" + ci} style={{ ...base, textAlign: "right", fontWeight: 800, fontSize: 10.5, color: vr ? vr.c : "var(--mut)" }}>{vr ? vr.t : "—"}</div>; }
+                  if (c === "score") { const sc = p.pickScore; return <div key={ri + "-" + ci} className="num" style={{ ...base, textAlign: "right", fontWeight: 800, color: sc == null ? "var(--mut)" : sc > 0 ? "#5FD0A8" : sc < 0 ? "#F2655C" : "var(--mut)" }}>{sc != null ? (sc > 0 ? "+" : "") + sc : "—"}</div>; }
                   return <div key={ri + "-" + ci} style={base} />;
                 }))}
               </div>
@@ -10845,12 +10846,18 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
       out.push(cur); return out.map((s) => s.trim());
     };
     const header = splitRow(lines[0]).map((h) => h.replace(/"/g, "").toUpperCase().trim());
-    const idx = (names) => header.findIndex((h) => names.includes(h));
+    // Return the column whose header matches the EARLIEST name in the priority list (not the earliest column),
+    // so e.g. AVG. is preferred over RK even when RK appears first in the file.
+    const idx = (names) => { for (const nm of names) { const j = header.indexOf(nm); if (j >= 0) return j; } return -1; };
     const iName = idx(["PLAYER NAME", "PLAYER", "NAME"]);
     const iPos = idx(["POS", "POSITION"]);
     const iTeam = idx(["TEAM", "TM"]);
-    const iAvg = idx(["AVG.", "AVG", "AVERAGE", "ECR", "RK", "RANK"]); // prefer AVG., fall back to RK
-    if (iName < 0 || iAvg < 0) return null;
+    // Value column: prefer the continuous average (AVG./ECR), fall back to the integer rank (RK/RANK). Both give
+    // a valid ordering; AVG. breaks ties more smoothly, but RK works fine as a similar signal when that's all the
+    // export has (e.g. FantasyPros' draft cheat-sheet export has RK but no AVG.).
+    const iVal = idx(["AVG.", "AVG", "AVERAGE", "ECR", "RK", "RANK", "#"]);
+    const usingRank = iVal >= 0 && ["RK", "RANK", "#"].includes(header[iVal]);
+    if (iName < 0 || iVal < 0) return null;
     const rows = [];
     for (let i = 1; i < lines.length; i++) {
       const c = splitRow(lines[i]);
@@ -10858,11 +10865,11 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
       if (!name) continue;
       const posRaw = iPos >= 0 ? (c[iPos] || "").replace(/[0-9"]/g, "").trim() : "";
       const team = iTeam >= 0 ? (c[iTeam] || "").replace(/"/g, "").trim() : "";
-      const avg = parseFloat((c[iAvg] || "").replace(/"/g, "").trim());
+      const avg = parseFloat((c[iVal] || "").replace(/"/g, "").trim());
       if (!Number.isFinite(avg)) continue;
       rows.push({ name, pos: posRaw, team, avg });
     }
-    return rows.length ? { rows, fileName } : null;
+    return rows.length ? { rows, fileName, usingRank } : null;
   };
 
   const onRankingFile = async (file) => {
@@ -10873,7 +10880,7 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
       if (!parsed) { note("Couldn't read that CSV — expected columns like PLAYER NAME, POS, TEAM, AVG."); return; }
       setRkParsed(parsed);
       if (!rkLabel) setRkLabel(file.name.replace(/\.csv$/i, ""));
-      note(`Parsed ${parsed.rows.length} players from ${file.name}. Review the format, then Upload.`);
+      note(`Parsed ${parsed.rows.length} players from ${file.name} (using ${parsed.usingRank ? "the RK/rank column — no AVG. found" : "the AVG. column"}). Review the format, then Upload.`);
     } catch (e) { note("Couldn't read that file."); }
   };
 
@@ -13430,11 +13437,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   };
   const arrow = (k) => (sortState.key === k ? (sortState.dir < 0 ? " ▾" : " ▴") : "");
   const cellFor = (p, key, gone) => {
-    const av = targetSurv ? targetSurv[p.id] : null;
-    const av2 = sims && sims.pct[1] ? sims.pct[1][p.id] : null;
-    const _er = myRanks.map[p.id];
-    const _pAdp = platRanks.map[p.id];
-    const edge = _pAdp != null ? Math.round(p.adp - _pAdp) : null;
+    // Only compute the lookups a given column actually needs. Previously all four (survival maps, personal &
+    // platform ranks) were computed for EVERY cell regardless of column — ~1000 wasted map lookups per board
+    // render, which is what made toggling the view (Value ↔ Stats) lag for several seconds. Now each is lazy.
     switch (key) {
       case "adp": {
         // Value highlight: when a player's ADP is EARLIER than the current pick, he's lasted past where
@@ -13456,8 +13461,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         return p.adp != null ? p.adp.toFixed(1) : "—";
       }
       case "consensus": return <span className="mut">{p.consensus.toFixed(1)}</span>;
-      case "edge": return edge == null ? <span className="mut" title="Enter Platform Ranks (your platform's ADP) to see your edge vs the market">—</span> : <span style={{ color: edge > 3 ? "var(--green)" : edge < -3 ? "var(--red)" : "var(--mut)" }} title="Market ADP minus your platform's ADP for this player">{edge > 0 ? `+${edge}` : edge}</span>;
-      case "platAdp": return _pAdp == null ? <span className="mut">—</span> : <span className="num" title="Your platform's ADP for this player (from Platform Ranks)">{(+_pAdp).toFixed(1)}</span>;
+      case "edge": { const _pAdp = platRanks.map[p.id]; const edge = _pAdp != null ? Math.round(p.adp - _pAdp) : null; return edge == null ? <span className="mut" title="Enter Platform Ranks (your platform's ADP) to see your edge vs the market">—</span> : <span style={{ color: edge > 3 ? "var(--green)" : edge < -3 ? "var(--red)" : "var(--mut)" }} title="Market ADP minus your platform's ADP for this player">{edge > 0 ? `+${edge}` : edge}</span>; }
+      case "platAdp": { const _pAdp = platRanks.map[p.id]; return _pAdp == null ? <span className="mut">—</span> : <span className="num" title="Your platform's ADP for this player (from Platform Ranks)">{(+_pAdp).toFixed(1)}</span>; }
       case "proj": return p.pts;
       case "floor": return <span className="mut">{p.floor}</span>;
       case "ceil": return <span className="mut">{p.ceil}</span>;
@@ -13484,7 +13489,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         </span>
       ) : <span className="mut">—</span>;
       case "bye": return p.bye || "—";
-      case "avail": return gone ? "—" : av != null ? <span style={{ color: av < 35 ? "var(--red)" : av > 75 ? "var(--green)" : "var(--ink)" }}>{av}%</span> : "…";
+      case "avail": { const av = targetSurv ? targetSurv[p.id] : null; return gone ? "—" : av != null ? <span style={{ color: av < 35 ? "var(--red)" : av > 75 ? "var(--green)" : "var(--ink)" }}>{av}%</span> : "…"; }
       case "nextpick": return gone ? "—" : av2 != null ? <span className="mut">{av2}%</span> : "—";
       default: return <span className="mut">{p.stats?.[key] || "—"}</span>;
     }
@@ -14066,8 +14071,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
               const recent = picks.slice(-6).map((pk, i) => ({ pk, o: picks.length - Math.min(6, picks.length) + i })).reverse();
               const moreTip = (e) => showTip(e, [
-                { kind: "take", tone: "neutral", x: `Recent picks — value read (steal / reach)` },
-                { kind: "playertable", cols: ["pick", "pos", "name", "drafter", "adp", "vbd", "valread"], players: picks.slice(-22).map((pk, i) => { const oo = Math.max(0, picks.length - Math.min(22, picks.length)) + i; const pp = players[pk]; if (!pp) return null; const gap = pp.adp != null ? Math.round((oo + 1) - pp.adp) : 0; const vr = gap >= 8 ? { t: "steal", c: "#5FD0A8" } : gap <= -8 ? { t: "reach", c: "#F2655C" } : { t: "fair", c: "var(--mut)" }; const mine = teamAt(oo) === userIdx; return { ...pp, pickNo: oo + 1, drafter: mine ? "You" : (TEAM_NAMES[teamAt(oo)] || `Team ${teamAt(oo) + 1}`), valRead: vr, rec: mine, star: mine }; }).filter(Boolean).reverse() },
+                { kind: "take", tone: "neutral", x: `Recent picks — draft Score (value vs. where he went)` },
+                { kind: "playertable", cols: ["pick", "pos", "name", "drafter", "adp", "score", "valread"], players: picks.slice(-22).map((pk, i) => { const oo = Math.max(0, picks.length - Math.min(22, picks.length)) + i; const pp = players[pk]; if (!pp) return null; const gap = pp.adp != null ? Math.round((oo + 1) - pp.adp) : 0; const vr = gap >= 8 ? { t: "steal", c: "#5FD0A8" } : gap <= -8 ? { t: "reach", c: "#F2655C" } : { t: "fair", c: "var(--mut)" }; const mine = teamAt(oo) === userIdx; return { ...pp, pickNo: oo + 1, pickScore: pickValue(pp, oo, cfg), drafter: mine ? "You" : (TEAM_NAMES[teamAt(oo)] || `Team ${teamAt(oo) + 1}`), valRead: vr, rec: mine, star: mine }; }).filter(Boolean).reverse() },
+                { kind: "take", tone: "neutral", x: "Score = draft-capital value gained/lost vs. his market price (ADP), weighted by round — the same value the scorecard grades teams on. Positive = got him below cost; negative = paid up." },
               ]);
               return (
                 <div className="tickcard" style={{ padding: "5px 9px", display: "flex", flexDirection: "column", minWidth: 0, height: "100%", boxSizing: "border-box" }}>
