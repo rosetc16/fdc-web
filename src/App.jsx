@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fo";
+const BUILD_TAG = "2026.06.28fp";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3628,6 +3628,14 @@ const valBg = (v) => (v === 0 ? "transparent" : v > 0 ? `rgba(124,217,178,${Math
 // Shared green→yellow→red scale for VBD / Value (points above replacement): strong ≥40, solid ≥20, fringe
 // ≥5, replacement-ish ≥0, below replacement <0. Used across hovers so strong values pop and weak ones warn.
 const vbdColor = (v) => v == null ? "var(--mut)" : v >= 40 ? "#5FD0A8" : v >= 20 ? "#9BD17E" : v >= 5 ? "#E7C24B" : v >= 0 ? "#C9A54B" : "#F2655C";
+// ADP read color for a pick: compares where a player was/would be taken (overall, 1-based) to his ADP.
+// Fell 8+ past ADP → steal (green); taken 8+ early → reach (red); within ±8 → fair (grey). Used to color the
+// ADP figure in the pick-flow widgets (Draft Pulse, On the Clock, Next Picks, Your Decision) at a glance.
+const adpReadColor = (overallPickNum, adp) => {
+  if (adp == null || overallPickNum == null) return "var(--mut)";
+  const gap = overallPickNum - adp;
+  return gap >= 8 ? "#5FD0A8" : gap <= -8 ? "#F2655C" : "var(--mut)";
+};
 
 // Lowercase a phrase for mid-sentence use, but keep position abbreviations (QB/RB/WR/TE/DST/DL/LB/DB) and
 // common up-cased tokens (WR-level, 3-down) in caps so roles like "Backup / rotational TE" don't become
@@ -14072,7 +14080,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           <span onMouseEnter={bestTip} onMouseLeave={hideTip} style={{ fontSize: 10.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "help" }}>{r.best.name} <span className="mut" style={{ fontSize: 8.5 }}>{r.best.pos}{r.best.posRank}</span></span>
                           <span onMouseEnter={bestTip} onMouseLeave={hideTip} className="num" style={{ fontSize: 10, fontWeight: 700, textAlign: "right", cursor: "help", color: vbdColor(r.best.vbd) }}>{(r.best.vbd > 0 ? "+" : "") + Math.round(r.best.vbd)}</span>
                           {dynasty && <span onMouseEnter={bestTip} onMouseLeave={hideTip} className="num" style={{ fontSize: 10, fontWeight: 700, textAlign: "right", cursor: "help", color: vbdColor(r.best.value ?? r.best.vbd) }}>{(() => { const v = r.best.value ?? r.best.vbd; return (v > 0 ? "+" : "") + Math.round(v); })()}</span>}
-                          <span className="num mut" style={{ fontSize: 9.5, textAlign: "right" }}>{r.best.adp != null ? r.best.adp.toFixed(0) : "—"}</span>
+                          <span className="num" style={{ fontSize: 9.5, textAlign: "right", color: adpReadColor(picks.length + 1, r.best.adp) }} title={r.best.adp != null ? `ADP ${r.best.adp.toFixed(1)} vs current pick ${picks.length + 1} — ${(picks.length + 1) - r.best.adp >= 8 ? "steal (fell past his ADP)" : (picks.length + 1) - r.best.adp <= -8 ? "reach (earlier than ADP)" : "fair value"}` : ""}>{r.best.adp != null ? r.best.adp.toFixed(0) : "—"}</span>
                           <span onMouseEnter={supplyTip} onMouseLeave={hideTip} style={{ display: "inline-flex", alignItems: "center", justifyContent: "flex-end", gap: 3, cursor: "help" }}>
                             {r.isRun && <i className="ti ti-flame" style={{ fontSize: 9, color: "#F2655C" }} aria-hidden="true" />}
                             <span style={{ fontSize: 8.5, fontWeight: 800, color: r.isRun ? "#F2655C" : r.supply.c, whiteSpace: "nowrap" }}>{r.isRun ? "run" : r.supply.label}</span>
@@ -14228,7 +14236,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 9 }}>
                                 <span className="num" style={{ fontWeight: 700, color: rankTierColor(pp.pos, pp.posRank) }}>{pp.pos}{pp.posRank}</span>
                                 <span className="num" style={{ color: vbdColor(vShowP) }}>{(vShowP > 0 ? "+" : "") + Math.round(vShowP)}</span>
-                                <span className="mut">ADP {pp.adp != null ? pp.adp.toFixed(0) : "—"}</span>
+                                <span className="num" style={{ color: adpReadColor(picks.length + 1, pp.adp) }} title={pp.adp != null ? `ADP ${pp.adp.toFixed(1)} vs pick ${picks.length + 1}` : ""}>ADP {pp.adp != null ? pp.adp.toFixed(0) : "—"}</span>
                                 {projPick.prob != null && <span className="mut">· {isYou ? "avail" : "take"} {projPick.prob}%</span>}
                               </div>
                             </div>
@@ -14249,7 +14257,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                     <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank), fontSize: 9 }}>{p.pos}{p.posRank}</span>
                                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
                                     <span className="num" style={{ fontSize: 9, textAlign: "right", color: vbdColor(vShow) }}>{(vShow > 0 ? "+" : "") + Math.round(vShow)}</span>
-                                    <span className="num mut" style={{ fontSize: 8.5, textAlign: "right" }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
+                                    <span className="num" style={{ fontSize: 8.5, textAlign: "right", color: adpReadColor(picks.length + 1, p.adp) }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
                                     <span className="num mut" style={{ fontSize: 8.5, textAlign: "right" }}>{c.prob != null ? `${c.prob}%` : ""}</span>
                                     {isYou && !gated && <button className="btn btn-mini" style={{ fontSize: 8.5, padding: "1px 5px", borderColor: "var(--gold)", color: "var(--gold)" }} onClick={(e) => { e.stopPropagation(); draftPlayer(p.id); }}>Draft</button>}
                                   </div>
@@ -14315,7 +14323,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           <span className="num" style={{ fontSize: 8.5, color: mine ? "var(--gold)" : "var(--mut)", fontWeight: mine ? 800 : 400 }}>{pickLabel(step.o)}</span>
                           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={p.pos} /><span style={{ fontSize: 10.5, fontWeight: mine ? 700 : 400 }}>{p.name}</span> {mine ? <span style={{ fontSize: 7.5, fontWeight: 800, color: "var(--gold)", background: "rgba(242,182,60,.2)", borderRadius: 3, padding: "0 3px", marginLeft: 2, textTransform: "uppercase", letterSpacing: ".03em" }}>You</span> : <span className="mut" style={{ fontSize: 8.5 }}>{TEAM_NAMES[step.t].split(" ")[0]}</span>}</span>
                           <span className="num" style={{ fontSize: 9, fontWeight: 700, textAlign: "right", color: vbdColor(vShow) }}>{(vShow > 0 ? "+" : "") + Math.round(vShow)}</span>
-                          <span className="num mut" style={{ fontSize: 9, textAlign: "right" }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
+                          <span className="num" style={{ fontSize: 9, textAlign: "right", color: adpReadColor(step.o + 1, p.adp) }} title={p.adp != null ? `ADP ${p.adp.toFixed(1)} vs this pick ${step.o + 1}` : ""}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
                         </div>
                       );
                     }) : <span className="mut" style={{ fontSize: 10 }}>No upcoming picks</span>}
@@ -14849,7 +14857,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}><Dot pos={p.pos} /><b style={{ color: i === 0 ? accent : "var(--ink)" }}>{i === 0 ? "★ " : ""}{p.name}</b></span>
                               <span className="mut" style={{ fontSize: 8.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textTransform: "capitalize" }}>{roleShort}</span>
                               <span className="num" style={{ fontWeight: 700, color: vbdColor(vShow), fontSize: 10.5, textAlign: "right" }}>{(vShow > 0 ? "+" : "") + Math.round(vShow)}</span>
-                              <span className="num mut" style={{ fontSize: 9.5, textAlign: "right" }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
+                              <span className="num" style={{ fontSize: 9.5, textAlign: "right", color: adpReadColor(pickNowN, p.adp) }} title={p.adp != null ? `ADP ${p.adp.toFixed(1)} vs pick ${pickNowN} — ${pickNowN - p.adp >= 8 ? "steal" : pickNowN - p.adp <= -8 ? "reach" : "fair value"}` : ""}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
                               <span className="num" style={{ fontSize: 9.5, color: surv == null ? "var(--mut)" : surv >= 65 ? "#5FD0A8" : surv >= 35 ? "var(--gold)" : "#F2655C", textAlign: "right" }}>{surv != null ? `${surv}%` : "—"}</span>
                               {onClockNow && (!gated ? <button className="btn btn-mini" style={{ fontSize: 9, padding: "2px 6px", borderColor: accent, color: accent }} onClick={(e) => { e.stopPropagation(); draftPlayer(p.id); }}>Draft</button> : <span />)}
                             </div>
