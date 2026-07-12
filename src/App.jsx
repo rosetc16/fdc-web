@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ff";
+const BUILD_TAG = "2026.06.28fg";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1281,16 +1281,36 @@ function applyAdpOverlay(pack) {
   let withAdp = 0;
   const adpVals = [];
   const MIN_TRUST_SAMPLES = 4;
+  // First pass: find any ADP value shared by a huge share of players. The backend sometimes assigns ONE
+  // fallback/placeholder ADP to the entire deep bench (thousands of players at, say, 15.9) while still marking
+  // them trusted. That's not real market data — it's a filler number — and if we let it through it both trips
+  // the collapse guard AND (worse) would flatten the deep board. So we identify that dominant placeholder and
+  // exclude just those players, keeping every player with a genuine, distinct ADP. This turns an all-or-nothing
+  // reject (which threw away a perfectly good top-200 because of deep-bench filler) into a clean salvage.
+  const preFreq = {};
+  for (const p of pack.players) {
+    if (!p.name || p.adp == null || p.adpDegraded) continue;
+    if (Number(p.sampleN != null ? p.sampleN : 0) < MIN_TRUST_SAMPLES) continue;
+    const k = Math.round(Number(p.adp) * 10) / 10;
+    preFreq[k] = (preFreq[k] || 0) + 1;
+  }
+  let placeholderAdp = null, placeholderCount = 0;
+  for (const k in preFreq) { if (preFreq[k] > placeholderCount) { placeholderCount = preFreq[k]; placeholderAdp = Number(k); } }
+  // Treat a value as a placeholder only if it's shared by an implausible number of players (real ADP never has
+  // 100+ players at the exact same number). Below that, it's just normal clustering and we keep it.
+  const hasPlaceholder = placeholderCount >= 100;
+
   for (const p of pack.players) {
     if (!p.name || p.adp == null) continue;
     if (p.adpDegraded) continue;               // wrong-format stand-in — not this league's market
     const n = Number(p.sampleN != null ? p.sampleN : 0);
     if (n < MIN_TRUST_SAMPLES) continue;       // exact-format published ships sampleN 999, so it always qualifies
+    if (hasPlaceholder && Math.round(Number(p.adp) * 10) / 10 === placeholderAdp) continue; // skip filler-ADP players
     byName.set(normName(p.name), p);
     adpVals.push(Number(p.adp));
     withAdp++;
   }
-  if (withAdp < 20) { LIVE_OVERLAY_REASON = `only ${withAdp} trusted ADP (need 20) — format ${pack.format || "?"}`; return false; }
+  if (withAdp < 20) { LIVE_OVERLAY_REASON = `only ${withAdp} trusted ADP (need 20) — format ${pack.format || "?"}${hasPlaceholder ? ` (excluded ${placeholderCount} filler-ADP)` : ""}`; return false; }
   // SANITY GUARD: reject a DEGENERATE pack whose ADP has collapsed — e.g. hundreds of players sharing a
   // single value (~15.9), which happens when the backend's published/consensus ADP for a format is missing
   // or malformed. Applying it flattens the whole board (every player ~identical ADP, QBs/streamers floating
