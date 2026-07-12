@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fc";
+const BUILD_TAG = "2026.06.28fd";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1077,6 +1077,8 @@ let LIVE_HARVEST_FMT = null;     // which harvested-consensus format the backend
 let LIVE_HARVEST_CHAIN = [];     // [{format, rows}] each fallback step the backend tried, for diagnosis
 let LIVE_OVERLAY_REASON = null;  // if a per-format overlay was REJECTED, why (so the board silently keeping the
                                  // global pack — e.g. a redraft mock stuck on dynasty ADP — is diagnosable)
+let LIVE_OVERLAY_TARGET = null;  // the format the current draft SHOULD be showing
+let LIVE_OVERLAY_STATE = null;   // loading | applied | rejected | miss — where the per-draft overlay ended up
 export function isLivePackLoaded() { return LIVE_LOADED; }
 
 
@@ -1787,7 +1789,11 @@ function buildPlayers(cfg) {
     // dynasty league. The lift only becomes meaningful where ADP and projection DISAGREE, which is mostly the
     // mid/late board (rookies, ascenders, faded vets) — not the elite tier.
     {
-      const withAdp = ps.filter((p) => VBD_POS.includes(p.pos) && p.adp != null && p.adp > 0 && !p.adpDegraded);
+      // Only players the projection ACTUALLY RATES can have "upside" — a 0-projection backup has no breakout to
+      // price in, and including him created the bug where deep QBs (ADP ~325, proj 0) shot to the top of Value.
+      // Require a real, positive projection and a real market ADP.
+      const projFloor = 1; // must have at least a token projection to be eligible for an upside lift
+      const withAdp = ps.filter((p) => VBD_POS.includes(p.pos) && p.adp != null && p.adp > 0 && !p.adpDegraded && (p.pts ?? 0) > projFloor);
       if (withAdp.length >= 20) {
         const byAdp = withAdp.slice().sort((a, b) => a.adp - b.adp);
         const adpRankById = new Map(byAdp.map((p, i) => [p.id, i + 1]));
@@ -1800,17 +1806,26 @@ function buildPlayers(cfg) {
         withAdp.forEach((p) => {
           const aR = adpRankById.get(p.id), vR = valRankById.get(p.id);
           if (aR == null || vR == null) return;
-          const gap = vR - aR;            // >0 market ranks him ahead of his projection (upside)
+          let gap = vR - aR;              // >0 market ranks him ahead of his projection (upside)
           if (gap === 0) return;
-          // Dampen the effect near the TOP of the board so the locked elite tier stays put; full strength in the
-          // mid/late board where upside actually lives. topDamp ~0 for ADP ranks inside ~top 24, ramps to 1.
+          // CAP the gap. A single player shouldn't be able to leap 100+ ranks on ADP alone — that's what let a
+          // deep backup rocket up. Bound it to a sane climb so the effect is a tilt, not a teleport.
+          const GAP_CAP = Math.min(40, Math.round(N * 0.18));
+          gap = Math.max(-GAP_CAP, Math.min(GAP_CAP, gap));
+          // Dampen near the TOP of the board so the locked elite tier stays put; full strength in the mid/late
+          // board where upside actually lives. topDamp ~0 for ADP ranks inside ~top 24, ramps to 1.
           const topDamp = Math.min(1, Math.max(0, (aR - 12) / 24));
           const a = AGE[p.pos];
           const young = a ? Math.max(0, a.peak - (p.age || a.peak)) : 0;
           const rookieBoost = p.rookie ? 1.35 : 1;
           const youthFactor = (1 + Math.min(0.6, young * 0.09)) * rookieBoost;
           const dir = gap > 0 ? 1 : 0.4;  // upside counts more than fade (don't over-punish a cooled vet)
-          const lift = gap * perRank * 0.5 * dir * topDamp * (gap > 0 ? youthFactor : 1);
+          let lift = gap * perRank * 0.5 * dir * topDamp * (gap > 0 ? youthFactor : 1);
+          // HARD CEILING: the lift can never push a player's value above his own projection-based ceiling by more
+          // than a fraction of the board spread. Prevents a low-VBD player from ever out-valuing genuinely
+          // productive players purely on market hype. Also never let the lift exceed the player's own |vbd|+spread.
+          const maxLift = Math.max(perRank * 6, Math.abs(p.vbd) * 0.5);
+          lift = Math.max(-maxLift, Math.min(maxLift, lift));
           p.value = Math.round((p.value + lift) * 10) / 10;
           p.adpUpside = Math.round(lift * 10) / 10;
         });
@@ -4257,11 +4272,16 @@ function VersionBadge() {
                 );
               })()}
               {(() => {
+                const target = (typeof LIVE_OVERLAY_TARGET !== "undefined") ? LIVE_OVERLAY_TARGET : null;
+                const state = (typeof LIVE_OVERLAY_STATE !== "undefined") ? LIVE_OVERLAY_STATE : null;
                 const reason = (typeof LIVE_OVERLAY_REASON !== "undefined") ? LIVE_OVERLAY_REASON : null;
-                if (!reason) return null;
+                if (!target) return null;
+                const mismatch = fmt && target && fmt !== target;
                 return (
-                  <div style={{ borderTop: "1px solid var(--line)", marginTop: 6, paddingTop: 6, color: "var(--gold)" }}>
-                    Format overlay rejected — board kept a broader pack.<br /><span className="mut">{reason}</span>
+                  <div style={{ borderTop: "1px solid var(--line)", marginTop: 6, paddingTop: 6 }}>
+                    <div style={{ color: mismatch ? "var(--gold)" : "var(--mut)" }}>This draft wants: {target}</div>
+                    <div className="mut">overlay: {state || "?"}{state === "applied" ? " ✓" : ""}</div>
+                    {reason && <div style={{ color: "var(--gold)" }}>{reason}</div>}
                   </div>
                 );
               })()}
@@ -4722,20 +4742,24 @@ export default function App() {
   const activeFmt = (route === "draft" && active && active.cfg) ? backendFormatKey(active.cfg) : null;
   useEffect(() => {
     if (!hasBackend || !activeFmt) return;
-    if (adpOverlayApplied.current === activeFmt) return; // already showing this format
+    LIVE_OVERLAY_TARGET = activeFmt; // the format this draft SHOULD be showing (for the badge diagnostic)
+    if (adpOverlayApplied.current === activeFmt) { LIVE_OVERLAY_STATE = "applied"; return; }
+    LIVE_OVERLAY_STATE = "loading";
     const cache = adpOverlayCache.current;
     const applyPack = (pack) => {
-      if (pack && applyAdpOverlay(pack)) { adpOverlayApplied.current = activeFmt; setDataVersion((v) => v + 1); }
+      if (pack && applyAdpOverlay(pack)) { adpOverlayApplied.current = activeFmt; LIVE_OVERLAY_STATE = "applied"; setDataVersion((v) => v + 1); }
+      else { LIVE_OVERLAY_STATE = "rejected"; }
     };
     if (cache[activeFmt] && cache[activeFmt] !== "pending" && cache[activeFmt] !== "miss") { applyPack(cache[activeFmt]); return; }
-    if (cache[activeFmt] === "pending" || cache[activeFmt] === "miss") return;
+    if (cache[activeFmt] === "pending") return;
+    if (cache[activeFmt] === "miss") { LIVE_OVERLAY_STATE = "miss"; return; }
     cache[activeFmt] = "pending";
     const st = (active.cfg && active.cfg.start) || {};
     const opts = { k: !!(st.K > 0), dst: !!(st.DST > 0) };
     let alive = true;
     api.playerPack(activeFmt, undefined, opts)
-      .then((pack) => { if (!alive) return; if (pack && Array.isArray(pack.players) && pack.players.length) { cache[activeFmt] = pack; applyPack(pack); } else { cache[activeFmt] = "miss"; } })
-      .catch(() => { cache[activeFmt] = "miss"; });
+      .then((pack) => { if (!alive) return; if (pack && Array.isArray(pack.players) && pack.players.length) { cache[activeFmt] = pack; applyPack(pack); } else { cache[activeFmt] = "miss"; LIVE_OVERLAY_STATE = "miss"; LIVE_OVERLAY_REASON = "backend returned no players for " + activeFmt; } })
+      .catch((e) => { cache[activeFmt] = "miss"; LIVE_OVERLAY_STATE = "miss"; LIVE_OVERLAY_REASON = "pack request failed: " + (e && e.message || e); });
     return () => { alive = false; };
   }, [activeFmt]);
 
