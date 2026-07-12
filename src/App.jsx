@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fi";
+const BUILD_TAG = "2026.06.28fj";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -12045,6 +12045,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [futureBig, setFutureBig] = useState(false);
   // Recommendation hub: which of your upcoming picks the decision panel is focused on. null = your next pick.
   const [recPickSel, setRecPickSel] = useState(null); // overall index (0-based) of the pick to analyze
+  const [recScope, setRecScope] = useState("mine");   // "Your decision" scope: "mine" (your picks) | "all" (every upcoming pick)
   useEffect(() => { setRecPickSel(null); }, [picks.length]); // default to your next pick after any pick
   const [tip, setTip] = useState(null);
   const [copied, setCopied] = useState(false);
@@ -12094,6 +12095,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [myTeamView, setMyTeamView] = useState("current"); // Team analysis tab: "current" | "projected"
   const [analysisTeam, setAnalysisTeam] = useState(null);   // which team the analysis tab shows; null = you
   const [leagueOpen, setLeagueOpen] = useState(false);      // Team analysis: League Overview dropdown open?
+  const [rankView, setRankView] = useState("standings");    // Team analysis bottom widget: "standings" | "power"
   const [recPick, setRecPick] = useState("current");        // Hub recommendation: "current" pick vs "mine" (your next)
   const [recView, setRecView] = useState("rec");            // Hub recommendation lens: "rec" (best for you) vs "expect" (engine's predicted market pick)
   // First-time onboarding. The GUIDED TOUR auto-launches whenever you enter a draft room, UNLESS you've
@@ -14688,15 +14690,25 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
                 // Which pick are we analyzing? Default = your next pick (or the current pick if you're up).
                 const myUpNext = onClock === userIdx ? picks.length : myNextOverall;
-                const myUpcoming = remainingPicks.filter((p) => p.mine); // all my remaining picks
+                // The dropdown's pick list depends on scope: just YOUR picks, or EVERY upcoming pick (so you can
+                // scout another team's decision). Both always include the pick currently on the board.
+                const boardPickEntry = { o: picks.length, overall: picks.length + 1, mine: teamAt(picks.length) === userIdx, label: pickLabel(picks.length), isBoard: true };
+                const mineList = remainingPicks.filter((p) => p.mine);
+                const allList = remainingPicks.slice(0, 40); // cap for a manageable dropdown
+                const scopeList = recScope === "all" ? allList : mineList;
+                // Ensure the on-the-board pick is present at the top of the list.
+                const myUpcoming = (scopeList.some((p) => p.o === picks.length) ? scopeList : [boardPickEntry, ...scopeList]);
                 const selOverall = recPickSel != null ? recPickSel : (myUpNext != null ? myUpNext : (myUpcoming[0] ? myUpcoming[0].o : null));
                 if (selOverall == null) return <div className="tickcard" style={{ padding: 12 }}><span className="mut" style={{ fontSize: 12 }}>No upcoming picks to analyze.</span></div>;
                 const onClockNow = selOverall === picks.length && onClock === userIdx;
                 const isBoardPick = selOverall === picks.length; // the pick currently ON THE BOARD
-                // Advice for the selected pick, using the STRATEGY the user has chosen (Smart / Max VBD /
-                // Upside / Strict ADP). mySelAdvice already tracks `strategy` for your next pick; for other
-                // picks compute fresh with the selected strategy.
-                const balAdv = (selOverall === myPickOverall && mySelAdvice) ? mySelAdvice : adviceFor(selOverall, userIdx, sims, strategy);
+                // WHOSE pick is this? For a pick you own it's you; otherwise it's another team, and we analyze it
+                // from THAT team's perspective (their roster needs), mirroring the top recommendation process.
+                const selTeamIdx = teamAt(selOverall);
+                const selIsMine = selTeamIdx === userIdx;
+                const selTeamLabel = selIsMine ? "You" : (TEAM_NAMES[selTeamIdx] || `Team ${selTeamIdx + 1}`);
+                // Advice for the selected pick, from the perspective of the team that owns it.
+                const balAdv = (selOverall === myPickOverall && selIsMine && mySelAdvice) ? mySelAdvice : adviceFor(selOverall, selTeamIdx, sims, strategy);
                 const bldAdv = balAdv; // one unified model — the list follows the selected strategy
                 const survOf = (p) => {
                   if (selOverall === picks.length) return 100; // on the clock now — everyone's available
@@ -14860,21 +14872,38 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
                 return (
                   <div data-tour="decision" className="tickcard" style={{ padding: "11px 13px", border: "1.5px solid var(--gold)", background: "linear-gradient(165deg,rgba(30,34,44,1),rgba(22,26,34,1))" }}>
-                    {/* header + pick selector dropdown */}
+                    {/* header + scope toggle + pick selector dropdown */}
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 7, flexWrap: "wrap" }}>
-                      <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", fontWeight: 800, display: "flex", alignItems: "center", gap: 5 }}><i className="ti ti-bulb" style={{ fontSize: 13 }} aria-hidden="true" />Your decision</div>
-                      {myUpcoming.length > 0 && (
-                        <select value={selOverall} onChange={(e) => setRecPickSel(+e.target.value)} style={{ background: "var(--panel3)", color: "var(--ink)", border: "1px solid var(--line)", borderRadius: 7, fontSize: 10.5, padding: "3px 7px", fontWeight: 600, cursor: "pointer", maxWidth: 180 }}>
-                          {myUpcoming.map((up, i) => (
-                            <option key={up.o} value={up.o}>{i === 0 ? (onClock === userIdx ? "Your pick (on clock)" : "Your next pick") : `+${i} → ${up.label}`} · {up.label}</option>
-                          ))}
-                        </select>
-                      )}
+                      <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", fontWeight: 800, display: "flex", alignItems: "center", gap: 5 }}><i className="ti ti-bulb" style={{ fontSize: 13 }} aria-hidden="true" />{selIsMine ? "Your decision" : `${selTeamLabel}'s decision`}</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        <div style={{ display: "inline-flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--line)" }}>
+                          <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", padding: "3px 8px", fontSize: 10, background: recScope === "mine" ? "var(--gold)" : "transparent", color: recScope === "mine" ? "#151002" : "var(--ink)", fontWeight: recScope === "mine" ? 700 : 400 }} onClick={() => { setRecScope("mine"); setRecPickSel(null); }}>Your picks</button>
+                          <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", padding: "3px 8px", fontSize: 10, background: recScope === "all" ? "var(--gold)" : "transparent", color: recScope === "all" ? "#151002" : "var(--ink)", fontWeight: recScope === "all" ? 700 : 400 }} onClick={() => setRecScope("all")}>All picks</button>
+                        </div>
+                        {myUpcoming.length > 0 && (
+                          <select value={selOverall} onChange={(e) => setRecPickSel(+e.target.value)} style={{ background: "var(--panel3)", color: "var(--ink)", border: "1px solid var(--line)", borderRadius: 7, fontSize: 10.5, padding: "3px 7px", fontWeight: 600, cursor: "pointer", maxWidth: 200 }}>
+                            {myUpcoming.map((up, i) => {
+                              const t = teamAt(up.o);
+                              const who = t === userIdx ? "You" : (TEAM_NAMES[t] || `Team ${t + 1}`);
+                              const isBoardNow = up.o === picks.length;
+                              const prefix = isBoardNow ? "On the clock" : recScope === "all" ? who : (i === 0 ? "Your next pick" : `+${i}`);
+                              return <option key={up.o} value={up.o}>{prefix} · {up.label}{recScope === "all" && !isBoardNow ? "" : ""}</option>;
+                            })}
+                          </select>
+                        )}
+                      </div>
                     </div>
+                    {/* whose pick this is — clear banner when it's NOT yours */}
+                    {!selIsMine && (
+                      <div style={{ fontSize: 10.5, marginBottom: 7, padding: "5px 8px", borderRadius: 6, background: "rgba(107,168,229,.12)", border: "1px solid rgba(107,168,229,.4)", color: "#9BC4EA", display: "flex", alignItems: "center", gap: 5 }}>
+                        <i className="ti ti-users" style={{ fontSize: 12 }} aria-hidden="true" />
+                        This is <b style={{ color: "#BFDcFF", margin: "0 3px" }}>{selTeamLabel}'s</b> pick — the recommendation below is what makes sense for <b style={{ color: "#BFDcFF", margin: "0 3px" }}>their</b> roster, not yours.
+                      </div>
+                    )}
                     {/* what "this pick" means */}
                     <div className="mut" style={{ fontSize: 9, marginBottom: 7, display: "flex", alignItems: "center", gap: 4 }}>
                       <i className="ti ti-info-circle" style={{ fontSize: 10 }} aria-hidden="true" />
-                      {isBoardPick ? (onClockNow ? "Analyzing the pick on the clock — yours right now." : "Analyzing the pick on the clock.") : `Analyzing your upcoming pick at ${pickLabel(selOverall)} — not the pick currently on the board.`}
+                      {isBoardPick ? (onClockNow ? "Analyzing the pick on the clock — yours right now." : `Analyzing the pick on the clock — ${selTeamLabel}'s.`) : `Analyzing ${selIsMine ? "your" : selTeamLabel + "'s"} upcoming pick at ${pickLabel(selOverall)} — not the pick currently on the board.`}
                     </div>
                     {/* summary */}
                     <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 10, background: "rgba(242,182,60,.05)", borderLeft: "2px solid var(--gold)", padding: "7px 9px", borderRadius: "0 6px 6px 0" }}>
@@ -15652,53 +15681,48 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               </div>
             </div>
 
-            {/* PROJECTED STANDINGS — every team ordered by projected points (the outcome that wins the league). */}
-            {proj && proj.pts && (
+            {/* LEAGUE RANKINGS — toggle between projected standings (by points) and power rankings (by roster value). */}
+            {proj && proj.pts && grades && (
               <div className="panel" style={{ padding: 14 }}>
-                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 3 }}>Projected standings</div>
-                <div className="mut" style={{ fontSize: 11, marginBottom: 10 }}>Where each team finishes, by projected starting-lineup points.</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  {Array.from({ length: TEAMS }, (_, i) => ({ i, pts: proj.pts[i] || 0, rank: proj.rank ? proj.rank[i] : i + 1 }))
-                    .sort((a, b) => a.rank - b.rank)
-                    .map((row) => {
-                      const isSel = row.i === selTeam;
-                      const isYou = row.i === userIdx;
-                      const maxPts = Math.max(...proj.pts, 1);
-                      return (
-                        <div key={row.i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 6px", borderRadius: 6, background: isSel ? "rgba(242,182,60,.12)" : "transparent", border: isSel ? "1px solid var(--gold)" : "1px solid transparent" }}>
-                          <span className="num" style={{ width: 22, textAlign: "right", fontWeight: 800, color: row.rank === 1 ? "var(--green)" : row.rank === TEAMS ? "var(--red)" : "var(--mut)" }}>{row.rank}</span>
-                          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontWeight: isYou ? 800 : 500, color: isYou ? "var(--gold)" : "var(--ink)" }}>{isYou ? "Your team" : (TEAM_NAMES[row.i] || `Team ${row.i + 1}`)}</span>
-                          <div style={{ width: 60, height: 6, background: "var(--panel2)", borderRadius: 3, overflow: "hidden" }}>
-                            <div style={{ width: `${Math.max(4, (row.pts / maxPts) * 100)}%`, height: "100%", background: isYou ? "var(--gold)" : "var(--blue)", opacity: 0.85 }} />
-                          </div>
-                          <span className="num mut" style={{ width: 42, textAlign: "right", fontSize: 11 }}>{Math.round(row.pts)}</span>
-                        </div>
-                      );
-                    })}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 3, flexWrap: "wrap" }}>
+                  <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)" }}>{rankView === "standings" ? "Projected standings" : "Power rankings"}</div>
+                  <div style={{ display: "inline-flex", borderRadius: 7, overflow: "hidden", border: "1px solid var(--line2)" }}>
+                    <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: rankView === "standings" ? "var(--gold)" : "transparent", color: rankView === "standings" ? "#151002" : "var(--ink)", fontWeight: rankView === "standings" ? 700 : 400, fontSize: 11 }} onClick={() => setRankView("standings")}>Standings</button>
+                    <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: rankView === "power" ? "var(--gold)" : "transparent", color: rankView === "power" ? "#151002" : "var(--ink)", fontWeight: rankView === "power" ? 700 : 400, fontSize: 11 }} onClick={() => setRankView("power")}>Power</button>
+                  </div>
                 </div>
-              </div>
-            )}
-
-            {/* POWER RANKINGS — ordered by overall roster value (draft-capital value + projected points blend). */}
-            {grades && (
-              <div className="panel" style={{ padding: 14 }}>
-                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 3 }}>Power rankings</div>
-                <div className="mut" style={{ fontSize: 11, marginBottom: 10 }}>Overall team strength — the total value each roster holds, not just this year's points.</div>
+                <div className="mut" style={{ fontSize: 11, marginBottom: 10 }}>{rankView === "standings" ? "Where each team finishes, by projected starting-lineup points." : "Overall team strength — the total value each roster holds, not just this year's points."}</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  {Array.from({ length: TEAMS }, (_, i) => ({ i, z: grades[i] ? grades[i].z : 0, g: grades[i] ? grades[i].g : "—" }))
-                    .sort((a, b) => b.z - a.z)
-                    .map((row, idx) => {
-                      const isSel = row.i === selTeam;
-                      const isYou = row.i === userIdx;
-                      const gradeColor = row.z >= 0.7 ? "var(--green)" : row.z >= 0.12 ? "#9BD17E" : row.z >= -0.45 ? "var(--gold)" : "var(--red)";
-                      return (
-                        <div key={row.i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 6px", borderRadius: 6, background: isSel ? "rgba(242,182,60,.12)" : "transparent", border: isSel ? "1px solid var(--gold)" : "1px solid transparent" }}>
-                          <span className="num" style={{ width: 22, textAlign: "right", fontWeight: 800, color: idx === 0 ? "var(--green)" : idx === TEAMS - 1 ? "var(--red)" : "var(--mut)" }}>{idx + 1}</span>
-                          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontWeight: isYou ? 800 : 500, color: isYou ? "var(--gold)" : "var(--ink)" }}>{isYou ? "Your team" : (TEAM_NAMES[row.i] || `Team ${row.i + 1}`)}</span>
-                          <span className="num" style={{ width: 32, textAlign: "right", fontSize: 12, fontWeight: 800, color: gradeColor }}>{row.g}</span>
-                        </div>
-                      );
-                    })}
+                  {rankView === "standings"
+                    ? Array.from({ length: TEAMS }, (_, i) => ({ i, pts: proj.pts[i] || 0, rank: proj.rank ? proj.rank[i] : i + 1 }))
+                        .sort((a, b) => a.rank - b.rank)
+                        .map((row) => {
+                          const isSel = row.i === selTeam, isYou = row.i === userIdx;
+                          const maxPts = Math.max(...proj.pts, 1);
+                          return (
+                            <div key={row.i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 6px", borderRadius: 6, background: isSel ? "rgba(242,182,60,.12)" : "transparent", border: isSel ? "1px solid var(--gold)" : "1px solid transparent" }}>
+                              <span className="num" style={{ width: 22, textAlign: "right", fontWeight: 800, color: row.rank === 1 ? "var(--green)" : row.rank === TEAMS ? "var(--red)" : "var(--mut)" }}>{row.rank}</span>
+                              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontWeight: isYou ? 800 : 500, color: isYou ? "var(--gold)" : "var(--ink)" }}>{isYou ? "Your team" : (TEAM_NAMES[row.i] || `Team ${row.i + 1}`)}</span>
+                              <div style={{ width: 60, height: 6, background: "var(--panel2)", borderRadius: 3, overflow: "hidden" }}>
+                                <div style={{ width: `${Math.max(4, (row.pts / maxPts) * 100)}%`, height: "100%", background: isYou ? "var(--gold)" : "var(--blue)", opacity: 0.85 }} />
+                              </div>
+                              <span className="num mut" style={{ width: 42, textAlign: "right", fontSize: 11 }}>{Math.round(row.pts)}</span>
+                            </div>
+                          );
+                        })
+                    : Array.from({ length: TEAMS }, (_, i) => ({ i, z: grades[i] ? grades[i].z : 0, g: grades[i] ? grades[i].g : "—" }))
+                        .sort((a, b) => b.z - a.z)
+                        .map((row, idx) => {
+                          const isSel = row.i === selTeam, isYou = row.i === userIdx;
+                          const gradeColor = row.z >= 0.7 ? "var(--green)" : row.z >= 0.12 ? "#9BD17E" : row.z >= -0.45 ? "var(--gold)" : "var(--red)";
+                          return (
+                            <div key={row.i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 6px", borderRadius: 6, background: isSel ? "rgba(242,182,60,.12)" : "transparent", border: isSel ? "1px solid var(--gold)" : "1px solid transparent" }}>
+                              <span className="num" style={{ width: 22, textAlign: "right", fontWeight: 800, color: idx === 0 ? "var(--green)" : idx === TEAMS - 1 ? "var(--red)" : "var(--mut)" }}>{idx + 1}</span>
+                              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontWeight: isYou ? 800 : 500, color: isYou ? "var(--gold)" : "var(--ink)" }}>{isYou ? "Your team" : (TEAM_NAMES[row.i] || `Team ${row.i + 1}`)}</span>
+                              <span className="num" style={{ width: 32, textAlign: "right", fontSize: 12, fontWeight: 800, color: gradeColor }}>{row.g}</span>
+                            </div>
+                          );
+                        })}
                 </div>
               </div>
             )}
