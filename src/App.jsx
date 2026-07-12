@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fm";
+const BUILD_TAG = "2026.06.28fn";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3587,24 +3587,36 @@ function pickCurve(overallPick) {
   const x = Math.max(1, overallPick);
   return 1000 * Math.pow(0.955, x - 1);
 }
-function pickValue(p, overall, cfg) {
+// A DECISION-QUALITY score for a pick: how good a decision was it, not just raw market gap. Two parts:
+//   1) MARKET gap — how far off ADP the pick went, measured RELATIVE to where we are in the draft and weighted
+//      so early rounds dominate and late rounds barely register (a R1 reach can make/break a draft; a R14 quirk
+//      can't). Reaches sting a little more than equal steals reward.
+//   2) NEED — did the pick fill a real roster hole (good decision) or pile onto a position already set (worse)?
+// `ctx` optionally carries { need: {QB,RB,WR,TE...}, have: {...} } for the drafting team AT the time of the pick
+// so the need term reflects the actual situation. Without ctx we score market only (back-compat).
+function roundWeight(overall) {
+  // 1.0 at pick 1, smooth decay — ~0.5 by pick ~25, ~0.15 by pick ~110, ~0.06 by ~180. Early picks dominate.
+  return Math.pow(0.972, Math.max(1, overall) - 1);
+}
+function pickValue(p, overall, cfg, ctx) {
   if (!p) return 0;                       // stale/unknown pick id — no value contribution
   const actual = overall + 1;            // where he was actually taken (1-based)
-  const adp = Math.max(1, p.adp);        // where he should have gone
-  // Value = how much draft-capital value the pick gained or lost vs. his market price, on the curve.
-  // Steal (fell past ADP): actual > adp → you spent a cheaper pick on a pricier asset → positive.
-  // Reach (taken early):   actual < adp → you spent a premium pick on a cheaper asset → negative.
-  const curveGap = pickCurve(adp) - pickCurve(actual);
-  // Scale to a readable range. The curve heavily weights early picks (as it should), but it goes nearly
-  // flat by the late rounds, so a genuine 15-spot slide at pick 110 would otherwise round to ~0. Add a
-  // modest LINEAR spots term so late-round value/reaches still register — early rounds stay curve-dominated
-  // (where the swings are huge), late rounds get a readable floor proportional to how far off market it was.
+  const adp = Math.max(1, p.adp || actual); // where the market says he should have gone
+  const w = roundWeight(actual);
+  // MARKET: relative miss (spots off ADP as a fraction of current draft position), round-weighted.
   const spotGap = actual - adp;             // >0 = fell past ADP (steal), <0 = reached
-  let v = curveGap / 6 + spotGap * 0.5;     // curve (early-weighted) + a flat per-spot floor
-  // Reaches sting a touch harder than equivalent steals reward — premium capital misused is worse
-  // than capital saved. Asymmetric by ~25%.
-  if (v < 0) v *= 1.25;
-  return Math.round(v);
+  const rel = spotGap / Math.max(8, adp);   // 8-spot floor so the very top of the draft isn't divide-by-tiny
+  let market = rel * 70 * w;
+  if (market < 0) market *= 1.2;            // reaches sting ~20% more than equal steals reward
+  // NEED: reward filling a starting hole, mildly penalize stacking a position that's already full. Scaled by
+  // round weight too — a needs-based decision matters more early. Capped so it shapes, never dominates, market.
+  let need = 0;
+  if (ctx && ctx.need && p.pos) {
+    const deficit = ctx.need[p.pos] || 0;   // >0 = still needs starters at this position
+    if (deficit > 0) need = Math.min(2, deficit) * 10 * w;        // filled a real need → positive
+    else if (deficit <= -1) need = Math.max(-2, deficit) * 6 * w; // piled onto a full position → negative
+  }
+  return Math.round(market + need);
 }
 // Overall pick number (1-based) from a 0-based pick index.
 const overallPick = (o) => o + 1;
@@ -13550,7 +13562,27 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     return sec;
   }, [advice, sims, myCurrent]);
 
-  const graded = useMemo(() => picks.map((pk, o) => { const p = players[pk]; return { p, o, t: teamAt(o), val: pickValue(p, o, cfg) }; }), [picks, players, cfg]);
+  const graded = useMemo(() => {
+    // Walk the draft in order, tracking each team's roster counts so far, so every pick can be scored against
+    // the team's ACTUAL need at that moment (need = starters still unfilled at that position). This turns the
+    // per-pick value into a decision-quality score: reaching for a need is judged more kindly than reaching for
+    // a position you'd already filled, and stacking a set position is dinged.
+    const req = REQ_F ? REQ_F(cfg.sf) : { QB: 1, RB: 2, WR: 2, TE: 1 };
+    const counts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
+    return picks.map((pk, o) => {
+      const p = players[pk];
+      const t = teamAt(o);
+      let ctx = null;
+      if (p && p.pos && counts[t]) {
+        const need = {};
+        ["QB", "RB", "WR", "TE"].forEach((pos) => { need[pos] = (req[pos] || 0) - (counts[t][pos] || 0); });
+        ctx = { need };
+      }
+      const val = pickValue(p, o, cfg, ctx);
+      if (p && p.pos && counts[t] && counts[t][p.pos] != null) counts[t][p.pos]++;
+      return { p, o, t, val };
+    });
+  }, [picks, players, cfg]);
   const valByTeamRaw = useMemo(() => Array.from({ length: TEAMS }, (_, i) => graded.filter((g) => g.t === i).reduce((s, g) => s + g.val, 0)), [graded]);
   // The raw per-pick value model is intentionally asymmetric (reaches sting more) and early-weighted, so
   // its LEAGUE SUM skews negative — most teams would show a negative total even in a normal draft. For the
@@ -14083,7 +14115,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               const recent = picks.slice(-6).map((pk, i) => ({ pk, o: picks.length - Math.min(6, picks.length) + i })).reverse();
               const moreTip = (e) => showTip(e, [
                 { kind: "take", tone: "neutral", x: `Recent picks — draft Score (value vs. where he went)` },
-                { kind: "playertable", cols: ["pick", "pos", "name", "drafter", "adp", "score", "valread"], players: picks.slice(-22).map((pk, i) => { const oo = Math.max(0, picks.length - Math.min(22, picks.length)) + i; const pp = players[pk]; if (!pp) return null; const gap = pp.adp != null ? Math.round((oo + 1) - pp.adp) : 0; const vr = gap >= 8 ? { t: "steal", c: "#5FD0A8" } : gap <= -8 ? { t: "reach", c: "#F2655C" } : { t: "fair", c: "var(--mut)" }; const mine = teamAt(oo) === userIdx; return { ...pp, pickNo: oo + 1, pickScore: pickValue(pp, oo, cfg), drafter: mine ? "You" : (TEAM_NAMES[teamAt(oo)] || `Team ${teamAt(oo) + 1}`), valRead: vr, rec: mine, star: mine }; }).filter(Boolean).reverse() },
+                { kind: "playertable", cols: ["pick", "pos", "name", "drafter", "adp", "score", "valread"], players: picks.slice(-22).map((pk, i) => { const oo = Math.max(0, picks.length - Math.min(22, picks.length)) + i; const pp = players[pk]; if (!pp) return null; const gap = pp.adp != null ? Math.round((oo + 1) - pp.adp) : 0; const vr = gap >= 8 ? { t: "steal", c: "#5FD0A8" } : gap <= -8 ? { t: "reach", c: "#F2655C" } : { t: "fair", c: "var(--mut)" }; const mine = teamAt(oo) === userIdx; return { ...pp, pickNo: oo + 1, pickScore: (graded[oo] ? graded[oo].val : pickValue(pp, oo, cfg)), drafter: mine ? "You" : (TEAM_NAMES[teamAt(oo)] || `Team ${teamAt(oo) + 1}`), valRead: vr, rec: mine, star: mine }; }).filter(Boolean).reverse() },
                 { kind: "take", tone: "neutral", x: "Score = draft-capital value gained/lost vs. his market price (ADP), weighted by round — the same value the scorecard grades teams on. Positive = got him below cost; negative = paid up." },
               ]);
               return (
