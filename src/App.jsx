@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fh";
+const BUILD_TAG = "2026.06.28fi";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -15330,9 +15330,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         <option key={t} value={t}>{t === userIdx ? "★ My team" : (TEAM_NAMES[t] || `Team ${t + 1}`)}{t !== userIdx && TEAM_OWNERS[t] ? ` (@${TEAM_OWNERS[t]})` : ""}</option>
                       ))}
                     </select>
-                    <button className="btn btn-mini" onClick={() => setLeagueOpen((o) => !o)} style={{ fontSize: 11.5, display: "inline-flex", alignItems: "center", gap: 5, background: leagueOpen ? "var(--gold)" : "var(--panel3)", color: leagueOpen ? "#151002" : "var(--ink)", fontWeight: 700, border: leagueOpen ? "1px solid var(--gold)" : "1px solid var(--line2)" }}>
-                      <i className="ti ti-binoculars" style={{ fontSize: 14 }} aria-hidden="true" />{leagueOpen ? "Back to team" : "League overview"}
-                    </button>
                   </div>
                   <div className="mut" style={{ fontSize: 12.5 }}>{cfg.name} · {teamName}{isMe ? "" : " (comparing)"}</div>
                 </div>
@@ -15654,6 +15651,57 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 })()}
               </div>
             </div>
+
+            {/* PROJECTED STANDINGS — every team ordered by projected points (the outcome that wins the league). */}
+            {proj && proj.pts && (
+              <div className="panel" style={{ padding: 14 }}>
+                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 3 }}>Projected standings</div>
+                <div className="mut" style={{ fontSize: 11, marginBottom: 10 }}>Where each team finishes, by projected starting-lineup points.</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  {Array.from({ length: TEAMS }, (_, i) => ({ i, pts: proj.pts[i] || 0, rank: proj.rank ? proj.rank[i] : i + 1 }))
+                    .sort((a, b) => a.rank - b.rank)
+                    .map((row) => {
+                      const isSel = row.i === selTeam;
+                      const isYou = row.i === userIdx;
+                      const maxPts = Math.max(...proj.pts, 1);
+                      return (
+                        <div key={row.i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 6px", borderRadius: 6, background: isSel ? "rgba(242,182,60,.12)" : "transparent", border: isSel ? "1px solid var(--gold)" : "1px solid transparent" }}>
+                          <span className="num" style={{ width: 22, textAlign: "right", fontWeight: 800, color: row.rank === 1 ? "var(--green)" : row.rank === TEAMS ? "var(--red)" : "var(--mut)" }}>{row.rank}</span>
+                          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontWeight: isYou ? 800 : 500, color: isYou ? "var(--gold)" : "var(--ink)" }}>{isYou ? "Your team" : (TEAM_NAMES[row.i] || `Team ${row.i + 1}`)}</span>
+                          <div style={{ width: 60, height: 6, background: "var(--panel2)", borderRadius: 3, overflow: "hidden" }}>
+                            <div style={{ width: `${Math.max(4, (row.pts / maxPts) * 100)}%`, height: "100%", background: isYou ? "var(--gold)" : "var(--blue)", opacity: 0.85 }} />
+                          </div>
+                          <span className="num mut" style={{ width: 42, textAlign: "right", fontSize: 11 }}>{Math.round(row.pts)}</span>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
+
+            {/* POWER RANKINGS — ordered by overall roster value (draft-capital value + projected points blend). */}
+            {grades && (
+              <div className="panel" style={{ padding: 14 }}>
+                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 3 }}>Power rankings</div>
+                <div className="mut" style={{ fontSize: 11, marginBottom: 10 }}>Overall team strength — the total value each roster holds, not just this year's points.</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  {Array.from({ length: TEAMS }, (_, i) => ({ i, z: grades[i] ? grades[i].z : 0, g: grades[i] ? grades[i].g : "—" }))
+                    .sort((a, b) => b.z - a.z)
+                    .map((row, idx) => {
+                      const isSel = row.i === selTeam;
+                      const isYou = row.i === userIdx;
+                      const gradeColor = row.z >= 0.7 ? "var(--green)" : row.z >= 0.12 ? "#9BD17E" : row.z >= -0.45 ? "var(--gold)" : "var(--red)";
+                      return (
+                        <div key={row.i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 6px", borderRadius: 6, background: isSel ? "rgba(242,182,60,.12)" : "transparent", border: isSel ? "1px solid var(--gold)" : "1px solid transparent" }}>
+                          <span className="num" style={{ width: 22, textAlign: "right", fontWeight: 800, color: idx === 0 ? "var(--green)" : idx === TEAMS - 1 ? "var(--red)" : "var(--mut)" }}>{idx + 1}</span>
+                          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontWeight: isYou ? 800 : 500, color: isYou ? "var(--gold)" : "var(--ink)" }}>{isYou ? "Your team" : (TEAM_NAMES[row.i] || `Team ${row.i + 1}`)}</span>
+                          <span className="num" style={{ width: 32, textAlign: "right", fontSize: 12, fontWeight: 800, color: gradeColor }}>{row.g}</span>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
               </div>
               <div className="ta-colR" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
               {ta.posRankByPos && Object.keys(ta.posRankByPos).length > 0 ? (
