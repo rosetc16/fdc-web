@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fk";
+const BUILD_TAG = "2026.06.28fl";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -14721,12 +14721,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const bldAdv = balAdv; // one unified model — the list follows the selected strategy
                 const survOf = (p) => {
                   if (selOverall === picks.length) return 100; // on the clock now — everyone's available
-                  const idx = myUpcoming.findIndex((x) => x.o === selOverall);
-                  // The sims only compute survival for your next ~3 picks. For a pick BEYOND that horizon we have
-                  // no real survival number — returning sims.pct[0] here (the old behavior) showed the odds for
-                  // your NEXT pick against a much later one, which is how a 201-ADP player looked "80% available"
-                  // three picks from now. Return null instead so the UI shows no bogus percentage.
-                  if (idx < 0 || !sims || !sims.pct || !sims.pct[idx]) return null;
+                  // Index into the sim results by the SIM's own pick list (sims.nexts), not myUpcoming — the two
+                  // no longer align now that myUpcoming includes the on-board pick and (in All-picks mode) other
+                  // teams' picks. Using the wrong index showed a different pick's survival — e.g. 0% for a player
+                  // who's actually ~79% to reach you. Only your own upcoming picks are simulated.
+                  if (!sims || !sims.nexts || !sims.pct) return null;
+                  const idx = sims.nexts.indexOf(selOverall);
+                  if (idx < 0 || !sims.pct[idx]) return null; // this pick isn't one of the simulated ones
                   const pctMap = sims.pct[idx];
                   return pctMap && pctMap[p.id] != null ? pctMap[p.id] : null;
                 };
@@ -15690,49 +15691,50 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               </div>
             </div>
 
-            {/* LEAGUE RANKINGS — toggle between projected standings (by points) and power rankings (by roster value). */}
+            {/* LEAGUE TABLE — projected points AND power side by side, sortable. Click a column to sort by it. */}
             {proj && proj.pts && grades && (
               <div className="panel" style={{ padding: 14 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 3, flexWrap: "wrap" }}>
-                  <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)" }}>{rankView === "standings" ? "Projected standings" : "Power rankings"}</div>
-                  <div style={{ display: "inline-flex", borderRadius: 7, overflow: "hidden", border: "1px solid var(--line2)" }}>
-                    <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: rankView === "standings" ? "var(--gold)" : "transparent", color: rankView === "standings" ? "#151002" : "var(--ink)", fontWeight: rankView === "standings" ? 700 : 400, fontSize: 11 }} onClick={() => setRankView("standings")}>Standings</button>
-                    <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: rankView === "power" ? "var(--gold)" : "transparent", color: rankView === "power" ? "#151002" : "var(--ink)", fontWeight: rankView === "power" ? 700 : 400, fontSize: 11 }} onClick={() => setRankView("power")}>Power</button>
-                  </div>
-                </div>
-                <div className="mut" style={{ fontSize: 11, marginBottom: 10 }}>{rankView === "standings" ? "Where each team finishes, by projected starting-lineup points." : "Overall team strength — the total value each roster holds, not just this year's points."}</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  {rankView === "standings"
-                    ? Array.from({ length: TEAMS }, (_, i) => ({ i, pts: proj.pts[i] || 0, rank: proj.rank ? proj.rank[i] : i + 1 }))
-                        .sort((a, b) => a.rank - b.rank)
-                        .map((row) => {
-                          const isSel = row.i === selTeam, isYou = row.i === userIdx;
-                          const maxPts = Math.max(...proj.pts, 1);
-                          return (
-                            <div key={row.i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 6px", borderRadius: 6, background: isSel ? "rgba(242,182,60,.12)" : "transparent", border: isSel ? "1px solid var(--gold)" : "1px solid transparent" }}>
-                              <span className="num" style={{ width: 22, textAlign: "right", fontWeight: 800, color: row.rank === 1 ? "var(--green)" : row.rank === TEAMS ? "var(--red)" : "var(--mut)" }}>{row.rank}</span>
-                              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontWeight: isYou ? 800 : 500, color: isYou ? "var(--gold)" : "var(--ink)" }}>{isYou ? "Your team" : (TEAM_NAMES[row.i] || `Team ${row.i + 1}`)}</span>
-                              <div style={{ width: 60, height: 6, background: "var(--panel2)", borderRadius: 3, overflow: "hidden" }}>
-                                <div style={{ width: `${Math.max(4, (row.pts / maxPts) * 100)}%`, height: "100%", background: isYou ? "var(--gold)" : "var(--blue)", opacity: 0.85 }} />
-                              </div>
-                              <span className="num mut" style={{ width: 42, textAlign: "right", fontSize: 11 }}>{Math.round(row.pts)}</span>
-                            </div>
-                          );
-                        })
-                    : Array.from({ length: TEAMS }, (_, i) => ({ i, z: grades[i] ? grades[i].z : 0, g: grades[i] ? grades[i].g : "—" }))
-                        .sort((a, b) => b.z - a.z)
-                        .map((row, idx) => {
+                <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--mut)", marginBottom: 3 }}>League rankings</div>
+                <div className="mut" style={{ fontSize: 11, marginBottom: 10 }}>Projected points (standings) and overall roster power side by side. Click a column to sort by it.</div>
+                {(() => {
+                  const maxPts = Math.max(...proj.pts, 1);
+                  // Build a row per team with both metrics, plus the rank each metric implies.
+                  const base = Array.from({ length: TEAMS }, (_, i) => ({ i, pts: proj.pts[i] || 0, z: grades[i] ? grades[i].z : 0, g: grades[i] ? grades[i].g : "—", finish: proj.rank ? proj.rank[i] : i + 1 }));
+                  const powerOrder = base.slice().sort((a, b) => b.z - a.z).map((r) => r.i);
+                  const rows = base.slice().sort((a, b) => rankView === "power" ? b.z - a.z : a.finish - b.finish);
+                  const Head = ({ k, label, w }) => (
+                    <span onClick={() => setRankView(k)} style={{ width: w, textAlign: "right", cursor: "pointer", fontSize: 9, textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 700, color: rankView === k ? "var(--gold)" : "var(--mut)", userSelect: "none" }}>{label}{rankView === k ? " ▾" : ""}</span>
+                  );
+                  return (
+                    <>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 6px 4px", borderBottom: "1px solid var(--line2)", marginBottom: 3 }}>
+                        <span style={{ width: 22 }} />
+                        <span style={{ flex: 1, fontSize: 9, textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 700, color: "var(--mut)" }}>Team</span>
+                        <Head k="standings" label="Proj pts" w={76} />
+                        <Head k="power" label="Power" w={44} />
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        {rows.map((row) => {
                           const isSel = row.i === selTeam, isYou = row.i === userIdx;
                           const gradeColor = row.z >= 0.7 ? "var(--green)" : row.z >= 0.12 ? "#9BD17E" : row.z >= -0.45 ? "var(--gold)" : "var(--red)";
+                          const powerRk = powerOrder.indexOf(row.i) + 1;
+                          const activeRk = rankView === "power" ? powerRk : row.finish;
                           return (
                             <div key={row.i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 6px", borderRadius: 6, background: isSel ? "rgba(242,182,60,.12)" : "transparent", border: isSel ? "1px solid var(--gold)" : "1px solid transparent" }}>
-                              <span className="num" style={{ width: 22, textAlign: "right", fontWeight: 800, color: idx === 0 ? "var(--green)" : idx === TEAMS - 1 ? "var(--red)" : "var(--mut)" }}>{idx + 1}</span>
+                              <span className="num" style={{ width: 22, textAlign: "right", fontWeight: 800, color: activeRk === 1 ? "var(--green)" : activeRk === TEAMS ? "var(--red)" : "var(--mut)" }}>{activeRk}</span>
                               <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontWeight: isYou ? 800 : 500, color: isYou ? "var(--gold)" : "var(--ink)" }}>{isYou ? "Your team" : (TEAM_NAMES[row.i] || `Team ${row.i + 1}`)}</span>
-                              <span className="num" style={{ width: 32, textAlign: "right", fontSize: 12, fontWeight: 800, color: gradeColor }}>{row.g}</span>
+                              <div style={{ width: 40, height: 5, background: "var(--panel2)", borderRadius: 3, overflow: "hidden" }}>
+                                <div style={{ width: `${Math.max(4, (row.pts / maxPts) * 100)}%`, height: "100%", background: isYou ? "var(--gold)" : "var(--blue)", opacity: 0.85 }} />
+                              </div>
+                              <span className="num mut" style={{ width: 32, textAlign: "right", fontSize: 11 }}>{Math.round(row.pts)}</span>
+                              <span className="num" style={{ width: 44, textAlign: "right", fontSize: 12, fontWeight: 800, color: gradeColor }}>{row.g}</span>
                             </div>
                           );
                         })}
-                </div>
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             )}
               </div>
