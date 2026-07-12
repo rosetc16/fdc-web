@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fb";
+const BUILD_TAG = "2026.06.28fc";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1075,6 +1075,8 @@ let LIVE_PACK_FORMAT = null;     // the format key the backend actually served (
 let LIVE_PACK_PUB_FORMAT = null; // the PUBLISHED-ADP format bucket actually used (null if none matched)
 let LIVE_HARVEST_FMT = null;     // which harvested-consensus format the backend fell back to (null if none had rows)
 let LIVE_HARVEST_CHAIN = [];     // [{format, rows}] each fallback step the backend tried, for diagnosis
+let LIVE_OVERLAY_REASON = null;  // if a per-format overlay was REJECTED, why (so the board silently keeping the
+                                 // global pack — e.g. a redraft mock stuck on dynasty ADP — is diagnosable)
 export function isLivePackLoaded() { return LIVE_LOADED; }
 
 
@@ -1271,13 +1273,11 @@ export function applyLivePack(pack, isReapply) {
 // therefore every player id (which is the array index) — are completely unchanged, so existing picks
 // stay valid. Returns true if it applied a healthy overlay.
 function applyAdpOverlay(pack) {
-  if (!pack || !Array.isArray(pack.players)) return false;
+  LIVE_OVERLAY_REASON = null;
+  if (!pack || !Array.isArray(pack.players)) { LIVE_OVERLAY_REASON = "no pack"; return false; }
   const byName = new Map();
   let withAdp = 0;
   const adpVals = [];
-  // Only players with enough real drafts behind them are eligible to overlay. A niche format's harvest
-  // legitimately covers the top of the board well and the deep bench barely at all — we want the good numbers
-  // without letting one-draft noise overwrite a sane baseline.
   const MIN_TRUST_SAMPLES = 4;
   for (const p of pack.players) {
     if (!p.name || p.adp == null) continue;
@@ -1288,27 +1288,27 @@ function applyAdpOverlay(pack) {
     adpVals.push(Number(p.adp));
     withAdp++;
   }
-  // Overlay as soon as there's a real market spine to work with. This used to demand 120 players, which meant a
-  // thin-but-correct format (SF + TE-premium dynasty) was rejected wholesale and the board silently fell back
-  // to projection-ranking — burying proven stars whose current projection is depressed. Sleeper publishes ADP
-  // for only the top few dozen players in a niche format; that's a small board, not a broken one.
-  if (withAdp < 20) return false;
+  if (withAdp < 20) { LIVE_OVERLAY_REASON = `only ${withAdp} trusted ADP (need 20) — format ${pack.format || "?"}`; return false; }
   // SANITY GUARD: reject a DEGENERATE pack whose ADP has collapsed — e.g. hundreds of players sharing a
   // single value (~15.9), which happens when the backend's published/consensus ADP for a format is missing
   // or malformed. Applying it flattens the whole board (every player ~identical ADP, QBs/streamers floating
   // to the top). The static baseline is far better than a collapsed overlay, so we bail and keep it.
   // Thresholds scale with N so a legitimately small published board isn't mistaken for a corrupt one.
   const sorted = adpVals.slice().sort((a, b) => a - b);
-  const distinct = new Set(adpVals.map((v) => Math.round(v * 10) / 10)).size;
-  // (a) too few distinct values across the pack = collapsed
-  if (distinct < Math.min(60, Math.max(8, withAdp * 0.35))) return false;
+  // (a) COLLAPSE CHECK. A degenerate pack is one where the TOP of the board has collapsed onto ~one value
+  //     (every early player shares ~15.9, QBs/streamers float up). We detect that by looking at the top slice's
+  //     distinctness — NOT whole-pack distinctness, which false-rejected large, healthy redraft boards where
+  //     the deep bench legitimately clusters on rounded ADP values (that clustering is normal and harmless).
+  const topSlice = sorted.slice(0, Math.min(sorted.length, 40));
+  const topDistinct = new Set(topSlice.map((v) => Math.round(v * 10) / 10)).size;
+  if (topSlice.length >= 12 && topDistinct < Math.max(8, topSlice.length * 0.45)) { LIVE_OVERLAY_REASON = `top collapsed: ${topDistinct} distinct in top ${topSlice.length}`; return false; }
   // (b) the top of the board must actually spread out: the 30th-ranked ADP should be clearly later than the
   //     1st. If ~everyone is bunched near one number, the 1st and 30th will be nearly equal.
-  if (sorted.length > 30 && (sorted[29] - sorted[0]) < 8) return false;
+  if (sorted.length > 30 && (sorted[29] - sorted[0]) < 8) { LIVE_OVERLAY_REASON = `top bunched: 1st..30th spread ${(sorted[29] - sorted[0]).toFixed(1)}`; return false; }
   // (c) a single value must not dominate the pack (e.g. >25% share one ADP)
   const freq = {}; let maxFreq = 0;
   for (const v of adpVals) { const k = Math.round(v * 10) / 10; freq[k] = (freq[k] || 0) + 1; if (freq[k] > maxFreq) maxFreq = freq[k]; }
-  if (maxFreq > Math.max(3, withAdp * (withAdp < 60 ? 0.34 : 0.25))) return false;
+  if (maxFreq > Math.max(3, withAdp * (withAdp < 60 ? 0.34 : 0.25))) { LIVE_OVERLAY_REASON = `one ADP dominates: ${maxFreq}/${withAdp}`; return false; }
   for (const row of RAW) {
     const m = byName.get(normName(row[0]));
     if (m && m.adp != null) {
@@ -1775,6 +1775,47 @@ function buildPlayers(cfg) {
       if (p.vbd > 0) p.value = Math.round(p.vbd * m * 10) / 10;
       else p.value = Math.round(p.vbd * (2 - m) * 10) / 10; // m>1 (young) → shrinks the negative; m<1 (old) → deepens it
     });
+    // ADP-IMPLIED UPSIDE (dynasty). Projection alone under-rates young/ascending players: the market drafts them
+    // earlier than their current-year points justify because it's pricing a multi-year breakout. Example — a
+    // rookie WR at ADP ~200 with ~74 projected points is a MORE valuable dynasty asset than a journeyman at ADP
+    // ~254 with ~98 projected points; the ADP edge is the market seeing upside the projection can't. So we fold
+    // the gap between market rank (ADP) and projection rank into dynasty value, amplified by youth (a young
+    // player beating his projection on ADP is a breakout signal; an old one is just name value).
+    //
+    // IMPORTANT — this is deliberately shaped to leave the TOP of the board (where ADP rank ≈ value rank for
+    // established studs) essentially untouched, because that top-50 is what's already dialed-in for the SF-TEP
+    // dynasty league. The lift only becomes meaningful where ADP and projection DISAGREE, which is mostly the
+    // mid/late board (rookies, ascenders, faded vets) — not the elite tier.
+    {
+      const withAdp = ps.filter((p) => VBD_POS.includes(p.pos) && p.adp != null && p.adp > 0 && !p.adpDegraded);
+      if (withAdp.length >= 20) {
+        const byAdp = withAdp.slice().sort((a, b) => a.adp - b.adp);
+        const adpRankById = new Map(byAdp.map((p, i) => [p.id, i + 1]));
+        const byVal = withAdp.slice().sort((a, b) => (b.value ?? b.vbd) - (a.value ?? a.vbd));
+        const valRankById = new Map(byVal.map((p, i) => [p.id, i + 1]));
+        const N = withAdp.length;
+        const topVal = byVal[0].value ?? byVal[0].vbd;
+        const botVal = byVal[byVal.length - 1].value ?? 0;
+        const perRank = N > 1 && topVal > botVal ? (topVal - botVal) / N : 1;
+        withAdp.forEach((p) => {
+          const aR = adpRankById.get(p.id), vR = valRankById.get(p.id);
+          if (aR == null || vR == null) return;
+          const gap = vR - aR;            // >0 market ranks him ahead of his projection (upside)
+          if (gap === 0) return;
+          // Dampen the effect near the TOP of the board so the locked elite tier stays put; full strength in the
+          // mid/late board where upside actually lives. topDamp ~0 for ADP ranks inside ~top 24, ramps to 1.
+          const topDamp = Math.min(1, Math.max(0, (aR - 12) / 24));
+          const a = AGE[p.pos];
+          const young = a ? Math.max(0, a.peak - (p.age || a.peak)) : 0;
+          const rookieBoost = p.rookie ? 1.35 : 1;
+          const youthFactor = (1 + Math.min(0.6, young * 0.09)) * rookieBoost;
+          const dir = gap > 0 ? 1 : 0.4;  // upside counts more than fade (don't over-punish a cooled vet)
+          const lift = gap * perRank * 0.5 * dir * topDamp * (gap > 0 ? youthFactor : 1);
+          p.value = Math.round((p.value + lift) * 10) / 10;
+          p.adpUpside = Math.round(lift * 10) / 10;
+        });
+      }
+    }
     // DYNASTY ELITE-TIER COMPRESSION. A pure-projection value spreads the top of a position wide — e.g. a QB6
     // whose median projection dipped (Mahomes) falls far below the QB1, and elite WR2-6 fall well below WR1.
     // But the dynasty MARKET compresses that top tier: proven elite producers are treated as near-interchangeable
@@ -4212,6 +4253,15 @@ function VersionBadge() {
                       {hf ? `Harvested drafts found: ${hf}` : "No harvested drafts found for this format"}
                     </div>
                     {firstHit && <div className="mut" style={{ fontSize: 10.5 }}>{firstHit.rows.toLocaleString()} players from real superflex-dynasty drafts</div>}
+                  </div>
+                );
+              })()}
+              {(() => {
+                const reason = (typeof LIVE_OVERLAY_REASON !== "undefined") ? LIVE_OVERLAY_REASON : null;
+                if (!reason) return null;
+                return (
+                  <div style={{ borderTop: "1px solid var(--line)", marginTop: 6, paddingTop: 6, color: "var(--gold)" }}>
+                    Format overlay rejected — board kept a broader pack.<br /><span className="mut">{reason}</span>
                   </div>
                 );
               })()}
