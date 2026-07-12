@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fj";
+const BUILD_TAG = "2026.06.28fk";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -12515,13 +12515,22 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // pick is excluded, EXCEPT genuine ADP-fallers (still on the board well past their ADP) which we keep.
     const survivesToPick = (id) => {
       if (!isFuture) return true;
-      if (survMap && survMap[id] != null) return survMap[id] >= 8; // ≥8% chance to reach your pick
+      if (survMap && survMap[id] != null) return survMap[id] >= 8; // ≥8% chance to reach your pick — authoritative
+      // No survival number for THIS exact pick. Before trusting the projection/faller logic, consult any OTHER
+      // covered sim pick: if the sims cover a pick at or before this one and show the player essentially gone
+      // there, he can't survive to a LATER pick either. This closes the bug where a player projected to go the
+      // pick ahead of yours (0% on the board) was still recommended for your pick because survMap was null here.
+      if (simState && simState.nexts && simState.pct) {
+        for (let k = 0; k < simState.nexts.length; k++) {
+          const no = simState.nexts[k];
+          if (no <= atOverall && simState.pct[k] && simState.pct[k][id] != null && simState.pct[k][id] < 5) return false;
+        }
+      }
       if (!goneSet.has(id)) return true; // projection thinks he's still around
       const pl = players[id];
       // Keep GENUINE fallers even if projected gone — but a genuine faller is an EARLY-ADP player who has slid
-      // well past his cost, not a late-ADP player sitting near his expected spot. Without the ADP ceiling, a
-      // 201-ADP player at pick ~217 counted as a "faller" (217-201 ≥ 12) and got recommended with a bogus high
-      // availability. Require the player's ADP to be meaningfully earlier than this pick to qualify.
+      // well past his cost, not a late-ADP player sitting near his expected spot. Require the player's ADP to be
+      // meaningfully earlier than this pick to qualify.
       if (!pl || pl.adp == null) return false;
       const pickN = atOverall + 1;
       const isEarlyEnough = pl.adp <= pickN * 0.6;          // his cost is well inside where we are now
