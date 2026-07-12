@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fe";
+const BUILD_TAG = "2026.06.28ff";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13755,6 +13755,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             }
             lines.push({ kind: "take", tone: sparse ? "bad" : "good",
               x: sparse ? "Board ranked by VALUE \u2014 not enough trusted market ADP" : "Board ranked by real market ADP" });
+            // Per-draft overlay diagnostic: what format THIS draft should be on, vs what's actually loaded.
+            const target = (typeof LIVE_OVERLAY_TARGET !== "undefined") ? LIVE_OVERLAY_TARGET : null;
+            const ostate = (typeof LIVE_OVERLAY_STATE !== "undefined") ? LIVE_OVERLAY_STATE : null;
+            const oreason = (typeof LIVE_OVERLAY_REASON !== "undefined") ? LIVE_OVERLAY_REASON : null;
+            if (target) {
+              const mism = fmt && target && fmt !== target;
+              lines.push({ kind: "take", tone: mism ? "bad" : "neutral", x: `This draft wants: ${target}` });
+              lines.push({ kind: "take", tone: ostate === "applied" ? "good" : "bad", x: `overlay: ${ostate || "?"}` });
+              if (oreason) lines.push({ kind: "take", tone: "bad", x: oreason });
+            }
             if (TRUST_LIVE_ADP) lines.push({ kind: "take", tone: "good", x: "Trusting live Sleeper ADP (connected draft)" });
             showTip(e, lines);
           }}
