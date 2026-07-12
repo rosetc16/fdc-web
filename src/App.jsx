@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fa";
+const BUILD_TAG = "2026.06.28fb";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5651,7 +5651,7 @@ function QuickMockSetup({ onStart, onCancel }) {
           <div>
             <div className="mut" style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 6, letterSpacing: ".03em" }}>ROUNDS</div>
             <select className="gs" value={rounds} onChange={(e) => setRounds(+e.target.value)}>
-              {[8, 10, 12, 14, 15, 16, 18, 20, 22, 25].map((n) => <option key={n} value={n}>{n} rounds</option>)}
+              {Array.from({ length: 23 }, (_, i) => i + 8).map((n) => <option key={n} value={n}>{n} rounds</option>)}
             </select>
           </div>
           <div>
@@ -12654,10 +12654,18 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     return m;
   }, [players, picks, cfg, teamsProj, proj, userIdx, liveSlots]);
   const projBoard = useMemo(() => (boardProj ? projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, advice?.verdict?.id ?? null) : null), [boardProj, players, sortedAdp, picks, userIdx, cfg, strategy, advice]);
-  // The user's next few upcoming pick indices (for highlighting on the board).
+  // The user's next few upcoming pick indices — used for the player-list "you're up" marker lines (kept small
+  // so the list isn't cluttered with a line for every remaining pick).
   const myUpcoming = useMemo(() => {
     const set = new Set(); let n = 0;
     for (let o = picks.length; o < TOTAL && n < 3; o++) { if (teamAt(o) === userIdx) { set.add(o); n++; } }
+    return set;
+  }, [picks.length, TOTAL, userIdx, cfg, liveSlots]);
+  // EVERY future pick of yours — used by the Draft Board tab so your entire slate is highlighted, not just the
+  // next three (which was why some of your later picks showed up unhighlighted).
+  const myAllUpcoming = useMemo(() => {
+    const set = new Set();
+    for (let o = picks.length; o < TOTAL; o++) { if (teamAt(o) === userIdx) set.add(o); }
     return set;
   }, [picks.length, TOTAL, userIdx, cfg, liveSlots]);
   const rawPath = useMemo(() => (!done ? projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, advice?.verdict?.id ?? null, true) : []), [players, sortedAdp, picks, userIdx, cfg, strategy, advice, done, liveSlots]);
@@ -13786,7 +13794,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   </div>
                   {/* position table */}
                   <div style={{ borderTop: "1px solid rgba(242,182,60,.22)", paddingTop: 5 }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "30px 52px 40px 46px minmax(0,1fr)", gap: "0 10px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", fontWeight: 700, paddingBottom: 3 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "26px 40px 38px 44px minmax(0,1fr)", gap: "0 6px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", fontWeight: 700, paddingBottom: 3 }}>
                       <span>Pos</span><span>Start</span><span style={{ textAlign: "center" }}>Rank</span><span style={{ textAlign: "center" }}>Read</span><span style={{ textAlign: "right" }}>Best avail</span>
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
@@ -13794,7 +13802,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         const ba = d.bestAvail;
                         const baV = ba ? (dynastyH ? (ba.value ?? ba.vbd) : ba.vbd) : null;
                         return (
-                          <div key={d.pos} onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "30px 52px 40px 46px minmax(0,1fr)", gap: "0 10px", alignItems: "center", cursor: "help", padding: "1.5px 4px", margin: "0 -4px", borderRadius: 5 }}>
+                          <div key={d.pos} onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "26px 40px 38px 44px minmax(0,1fr)", gap: "0 6px", alignItems: "center", cursor: "help", padding: "1.5px 4px", margin: "0 -4px", borderRadius: 5 }}>
                             <span style={{ fontSize: 11, fontWeight: 800, color: POS_COLOR[d.pos] }}>{d.pos}</span>
                             <span style={{ fontSize: 10.5, display: "inline-flex", alignItems: "baseline", gap: 1, whiteSpace: "nowrap" }} title={d.deficit > 0 ? `Need ${Math.round(d.deficit)} more starter${Math.round(d.deficit) === 1 ? "" : "s"} at ${d.pos}` : d.filled ? `${d.pos} starters filled` : ""}>
                               <span style={{ fontWeight: 800, color: d.deficit > 0 ? "#F2655C" : "var(--ink)" }}>{d.has}</span>
@@ -15778,7 +15786,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     const pk = realPk != null ? realPk : keeperHere ? keeperByPick[o] : (isProjected ? projBoard[o] : null);
                     const p = pk != null ? players[pk] : null;
                     const v = p && !isProjected && !isKeeper ? pickValue(p, o, cfg) : 0;
-                    const isUpcoming = realPk == null && !isKeeper && myUpcoming.has(o);
+                    const isUpcoming = realPk == null && !isKeeper && myAllUpcoming.has(o);
                     const isOnClock = o === picks.length && !done;
                     // Highlight a cell as "yours" whenever you own that pick — natural or traded-for.
                     const cls = `bcell${ownedByYou ? " you" : ""}${ownedByYou && isOnClock ? " oncl" : ""}${isUpcoming ? " upcoming" : ""}${!p ? " empty" : ""}`;
