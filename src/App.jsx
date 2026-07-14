@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fs";
+const BUILD_TAG = "2026.06.28ft";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4155,22 +4155,35 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 @media(max-width:640px){
   .hero-h{font-size:30px!important}
   .statline{font-size:30px}
+  /* THE KEY MOBILE FIX: the draft-tracker header is sticky on desktop (a nice always-visible dashboard), but on
+     a phone it's tall enough to fill the whole screen and trap you — you can't scroll down to the tabs or the
+     player list. On mobile we un-stick it so it scrolls away normally, and instead make the TAB BAR sticky so
+     navigation is always one reach away as you scroll. */
+  .draft-stickyhead{position:static!important;z-index:auto!important}
+  .tabbar{position:sticky;top:0;z-index:14;background:var(--bg);box-shadow:0 2px 8px rgba(0,0,0,.4)}
   /* draft-room tab bar scrolls horizontally instead of wrapping/squishing */
   .tabbar{overflow-x:auto;-webkit-overflow-scrolling:touch;flex-wrap:nowrap!important;scrollbar-width:none}
   .tabbar::-webkit-scrollbar{display:none}
   .tab{white-space:nowrap;flex:0 0 auto}
+  /* the four tracker zones stack in one column and each keeps a sensible height instead of being crammed side by side */
+  .decision-grid{flex-direction:column!important;gap:8px!important}
+  .decision-group-a,.decision-group-b{grid-template-columns:1fr!important;flex:1 1 auto!important;min-width:0!important}
+  .decision-divider{display:none!important}
   /* wide tables scroll inside their panel rather than blowing out the page */
   .tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
   /* collapse the ADP-intel / trade two-column layouts to one column on phones */
   .adp-grid{grid-template-columns:1fr!important}
   .adp-grid .adp-list{max-height:200px!important}
+  /* the hub's main column + right rail stack vertically; main content is first in the DOM so it stays on top */
+  .cols{flex-direction:column!important}
+  .rail{width:100%!important}
   /* comfortable tap targets */
   .btn,.btn-mini{min-height:38px}
   .menuitem{min-height:44px}
-  /* tighten page gutters */
-  .gs-pad{padding-left:14px!important;padding-right:14px!important}
-  /* header button labels: keep them from overflowing */
+  /* header wraps instead of overflowing, with a little breathing room */
   .appheader{flex-wrap:wrap;row-gap:6px}
+  /* the player-list / board tables get a horizontal scroll region so they don't blow out the viewport */
+  table{max-width:100%}
   /* tooltips: fit the phone width, sit near the bottom as a sheet, and allow touch-scrolling of long content */
   .tooltip{width:auto!important;max-width:calc(100vw - 20px)!important;left:10px!important;right:10px!important;pointer-events:auto!important;max-height:60vh!important}
 }
@@ -13852,7 +13865,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         </span>
       </div>
 
-      <div ref={stickyHeadRef} style={{ position: "sticky", top: 0, zIndex: 12, background: "var(--bg)" }}>
+      <div ref={stickyHeadRef} className="draft-stickyhead" style={{ position: "sticky", top: 0, zIndex: 12, background: "var(--bg)" }}>
       {!done && !hypoMode && liveConflict && (
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 16px", flexWrap: "wrap", background: "rgba(242,101,92,.12)", borderBottom: "1px solid var(--red)" }}>
           <i className="ti ti-alert-triangle" style={{ fontSize: 15, color: "var(--red)" }} aria-hidden="true" />
