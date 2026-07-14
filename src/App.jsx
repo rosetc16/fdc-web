@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ft";
+const BUILD_TAG = "2026.06.28fu";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -6053,6 +6053,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   const [err, setErr] = useState("");
   const [posture, setPosture] = useState(null); // null until we auto-detect; user can override
   const [tab, setTab] = useState("notes");     // notes(Summary) | lineup | freeagents | roster | league
+  const [posSortCol, setPosSortCol] = useState("all"); // Positional strength grid: sort by "all"|QB|RB|WR|TE
 
   // Build the enriched, projection-scored player pool for THIS league's cfg, keyed by Sleeper id.
   const cfg = data && data.cfg ? normalizeHubCfg(data.cfg) : null;
@@ -6339,22 +6340,31 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   // -------- League-wide analytics (for the League tab) --------
   const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
   // For every team: resolve roster -> per-game optimal lineup projection ("power"), and per-position strength.
+  const dynastyLg = cfg.type === "dynasty" || cfg.type === "keeper";
+  const effReqLg = EFF_REQ(cfg);
+  const flexShLg = flexShareOf(cfg);
   const leagueTeams = (data.teams || []).map((t) => {
     const roster = resolve(t.players);
     const lu = lineupSlots(roster, cfg.sf);
     const power = Math.round(lu.slots.reduce((s, sl) => s + (sl.p ? sl.p.pts : 0), 0) * 10) / 10;
     const posStrength = {};
+    const posQuality = {};                 // SHARED quality×quantity score — identical to the live draft app
+    const posPlayers = {};                 // the players at each position (best first), for hovers
     POS.forEach((pos) => {
       const need = (req[pos] || 0);
-      const starters = roster.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts).slice(0, Math.max(1, need));
+      const atPos = roster.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts);
+      const starters = atPos.slice(0, Math.max(1, need));
       posStrength[pos] = Math.round(starters.reduce((s, p) => s + p.pts, 0) * 10) / 10;
+      posQuality[pos] = posQualityScore(atPos, effReqLg[pos] || 0, { dynasty: dynastyLg, flexShare: flexShLg[pos] || 0 });
+      posPlayers[pos] = atPos;
     });
     const wins = t.record ? t.record.wins : 0;
     const losses = t.record ? t.record.losses : 0;
-    return { rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName, isMe: t.rosterId === data.myRosterId, power, posStrength, wins, losses, pointsFor: t.pointsFor || 0, record: t.record };
+    return { rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName, isMe: t.rosterId === data.myRosterId, power, posStrength, posQuality, posPlayers, roster, wins, losses, pointsFor: t.pointsFor || 0, record: t.record };
   });
-  // Power rankings: by projected optimal weekly points.
-  const powerRanked = leagueTeams.slice().sort((a, b) => b.power - a.power).map((t, i) => ({ ...t, powerRank: i + 1 }));
+  // Power rankings: overall ROSTER STRENGTH (quality × quantity across positions) — a different lens than
+  // projected points, so it stays distinct from projected standings even before any games are played.
+  const powerRanked = leagueTeams.slice().map((t) => ({ ...t, powerScore: t.posQuality.QB + t.posQuality.RB + t.posQuality.WR + t.posQuality.TE })).sort((a, b) => b.powerScore - a.powerScore).map((t, i) => ({ ...t, powerRank: i + 1 }));
   const powerRankById = {}; powerRanked.forEach((t) => { powerRankById[t.rosterId] = t.powerRank; });
   // Projected final standings: blend current wins with power (a rough season-long strength signal).
   const totalGames = (leagueTeams[0] && leagueTeams[0].record) ? (leagueTeams[0].record.wins + leagueTeams[0].record.losses + (leagueTeams[0].record.ties || 0)) : 0;
@@ -6822,9 +6832,16 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                       const pj = projRanked.find((t) => t.rosterId === st.rosterId);
                       const pr = powerRankById[st.rosterId];
                       const inPlayoffs = pj && pj.projRank <= playoffSpots;
+                      const rosterTip = (() => {
+                        if (!lt.roster) return st.ownerName ? `@${st.ownerName}` : undefined;
+                        const lu = lineupSlots(lt.roster, cfg.sf);
+                        const lines = lu.slots.filter((sl) => sl.p).map((sl) => `${sl.slot}: ${sl.p.name} (${sl.p.pos}${sl.p.posRank || ""}) — ${Math.round(sl.p.pts || 0)} pts`);
+                        const header = `${st.teamName}${st.ownerName ? ` (@${st.ownerName})` : ""} — starting lineup`;
+                        return header + "\n" + lines.join("\n");
+                      })();
                       return (
                         <tr key={st.rosterId} style={{ borderTop: "1px solid var(--line)", background: st.isMe ? "rgba(242,182,60,.07)" : "transparent" }}>
-                          <td style={{ padding: "6px", fontWeight: st.isMe ? 700 : 500, color: st.isMe ? "var(--gold)" : "var(--ink)", cursor: st.ownerName ? "help" : "default" }} title={st.ownerName ? `@${st.ownerName}` : undefined}>
+                          <td style={{ padding: "6px", fontWeight: st.isMe ? 700 : 500, color: st.isMe ? "var(--gold)" : "var(--ink)", cursor: "help" }} title={rosterTip}>
                             {st.rank}. {st.teamName}{st.isMe ? " ★" : ""}{st.ownerName ? <span className="mut" style={{ fontSize: 10, fontWeight: 400 }}> (@{st.ownerName})</span> : null}
                           </td>
                           <td style={{ textAlign: "center", padding: "6px" }}>{st.record.wins}-{st.record.losses}{st.record.ties ? `-${st.record.ties}` : ""}</td>
@@ -6840,37 +6857,56 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
               <div className="mut" style={{ fontSize: 10, marginTop: 8 }}>Projections use current record and each roster's best-lineup weekly projection. They're a guide, not a guarantee.</div>
             </div>
 
-            {/* Positional strength grid — where each team is strong/weak. */}
+            {/* Positional strength grid — same quality×quantity read as the live draft app. Sortable; All column. */}
             <div className="panel" style={{ padding: 16 }}>
               <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 3 }}>Positional strength</div>
-              <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Each team's starting-strength by position (per-game projected points). Green = top of the league, red = bottom.</div>
+              <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Each team's strength by position — the same quality × quantity score the draft app uses (not just raw points). Green = top of the league, amber = middle, red = bottom. Click a column to sort; hover a cell to see the players. <b>All</b> = overall team strength.</div>
               {(() => {
-                // Rank each position across teams to color cells.
-                const posRankMap = {};
-                POS.forEach((pos) => {
-                  const sorted = leagueTeams.slice().sort((a, b) => b.posStrength[pos] - a.posStrength[pos]);
-                  posRankMap[pos] = {}; sorted.forEach((t, i) => { posRankMap[pos][t.rosterId] = i + 1; });
-                });
-                const cellColor = (rank, n) => rank <= Math.ceil(n / 3) ? "var(--green)" : rank <= Math.ceil((2 * n) / 3) ? "var(--gold)" : "var(--red)";
                 const n = leagueTeams.length;
+                // League rank (1 = best) per position AND overall, from the shared quality score.
+                const rankByCol = {};
+                ["QB", "RB", "WR", "TE", "all"].forEach((col) => {
+                  const val = (t) => col === "all" ? (t.posQuality.QB + t.posQuality.RB + t.posQuality.WR + t.posQuality.TE) : (t.posQuality[col] || 0);
+                  const sorted = leagueTeams.slice().sort((a, b) => val(b) - val(a));
+                  rankByCol[col] = {}; sorted.forEach((t, i) => { rankByCol[col][t.rosterId] = i + 1; });
+                });
+                const cellColor = (rank) => rank <= Math.ceil(n / 3) ? "var(--green)" : rank <= Math.ceil((2 * n) / 3) ? "var(--gold)" : "var(--red)";
+                const cellBg = (rank) => rank <= Math.ceil(n / 3) ? "rgba(95,208,168,.14)" : rank <= Math.ceil((2 * n) / 3) ? "rgba(242,182,60,.12)" : "rgba(242,101,92,.14)";
+                const overallVal = (t) => t.posQuality.QB + t.posQuality.RB + t.posQuality.WR + t.posQuality.TE;
+                const sortVal = (t) => posSortCol === "all" ? overallVal(t) : (t.posQuality[posSortCol] || 0);
+                const rowsSorted = leagueTeams.slice().sort((a, b) => sortVal(b) - sortVal(a));
+                const Header = ({ col, label, color }) => (
+                  <th onClick={() => setPosSortCol(col)} style={{ textAlign: "center", padding: "4px 6px", color: posSortCol === col ? "var(--ink)" : (color || "var(--mut)"), cursor: "pointer", userSelect: "none", borderBottom: posSortCol === col ? "2px solid var(--gold)" : "2px solid transparent" }} title={`Sort by ${label} strength`}>{label}{posSortCol === col ? " ▾" : ""}</th>
+                );
                 return (
                   <div style={{ overflowX: "auto" }}>
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                       <thead>
                         <tr style={{ color: "var(--mut)", fontSize: 10.5, textTransform: "uppercase" }}>
                           <th style={{ textAlign: "left", padding: "4px 6px" }}>Team</th>
-                          {POS.map((pos) => <th key={pos} style={{ textAlign: "center", padding: "4px 6px", color: POS_COLOR[pos] }}>{pos}</th>)}
+                          {POS.map((pos) => <Header key={pos} col={pos} label={pos} color={POS_COLOR[pos]} />)}
+                          <Header col="all" label="All" />
                         </tr>
                       </thead>
                       <tbody>
-                        {powerRanked.map((t) => (
+                        {rowsSorted.map((t) => (
                           <tr key={t.rosterId} style={{ borderTop: "1px solid var(--line)", background: t.isMe ? "rgba(242,182,60,.07)" : "transparent" }}>
-                            <td style={{ padding: "5px 6px", fontWeight: t.isMe ? 700 : 500, color: t.isMe ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", cursor: t.ownerName ? "help" : "default" }} title={t.ownerName ? `@${t.ownerName}` : undefined}>{t.teamName}{t.isMe ? " ★" : ""}{t.ownerName ? <span className="mut" style={{ fontSize: 10, fontWeight: 400 }}> (@{t.ownerName})</span> : null}</td>
-                            {POS.map((pos) => (
-                              <td key={pos} style={{ textAlign: "center", padding: "5px 6px" }}>
-                                <span className="num" style={{ color: cellColor(posRankMap[pos][t.rosterId], n), fontWeight: 700 }}>{t.posStrength[pos].toFixed(0)}</span>
-                              </td>
-                            ))}
+                            <td style={{ padding: "5px 6px", fontWeight: t.isMe ? 700 : 500, color: t.isMe ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap" }} title={t.ownerName ? `@${t.ownerName}` : undefined}>{t.teamName}{t.isMe ? " ★" : ""}{t.ownerName ? <span className="mut" style={{ fontSize: 10, fontWeight: 400 }}> (@{t.ownerName})</span> : null}</td>
+                            {POS.map((pos) => {
+                              const rk = rankByCol[pos][t.rosterId];
+                              const plist = (t.posPlayers[pos] || []);
+                              const tip = `${t.teamName} — ${pos}: ${ordinal(rk)} of ${n} in the league\n` + (plist.length ? plist.slice(0, 8).map((p) => `${p.name} (${p.pos}${p.posRank || ""}) — ${Math.round(p.pts || 0)} pts`).join("\n") : "none drafted");
+                              return (
+                                <td key={pos} style={{ textAlign: "center", padding: "4px 6px" }}>
+                                  <span className="num" title={tip} style={{ color: cellColor(rk), background: cellBg(rk), borderRadius: 5, padding: "2px 7px", fontWeight: 700, cursor: "help" }}>{Math.round(t.posQuality[pos] || 0)}</span>
+                                </td>
+                              );
+                            })}
+                            {(() => {
+                              const rk = rankByCol.all[t.rosterId];
+                              const tip = `${t.teamName} — overall roster strength: ${ordinal(rk)} of ${n}`;
+                              return <td style={{ textAlign: "center", padding: "4px 6px" }}><span className="num" title={tip} style={{ color: cellColor(rk), background: cellBg(rk), borderRadius: 5, padding: "2px 7px", fontWeight: 800, cursor: "help" }}>{Math.round(overallVal(t))}</span></td>;
+                            })()}
                           </tr>
                         ))}
                       </tbody>
