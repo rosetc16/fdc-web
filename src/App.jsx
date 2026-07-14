@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fu";
+const BUILD_TAG = "2026.06.28fv";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -6054,6 +6054,11 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   const [posture, setPosture] = useState(null); // null until we auto-detect; user can override
   const [tab, setTab] = useState("notes");     // notes(Summary) | lineup | freeagents | roster | league
   const [posSortCol, setPosSortCol] = useState("all"); // Positional strength grid: sort by "all"|QB|RB|WR|TE
+  // Rich floating tooltip (same card the draft app uses) for player and positional hovers in this hub.
+  const [tip, setTip] = useState(null);
+  const showTip = (e, content) => { try { setTip(positionTip(e.clientX, e.clientY, content)); } catch (_) {} };
+  const showPlayerTip = (e, p) => { if (p) showTip(e, makeOutlook(p, null, false)); };
+  const hideTip = () => setTip(null);
 
   // Build the enriched, projection-scored player pool for THIS league's cfg, keyed by Sleeper id.
   const cfg = data && data.cfg ? normalizeHubCfg(data.cfg) : null;
@@ -6392,7 +6397,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   // `powerRanked` (posStrength) — turn my ranks into a strong/solid/thin verdict per position.
   const myPosRank = {};
   POS.forEach((pos) => {
-    const sorted = leagueTeams.slice().sort((a, b) => (b.posStrength[pos] || 0) - (a.posStrength[pos] || 0));
+    // Use the SHARED quality scorer (same as the league tab and the draft app) so the rank shown here matches
+    // everywhere. Previously this ranked by raw starter points (posStrength), which disagreed with the league
+    // tab's quality-based rank — that's why QB read 8th here but 6th there.
+    const sorted = leagueTeams.slice().sort((a, b) => (b.posQuality[pos] || 0) - (a.posQuality[pos] || 0));
     const idx = sorted.findIndex((t) => t.rosterId === data.myRosterId);
     myPosRank[pos] = { rank: idx >= 0 ? idx + 1 : null, of: leagueTeams.length };
   });
@@ -6703,7 +6711,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
               {topFA.map(({ p, upgrade, verdict, reason, worstOnRoster }) => {
                 const vc = verdict === "add" ? { c: "var(--green)", bg: "rgba(95,208,168,.10)", label: "Add" } : verdict === "stream" ? { c: "var(--gold)", bg: "rgba(242,182,60,.10)", label: "Stream" } : { c: "var(--mut)", bg: "transparent", label: "Hold" };
                 return (
-                  <div key={p.sid} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", background: vc.bg !== "transparent" ? vc.bg : "var(--panel2)", border: `1px solid ${verdict === "add" ? "var(--green)" : "var(--line)"}`, borderRadius: 8 }}>
+                  <div key={p.sid} onMouseEnter={(e) => showPlayerTip(e, p)} onMouseLeave={hideTip} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", cursor: "help", background: vc.bg !== "transparent" ? vc.bg : "var(--panel2)", border: `1px solid ${verdict === "add" ? "var(--green)" : "var(--line)"}`, borderRadius: 8 }}>
                     <Dot pos={p.pos} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · {p.team}{p.age ? ` · ${p.age}y` : ""}{p.rookie ? " · rookie" : ""}{p.noGame ? " · 0 this week" : ""}</span></div>
@@ -6760,7 +6768,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                         const isStarter = !!slot;
                         const isFlex = slot && (slot.startsWith("FLEX") || slot === "SFLX");
                         return (
-                          <div key={p.sid} style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 6px", borderRadius: 6, background: isStarter ? (isFlex ? "rgba(107,168,229,.10)" : "rgba(242,182,60,.08)") : "transparent" }}>
+                          <div key={p.sid} onMouseEnter={(e) => showPlayerTip(e, p)} onMouseLeave={hideTip} style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 6px", borderRadius: 6, cursor: "help", background: isStarter ? (isFlex ? "rgba(107,168,229,.10)" : "rgba(242,182,60,.08)") : "transparent" }}>
                             <span style={{ width: 4, height: 4, borderRadius: "50%", background: isStarter ? (isFlex ? "var(--blue)" : "var(--gold)") : "var(--line2)", flexShrink: 0 }} />
                             <span style={{ fontSize: 12.5, fontWeight: isStarter ? 600 : 400, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isStarter ? "var(--ink)" : "var(--mut)" }}>
                               {p.name} <span style={{ fontSize: 10, opacity: 0.7 }}>{p.team}{p.age ? ` · ${p.age}y` : ""}</span>
@@ -6832,16 +6840,19 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                       const pj = projRanked.find((t) => t.rosterId === st.rosterId);
                       const pr = powerRankById[st.rosterId];
                       const inPlayoffs = pj && pj.projRank <= playoffSpots;
-                      const rosterTip = (() => {
-                        if (!lt.roster) return st.ownerName ? `@${st.ownerName}` : undefined;
+                      const rosterTipContent = (() => {
+                        if (!lt.roster) return null;
                         const lu = lineupSlots(lt.roster, cfg.sf);
-                        const lines = lu.slots.filter((sl) => sl.p).map((sl) => `${sl.slot}: ${sl.p.name} (${sl.p.pos}${sl.p.posRank || ""}) — ${Math.round(sl.p.pts || 0)} pts`);
-                        const header = `${st.teamName}${st.ownerName ? ` (@${st.ownerName})` : ""} — starting lineup`;
-                        return header + "\n" + lines.join("\n");
+                        const starters = lu.slots.filter((sl) => sl.p).map((sl) => ({ ...sl.p, slot: sl.slot }));
+                        return [
+                          { kind: "take", tone: "neutral", x: `${st.teamName}${st.ownerName ? ` · @${st.ownerName}` : ""} — starting lineup` },
+                          { kind: "playertable", cols: ["slot", "name", "team", "age", "pts", "vbd"], players: starters },
+                        ];
                       })();
+                      const nameTip = rosterTipContent ? (e) => showTip(e, rosterTipContent) : undefined;
                       return (
                         <tr key={st.rosterId} style={{ borderTop: "1px solid var(--line)", background: st.isMe ? "rgba(242,182,60,.07)" : "transparent" }}>
-                          <td style={{ padding: "6px", fontWeight: st.isMe ? 700 : 500, color: st.isMe ? "var(--gold)" : "var(--ink)", cursor: "help" }} title={rosterTip}>
+                          <td onMouseEnter={nameTip} onMouseLeave={nameTip ? hideTip : undefined} style={{ padding: "6px", fontWeight: st.isMe ? 700 : 500, color: st.isMe ? "var(--gold)" : "var(--ink)", cursor: nameTip ? "help" : "default" }}>
                             {st.rank}. {st.teamName}{st.isMe ? " ★" : ""}{st.ownerName ? <span className="mut" style={{ fontSize: 10, fontWeight: 400 }}> (@{st.ownerName})</span> : null}
                           </td>
                           <td style={{ textAlign: "center", padding: "6px" }}>{st.record.wins}-{st.record.losses}{st.record.ties ? `-${st.record.ties}` : ""}</td>
@@ -6895,17 +6906,24 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                             {POS.map((pos) => {
                               const rk = rankByCol[pos][t.rosterId];
                               const plist = (t.posPlayers[pos] || []);
-                              const tip = `${t.teamName} — ${pos}: ${ordinal(rk)} of ${n} in the league\n` + (plist.length ? plist.slice(0, 8).map((p) => `${p.name} (${p.pos}${p.posRank || ""}) — ${Math.round(p.pts || 0)} pts`).join("\n") : "none drafted");
+                              const cellTip = (e) => showTip(e, [
+                                { kind: "take", tone: rk <= Math.ceil(n / 3) ? "good" : rk > Math.ceil((2 * n) / 3) ? "bad" : "neutral", x: `${t.teamName} — ${pos}: ${ordinal(rk)} of ${n} in the league` },
+                                ...(plist.length ? [{ kind: "playertable", cols: ["rank", "name", "team", "age", "pts", "vbd"], players: plist.slice(0, 10) }] : [{ t: "—", x: "None drafted here" }]),
+                              ]);
                               return (
                                 <td key={pos} style={{ textAlign: "center", padding: "4px 6px" }}>
-                                  <span className="num" title={tip} style={{ color: cellColor(rk), background: cellBg(rk), borderRadius: 5, padding: "2px 7px", fontWeight: 700, cursor: "help" }}>{Math.round(t.posQuality[pos] || 0)}</span>
+                                  <span className="num" onMouseEnter={cellTip} onMouseLeave={hideTip} style={{ color: cellColor(rk), background: cellBg(rk), borderRadius: 5, padding: "2px 7px", fontWeight: 700, cursor: "help" }}>{Math.round(t.posQuality[pos] || 0)}</span>
                                 </td>
                               );
                             })}
                             {(() => {
                               const rk = rankByCol.all[t.rosterId];
-                              const tip = `${t.teamName} — overall roster strength: ${ordinal(rk)} of ${n}`;
-                              return <td style={{ textAlign: "center", padding: "4px 6px" }}><span className="num" title={tip} style={{ color: cellColor(rk), background: cellBg(rk), borderRadius: 5, padding: "2px 7px", fontWeight: 800, cursor: "help" }}>{Math.round(overallVal(t))}</span></td>;
+                              const allP = ["QB", "RB", "WR", "TE"].flatMap((pos) => (t.posPlayers[pos] || [])).sort((a, b) => (b.pts || 0) - (a.pts || 0));
+                              const cellTip = (e) => showTip(e, [
+                                { kind: "take", tone: rk <= Math.ceil(n / 3) ? "good" : rk > Math.ceil((2 * n) / 3) ? "bad" : "neutral", x: `${t.teamName} — overall roster strength: ${ordinal(rk)} of ${n}` },
+                                ...(allP.length ? [{ kind: "playertable", cols: ["rank", "name", "team", "age", "pts", "vbd"], players: allP.slice(0, 12) }] : [{ t: "—", x: "No players" }]),
+                              ]);
+                              return <td style={{ textAlign: "center", padding: "4px 6px" }}><span className="num" onMouseEnter={cellTip} onMouseLeave={hideTip} style={{ color: cellColor(rk), background: cellBg(rk), borderRadius: 5, padding: "2px 7px", fontWeight: 800, cursor: "help" }}>{Math.round(overallVal(t))}</span></td>;
                             })()}
                           </tr>
                         ))}
@@ -6961,11 +6979,18 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
             {/* ===== Strengths & weaknesses ===== */}
             <div className="panel" style={{ padding: 16 }}>
               <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Team shape</div>
+              {(() => {
+                const myLT = leagueTeams.find((t) => t.rosterId === data.myRosterId);
+                const shapeTip = (pos) => (e) => showTip(e, [
+                  { kind: "take", tone: myPosRank[pos].rank <= Math.ceil(leagueTeams.length / 3) ? "good" : myPosRank[pos].rank > Math.ceil((2 * leagueTeams.length) / 3) ? "bad" : "neutral", x: `Your ${pos} — ${ordinal(myPosRank[pos].rank)} of ${myPosRank[pos].of} in the league` },
+                  ...((myLT && myLT.posPlayers[pos] && myLT.posPlayers[pos].length) ? [{ kind: "playertable", cols: ["rank", "name", "team", "age", "pts", "vbd"], players: myLT.posPlayers[pos].slice(0, 10) }] : [{ t: "—", x: "None on your roster" }]),
+                ]);
+                return (
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                 <div>
                   <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6, color: "var(--green)" }}>Strengths</div>
                   {strengths.length ? strengths.map((pos) => (
-                    <div key={pos} style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 0", fontSize: 12.5 }}>
+                    <div key={pos} onMouseEnter={shapeTip(pos)} onMouseLeave={hideTip} style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 0", fontSize: 12.5, cursor: "help" }}>
                       <Dot pos={pos} /><b>{pos}</b> <span className="mut">— {ordinal(myPosRank[pos].rank)} of {myPosRank[pos].of} in the league</span>
                     </div>
                   )) : <div className="mut" style={{ fontSize: 12 }}>No standout strengths yet — balanced roster.</div>}
@@ -6973,12 +6998,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                 <div>
                   <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6, color: "var(--red)" }}>Needs work</div>
                   {weaknesses.length ? weaknesses.map((pos) => (
-                    <div key={pos} style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 0", fontSize: 12.5 }}>
+                    <div key={pos} onMouseEnter={shapeTip(pos)} onMouseLeave={hideTip} style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 0", fontSize: 12.5, cursor: "help" }}>
                       <Dot pos={pos} /><b>{pos}</b> <span className="mut">— {ordinal(myPosRank[pos].rank)} of {myPosRank[pos].of}, target upgrades</span>
                     </div>
                   )) : <div className="mut" style={{ fontSize: 12 }}>No glaring holes — nice and deep.</div>}
                 </div>
               </div>
+                );
+              })()}
             </div>
 
             {/* ===== Lineup call ===== */}
@@ -7049,6 +7076,11 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
           </div>
         )}
       </div>
+      {tip && (
+        <Tooltip tip={tip}>
+          <OutlookCard content={tip.content} />
+        </Tooltip>
+      )}
     </HubShell>
   );
 }
