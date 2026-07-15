@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fy";
+const BUILD_TAG = "2026.06.28fz";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3384,6 +3384,7 @@ function posQualityScore(playersAtPos, req, opts) {
   const dynasty = !!opts.dynasty;
   const flexShare = opts.flexShare || 0;
   const slotBaseline = opts.slotBaseline || null;   // array: typical value at slot 0,1,2,...
+  const explain = !!opts.explain;                   // when true, also return the per-player math
   const FLAT = opts.replacementValue != null ? opts.replacementValue : -35;
   // DYNASTY reads the age-aware value (a young WR60 can genuinely be worth more than an old WR30); REDRAFT
   // reads this year's production. This is why positional rank alone must not drive the score in dynasty.
@@ -3392,9 +3393,11 @@ function posQualityScore(playersAtPos, req, opts) {
     if (dynasty) { const v = p.value != null ? p.value : p.vbd; if (v != null) return v; }
     return p.vbd0 != null ? p.vbd0 : (p.vbd != null ? p.vbd : null);
   };
-  const arr = (playersAtPos || []).map(valOf).filter((v) => v != null).sort((a, b) => b - a);
+  // Keep players attached to their values so we can explain who produced each slot's contribution.
+  const withVal = (playersAtPos || []).map((p) => ({ p, v: valOf(p) })).filter((x) => x.v != null).sort((a, b) => b.v - a.v);
+  const arr = withVal.map((x) => x.v);
   const effStarters = Math.max(0, req || 0) + flexShare;
-  if (effStarters <= 0 || !arr.length) return 0;
+  if (effStarters <= 0 || !arr.length) return explain ? { total: 0, rows: [] } : 0;
   const baseAt = (k) => {
     if (slotBaseline && slotBaseline[k] != null) return slotBaseline[k];
     if (slotBaseline && slotBaseline.length) return slotBaseline[slotBaseline.length - 1];
@@ -3403,6 +3406,7 @@ function posQualityScore(playersAtPos, req, opts) {
   const fullStarters = Math.floor(effStarters);
   const partial = effStarters - fullStarters;
   const reqSlots = Math.max(0, Math.round(req || 0));
+  const rows = [];
 
   // (1) STARTERS — each fielded slot vs. the typical team's player at that slot. Surpluses and deficits both
   //     count, so a weak WR2 genuinely costs you. Required slots weigh 1.0; a flex-absorbed slot weighs less
@@ -3411,24 +3415,37 @@ function posQualityScore(playersAtPos, req, opts) {
   for (let k = 0; k < fullStarters; k++) {
     const mine = arr[k] != null ? arr[k] : baseAt(k) - 25; // missing a required starter is a real hole
     const w = k < reqSlots ? 1.0 : 1 / (1 + (k - reqSlots + 1) * 0.6);
-    starters += (mine - baseAt(k)) * w;
+    const c = (mine - baseAt(k)) * w;
+    starters += c;
+    if (explain) rows.push({ role: k < reqSlots ? `Starter ${k + 1}` : `Flex`, p: withVal[k] ? withVal[k].p : null, val: arr[k] != null ? arr[k] : null, typical: baseAt(k), weight: w, contrib: c });
   }
   if (partial > 0) {
     const k = fullStarters;
     const mine = arr[k] != null ? arr[k] : baseAt(k) - 25;
     const w = k < reqSlots ? 1.0 : 1 / (1 + (k - reqSlots + 1) * 0.6);
-    starters += (mine - baseAt(k)) * w * partial;
+    const c = (mine - baseAt(k)) * w * partial;
+    starters += c;
+    if (explain) rows.push({ role: "Flex", p: withVal[k] ? withVal[k].p : null, val: arr[k] != null ? arr[k] : null, typical: baseAt(k), weight: w * partial, contrib: c });
   }
 
   // (2) DEPTH — only what each reserve adds OVER a typical bench body at that slot, tapering fast. A reserve
-  //     who's merely replaceable adds 0; a genuinely good stashed player still earns real credit.
+  //     who's merely replaceable adds 0; a genuinely good stashed player still earns real credit. Floored at 0
+  //     so a deep bench of players who'd never start (a WR94, a WR127) can NEVER drag the score down.
   let depth = 0;
   const startIdx = Math.ceil(effStarters);
   const dw = [0.22, 0.12, 0.06, 0.03, 0.015];
   for (let j = 0; j < dw.length; j++) {
     const v = arr[startIdx + j];
     if (v == null) break;
-    depth += Math.max(0, v - baseAt(startIdx + j)) * dw[j];
+    const c = Math.max(0, v - baseAt(startIdx + j)) * dw[j];
+    depth += c;
+    if (explain) rows.push({ role: "Depth", p: withVal[startIdx + j] ? withVal[startIdx + j].p : null, val: v, typical: baseAt(startIdx + j), weight: dw[j], contrib: c });
+  }
+  // Any remaining players are pure bench — they contribute nothing at all. Listed so the hover is complete and
+  // it's obvious they aren't hurting the team.
+  if (explain) {
+    for (let j = startIdx + dw.length; j < withVal.length; j++) rows.push({ role: "Bench", p: withVal[j].p, val: arr[j], typical: null, weight: 0, contrib: 0 });
+    return { total: starters + depth, starters, depth, rows };
   }
   return starters + depth;
 }
@@ -3892,6 +3909,39 @@ function OutlookCard({ content }) {
                 </div>
               ))}
               {l.footer && <div style={{ fontSize: 11, color: "var(--mut)", marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--line)", lineHeight: 1.4 }}>{l.footer}</div>}
+            </div>
+          );
+        }
+        if (l.kind === "scoremath") {
+          // The positional-strength score, broken down player by player: what each guy is worth, what a TYPICAL
+          // team has at that same slot, and what he therefore contributed (+/-). Makes the single number on the
+          // grid fully auditable instead of a black box.
+          const rows = l.rows || [];
+          const roleColor = (r) => r.role === "Bench" ? "var(--mut)" : r.role === "Depth" ? "#9BC4EA" : "var(--gold)";
+          return (
+            <div key={i} style={{ marginTop: 6 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "54px minmax(0,1fr) 42px 42px 46px", gap: "0 6px", fontSize: 8, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line2)", paddingBottom: 3, marginBottom: 3 }}>
+                <span>Role</span><span>Player</span>
+                <span style={{ textAlign: "right" }} title={l.dynasty ? "This player's dynasty value (age-aware)" : "This player's value over replacement"}>{l.dynasty ? "Value" : "VBD"}</span>
+                <span style={{ textAlign: "right" }} title="What a typical team in this league has at this slot">Typical</span>
+                <span style={{ textAlign: "right" }} title="What this player added (+) or cost (−) versus a typical team's player at this slot">Adds</span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                {rows.map((r, ri) => (
+                  <div key={ri} style={{ display: "grid", gridTemplateColumns: "54px minmax(0,1fr) 42px 42px 46px", gap: "0 6px", alignItems: "center", fontSize: 10.5 }}>
+                    <span style={{ fontSize: 8.5, fontWeight: 700, color: roleColor(r) }}>{r.role}</span>
+                    <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {r.p ? <><Dot pos={r.p.pos} />{r.p.name} <span className="mut" style={{ fontSize: 8.5 }}>{r.p.pos}{r.p.posRank}{r.p.age != null ? ` · ${r.p.age}y` : ""}</span></> : <span className="mut">— empty —</span>}
+                    </span>
+                    <span className="num" style={{ textAlign: "right", fontWeight: 700, color: vbdColor(r.val) }}>{r.val != null ? Math.round(r.val) : "—"}</span>
+                    <span className="num mut" style={{ textAlign: "right" }}>{r.typical != null ? Math.round(r.typical) : "—"}</span>
+                    <span className="num" style={{ textAlign: "right", fontWeight: 800, color: r.contrib > 0.5 ? "#5FD0A8" : r.contrib < -0.5 ? "#F2655C" : "var(--mut)" }}>{Math.abs(r.contrib) < 0.05 ? "0" : (r.contrib > 0 ? "+" : "") + r.contrib.toFixed(1)}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="mut" style={{ fontSize: 9, marginTop: 5, lineHeight: 1.35 }}>
+                Starters are compared 1-for-1 against a typical team's player at that slot. Bench players who'd never crack the lineup show <b style={{ color: "var(--mut)" }}>0</b> — they never subtract.
+              </div>
             </div>
           );
         }
@@ -7012,11 +7062,18 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                             <td style={{ padding: "5px 6px", fontWeight: t.isMe ? 700 : 500, color: t.isMe ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap" }} title={t.ownerName ? `@${t.ownerName}` : undefined}>{t.teamName}{t.isMe ? " ★" : ""}{t.ownerName ? <span className="mut" style={{ fontSize: 10, fontWeight: 400 }}> (@{t.ownerName})</span> : null}</td>
                             {POS.map((pos) => {
                               const rk = rankByCol[pos][t.rosterId];
-                              const plist = (t.posPlayers[pos] || []);
-                              const cellTip = (e) => showTip(e, [
-                                { kind: "take", tone: rk <= Math.ceil(n / 3) ? "good" : rk > Math.ceil((2 * n) / 3) ? "bad" : "neutral", x: `${t.teamName} — ${pos}: ${ordinal(rk)} of ${n} in the league` },
-                                ...(plist.length ? [{ kind: "playertable", cols: ["rank", "name", "team", "age", "pts", "vbd"], players: plist.slice(0, 10) }] : [{ t: "—", x: "None drafted here" }]),
-                              ]);
+                              const cellTip = (e) => {
+                                // Recompute WITH the explain flag so the hover can show exactly how the number
+                                // was built: each player, his value, what a typical team has at that slot, and
+                                // what he therefore contributed.
+                                const ex = posQualityScore((t.posPlayers[pos] || []), effReqLg[pos] || 0, { dynasty: dynastyLg, flexShare: flexShLg[pos] || 0, slotBaseline: replLg[pos], explain: true });
+                                const lines = [
+                                  { kind: "take", tone: rk <= Math.ceil(n / 3) ? "good" : rk > Math.ceil((2 * n) / 3) ? "bad" : "neutral", x: `${t.teamName} — ${pos}: ${ordinal(rk)} of ${n}  ·  score ${Math.round(ex.total)}` },
+                                  { t: "How to read it", x: `Score = how much better (+) or worse (−) than a TYPICAL team this roster is at ${pos}. Each starting slot is compared to what a normal team has at that slot. Bench players who'd never start contribute 0 — they can't drag you down.` },
+                                ];
+                                if (ex.rows && ex.rows.length) lines.push({ kind: "scoremath", rows: ex.rows, dynasty: dynastyLg });
+                                showTip(e, lines);
+                              };
                               return (
                                 <td key={pos} style={{ textAlign: "center", padding: "4px 6px" }}>
                                   <span className="num" onMouseEnter={cellTip} onMouseLeave={hideTip} style={{ color: cellColor(rk), background: cellBg(rk), borderRadius: 5, padding: "2px 7px", fontWeight: 700, cursor: "help" }}>{Math.round(t.posQuality[pos] || 0)}</span>
@@ -7088,10 +7145,16 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
               <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Team shape</div>
               {(() => {
                 const myLT = leagueTeams.find((t) => t.rosterId === data.myRosterId);
-                const shapeTip = (pos) => (e) => showTip(e, [
-                  { kind: "take", tone: myPosRank[pos].rank <= Math.ceil(leagueTeams.length / 3) ? "good" : myPosRank[pos].rank > Math.ceil((2 * leagueTeams.length) / 3) ? "bad" : "neutral", x: `Your ${pos} — ${ordinal(myPosRank[pos].rank)} of ${myPosRank[pos].of} in the league` },
-                  ...((myLT && myLT.posPlayers[pos] && myLT.posPlayers[pos].length) ? [{ kind: "playertable", cols: ["rank", "name", "team", "age", "pts", "vbd"], players: myLT.posPlayers[pos].slice(0, 10) }] : [{ t: "—", x: "None on your roster" }]),
-                ]);
+                const shapeTip = (pos) => (e) => {
+                  const ex = myLT ? posQualityScore((myLT.posPlayers[pos] || []), effReqLg[pos] || 0, { dynasty: dynastyLg, flexShare: flexShLg[pos] || 0, slotBaseline: replLg[pos], explain: true }) : null;
+                  const lines = [
+                    { kind: "take", tone: myPosRank[pos].rank <= Math.ceil(leagueTeams.length / 3) ? "good" : myPosRank[pos].rank > Math.ceil((2 * leagueTeams.length) / 3) ? "bad" : "neutral", x: `Your ${pos} — ${ordinal(myPosRank[pos].rank)} of ${myPosRank[pos].of} in the league${ex ? `  ·  score ${Math.round(ex.total)}` : ""}` },
+                    { t: "How to read it", x: `Score = how much better (+) or worse (−) than a typical team you are at ${pos}. Bench players who'd never start contribute 0.` },
+                  ];
+                  if (ex && ex.rows && ex.rows.length) lines.push({ kind: "scoremath", rows: ex.rows, dynasty: dynastyLg });
+                  else lines.push({ t: "—", x: "None on your roster" });
+                  showTip(e, lines);
+                };
                 return (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 14 }}>
                 <div>
