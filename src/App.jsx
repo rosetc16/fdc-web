@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28gb";
+const BUILD_TAG = "2026.06.28gc";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1079,10 +1079,6 @@ let LIVE_OVERLAY_REASON = null;  // if a per-format overlay was REJECTED, why (s
                                  // global pack — e.g. a redraft mock stuck on dynasty ADP — is diagnosable)
 let LIVE_OVERLAY_TARGET = null;  // the format the current draft SHOULD be showing
 let LIVE_OVERLAY_STATE = null;   // loading | applied | rejected | miss — where the per-draft overlay ended up
-// Picks a commissioner forced into FUTURE slots (e.g. filler picks to skip a round). They're real and must be
-// honored when the draft reaches them, but they must NOT drag the board forward past the pick actually on the
-// clock. Kept aside so the UI can surface them without corrupting the current-pick math.
-let LIVE_FORCED_AHEAD = null;
 export function isLivePackLoaded() { return LIVE_LOADED; }
 
 
@@ -1367,6 +1363,14 @@ const setTeamNames = (names) => { TEAM_NAMES = names; };
 // Sleeper-linked league.
 let TEAM_OWNERS = [];
 const setTeamOwners = (owners) => { TEAM_OWNERS = owners || []; };
+// Full, unabbreviated label for a team: its complete name plus the Sleeper username when we have one.
+// The compact widgets abbreviate names to fit, so hovers use this to show who a team actually is.
+const teamFullLabel = (t) => {
+  if (t == null || t < 0) return "";
+  const name = TEAM_NAMES[t] || `Team ${t + 1}`;
+  const owner = TEAM_OWNERS[t];
+  return owner ? `${name} (@${owner})` : name;
+};
 const POS_COLOR = { QB:"#EF6A6A", RB:"#4FD1A1", WR:"#5BA8F5", TE:"#F2A35C", DL:"#b07cc6", LB:"#7e9b59", DB:"#5fb0b0", K:"var(--mut)", DST:"var(--mut)" };
 // ---- Recent trends feed --------------------------------------------------------------
 // PLUGGABLE DATA LAYER. In production, getTrendsFeed() reads a nightly-synced blend of
@@ -2754,15 +2758,22 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
   for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, baseCounts[t]); seedRosterCounts(t, baseCounts[t]); }
   allKeeperAddIds().forEach((id) => { baseDrafted[id] = 1; });
   const baseRecent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
-  const surv = [new Float64Array(players.length), new Float64Array(players.length), new Float64Array(players.length)];
-  // PERF: survival and best-available only matter for players who could plausibly be drafted in the next
-  // ~40 picks. Everyone below that has ~100% survival at your next pick and never wins "best available", so
-  // iterating the full pool (500+ players) inside the sim loop is wasted work that stalls the UI when a pick
-  // lands. Restrict the hot loops to a relevant subset (undrafted players near the top by ADP), then default
-  // the rest to full survival afterward. This is the main cost of registering a pick.
+  // PERF: survival and best-available only matter for players who could plausibly be drafted before your last
+  // simulated pick. Everyone below that has ~100% survival and never wins "best available", so touching them
+  // inside the sim loop is pure waste — and it's the main cost of registering a pick.
+  //
+  // The cap is now sized to the actual horizon: roughly the picks between here and your third-next turn, plus
+  // headroom for reaches. In practice that's ~40-70 players, not the flat 170 it used to scan — the sim loop is
+  // O(relevant × sims × picks), so this is a big, direct cut to the work done on every single pick.
+  const horizon = Math.max(0, (nexts[nexts.length - 1] - start)) + 1;
+  const relevantCap = Math.min(players.length, Math.max(40, Math.round(horizon * 1.6) + 20));
   const relevant = [];
-  { const cap = Math.min(players.length, 170); let seen = 0;
-    for (const p of sortedAdp) { if (!baseDrafted[p.id]) { relevant.push(p); if (++seen >= cap) break; } } }
+  { let seen = 0;
+    for (const p of sortedAdp) { if (!baseDrafted[p.id]) { relevant.push(p); if (++seen >= relevantCap) break; } } }
+  // Survival tallies are keyed by player id but only ever written for `relevant` players, so a plain object
+  // beats allocating three full-pool Float64Arrays (~3k entries each) on every pick just to zero them out.
+  const surv = [{}, {}, {}];
+  for (const p of relevant) { surv[0][p.id] = 0; surv[1][p.id] = 0; surv[2][p.id] = 0; }
   const expBest1 = { QB: 0, RB: 0, WR: 0, TE: 0 };
   // Per-pick-index tally of the best-available player (by pos), for your next TWO picks (ni 0 and 1). Lets
   // us show not just "who's likely at your next pick" but also the further drop-off to the pick after that.
@@ -12268,6 +12279,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // Live per-pick ownership from a connected platform (Sleeper draft_slot). Declared here so it can
   // be applied to the engine's team-assignment BEFORE any roster/sim computation in this render.
   const [liveSlots, setLiveSlots] = useState(null); // { overallPickIndex: teamIndex } or null
+  // Picks that exist in the live feed but sit AHEAD of the pick currently on the clock — commissioner-forced
+  // filler picks, keepers written in early, pre-loaded rosters. They're really owned, so they must show on the
+  // owning team's roster and count toward its positional strength, while staying off the live board.
+  // [{ o, id, team }]
+  const [forcedAhead, setForcedAhead] = useState([]);
   // Real Sleeper clock: { deadlineMs, timerSec, skewMs } from the live draft. skewMs aligns the
   // server's clock to the browser's so the countdown matches Sleeper exactly and survives refreshes.
   const [liveClock, setLiveClock] = useState(null);
@@ -12619,7 +12635,26 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     return { has: true, map };
   }, [user, league]);
   useEffect(() => { if (platRanks.has) setCols((c) => (c.edge && c.platAdp ? c : { ...c, edge: true, platAdp: true })); }, [platRanks.has]);
-  const draftedSet = useMemo(() => { const s = new Set(picks); Object.values(noCostByTeam).flat().forEach((id) => s.add(id)); return s; }, [picks, cfg]);
+  // Everyone who is off the board: picks made, no-cost keepers, and any forced picks that live ahead of the
+  // current slot (commissioner filler, early-written keepers). A forced-ahead player is genuinely owned, so he
+  // must never be recommended or counted as available just because the draft hasn't reached his slot yet.
+  const draftedSet = useMemo(() => {
+    const s = new Set(picks);
+    Object.values(noCostByTeam).flat().forEach((id) => s.add(id));
+    (forcedAhead || []).forEach((f) => s.add(f.id));
+    return s;
+  }, [picks, cfg, forcedAhead]);
+  // Every team's ACTUAL roster: the picks they've made, plus any player they already own who isn't on the board
+  // — no-cost keepers and forced-ahead picks. Anything that reads a roster (positional strength, team view,
+  // draft board, recommendations) should use this rather than deriving from `picks` alone, or those owned
+  // players silently vanish from the team that holds them.
+  const rostersByTeam = useMemo(() => {
+    const out = Array.from({ length: TEAMS }, () => []);
+    picks.forEach((pk, o) => { const p = players[pk]; if (p) out[teamAt(o)].push(p); });
+    Object.entries(noCostByTeam).forEach(([t, ids]) => { (ids || []).forEach((id) => { const p = players[id]; if (p && out[+t]) out[+t].push(p); }); });
+    (forcedAhead || []).forEach((f) => { const p = players[f.id]; if (p && out[f.team] && !out[f.team].some((x) => x.id === p.id)) out[f.team].push(p); });
+    return out;
+  }, [picks, players, noCostByTeam, forcedAhead, liveSlots, cfg]);
   // Available players per position, best-first by VBD — powers the "scarcity" note in player blurbs (last
   // startable-tier guy on the board, steep drop to the next, etc.).
   const availByPos = useMemo(() => {
@@ -12700,18 +12735,28 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // not your turn, then snap back to full resolution as your pick approaches (or any non-fast draft).
   const simCount = useMemo(() => {
     if (done) return 0;
-    if (!fast || onClock === userIdx) return 300; // full detail when it matters / normal speed
-    // cheap distance-to-my-next-pick without depending on the (later-defined) memo
+    // Distance (in picks) until YOUR next turn. This — not "is fast mode on" — is what should drive the cost.
     let dist = 0; for (let o = picks.length; o < TOTAL; o++) { if (teamAt(o) === userIdx) break; dist++; }
-    if (dist <= 2) return 300;   // your pick is imminent — full detail
-    if (dist <= 6) return 150;
-    return 60;                   // far away in a fast sim — light pass keeps the UI responsive
+    // On the clock: full resolution. This is the one moment the numbers must be exact.
+    if (onClock === userIdx || dist === 0) return 300;
+    // Otherwise scale DOWN with distance, in every mode. Previously full 300-path Monte Carlo ran on every
+    // single CPU pick of a normal mock (the throttle only applied in "fast" mode), and because runSims
+    // simulates from now through your next three picks, the work GREW as your pick approached — which is
+    // exactly why a mock got slower and slower the closer you got, then stalled hard on your turn.
+    // The survival odds for a pick that's still many slots away don't need 300 paths to be useful.
+    if (dist <= 2) return fast ? 200 : 240;
+    if (dist <= 6) return fast ? 90 : 130;
+    if (dist <= 12) return fast ? 50 : 70;
+    return fast ? 30 : 40;       // far out — a light pass; it'll sharpen automatically as your pick nears
   }, [fast, onClock, userIdx, picks.length, done, TOTAL]);
   const sims = useMemo(() => (!done ? runSims(players, sortedAdp, picks, userIdx, cfg, strategy, simCount) : null), [players, sortedAdp, picks, userIdx, cfg, done, strategy, liveSlots, simCount]);
   const customSims = useMemo(() => {
     const n = parseInt(customPick, 10);
     if (!n || n <= picks.length || done) return null;
-    return survivalAtPick(players, sortedAdp, picks, n, cfg, 800);
+    // 800 paths here was gratuitous: this only powers the "what survives to pick N?" lookup, and it re-ran on
+    // EVERY pick while a custom pick was set. 250 is plenty for a percentage we round to the nearest whole
+    // number, and it cuts this from the most expensive call in the app to a minor one.
+    return survivalAtPick(players, sortedAdp, picks, n, cfg, 250);
   }, [customPick, players, sortedAdp, picks, cfg, done]);
 
   // Remaining picks for the hub "Avail @" dropdown, flagged with whether YOU own them. Capped to keep
@@ -13001,8 +13046,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       }
     }
     const verdict = ranked[0]; const alts = ranked.slice(1, 10);
+    // "Impact" = how your projected finish changes if you take this player. Each one costs a FULL projection of
+    // the rest of the draft, and this used to run for the verdict plus all ten alternatives on EVERY pick —
+    // eleven whole-draft simulations per pick, most of which are never looked at. That was a major contributor
+    // to the UI stalling as a mock progressed. We now project only the top few candidates (the ones the panel
+    // actually surfaces); anything below that reports no impact rather than paying for a projection nobody sees.
+    const IMPACT_CANDIDATES = 4;
     const impacts = {};
-    [verdict, ...alts].forEach((c) => { if (!c) return; const pr = projectAll(players, sortedAdp, picks, userIdx, cfg, strat, c.id); impacts[c.id] = { pts: pr.pts[userIdx], rank: pr.rank[userIdx] }; });
+    [verdict, ...alts].slice(0, IMPACT_CANDIDATES).forEach((c) => { if (!c) return; const pr = projectAll(players, sortedAdp, picks, userIdx, cfg, strat, c.id); impacts[c.id] = { pts: pr.pts[userIdx], rank: pr.rank[userIdx] }; });
     const recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
     let run = null;
     POS.forEach((pos) => { const c = recent.filter((x) => x === pos).length; if (c >= 3 && (!run || c > run.count)) run = { pos, count: c }; });
@@ -13401,14 +13452,26 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           mapped[o] = id;
         }
         // The array may now be sparse (holes where picks haven't happened). The rest of the app treats `picks`
-        // as dense up to the current pick, so trim to the first hole: everything before it is settled, and any
-        // forced pick beyond it stays out of the board until the draft actually reaches it.
+        // as dense up to the current pick, so trim to the first hole: everything before it is settled.
+        //
+        // Picks BEYOND that hole are real and already owned (a commissioner forcing filler picks into a later
+        // round, a keeper written in ahead of time, a pre-loaded roster). They must not drag the board forward
+        // to a pick that hasn't happened — but they absolutely must still count: they're on someone's roster,
+        // they're off the board, and they change that team's positional strength and what anyone should draft.
+        // So we keep them as `forcedAhead` and fold them into rosters/counts/drafted separately from the board.
         let firstHole = 0;
         while (firstHole < mapped.length && mapped[firstHole] != null) firstHole++;
         const forcedAhead = [];
-        for (let i = firstHole; i < mapped.length; i++) if (mapped[i] != null) forcedAhead.push({ o: i, id: mapped[i] });
+        for (let i = firstHole; i < mapped.length; i++) {
+          if (mapped[i] == null) continue;
+          const t = slotTeam[i] != null ? slotTeam[i] : teamAt(i);
+          forcedAhead.push({ o: i, id: mapped[i], team: t });
+        }
         mapped.length = firstHole;
-        if (forcedAhead.length) LIVE_FORCED_AHEAD = forcedAhead; else LIVE_FORCED_AHEAD = null;
+        setForcedAhead((prev) => {
+          const a = JSON.stringify(prev || []), b = JSON.stringify(forcedAhead);
+          return a === b ? prev : forcedAhead;
+        });
         setSyncState({ status: d.status, lastAt: Date.now(), error: null });
         setLiveSlots((prev) => { const next = JSON.stringify(slotTeam); return prev && JSON.stringify(prev) === next ? prev : slotTeam; });
         if (d.pickDeadlineMs && d.serverNowMs) setLiveClock({ deadlineMs: d.pickDeadlineMs, timerSec: d.pickTimerSec || 0, skewMs: Date.now() - d.serverNowMs });
@@ -14472,7 +14535,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               const recent = picks.slice(-6).map((pk, i) => ({ pk, o: picks.length - Math.min(6, picks.length) + i })).reverse();
               const moreTip = (e) => showTip(e, [
                 { kind: "take", tone: "neutral", x: `Recent picks — draft Score (value vs. where he went)` },
-                { kind: "playertable", cols: ["pick", "pos", "name", "drafter", "adp", "score", "valread"], players: picks.slice(-22).map((pk, i) => { const oo = Math.max(0, picks.length - Math.min(22, picks.length)) + i; const pp = players[pk]; if (!pp) return null; const gap = pp.adp != null ? Math.round((oo + 1) - pp.adp) : 0; const vr = gap >= 8 ? { t: "steal", c: "#5FD0A8" } : gap <= -8 ? { t: "reach", c: "#F2655C" } : { t: "fair", c: "var(--mut)" }; const mine = teamAt(oo) === userIdx; return { ...pp, pickNo: oo + 1, pickScore: (graded[oo] ? graded[oo].val : pickValue(pp, oo, cfg)), drafter: mine ? "You" : (TEAM_NAMES[teamAt(oo)] || `Team ${teamAt(oo) + 1}`), valRead: vr, rec: mine, star: mine }; }).filter(Boolean).reverse() },
+                { kind: "playertable", cols: ["pick", "pos", "name", "drafter", "adp", "score", "valread"], players: picks.slice(-22).map((pk, i) => { const oo = Math.max(0, picks.length - Math.min(22, picks.length)) + i; const pp = players[pk]; if (!pp) return null; const gap = pp.adp != null ? Math.round((oo + 1) - pp.adp) : 0; const vr = gap >= 8 ? { t: "steal", c: "#5FD0A8" } : gap <= -8 ? { t: "reach", c: "#F2655C" } : { t: "fair", c: "var(--mut)" }; const mine = teamAt(oo) === userIdx; return { ...pp, pickNo: oo + 1, pickScore: (graded[oo] ? graded[oo].val : pickValue(pp, oo, cfg)), drafter: mine ? "You" : teamFullLabel(teamAt(oo)), valRead: vr, rec: mine, star: mine }; }).filter(Boolean).reverse() },
                 { kind: "take", tone: "neutral", x: "Score = draft-capital value gained/lost vs. his market price (ADP), weighted by round — the same value the scorecard grades teams on. Positive = got him below cost; negative = paid up." },
               ]);
               return (
@@ -14513,7 +14576,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         // Headline: the value verdict, big and color-coded — this is the "what was this pick worth?" answer.
                         { kind: "take", tone: val.grade === "steal" ? "good" : val.grade === "reach" ? "bad" : "neutral", x: `${val.t.toUpperCase()} — ${rationale}` },
                         // Sub-line: who took him, at what pick, and their read (need/depth).
-                        { kind: "take", tone: "neutral", x: `${pickLabel(o)} · ${teamLabel}${demo ? ` — ${demo}` : ""}` },
+                        { kind: "take", tone: "neutral", x: `${pickLabel(o)} · ${mine ? "You" : teamFullLabel(forTeam)}${demo ? ` — ${demo}` : ""}` },
                         { kind: "kvtable", items: [
                           { k: "Pos rank", v: `${p.pos}${p.posRank ?? "—"}`, c: rankTierColor(p.pos, p.posRank) },
                           { k: "Proj pts", v: `${Math.round(p.pts || 0)}` },
@@ -14528,7 +14591,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         <div key={o} onMouseEnter={tip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "30px 1fr auto 34px", gap: "0 5px", alignItems: "center", fontSize: 11, cursor: "help", padding: "1px 0" }}>
                           <span className="num mut" style={{ fontSize: 8.5 }}>{pickLabel(o)}</span>
                           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={p.pos} /><b style={{ fontSize: 10.5 }}>{p.name}</b></span>
-                          <span className="mut" style={{ fontSize: 8.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 52, color: mine ? "var(--gold)" : "var(--mut)", fontWeight: mine ? 700 : 400 }}>{mine ? "You" : (TEAM_NAMES[forTeam] || `Team ${forTeam + 1}`).split(" ")[0]}</span>
+                          <span className="mut" title={mine ? "Your team" : teamFullLabel(forTeam)} style={{ fontSize: 8.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 52, color: mine ? "var(--gold)" : "var(--mut)", fontWeight: mine ? 700 : 400 }}>{mine ? "You" : (TEAM_NAMES[forTeam] || `Team ${forTeam + 1}`).split(" ")[0]}</span>
                           <span title={val.t} style={{ fontSize: 8.5, fontWeight: 700, color: val.c, textAlign: "right" }}>{val.grade === "steal" ? "steal" : val.grade === "reach" ? "reach" : "fair"}</span>
                         </div>
                       );
@@ -14548,7 +14611,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               const curTip = currentPred ? (e) => showTip(e, (() => {
                 const cAll = cur && cur.cands5 && cur.cands5.length ? cur.cands5 : null;
                 return [
-                  { kind: "take", tone: isYou ? "good" : "neutral", x: `${pickLabel(picks.length)} · ${isYou ? "YOUR PICK" : TEAM_NAMES[onClock]} — ${isYou ? "recommendation" : "engine expects"}` },
+                  { kind: "take", tone: isYou ? "good" : "neutral", x: `${pickLabel(picks.length)} · ${isYou ? "YOUR PICK" : teamFullLabel(onClock)} — ${isYou ? "recommendation" : "engine expects"}` },
                   ...(cAll ? [{ kind: "playertable", probLabel: "Picked", cols: ["prob", "name", "rank", "adp", "pts", "vbd"], players: cAll.map((c, ci) => ({ ...c.p, prob: c.prob, star: ci === 0, rec: ci === 0 })) }] : [{ kind: "playercard", p: currentPred }]),
                 ];
               })()) : undefined;
@@ -14559,7 +14622,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     {connected && (liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? <span className="num mut" style={{ fontSize: 13 }}>no timer</span> : clock <= 0 ? <span className="num" style={{ fontSize: 20, color: "var(--red)", fontWeight: 800, letterSpacing: ".02em" }}>overdue</span> : <span className="num" style={{ fontSize: 22, lineHeight: 1, color: clock <= 15 ? "var(--red)" : "var(--ink)", fontWeight: 800, letterSpacing: ".02em", background: clock <= 15 ? "rgba(242,101,92,.16)" : "rgba(255,255,255,.06)", padding: "3px 9px", borderRadius: 6, fontVariantNumeric: "tabular-nums" }}>{fmtClock(clock)}</span>)}
                   </div>
                   <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 3 }}>
-                    <span style={{ fontSize: 14, fontWeight: 800, color: isYou ? "var(--gold)" : "var(--ink)" }}>{isYou ? "YOU" : (TEAM_NAMES[onClock] || `Team ${onClock + 1}`).split(" ")[0]}</span>
+                    <span title={isYou ? "Your team" : teamFullLabel(onClock)} style={{ fontSize: 14, fontWeight: 800, color: isYou ? "var(--gold)" : "var(--ink)", cursor: "help" }}>{isYou ? "YOU" : (TEAM_NAMES[onClock] || `Team ${onClock + 1}`).split(" ")[0]}</span>
                     <span className="mut" style={{ fontSize: 9 }}>overall {picks.length + 1}</span>
                     {isYou && <span style={{ marginLeft: "auto", fontSize: 8.5, fontWeight: 700, color: "var(--gold)", background: "rgba(242,182,60,.14)", padding: "1px 6px", borderRadius: 4, textTransform: "uppercase", letterSpacing: ".04em" }}>Your pick</span>}
                   </div>
@@ -14661,7 +14724,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       const cands = step.cands5 && step.cands5.length ? step.cands5 : null;
                       const vShow = dynasty ? (p.value ?? p.vbd) : p.vbd;
                       const tip = (e) => showTip(e, [
-                        { kind: "take", tone: mine ? "good" : "neutral", x: `${pickLabel(step.o)} · ${mine ? "YOUR PICK" : TEAM_NAMES[step.t]}${cands ? " — likely options" : ""}` },
+                        { kind: "take", tone: mine ? "good" : "neutral", x: `${pickLabel(step.o)} · ${mine ? "YOUR PICK" : teamFullLabel(step.t)}${cands ? " — likely options" : ""}` },
                         ...(cands ? [{ kind: "playertable", probLabel: "Picked", cols: ["prob", "name", "rank", "adp", "pts", "vbd"], players: cands.map((c, ci) => ({ ...c.p, prob: c.prob, star: ci === 0, rec: ci === 0 })) }] : [{ kind: "playercard", p }]),
                       ]);
                       return (
@@ -15450,7 +15513,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               </div>
               {proj && (() => {
                 const ti = teamView === -1 ? userIdx : teamView;
-                const current = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => x.p && teamAt(x.o) === ti).map((x) => x.p);
+                // The team's real holdings — board picks PLUS anything they already own off-board (keepers,
+                // commissioner-forced picks). Deriving this from `picks` alone hid those players from the team
+                // that actually owns them.
+                const current = rostersByTeam[ti] || [];
                 const roster = railProj ? proj.rosters[ti] : current;
                 const { slots, bench } = lineupSlots(roster, cfg.sf);
                 const curSet = new Set(current.map((p) => p.id));
@@ -15474,8 +15540,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 // Exact league rank (1 = best) at each position for the VIEWED team, using the same shared quality
                 // scorer as everywhere else. This replaces the vague "strong/upgrade" tags with a real "3rd of 10"
                 // read the user asked for.
+                // Use each team's TRUE roster (picks + keepers + forced-ahead owned players), not just what's
+                // been drafted on the board — otherwise a commissioner-forced pick or an early keeper wouldn't
+                // count toward that team's positional strength even though they own the player.
                 const rostersAll = [];
-                for (let k = 0; k < TEAMS; k++) rostersAll.push(railProj && proj ? (proj.rosters[k] || []) : picks.map((pk, o) => (teamAt(o) === k ? players[pk] : null)).filter(Boolean));
+                for (let k = 0; k < TEAMS; k++) rostersAll.push(railProj && proj ? (proj.rosters[k] || []) : (rostersByTeam[k] || []));
                 const effReq = EFF_REQ(cfg); const flexSh = flexShareOf(cfg);
                 const replRail = slotBaselines(players, cfg, TEAMS);
                 const posAssess = ["QB", "RB", "WR", "TE"].map((pos) => {

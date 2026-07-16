@@ -53,6 +53,9 @@ export default class ErrorBoundary extends React.Component {
             <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
               <button onClick={this.hardReload} style={{ background: '#F2B63C', color: '#151002', border: 'none', borderRadius: 8, padding: '11px 20px', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>Refresh the page</button>
             </div>
+            <div style={{ fontSize: 12.5, lineHeight: 1.55, color: '#6b7683', marginTop: 14 }}>
+              If this problem persists, please restart your browser or open the website in a new tab.
+            </div>
             {this.state.detail && (
               <details style={{ marginTop: 18, textAlign: 'left', fontSize: 11, color: '#6b7683' }}>
                 <summary style={{ cursor: 'pointer', color: '#9AA7B5' }}>Error details (for support)</summary>
