@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28gd";
+const BUILD_TAG = "2026.06.28gf";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1768,7 +1768,11 @@ function buildPlayers(cfg) {
   // "Value" is the composite ranking number. In REDRAFT, value === VBD (you're just trying to win now). In
   // DYNASTY, value weighs age / long-term outlook on top of VBD, because you're also banking future seasons.
   // We store the multiplier on p.ageMult and the composite on p.value; p.vbd stays RAW.
-  const isDynasty = cfg.type === "dynasty" || cfg.type === "keeper";
+  // A ROOKIE-ONLY draft only exists inside a dynasty/keeper league — nobody runs a rookie draft for a redraft
+  // team. So it must use the same age-aware value model as dynasty: a 21-year-old's value isn't just this
+  // year's VBD, it's the multi-year asset. Treating it as redraft (value = VBD) was flatly wrong, and it made
+  // rookie boards rank an older/plug-in rookie over a younger one with far more long-term value.
+  const isDynasty = isDynastyCfg(cfg) || cfg.type === "rookie";
   if (isDynasty) {
     // Dynasty age curve, recalibrated against superflex-dynasty consensus (FantasyPros). The prior curve
     // peaked too early and declined too fast, which over-taxed PRIME elite players: a 27-yo elite WR
@@ -2480,7 +2484,9 @@ function setByeLoad(load, counts) { BYE_LOAD = load || {}; BYE_COUNTS = counts |
 // NOW so a high-leverage run doesn't freeze you out of it. Keyed by position; 0 = no scarcity pressure.
 let SCARCITY_PREM = { QB: 0, RB: 0, WR: 0, TE: 0 };
 function setScarcityPrem(m) { SCARCITY_PREM = m || { QB: 0, RB: 0, WR: 0, TE: 0 }; }
-function isDynastyCfg(cfg) { return !!(cfg && (cfg.type === "dynasty" || cfg.type === "keeper")); }
+// Rookie-only drafts are dynasty by definition (they only exist inside a dynasty/keeper league), so every
+// value/strength read should treat them with the age-aware dynasty model rather than raw this-year VBD.
+function isDynastyCfg(cfg) { return !!(cfg && (cfg.type === "dynasty" || cfg.type === "keeper" || cfg.type === "rookie")); }
 // Small bye-stack penalty: if this candidate would land on a bye week where the team ALREADY has one or more
 // starters at his position, and the team already has real depth there, nudge his score down a touch. Talent
 // dominates — this is deliberately small and never applies to a position you still need to fill.
@@ -3080,7 +3086,7 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
   const req = REQ_F(sf);
   const effReq = EFF_REQ(cfg);
   const taFlexShare = flexShareOf(cfg);
-  const taDynasty = cfg.type === "dynasty" || cfg.type === "keeper";
+  const taDynasty = isDynastyCfg(cfg);
   // per-position breakdown (own roster)
   const byPos = {};
   ["QB", "RB", "WR", "TE"].forEach((pos) => {
@@ -3387,7 +3393,7 @@ function leagueOverview(allPicks, players, teamAtFn, cfg) {
 // redraft production), league size, starters, flex and superflex.
 // Returns { QB:[...], RB:[...], WR:[...], TE:[...] } where index k = the typical value at slot k.
 function slotBaselines(pool, cfg, teamsN) {
-  const dynasty = cfg && (cfg.type === "dynasty" || cfg.type === "keeper");
+  const dynasty = cfg && (isDynastyCfg(cfg));
   const N = Math.max(2, teamsN || (cfg && cfg.teams) || 12);
   const out = {};
   POS.forEach((pos) => {
@@ -3517,7 +3523,7 @@ function posQualityTiers(rostersByTeam, cfg) {
   const n = rostersByTeam.length;
   const req = EFF_REQ(cfg);
   const fShare = flexShareOf(cfg);
-  const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
+  const dynasty = isDynastyCfg(cfg);
   // Slot baselines from every rostered player across the league. In a fully drafted league that IS the
   // startable universe, so the "typical team's WR1/WR2/WR3" it derives is exactly right. (Mid-draft it skews a
   // little optimistic, which is fine: every team is measured against the same baseline, so the RANKING — which
@@ -5982,6 +5988,14 @@ function QuickMockSetup({ onStart, onCancel }) {
           </div>
         </div>
 
+        {/* Sleeper connect is available on the Complex page (via the full setup form). Rather than duplicate the
+            connect flow here, offer it plainly on Simple and hand off — same result, one implementation. */}
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--line2)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <i className="ti ti-plug-connected" style={{ fontSize: 15, color: "var(--mut)" }} aria-hidden="true" />
+          <span className="mut" style={{ fontSize: 12, flex: "1 1 180px" }}>Want to mock your real league? Pull the settings straight from Sleeper.</span>
+          <button className="btn btn-mini" onClick={() => setMode("complex")} style={{ fontWeight: 700 }}>Connect a Sleeper league</button>
+        </div>
+
         <div style={{ display: "flex", gap: 8, marginTop: 22 }}>
           <button className="btn" onClick={onCancel}>Cancel</button>
           <div style={{ flex: 1 }} />
@@ -6269,7 +6283,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   // Rich floating tooltip (same card the draft app uses) for player and positional hovers in this hub.
   const [tip, setTip] = useState(null);
   const showTip = (e, content) => { try { setTip(positionTip(e.clientX, e.clientY, content)); } catch (_) {} };
-  const showPlayerTip = (e, p) => { if (p) showTip(e, makeOutlook(p, null, false, { dynasty: cfg && (cfg.type === "dynasty" || cfg.type === "keeper") })); };
+  const showPlayerTip = (e, p) => { if (p) showTip(e, makeOutlook(p, null, false, { dynasty: cfg && (isDynastyCfg(cfg)) })); };
   const hideTip = () => setTip(null);
 
   // Build the enriched, projection-scored player pool for THIS league's cfg, keyed by Sleeper id.
@@ -6365,7 +6379,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     return m;
   }, [perGamePool]);
 
-  const isDynasty = cfg && (cfg.type === "dynasty" || cfg.type === "keeper");
+  const isDynasty = cfg && (isDynastyCfg(cfg));
   const myTeam = data && data.teams ? data.teams.find((t) => t.rosterId === data.myRosterId) : null;
   const myRoster = myTeam ? resolve(myTeam.players) : [];
   const autoPosture = React.useMemo(() => {
@@ -6557,7 +6571,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   // -------- League-wide analytics (for the League tab) --------
   const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
   // For every team: resolve roster -> per-game optimal lineup projection ("power"), and per-position strength.
-  const dynastyLg = cfg.type === "dynasty" || cfg.type === "keeper";
+  const dynastyLg = isDynastyCfg(cfg);
   const effReqLg = EFF_REQ(cfg);
   const flexShLg = flexShareOf(cfg);
   // Replacement level per position from this league's whole player universe.
@@ -7410,6 +7424,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
   const [showMocks, setShowMocks] = useState(false); // standalone quick-mock history dropdown
   const [mockQ, setMockQ] = useState(""); // search within quick mocks
   const [mockTypeF, setMockTypeF] = useState("all"); // all | redraft | dynasty | bestball | rookie
+  const [mockStatusF, setMockStatusF] = useState("all"); // all | complete | progress — where a mock stands
   const [mockQbF, setMockQbF] = useState("all"); // all | 1qb | sf
   const [mockTeF, setMockTeF] = useState("all"); // all | std | tep
   // Pull the user's Sleeper leagues so we can surface any not yet imported into FDC, right in the leagues list.
@@ -7757,9 +7772,12 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
           </button>
           {showMocks && (() => {
             const qbOf = (c) => ((c.start && c.start.SUPER > 0) || c.sf || (c.start && c.start.QB >= 2)) ? "sf" : "1qb";
+            const totalOfMock = (m) => (m.total != null ? m.total : (((m.cfg && m.cfg.rounds) || 15) * ((m.cfg && m.cfg.teams) || 12)));
+            const isComplete = (m) => (m.complete != null ? !!m.complete : ((m.picks || []).length >= totalOfMock(m)));
             const filtered = funMocks.filter((m) => {
               const c = m.cfg || {};
               if (mockTypeF !== "all" && (c.type || "redraft") !== mockTypeF) return false;
+              if (mockStatusF !== "all") { const done = isComplete(m); if ((mockStatusF === "complete") !== done) return false; }
               if (mockQbF !== "all" && qbOf(c) !== mockQbF) return false;
               if (mockTeF !== "all") { const isTep = c.tePremMult > 0; if ((mockTeF === "tep") !== isTep) return false; }
               if (mockQ.trim()) { const q = mockQ.toLowerCase(); const hay = `${m.name || ""} ${c.type || ""} ${c.teams || ""}`.toLowerCase(); if (!hay.includes(q)) return false; }
@@ -7777,6 +7795,12 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                   <input className="gs" style={{ width: "100%", paddingLeft: 30, paddingTop: 6, paddingBottom: 6, fontSize: 12.5 }} placeholder="Search mocks…" value={mockQ} onChange={(e) => setMockQ(e.target.value)} />
                   {mockQ.trim() && <button onClick={() => setMockQ("")} style={{ position: "absolute", right: 6, top: 5, background: "transparent", border: "none", color: "var(--mut)", cursor: "pointer", padding: 3 }} aria-label="Clear"><i className="ti ti-x" aria-hidden="true" /></button>}
                 </div>
+              </div>
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 6 }}>
+                <span className="mut" style={{ fontSize: 11, alignSelf: "center", marginRight: 2 }}>Status</span>
+                {chip("all", mockStatusF, setMockStatusF, "All")}
+                {chip("complete", mockStatusF, setMockStatusF, "Complete")}
+                {chip("progress", mockStatusF, setMockStatusF, "In progress")}
               </div>
               <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 6 }}>
                 <span className="mut" style={{ fontSize: 11, alignSelf: "center", marginRight: 2 }}>Type</span>
@@ -12200,6 +12224,78 @@ function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
 // mocks in THIS league's format — without leaving the draft. Focuses on what helps you right now: which
 // still-available players are going earlier/later than ADP, plus positional flow by round. Reuses the same
 // analyzeDraftTrends engine as the full Draft Trends page, but scoped to this format and this board.
+// Fix a specific earlier pick without undoing everything after it. Undo is last-in-first-out, so correcting a
+// mistake 15 picks back used to mean destroying 15 good picks to get there. This edits the one slot in place
+// and leaves the rest of the board untouched.
+function EditPicksModal({ picks, players, sortedAdp, draftedSet, userIdx, cfg, onClose, onApply }) {
+  const [sel, setSel] = useState(picks.length ? picks.length - 1 : 0); // default: the most recent pick
+  const [q, setQ] = useState("");
+  const [newId, setNewId] = useState(null);
+  const cur = players[picks[sel]];
+  const selTeam = teamAt(sel);
+  const selIsMine = selTeam === userIdx;
+  // Candidates: anyone still available, PLUS whoever currently occupies this slot (so he's visible/keepable).
+  const results = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    const out = [];
+    for (const p of sortedAdp) {
+      if (draftedSet.has(p.id) && p.id !== picks[sel]) continue;
+      if (term && !`${p.name} ${p.team} ${p.pos}`.toLowerCase().includes(term)) continue;
+      out.push(p);
+      if (out.length >= 60) break;
+    }
+    return out;
+  }, [q, sortedAdp, draftedSet, picks, sel]);
+  const chosen = newId != null ? players[newId] : null;
+  return (
+    <div className="modalbg" onClick={onClose}>
+      <div className="panel" style={{ maxWidth: 560, width: "100%", padding: 22, borderColor: "var(--gold)", position: "relative", maxHeight: "86vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+        <button onClick={onClose} aria-label="Close" style={{ position: "absolute", top: 10, right: 10, background: "transparent", border: "none", color: "var(--mut)", cursor: "pointer", padding: 6, fontSize: 16, lineHeight: 1 }}><i className="ti ti-x" aria-hidden="true" /></button>
+        <div className="disp" style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Edit a pick</div>
+        <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 14 }}>Correct a pick that was entered wrong — without undoing everything after it. Only this slot changes.</div>
+
+        <div style={{ marginBottom: 12 }}>
+          <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700, marginBottom: 5 }}>Which pick?</div>
+          <select className="gs" style={{ width: "100%", fontSize: 13, padding: "7px 9px" }} value={sel} onChange={(e) => { setSel(+e.target.value); setNewId(null); }}>
+            {picks.map((pk, o) => {
+              const p = players[pk];
+              const t = teamAt(o);
+              return <option key={o} value={o}>{pickLabel(o)} · {t === userIdx ? "You" : (TEAM_NAMES[t] || `Team ${t + 1}`)} — {p ? `${p.name} (${p.pos}${p.posRank || ""})` : "—"}</option>;
+            })}
+          </select>
+        </div>
+
+        <div style={{ background: "var(--panel2)", borderRadius: 8, padding: "9px 11px", marginBottom: 12, fontSize: 12.5 }}>
+          <span className="mut">Currently: </span>
+          {cur ? <><Dot pos={cur.pos} /><b>{cur.name}</b> <span className="mut">{cur.pos}{cur.posRank} · {cur.team}</span></> : <span className="mut">— empty —</span>}
+          <span className="mut"> · drafted by </span><b style={{ color: selIsMine ? "var(--gold)" : "var(--ink)" }}>{selIsMine ? "you" : teamFullLabel(selTeam)}</b>
+        </div>
+
+        <div style={{ marginBottom: 10 }}>
+          <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700, marginBottom: 5 }}>Replace with</div>
+          <input className="gs" style={{ width: "100%", fontSize: 13, padding: "7px 9px" }} placeholder="Search for a player…" value={q} onChange={(e) => setQ(e.target.value)} autoFocus />
+        </div>
+        <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--line2)", borderRadius: 8 }}>
+          {results.length ? results.map((p) => (
+            <div key={p.id} onClick={() => setNewId(p.id)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", cursor: "pointer", fontSize: 12.5, background: newId === p.id ? "rgba(242,182,60,.16)" : "transparent", borderLeft: newId === p.id ? "3px solid var(--gold)" : "3px solid transparent" }}>
+              <Dot pos={p.pos} />
+              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name} <span className="mut" style={{ fontSize: 10.5 }}>{p.pos}{p.posRank} · {p.team}</span></span>
+              <span className="num mut" style={{ fontSize: 10.5 }}>ADP {p.adp != null ? p.adp.toFixed(1) : "—"}</span>
+              {p.id === picks[sel] && <span className="mut" style={{ fontSize: 9, fontWeight: 700, marginLeft: 4 }}>current</span>}
+            </div>
+          )) : <div className="mut" style={{ padding: 12, fontSize: 12 }}>No available players match that search.</div>}
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginTop: 18, alignItems: "center" }}>
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <div style={{ flex: 1 }} />
+          {chosen && <span className="mut" style={{ fontSize: 11.5 }}>→ {chosen.name}</span>}
+          <button className="btn btn-gold" disabled={newId == null || newId === picks[sel]} onClick={() => onApply(sel, newId)}>Update pick</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 function InDraftTrends({ cfg, players, draftedSet, allLeagues, allFunMocks, onClose }) {
   const drafts = useMemo(() => {
     const key = formatKey(cfg);
@@ -12427,6 +12523,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // Recommendation hub: which of your upcoming picks the decision panel is focused on. null = your next pick.
   const [recPickSel, setRecPickSel] = useState(null); // overall index (0-based) of the pick to analyze
   const [recScope, setRecScope] = useState("mine");   // "Your decision" scope: "mine" (your picks) | "all" (every upcoming pick)
+  const [editPicksOpen, setEditPicksOpen] = useState(false); // Edit-picks modal: fix a specific earlier pick
+  // Keep the "Your decision" selection honest as the draft moves. Once the board passes the pick you had
+  // selected, that selection is stale — it was pinned to a pick that has already happened, which is why the
+  // panel appeared to lag a pick behind (still analyzing/highlighting the previous recommendation).
+  // In "your picks" scope we fall back to your next pick; in "all picks" scope we follow the board to whatever
+  // is now on the clock, which is what you'd expect when you're scouting the draft as it unfolds.
+  useEffect(() => {
+    if (recPickSel == null) return;
+    if (recPickSel >= picks.length) return; // still in the future — leave the user's choice alone
+    setRecPickSel(recScope === "all" ? picks.length : null);
+  }, [picks.length, recPickSel, recScope]);
   useEffect(() => { setRecPickSel(null); }, [picks.length]); // default to your next pick after any pick
   const [tip, setTip] = useState(null);
   const [copied, setCopied] = useState(false);
@@ -13120,14 +13227,34 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     if (advice.verdict) add(advice.verdict.id, "Top pick", "#d6aa4b", 0);
     // 2) the model's next-best alternatives (these ARE the shortlist to consider)
     (advice.alts || []).slice(0, 2).forEach((a) => add(a.id, "Consider", "#d6aa4b", 1));
-    // 3) a genuine positional run at a spot you still need to fill — flag the best body there
-    if (advice.run && needAt(advice.run.pos) && advice.bestNow[advice.run.pos]) {
-      add(advice.bestNow[advice.run.pos].id, `${POS_LABEL[advice.run.pos]} run — act now`, "#EF6A6A", 0.5);
+    // 3) a genuine positional run at a spot you still need to fill.
+    //    The run tag must land on a player you'd ACTUALLY want. `bestNow` is picked by raw VBD, which routinely
+    //    disagrees with the model's own shortlist — that's how a lesser RB ended up wearing a loud red
+    //    "RB run — act now" while the genuinely better RBs sat under a mild "Consider". Two rules fix it:
+    //      • only ever tag a run on a player who's already on the shortlist (the verdict or its alternatives),
+    //        so the tag can never point away from the better options, and
+    //      • if the shortlist already surfaces that position, the Consider/Top pick tag is doing the job — the
+    //        run is conveyed by the panel's run banner instead of a competing red tag on the same row.
+    if (advice.run && needAt(advice.run.pos)) {
+      const shortlist = [advice.verdict, ...(advice.alts || []).slice(0, 2)].filter(Boolean);
+      const runPos = advice.run.pos;
+      // The best shortlisted player at the running position, if any.
+      const runCand = shortlist.find((c) => c && c.pos === runPos);
+      // Only escalate to a red "act now" when the run is at a position you need AND the model's own top pick
+      // is NOT already that position — i.e. the run is a reason to deviate. Otherwise the shortlist covers it.
+      const topIsRunPos = advice.verdict && advice.verdict.pos === runPos;
+      // Colored like the rest of the shortlist (gold), NOT red. Red reads as "careful" — the wrong signal for a
+      // player the model is telling you to take. The urgency is in the words ("act now"), not an alarm color.
+      if (runCand && !topIsRunPos) add(runCand.id, `${POS_LABEL[runPos]} run — act now`, "#d6aa4b", 0.5);
     }
-    // 4) scarcity: a clearly-elite player at a need position who likely will NOT survive to your next pick
+    // 4) scarcity: a clearly-elite player at a need position who likely will NOT survive to your next pick.
+    //    This is a real, useful warning even for someone off the shortlist ("he won't be here next time"), but
+    //    it must never REPLACE a "Top pick"/"Consider" tag on a player the model is actively recommending —
+    //    that would swap a positive recommendation for an alarming red one on the same row.
+    const shortlistIds = new Set([advice.verdict, ...(advice.alts || []).slice(0, 2)].filter(Boolean).map((c) => c.id));
     POS.forEach((pos) => {
       const b = advice.bestNow[pos];
-      if (b && needAt(pos)) { const s = survOf(b.id); if (s != null && s <= 20 && b.adp <= pickNum + 6) add(b.id, "Won't last", "#EF6A6A", 0.7); }
+      if (b && needAt(pos) && !shortlistIds.has(b.id)) { const s = survOf(b.id); if (s != null && s <= 20 && b.adp <= pickNum + 6) add(b.id, "Won't last", "#EF6A6A", 0.7); }
     });
     // 5) standout VALUE within reach. True value = a player whose actual value (VBD rank) is
     // meaningfully better than where he's going (ADP) AND who is a top option available around
@@ -13178,7 +13305,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const posRankMine = useMemo(() => {
     const rosters = [];
     for (let i = 0; i < TEAMS; i++) rosters.push(teamsProj && proj ? proj.rosters[i] : (rostersByTeam[i] || []));
-    const eff = EFF_REQ(cfg); const fsh = flexShareOf(cfg); const dyn = cfg.type === "dynasty" || cfg.type === "keeper";
+    const eff = EFF_REQ(cfg); const fsh = flexShareOf(cfg); const dyn = isDynastyCfg(cfg);
     const repl = slotBaselines(players, cfg, TEAMS);
     const out = {};
     ["QB", "RB", "WR", "TE"].forEach((pos) => {
@@ -13557,6 +13684,34 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     return () => { alive = false; clearInterval(iv); };
   }, [sleeperLive, done, cfg, nameToId, hypoMode, hypoBase]);
 
+  // Which positions the team ON THE CLOCK can no longer draft, because the league sets an explicit maximum and
+  // they've hit it. Only meaningful when the league actually defines caps — most don't, and we don't want to
+  // invent restrictions. Used to mark the Draft button (and the roster read) so a blocked pick is obvious
+  // BEFORE you click, instead of silently bouncing you with a warning afterwards.
+  const cappedPos = useMemo(() => {
+    const out = {};
+    if (!cfg.caps) return out;
+    POS.forEach((pos) => {
+      const cap = cfg.caps[pos];
+      if (cap == null || cap === "" || +cap <= 0) return;
+      const n = (rostersByTeam[onClock] || []).filter((p) => p && p.pos === pos).length;
+      if (n >= +cap) out[pos] = +cap;
+    });
+    return out;
+  }, [cfg, rostersByTeam, onClock]);
+  // The same read for YOUR roster specifically — the "How you're doing" rail is always about your team, not
+  // whoever happens to be on the clock.
+  const myCapped = useMemo(() => {
+    const out = {};
+    if (!cfg.caps) return out;
+    POS.forEach((pos) => {
+      const cap = cfg.caps[pos];
+      if (cap == null || cap === "" || +cap <= 0) return;
+      const n = (rostersByTeam[userIdx] || []).filter((p) => p && p.pos === pos).length;
+      if (n >= +cap) out[pos] = +cap;
+    });
+    return out;
+  }, [cfg, rostersByTeam, userIdx]);
   const draftPlayer = (id) => {
     if (done || draftedSet.has(id) || (gated && onClock === userIdx)) return;
     const p = players[id];
@@ -13659,7 +13814,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // tilts the board toward players that fit your window. Most meaningful in dynasty, but a mild bias
   // applies in any league. Returns { lane, label, confidence, picksIn, tilt(pos,age)->multiplier }.
   const myWindow = useMemo(() => {
-    const isDyn = cfg.type === "dynasty" || cfg.type === "keeper";
+    const isDyn = isDynastyCfg(cfg);
     // Weight earlier picks more (they define your core). Use only skill positions with a known age.
     const aged = myCurrent.filter((p) => p.age && ["QB", "RB", "WR", "TE"].includes(p.pos));
     let wsum = 0, asum = 0;
@@ -14050,7 +14205,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     //   • DYNASTY/KEEPER accumulates long-term assets, so ADP value/efficiency matters more, but win-now still
     //     counts — a lighter tilt toward value (60/40 toward value).
     // This stops an "immense ADP value but middling projected finish" redraft team from grading out as an A+.
-    const dyn = cfg.type === "dynasty" || cfg.type === "keeper";
+    const dyn = isDynastyCfg(cfg);
     const wVal = dyn ? 0.60 : 0.35;
     const wPts = 1 - wVal;
     return Array.from({ length: TEAMS }, (_, i) => {
@@ -14231,6 +14386,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <i className="ti ti-arrow-back-up" style={{ fontSize: 13 }} aria-hidden="true" />Undo
           </button>
         )}
+        {!done && (
+          <button className="btn" onClick={() => setEditPicksOpen(true)} disabled={!picks.length}
+            title="Fix a specific pick without undoing everything after it"
+            style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <i className="ti ti-pencil" style={{ fontSize: 13 }} aria-hidden="true" />Edit picks
+          </button>
+        )}
         {!done && !hypoMode && sleeperLive && (
           <button onClick={startHypo}
             onMouseEnter={(e) => showTip(e, [
@@ -14335,7 +14497,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             {/* ===== ZONE 1: HOW YOU'RE DOING (table) ===== */}
             {(() => {
               const laneMap = { rebuild: { t: "Rebuild", c: "#5FD0A8", i: "ti-seedling" }, winnow: { t: "Win-now", c: "#F2655C", i: "ti-flame" }, balanced: { t: "Balanced", c: "var(--gold)", i: "ti-scale" }, undecided: { t: "Forming…", c: "var(--mut)", i: "ti-loader" } };
-              const isReDraft = !(cfg.type === "dynasty" || cfg.type === "keeper");
+              const isReDraft = !(isDynastyCfg(cfg));
               const laneKey = isReDraft ? "winnow" : (myWindow.decided ? myWindow.lane : "undecided");
               const lane = laneMap[laneKey] || laneMap.undecided;
               const showBuild = isReDraft || myWindow.decided;
@@ -14356,7 +14518,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 { kind: "playertable", cols: ["rank", "name", "pts"], players: standings.map((s) => ({ posRank: s.rank, pos: "", name: s.i === userIdx ? "YOUR TEAM" : TEAM_NAMES[s.i], pts: Math.round(s.pts), rec: s.i === userIdx, star: s.i === userIdx })) },
               ]) : undefined;
               // one row per position: quantity vs required, league rank, and a strength/weakness read BY RANK
-              const dynastyH = cfg.type === "dynasty" || cfg.type === "keeper";
+              const dynastyH = isDynastyCfg(cfg);
               const rows = ["QB", "RB", "WR", "TE"].map((pos) => {
                 const rk = posRankByPos && posRankByPos[pos] ? posRankByPos[pos] : null;
                 const need = req[pos] || 0, has = have[pos] || 0;
@@ -14403,10 +14565,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         return (
                           <div key={d.pos} onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "26px 40px 38px 44px minmax(0,1fr)", gap: "0 6px", alignItems: "center", cursor: "help", padding: "1.5px 4px", margin: "0 -4px", borderRadius: 5 }}>
                             <span style={{ fontSize: 11, fontWeight: 800, color: POS_COLOR[d.pos] }}>{d.pos}</span>
-                            <span style={{ fontSize: 10.5, display: "inline-flex", alignItems: "baseline", gap: 1, whiteSpace: "nowrap" }} title={d.deficit > 0 ? `Need ${Math.round(d.deficit)} more starter${Math.round(d.deficit) === 1 ? "" : "s"} at ${d.pos}` : d.filled ? `${d.pos} starters filled` : ""}>
-                              <span style={{ fontWeight: 800, color: d.deficit > 0 ? "#F2655C" : "var(--ink)" }}>{d.has}</span>
+                            <span style={{ fontSize: 10.5, display: "inline-flex", alignItems: "baseline", gap: 1, whiteSpace: "nowrap" }} title={myCapped[d.pos] != null ? `${d.pos} is FULL — league maximum of ${myCapped[d.pos]} reached. You can't draft another ${d.pos}.` : d.deficit > 0 ? `Need ${Math.round(d.deficit)} more starter${Math.round(d.deficit) === 1 ? "" : "s"} at ${d.pos}` : d.filled ? `${d.pos} starters filled` : ""}>
+                              <span style={{ fontWeight: 800, color: myCapped[d.pos] != null ? "#F2655C" : d.deficit > 0 ? "#F2655C" : "var(--ink)" }}>{d.has}</span>
                               <span className="mut" style={{ fontSize: 9 }}>/{d.need || 0}</span>
-                              {d.filled ? <i className="ti ti-circle-check-filled" style={{ fontSize: 9.5, color: "#5FD0A8", marginLeft: 2 }} aria-hidden="true" /> : d.deficit > 0 ? <i className="ti ti-alert-circle-filled" style={{ fontSize: 9.5, color: "#F2655C", marginLeft: 2 }} aria-hidden="true" /> : null}
+                              {myCapped[d.pos] != null ? <span style={{ fontSize: 7.5, fontWeight: 800, color: "#F2655C", background: "rgba(242,101,92,.16)", borderRadius: 3, padding: "0 3px", marginLeft: 3, letterSpacing: ".03em" }}>MAX</span>
+                                : d.filled ? <i className="ti ti-circle-check-filled" style={{ fontSize: 9.5, color: "#5FD0A8", marginLeft: 2 }} aria-hidden="true" /> : d.deficit > 0 ? <i className="ti ti-alert-circle-filled" style={{ fontSize: 9.5, color: "#F2655C", marginLeft: 2 }} aria-hidden="true" /> : null}
                             </span>
                             <span style={{ textAlign: "center", fontSize: 10.5, fontWeight: 700, color: d.rk ? d.read.c : "var(--mut)" }}>{d.rk ? `${d.rk.rank}/${d.rk.of}` : "—"}</span>
                             <span style={{ textAlign: "center", fontSize: 10, fontWeight: 800, color: d.read.c }}>{d.read.t}</span>
@@ -14432,7 +14595,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             })()}
             {/* ===== ZONE: DRAFT PULSE (best available + dynamic supply by position) ===== */}
             {(() => {
-              const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
+              const dynasty = isDynastyCfg(cfg);
               // Which metric ranks "best available" at each position (and the best-value footer). Defaults to
               // Value in dynasty (age-weighted, what matters long-term) and VBD in redraft (pure this-year points
               // over replacement); the user can override via the toggle. ADP ranks by market draft position.
@@ -14557,7 +14720,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
             {/* ===== ZONE 2: LAST PICKS ===== */}
             {(() => {
-              const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
+              const dynasty = isDynastyCfg(cfg);
               const recent = picks.slice(-6).map((pk, i) => ({ pk, o: picks.length - Math.min(6, picks.length) + i })).reverse();
               const moreTip = (e) => showTip(e, [
                 { kind: "take", tone: "neutral", x: `Recent picks — draft Score (value vs. where he went)` },
@@ -14655,7 +14818,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   {/* projected pick (with photo) + 3 alternatives */}
                   <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4, flex: 1 }}>
                     {(() => {
-                      const dyn = cfg.type === "dynasty" || cfg.type === "keeper";
+                      const dyn = isDynastyCfg(cfg);
                       if (!projPick) return <span className="mut" style={{ fontSize: 10 }}>—</span>;
                       const pp = projPick.p;
                       const vShowP = dyn ? (pp.value ?? pp.vbd) : pp.vbd;
@@ -14710,7 +14873,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             })()}
             {/* ===== ZONE 4: NEXT PICKS ===== */}
             {(() => {
-              const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
+              const dynasty = isDynastyCfg(cfg);
               // Use the full projected path (path[0] is the on-clock pick shown separately), so we can show a
               // deep look-ahead here regardless of the compact displayPath used elsewhere.
               const upSource = path.slice(1).filter((s) => s && s.o > picks.length && s.p);
@@ -15116,9 +15279,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               <i className="ti ti-star" style={{ fontSize: 15, fontWeight: queue.has(p.name) ? 700 : 400 }} aria-hidden="true" />
                             </button>
                             {!gone
-                              ? <button className={`btn btn-mini${onClock === userIdx ? " btn-gold" : ""}`} style={{ flexShrink: 0, border: onClock === userIdx ? "none" : "1.5px solid #fff", fontWeight: 700 }} onClick={() => draftPlayer(p.id)}>{onClock === userIdx ? "Draft" : "Pick"}</button>
+                              ? (cappedPos[p.pos] != null
+                                  ? <button className="btn btn-mini" disabled title={`Roster maximum reached — ${onClock === userIdx ? "your team has" : "this team has"} the league limit of ${cappedPos[p.pos]} at ${p.pos}. You can't draft another.`} style={{ flexShrink: 0, border: "1.5px solid #F2655C", background: "rgba(242,101,92,.16)", color: "#F2655C", fontWeight: 800, cursor: "not-allowed" }}>Max</button>
+                                  : <button className={`btn btn-mini${onClock === userIdx ? " btn-gold" : ""}`} style={{ flexShrink: 0, border: onClock === userIdx ? "none" : "1.5px solid #fff", fontWeight: 700 }} onClick={() => draftPlayer(p.id)}>{onClock === userIdx ? "Draft" : "Pick"}</button>)
                               : <span style={{ width: 38, flexShrink: 0 }} />}
-                            <span onClick={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: cfg.type === "dynasty" || cfg.type === "keeper", run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: cfg.type === "dynasty" || cfg.type === "keeper", run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseLeave={hideTip} style={{ cursor: "help", whiteSpace: "nowrap" }}>
+                            <span onClick={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: isDynastyCfg(cfg), run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: isDynastyCfg(cfg), run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseLeave={hideTip} style={{ cursor: "help", whiteSpace: "nowrap" }}>
                               <PosName p={p} /> <span className="mut">{p.team}</span>
                             </span>
                             {injInfo && <span onClick={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note }])} onMouseEnter={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note }])} onMouseLeave={hideTip}
@@ -15174,7 +15339,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 // ===== DECISION HUB — the money maker. Pick which upcoming pick to analyze, then see the
                 // Balanced and My-build recommendations stacked, with take-now-vs-wait per position, a
                 // recommendation duo (headshots), and a trend/needs/value-gap summary up top.
-                const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
+                const dynasty = isDynastyCfg(cfg);
                 // Which pick are we analyzing? Default = your next pick (or the current pick if you're up).
                 const myUpNext = onClock === userIdx ? picks.length : myNextOverall;
                 // The dropdown's pick list depends on scope: just YOUR picks, or EVERY upcoming pick (so you can
@@ -15549,7 +15714,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 // position strength strip (same read as the Show-my-team popup): combine quantity + quality
                 const req = REQ_F(cfg.sf);
                 const relI = posRel[ti] || {};
-                const dynastyRail = cfg.type === "dynasty" || cfg.type === "keeper";
+                const dynastyRail = isDynastyCfg(cfg);
                 // Draft score per player (for THIS team's picks) — the same decision-quality score as the
                 // scorecard, so the roster view can show how well each pick was made vs. the market.
                 const scoreById = {};
@@ -15720,7 +15885,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     const rankGrid = (() => {
                       const rostersAll = [];
                       for (let k = 0; k < TEAMS; k++) rostersAll.push(rostersByTeam[k] || []);
-                      const eff = EFF_REQ(cfg); const fsh = flexShareOf(cfg); const dyn = cfg.type === "dynasty" || cfg.type === "keeper";
+                      const eff = EFF_REQ(cfg); const fsh = flexShareOf(cfg); const dyn = isDynastyCfg(cfg);
                       const replGrid = slotBaselines(players, cfg, TEAMS);
                       const g = {};
                       POS.forEach((pos) => {
@@ -16069,7 +16234,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               const laneKey = (myWindow && myWindow.decided) ? myWindow.lane : "balanced";
               const laneLabel = { rebuild: "Rebuild / youth", winnow: "Win-now", balanced: "Balanced" }[laneKey];
               const finishRank = (proj && proj.rank && proj.rank[selTeam] != null) ? proj.rank[selTeam] : null;
-              const dyn = cfg.type === "dynasty" || cfg.type === "keeper";
+              const dyn = isDynastyCfg(cfg);
               // per-position standing (from this team's byPos + the league position tiers)
               const loSum = leagueOverview(picks, players, teamAt, cfg);
               const leagueTiers = (loSum && loSum.posTiers && loSum.posTiers[selTeam]) ? loSum.posTiers[selTeam] : null;
@@ -16164,7 +16329,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               </div>
               {myProjView && <div className="mut" style={{ fontSize: 11.5, marginBottom: 8 }}>Includes your {projectedAdds.length} most-likely future pick{projectedAdds.length !== 1 ? "s" : ""} (shown in gold) based on the engine's projection.</div>}
               {(() => {
-                const dynH = cfg.type === "dynasty" || cfg.type === "keeper";
+                const dynH = isDynastyCfg(cfg);
                 // Slot | photo | Player(+role) | Tm | Bye | Age | Rank | ADP | VBD | [Val] | Floor–Ceil | Proj
                 const LCOLS = dynH
                   ? "40px 28px minmax(0,1fr) 32px 30px 30px 44px 40px 40px 40px 74px 42px"
@@ -16361,7 +16526,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     const adv = mySelAdvice && mySelAdvice.verdict ? mySelAdvice : (myBalancedAdvice || null);
                     const list = adv && adv.verdict ? [adv.verdict, ...(adv.alts || [])].filter(Boolean).slice(0, 10) : [];
                     if (!list.length) return null;
-                    const dyn = cfg.type === "dynasty" || cfg.type === "keeper";
+                    const dyn = isDynastyCfg(cfg);
                     const survOf = (p) => (sims && sims.pct && sims.pct[0] && sims.pct[0][p.id] != null) ? sims.pct[0][p.id] : null;
                     const openTip = (p) => (e) => showTip(e, makeOutlook(p, sims, false, { pickNow: (myNextOv != null ? myNextOv + 1 : picks.length + 1), dynasty: dyn, scarcity: scarcityFor(p) }));
                     const pickNo = (myNextOv != null ? myNextOv + 1 : picks.length + 1);
@@ -16487,7 +16652,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               </div>
               )}
               {/* Bye-week outlook — below the outlook panel; redraft-focused, graceful when byes unannounced */}
-              <ByeWeekWidget roster={selRoster} req={REQ_F(isSuperflex(cfg))} isDynasty={cfg.type === "dynasty" || cfg.type === "keeper"} />
+              <ByeWeekWidget roster={selRoster} req={REQ_F(isSuperflex(cfg))} isDynasty={isDynastyCfg(cfg)} />
             </div>
               </div>
             </div>
@@ -17146,7 +17311,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
           <div className="panel" style={{ padding: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
-              <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{done ? "Final grades" : "Live grades"} <span className="mut" style={{ fontSize: 12 }} title={(cfg.type === "dynasty" || cfg.type === "keeper") ? "Dynasty leans on ADP value (long-term asset efficiency), with some weight on projected finish." : "Redraft leans on projected finish (win-now), with some weight on ADP value."}>{(cfg.type === "dynasty" || cfg.type === "keeper") ? "value-weighted · win-now aware" : "projected finish · value aware"}</span></div>
+              <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{done ? "Final grades" : "Live grades"} <span className="mut" style={{ fontSize: 12 }} title={(isDynastyCfg(cfg)) ? "Dynasty leans on ADP value (long-term asset efficiency), with some weight on projected finish." : "Redraft leans on projected finish (win-now), with some weight on ADP value."}>{(isDynastyCfg(cfg)) ? "value-weighted · win-now aware" : "projected finish · value aware"}</span></div>
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }}>
                 <span className="mut" style={{ fontSize: 11, alignSelf: "center", padding: "0 8px" }}>Sort</span>
                 <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: sumSort.key === "z" ? "var(--gold)" : "transparent", color: sumSort.key === "z" ? "#151002" : "var(--ink)", fontWeight: sumSort.key === "z" ? 700 : 400 }} onClick={() => setSumSort({ key: "z", dir: -1 })}>Grade</button>
@@ -17342,7 +17507,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const myRoster = (proj.rosters[userIdx] || []).filter(Boolean);
                 const req = REQ_F(cfg.sf);
                 const effReq = EFF_REQ(cfg);
-                const dyn = cfg.type === "dynasty" || cfg.type === "keeper";
+                const dyn = isDynastyCfg(cfg);
                 const fShareW = flexShareOf(cfg);
                 const replW = slotBaselines(players, cfg, TEAMS);
                 // 1) Weakest starting spot — the position where your best starter is thinnest vs the league.
@@ -17713,6 +17878,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         </div>
       )}
 
+      {editPicksOpen && <EditPicksModal picks={picks} players={players} sortedAdp={sortedAdp} draftedSet={draftedSet}
+        userIdx={userIdx} cfg={cfg} onClose={() => setEditPicksOpen(false)}
+        onApply={(o, newId) => { setPicks((prev) => { const next = prev.slice(); next[o] = newId; return next; }); setEditPicksOpen(false); }} />}
+
       {trendsOpen && <InDraftTrends cfg={cfg} players={players} draftedSet={draftedSet} allLeagues={allLeagues} allFunMocks={allFunMocks} onClose={() => setTrendsOpen(false)} />}
       {myTeamOpen && (() => {
         const currentRoster = picks.map((pk, o) => (teamAt(o) === userIdx ? players[pk] : null)).filter(Boolean);
@@ -18080,7 +18249,7 @@ function tradeValue(p, cfg) {
   if (!p) return 0;
   cfg = cfg || {};
   const sf = (cfg.start && cfg.start.SUPER > 0) || cfg.sf;
-  const dynasty = cfg.type === "dynasty" || cfg.type === "keeper";
+  const dynasty = isDynastyCfg(cfg);
   // NOTE: in dynasty, p.vbd is ALREADY age-adjusted in buildPlayers — do NOT re-apply a youth multiplier
   // here or older elites get double-penalized.
   let base = Math.max(0, p.vbd) * 0.9 + Math.max(0, p.pts) * 0.12;
@@ -18528,7 +18697,7 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
   const [vbScoring, setVbScoring] = useState(cfg.scoring && cfg.scoring.rec != null ? (cfg.scoring.rec >= 0.75 ? "ppr" : cfg.scoring.rec >= 0.25 ? "half" : "std") : "ppr");
   const [vbQb, setVbQb] = useState(((cfg.start && cfg.start.SUPER > 0) || cfg.sf) ? "sf" : "1qb");
   const [vbTep, setVbTep] = useState(cfg.tePremMult > 0 ? "tep" : "std");
-  const [vbType, setVbType] = useState(cfg.type === "dynasty" || cfg.type === "keeper" ? "dynasty" : "redraft");
+  const [vbType, setVbType] = useState(isDynastyCfg(cfg) ? "dynasty" : "redraft");
   const [vbTeams, setVbTeams] = useState(cfg.teams || 12);
   const [vbPos, setVbPos] = useState("ALL");
   const [vbSearch, setVbSearch] = useState("");
@@ -18598,7 +18767,7 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
           <div className="panel" style={{ padding: "8px 12px", marginBottom: 10, background: "var(--panel2)", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <i className="ti ti-adjustments" style={{ fontSize: 14, color: "var(--gold)" }} aria-hidden="true" />
             <span className="mut" style={{ fontSize: 11.5 }}>Values are set to this league's format:</span>
-            <span style={{ fontSize: 11.5, fontWeight: 600 }}>{rankSetLabel(formatKey(cfg))}{((cfg.start && cfg.start.SUPER > 0) || cfg.sf) ? " · QBs premium" : ""}{(cfg.type === "dynasty" || cfg.type === "keeper") ? " · youth-weighted" : ""}</span>
+            <span style={{ fontSize: 11.5, fontWeight: 600 }}>{rankSetLabel(formatKey(cfg))}{((cfg.start && cfg.start.SUPER > 0) || cfg.sf) ? " · QBs premium" : ""}{(isDynastyCfg(cfg)) ? " · youth-weighted" : ""}</span>
           </div>
           <div className="mut" style={{ fontSize: 12.5, marginBottom: 14 }}>Values are specific to <i>this</i> league's format — Superflex inflates QBs, TE-premium lifts tight ends, dynasty weights youth — so the same player is worth different amounts in different leagues. In production these blend live consensus from FantasyCalc, FantasyPros, and DraftSharks for your exact format and refresh daily. Hover for the full outlook.</div>
           <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
