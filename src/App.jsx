@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28gc";
+const BUILD_TAG = "2026.06.28gd";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2954,6 +2954,21 @@ function projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, forcedI
   return board;
 }
 
+// Full-draft projections are expensive (they simulate every remaining pick) and the UI asks for the SAME ones
+// several times per pick: the advice engine, the "your next pick" advice, and the decision panel each project
+// the same board. Recomputing them independently is a large part of why registering a pick could stall the UI.
+// This memoizes by (picks length + picks signature + the few args that change the result) and is cleared
+// whenever the board changes, so a repeat request within the same pick is free.
+const PROJ_CACHE = new Map();
+let PROJ_CACHE_KEY = "";
+const projCacheReset = (sig) => { if (sig !== PROJ_CACHE_KEY) { PROJ_CACHE.clear(); PROJ_CACHE_KEY = sig; } };
+const projMemo = (key, fn) => {
+  if (PROJ_CACHE.has(key)) return PROJ_CACHE.get(key);
+  const v = fn();
+  // Bound the cache: a handful of entries per pick is expected; anything more means the key isn't stable.
+  if (PROJ_CACHE.size < 64) PROJ_CACHE.set(key, v);
+  return v;
+};
 function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId, extend, targetOverall) {
   const TOTAL = totalOf(cfg), R = cfg.rounds, sf = cfg.sf;
   const dem = demand(sf);
@@ -12655,6 +12670,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     (forcedAhead || []).forEach((f) => { const p = players[f.id]; if (p && out[f.team] && !out[f.team].some((x) => x.id === p.id)) out[f.team].push(p); });
     return out;
   }, [picks, players, noCostByTeam, forcedAhead, liveSlots, cfg]);
+  // Forced-ahead picks keyed by their real overall slot, so the draft board can render them in place.
+  const forcedAheadByPick = useMemo(() => {
+    const m = {};
+    (forcedAhead || []).forEach((f) => { m[f.o] = f.id; });
+    return m;
+  }, [forcedAhead]);
   // Available players per position, best-first by VBD — powers the "scarcity" note in player blurbs (last
   // startable-tier guy on the board, steep drop to the next, etc.).
   const availByPos = useMemo(() => {
@@ -12891,7 +12912,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // a WR at +1 → your +2 analysis knows WR is deeper → it may pivot to RB/TE.
     const myProjectedByPos = { QB: 0, RB: 0, WR: 0, TE: 0 };
     if (isFuture) {
-      const proj = projectPath(players, sortedAdp, picks, userIdx, cfg, strat, null, true, atOverall);
+      // Same board + same team + same strategy + same target ⇒ same projection. adviceFor runs several times
+      // per pick (current advice, your-next-pick advice, the decision panel), so memoizing this turns N full
+      // draft projections into one.
+      projCacheReset(`${picks.length}:${picks[picks.length - 1] ?? "-"}:${strat}`);
+      const proj = projMemo(`path:${userIdx}:${forTeam}:${atOverall}:${strat}`, () => projectPath(players, sortedAdp, picks, userIdx, cfg, strat, null, true, atOverall));
       for (const step of proj) {
         if (step.o < atOverall && step.p) {
           goneSet.add(step.p.id);
@@ -13053,7 +13078,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // actually surfaces); anything below that reports no impact rather than paying for a projection nobody sees.
     const IMPACT_CANDIDATES = 4;
     const impacts = {};
-    [verdict, ...alts].slice(0, IMPACT_CANDIDATES).forEach((c) => { if (!c) return; const pr = projectAll(players, sortedAdp, picks, userIdx, cfg, strat, c.id); impacts[c.id] = { pts: pr.pts[userIdx], rank: pr.rank[userIdx] }; });
+    projCacheReset(`${picks.length}:${picks[picks.length - 1] ?? "-"}:${strat}`);
+    [verdict, ...alts].slice(0, IMPACT_CANDIDATES).forEach((c) => { if (!c) return; const pr = projMemo(`all:${userIdx}:${c.id}:${strat}`, () => projectAll(players, sortedAdp, picks, userIdx, cfg, strat, c.id)); impacts[c.id] = { pts: pr.pts[userIdx], rank: pr.rank[userIdx] }; });
     const recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
     let run = null;
     POS.forEach((pos) => { const c = recent.filter((x) => x === pos).length; if (c >= 3 && (!run || c > run.count)) run = { pos, count: c }; });
@@ -13143,15 +13169,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // so the hub coloring matches the team-analysis coloring exactly.
     const rosters = [];
     for (let i = 0; i < TEAMS; i++) {
-      rosters.push(teamsProj && proj ? proj.rosters[i] : picks.map((pk, o) => (teamAt(o) === i ? players[pk] : null)).filter(Boolean));
+      rosters.push(teamsProj && proj ? proj.rosters[i] : (rostersByTeam[i] || []));
     }
     return posQualityTiers(rosters, cfg).level;
-  }, [players, picks, cfg, teamsProj, proj, userIdx, liveSlots]);
+  }, [players, picks, cfg, teamsProj, proj, userIdx, liveSlots, rostersByTeam]);
   // Exact league rank (1 = best) for YOUR team at each position, plus your players per position — powers the
   // "How you're doing" positional-standing rail. Uses the same shared quality scorer as everything else.
   const posRankMine = useMemo(() => {
     const rosters = [];
-    for (let i = 0; i < TEAMS; i++) rosters.push(teamsProj && proj ? proj.rosters[i] : picks.map((pk, o) => (teamAt(o) === i ? players[pk] : null)).filter(Boolean));
+    for (let i = 0; i < TEAMS; i++) rosters.push(teamsProj && proj ? proj.rosters[i] : (rostersByTeam[i] || []));
     const eff = EFF_REQ(cfg); const fsh = flexShareOf(cfg); const dyn = cfg.type === "dynasty" || cfg.type === "keeper";
     const repl = slotBaselines(players, cfg, TEAMS);
     const out = {};
@@ -13160,9 +13186,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       out[pos] = { rank: scored.findIndex((x) => x.i === userIdx) + 1, of: TEAMS };
     });
     return out;
-  }, [players, picks, cfg, teamsProj, proj, userIdx, liveSlots]);
+  }, [players, picks, cfg, teamsProj, proj, userIdx, liveSlots, rostersByTeam]);
   const byPosMine = useMemo(() => {
-    const roster = teamsProj && proj ? (proj.rosters[userIdx] || []) : picks.map((pk, o) => (teamAt(o) === userIdx ? players[pk] : null)).filter(Boolean);
+    const roster = teamsProj && proj ? (proj.rosters[userIdx] || []) : (rostersByTeam[userIdx] || []);
     const m = { QB: [], RB: [], WR: [], TE: [] };
     roster.forEach((p) => { if (p && m[p.pos]) m[p.pos].push(p); });
     Object.keys(m).forEach((pos) => m[pos].sort((a, b) => ((b.vbd0 != null ? b.vbd0 : b.vbd) || 0) - ((a.vbd0 != null ? a.vbd0 : a.vbd) || 0)));
@@ -13624,7 +13650,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const defaultDir = (key) => (["adp", "consensus", "rank", "vbdTier", "adpTier", "age", "bye", "name"].includes(key) ? 1 : -1);
   const setSort = (key) => { setManualSort(true); setSortState((s) => (s.key === key ? { key, dir: -s.dir } : { key, dir: defaultDir(key) })); };
 
-  const myCurrent = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => x.p && teamAt(x.o) === userIdx).map((x) => x.p);
+  const myCurrent = rostersByTeam[userIdx] || [];
 
   // ---- CONTENTION WINDOW ("Your build" demographics) -----------------------------------------
   // Reads YOUR roster's age lean to infer your window: rebuild (young) / balanced / win-now (old).
@@ -15693,7 +15719,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     // Used by the "Rank" mode so each cell shows where that team stands at the position league-wide.
                     const rankGrid = (() => {
                       const rostersAll = [];
-                      for (let k = 0; k < TEAMS; k++) rostersAll.push(picks.map((pk, o) => (teamAt(o) === k ? players[pk] : null)).filter(Boolean));
+                      for (let k = 0; k < TEAMS; k++) rostersAll.push(rostersByTeam[k] || []);
                       const eff = EFF_REQ(cfg); const fsh = flexShareOf(cfg); const dyn = cfg.type === "dynasty" || cfg.type === "keeper";
                       const replGrid = slotBaselines(players, cfg, TEAMS);
                       const g = {};
@@ -15882,7 +15908,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         const selTeam = analysisTeam != null ? analysisTeam : userIdx;
         const isMe = selTeam === userIdx;
         // Build the selected team's drafted roster from picks.
-        const selRoster = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => x.p && teamAt(x.o) === selTeam).map((x) => x.p);
+        const selRoster = rostersByTeam[selTeam] || [];
         const posColor = { QB: POS_COLOR.QB, RB: POS_COLOR.RB, WR: POS_COLOR.WR, TE: POS_COLOR.TE };
         const ta = teamAnalysis(selRoster, cfg, isMe ? myWindow : null, isMe ? advice : null, path, { allPicks: picks, players, teamAtFn: teamAt, userIdx: selTeam });
         const myProjView = myTeamView === "projected";
@@ -16523,7 +16549,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     const owner = teamAt(o);              // who owns this pick now (after trades)
                     const traded = owner !== naturalOwner(o); // pick changed hands
                     const ownedByYou = owner === userIdx;  // you own it (natural OR traded-for)
-                    const realPk = picks[o];
+                    // A pick the commissioner forced into a FUTURE slot lives outside the dense `picks` array
+                    // (so it can't drag the board forward), but it IS a real, owned pick — it belongs in its
+                    // true cell on the board, not hidden until the draft catches up to it.
+                    const realPk = picks[o] != null ? picks[o] : (forcedAheadByPick[o] != null ? forcedAheadByPick[o] : undefined);
                     const keeperHere = realPk == null && keeperByPick[o] != null;
                     const isKeeper = (realPk != null && keeperByPick[o] === realPk) || keeperHere;
                     const isProjected = realPk == null && !keeperHere && projBoard && projBoard[o] != null;
@@ -16635,7 +16664,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(258px,1fr))", gap: 12 }}>
             {TEAM_NAMES.map((n, i) => {
-              const current = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => x.p && teamAt(x.o) === i).map((x) => x.p);
+              const current = rostersByTeam[i] || [];
               const roster = teamsProj ? proj.rosters[i] : current;
               const curSet = new Set(current.map((p) => p.id));
               const counts = { QB: 0, RB: 0, WR: 0, TE: 0 };
@@ -16824,7 +16853,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 // Helpers to build the "players behind the award" hover content.
                 // teamDrafted = ONLY players this team has actually drafted (what the count-based awards use).
                 // teamRoster  = projected full roster incl. future picks (only for lineup-based awards).
-                const teamDrafted = (ti) => picks.map((pk, o) => (teamAt(o) === ti ? players[pk] : null)).filter(Boolean);
+                const teamDrafted = (ti) => (rostersByTeam[ti] || []);
                 const teamRoster = (ti) => (proj && proj.rosters && proj.rosters[ti]) || teamDrafted(ti);
                 const teamStarters = (ti) => lineupSlots(teamRoster(ti), cfg.sf).slots.filter((s) => s.p).map((s) => ({ ...s.p, slot: s.slot }));
                 const teamValuePicks = (ti) => picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => teamAt(x.o) === ti && x.p).map((x) => ({ ...x.p, v: pickValue(x.p, x.o, cfg) })).sort((a, b) => b.v - a.v);
@@ -16860,7 +16889,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 let powerhouse = null;
                 for (let i = 0; i < TEAMS; i++) {
                   POS.forEach((pos) => {
-                    const arr = picks.map((pk, o) => teamAt(o) === i ? players[pk] : null).filter((p) => p && p.pos === pos).sort((a, b) => b.vbd - a.vbd);
+                    const arr = (rostersByTeam[i] || []).filter((p) => p && p.pos === pos).sort((a, b) => b.vbd - a.vbd);
                     if (arr.length >= 2) { const sc = arr[0].vbd + arr[1].vbd; if (!powerhouse || sc > powerhouse.sc) powerhouse = { i, pos, sc, names: `${arr[0].name.split(" ").slice(-1)} & ${arr[1].name.split(" ").slice(-1)}` }; }
                   });
                 }
@@ -17008,7 +17037,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>{summaryTeam == null || summaryTeam === userIdx ? "Your team" : `${TEAM_NAMES[summaryTeam]}`} <span className="mut" style={{ fontSize: 12 }}>{done ? "final" : "current + projected"}</span></div>
             {(() => {
               const ti = summaryTeam == null ? userIdx : summaryTeam;
-              const teamCurrent = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => x.p && teamAt(x.o) === ti).map((x) => x.p);
+              const teamCurrent = rostersByTeam[ti] || [];
               const curSet = new Set(teamCurrent.map((p) => p.id));
               const roster = done ? teamCurrent : proj.rosters[ti];
               const { slots, bench } = lineupSlots(roster, cfg.sf);
