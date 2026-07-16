@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28ga";
+const BUILD_TAG = "2026.06.28gb";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1079,6 +1079,10 @@ let LIVE_OVERLAY_REASON = null;  // if a per-format overlay was REJECTED, why (s
                                  // global pack — e.g. a redraft mock stuck on dynasty ADP — is diagnosable)
 let LIVE_OVERLAY_TARGET = null;  // the format the current draft SHOULD be showing
 let LIVE_OVERLAY_STATE = null;   // loading | applied | rejected | miss — where the per-draft overlay ended up
+// Picks a commissioner forced into FUTURE slots (e.g. filler picks to skip a round). They're real and must be
+// honored when the draft reaches them, but they must NOT drag the board forward past the pick actually on the
+// clock. Kept aside so the UI can surface them without corrupting the current-pick math.
+let LIVE_FORCED_AHEAD = null;
 export function isLivePackLoaded() { return LIVE_LOADED; }
 
 
@@ -2355,7 +2359,14 @@ const REQ_EFF = (sf) => {
 const EFF_REQ = (cfg) => {
   const sf = isSuperflex(cfg);
   const base = { QB: SPEC.QB, RB: SPEC.RB, WR: SPEC.WR, TE: SPEC.TE };
-  if (sf || (SPEC.SUPER || 0) > 0) base.QB += Math.max(1, SPEC.SUPER || 1); // superflex → count a 2nd QB starter
+  // A TRUE 2QB league (two dedicated QB slots) forces a second QB every week — it counts in full, and it's
+  // already in SPEC.QB. A SUPERFLEX/OP slot is QB-eligible but not QB-mandatory: managers overwhelmingly play a
+  // QB there, but not always (a thin QB room may flex an RB/WR instead). So a superflex slot counts as ~0.9 of
+  // a QB starter rather than a whole one. That's a small but real difference: 2QB should price QBs slightly
+  // higher than superflex, which previously scored identically because SUPER was folded in at full weight.
+  const superSlots = SPEC.SUPER || 0;
+  if (superSlots > 0) base.QB += superSlots * 0.9;
+  else if (sf && SPEC.QB < 2) base.QB += 0.9; // cfg flagged superflex without an explicit SUPER slot
   return base;
 };
 // How much extra starter capacity each position draws from shared FLEX/SUPER slots. FLEX is RB/WR/TE-eligible
@@ -2802,7 +2813,15 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
     }
   }
   const relevantSet = new Set(relevant.map((p) => p.id));
-  const pct = surv.map((arr) => { const m = {}; players.forEach((p) => (m[p.id] = relevantSet.has(p.id) ? Math.round((arr[p.id] / nSims) * 100) : 100)); return m; });
+  // Build the survival map over the RELEVANT players only. This used to walk the entire player pool (~3000)
+  // once per simulated pick and write "100" for everyone irrelevant — ~9k wasted writes on every single pick,
+  // synchronously, which is a big part of why registering a pick could stall the UI. Consumers read a missing
+  // key as "not at risk", so the default is handled at the read site instead of being materialized here.
+  const pct = surv.map((arr) => {
+    const m = {};
+    for (const p of relevant) m[p.id] = Math.round((arr[p.id] / nSims) * 100);
+    return m;
+  });
   POS.forEach((pos) => (expBest1[pos] /= nSims));
   // Most-frequent "best available" player per position at your next pick (expBestPlayer) and the pick after
   // that (expBestPlayer2) — the mode across sims, so we can name real players and show the drop-off chain.
@@ -4865,9 +4884,19 @@ export default function App() {
     setMockLeague({ id: mockId, mockOf: leagueId, name: `${lg.name} — mock`, cfg: { ...mcfg, mockSeed: (Math.random() * 1e9) | 0 }, picks: [], preds: [] });
     setDraftTab(null); setActiveId(mockId); setRoute("draft");
   };
+  // A mock only counts as real signal once enough of it has actually been drafted. A 10-pick mock says almost
+  // nothing about the market, and letting it feed trends/history would skew everything downstream. We record
+  // the flag at save time so every consumer can filter consistently.
+  const MOCK_MIN_PICKS_FOR_TRENDS = 24; // ~2 full rounds — enough for the board to mean something
   const saveMock = (picks, preds) => {
     if (!mockLeague) return;
-    const entry = { id: mockLeague.id, picks, preds, ran: new Date().toLocaleString(), at: Date.now(), n: picks.length };
+    const rounds = (mockLeague.cfg && mockLeague.cfg.rounds) || 15;
+    const teams = (mockLeague.cfg && mockLeague.cfg.teams) || 12;
+    const total = rounds * teams;
+    const pctDone = total > 0 ? picks.length / total : 0;
+    // Substantial = a real chunk of the board: at least ~2 rounds AND at least a quarter of the draft.
+    const substantial = picks.length >= MOCK_MIN_PICKS_FOR_TRENDS && pctDone >= 0.25;
+    const entry = { id: mockLeague.id, picks, preds, ran: new Date().toLocaleString(), at: Date.now(), n: picks.length, total, substantial, complete: picks.length >= total };
     if (mockLeague.mockOf == null) {
       // standalone "fun" mock — store in the global funMocks list, not under a league
       const e2 = { ...entry, name: mockLeague.name, cfg: mockLeague.cfg };
@@ -8828,13 +8857,22 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
   const [pullMsg, setPullMsg] = useState("");
   // Collect EVERY draft the account has — official league drafts and all mocks (league + standalone) —
   // each tagged with its format so we can filter to a comparable set.
+  // A mock only feeds trends if it's substantial (see saveMock: ~2+ rounds AND ≥25% of the board). A handful of
+  // picks isn't market signal and shouldn't move anything site-wide. Older saved mocks predate the flag, so we
+  // fall back to the same rule computed on the fly rather than silently trusting them.
+  const isSubstantialMock = (m, cfg) => {
+    if (!m || !m.picks) return false;
+    if (m.substantial != null) return !!m.substantial;
+    const total = (m.total != null) ? m.total : (((cfg && cfg.rounds) || 15) * ((cfg && cfg.teams) || 12));
+    return m.picks.length >= 24 && (total > 0 ? m.picks.length / total >= 0.25 : false);
+  };
   const allDrafts = useMemo(() => {
     const out = [];
     leagues.forEach((l) => {
       if (l.picks && l.picks.length >= 12) out.push({ id: l.id, name: l.name, cfg: l.cfg, picks: l.picks, kind: "official", fmt: formatKey(l.cfg), at: l.lastPickAt || null });
-      (l.mocks || []).forEach((m) => { if (m.picks && m.picks.length >= 12) out.push({ id: `${l.id}:${m.id}`, name: `${l.name} — mock`, cfg: l.cfg, picks: m.picks, kind: "mock", fmt: formatKey(l.cfg), at: m.at || null }); });
+      (l.mocks || []).forEach((m) => { if (isSubstantialMock(m, l.cfg)) out.push({ id: `${l.id}:${m.id}`, name: `${l.name} — mock`, cfg: l.cfg, picks: m.picks, kind: "mock", fmt: formatKey(l.cfg), at: m.at || null }); });
     });
-    (funMocks || []).forEach((m) => { if (m.picks && m.picks.length >= 12) out.push({ id: m.id, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks, kind: "mock", fmt: formatKey(m.cfg), at: m.at || null }); });
+    (funMocks || []).forEach((m) => { if (isSubstantialMock(m, m.cfg)) out.push({ id: m.id, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks, kind: "mock", fmt: formatKey(m.cfg), at: m.at || null }); });
     pulled.forEach((d) => out.push(d));
     return out;
   }, [leagues, funMocks, pulled]);
@@ -13349,10 +13387,28 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         if (d.draft_id) draftIdCache = d.draft_id;
         const mapped = [];
         const slotTeam = {};
+        // Place every pick at its TRUE slot (pick_no - 1), not at the next free index. A commissioner can force
+        // picks out of order — e.g. injecting filler picks into a later round to skip it — and Sleeper returns
+        // those alongside the real ones. Appending them sequentially made the board fast-forward past the round
+        // actually being drafted (showing 25.05 on the clock while Sleeper sat at 24.07). Honoring pick_no keeps
+        // every forced pick in its real place AND leaves the genuinely un-drafted slots empty, so "on the clock"
+        // resolves to where the draft actually is.
         for (const pk of (d.picks || [])) {
           const id = nameToId[normName(pk.name)];
-          if (id != null) { const o = mapped.length; if (pk.draft_slot) slotTeam[o] = pk.draft_slot - 1; mapped.push(id); }
+          if (id == null) continue;
+          const o = (pk.pick_no != null && pk.pick_no > 0) ? pk.pick_no - 1 : mapped.length;
+          if (pk.draft_slot) slotTeam[o] = pk.draft_slot - 1;
+          mapped[o] = id;
         }
+        // The array may now be sparse (holes where picks haven't happened). The rest of the app treats `picks`
+        // as dense up to the current pick, so trim to the first hole: everything before it is settled, and any
+        // forced pick beyond it stays out of the board until the draft actually reaches it.
+        let firstHole = 0;
+        while (firstHole < mapped.length && mapped[firstHole] != null) firstHole++;
+        const forcedAhead = [];
+        for (let i = firstHole; i < mapped.length; i++) if (mapped[i] != null) forcedAhead.push({ o: i, id: mapped[i] });
+        mapped.length = firstHole;
+        if (forcedAhead.length) LIVE_FORCED_AHEAD = forcedAhead; else LIVE_FORCED_AHEAD = null;
         setSyncState({ status: d.status, lastAt: Date.now(), error: null });
         setLiveSlots((prev) => { const next = JSON.stringify(slotTeam); return prev && JSON.stringify(prev) === next ? prev : slotTeam; });
         if (d.pickDeadlineMs && d.serverNowMs) setLiveClock({ deadlineMs: d.pickDeadlineMs, timerSec: d.pickTimerSec || 0, skewMs: Date.now() - d.serverNowMs });
@@ -13495,7 +13551,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       case "roleDesc": return p.role || "zzz";
       case "bye": return p.bye || 99;
       case "avail": return targetSurv ? (targetSurv[p.id] ?? -1) : -1;
-      case "nextpick": return sims && sims.pct[1] ? (sims.pct[1][p.id] ?? -1) : -1;
+      case "nextpick": return sims && sims.pct[1] ? (sims.pct[1][p.id] ?? 100) : -1; // not simulated ⇒ not at risk
       case "passYd": case "passTD": case "rushYd": case "rushTD": case "rec": case "recYd": case "recTD": case "tgt":
         return p.stats?.[key] || 0;
       default: return p.adp;
@@ -15354,7 +15410,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, padding: "3px 0", borderBottom: "1px solid #16203340", fontSize: 12.5 }}>
                       <span onClick={(e) => showTip(e, makeOutlook(a, sims, false))} onMouseEnter={(e) => showTip(e, makeOutlook(a, sims, false))} onMouseLeave={hideTip} style={{ cursor: "help", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={a.pos} />{a.name}</span>
                       <span style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
-                        <span className="mut num">{sims ? `${sims.pct[0][a.id]}%` : ""}{advice.impacts[a.id] ? ` • ${ordinal(advice.impacts[a.id].rank)}` : ""}</span>
+                        <span className="mut num">{sims && sims.pct[0] && sims.pct[0][a.id] != null ? `${sims.pct[0][a.id]}%` : ""}{advice.impacts[a.id] ? ` • ${ordinal(advice.impacts[a.id].rank)}` : ""}</span>
                         <button className="btn btn-mini" onClick={() => draftPlayer(a.id)}>Draft</button>
                       </span>
                     </div>
