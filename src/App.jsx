@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28fz";
+const BUILD_TAG = "2026.06.28ga";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3449,6 +3449,22 @@ function posQualityScore(playersAtPos, req, opts) {
   }
   return starters + depth;
 }
+// Label every player on a roster with the slot he ACTUALLY occupies in the optimal lineup — QB/RB2/WR3/FLEX/
+// SFLX/BN — by running the same optimizer the lineup pages use. This is what lets the score breakdown say
+// "this WR is genuinely your FLEX" instead of assuming a fixed shape: a team running two WRs at flex, or an
+// RB there, or a TE, all get labelled honestly.
+function slotLabelsFor(roster, cfg) {
+  const map = new Map();
+  try {
+    // lineupSlots reads the global SPEC, so make sure it reflects THIS league's starting requirements before
+    // resolving — otherwise a 3WR/2FLEX league could be labelled with another league's shape.
+    if (cfg && cfg.start) setSpec(cfg.start);
+    const { slots, bench } = lineupSlots(roster || [], cfg && cfg.sf);
+    slots.forEach((s) => { if (s.p) map.set(s.p.id != null ? s.p.id : s.p.sid, s.slot); });
+    (bench || []).forEach((p) => { if (p) map.set(p.id != null ? p.id : p.sid, "BN"); });
+  } catch (e) { /* optimizer unavailable — fall back to no labels */ }
+  return map;
+}
 // Rank every team at a position by the shared quality score, then bucket into terciles:
 // 0 = top third (green/strong), 1 = middle (amber), 2 = bottom third (red/weak). This is the single
 // source of truth for position coloring across the hub and the team-analysis tab.
@@ -3913,34 +3929,45 @@ function OutlookCard({ content }) {
           );
         }
         if (l.kind === "scoremath") {
-          // The positional-strength score, broken down player by player: what each guy is worth, what a TYPICAL
-          // team has at that same slot, and what he therefore contributed (+/-). Makes the single number on the
-          // grid fully auditable instead of a black box.
+          // The positional-strength score, broken down player by player: what each guy is worth and what he
+          // therefore added (+) or cost (−). The Slot column shows where he ACTUALLY lands in the optimal
+          // lineup (WR1/FLEX/SFLX/BN), resolved by the same optimizer the lineup pages use — so a team running
+          // two WRs at flex, or an RB there, reads honestly rather than against an assumed shape.
           const rows = l.rows || [];
-          const roleColor = (r) => r.role === "Bench" ? "var(--mut)" : r.role === "Depth" ? "#9BC4EA" : "var(--gold)";
+          const slotMap = l.slotMap || null;
+          const slotOf = (r) => {
+            if (!r.p) return "—";
+            if (slotMap) { const s = slotMap.get(r.p.id != null ? r.p.id : r.p.sid); if (s) return s; }
+            return r.role === "Bench" ? "BN" : r.role;
+          };
+          const slotColor = (s) => s === "BN" ? "var(--mut)" : s.startsWith("FLEX") || s === "SFLX" ? "#9BC4EA" : "var(--gold)";
           return (
             <div key={i} style={{ marginTop: 6 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "54px minmax(0,1fr) 42px 42px 46px", gap: "0 6px", fontSize: 8, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line2)", paddingBottom: 3, marginBottom: 3 }}>
-                <span>Role</span><span>Player</span>
+              <div style={{ display: "grid", gridTemplateColumns: "42px minmax(0,1fr) 44px 46px", gap: "0 6px", fontSize: 8, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line2)", paddingBottom: 3, marginBottom: 3 }}>
+                <span title="Where this player actually slots in the optimal lineup">Slot</span><span>Player</span>
                 <span style={{ textAlign: "right" }} title={l.dynasty ? "This player's dynasty value (age-aware)" : "This player's value over replacement"}>{l.dynasty ? "Value" : "VBD"}</span>
-                <span style={{ textAlign: "right" }} title="What a typical team in this league has at this slot">Typical</span>
-                <span style={{ textAlign: "right" }} title="What this player added (+) or cost (−) versus a typical team's player at this slot">Adds</span>
+                <span style={{ textAlign: "right" }} title="What this player added (+) or cost (−) versus what a typical team gets from that lineup spot">Adds</span>
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-                {rows.map((r, ri) => (
-                  <div key={ri} style={{ display: "grid", gridTemplateColumns: "54px minmax(0,1fr) 42px 42px 46px", gap: "0 6px", alignItems: "center", fontSize: 10.5 }}>
-                    <span style={{ fontSize: 8.5, fontWeight: 700, color: roleColor(r) }}>{r.role}</span>
-                    <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {r.p ? <><Dot pos={r.p.pos} />{r.p.name} <span className="mut" style={{ fontSize: 8.5 }}>{r.p.pos}{r.p.posRank}{r.p.age != null ? ` · ${r.p.age}y` : ""}</span></> : <span className="mut">— empty —</span>}
-                    </span>
-                    <span className="num" style={{ textAlign: "right", fontWeight: 700, color: vbdColor(r.val) }}>{r.val != null ? Math.round(r.val) : "—"}</span>
-                    <span className="num mut" style={{ textAlign: "right" }}>{r.typical != null ? Math.round(r.typical) : "—"}</span>
-                    <span className="num" style={{ textAlign: "right", fontWeight: 800, color: r.contrib > 0.5 ? "#5FD0A8" : r.contrib < -0.5 ? "#F2655C" : "var(--mut)" }}>{Math.abs(r.contrib) < 0.05 ? "0" : (r.contrib > 0 ? "+" : "") + r.contrib.toFixed(1)}</span>
-                  </div>
-                ))}
+                {rows.map((r, ri) => {
+                  const s = slotOf(r);
+                  return (
+                    <div key={ri} style={{ display: "grid", gridTemplateColumns: "42px minmax(0,1fr) 44px 46px", gap: "0 6px", alignItems: "center", fontSize: 10.5, opacity: s === "BN" ? 0.7 : 1 }}>
+                      <span className="disp" style={{ fontSize: 8.5, fontWeight: 800, color: slotColor(s) }}>{s}</span>
+                      <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {r.p ? <><Dot pos={r.p.pos} />{r.p.name}{" "}
+                          <span className="num" style={{ fontSize: 8.5, fontWeight: 700, color: rankTierColor(r.p.pos, r.p.posRank) }}>{r.p.pos}{r.p.posRank}</span>
+                          {r.p.age != null && <span className="mut" style={{ fontSize: 8.5 }}> · {r.p.age}y</span>}
+                        </> : <span className="mut">— empty —</span>}
+                      </span>
+                      <span className="num" style={{ textAlign: "right", fontWeight: 700, color: vbdColor(r.val) }}>{r.val != null ? Math.round(r.val) : "—"}</span>
+                      <span className="num" style={{ textAlign: "right", fontWeight: 800, color: r.contrib > 0.5 ? "#5FD0A8" : r.contrib < -0.5 ? "#F2655C" : "var(--mut)" }}>{Math.abs(r.contrib) < 0.05 ? "0" : (r.contrib > 0 ? "+" : "") + r.contrib.toFixed(1)}</span>
+                    </div>
+                  );
+                })}
               </div>
               <div className="mut" style={{ fontSize: 9, marginTop: 5, lineHeight: 1.35 }}>
-                Starters are compared 1-for-1 against a typical team's player at that slot. Bench players who'd never crack the lineup show <b style={{ color: "var(--mut)" }}>0</b> — they never subtract.
+                Each lineup spot is measured against what a typical team in this league gets there. Players who'd never crack the lineup show <b style={{ color: "var(--mut)" }}>0</b> — they never subtract.
               </div>
             </div>
           );
@@ -7071,7 +7098,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                                   { kind: "take", tone: rk <= Math.ceil(n / 3) ? "good" : rk > Math.ceil((2 * n) / 3) ? "bad" : "neutral", x: `${t.teamName} — ${pos}: ${ordinal(rk)} of ${n}  ·  score ${Math.round(ex.total)}` },
                                   { t: "How to read it", x: `Score = how much better (+) or worse (−) than a TYPICAL team this roster is at ${pos}. Each starting slot is compared to what a normal team has at that slot. Bench players who'd never start contribute 0 — they can't drag you down.` },
                                 ];
-                                if (ex.rows && ex.rows.length) lines.push({ kind: "scoremath", rows: ex.rows, dynasty: dynastyLg });
+                                if (ex.rows && ex.rows.length) lines.push({ kind: "scoremath", rows: ex.rows, dynasty: dynastyLg, slotMap: slotLabelsFor(t.roster || [], cfg) });
                                 showTip(e, lines);
                               };
                               return (
@@ -7151,7 +7178,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                     { kind: "take", tone: myPosRank[pos].rank <= Math.ceil(leagueTeams.length / 3) ? "good" : myPosRank[pos].rank > Math.ceil((2 * leagueTeams.length) / 3) ? "bad" : "neutral", x: `Your ${pos} — ${ordinal(myPosRank[pos].rank)} of ${myPosRank[pos].of} in the league${ex ? `  ·  score ${Math.round(ex.total)}` : ""}` },
                     { t: "How to read it", x: `Score = how much better (+) or worse (−) than a typical team you are at ${pos}. Bench players who'd never start contribute 0.` },
                   ];
-                  if (ex && ex.rows && ex.rows.length) lines.push({ kind: "scoremath", rows: ex.rows, dynasty: dynastyLg });
+                  if (ex && ex.rows && ex.rows.length) lines.push({ kind: "scoremath", rows: ex.rows, dynasty: dynastyLg, slotMap: slotLabelsFor((myLT && myLT.roster) || [], cfg) });
                   else lines.push({ t: "—", x: "None on your roster" });
                   showTip(e, lines);
                 };
