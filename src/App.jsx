@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28gm";
+const BUILD_TAG = "2026.06.28go";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2901,21 +2901,39 @@ function projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId)
   allKeeperAddIds().forEach((id) => { drafted[id] = 1; });
   let recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   let userFirstDone = false;
+  // How many picks ahead get FULL candidate scoring. Beyond this, rosters still fill (the projected lineup and
+  // finish need complete teams), but we just take the best legal body by ADP instead of scoring a candidate pool
+  // for every one. Round 22's exact projected pick has no real information in it — it's the product of twenty
+  // compounding guesses — yet scoring it cost the same as scoring the very next pick. This was the single
+  // biggest remaining cost: with ~14 projectAll calls per render and ~260 remaining picks each, that's ~3,600
+  // fully-scored simulated picks per render, which a trace attributed ~6.8s of FunctionCall time to.
+  const SCORE_AHEAD = 3 * TEAMS; // careful scoring for ~3 rounds out; cheap fill beyond
+  const scoreUntil = picks.length + SCORE_AHEAD;
+  // Maintain roster counts incrementally instead of recounting every team's whole roster on every one of the
+  // remaining picks (that was O(picks × roster size) of pure waste).
+  const liveCounts = rosters.map((r) => { const c = { QB: 0, RB: 0, WR: 0, TE: 0 }; r.forEach((p) => { if (c[p.pos] != null) c[p.pos]++; }); return c; });
   for (let o = picks.length; o < TOTAL; o++) {
     const t = teamAt(o), round = Math.floor(o / TEAMS) + 1, pickNum = o + 1;
-    const counts = { QB: 0, RB: 0, WR: 0, TE: 0 };
-    rosters[t].forEach((p) => { if (counts[p.pos] != null) counts[p.pos]++; });
+    const counts = liveCounts[t];
     let choice = null;
+    const cheap = o >= scoreUntil;
     if (t === userIdx) {
       if (!userFirstDone && forcedId != null && !drafted[forcedId]) { choice = players[forcedId]; }
+      else if (cheap) { const cands = legalCands(candidatesOf(sortedAdp, drafted, 8), counts, cfg); choice = cands[0] || null; }
       else { const cands = legalCands(candidatesOf(sortedAdp, drafted, 30), counts, cfg); let bs = -1e9; for (const c of cands) { const sc = userScore(c, counts, dem, strategy, sf, pickNum); if (sc > bs) { bs = sc; choice = c; } } }
       userFirstDone = true;
+    } else if (cheap) {
+      // Deep pick: best legal player by ADP. Fills the roster realistically at a fraction of the cost.
+      const cands = legalCands(candidatesOf(sortedAdp, drafted, 8), counts, cfg);
+      choice = cands[0] || null;
     } else {
       const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts, cfg);
       let bs = -1e9; for (let ri = 0; ri < cands.length; ri++) { const c = cands[ri]; const w = weightFor(c, pickNum, counts, round, recent, dem, R, ri); if (w > bs) { bs = w; choice = c; } }
     }
     if (!choice) break;
-    drafted[choice.id] = 1; rosters[t].push(choice); recent = [...recent.slice(-7), choice.pos];
+    drafted[choice.id] = 1; rosters[t].push(choice);
+    if (liveCounts[t][choice.pos] != null) liveCounts[t][choice.pos]++;
+    recent = [...recent.slice(-7), choice.pos];
   }
   const pts = rosters.map((r) => lineupPts(r, sf));
   const order = pts.map((v, i) => ({ v, i })).sort((a, b) => b.v - a.v);
@@ -14284,8 +14302,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         ctx = { need };
       }
       const val = pickValue(p, o, cfg, ctx);
+      // MARKET-ONLY value: the same score with the need term switched off.
+      //
+      // These are two genuinely different questions and they were being answered with one number:
+      //   • "Was this a good DECISION?" — market gap AND whether it filled a hole. That's `val`, and it's the
+      //     right basis for grading a team's draft.
+      //   • "Was this a STEAL or a REACH?" — purely how far the player fell past (or was taken ahead of) his
+      //     market price. Need has nothing to do with it.
+      // Using the decision score for the steals list made every round-1 pick look like a huge steal: early on
+      // every roster is empty, so every pick collects the full need bonus. A player taken exactly at his ADP
+      // scored ~+20 with ~+0.3 of that coming from the market — i.e. the list was ranking early picks, not
+      // steals. `mval` is what the steals/reaches lists use; `val` still grades the teams.
+      const mval = pickValue(p, o, cfg, null);
       if (p && p.pos && counts[t] && counts[t][p.pos] != null) counts[t][p.pos]++;
-      return { p, o, t, val };
+      return { p, o, t, val, mval };
     });
   }, [picks, players, cfg]);
   const valByTeamRaw = useMemo(() => Array.from({ length: TEAMS }, (_, i) => graded.filter((g) => g.t === i).reduce((s, g) => s + g.val, 0)), [graded]);
@@ -17319,9 +17349,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
           <div className="panel" style={{ padding: 14 }}>
             <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Biggest steals <span className="mut" style={{ fontSize: 12 }}>{summaryTeam == null ? "(league-wide, curve-weighted)" : `(${summaryTeam === userIdx ? "your team" : TEAM_NAMES[summaryTeam]})`}</span></div>
-            <SummaryTable rows={graded.filter((g) => summaryTeam == null || g.t === summaryTeam).slice().sort((a, b) => b.val - a.val).filter((g) => g.val > 0).slice(0, summaryExpand ? 40 : 8)} userIdx={userIdx} focusIdx={focusIdx} />
+            <SummaryTable rows={graded.filter((g) => summaryTeam == null || g.t === summaryTeam).slice().sort((a, b) => b.mval - a.mval).filter((g) => g.mval > 0).slice(0, summaryExpand ? 40 : 8).map((g) => ({ ...g, val: g.mval }))} userIdx={userIdx} focusIdx={focusIdx} />
             <div className="disp" style={{ fontSize: 18, fontWeight: 700, margin: "14px 0 8px" }}>Biggest reaches</div>
-            <SummaryTable rows={graded.filter((g) => summaryTeam == null || g.t === summaryTeam).slice().sort((a, b) => a.val - b.val).filter((g) => g.val < 0).slice(0, summaryExpand ? 40 : 8)} userIdx={userIdx} focusIdx={focusIdx} />
+            <SummaryTable rows={graded.filter((g) => summaryTeam == null || g.t === summaryTeam).slice().sort((a, b) => a.mval - b.mval).filter((g) => g.mval < 0).slice(0, summaryExpand ? 40 : 8).map((g) => ({ ...g, val: g.mval }))} userIdx={userIdx} focusIdx={focusIdx} />
             <button className="btn btn-mini" style={{ marginTop: 10, width: "100%" }} onClick={() => setSummaryExpand((s) => !s)}>{summaryExpand ? "Show less" : "Show more"}</button>
           </div>
 
