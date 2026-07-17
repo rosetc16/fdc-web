@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28gf";
+const BUILD_TAG = "2026.06.28gg";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3735,11 +3735,16 @@ function pickValue(p, overall, cfg, ctx) {
   const actual = overall + 1;            // where he was actually taken (1-based)
   const adp = Math.max(1, p.adp || actual); // where the market says he should have gone
   const w = roundWeight(actual);
-  // MARKET: how far off ADP, measured relative to draft position (a 10-spot miss at pick 5 is egregious; at
-  // pick 100 it's minor) but with a softened divisor so late-round misses don't self-suppress to nothing.
+  // MARKET: how far off ADP, measured relative to WHERE WE ARE in the draft.
+  //
+  // The denominator has to be the pick number, not the player's own ADP. Dividing by his ADP meant the worse
+  // the reach, the larger the denominator — which cancelled out the very thing we're measuring. Taking an
+  // ADP-30 player at 1.01 and taking an ADP-236 player at 1.01 both scored ~-85, even though the second is
+  // catastrophically worse. Normalizing by draft position fixes that: at pick 1 a 235-spot reach is 235x the
+  // pick's own cost and scores accordingly, while the same 10-spot miss at pick 100 stays minor.
   const spotGap = actual - adp;             // >0 = fell past ADP (steal), <0 = reached
-  const rel = spotGap / Math.max(16, adp * 0.85);
-  let market = rel * 62 * w;
+  const rel = spotGap / Math.max(12, actual * 0.85);
+  let market = rel * 42 * w;
   if (market < 0) market *= 1.2;            // reaches sting ~20% more than equal steals reward
   // NEED: reward filling a starting hole, mildly penalize stacking a position that's already full. Scaled by
   // round weight too — a needs-based decision matters more early. Capped so it shapes, never dominates, market.
@@ -12456,11 +12461,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [livePending, setLivePending] = useState(null); // {picks} captured from a real update while in hypo mode
   const [localAhead, setLocalAhead] = useState(0);      // # of manual picks made locally BEYOND Sleeper's live count (connected fail-safe)
   const [liveConflict, setLiveConflict] = useState(null); // {slot, localName, liveName} when Sleeper overrides a locally-made pick
-  const [paused, setPaused] = useState(false);
   const [fast, setFast] = useState(false);
   // Mocks wait for an explicit Start so you can watch them unfold. Official drafts run immediately.
   // Resuming an in-progress mock (picks already made) counts as already started.
+  // A REAL (non-mock) draft resumes live — its picks come from the feed or from you, so there's no engine to
+  // run away with the board. A MOCK is different: the engine drafts for everyone else on a timer, so if we
+  // auto-start it on resume, the timer fires the instant the room mounts and drafts a pick (or several) before
+  // you've even looked at the board — which is how a player you were about to take showed up as "already
+  // taken" right after reopening a saved mock. Reopened mocks therefore start PAUSED and wait for you to hit
+  // play; a fresh mock still waits for "Start mock" as before.
   const [started, setStarted] = useState((!isMock && !isDemo) || (league.picks || []).length > 0);
+  const [paused, setPaused] = useState(isMock && (league.picks || []).length > 0);
   // Free-demo welcome modal — explains it's redraft-only, 3 rounds, and that dynasty/custom/Sleeper are paid.
   const [showDemoIntro, setShowDemoIntro] = useState(isDemo);
   // How picks are entered. Mocks AND the demo default to AUTO (engine drafts opponents, stops on
@@ -12527,13 +12538,22 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // Keep the "Your decision" selection honest as the draft moves. Once the board passes the pick you had
   // selected, that selection is stale — it was pinned to a pick that has already happened, which is why the
   // panel appeared to lag a pick behind (still analyzing/highlighting the previous recommendation).
-  // In "your picks" scope we fall back to your next pick; in "all picks" scope we follow the board to whatever
-  // is now on the clock, which is what you'd expect when you're scouting the draft as it unfolds.
+  //
+  // Scope decides where it goes next:
+  //   • "all picks"  — you're scouting the room, so follow the board to whatever is now ON THE CLOCK
+  //                    (select 2.08, it gets drafted, you land on 2.09 — not jumped to your own next pick).
+  //   • "your picks" — clear the pin so it falls back to YOUR next pick, which is the whole point of that mode.
   useEffect(() => {
     if (recPickSel == null) return;
     if (recPickSel >= picks.length) return; // still in the future — leave the user's choice alone
-    setRecPickSel(recScope === "all" ? picks.length : null);
-  }, [picks.length, recPickSel, recScope]);
+    if (recScope === "all") {
+      // The pick now on the clock. Guard against running past the end of the draft.
+      const nextOnClock = picks.length;
+      setRecPickSel(nextOnClock < totalOf(cfg) ? nextOnClock : null);
+    } else {
+      setRecPickSel(null);
+    }
+  }, [picks.length, recPickSel, recScope, cfg]);
   useEffect(() => { setRecPickSel(null); }, [picks.length]); // default to your next pick after any pick
   const [tip, setTip] = useState(null);
   const [copied, setCopied] = useState(false);
@@ -13193,7 +13213,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     return { bestNow, waitCost, waitDetail, verdict, alts, impacts, run, myCounts, strat, expBestPlayer: simState.expBestPlayer || {} };
   };
   // Recommendation for the CURRENT pick on the clock (whoever it is).
-  const advice = useMemo(() => adviceFor(picks.length, onClock, sims), [sims, picks, players, sortedAdp, draftedSet, onClock, cfg, strategy, done, dem]);
+  // NOTE: adviceFor reads `strategy` internally (via strat = strategyOverride || strategy), so it MUST be a
+  // dependency here. Without it this memo served a stale recommendation after a strategy change, which is how
+  // the "On the clock" alternatives could disagree with the "Your decision" panel for the very same pick.
+  const advice = useMemo(() => adviceFor(picks.length, onClock, sims), [sims, picks, players, sortedAdp, draftedSet, onClock, cfg, strategy, done, dem, forcedAhead]);
   // The overall index of YOUR next pick (whether you're on the clock right now or it's coming up).
   const myPickOverall = onClock === userIdx ? picks.length : myNextOverall;
   // Recommendation for YOUR next pick under the SELECTED strategy (top line of the plaque) and, separately,
@@ -15360,7 +15383,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const selIsMine = selTeamIdx === userIdx;
                 const selTeamLabel = selIsMine ? "You" : (TEAM_NAMES[selTeamIdx] || `Team ${selTeamIdx + 1}`);
                 // Advice for the selected pick, from the perspective of the team that owns it.
-                const balAdv = (selOverall === myPickOverall && selIsMine && mySelAdvice) ? mySelAdvice : adviceFor(selOverall, selTeamIdx, sims, strategy);
+                // Advice for the selected pick, from the perspective of the team that owns it.
+                // IMPORTANT: when the panel is analyzing the pick that's actually ON THE CLOCK, reuse the very
+                // same `advice` object the "On the clock" widget renders. Recomputing it here produced a second,
+                // independently-projected result for the identical decision — which is why the two widgets could
+                // list different alternatives (and why a player tagged "Consider" on the board could be missing
+                // from this panel's list). One decision, one source of truth.
+                const balAdv = (selOverall === picks.length && advice) ? advice
+                  : (selOverall === myPickOverall && selIsMine && mySelAdvice) ? mySelAdvice
+                  : adviceFor(selOverall, selTeamIdx, sims, strategy);
                 const bldAdv = balAdv; // one unified model — the list follows the selected strategy
                 const survOf = (p) => {
                   if (selOverall === picks.length) return 100; // on the clock now — everyone's available
