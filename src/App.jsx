@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28gj";
+const BUILD_TAG = "2026.06.28gk";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4286,8 +4286,16 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .bteam.you{background:linear-gradient(180deg,rgba(242,182,60,.18),rgba(242,182,60,.05));border-color:var(--gold)}
 .bteam .nm{font-size:11px;font-weight:700;line-height:1.1;letter-spacing:.02em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .bteam .sub{font-size:8.5px;letter-spacing:.08em;text-transform:uppercase}
-.bcell{position:relative;border-radius:9px;padding:7px 8px;background:var(--panel2);border:1px solid var(--line);min-height:62px;height:auto;display:flex;flex-direction:column;gap:2px;cursor:default;transition:transform .1s,border-color .1s}
-.bcell:hover{transform:translateY(-1px);border-color:#4a4a3c}
+/* PERF — the draft board is ROUNDS×TEAMS cells (260 in a 26-round, 10-team league) and their classes change
+   constantly as the draft moves (you / oncl / upcoming / empty toggle on many cells at once). A transition
+   declared on the base rule means EVERY one of those class changes starts a transition on EVERY affected cell,
+   and each transition forces style recalc + layout for the life of the animation. A trace of a real draft
+   showed ~2,600 transitionrun/start/end triples (~7,800 events) — that, not the projection maths, is what made
+   the board lock the browser up for seconds at a time.
+   The transition now lives ONLY on :hover, so pointing at a cell still feels alive, but a pick landing repaints
+   the grid instantly instead of animating hundreds of cells. */
+.bcell{position:relative;border-radius:9px;padding:7px 8px;background:var(--panel2);border:1px solid var(--line);min-height:62px;height:auto;display:flex;flex-direction:column;gap:2px;cursor:default}
+.bcell:hover{transform:translateY(-1px);border-color:#4a4a3c;transition:transform .1s,border-color .1s}
 .bcell.you{background:linear-gradient(180deg,rgba(242,182,60,.13),rgba(242,182,60,.03));border-color:rgba(242,182,60,.55)}
 .bcell.you.oncl{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold) inset}
 .bcell.upcoming{border-style:dashed;border-color:rgba(242,182,60,.6)}
@@ -4297,7 +4305,10 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .bcell .posdot{display:inline-flex;align-items:center;justify-content:center;min-width:16px;width:auto;height:13px;text-align:center;font-size:8.5px;font-weight:800;border-radius:3px;padding:0 3px;color:#0a0a0a;line-height:1}
 .bcell .val{font-size:9px;font-weight:700;margin-top:1px}
 /* --- Availability tab (modern) --- */
-.availrow{display:grid;align-items:center;gap:10px;padding:9px 12px;border-radius:11px;background:var(--panel2);border:1px solid var(--line);transition:border-color .12s,transform .1s}
+/* Same reasoning as .bcell: the available-player list re-renders on every pick, so a base-rule transition
+   animates every visible row each time. Hover-only keeps the interaction feel without the per-pick cost. */
+.availrow{display:grid;align-items:center;gap:10px;padding:9px 12px;border-radius:11px;background:var(--panel2);border:1px solid var(--line)}
+.availrow:hover{transition:border-color .12s,transform .1s}
 .availrow:hover{border-color:#4a4a3c;transform:translateY(-1px)}
 .availrow .pname{font-weight:700;font-size:13.5px}
 .availpct{position:relative;height:30px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;overflow:hidden;border:1px solid var(--line)}
@@ -4328,13 +4339,27 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .team-row:hover{border-color:var(--gold)!important;background:var(--panel3)!important;transform:translateX(2px);box-shadow:-3px 0 0 0 var(--gold)}
 .team-row:hover .team-arrow{opacity:1;transform:translateX(0)}
 .team-arrow{opacity:0;transform:translateX(-4px);transition:opacity .15s, transform .15s}
-@media(max-width:1280px){.decision-grid{flex-direction:column!important}.decision-group-a,.decision-group-b{flex:1 1 auto!important}.decision-divider{display:none!important}}
+/* The tracker only stacks into a column on PHONES. On a narrow desktop window it stays a single scrollable row
+   (see the 641-1279px block below) — stacking there buried the board under a tall header. */
+@media(max-width:640px){.decision-grid{flex-direction:column!important}.decision-group-a,.decision-group-b{flex:1 1 auto!important}.decision-divider{display:none!important}}
 @media(max-width:980px){.cols{flex-direction:column}.rail{width:100%!important}.hero-h{font-size:38px}.myteam-grid{grid-template-columns:1fr!important;flex-direction:column!important}.needteam-row{grid-template-columns:1fr!important}.recap-row{grid-template-columns:1fr!important}.superlative-grid{grid-template-columns:repeat(2,1fr)!important}.decision-group-b{grid-template-columns:1fr 1fr!important}}
 @media(max-width:640px){.decision-group-a,.decision-group-b{grid-template-columns:1fr!important}}
+/* Narrow DESKTOP windows (not phones): the draft tracker's four zones used to wrap and stack on top of each
+   other, which makes the whole header unusable — you lose the at-a-glance dashboard and have to scroll past a
+   tall column to reach the board. Instead keep them on one row and let the row scroll sideways, so each zone
+   stays its readable width and you swipe/scroll to the ones you want. Phones still stack (see the 640px block),
+   because a horizontal scroll of full-width panels is worse on a small touch screen. */
+@media(min-width:641px) and (max-width:1279px){
+  .decision-grid{flex-direction:row!important;flex-wrap:nowrap!important;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin;padding-bottom:4px}
+  .decision-grid > *{flex:0 0 auto!important}
+  .decision-group-a,.decision-group-b{min-width:340px}
+}
 @media(max-width:900px){
   /* Home page: leagues + quick mocks sit side by side on desktop, but two columns aren't readable on a narrow
-     screen — stack them so each gets the full width, leagues first (they're first in the DOM). */
+     screen — stack them so each gets the full width, leagues first (they're first in the DOM). The vertical
+     rule between them makes no sense once stacked, so it's hidden. */
   .home-grid{grid-template-columns:1fr!important}
+  .home-divider{display:none!important}
 }
 @media(max-width:640px){
   .hero-h{font-size:30px!important}
@@ -7566,23 +7591,35 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         </div>
       )}
 
-      {/* ===== HOME GRID: Your leagues and Quick mocks SIDE BY SIDE =====
-           Stacked, the mocks section sank below a long league list and got lost. Side by side, both are visible
-           at a glance and the leagues' whitespace is put to use. `home-grid` collapses to a single column on
-           narrow screens (see the CSS), so mobile still reads top-to-bottom. ===== */}
-      <div className="home-grid" style={{ maxWidth: 1180, margin: "0 auto", padding: "0 20px 8px", display: "grid", gridTemplateColumns: "minmax(0,1.35fr) minmax(0,1fr)", gap: 22, alignItems: "start" }}>
-      {/* ===== YOUR LEAGUES — front and center, no dropdown. Each league: clear Draft room + My Team. ===== */}
-      <div data-teams-anchor style={{ minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3, flexWrap: "wrap" }}>
-          <i className="ti ti-clipboard-list" style={{ fontSize: 17, color: "var(--gold)" }} aria-hidden="true" />
-          <span className="disp" style={{ fontSize: 17, fontWeight: 800, color: "var(--ink)" }}>Your leagues</span>
-          {leagues.length > 0 && <span className="mut" style={{ fontSize: 11.5, fontWeight: 600, background: "var(--panel2)", borderRadius: 99, padding: "1px 8px" }}>{leagues.length}</span>}
-          <div style={{ flex: 1 }} />
-          <div style={{ width: 240, maxWidth: "100%" }}>
+      {/* ===== SLEEPER LINK — its own bar. It used to sit inside the "Your leagues" header, which made that
+           header read as two unrelated things at once and pushed the actual section title off to the left.
+           It's an account-level connection, not a property of the leagues list, so it lives on its own. ===== */}
+      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "0 20px 14px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 12, padding: "10px 14px" }}>
+          <i className="ti ti-plug-connected" style={{ fontSize: 16, color: sleeperLink.linked ? "#4FD1A1" : "var(--mut)" }} aria-hidden="true" />
+          <div style={{ minWidth: 0, flex: "1 1 auto" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>Sleeper account</div>
+            <div className="mut" style={{ fontSize: 11.5 }}>{sleeperLink.linked ? "Your leagues and live drafts sync automatically." : "Link Sleeper to pull in your real leagues and sync drafts live."}</div>
+          </div>
+          <div style={{ width: 240, maxWidth: "100%", flexShrink: 0 }}>
             <SleeperLinkControl link={sleeperLink.link} unlink={sleeperLink.unlink} linked={sleeperLink.linked} username={sleeperLink.username} />
           </div>
         </div>
-        <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Your real leagues — draft rooms, rosters, and season tools.</div>
+      </div>
+
+      {/* ===== HOME GRID: Your leagues and Quick mocks SIDE BY SIDE =====
+           Stacked, the mocks section sank below a long league list and got lost. Side by side, both are visible
+           at a glance. A ruled divider runs down the middle so the two zones read as genuinely separate things
+           rather than one long column of cards. `home-grid` collapses to a single column on narrow screens. */}
+      <div className="home-grid" style={{ maxWidth: 1180, margin: "0 auto", padding: "0 20px 8px", display: "grid", gridTemplateColumns: "minmax(0,1.3fr) 1px minmax(0,1fr)", gap: 24, alignItems: "start" }}>
+      {/* ===== YOUR LEAGUES — front and center, no dropdown. Each league: clear Draft room + My Team. ===== */}
+      <div data-teams-anchor style={{ minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginBottom: 2, flexWrap: "wrap" }}>
+          <i className="ti ti-clipboard-list" style={{ fontSize: 18, color: "var(--gold)", alignSelf: "center" }} aria-hidden="true" />
+          <span className="disp" style={{ fontSize: 20, fontWeight: 800, color: "var(--ink)", letterSpacing: ".01em" }}>Your leagues</span>
+          {leagues.length > 0 && <span className="mut" style={{ fontSize: 11.5, fontWeight: 700, background: "var(--panel2)", borderRadius: 99, padding: "1px 8px", alignSelf: "center" }}>{leagues.length}</span>}
+        </div>
+        <div className="mut" style={{ fontSize: 12, marginBottom: 12 }}>Draft rooms, rosters, and season tools for your real leagues.</div>
 
         {/* Search — helpful when you have a lot of leagues */}
         {totalLeagueCount > 4 && (
@@ -7777,18 +7814,19 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         </div>
       )}
 
-      {/* ===== STANDALONE QUICK MOCKS — its own clearly-separated zone, not a stray dropdown tacked on the ===== */}
-      {/* end of a long league list. These aren't tied to any league; they're saved to your account. */}
+      {/* the ruled line down the middle of the home grid (hidden when the grid collapses to one column) */}
+      <div className="home-divider" style={{ alignSelf: "stretch", background: "var(--line2)", width: 1, minHeight: 120 }} />
+
+      {/* ===== STANDALONE QUICK MOCKS — the right-hand zone. Not tied to any league; saved to your account. */}
       {funMocks && funMocks.length > 0 ? (
         <div style={{ minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3, flexWrap: "wrap" }}>
-            <i className="ti ti-dice-5" style={{ fontSize: 17, color: "#4FD1A1" }} aria-hidden="true" />
-            <span className="disp" style={{ fontSize: 17, fontWeight: 800, color: "var(--ink)" }}>Quick mocks</span>
-            <span className="mut" style={{ fontSize: 11.5, fontWeight: 600, background: "var(--panel2)", borderRadius: 99, padding: "1px 8px" }}>{funMocks.length}</span>
-            <div style={{ flex: 1 }} />
-            {onQuickMock && <button className="btn btn-mini btn-gold" onClick={onQuickMock} style={{ fontWeight: 700 }}><i className="ti ti-plus" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />New mock</button>}
+          <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginBottom: 2, flexWrap: "wrap" }}>
+            <i className="ti ti-dice-5" style={{ fontSize: 18, color: "#4FD1A1", alignSelf: "center" }} aria-hidden="true" />
+            <span className="disp" style={{ fontSize: 20, fontWeight: 800, color: "var(--ink)", letterSpacing: ".01em" }}>Quick mocks</span>
+            <span className="mut" style={{ fontSize: 11.5, fontWeight: 700, background: "var(--panel2)", borderRadius: 99, padding: "1px 8px", alignSelf: "center" }}>{funMocks.length}</span>
           </div>
-          <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Practice drafts that aren't tied to a league — reps, board testing, and what-ifs.</div>
+          <div className="mut" style={{ fontSize: 12, marginBottom: 12 }}>Practice reps that aren't tied to a league — test the board, try what-ifs.</div>
+          {onQuickMock && <button className="btn btn-gold" onClick={onQuickMock} style={{ width: "100%", fontWeight: 700, marginBottom: 8, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 }}><i className="ti ti-plus" style={{ fontSize: 13 }} aria-hidden="true" />Start a new mock</button>}
           <button onClick={() => setShowMocks((v) => !v)} style={{ width: "100%", cursor: "pointer", fontFamily: "inherit", background: "transparent", border: "1px solid var(--line)", borderRadius: 11, padding: "11px 14px", textAlign: "left", display: "flex", alignItems: "center", gap: 9, color: "var(--ink)" }}>
             <i className="ti ti-history" style={{ fontSize: 16, color: "#4FD1A1" }} aria-hidden="true" />
             <span className="disp" style={{ fontSize: 14, fontWeight: 800, flex: 1 }}>{showMocks ? "Hide saved mocks" : "Browse saved mocks"}</span>
@@ -7890,7 +7928,21 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
             );
           })()}
         </div>
-      ) : <div />}
+      ) : (
+        /* No saved mocks yet — the column still needs to say what it's FOR and offer the action, otherwise the
+           right half of the home page is just dead space to a new user. */
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginBottom: 2, flexWrap: "wrap" }}>
+            <i className="ti ti-dice-5" style={{ fontSize: 18, color: "#4FD1A1", alignSelf: "center" }} aria-hidden="true" />
+            <span className="disp" style={{ fontSize: 20, fontWeight: 800, color: "var(--ink)", letterSpacing: ".01em" }}>Quick mocks</span>
+          </div>
+          <div className="mut" style={{ fontSize: 12, marginBottom: 12 }}>Practice reps that aren't tied to a league — test the board, try what-ifs.</div>
+          <div style={{ border: "1px dashed var(--line2)", borderRadius: 12, padding: "18px 16px", textAlign: "center" }}>
+            <div className="mut" style={{ fontSize: 12.5, marginBottom: 10 }}>No mocks yet. Run one to test your board before draft day.</div>
+            {onQuickMock && <button className="btn btn-gold" onClick={onQuickMock} style={{ fontWeight: 700 }}><i className="ti ti-plus" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Start a mock</button>}
+          </div>
+        </div>
+      )}
       </div>
 
       <div style={{ maxWidth: 940, margin: "0 auto", padding: "26px 20px 64px", display: "flex", flexDirection: "column", gap: 22 }}>
