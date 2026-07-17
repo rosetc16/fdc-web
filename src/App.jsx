@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28go";
+const BUILD_TAG = "2026.06.28gp";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13296,10 +13296,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // eleven whole-draft simulations per pick, most of which are never looked at. That was a major contributor
     // to the UI stalling as a mock progressed. We now project only the top few candidates (the ones the panel
     // actually surfaces); anything below that reports no impact rather than paying for a projection nobody sees.
-    const IMPACT_CANDIDATES = 4;
+    // IMPACT ("projects you 3rd") costs a FULL draft projection per candidate. It was computed for 4 candidates
+    // inside every adviceFor call, and adviceFor runs several times per render — ~12 full projections per pick,
+    // roughly 12x the cost of the single projection that actually drives grades, standings and rosters. All to
+    // print one line next to a few names.
+    //
+    // Now: only the VERDICT gets an impact, and only when this advice is for the pick actually being decided
+    // (not the look-ahead calls). Alternatives show no impact line rather than paying for a projection nobody
+    // reads. Consumers already guard with `advice.impacts[x] && ...`, so a missing entry degrades cleanly.
     const impacts = {};
-    projCacheReset(`${picks.length}:${picks[picks.length - 1] ?? "-"}:${strat}`);
-    [verdict, ...alts].slice(0, IMPACT_CANDIDATES).forEach((c) => { if (!c) return; const pr = projMemo(`all:${userIdx}:${c.id}:${strat}`, () => projectAll(players, sortedAdp, picks, userIdx, cfg, strat, c.id)); impacts[c.id] = { pts: pr.pts[userIdx], rank: pr.rank[userIdx] }; });
+    if (verdict && !isFuture) {
+      projCacheReset(`${picks.length}:${picks[picks.length - 1] ?? "-"}:${strat}`);
+      const pr = projMemo(`all:${userIdx}:${verdict.id}:${strat}`, () => projectAll(players, sortedAdp, picks, userIdx, cfg, strat, verdict.id));
+      impacts[verdict.id] = { pts: pr.pts[userIdx], rank: pr.rank[userIdx] };
+    }
     const recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
     let run = null;
     POS.forEach((pos) => { const c = recent.filter((x) => x === pos).length; if (c >= 3 && (!run || c > run.count)) run = { pos, count: c }; });
@@ -13339,16 +13349,22 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const POS_LABEL = { QB: "QB", RB: "RB", WR: "WR", TE: "TE" };
   const highlights = useMemo(() => {
     const out = {}; // id -> { label, color, rank } ; lower rank = higher priority
-    if (!advice || done) return out;
+    // Highlight YOUR recommendation, not the on-clock team's. `advice` is computed for whoever is currently
+    // picking — so while other teams were on the clock the board highlighted THEIR guy (or, since he's usually
+    // gone the moment they pick, nothing at all). That's why the gold row flickered: it appeared only on the
+    // picks where you happened to be on the clock and vanished in between, looking random.
+    // mySelAdvice is always about your next pick, which is what the highlight should follow.
+    const adv = (mySelAdvice && mySelAdvice.verdict) ? mySelAdvice : advice;
+    if (!adv || done) return out;
     const pickNum = picks.length + 1;
     const add = (id, label, color, rank) => { if (id == null) return; if (!out[id] || rank < out[id].rank) out[id] = { label, color, rank }; };
     const survOf = (id) => (sims && sims.pct[0] ? sims.pct[0][id] : null);
-    const needAt = (pos) => advice.myCounts[pos] != null && (dem[pos] || 0) > 0 && advice.myCounts[pos] < (dem[pos] || 0);
+    const needAt = (pos) => adv.myCounts[pos] != null && (dem[pos] || 0) > 0 && adv.myCounts[pos] < (dem[pos] || 0);
 
     // 1) the model's single best pick right now
-    if (advice.verdict) add(advice.verdict.id, "Top pick", "#d6aa4b", 0);
+    if (adv.verdict) add(adv.verdict.id, "Top pick", "#d6aa4b", 0);
     // 2) the model's next-best alternatives (these ARE the shortlist to consider)
-    (advice.alts || []).slice(0, 2).forEach((a) => add(a.id, "Consider", "#d6aa4b", 1));
+    (adv.alts || []).slice(0, 2).forEach((a) => add(a.id, "Consider", "#d6aa4b", 1));
     // 3) a genuine positional run at a spot you still need to fill.
     //    The run tag must land on a player you'd ACTUALLY want. `bestNow` is picked by raw VBD, which routinely
     //    disagrees with the model's own shortlist — that's how a lesser RB ended up wearing a loud red
@@ -13357,14 +13373,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     //        so the tag can never point away from the better options, and
     //      • if the shortlist already surfaces that position, the Consider/Top pick tag is doing the job — the
     //        run is conveyed by the panel's run banner instead of a competing red tag on the same row.
-    if (advice.run && needAt(advice.run.pos)) {
-      const shortlist = [advice.verdict, ...(advice.alts || []).slice(0, 2)].filter(Boolean);
-      const runPos = advice.run.pos;
+    if (adv.run && needAt(adv.run.pos)) {
+      const shortlist = [adv.verdict, ...(adv.alts || []).slice(0, 2)].filter(Boolean);
+      const runPos = adv.run.pos;
       // The best shortlisted player at the running position, if any.
       const runCand = shortlist.find((c) => c && c.pos === runPos);
       // Only escalate to a red "act now" when the run is at a position you need AND the model's own top pick
       // is NOT already that position — i.e. the run is a reason to deviate. Otherwise the shortlist covers it.
-      const topIsRunPos = advice.verdict && advice.verdict.pos === runPos;
+      const topIsRunPos = adv.verdict && adv.verdict.pos === runPos;
       // Colored like the rest of the shortlist (gold), NOT red. Red reads as "careful" — the wrong signal for a
       // player the model is telling you to take. The urgency is in the words ("act now"), not an alarm color.
       if (runCand && !topIsRunPos) add(runCand.id, `${POS_LABEL[runPos]} run — act now`, "#d6aa4b", 0.5);
@@ -13373,9 +13389,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     //    This is a real, useful warning even for someone off the shortlist ("he won't be here next time"), but
     //    it must never REPLACE a "Top pick"/"Consider" tag on a player the model is actively recommending —
     //    that would swap a positive recommendation for an alarming red one on the same row.
-    const shortlistIds = new Set([advice.verdict, ...(advice.alts || []).slice(0, 2)].filter(Boolean).map((c) => c.id));
+    const shortlistIds = new Set([adv.verdict, ...(adv.alts || []).slice(0, 2)].filter(Boolean).map((c) => c.id));
     POS.forEach((pos) => {
-      const b = advice.bestNow[pos];
+      const b = adv.bestNow[pos];
       if (b && needAt(pos) && !shortlistIds.has(b.id)) { const s = survOf(b.id); if (s != null && s <= 20 && b.adp <= pickNum + 6) add(b.id, "Won't last", "#EF6A6A", 0.7); }
     });
     // 5) standout VALUE within reach. True value = a player whose actual value (VBD rank) is
@@ -13401,7 +13417,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const capped = {};
     ranked.forEach(([id, v]) => { capped[id] = v; });
     return capped;
-  }, [advice, sims, picks, draftedSet, sortedAdp, dem, done]);
+  }, [advice, mySelAdvice, sims, picks, draftedSet, sortedAdp, dem, done]);
 
   const insightTag = (p) => {
     if (done || draftedSet.has(p.id)) return null;
