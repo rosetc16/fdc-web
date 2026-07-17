@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28gl";
+const BUILD_TAG = "2026.06.28gm";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2926,8 +2926,17 @@ function projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId)
 // Projected full board: returns an array indexed by OVERALL pick number. Already-made picks
 // are left undefined (the real pick fills them); each remaining slot gets the engine's
 // most-likely player id, simulating the rest of the draft from the current state forward.
+// How far ahead the BOARD projects. Projecting every remaining slot in a deep league means simulating hundreds
+// of picks and then rendering a populated cell for each — and a projection 20 rounds out is worthless anyway
+// (every pick compounds the uncertainty of the ones before it). Capping to the next couple of rounds keeps the
+// genuinely useful part — "who's likely gone before my next pick or two" — and removes the bulk of the DOM and
+// style-recalc work that was making the board lag. Measured: a full-board projection put ~2,270 elements into a
+// single style recalculation.
+const BOARD_PROJ_ROUNDS = 2;
 function projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId) {
   const TOTAL = totalOf(cfg), R = cfg.rounds, sf = cfg.sf;
+  // Only project the next couple of rounds' worth of picks from where the draft actually is.
+  const PROJ_LIMIT = Math.min(TOTAL, picks.length + BOARD_PROJ_ROUNDS * TEAMS);
   const dem = demand(sf);
   const drafted = new Uint8Array(players.length);
   const counts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
@@ -2940,7 +2949,7 @@ function projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, forcedI
   // Pre-rank a deep fallback list (by ADP, then projection value) so we can always fill late slots
   // even when the top-of-board candidate window is exhausted in very deep (e.g. 26-round) drafts.
   const deepPool = sortedAdp.slice();
-  for (let o = picks.length; o < TOTAL; o++) {
+  for (let o = picks.length; o < PROJ_LIMIT; o++) {
     const t = teamAt(o), round = Math.floor(o / TEAMS) + 1, pickNum = o + 1;
     let choice = null;
     if (t === userIdx) {
@@ -7582,33 +7591,20 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         </div>
       </div>
 
-      {/* RESUME — in-progress drafts, right under the quick actions */}
-      {inProgress.length > 0 && (
-        <div style={{ maxWidth: 940, margin: "0 auto", padding: "0 20px 10px", display: "flex", flexDirection: "column", gap: 8 }}>
-          {inProgress.map((lg) => (
-            <button key={lg.id} className="bigact" onClick={() => onOfficial(lg.id)} style={{ width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1.5px solid var(--gold)", background: "linear-gradient(90deg, #1b1708, #141206)", borderRadius: 14, padding: "14px 18px", display: "flex", alignItems: "center", gap: 14 }}>
-              <div style={{ width: 38, height: 38, borderRadius: 19, background: "var(--gold)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className="ti ti-player-play-filled" style={{ fontSize: 18, color: "#151002" }} aria-hidden="true" /></div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Resume your draft</div>
-                <div className="mut" style={{ fontSize: 12.5 }}>{lg.name} — {lg.picks.length}/{(lg.cfg.teams || 12) * lg.cfg.rounds} picks made</div>
-              </div>
-              <span className="gold" style={{ fontSize: 13, fontWeight: 600, flexShrink: 0 }}>Continue →</span>
-            </button>
-          ))}
-        </div>
-      )}
+      {/* NOTE: the old "Resume your draft" banner lived here. It duplicated the in-progress state already shown
+          on the league card below (which has its own Resume button), so it was the same information twice —
+          just more words before you reach anything actionable. */}
 
-      {/* ===== SLEEPER LINK — its own bar. It used to sit inside the "Your leagues" header, which made that
-           header read as two unrelated things at once and pushed the actual section title off to the left.
-           It's an account-level connection, not a property of the leagues list, so it lives on its own. ===== */}
-      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "0 20px 14px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 12, padding: "10px 14px" }}>
-          <i className="ti ti-plug-connected" style={{ fontSize: 16, color: sleeperLink.linked ? "#4FD1A1" : "var(--mut)" }} aria-hidden="true" />
-          <div style={{ minWidth: 0, flex: "1 1 auto" }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>Sleeper account</div>
-            <div className="mut" style={{ fontSize: 11.5 }}>{sleeperLink.linked ? "Your leagues and live drafts sync automatically." : "Link Sleeper to pull in your real leagues and sync drafts live."}</div>
-          </div>
-          <div style={{ width: 240, maxWidth: "100%", flexShrink: 0 }}>
+
+      {/* Sleeper link — a quiet one-line strip. It's an account connection, not a headline feature, so it
+          shouldn't shout or carry a paragraph of explanation. */}
+      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "0 20px 16px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", borderBottom: "1px solid var(--line2)", paddingBottom: 12 }}>
+          <i className="ti ti-plug-connected" style={{ fontSize: 14, color: sleeperLink.linked ? "#4FD1A1" : "var(--mut)" }} aria-hidden="true" />
+          <span className="mut" style={{ fontSize: 12.5, flex: "1 1 auto", minWidth: 0 }}>
+            {sleeperLink.linked ? <>Sleeper connected — leagues sync automatically.</> : <>Connect Sleeper to pull in your real leagues.</>}
+          </span>
+          <div style={{ width: 220, maxWidth: "100%", flexShrink: 0 }}>
             <SleeperLinkControl link={sleeperLink.link} unlink={sleeperLink.unlink} linked={sleeperLink.linked} username={sleeperLink.username} />
           </div>
         </div>
@@ -7621,12 +7617,11 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
       <div className="home-grid" style={{ maxWidth: 1180, margin: "0 auto", padding: "0 20px 8px", display: "grid", gridTemplateColumns: "minmax(0,1.3fr) 1px minmax(0,1fr)", gap: 24, alignItems: "start" }}>
       {/* ===== YOUR LEAGUES — front and center, no dropdown. Each league: clear Draft room + My Team. ===== */}
       <div data-teams-anchor style={{ minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginBottom: 2, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginBottom: 12, flexWrap: "wrap" }}>
           <i className="ti ti-clipboard-list" style={{ fontSize: 18, color: "var(--gold)", alignSelf: "center" }} aria-hidden="true" />
           <span className="disp" style={{ fontSize: 20, fontWeight: 800, color: "var(--ink)", letterSpacing: ".01em" }}>Your leagues</span>
           {leagues.length > 0 && <span className="mut" style={{ fontSize: 11.5, fontWeight: 700, background: "var(--panel2)", borderRadius: 99, padding: "1px 8px", alignSelf: "center" }}>{leagues.length}</span>}
         </div>
-        <div className="mut" style={{ fontSize: 12, marginBottom: 12 }}>Draft rooms, rosters, and season tools for your real leagues.</div>
 
         {/* Search — helpful when you have a lot of leagues */}
         {totalLeagueCount > 4 && (
@@ -7827,12 +7822,11 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
       {/* ===== STANDALONE QUICK MOCKS — the right-hand zone. Not tied to any league; saved to your account. */}
       {funMocks && funMocks.length > 0 ? (
         <div style={{ minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginBottom: 2, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginBottom: 12, flexWrap: "wrap" }}>
             <i className="ti ti-dice-5" style={{ fontSize: 18, color: "#4FD1A1", alignSelf: "center" }} aria-hidden="true" />
             <span className="disp" style={{ fontSize: 20, fontWeight: 800, color: "var(--ink)", letterSpacing: ".01em" }}>Quick mocks</span>
             <span className="mut" style={{ fontSize: 11.5, fontWeight: 700, background: "var(--panel2)", borderRadius: 99, padding: "1px 8px", alignSelf: "center" }}>{funMocks.length}</span>
           </div>
-          <div className="mut" style={{ fontSize: 12, marginBottom: 12 }}>Practice reps that aren't tied to a league — test the board, try what-ifs.</div>
           {onQuickMock && <button className="btn btn-gold" onClick={onQuickMock} style={{ width: "100%", fontWeight: 700, marginBottom: 8, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 }}><i className="ti ti-plus" style={{ fontSize: 13 }} aria-hidden="true" />Start a new mock</button>}
           <button onClick={() => setShowMocks((v) => !v)} style={{ width: "100%", cursor: "pointer", fontFamily: "inherit", background: "transparent", border: "1px solid var(--line)", borderRadius: 11, padding: "11px 14px", textAlign: "left", display: "flex", alignItems: "center", gap: 9, color: "var(--ink)" }}>
             <i className="ti ti-history" style={{ fontSize: 16, color: "#4FD1A1" }} aria-hidden="true" />
@@ -16791,7 +16785,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
             <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 9, overflow: "hidden" }}>
               <button className="btn" style={{ border: "none", borderRadius: 0, background: !boardProj ? "rgba(242,182,60,.14)" : "transparent", color: !boardProj ? "var(--gold)" : "var(--mut)" }} onClick={() => setBoardProj(false)}>Current</button>
-              <button className="btn" style={{ border: "none", borderRadius: 0, background: boardProj ? "rgba(242,182,60,.14)" : "transparent", color: boardProj ? "var(--gold)" : "var(--mut)" }} onClick={() => setBoardProj(true)}>Projected</button>
+              <button className="btn" title={`Fill the next ${BOARD_PROJ_ROUNDS} rounds with the engine's projected picks. Beyond that the projection compounds too much uncertainty to be useful, so it stops there.`} style={{ border: "none", borderRadius: 0, background: boardProj ? "rgba(242,182,60,.14)" : "transparent", color: boardProj ? "var(--gold)" : "var(--mut)" }} onClick={() => setBoardProj(true)}>Projected · next {BOARD_PROJ_ROUNDS} rds</button>
             </div>
             <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, cursor: "pointer", color: showBoardVal ? "var(--ink)" : "var(--mut)" }}>
               <input type="checkbox" checked={showBoardVal} onChange={(e) => setShowBoardVal(e.target.checked)} style={{ accentColor: "var(--gold)", cursor: "pointer" }} />
