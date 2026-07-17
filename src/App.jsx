@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28gg";
+const BUILD_TAG = "2026.06.28gh";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -7563,14 +7563,16 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
 
       {/* ===== YOUR LEAGUES — front and center, no dropdown. Each league: clear Draft room + My Team. ===== */}
       <div data-teams-anchor style={{ maxWidth: 940, margin: "0 auto", padding: "0 20px 8px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 9, flexWrap: "wrap" }}>
-          <i className="ti ti-clipboard-list" style={{ fontSize: 16, color: "var(--gold)" }} aria-hidden="true" />
-          <span className="disp" style={{ fontSize: 15, fontWeight: 800, color: "var(--ink)" }}>Your leagues</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3, flexWrap: "wrap" }}>
+          <i className="ti ti-clipboard-list" style={{ fontSize: 17, color: "var(--gold)" }} aria-hidden="true" />
+          <span className="disp" style={{ fontSize: 17, fontWeight: 800, color: "var(--ink)" }}>Your leagues</span>
+          {leagues.length > 0 && <span className="mut" style={{ fontSize: 11.5, fontWeight: 600, background: "var(--panel2)", borderRadius: 99, padding: "1px 8px" }}>{leagues.length}</span>}
           <div style={{ flex: 1 }} />
           <div style={{ width: 240, maxWidth: "100%" }}>
             <SleeperLinkControl link={sleeperLink.link} unlink={sleeperLink.unlink} linked={sleeperLink.linked} username={sleeperLink.username} />
           </div>
         </div>
+        <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Your real leagues — draft rooms, rosters, and season tools.</div>
 
         {/* Search — helpful when you have a lot of leagues */}
         {totalLeagueCount > 4 && (
@@ -7765,13 +7767,23 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         </div>
       )}
 
-      {/* ===== STANDALONE QUICK MOCKS — a dropdown below your leagues. These aren't tied to any league; ===== */}
-      {/* they're saved to your account so you can re-open or review them. */}
+      {/* ===== STANDALONE QUICK MOCKS — its own clearly-separated zone, not a stray dropdown tacked on the ===== */}
+      {/* end of a long league list. These aren't tied to any league; they're saved to your account. */}
       {funMocks && funMocks.length > 0 && (
         <div style={{ maxWidth: 940, margin: "0 auto", padding: "0 20px 8px" }}>
+          {/* hard visual break between "your real leagues" and "practice mocks" */}
+          <div style={{ borderTop: "1px solid var(--line2)", margin: "18px 0 14px" }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3, flexWrap: "wrap" }}>
+            <i className="ti ti-dice-5" style={{ fontSize: 17, color: "#4FD1A1" }} aria-hidden="true" />
+            <span className="disp" style={{ fontSize: 17, fontWeight: 800, color: "var(--ink)" }}>Quick mocks</span>
+            <span className="mut" style={{ fontSize: 11.5, fontWeight: 600, background: "var(--panel2)", borderRadius: 99, padding: "1px 8px" }}>{funMocks.length}</span>
+            <div style={{ flex: 1 }} />
+            {onQuickMock && <button className="btn btn-mini btn-gold" onClick={onQuickMock} style={{ fontWeight: 700 }}><i className="ti ti-plus" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />New mock</button>}
+          </div>
+          <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Practice drafts that aren't tied to a league — reps, board testing, and what-ifs.</div>
           <button onClick={() => setShowMocks((v) => !v)} style={{ width: "100%", cursor: "pointer", fontFamily: "inherit", background: "transparent", border: "1px solid var(--line)", borderRadius: 11, padding: "11px 14px", textAlign: "left", display: "flex", alignItems: "center", gap: 9, color: "var(--ink)" }}>
-            <i className="ti ti-dice-5" style={{ fontSize: 16, color: "#4FD1A1" }} aria-hidden="true" />
-            <span className="disp" style={{ fontSize: 14, fontWeight: 800, flex: 1 }}>Quick mocks</span>
+            <i className="ti ti-history" style={{ fontSize: 16, color: "#4FD1A1" }} aria-hidden="true" />
+            <span className="disp" style={{ fontSize: 14, fontWeight: 800, flex: 1 }}>{showMocks ? "Hide saved mocks" : "Browse saved mocks"}</span>
             <span className="mut" style={{ fontSize: 12 }}>{funMocks.length} saved</span>
             <i className={`ti ti-chevron-${showMocks ? "up" : "down"}`} style={{ fontSize: 16, color: "var(--mut)" }} aria-hidden="true" />
           </button>
@@ -12544,6 +12556,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   //                    (select 2.08, it gets drafted, you land on 2.09 — not jumped to your own next pick).
   //   • "your picks" — clear the pin so it falls back to YOUR next pick, which is the whole point of that mode.
   useEffect(() => {
+    if (recScope === "current") return; // always live — nothing to keep in sync
     if (recPickSel == null) return;
     if (recPickSel >= picks.length) return; // still in the future — leave the user's choice alone
     if (recScope === "all") {
@@ -15373,7 +15386,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const scopeList = recScope === "all" ? allList : mineList;
                 // Ensure the on-the-board pick is present at the top of the list.
                 const myUpcoming = (scopeList.some((p) => p.o === picks.length) ? scopeList : [boardPickEntry, ...scopeList]);
-                const selOverall = recPickSel != null ? recPickSel : (myUpNext != null ? myUpNext : (myUpcoming[0] ? myUpcoming[0].o : null));
+                // "Current pick" is a LIVE lock, not a selection: it always resolves to whatever is on the clock
+                // right now and follows the board as it moves, so there's nothing stale to go wrong. The other
+                // two scopes keep the existing behaviour — an explicit choice, falling back to your next pick.
+                const selOverall = recScope === "current"
+                  ? picks.length
+                  : (recPickSel != null ? recPickSel : (myUpNext != null ? myUpNext : (myUpcoming[0] ? myUpcoming[0].o : null)));
                 if (selOverall == null) return <div className="tickcard" style={{ padding: 12 }}><span className="mut" style={{ fontSize: 12 }}>No upcoming picks to analyze.</span></div>;
                 const onClockNow = selOverall === picks.length && onClock === userIdx;
                 const isBoardPick = selOverall === picks.length; // the pick currently ON THE BOARD
@@ -15556,25 +15574,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
                 return (
                   <div data-tour="decision" className="tickcard" style={{ padding: "11px 13px", border: "1.5px solid var(--gold)", background: "linear-gradient(165deg,rgba(30,34,44,1),rgba(22,26,34,1))" }}>
-                    {/* header + scope toggle + pick selector dropdown */}
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 7, flexWrap: "wrap" }}>
+                    {/* header + three-way scope toggle */}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
                       <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", fontWeight: 800, display: "flex", alignItems: "center", gap: 5 }}><i className="ti ti-bulb" style={{ fontSize: 13 }} aria-hidden="true" />{selIsMine ? "Your decision" : `${selTeamLabel}'s decision`}</div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                        <div style={{ display: "inline-flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--line)" }}>
-                          <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", padding: "3px 8px", fontSize: 10, background: recScope === "mine" ? "var(--gold)" : "transparent", color: recScope === "mine" ? "#151002" : "var(--ink)", fontWeight: recScope === "mine" ? 700 : 400 }} onClick={() => { setRecScope("mine"); setRecPickSel(null); }}>Your picks</button>
-                          <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", padding: "3px 8px", fontSize: 10, background: recScope === "all" ? "var(--gold)" : "transparent", color: recScope === "all" ? "#151002" : "var(--ink)", fontWeight: recScope === "all" ? 700 : 400 }} onClick={() => setRecScope("all")}>All picks</button>
-                        </div>
-                        {myUpcoming.length > 0 && (
-                          <select value={selOverall} onChange={(e) => setRecPickSel(+e.target.value)} style={{ background: "var(--panel3)", color: "var(--ink)", border: "1px solid var(--line)", borderRadius: 7, fontSize: 10.5, padding: "3px 7px", fontWeight: 600, cursor: "pointer", maxWidth: 200 }}>
-                            {myUpcoming.map((up, i) => {
-                              const t = teamAt(up.o);
-                              const who = t === userIdx ? "You" : (TEAM_NAMES[t] || `Team ${t + 1}`);
-                              const isBoardNow = up.o === picks.length;
-                              const prefix = isBoardNow ? "On the clock" : recScope === "all" ? who : (i === 0 ? "Your next pick" : `+${i}`);
-                              return <option key={up.o} value={up.o}>{prefix} · {up.label}{recScope === "all" && !isBoardNow ? "" : ""}</option>;
-                            })}
-                          </select>
-                        )}
+                      <div style={{ display: "inline-flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--line)" }}>
+                        {[["mine", "Your picks"], ["all", "All picks"], ["current", "Current pick"]].map(([k, label]) => (
+                          <button key={k} className="btn btn-mini"
+                            style={{ borderRadius: 0, border: "none", padding: "3px 8px", fontSize: 10, background: recScope === k ? "var(--gold)" : "transparent", color: recScope === k ? "#151002" : "var(--ink)", fontWeight: recScope === k ? 700 : 400 }}
+                            onClick={() => { setRecScope(k); setRecPickSel(null); }}>{label}</button>
+                        ))}
                       </div>
                     </div>
                     {/* whose pick this is — clear banner when it's NOT yours */}
@@ -15584,11 +15592,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         This is <b style={{ color: "#BFDcFF", margin: "0 3px" }}>{selTeamLabel}'s</b> pick — the recommendation below is what makes sense for <b style={{ color: "#BFDcFF", margin: "0 3px" }}>their</b> roster, not yours.
                       </div>
                     )}
-                    {/* what "this pick" means */}
-                    <div className="mut" style={{ fontSize: 9, marginBottom: 7, display: "flex", alignItems: "center", gap: 4 }}>
-                      <i className="ti ti-info-circle" style={{ fontSize: 10 }} aria-hidden="true" />
-                      {isBoardPick ? (onClockNow ? "Analyzing the pick on the clock — yours right now." : `Analyzing the pick on the clock — ${selTeamLabel}'s.`) : `Analyzing ${selIsMine ? "your" : selTeamLabel + "'s"} upcoming pick at ${pickLabel(selOverall)} — not the pick currently on the board.`}
-                    </div>
+                    {/* pick selector (or a plain read-out when locked to the current pick) */}
+                    {recScope === "current" ? (
+                      <div className="mut" style={{ fontSize: 9.5, marginBottom: 7, display: "flex", alignItems: "center", gap: 4 }}>
+                        <i className="ti ti-target-arrow" style={{ fontSize: 11, color: "var(--gold)" }} aria-hidden="true" />
+                        Locked to the pick on the clock — <b style={{ color: "var(--ink)" }}>{pickLabel(selOverall)}</b> · {selIsMine ? "yours" : selTeamLabel}. Follows the board as it moves.
+                      </div>
+                    ) : myUpcoming.length > 0 ? (
+                      <select value={selOverall} onChange={(e) => setRecPickSel(+e.target.value)} style={{ width: "100%", background: "var(--panel3)", color: "var(--ink)", border: "1px solid var(--line)", borderRadius: 7, fontSize: 11, padding: "5px 8px", fontWeight: 600, cursor: "pointer", marginBottom: 7 }}>
+                        {myUpcoming.map((up, i) => {
+                          const t = teamAt(up.o);
+                          const who = t === userIdx ? "You" : (TEAM_NAMES[t] || `Team ${t + 1}`);
+                          const isBoardNow = up.o === picks.length;
+                          const prefix = isBoardNow ? "On the clock" : recScope === "all" ? who : (i === 0 ? "Your next pick" : `+${i}`);
+                          return <option key={up.o} value={up.o}>{prefix} · {up.label}</option>;
+                        })}
+                      </select>
+                    ) : null}
                     {/* summary */}
                     <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 10, background: "rgba(242,182,60,.05)", borderLeft: "2px solid var(--gold)", padding: "7px 9px", borderRadius: "0 6px 6px 0" }}>
                       {summaryBitsCapped.map((b, i) => (
