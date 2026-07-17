@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28gk";
+const BUILD_TAG = "2026.06.28gl";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4206,7 +4206,8 @@ const css = `
 .disp{font-family:'Barlow Condensed','Barlow',sans-serif;letter-spacing:.02em}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.25)}
 .hairline{border-bottom:1px solid var(--line)} .mut{color:var(--mut)} .gold{color:var(--gold)}
-.btn{background:var(--panel3);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer;font-family:'Barlow';font-size:13px;transition:border-color .15s,background .15s,transform .1s,box-shadow .15s}
+.btn{background:var(--panel3);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer;font-family:'Barlow';font-size:13px}
+.btn:hover{transition:border-color .15s,background .15s,transform .1s,box-shadow .15s}
 .btn:hover,.btn-mini:hover{border-color:var(--gold);background:#2B3340}
 select.gs{cursor:pointer}
 select.gs:hover{border-color:var(--gold)}
@@ -4218,7 +4219,8 @@ select.gs:hover{border-color:var(--gold)}
 .btn-mini{padding:3px 10px;font-size:11px;border-radius:6px;background:var(--panel3)}
 .btn-gold,.btn-mini.btn-gold{background:var(--gold);color:#151002;border:none;font-weight:700}
 .btn-mini:hover{transform:none;box-shadow:none;background:#262017;border-color:var(--gold)}
-.tab{padding:6px 14px;cursor:pointer;border:none;background:none;color:#AEB9C7;font-family:'Barlow Condensed';font-size:16px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;border-bottom:2px solid transparent;transition:color .15s,border-color .15s}
+.tab{padding:6px 14px;cursor:pointer;border:none;background:none;color:#AEB9C7;font-family:'Barlow Condensed';font-size:16px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;border-bottom:2px solid transparent}
+.tab:hover{transition:color .15s,border-color .15s}
 .tab:hover{color:var(--ink);border-bottom-color:var(--line2)}
 .tab.on{color:var(--ink);border-bottom-color:var(--gold)}
 .hubtile:hover{transform:translateY(-2px);border-color:var(--gold)!important;box-shadow:0 6px 20px #0008}
@@ -4229,7 +4231,7 @@ select.gs:hover{border-color:var(--gold)}
 .flipback{transform:rotateY(180deg);background:var(--panel);padding:13px;justify-content:flex-start}
 .flipback .flipbacktext{flex:1;min-height:0;overflow:hidden;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical}
 .bigact:hover{transform:translateY(-2px);box-shadow:0 8px 24px #0009}
-.bigact{transition:transform .15s,box-shadow .15s,border-color .15s}
+.bigact:hover{transition:transform .15s,box-shadow .15s,border-color .15s}
 .dblsep{border:none;height:0;margin:0;border-top:2px solid var(--ink);border-bottom:2px solid var(--ink);padding:3px 0;opacity:.22}
 .menuitem{transition:background .15s}
 .hubsection{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px 20px 22px}
@@ -4335,7 +4337,7 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 @keyframes pulseGold{0%,100%{opacity:.5}50%{opacity:1}}
 .glowline{background:linear-gradient(90deg,transparent,var(--gold),transparent);height:1px;opacity:.5}
 .hover-row{transition:background .12s}.hover-row:hover{background:#16160F}
-.team-row{transition:border-color .15s, background .15s, transform .1s, box-shadow .15s}
+.team-row:hover{transition:border-color .15s, background .15s, transform .1s, box-shadow .15s}
 .team-row:hover{border-color:var(--gold)!important;background:var(--panel3)!important;transform:translateX(2px);box-shadow:-3px 0 0 0 var(--gold)}
 .team-row:hover .team-arrow{opacity:1;transform:translateX(0)}
 .team-arrow{opacity:0;transform:translateX(-4px);transition:opacity .15s, transform .15s}
@@ -4352,7 +4354,12 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 @media(min-width:641px) and (max-width:1279px){
   .decision-grid{flex-direction:row!important;flex-wrap:nowrap!important;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin;padding-bottom:4px}
   .decision-grid > *{flex:0 0 auto!important}
-  .decision-group-a,.decision-group-b{min-width:340px}
+  /* Keep each group at its FULL column count. Other breakpoints collapse group-b from 3 columns to 2, which is
+     what pushed Next picks onto a second row underneath Last picks. Since the row now scrolls sideways, there's
+     no need to collapse anything — every zone keeps its own readable width and you scroll to reach them. */
+  .decision-group-a{grid-template-columns:minmax(190px,0.9fr) minmax(210px,1.05fr)!important;min-width:420px}
+  .decision-group-b{grid-template-columns:minmax(155px,0.8fr) minmax(170px,0.9fr) minmax(175px,0.92fr)!important;min-width:540px}
+  .decision-divider{display:block!important}
 }
 @media(max-width:900px){
   /* Home page: leagues + quick mocks sit side by side on desktop, but two columns aren't readable on a narrow
