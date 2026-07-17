@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28gq";
+const BUILD_TAG = "2026.06.28gr";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4835,7 +4835,14 @@ export default function App() {
     } catch (e) {}
   }, [route]);
 
-  const persist = async (next) => {
+  // PERSISTENCE IS EXPENSIVE — it reads the whole stored blob, parses it, merges, re-serializes, writes it
+  // back (synchronously, via localStorage) and then mirrors it to the server. During a draft that can be
+  // megabytes of JSON. Callers fire it far more often than the data actually needs to be durable, so we
+  // coalesce: rapid calls merge into one write a short time later. The last write always wins, and we flush
+  // on page-hide so nothing is lost if the tab closes.
+  const persistTimerRef = useRef(null);
+  const persistPendingRef = useRef(null);
+  const persistNow = async (next) => {
     // CRITICAL: write by merging against the freshest STORED value, not React state. During initial
     // load (and other async flows) the `leagues`/`user` state captured in this closure can be stale
     // (e.g. still [] before setLeagues has committed), so writing `next.leagues ?? leagues` could wipe
@@ -4898,6 +4905,35 @@ export default function App() {
       }
     } catch (e) { /* offline or transient — local copy stands; retries on next change */ }
   };
+
+  // Debounced entry point. Everything in the app calls `persist`; rapid successive calls (autosave during a
+  // draft, a burst of state changes) merge into a single write ~600ms later instead of each paying a full
+  // blob read/parse/serialize/write plus a network mirror. `persist.flush()` forces it out immediately.
+  const persist = (next) => {
+    persistPendingRef.current = { ...(persistPendingRef.current || {}), ...next };
+    if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+    persistTimerRef.current = setTimeout(() => {
+      const payload = persistPendingRef.current || {};
+      persistPendingRef.current = null;
+      persistTimerRef.current = null;
+      persistNow(payload);
+    }, 600);
+  };
+  persist.flush = () => {
+    if (!persistTimerRef.current) return;
+    clearTimeout(persistTimerRef.current);
+    persistTimerRef.current = null;
+    const payload = persistPendingRef.current || {};
+    persistPendingRef.current = null;
+    persistNow(payload);
+  };
+  // Never lose a pending write because the tab went away.
+  useEffect(() => {
+    const flush = () => { try { persist.flush(); } catch (e) {} };
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("beforeunload", flush);
+    return () => { window.removeEventListener("pagehide", flush); window.removeEventListener("beforeunload", flush); };
+  }, []);
 
   const signUp = async (email, password, mode = "signup") => {
     // Backend mode: real accounts. Falls back to local simulated accounts when no backend.
@@ -13628,10 +13664,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     }
     backfilledRef.current = picks.length;
     setPreds(filled);
-    // Persist immediately so the backfilled predictions (and therefore the accuracy gauge) are STABLE on
-    // the next load instead of being recomputed — recomputation against a slightly different ADP snapshot
-    // is what made the percentages appear to drift without any picks happening.
-    try { if (typeof onSave === "function") onSave(picks, filled); } catch {}
+    // NOTE: we deliberately do NOT persist here any more.
+    //
+    // This effect lists `preds` as a dependency and also SETS `preds`, so it re-runs after every pick. It used
+    // to call onSave() on each of those runs, and onSave → persist() reads the ENTIRE stored blob (every
+    // league, every saved mock with its full pick history), JSON-parses it, merges, re-serializes and writes
+    // it back — synchronously. A trace attributed ~5.4s across 157 blocking calls (~35ms each) to that write,
+    // with no CPU samples underneath: the main thread was simply stalled on storage. It was the single
+    // largest remaining cost in the draft.
+    //
+    // The regular autosave (every 5 picks, and on completion/exit) already persists preds, so nothing is lost;
+    // we just stop paying a full-blob rewrite on every single pick.
   }, [players, picks, preds, sortedAdp, cfg, userIdx, dem, ROUNDS, noCostByTeam]);
 
   useEffect(() => {
