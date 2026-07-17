@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28gi";
+const BUILD_TAG = "2026.06.28gj";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4331,6 +4331,11 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 @media(max-width:1280px){.decision-grid{flex-direction:column!important}.decision-group-a,.decision-group-b{flex:1 1 auto!important}.decision-divider{display:none!important}}
 @media(max-width:980px){.cols{flex-direction:column}.rail{width:100%!important}.hero-h{font-size:38px}.myteam-grid{grid-template-columns:1fr!important;flex-direction:column!important}.needteam-row{grid-template-columns:1fr!important}.recap-row{grid-template-columns:1fr!important}.superlative-grid{grid-template-columns:repeat(2,1fr)!important}.decision-group-b{grid-template-columns:1fr 1fr!important}}
 @media(max-width:640px){.decision-group-a,.decision-group-b{grid-template-columns:1fr!important}}
+@media(max-width:900px){
+  /* Home page: leagues + quick mocks sit side by side on desktop, but two columns aren't readable on a narrow
+     screen — stack them so each gets the full width, leagues first (they're first in the DOM). */
+  .home-grid{grid-template-columns:1fr!important}
+}
 @media(max-width:640px){
   .hero-h{font-size:30px!important}
   .statline{font-size:30px}
@@ -7561,8 +7566,13 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         </div>
       )}
 
+      {/* ===== HOME GRID: Your leagues and Quick mocks SIDE BY SIDE =====
+           Stacked, the mocks section sank below a long league list and got lost. Side by side, both are visible
+           at a glance and the leagues' whitespace is put to use. `home-grid` collapses to a single column on
+           narrow screens (see the CSS), so mobile still reads top-to-bottom. ===== */}
+      <div className="home-grid" style={{ maxWidth: 1180, margin: "0 auto", padding: "0 20px 8px", display: "grid", gridTemplateColumns: "minmax(0,1.35fr) minmax(0,1fr)", gap: 22, alignItems: "start" }}>
       {/* ===== YOUR LEAGUES — front and center, no dropdown. Each league: clear Draft room + My Team. ===== */}
-      <div data-teams-anchor style={{ maxWidth: 940, margin: "0 auto", padding: "0 20px 8px" }}>
+      <div data-teams-anchor style={{ minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3, flexWrap: "wrap" }}>
           <i className="ti ti-clipboard-list" style={{ fontSize: 17, color: "var(--gold)" }} aria-hidden="true" />
           <span className="disp" style={{ fontSize: 17, fontWeight: 800, color: "var(--ink)" }}>Your leagues</span>
@@ -7769,10 +7779,8 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
 
       {/* ===== STANDALONE QUICK MOCKS — its own clearly-separated zone, not a stray dropdown tacked on the ===== */}
       {/* end of a long league list. These aren't tied to any league; they're saved to your account. */}
-      {funMocks && funMocks.length > 0 && (
-        <div style={{ maxWidth: 940, margin: "0 auto", padding: "0 20px 8px" }}>
-          {/* hard visual break between "your real leagues" and "practice mocks" */}
-          <div style={{ borderTop: "1px solid var(--line2)", margin: "18px 0 14px" }} />
+      {funMocks && funMocks.length > 0 ? (
+        <div style={{ minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3, flexWrap: "wrap" }}>
             <i className="ti ti-dice-5" style={{ fontSize: 17, color: "#4FD1A1" }} aria-hidden="true" />
             <span className="disp" style={{ fontSize: 17, fontWeight: 800, color: "var(--ink)" }}>Quick mocks</span>
@@ -7882,7 +7890,8 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
             );
           })()}
         </div>
-      )}
+      ) : <div />}
+      </div>
 
       <div style={{ maxWidth: 940, margin: "0 auto", padding: "26px 20px 64px", display: "flex", flexDirection: "column", gap: 22 }}>
 
@@ -13237,12 +13246,18 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // the real recommendation — so the "My build" line is always exactly the My-build recommendation, and the
   // top line always matches the selected strategy (identical to the build line when "My build" is selected).
   const mySelAdvice = useMemo(() => adviceFor(myPickOverall, userIdx, sims), [sims, picks, players, sortedAdp, draftedSet, userIdx, myPickOverall, cfg, strategy, done, dem]);
-  const myBuildAdvice = useMemo(() => adviceFor(myPickOverall, userIdx, sims, "build"), [sims, picks, players, sortedAdp, draftedSet, userIdx, myPickOverall, cfg, done, dem]);
-  // Balanced-strategy advice for YOUR next pick — used by the Team-analysis "Your next pick" panel, which
-  // shows Balanced-build and My-build targets side by side (independent of the board's strategy dropdown).
-  const myBalancedAdvice = useMemo(() => adviceFor(myPickOverall, userIdx, sims, "balanced"), [sims, picks, players, sortedAdp, draftedSet, userIdx, myPickOverall, cfg, done, dem]);
-  // Back-compat aliases used elsewhere in the tracker.
-  const buildAdvice = myBuildAdvice;
+  // PERF: `myBuildAdvice` used to be computed here on every render and then never read — its only reference was
+  // an alias (`buildAdvice`) that nothing consumed. Each adviceFor call runs a full draft-path projection plus
+  // impact projections, so that was an entire wasted simulation per pick. Removed.
+  //
+  // `myBalancedAdvice` is only ever a FALLBACK for when mySelAdvice has no verdict, but it was also computed
+  // eagerly every render. Now it's only computed when that fallback is actually needed — which, in a normal
+  // draft, is almost never. Together these remove ~2 of the 6 full advice computations that ran per pick, and
+  // they were the two doing the most redundant work as your pick approached.
+  const myBalancedAdvice = useMemo(
+    () => (mySelAdvice && mySelAdvice.verdict ? null : adviceFor(myPickOverall, userIdx, sims, "balanced")),
+    [mySelAdvice, sims, picks, players, sortedAdp, draftedSet, userIdx, myPickOverall, cfg, done, dem]
+  );
   // Recommendation specifically for YOUR next pick (may be the same as current if you're on the clock).
   const myAdvice = useMemo(() => (onClock === userIdx ? null : adviceFor(myNextOverall, userIdx, sims)), [sims, picks, players, sortedAdp, draftedSet, onClock, userIdx, myNextOverall, cfg, strategy, done, dem]);
 
@@ -16842,7 +16857,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           {traded && <i className="ti ti-arrows-exchange" style={{ fontSize: 9, color: ownedByYou ? "var(--gold)" : "#4FD1A1" }} title={`Traded pick — now ${ownedByYou ? "yours" : TEAM_NAMES[owner]}`} aria-hidden="true" />}
                         </div>
                         {/* When a pick was traded, name who owns it now (esp. your acquired picks). */}
-                        {traded && <div style={{ fontSize: 8.5, letterSpacing: ".04em", textTransform: "uppercase", color: ownedByYou ? "var(--gold)" : "var(--mut)", marginTop: -1, fontWeight: 700 }}>{ownedByYou ? "YOUR PICK" : `→ ${TEAM_NAMES[owner].split(" ")[0]}`}</div>}
+                        {/* Label the slot's OWNER. This used to be gated behind `traded`, so it only ever
+                            appeared on picks that had changed hands — your own original picks (the majority)
+                            silently showed nothing. Ownership is what matters here, so mark every slot you own;
+                            the trade arrow is extra information shown only when the pick actually moved. */}
+                        {(ownedByYou || traded) && (
+                          <div style={{ fontSize: 8.5, letterSpacing: ".04em", textTransform: "uppercase", color: ownedByYou ? "var(--gold)" : "var(--mut)", marginTop: -1, fontWeight: 700 }}>
+                            {ownedByYou ? "YOUR PICK" : `→ ${TEAM_NAMES[owner].split(" ")[0]}`}
+                          </div>
+                        )}
                         {p ? (
                           <>
                             <div className="pl" style={{ color: isKeeper ? "var(--green)" : isProjected ? "var(--gold)" : "var(--ink)", fontStyle: isProjected ? "italic" : "normal" }}>
