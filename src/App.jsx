@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28gp";
+const BUILD_TAG = "2026.06.28gq";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3323,21 +3323,40 @@ function BootSplash({ css }) {
 }
 
 function Tooltip({ tip, children }) {
-  const ref = useRef(null);
-  const [pos, setPos] = useState({ left: tip.x, top: tip.y });
-  useLayoutEffect(() => {
-    const el = ref.current; if (!el) return;
-    const h = el.offsetHeight, w = el.offsetWidth;
-    const H = window.innerHeight, W = window.innerWidth, M = 8;
-    let top = (tip.anchorY != null ? tip.anchorY : tip.y) - h / 2; // center on cursor
-    if (top + h > H - M) top = H - h - M;     // would overflow bottom → pull up
-    if (top < M) top = M;                      // would overflow top → pin to top
-    let left = tip.x;
-    if (left + w > W - M) left = Math.max(M, W - w - M);
-    if (left < M) left = M;
-    setPos({ left, top });
-  }, [tip]);
-  return <div ref={ref} className="tooltip" style={{ left: pos.left, top: pos.top }}>{children}</div>;
+  // PERF — this used to measure itself (offsetHeight/offsetWidth) in a useLayoutEffect on every hover, then
+  // setState to reposition. Reading a layout property mid-JS forces the browser to STOP and recompute layout
+  // for the whole page synchronously, and with a draft-board DOM of ~2,300 elements that is enormously
+  // expensive — a trace attributed ~1.3s to `get offsetHeight` alone, the single hottest thing in the app,
+  // and it happened TWICE per hover (once for the read, once for the re-render the setState caused).
+  //
+  // We now position with CSS only: the tooltip is placed at the cursor and shifted by its own size using
+  // translate percentages, which the compositor resolves without us ever measuring anything. `max-width`/
+  // `max-height` keep it on screen, and flipping to the other side of the cursor near the right/bottom edge is
+  // done from the cursor coordinates we already have — no DOM reads, no forced layout, no second render.
+  const M = 8;
+  const W = typeof window !== "undefined" ? window.innerWidth : 1200;
+  const H = typeof window !== "undefined" ? window.innerHeight : 800;
+  const anchorY = tip.anchorY != null ? tip.anchorY : tip.y;
+  // Flip horizontally if we're close to the right edge; vertically centre on the cursor but clamp near edges.
+  const flipX = tip.x > W * 0.6;
+  const nearTop = anchorY < H * 0.25;
+  const nearBottom = anchorY > H * 0.75;
+  const tx = flipX ? "calc(-100% - 12px)" : "12px";
+  const ty = nearTop ? "0" : nearBottom ? "-100%" : "-50%";
+  return (
+    <div
+      className="tooltip"
+      style={{
+        left: Math.min(Math.max(tip.x, M), W - M),
+        top: Math.min(Math.max(anchorY, M), H - M),
+        transform: `translate(${tx}, ${ty})`,
+        maxHeight: `calc(100vh - ${M * 2}px)`,
+        overflowY: "auto",
+      }}
+    >
+      {children}
+    </div>
+  );
 }
 // Color a player's positional rank red/yellow/green. Thresholds scale with position scarcity: QB/TE go
 // deeper before "red" since fewer start; RB/WR are tighter. Green = clear starter, yellow = streamer/depth,
@@ -4428,7 +4447,9 @@ select.gs option{background:var(--panel2);color:var(--ink)}
   /* the player-list / board tables get a horizontal scroll region so they don't blow out the viewport */
   table{max-width:100%}
   /* tooltips: fit the phone width, sit near the bottom as a sheet, and allow touch-scrolling of long content */
-  .tooltip{width:auto!important;max-width:calc(100vw - 20px)!important;left:10px!important;right:10px!important;pointer-events:auto!important;max-height:60vh!important}
+  /* On a phone the tooltip is pinned to the viewport edges rather than following the cursor, so the
+     cursor-relative transform used on desktop must be cancelled or it would push it off-screen. */
+  .tooltip{width:auto!important;max-width:calc(100vw - 20px)!important;left:10px!important;right:10px!important;pointer-events:auto!important;max-height:60vh!important;transform:none!important}
 }
 @media(prefers-reduced-motion:reduce){.gs-root *{transition:none!important;animation:none!important}}
 `;
@@ -14501,12 +14522,26 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
   // Measure the sticky ticker+tabbar header so tab-level sticky bars (e.g. the depth-chart position filter)
   // can sit just BELOW it instead of sliding underneath. Re-measures on layout-affecting state changes.
-  useLayoutEffect(() => {
-    const el = stickyHeadRef.current;
-    if (!el) return;
-    const h = el.offsetHeight;
-    if (h && h !== stickyHeadH) setStickyHeadH(h);
-  }, [tab, done, hypoMode, pastCount, futureBig, picks.length, sleeperLive, stickyHeadH]);
+  // Measure the sticky ticker+tabbar header so tab-level sticky bars (e.g. the depth-chart position filter)
+  // can sit just BELOW it instead of sliding underneath.
+  //
+  // PERF — this reads offsetHeight, which forces the browser to compute layout synchronously on the spot. It
+  // previously ran in a useLayoutEffect keyed on picks.length, i.e. it forced a full-page layout on EVERY PICK,
+  // right in the middle of the draft's hottest path, on a ~2,300-element DOM. The header's height doesn't
+  // actually change when a pick lands — only when the tab or a banner changes — so picks.length has no business
+  // here. We also use a plain effect + rAF so the read happens AFTER the browser has painted, where it's cheap,
+  // instead of blocking the frame that's trying to render the pick.
+  useEffect(() => {
+    let raf = 0;
+    const measure = () => {
+      const el = stickyHeadRef.current;
+      if (!el) return;
+      const h = el.offsetHeight;
+      if (h && h !== stickyHeadH) setStickyHeadH(h);
+    };
+    raf = requestAnimationFrame(measure);
+    return () => cancelAnimationFrame(raf);
+  }, [tab, done, hypoMode, sleeperLive]);
 
   return (
     <div>
