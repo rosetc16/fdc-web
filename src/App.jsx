@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28gr";
+const BUILD_TAG = "2026.06.28gs";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -12717,7 +12717,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // The pick (overall number) the hub "Avail" column reports survival for. Defaults to your NEXT pick;
   // a dropdown lets you choose any remaining pick (e.g. one you traded for). null = your next pick.
   const [targetPick, setTargetPick] = useState(null);
-  const [rowLimit, setRowLimit] = useState(130); // how many board rows to show; "Show more" raises it
+  // How many player rows the board renders at once. This list re-renders on EVERY pick, and each row draws
+  // ~20 column cells (each running cellFor), so 130 rows meant ~2,600 cells rebuilt per pick — which a trace
+  // matched almost exactly to a 2,265-element style recalculation and ~17k dirty layout objects. Nobody reads
+  // row 130 while deciding a pick; 40 covers the realistic decision window, and "Show more" is one click away.
+  const [rowLimit, setRowLimit] = useState(40);
   // PRIORITY QUEUE: players you've starred for this league. Persisted to localStorage keyed by league id
   // so it survives refreshes and is separate per league. `queueOnly` filters the board to just these.
   // Priority queue persists to localStorage. Key it by the most STABLE id available so it survives sign-out
@@ -13684,15 +13688,31 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const t = setTimeout(() => {
       setPicks((prev) => {
         if (prev.length >= TOTAL || teamAt(prev.length) === userIdx) return prev;
-        const drafted = new Set(prev);
+        // BATCH every consecutive CPU pick up to the user's next turn into ONE state update.
+        //
+        // This used to draft a single pick per timer fire, so each CPU pick cost a full React render of the
+        // draft room — the player list alone rebuilds ~800 table cells, and a trace measured ~2,265 elements
+        // per style recalc with ~17k dirty layout objects. Ten CPU picks between your turns meant paying that
+        // ten times. Simulating them in one pass and committing once means the board updates as a single
+        // render, which is the difference between a stutter per pick and one quick update.
+        const next = prev.slice();
+        const drafted = new Set(next);
+        const batchedPreds = [];
         Object.values(noCostByTeam).flat().forEach((id) => drafted.add(id));
-        const counts = { QB: 0, RB: 0, WR: 0, TE: 0 };
-        prev.forEach((pk, o) => { const pl = players[pk]; if (pl && teamAt(o) === teamAt(prev.length) && counts[pl.pos] != null) counts[pl.pos]++; });
-        const recent = prev.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
-        const pickNum = prev.length + 1, rd = Math.floor(prev.length / TEAMS) + 1;
-        const cands0 = []; for (const p of sortedAdp) { if (!drafted.has(p.id)) { cands0.push(p); if (cands0.length >= 34) break; } }
-        const cands = legalCands(cands0, counts, cfg);
-        let ws = cands.map((c, ri) => weightFor(c, pickNum, counts, rd, recent, dem, ROUNDS, ri));
+        // Fill until it's the user's turn (or the draft ends). A hard cap keeps a pathological config from
+        // locking the thread; the timer simply picks up where this left off.
+        let guard = 0;
+        while (next.length < TOTAL && teamAt(next.length) !== userIdx && guard++ < TEAMS * 2) {
+          if (keeperByPick[next.length] != null) break; // the keeper effect owns this slot
+          const counts = { QB: 0, RB: 0, WR: 0, TE: 0 };
+          const forTeam = teamAt(next.length);
+          next.forEach((pk, o) => { const pl = players[pk]; if (pl && teamAt(o) === forTeam && counts[pl.pos] != null) counts[pl.pos]++; });
+          const recent = next.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
+          const pickNum = next.length + 1, rd = Math.floor(next.length / TEAMS) + 1;
+          const cands0 = []; for (const p of sortedAdp) { if (!drafted.has(p.id)) { cands0.push(p); if (cands0.length >= 34) break; } }
+          const cands = legalCands(cands0, counts, cfg);
+          if (!cands.length) break;
+          let ws = cands.map((c, ri) => weightFor(c, pickNum, counts, rd, recent, dem, ROUNDS, ri));
         // MOCK VARIANCE: in a mock, use a PRIVATE per-mock RNG and apply a MILD temperature to the weights so
         // each mock plays out a little differently (different runs, an occasional slide) — good practice reps.
         // Bounded on purpose: a small exponent flattening + a light per-candidate jitter, so opponents still
@@ -13710,9 +13730,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             return Math.pow(Math.max(w, 1e-9), TEMP) * jitter;
           });
         }
-        const chosen = cands[sample(cands, ws, mockRnd)];
-        setPreds((pp) => [...pp, currentPred ? currentPred.id : null]);
-        return [...prev, chosen.id];
+          const chosen = cands[sample(cands, ws, mockRnd)];
+          if (!chosen) break;
+          drafted.add(chosen.id);
+          next.push(chosen.id);
+          batchedPreds.push(next.length === prev.length + 1 && currentPred ? currentPred.id : null);
+        }
+        if (next.length === prev.length) return prev; // nothing to do
+        // One preds update for the whole batch, mirroring the picks we just committed.
+        setPreds((pp) => [...pp, ...batchedPreds]);
+        return next;
       });
     }, fast ? 250 : 950);
     return () => clearTimeout(t);
