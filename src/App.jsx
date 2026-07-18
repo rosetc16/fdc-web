@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.06.28gs";
+const BUILD_TAG = "2026.06.28gt";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1079,6 +1079,9 @@ let LIVE_OVERLAY_REASON = null;  // if a per-format overlay was REJECTED, why (s
                                  // global pack — e.g. a redraft mock stuck on dynasty ADP — is diagnosable)
 let LIVE_OVERLAY_TARGET = null;  // the format the current draft SHOULD be showing
 let LIVE_OVERLAY_STATE = null;   // loading | applied | rejected | miss — where the per-draft overlay ended up
+// Picks the live feed reported but whose player we couldn't match to our pool. These used to be dropped
+// silently, which punched holes in the board and misfiled every later pick. Surfaced so they're diagnosable.
+let LIVE_UNRESOLVED_PICKS = null;
 export function isLivePackLoaded() { return LIVE_LOADED; }
 
 
@@ -13826,13 +13829,25 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         // actually being drafted (showing 25.05 on the clock while Sleeper sat at 24.07). Honoring pick_no keeps
         // every forced pick in its real place AND leaves the genuinely un-drafted slots empty, so "on the clock"
         // resolves to where the draft actually is.
+        const unresolved = [];
         for (const pk of (d.picks || [])) {
           const id = nameToId[normName(pk.name)];
-          if (id == null) continue;
           const o = (pk.pick_no != null && pk.pick_no > 0) ? pk.pick_no - 1 : mapped.length;
           if (pk.draft_slot) slotTeam[o] = pk.draft_slot - 1;
+          if (id == null) {
+            // The feed has a pick here but we can't match the name to our player pool — an unusual name, a
+            // player we don't carry, or a commissioner-entered filler entry. Previously we `continue`d, which
+            // silently DROPPED the pick and left a hole in the board. A hole is far worse than an unknown
+            // player: `firstHole` stops there, so every later pick gets misfiled as "forced ahead" and the
+            // board shows blank cells for picks that really happened (this is what left 26.02 and 26.08 empty
+            // in a completed draft). Record it so we can see it, and mark the slot as taken.
+            unresolved.push({ o, name: pk.name });
+            if (mapped[o] === undefined) mapped[o] = null; // occupied-but-unknown, not "not yet drafted"
+            continue;
+          }
           mapped[o] = id;
         }
+        LIVE_UNRESOLVED_PICKS = unresolved.length ? unresolved : null;
         // The array may now be sparse (holes where picks haven't happened). The rest of the app treats `picks`
         // as dense up to the current pick, so trim to the first hole: everything before it is settled.
         //
@@ -13841,8 +13856,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         // to a pick that hasn't happened — but they absolutely must still count: they're on someone's roster,
         // they're off the board, and they change that team's positional strength and what anyone should draft.
         // So we keep them as `forcedAhead` and fold them into rosters/counts/drafted separately from the board.
+        // Find where the draft ACTUALLY is: the first slot the feed has no pick for at all.
+        // `mapped[i] === null` means "the feed reported a pick here but we couldn't identify the player" — that
+        // slot IS drafted, so it must not be treated as the live edge. Only `undefined` (never reported) is a
+        // genuine hole. When Sleeper says the draft is complete there is no live edge at all, so everything the
+        // feed gave us is settled — otherwise a completed draft can sit forever showing a phantom pick on the
+        // clock, counting a 24-hour timer down and resetting (exactly what a finished league was doing).
+        const feedComplete = d.status === "complete";
         let firstHole = 0;
-        while (firstHole < mapped.length && mapped[firstHole] != null) firstHole++;
+        while (firstHole < mapped.length && mapped[firstHole] !== undefined) firstHole++;
+        if (feedComplete) firstHole = mapped.length; // draft is over: nothing is "upcoming"
         const forcedAhead = [];
         for (let i = firstHole; i < mapped.length; i++) {
           if (mapped[i] == null) continue;
@@ -14121,6 +14144,18 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
   const rows = useMemo(() => {
     let list = players.slice();
+    // Trim the board to `rowLimit` for performance (the list re-renders on every pick), but NEVER drop the
+    // recommended player. Cutting the limit made the gold "recommended" row vanish whenever the engine's pick
+    // sat below the cutoff — the highlight looked broken when really the row just wasn't rendered. If he'd be
+    // cut, append him so the highlight always has something to land on.
+    const recIdForRows = (mySelAdvice && mySelAdvice.verdict && mySelAdvice.verdict.id != null) ? mySelAdvice.verdict.id : null;
+    const capToLimit = (arr) => {
+      const cut = arr.slice(0, rowLimit);
+      if (recIdForRows == null) return cut;
+      if (cut.some((p) => p.id === recIdForRows)) return cut;
+      const rec = arr.find((p) => p.id === recIdForRows);
+      return rec ? [...cut, rec] : cut;
+    };
     if (posFilter !== "ALL") list = list.filter((p) => p.pos === posFilter);
     if (rookieOnly) list = list.filter((p) => p.rookie);
     if (queueOnly) list = list.filter((p) => queue.has(p.name));
@@ -14134,7 +14169,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // and ADP follow the market.
     if (manualSort) {
       list.sort((a, b) => { const va = colVal(a, key), vb = colVal(b, key); if (typeof va === "string") return String(va).localeCompare(String(vb)) * dir; return (va - vb) * dir; });
-      return list.slice(0, rowLimit);
+      return capToLimit(list);
     }
 
     // strategy-driven board score (higher = ranks earlier). We anchor on market ADP and adjust.
@@ -14188,8 +14223,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       }
     };
     list.sort((a, b) => scoreFor(b) - scoreFor(a));
-    return list.slice(0, rowLimit);
-  }, [players, posFilter, search, showDrafted, sortState, manualSort, strategy, draftedSet, sims, rookieOnly, myWindow, rowLimit, targetSurv, queue, queueOnly]);
+    return capToLimit(list);
+  }, [players, posFilter, search, showDrafted, sortState, manualSort, strategy, draftedSet, sims, rookieOnly, myWindow, rowLimit, targetSurv, queue, queueOnly, mySelAdvice]);
 
   // Column registry. group: "draft" (board intelligence) or "stat" (projection inputs).
   // section groups columns under labeled dividers in the table + columns menu.
@@ -14697,6 +14732,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               if (oreason) lines.push({ kind: "take", tone: "bad", x: oreason });
             }
             if (TRUST_LIVE_ADP) lines.push({ kind: "take", tone: "good", x: "Trusting live Sleeper ADP (connected draft)" });
+            const unres = (typeof LIVE_UNRESOLVED_PICKS !== "undefined") ? LIVE_UNRESOLVED_PICKS : null;
+            if (unres && unres.length) {
+              lines.push({ kind: "take", tone: "bad", x: `${unres.length} pick${unres.length === 1 ? "" : "s"} from Sleeper couldn't be matched to a player` });
+              lines.push({ t: "Unmatched", x: unres.slice(0, 6).map((u) => `${pickLabel(u.o)} — "${u.name}"`).join(" · ") });
+            }
             showTip(e, lines);
           }}
           onMouseLeave={hideTip}>
