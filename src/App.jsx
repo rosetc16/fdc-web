@@ -4311,10 +4311,14 @@ table.board th.frz,table.board td.frz{position:sticky;left:0;z-index:3;backgroun
 /* Recommended-pick row. The frozen Player column is sticky with its own opaque background, so a background set
    on the row gets painted over and the leftmost cell stays un-highlighted. We therefore tint every cell —
    including .frz — and hang the gold edge marker off the frozen cell so it rides along on horizontal scroll. */
-table.board tr.recrow>td{background:rgba(242,182,60,.14)}
-table.board tr.recrow>td.frz{background:linear-gradient(90deg,rgba(242,182,60,.24),rgba(242,182,60,.14)),var(--panel);box-shadow:inset 3px 0 0 var(--gold)}
-table.board tr.recrow:hover>td{background:rgba(242,182,60,.20)}
-table.board tr.recrow:hover>td.frz{background:linear-gradient(90deg,rgba(242,182,60,.30),rgba(242,182,60,.20)),var(--panel)}
+table.board tr.recrow>td{background:rgba(242,182,60,.14)!important}
+table.board tr.recrow>td.frz{background:linear-gradient(90deg,rgba(242,182,60,.24),rgba(242,182,60,.14)),var(--panel)!important;box-shadow:inset 3px 0 0 var(--gold)}
+table.board tr.recrow:hover>td{background:rgba(242,182,60,.20)!important}
+table.board tr.recrow:hover>td.frz{background:linear-gradient(90deg,rgba(242,182,60,.30),rgba(242,182,60,.20)),var(--panel)!important}
+/* WHY !important: the zebra-striping rule below (tbody tr:nth-child(even) td, and its .frz twin) is MORE
+   SPECIFIC than these recrow rules, so on every even row it silently painted over the gold — which is exactly
+   why the highlight looked like it "only worked on hover" (the hover rules happened to out-rank the stripe).
+   !important ends the specificity fight for good: the recommended row is gold at rest, every row, always. */
 table.board tbody tr:nth-child(even) td.frz{background:#141A22}
 table.board tbody tr:hover td.frz{background:#1A2230}
 table.board th.frz{z-index:4;box-shadow:1px 0 0 var(--line)}
@@ -5154,11 +5158,12 @@ export default function App() {
         onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} onGuide={() => { setHelpTab("guide"); setRoute("help"); }} onAccount={() => setRoute("account")} onAdmin={() => setRoute("admin")} onSignOut={signOut}
         onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }}
         onDraftTrends={() => setRoute("draftTrends")}
-        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [] }); setActiveId(m.id); setRoute("draft"); }} onDeleteFun={deleteFunMock} />}
+        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null }); setActiveId(m.id); setRoute("draft"); }} onDeleteFun={deleteFunMock} />}
       {route === "leagueHub" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? <LeagueUmbrella user={user} league={lg} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")}
         onOfficial={(id) => { setDraftTab(null); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
-        onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [] }); setActiveId(m.id); setRoute("draft"); }}
-        onDeleteMock={deleteMock} onDelete={(id) => { deleteLeague(id); setRoute(user.paid ? "home" : "library"); }} /> : null; })()}
+        onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null }); setActiveId(m.id); setRoute("draft"); }}
+        onDeleteMock={deleteMock} onDelete={(id) => { deleteLeague(id); setRoute(user.paid ? "home" : "library"); }}
+        onOpenTeamHub={lg.cfg.connect && lg.cfg.connect.leagueId ? () => { setHubLeagueId(lg.cfg.connect.leagueId); setRoute("teamHub"); } : null} /> : null; })()}
       {route === "teamHub" && user && hubLeagueId && <TeamHub user={user} leagues={leagues} leagueId={hubLeagueId} onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} onUpdate={updateUser} />}
       {route === "teamHub" && hubLeagueId && !user && (
         <HubShell title="Team hub" onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} user={user}><HubLoading /></HubShell>
@@ -5175,11 +5180,11 @@ export default function App() {
       {route === "draftTrends" && user && <DraftTrendsPage user={user} leagues={leagues} funMocks={funMocks} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user?.paid ? "home" : "library")} onOpenLeague={(id) => { setActiveId(id); setRoute("leagueHub"); }} />}
       {route === "help" && <HelpPage user={user} biz={biz} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user ? (user.paid ? "home" : "library") : "home")} onSubmit={submitFeedback} initialTab={helpTab} />}
       {route === "checkout" && user && <Checkout biz={biz} user={user} onDone={completePurchase} onBack={() => setRoute("home")} />}
-      {route === "library" && user && <Library user={user} leagues={leagues} onNew={() => setRoute("setup")} onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onDelete={deleteLeague} onAdmin={() => setRoute("admin")} onSignOut={signOut} onHome={() => setRoute("home")} onAccount={() => setRoute("account")} onDeleteMock={deleteMock} onOpenMockView={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [] }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onDatabase={() => setRoute("database")} onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} funMockCount={funMocks.length} />}
+      {route === "library" && user && <Library user={user} leagues={leagues} onNew={() => setRoute("setup")} onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onDelete={deleteLeague} onAdmin={() => setRoute("admin")} onSignOut={signOut} onHome={() => setRoute("home")} onAccount={() => setRoute("account")} onDeleteMock={deleteMock} onOpenMockView={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onDatabase={() => setRoute("database")} onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} funMockCount={funMocks.length} />}
       {route === "database" && user && <DraftsDatabase leagues={leagues} funMocks={funMocks} user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")}
         onOpenLeague={(id) => { setActiveId(id); setRoute("draft"); }}
-        onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [] }); setActiveId(m.id); setRoute("draft"); }}
-        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [] }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onTrendsTime={() => setRoute("trendsTime")} onDelete={deleteLeague} />}
+        onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null }); setActiveId(m.id); setRoute("draft"); }}
+        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onTrendsTime={() => setRoute("trendsTime")} onDelete={deleteLeague} />}
       {route === "trendsTime" && user && <TrendsOverTimePage user={user} leagues={leagues} funMocks={funMocks} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} onOpenLeague={(id) => { setActiveId(id); setRoute("leagueHub"); }} />}
       {route === "tradeTools" && user && <TradeToolsPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} />}
       {route === "adpIntel" && user && <AdpIntelPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} />}
@@ -5192,6 +5197,23 @@ export default function App() {
             if (active.id === "demo") setDemoLeague((d) => ({ ...d, picks, preds }));
             else if (mockLeague && active.id === mockLeague.id) { setMockLeague((m) => ({ ...m, picks, preds })); saveMock(picks, preds); }
             else saveLeague(active.id, picks, preds);
+          }}
+          onSaveSnap={(snap) => {
+            // Persist a completion snapshot on whichever record owns this draft (see the writer in DraftRoom).
+            if (active.id === "demo") return;
+            if (mockLeague && active.id === mockLeague.id) {
+              setMockLeague((m) => ({ ...m, snap }));
+              if (mockLeague.mockOf == null) {
+                const next = funMocks.map((m) => (m.id === mockLeague.id ? { ...m, snap } : m));
+                setFunMocks(next); persist({ funMocks: next });
+              } else {
+                const next = leagues.map((l) => (l.id !== mockLeague.mockOf ? l : { ...l, mocks: (l.mocks || []).map((m) => (m.id === mockLeague.id ? { ...m, snap } : m)) }));
+                setLeagues(next); persist({ leagues: next });
+              }
+              return;
+            }
+            const next = leagues.map((l) => (l.id === active.id ? { ...l, snap } : l));
+            setLeagues(next); persist({ leagues: next });
           }}
           onSaveQueue={(queueArr) => {
             // Persist the priority queue into the league object so it survives sign-out / new sessions.
@@ -5546,13 +5568,37 @@ function TrendsPage({ user, onBack, onHome, onSignOut }) {
   );
 }
 
-function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, onMock, onSettings, onViewMock, onDeleteMock, onDelete }) {
+function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, onMock, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub }) {
   const total = (league.cfg.teams || 12) * league.cfg.rounds;
   const st = league.picks.length >= total ? "complete" : league.picks.length > 0 ? "progress" : "fresh";
   const mocks = league.mocks || [];
   const keepers = league.cfg.keepers || [];
   const [showMocks, setShowMocks] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
+  // ---- DYNASTY DRAFT HISTORY (connected leagues) ----
+  // A dynasty league accumulates drafts: the original startup plus a rookie draft every year. Sleeper
+  // chains these across seasons; the backend walks that chain, and this panel lists every draft so any
+  // of them can be reopened as a board. The CURRENT season's draft opens in the full draft room.
+  const connectedId = league.cfg.connect && league.cfg.connect.leagueId;
+  const dynastyLike = league.cfg.type === "dynasty" || league.cfg.type === "rookie";
+  const [histOpen, setHistOpen] = useState(false);
+  const [hist, setHist] = useState(null);        // null = not loaded, [] = loaded empty
+  const [histErr, setHistErr] = useState(null);
+  const [histBoard, setHistBoard] = useState(null);   // { loading } | board payload for the archive modal
+  const openHistory = () => {
+    setHistOpen((o) => !o);
+    if (hist == null && connectedId && hasBackend) {
+      api.sleeperDraftHistory(connectedId)
+        .then((r) => { setHist((r && r.drafts) || []); setHistErr(null); })
+        .catch(() => { setHist([]); setHistErr("Couldn't load draft history from Sleeper."); });
+    }
+  };
+  const openArchivedBoard = (d) => {
+    setHistBoard({ loading: true, season: d.season, kind: d.kind });
+    api.sleeperDraftBoard(d.draft_id)
+      .then((b) => setHistBoard({ ...b, loading: false }))
+      .catch(() => setHistBoard({ loading: false, error: "Couldn't load that draft board." }));
+  };
   return (
     <div>
       <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="League" />
@@ -5595,12 +5641,21 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
           return null;
         })()}
 
-        {/* THREE CHOICES INSIDE THE UMBRELLA */}
+        {/* CHOICES INSIDE THE UMBRELLA. On a COMPLETED league this splits into the two things you
+            actually want after draft day: your TEAM (the in-season hub — weekly matchup, roster, waivers
+            context; connected leagues only) and the DRAFT itself (board, grades, recap — era-locked). */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(230px,1fr))", gap: 12, marginTop: 18 }}>
+          {st === "complete" && connectedId && onOpenTeamHub && (
+            <button className="hubtile" onClick={onOpenTeamHub} style={{ textAlign: "left", background: "rgba(79,209,161,.07)", border: "1px solid var(--green)", borderRadius: 12, padding: 18, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)" }}>
+              <i className="ti ti-users" style={{ fontSize: 24, color: "var(--green)" }} aria-hidden="true" />
+              <div className="disp" style={{ fontSize: 17, fontWeight: 700, margin: "9px 0 3px" }}>View My Team</div>
+              <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>Your in-season hub — this week's matchup, roster, and league standings.</div>
+            </button>
+          )}
           <button className="hubtile" onClick={() => onOfficial(league.id)} style={{ textAlign: "left", background: "rgba(242,182,60,.07)", border: "1px solid var(--gold)", borderRadius: 12, padding: 18, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)" }}>
             <i className="ti ti-flag-3" style={{ fontSize: 24, color: "var(--gold)" }} aria-hidden="true" />
-            <div className="disp" style={{ fontSize: 17, fontWeight: 700, margin: "9px 0 3px" }}>{st === "complete" ? "View Official Results" : st === "progress" ? "Resume Official Draft" : "Start Official Draft"}</div>
-            <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>{st === "complete" ? "Draft complete — review the board, teams, and recap." : st === "progress" ? `${league.picks.length}/${total} picks made.` : "The real one. Live recommendations, projections, and grades."}</div>
+            <div className="disp" style={{ fontSize: 17, fontWeight: 700, margin: "9px 0 3px" }}>{st === "complete" ? "View the Draft" : st === "progress" ? "Resume Official Draft" : "Start Official Draft"}</div>
+            <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>{st === "complete" ? "The full recap — board, teams, grades, steals & reaches, locked to draft-day values." : st === "progress" ? `${league.picks.length}/${total} picks made.` : "The real one. Live recommendations, projections, and grades."}</div>
           </button>
           <button className="hubtile" onClick={() => onMock(league.id)} style={{ textAlign: "left", background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 12, padding: 18, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)" }}>
             <i className="ti ti-dice-5" style={{ fontSize: 24, color: "var(--gold)" }} aria-hidden="true" />
@@ -5613,6 +5668,40 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
             <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>Scoring, roster, draft order, keepers & pick trades — edit anytime.</div>
           </button>
         </div>
+
+        {/* DYNASTY DRAFT HISTORY — startup + every rookie draft across seasons (connected leagues) */}
+        {connectedId && dynastyLike && (
+          <div style={{ marginTop: 22 }}>
+            <button className="btn btn-mini" onClick={openHistory}>
+              <i className="ti ti-history" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />
+              {histOpen ? "Hide draft history" : "Draft history — startup & rookie drafts"}
+            </button>
+            {histOpen && (
+              <div className="panel" style={{ padding: 14, marginTop: 10 }}>
+                {hist == null && <div className="mut" style={{ fontSize: 12.5 }}>Loading draft history from Sleeper…</div>}
+                {histErr && <div className="mut" style={{ fontSize: 12.5, color: "#F2655C" }}>{histErr}</div>}
+                {hist != null && !histErr && hist.length === 0 && <div className="mut" style={{ fontSize: 12.5 }}>No past drafts found for this league chain yet.</div>}
+                {hist != null && hist.length > 0 && (
+                  <div>
+                    <div className="mut" style={{ fontSize: 11.5, marginBottom: 8 }}>Every draft in this league's history — the original startup and each season's rookie draft. The current season's draft opens in the full draft room; older seasons open as archived boards.</div>
+                    {hist.map((d, i) => (
+                      <div key={d.draft_id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", fontSize: 13, borderTop: i ? "1px solid var(--line)" : "none" }}>
+                        <span className="num" style={{ width: 44, fontWeight: 700, color: "var(--gold)" }}>{d.season || "—"}</span>
+                        <span style={{ flex: 1 }}>
+                          {d.kind === "rookie" ? "Rookie draft" : d.kind === "vets" ? "Veteran draft" : (i === hist.length - 1 ? "Startup draft" : "Draft (all players)")}
+                          <span className="mut" style={{ fontSize: 11.5, marginLeft: 8 }}>{d.rounds ? `${d.rounds} rounds` : ""}{d.teams ? ` · ${d.teams} teams` : ""}{d.status && d.status !== "complete" ? ` · ${d.status.replace("_", " ")}` : ""}</span>
+                        </span>
+                        {d.current
+                          ? <button className="btn btn-mini btn-gold" onClick={() => onOfficial(league.id)}>Open draft room</button>
+                          : <button className="btn btn-mini" onClick={() => openArchivedBoard(d)}>View board</button>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* MOCK HISTORY + TRENDS */}
         {mocks.length > 0 && (
@@ -5651,6 +5740,49 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* ARCHIVED DRAFT BOARD MODAL — a past season's draft, straight from Sleeper's record. Shown as
+            the plain historical board (round by round, who took whom). Deliberately NOT graded against
+            ADP: we have no snapshot of what ADP looked like back then, and grading an old draft against
+            TODAY'S values is exactly the anachronism the era-lock exists to prevent. */}
+        {histBoard && (
+          <div onClick={() => setHistBoard(null)} style={{ position: "fixed", inset: 0, zIndex: 80, background: "#000b", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
+            <div className="panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 760, width: "100%", padding: 0, overflow: "hidden" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 16px", borderBottom: "1px solid var(--line)" }}>
+                <i className="ti ti-history" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
+                <div className="disp" style={{ fontSize: 17, fontWeight: 700, flex: 1 }}>
+                  {histBoard.season || ""} {histBoard.kind === "rookie" ? "Rookie draft" : "Draft"}{histBoard.loading ? " — loading…" : ""}
+                </div>
+                <button className="btn btn-mini" onClick={() => setHistBoard(null)}><i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true" /></button>
+              </div>
+              <div style={{ padding: "12px 16px", maxHeight: "70vh", overflowY: "auto" }}>
+                {histBoard.loading && <div className="mut" style={{ fontSize: 13 }}>Pulling this draft from Sleeper…</div>}
+                {histBoard.error && <div className="mut" style={{ fontSize: 13, color: "#F2655C" }}>{histBoard.error}</div>}
+                {!histBoard.loading && !histBoard.error && Array.isArray(histBoard.picks) && (
+                  histBoard.picks.length === 0
+                    ? <div className="mut" style={{ fontSize: 13 }}>No picks recorded for this draft.</div>
+                    : (() => {
+                        const byRound = {};
+                        histBoard.picks.forEach((p) => { (byRound[p.round] = byRound[p.round] || []).push(p); });
+                        return Object.keys(byRound).sort((a, b) => +a - +b).map((rd) => (
+                          <div key={rd} style={{ marginBottom: 10 }}>
+                            <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".07em", fontWeight: 700, borderBottom: "1px solid var(--line)", paddingBottom: 3, marginBottom: 4 }}>Round {rd}</div>
+                            {byRound[rd].sort((a, b) => a.pick_no - b.pick_no).map((p) => (
+                              <div key={p.pick_no} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 12.5, padding: "2px 0" }}>
+                                <span className="mut num" style={{ width: 42, flexShrink: 0 }}>{rd}.{String(p.pick_no - (rd - 1) * (histBoard.teams || byRound[rd].length)).padStart(2, "0")}</span>
+                                <span style={{ color: POS_COLOR[p.pos] || "var(--ink)", fontWeight: 700, width: 26 }}>{p.pos || ""}</span>
+                                <span style={{ flex: 1 }}>{p.name || "Unknown player"} <span className="mut">{p.team || ""}</span></span>
+                                {p.by && <span className="mut" style={{ fontSize: 11.5 }}>{p.by}</span>}
+                              </div>
+                            ))}
+                          </div>
+                        ));
+                      })()
+                )}
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -12542,7 +12674,7 @@ function InDraftTrends({ cfg, players, draftedSet, allLeagues, allFunMocks, onCl
 
 
 
-function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQueue, onExit, onBuy, onSettings, onEditRanks, onEditRankSet, onDeleteRankSet, onRanksOff, onUseRankSet, onColPrefs, onSaveInRoomRanks, onUpdate, dataVersion = 0, allLeagues, allFunMocks }) {
+function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQueue, onSaveSnap, onExit, onBuy, onSettings, onEditRanks, onEditRankSet, onDeleteRankSet, onRanksOff, onUseRankSet, onColPrefs, onSaveInRoomRanks, onUpdate, dataVersion = 0, allLeagues, allFunMocks }) {
   const cfg = league.cfg;
   // Live per-pick ownership from a connected platform (Sleeper draft_slot). Declared here so it can
   // be applied to the engine's team-assignment BEFORE any roster/sim computation in this render.
@@ -12642,6 +12774,24 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [tab, setTab] = useState(initialTab || "hub");
   const [trendsOpen, setTrendsOpen] = useState(false); // in-draft cross-draft trends drawer
   const [myTeamOpen, setMyTeamOpen] = useState(false); // "show my team" popup over the hub
+  // ---- BETWEEN-PICKS SUMMARY POPUP ------------------------------------------------------------
+  // When your turn arrives (any draft type — mock, official, live-synced), a popup recaps everything
+  // that happened since your last pick: notable values/reaches, positional flow + runs, who's still
+  // slipping to you, and a condensed "Your decision". Dismissable per-draft ("don't show these
+  // again"); a brand-new draft gets the popups back until dismissed there too.
+  const [turnRecap, setTurnRecap] = useState(null);      // payload for the open popup (null = closed)
+  const [recapDontShow, setRecapDontShow] = useState(false); // the "dismiss these summaries" checkbox
+  const recapDismissedRef = useRef(false);               // per-draft dismissal (persisted below)
+  const recapShownAtRef = useRef(-1);                    // picks.length we last opened for — one popup per turn
+  useEffect(() => {
+    let alive = true;
+    try { window.storage.get(`recapDismiss:${league.id}`).then((v) => { if (alive && v && v.value === "1") recapDismissedRef.current = true; }).catch(() => {}); } catch (e) {}
+    return () => { alive = false; };
+  }, [league.id]);
+  const closeRecap = () => {
+    if (recapDontShow) { recapDismissedRef.current = true; try { window.storage.set(`recapDismiss:${league.id}`, "1"); } catch (e) {} }
+    setTurnRecap(null);
+  };
   const [needsHover, setNeedsHover] = useState(false); // "How you're doing" needs breakdown popover
   // The player pool and its ADP are loaded ONCE at app startup and never modified during a session.
   // We previously experimented with re-fetching/overlaying per-league ADP here; that risked the board and
@@ -12840,8 +12990,25 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // collapse/rookie guards + VBD rebuild). Mocks keep the full guard machinery.
     const liveConnected = connectedPlatform === "sleeper" && draftMode === "sleeper" && !!(cfg.connect && cfg.connect.leagueId);
     setTrustLiveAdp(liveConnected);
-    return buildPlayers(cfg);
-  }, [cfg, adpVersion, dataVersion, connectedPlatform, draftMode]);
+    const base = buildPlayers(cfg);
+    // ===== ERA LOCK: once a draft completes, its snapshot (written below at completion time) overrides
+    // live values for every snapshotted player — ADP, VBD, value, projection. A 2026 startup draft is
+    // forever judged against 2026 draft-day numbers, not whatever ADP looks like months later. Keyed by
+    // normalized name so it survives pool rebuilds/id shifts. (Tier chips still come from the live build;
+    // the graded numbers — the part that matters — are locked.)
+    const snapP = league.snap && league.snap.p;
+    if (!snapP) return base;
+    return base.map((p) => {
+      const s = snapP[normName(p.name)];
+      if (!s) return p;
+      const q = { ...p };
+      if (s[0] != null) q.adp = s[0];
+      if (s[1] != null) q.vbd = s[1];
+      if (s[2] != null) q.value = s[2];
+      if (s[3] != null) q.pts = s[3];
+      return q;
+    });
+  }, [cfg, adpVersion, dataVersion, connectedPlatform, draftMode, league.snap]);
   // When the pool identity changes (fallback → live data), picks/preds stored as ids must be re-pointed.
   // CRITICAL: for CONNECTED Sleeper drafts the live sync is the source of truth and re-derives picks from
   // Sleeper BY NAME on every poll, so we must NOT touch picks here — doing so races the sync and makes the
@@ -12983,6 +13150,30 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     return { availRank: idx + 1, next, drop, startersLeft, starterLine, isLastStarter: (p.posRank || 99) <= starterLine && startersLeft <= 1 };
   };
   const done = picks.length >= TOTAL;
+  // ===== SNAPSHOT WRITER: the moment a draft completes, freeze draft-day values (ADP/VBD/value/proj)
+  // for every drafted player plus the top ~450 of the board, and persist it on the league/mock record.
+  // The players memo above overlays this forever after — so summaries, grades, and trends for a finished
+  // draft never drift as live ADP moves on. Written once (guarded by league.snap); demo drafts skip it.
+  // `retro` marks snapshots taken long after the draft actually ended (pre-feature completions) so the
+  // UI can be honest that values were locked late, not on draft day.
+  useEffect(() => {
+    if (!done || isDemo || league.snap || !onSaveSnap || !players.length) return;
+    const p = {};
+    const wanted = new Set(picks.filter((id) => id != null));
+    sortedAdp.slice(0, 450).forEach((pl) => wanted.add(pl.id));
+    wanted.forEach((id) => {
+      const pl = players[id];
+      if (!pl) return;
+      p[normName(pl.name)] = [
+        pl.adp != null ? Math.round(pl.adp * 10) / 10 : null,
+        pl.vbd != null ? Math.round(pl.vbd) : null,
+        pl.value != null ? Math.round(pl.value) : null,
+        pl.pts != null ? Math.round(pl.pts) : null,
+      ];
+    });
+    const retro = league.lastPickAt ? (Date.now() - league.lastPickAt > 36 * 3600 * 1000) : false;
+    onSaveSnap({ at: Date.now(), retro, p });
+  }, [done, isDemo, league.snap, players, sortedAdp, picks, onSaveSnap]);
   // Demo stops after a limited number of rounds (it's not "complete" — you must purchase to continue).
   const demoCap = isDemo && cfg.demoRounds ? cfg.demoRounds * TEAMS : null;
   const demoCapped = demoCap != null && picks.length >= demoCap && !user?.paid;
@@ -13384,6 +13575,38 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // dependency here. Without it this memo served a stale recommendation after a strategy change, which is how
   // the "On the clock" alternatives could disagree with the "Your decision" panel for the very same pick.
   const advice = useMemo(() => adviceFor(picks.length, onClock, sims), [sims, picks, players, sortedAdp, draftedSet, onClock, cfg, strategy, done, dem, forcedAhead]);
+  // Open the between-picks summary the moment you land on the clock. Fires once per turn (guarded by
+  // recapShownAtRef), never after a per-draft dismissal, and only when at least one pick actually
+  // happened since your last one (opening the draft at 1.01 has nothing to recap).
+  useEffect(() => {
+    if (!started || done || onClock !== userIdx) return;
+    if (recapDismissedRef.current || recapShownAtRef.current === picks.length) return;
+    let prevMine = -1;
+    for (let o = picks.length - 1; o >= 0; o--) { if (teamAt(o) === userIdx) { prevMine = o; break; } }
+    const since = [];
+    for (let o = prevMine + 1; o < picks.length; o++) {
+      const p = players[picks[o]];
+      if (p) since.push({ o, p, delta: p.adp != null ? Math.round((o + 1) - p.adp) : 0 });
+    }
+    if (!since.length) return;
+    recapShownAtRef.current = picks.length;
+    const pickNum = picks.length + 1;
+    const posCounts = { QB: 0, RB: 0, WR: 0, TE: 0 };
+    since.forEach((s) => { if (posCounts[s.p.pos] != null) posCounts[s.p.pos]++; });
+    const steals = since.filter((s) => s.delta <= -6).sort((a, b) => a.delta - b.delta).slice(0, 4);
+    const reaches = since.filter((s) => s.delta >= 6).sort((a, b) => b.delta - a.delta).slice(0, 4);
+    const slipping = sortedAdp
+      .filter((p) => !draftedSet.has(p.id) && p.adp != null && (pickNum - p.adp) >= 5)
+      .slice(0, 6)
+      .map((p) => ({ p, slip: Math.round(pickNum - p.adp) }));
+    setRecapDontShow(false);
+    setTurnRecap({
+      pickNum, sinceN: since.length, since, posCounts, steals, reaches, slipping,
+      run: advice && advice.run ? advice.run : null,
+      verdict: advice && advice.verdict ? advice.verdict : null,
+      alts: advice && advice.alts ? advice.alts.slice(0, 3) : [],
+    });
+  }, [started, done, onClock, userIdx, picks, players, sortedAdp, draftedSet, advice]);
   // The overall index of YOUR next pick (whether you're on the clock right now or it's coming up).
   const myPickOverall = onClock === userIdx ? picks.length : myNextOverall;
   // Recommendation for YOUR next pick under the SELECTED strategy (top line of the plaque) and, separately,
@@ -13713,13 +13936,28 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           const recent = next.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
           const pickNum = next.length + 1, rd = Math.floor(next.length / TEAMS) + 1;
           const cands0 = []; for (const p of sortedAdp) { if (!drafted.has(p.id)) { cands0.push(p); if (cands0.length >= 34) break; } }
-          const cands = legalCands(cands0, counts, cfg);
+          let cands = legalCands(cands0, counts, cfg);
+          // MOCK-ONLY REACH CLAMP: with the flatter early-round sampling below, the weight tails get fatter — so
+          // we hard-cap how far ahead of ADP a bot can ever take someone early. Round 1-2: 8 spots; 3-4: 12.
+          // This is exactly the requested behavior: varied, realistic boards, never a 15-20 pick reach.
+          if (mockLike && cfg.mockSeed != null && rd <= 4) {
+            const maxReach = rd <= 2 ? 8 : 12;
+            const clamped = cands.filter((c) => c.adp == null || (c.adp - pickNum) <= maxReach);
+            if (clamped.length) cands = clamped;
+          }
           if (!cands.length) break;
           let ws = cands.map((c, ri) => weightFor(c, pickNum, counts, rd, recent, dem, ROUNDS, ri));
-        // MOCK VARIANCE: in a mock, use a PRIVATE per-mock RNG and apply a MILD temperature to the weights so
-        // each mock plays out a little differently (different runs, an occasional slide) — good practice reps.
-        // Bounded on purpose: a small exponent flattening + a light per-candidate jitter, so opponents still
-        // track ADP closely and never reach wildly. Live/connected drafts are untouched (deterministic feed).
+        // MOCK VARIANCE: in a mock, use a PRIVATE per-mock RNG so each run plays out differently — real
+        // practice reps instead of the same board every time. Three bounded layers:
+        //   1) TEMPERATURE, scaled by round. Early rounds are where real drafts diverge most (pick 1.05
+        //      could genuinely be any of ~4 players), yet the raw weights are at their most peaked there —
+        //      which is why mocks felt carbon-copied through round 4. Flatten hardest early, least late.
+        //   2) PER-TEAM PLAYER AFFINITY, seeded once per mock. Each bot quietly "loves" some players and
+        //      "fades" others for the WHOLE draft — so a faded player slides coherently across several
+        //      teams (realistic value falling to you) instead of random per-pick noise that averages out.
+        //   3) A light per-pick jitter for tiebreak-level wobble.
+        // Bounded on purpose: the ADP magnet still dominates, and the reach clamp above caps the tails.
+        // Live/connected drafts are untouched (deterministic feed).
         //
         // Deliberately NOT `seedRng()`: that reseeds the module-wide RNG shared with runSims/projectPath, so
         // re-running this effect (e.g. because the Fast/Normal toggle is in its dependency list) would shift
@@ -13727,10 +13965,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         let mockRnd = null;
         if (mockLike && cfg.mockSeed != null) {
           mockRnd = makeRng(((cfg.mockSeed >>> 0) ^ (pickNum * 2654435761)) >>> 0);
-          const TEMP = 0.82;               // <1 flattens the distribution slightly (more spread, not chaos)
-          ws = ws.map((w) => {
-            const jitter = 0.85 + mockRnd() * 0.3; // ±15% per-candidate wobble
-            return Math.pow(Math.max(w, 1e-9), TEMP) * jitter;
+          const TEMP = rd <= 2 ? 0.60 : rd <= 4 ? 0.70 : 0.82; // flatter early → real early-round variety
+          // Stable per-(mock, team, player) affinity in 0.80–1.28 — same all draft, different every mock.
+          const affinityOf = (pid) => {
+            let h = ((cfg.mockSeed >>> 0) ^ Math.imul(forTeam + 1, 0x9E3779B1)) >>> 0;
+            const s = String(pid);
+            for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193) >>> 0;
+            return 0.80 + ((h >>> 8) % 1000) / 1000 * 0.48;
+          };
+          ws = ws.map((w, wi) => {
+            const jitter = 0.90 + mockRnd() * 0.2; // ±10% per-pick wobble (affinity carries the signal)
+            return Math.pow(Math.max(w, 1e-9), TEMP) * affinityOf(cands[wi].id) * jitter;
           });
         }
           const chosen = cands[sample(cands, ws, mockRnd)];
@@ -15187,13 +15432,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     <span className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700 }}>Next picks</span>
                     {untilMine != null && (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 8.5, fontWeight: 800, color: untilColor, background: untilColor + "1e", border: `1px solid ${untilColor}55`, borderRadius: 20, padding: "1px 7px" }}>
+                        {/* TWO explicit tickers: picks until YOUR next pick, and picks until the one AFTER it —
+                            so you can plan two selections ahead at a glance (the second counts from NOW too). */}
+                        <span title="Picks until your NEXT pick" style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 8.5, fontWeight: 800, color: untilColor, background: untilColor + "1e", border: `1px solid ${untilColor}55`, borderRadius: 20, padding: "1px 7px" }}>
                           <i className="ti ti-user-star" style={{ fontSize: 9 }} aria-hidden="true" />
-                          {untilMine === 0 ? "you're up!" : untilMine === 1 ? "you're next" : `you in ${untilMine}`}
+                          {untilMine === 0 ? "you're up!" : untilMine === 1 ? "you're next" : `your pick: ${untilMine}`}
                         </span>
-                        {untilMine2 != null && untilMine > 0 && (
-                          <span title="Picks until your SECOND upcoming pick (the one after next)" style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 8.5, fontWeight: 700, color: "var(--mut)", background: "rgba(255,255,255,.05)", border: "1px solid var(--line2)", borderRadius: 20, padding: "1px 7px" }}>
-                            then {untilMine2}
+                        {untilMine2 != null && (
+                          <span title="Picks until your pick AFTER the next one (also counted from right now)" style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 8.5, fontWeight: 800, color: "#8FB8E8", background: "rgba(143,184,232,.12)", border: "1px solid rgba(143,184,232,.4)", borderRadius: 20, padding: "1px 7px" }}>
+                            <i className="ti ti-user-star" style={{ fontSize: 9, opacity: 0.7 }} aria-hidden="true" />
+                            {`pick after: ${untilMine2}`}
                           </span>
                         )}
                       </span>
@@ -15576,7 +15824,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             {!gone
                               ? (cappedPos[p.pos] != null
                                   ? <button className="btn btn-mini" disabled title={`Roster maximum reached — ${onClock === userIdx ? "your team has" : "this team has"} the league limit of ${cappedPos[p.pos]} at ${p.pos}. You can't draft another.`} style={{ flexShrink: 0, border: "1.5px solid #F2655C", background: "rgba(242,101,92,.16)", color: "#F2655C", fontWeight: 800, cursor: "not-allowed" }}>Max</button>
-                                  : <button className={`btn btn-mini${onClock === userIdx ? " btn-gold" : ""}`} style={{ flexShrink: 0, border: onClock === userIdx ? "none" : "1.5px solid #fff", fontWeight: 700 }} onClick={() => draftPlayer(p.id)}>{onClock === userIdx ? "Draft" : "Pick"}</button>)
+                                  : <button className={`btn btn-mini${(onClock === userIdx || isRec) ? " btn-gold" : ""}`} style={{ flexShrink: 0, border: (onClock === userIdx || isRec) ? "none" : "1.5px solid #fff", fontWeight: 700 }} onClick={() => draftPlayer(p.id)}>{onClock === userIdx ? "Draft" : "Pick"}</button>)
                               : <span style={{ width: 38, flexShrink: 0 }} />}
                             <span onClick={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: isDynastyCfg(cfg), run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: isDynastyCfg(cfg), run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseLeave={hideTip} style={{ cursor: "help", whiteSpace: "nowrap" }}>
                               <PosName p={p} /> <span className="mut">{p.team}</span>
@@ -17296,6 +17544,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               {TEAM_NAMES.map((n, i) => <option key={i} value={i}>{i === userIdx ? "Your team" : n}</option>)}
             </select>
             <span className="mut" style={{ fontSize: 11.5 }}>{summaryTeam == null ? "Steals & reaches show the whole league; your roster is highlighted." : `Showing ${summaryTeam === userIdx ? "your" : TEAM_NAMES[summaryTeam] + "'s"} picks, steals & reaches.`}</span>
+            {league.snap && (
+              <span title={league.snap.retro
+                ? `This draft finished before value-locking existed, so its values were frozen when it was first reopened (${new Date(league.snap.at).toLocaleDateString()}) — close to, but not exactly, draft-day numbers.`
+                : `All ADPs, values, and projections on this draft were frozen at completion (${new Date(league.snap.at).toLocaleDateString()}). Nothing here drifts as live ADP changes.`}
+                style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700, color: "var(--gold)", border: "1px solid rgba(242,182,60,.45)", background: "rgba(242,182,60,.08)", borderRadius: 20, padding: "2px 9px", cursor: "help" }}>
+                <i className="ti ti-lock" style={{ fontSize: 11 }} aria-hidden="true" />{league.snap.retro ? "Values locked (late)" : "Draft-day values locked"}
+              </span>
+            )}
           </div>
 
           {/* ===== Superlatives: fun awards drawn from the live engine numbers — now the very top of the summary ===== */}
@@ -18201,6 +18457,101 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         onApply={(o, newId) => { setPicks((prev) => { const next = prev.slice(); next[o] = newId; return next; }); setEditPicksOpen(false); }} />}
 
       {trendsOpen && <InDraftTrends cfg={cfg} players={players} draftedSet={draftedSet} allLeagues={allLeagues} allFunMocks={allFunMocks} onClose={() => setTrendsOpen(false)} />}
+      {/* ===== BETWEEN-PICKS SUMMARY POPUP — what happened while you waited, then your decision.
+             X closes, Continue closes, clicking the backdrop closes; the checkbox suppresses these
+             for the REST OF THIS DRAFT only (a new draft gets them back until dismissed there). */}
+      {turnRecap && (() => { const recap = turnRecap; return (
+        <div onClick={closeRecap} style={{ position: "fixed", inset: 0, zIndex: 78, background: "#000b", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "36px 16px", overflowY: "auto" }}>
+          <div className="panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 640, width: "100%", padding: 0, borderColor: "var(--gold)", boxShadow: "0 20px 70px #000d", overflow: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 16px", borderBottom: "1px solid var(--line)", background: "linear-gradient(180deg, rgba(242,182,60,.10), transparent)" }}>
+              <i className="ti ti-alarm" style={{ fontSize: 20, color: "var(--gold)" }} aria-hidden="true" />
+              <div style={{ flex: 1 }}>
+                <div className="disp" style={{ fontSize: 17, fontWeight: 700 }}>You're on the clock — pick {pickLabel(recap.pickNum - 1)}</div>
+                <div className="mut" style={{ fontSize: 11.5 }}>{recap.sinceN} pick{recap.sinceN === 1 ? "" : "s"} since your last turn</div>
+              </div>
+              <button className="btn btn-mini" onClick={closeRecap} title="Close"><i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true" /></button>
+            </div>
+            <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 12 }}>
+              {/* Positional flow + run callout */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700 }}>Went</span>
+                {POS.map((pos) => recap.posCounts[pos] > 0 && (
+                  <span key={pos} style={{ fontSize: 11.5, fontWeight: 700, color: POS_COLOR[pos] || "var(--ink)", border: `1px solid ${(POS_COLOR[pos] || "#888")}55`, borderRadius: 20, padding: "1px 8px" }}>{recap.posCounts[pos]} {pos}</span>
+                ))}
+                {recap.run && (
+                  <span style={{ fontSize: 11.5, fontWeight: 800, color: "#F2655C", border: "1px solid #F2655C66", background: "rgba(242,101,92,.10)", borderRadius: 20, padding: "1px 8px" }}>
+                    <i className="ti ti-flame" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />{recap.run.pos} run — {recap.run.count} of the last 8
+                  </span>
+                )}
+              </div>
+              {/* Notable picks while you waited */}
+              {(recap.steals.length > 0 || recap.reaches.length > 0) && (
+                <div style={{ display: "grid", gridTemplateColumns: recap.steals.length && recap.reaches.length ? "1fr 1fr" : "1fr", gap: 10 }}>
+                  {recap.steals.length > 0 && (
+                    <div>
+                      <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700, marginBottom: 4 }}>Values that went</div>
+                      {recap.steals.map((s) => (
+                        <div key={s.o} style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 12.5, padding: "2px 0" }}>
+                          <span className="mut num" style={{ width: 34, flexShrink: 0 }}>{pickLabel(s.o)}</span>
+                          <span style={{ color: POS_COLOR[s.p.pos] || "var(--ink)", fontWeight: 700 }}>{s.p.pos}</span>
+                          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.p.name}</span>
+                          <span className="num" style={{ color: "var(--green)", fontWeight: 700 }}>{s.delta} vs ADP</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {recap.reaches.length > 0 && (
+                    <div>
+                      <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700, marginBottom: 4 }}>Reaches</div>
+                      {recap.reaches.map((s) => (
+                        <div key={s.o} style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 12.5, padding: "2px 0" }}>
+                          <span className="mut num" style={{ width: 34, flexShrink: 0 }}>{pickLabel(s.o)}</span>
+                          <span style={{ color: POS_COLOR[s.p.pos] || "var(--ink)", fontWeight: 700 }}>{s.p.pos}</span>
+                          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.p.name}</span>
+                          <span className="num" style={{ color: "#F2655C", fontWeight: 700 }}>+{s.delta} vs ADP</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {/* Who's slipping to you */}
+              {recap.slipping.length > 0 && (
+                <div>
+                  <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700, marginBottom: 4 }}>Still on the board & slipping</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {recap.slipping.map(({ p, slip }) => (
+                      <span key={p.id} style={{ fontSize: 12, border: "1px solid var(--line2)", borderRadius: 8, padding: "3px 8px", background: "var(--panel2)" }}>
+                        <b style={{ color: POS_COLOR[p.pos] || "var(--ink)" }}>{p.pos}</b> {p.name} <span className="mut num">ADP {Math.round(p.adp)} · <span style={{ color: "var(--green)", fontWeight: 700 }}>+{slip}</span></span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* Condensed "Your decision" */}
+              {recap.verdict && (
+                <div style={{ border: "1px solid rgba(242,182,60,.4)", background: "rgba(242,182,60,.06)", borderRadius: 10, padding: "9px 12px" }}>
+                  <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700, marginBottom: 3 }}>Your decision</div>
+                  <div style={{ fontSize: 14 }}>
+                    <b style={{ color: "var(--gold)" }}>{recap.verdict.name}</b>
+                    <span style={{ color: POS_COLOR[recap.verdict.pos] || "var(--mut)", fontWeight: 700, marginLeft: 6 }}>{recap.verdict.pos}</span>
+                    {recap.verdict.adp != null && <span className="mut num" style={{ marginLeft: 6, fontSize: 12 }}>ADP {Math.round(recap.verdict.adp)}</span>}
+                    {recap.alts.length > 0 && <span className="mut" style={{ fontSize: 12, marginLeft: 8 }}>or {recap.alts.map((a) => a.name).join(" · ")}</span>}
+                  </div>
+                  <div className="mut" style={{ fontSize: 11, marginTop: 3 }}>Full reasoning, take-now-vs-wait, and availability live in the Your Decision panel.</div>
+                </div>
+              )}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", borderTop: "1px solid var(--line)", background: "var(--panel2)" }}>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12, cursor: "pointer", flex: 1 }} className="mut">
+                <input type="checkbox" checked={recapDontShow} onChange={(e) => setRecapDontShow(e.target.checked)} style={{ accentColor: "var(--gold)" }} />
+                Dismiss these summaries for the rest of this draft
+              </label>
+              <button className="btn btn-gold" onClick={closeRecap}>Continue to your pick</button>
+            </div>
+          </div>
+        </div>
+      ); })()}
       {myTeamOpen && (() => {
         const currentRoster = picks.map((pk, o) => (teamAt(o) === userIdx ? players[pk] : null)).filter(Boolean);
         (noCostByTeam[userIdx] || []).forEach((id) => { const p = players[id]; if (p && !currentRoster.includes(p)) currentRoster.push(p); });

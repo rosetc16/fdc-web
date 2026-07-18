@@ -195,6 +195,10 @@ export const api = {
   async sleeperUnlink() { return call('/api/connect/sleeper/unlink', { method: 'POST' }); },
   async sleeperMyLeagues(season) { return call(`/api/connect/sleeper/my-leagues${season ? `?season=${season}` : ''}`); },
   async sleeperTeamHub(leagueId, week) { return call(`/api/connect/sleeper/team-hub?league_id=${encodeURIComponent(leagueId)}${week ? `&week=${week}` : ''}`); },
+  // Dynasty draft archive: every draft in the league's season chain (startup + each rookie draft), and
+  // the finished board of any one of them.
+  async sleeperDraftHistory(leagueId) { return call(`/api/connect/sleeper/draft-history?league_id=${encodeURIComponent(leagueId)}`); },
+  async sleeperDraftBoard(draftId) { return call(`/api/connect/sleeper/draft-board?draft_id=${encodeURIComponent(draftId)}`); },
 
   // ---- feedback (public submit) ----
   async submitFeedback(payload) { return call('/api/feedback', { method: 'POST', auth: false, body: payload }); },
