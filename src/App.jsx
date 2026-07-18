@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18a";
+const BUILD_TAG = "2026.07.18b";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5570,7 +5570,11 @@ function TrendsPage({ user, onBack, onHome, onSignOut }) {
 
 function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, onMock, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub }) {
   const total = (league.cfg.teams || 12) * league.cfg.rounds;
-  const st = league.picks.length >= total ? "complete" : league.picks.length > 0 ? "progress" : "fresh";
+  // A league is "complete" if the LOCAL pick log is full OR the connected platform says the draft is
+  // done — the local log only fills when the draft room is opened, so a Sleeper league that finished
+  // entirely on Sleeper must still unlock the post-draft tiles (View My Team / View the Draft).
+  const connStatus = (league.cfg.connect && league.cfg.connect.status) || (league.connect && league.connect.status) || null;
+  const st = (league.picks.length >= total || connStatus === "complete") ? "complete" : league.picks.length > 0 ? "progress" : "fresh";
   const mocks = league.mocks || [];
   const keepers = league.cfg.keepers || [];
   const [showMocks, setShowMocks] = useState(false);
@@ -5579,8 +5583,8 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
   // A dynasty league accumulates drafts: the original startup plus a rookie draft every year. Sleeper
   // chains these across seasons; the backend walks that chain, and this panel lists every draft so any
   // of them can be reopened as a board. The CURRENT season's draft opens in the full draft room.
-  const connectedId = league.cfg.connect && league.cfg.connect.leagueId;
-  const dynastyLike = league.cfg.type === "dynasty" || league.cfg.type === "rookie";
+  const connectedId = (league.cfg.connect && league.cfg.connect.leagueId) || (league.connect && league.connect.leagueId);
+  const dynastyLike = league.cfg.type === "dynasty" || league.cfg.type === "rookie"; // affects labeling only
   const [histOpen, setHistOpen] = useState(false);
   const [hist, setHist] = useState(null);        // null = not loaded, [] = loaded empty
   const [histErr, setHistErr] = useState(null);
@@ -5670,11 +5674,11 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
         </div>
 
         {/* DYNASTY DRAFT HISTORY — startup + every rookie draft across seasons (connected leagues) */}
-        {connectedId && dynastyLike && (
+        {connectedId && (
           <div style={{ marginTop: 22 }}>
             <button className="btn btn-mini" onClick={openHistory}>
               <i className="ti ti-history" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />
-              {histOpen ? "Hide draft history" : "Draft history — startup & rookie drafts"}
+              {histOpen ? "Hide draft history" : dynastyLike ? "Draft history — startup & rookie drafts" : "Draft history"}
             </button>
             {histOpen && (
               <div className="panel" style={{ padding: 14, marginTop: 10 }}>
@@ -7724,7 +7728,8 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
 
   const leagueStatus = (l) => {
     const total = (l.cfg.teams || 12) * l.cfg.rounds;
-    if (l.picks.length >= total) return { label: "Draft complete", color: "var(--green)", pct: 100, icon: "ti-circle-check" };
+    const connStatus = (l.connect && l.connect.status) || (l.cfg.connect && l.cfg.connect.status) || null;
+    if (l.picks.length >= total || connStatus === "complete") return { label: "Draft complete", color: "var(--green)", pct: 100, icon: "ti-circle-check" };
     if (l.picks.length > 0) return { label: `Drafting · ${l.picks.length}/${total}`, color: "var(--gold)", pct: Math.round((l.picks.length / total) * 100), icon: "ti-player-play" };
     return { label: "Ready to draft", color: "var(--mut)", pct: 0, icon: "ti-flag-3" };
   };
@@ -7920,8 +7925,13 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                   {/* actions */}
                   <div style={{ display: "flex", gap: 7, flexShrink: 0, alignItems: "center" }}>
                     <button onClick={() => onUmbrella(l.id)} style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: `1px solid ${draftLive ? "var(--gold)" : "var(--line2)"}`, background: draftLive ? "var(--gold)" : "var(--panel3)", color: draftLive ? "#151002" : "var(--ink)", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>
-                      <i className="ti ti-clipboard-text" style={{ fontSize: 14 }} aria-hidden="true" />{draftLive ? "Resume" : "Draft room"}
+                      <i className="ti ti-clipboard-text" style={{ fontSize: 14 }} aria-hidden="true" />{draftLive ? "Resume" : st.pct === 100 ? "League hub" : "Draft room"}
                     </button>
+                    {st.pct === 100 && onOfficial && (
+                      <button onClick={() => onOfficial(l.id)} title="Reopen the completed draft — board, grades, and recap, locked to draft-day values" style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--gold)", background: "rgba(242,182,60,.10)", color: "var(--gold)", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>
+                        <i className="ti ti-flag-3" style={{ fontSize: 14 }} aria-hidden="true" />View draft
+                      </button>
+                    )}
                     {isSleeper && onOpenHub && (
                       <button onClick={() => onOpenHub({ league_id: l.connect.leagueId })} style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--blue)", background: "rgba(107,168,229,.10)", color: "var(--blue)", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>
                         <i className="ti ti-user-heart" style={{ fontSize: 14 }} aria-hidden="true" />My Team
@@ -13586,25 +13596,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const since = [];
     for (let o = prevMine + 1; o < picks.length; o++) {
       const p = players[picks[o]];
-      if (p) since.push({ o, p, delta: p.adp != null ? Math.round((o + 1) - p.adp) : 0 });
+      if (p) since.push({ o, p, by: TEAM_NAMES[teamAt(o)] || `Team ${teamAt(o) + 1}`, delta: p.adp != null ? Math.round((o + 1) - p.adp) : 0 });
     }
     if (!since.length) return;
     recapShownAtRef.current = picks.length;
     const pickNum = picks.length + 1;
     const posCounts = { QB: 0, RB: 0, WR: 0, TE: 0 };
     since.forEach((s) => { if (posCounts[s.p.pos] != null) posCounts[s.p.pos]++; });
-    const steals = since.filter((s) => s.delta <= -6).sort((a, b) => a.delta - b.delta).slice(0, 4);
-    const reaches = since.filter((s) => s.delta >= 6).sort((a, b) => b.delta - a.delta).slice(0, 4);
     const slipping = sortedAdp
       .filter((p) => !draftedSet.has(p.id) && p.adp != null && (pickNum - p.adp) >= 5)
       .slice(0, 6)
       .map((p) => ({ p, slip: Math.round(pickNum - p.adp) }));
     setRecapDontShow(false);
     setTurnRecap({
-      pickNum, sinceN: since.length, since, posCounts, steals, reaches, slipping,
+      pickNum, sinceN: since.length, since, posCounts, slipping,
       run: advice && advice.run ? advice.run : null,
       verdict: advice && advice.verdict ? advice.verdict : null,
-      alts: advice && advice.alts ? advice.alts.slice(0, 3) : [],
+      alts: advice && advice.alts ? advice.alts.slice(0, 5) : [],
     });
   }, [started, done, onClock, userIdx, picks, players, sortedAdp, draftedSet, advice]);
   // The overall index of YOUR next pick (whether you're on the clock right now or it's coming up).
@@ -18484,37 +18492,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   </span>
                 )}
               </div>
-              {/* Notable picks while you waited */}
-              {(recap.steals.length > 0 || recap.reaches.length > 0) && (
-                <div style={{ display: "grid", gridTemplateColumns: recap.steals.length && recap.reaches.length ? "1fr 1fr" : "1fr", gap: 10 }}>
-                  {recap.steals.length > 0 && (
-                    <div>
-                      <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700, marginBottom: 4 }}>Values that went</div>
-                      {recap.steals.map((s) => (
-                        <div key={s.o} style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 12.5, padding: "2px 0" }}>
-                          <span className="mut num" style={{ width: 34, flexShrink: 0 }}>{pickLabel(s.o)}</span>
-                          <span style={{ color: POS_COLOR[s.p.pos] || "var(--ink)", fontWeight: 700 }}>{s.p.pos}</span>
-                          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.p.name}</span>
-                          <span className="num" style={{ color: "var(--green)", fontWeight: 700 }}>{s.delta} vs ADP</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {recap.reaches.length > 0 && (
-                    <div>
-                      <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700, marginBottom: 4 }}>Reaches</div>
-                      {recap.reaches.map((s) => (
-                        <div key={s.o} style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 12.5, padding: "2px 0" }}>
-                          <span className="mut num" style={{ width: 34, flexShrink: 0 }}>{pickLabel(s.o)}</span>
-                          <span style={{ color: POS_COLOR[s.p.pos] || "var(--ink)", fontWeight: 700 }}>{s.p.pos}</span>
-                          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.p.name}</span>
-                          <span className="num" style={{ color: "#F2655C", fontWeight: 700 }}>+{s.delta} vs ADP</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
               {/* Who's slipping to you */}
               {recap.slipping.length > 0 && (
                 <div>
@@ -18528,19 +18505,68 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   </div>
                 </div>
               )}
-              {/* Condensed "Your decision" */}
-              {recap.verdict && (
-                <div style={{ border: "1px solid rgba(242,182,60,.4)", background: "rgba(242,182,60,.06)", borderRadius: 10, padding: "9px 12px" }}>
-                  <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700, marginBottom: 3 }}>Your decision</div>
-                  <div style={{ fontSize: 14 }}>
-                    <b style={{ color: "var(--gold)" }}>{recap.verdict.name}</b>
-                    <span style={{ color: POS_COLOR[recap.verdict.pos] || "var(--mut)", fontWeight: 700, marginLeft: 6 }}>{recap.verdict.pos}</span>
-                    {recap.verdict.adp != null && <span className="mut num" style={{ marginLeft: 6, fontSize: 12 }}>ADP {Math.round(recap.verdict.adp)}</span>}
-                    {recap.alts.length > 0 && <span className="mut" style={{ fontSize: 12, marginLeft: 8 }}>or {recap.alts.map((a) => a.name).join(" · ")}</span>}
+              {/* YOUR DECISION — the candidates in full, top recommendation pinned & highlighted */}
+              {recap.verdict && (() => {
+                const rows = [recap.verdict, ...recap.alts.filter((a) => a.id !== recap.verdict.id)];
+                const th = { fontFamily: "'Barlow Condensed'", textTransform: "uppercase", letterSpacing: ".05em", fontSize: 10.5, color: "var(--mut)", textAlign: "left", padding: "4px 8px", borderBottom: "1px solid var(--line)" };
+                const thR = { ...th, textAlign: "right" };
+                const td = { padding: "5px 8px", fontSize: 12.5, borderBottom: "1px solid rgba(255,255,255,.04)", whiteSpace: "nowrap" };
+                const tdR = { ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" };
+                return (
+                  <div style={{ border: "1px solid rgba(242,182,60,.4)", background: "rgba(242,182,60,.05)", borderRadius: 10, overflow: "hidden" }}>
+                    <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700, padding: "8px 12px 2px" }}>Your decision</div>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead><tr><th style={th}>Player</th><th style={th}>Pos</th><th style={thR}>Pos rk</th><th style={thR}>ADP</th><th style={thR}>VBD</th><th style={thR}>Value</th><th style={thR}>Proj</th></tr></thead>
+                      <tbody>
+                        {rows.map((p, i) => {
+                          const top = i === 0;
+                          return (
+                            <tr key={p.id} style={top ? { background: "rgba(242,182,60,.16)", boxShadow: "inset 3px 0 0 var(--gold)" } : undefined}>
+                              <td style={{ ...td, fontWeight: top ? 800 : 500, color: top ? "var(--gold)" : "var(--ink)" }}>{top && <i className="ti ti-star-filled" style={{ fontSize: 10, marginRight: 5 }} aria-hidden="true" />}{p.name} <span className="mut" style={{ fontWeight: 400 }}>{p.team}</span></td>
+                              <td style={{ ...td, color: POS_COLOR[p.pos] || "var(--ink)", fontWeight: 700 }}>{p.pos}</td>
+                              <td style={tdR}>{p.posRank != null ? `${p.pos}${p.posRank}` : "—"}</td>
+                              <td style={tdR}>{p.adp != null ? Math.round(p.adp * 10) / 10 : "—"}</td>
+                              <td style={tdR}>{p.vbd != null ? Math.round(p.vbd) : "—"}</td>
+                              <td style={tdR}>{p.value != null ? Math.round(p.value) : "—"}</td>
+                              <td style={tdR}>{p.pts != null ? Math.round(p.pts) : "—"}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    <div className="mut" style={{ fontSize: 10.5, padding: "4px 12px 8px" }}>Full reasoning, take-now-vs-wait, and availability live in the Your Decision panel.</div>
                   </div>
-                  <div className="mut" style={{ fontSize: 11, marginTop: 3 }}>Full reasoning, take-now-vs-wait, and availability live in the Your Decision panel.</div>
-                </div>
-              )}
+                );
+              })()}
+              {/* EVERY PICK SINCE YOUR LAST — the complete stretch of the draft you just sat through */}
+              {recap.since.length > 0 && (() => {
+                const th = { fontFamily: "'Barlow Condensed'", textTransform: "uppercase", letterSpacing: ".05em", fontSize: 10.5, color: "var(--mut)", textAlign: "left", padding: "4px 8px", borderBottom: "1px solid var(--line)", position: "sticky", top: 0, background: "var(--panel)" }; 
+                const thR = { ...th, textAlign: "right" };
+                const td = { padding: "4px 8px", fontSize: 12, borderBottom: "1px solid rgba(255,255,255,.04)", whiteSpace: "nowrap" };
+                const tdR = { ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" };
+                return (
+                  <div>
+                    <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700, marginBottom: 4 }}>Every pick since your last</div>
+                    <div style={{ maxHeight: 210, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8 }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                        <thead><tr><th style={th}>Pick</th><th style={th}>Pos</th><th style={th}>Player</th><th style={th}>Drafted by</th><th style={thR}>ADP</th><th style={thR}>± ADP</th></tr></thead>
+                        <tbody>
+                          {recap.since.map((sr) => (
+                            <tr key={sr.o}>
+                              <td style={{ ...td, fontVariantNumeric: "tabular-nums" }} className="mut">{pickLabel(sr.o)}</td>
+                              <td style={{ ...td, color: POS_COLOR[sr.p.pos] || "var(--ink)", fontWeight: 700 }}>{sr.p.pos}</td>
+                              <td style={td}>{sr.p.name} <span className="mut">{sr.p.team}</span></td>
+                              <td style={{ ...td, maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis" }} className="mut">{sr.by}</td>
+                              <td style={tdR}>{sr.p.adp != null ? Math.round(sr.p.adp * 10) / 10 : "—"}</td>
+                              <td style={{ ...tdR, fontWeight: 700, color: sr.delta <= -5 ? "var(--green)" : sr.delta >= 5 ? "#F2655C" : "var(--mut)" }}>{sr.delta > 0 ? `+${sr.delta}` : sr.delta}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", borderTop: "1px solid var(--line)", background: "var(--panel2)" }}>
               <label style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12, cursor: "pointer", flex: 1 }} className="mut">
