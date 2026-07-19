@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18b";
+const BUILD_TAG = "2026.07.18c";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -16583,9 +16583,18 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     else if (isStarter) { starter++; starterList.push(p); }
                     else if ((p.pts || 0) >= 20 || (p.posDepth != null && p.posDepth <= 2)) { depth++; depthList.push(p); }
                   });
-                  return { pos, elite, starter, depth, total: pool.length, eliteList, starterList, depthList };
+                  // Order every tier by ADP (the draft-relevant order: who the room will take next),
+                  // falling back to positional rank for players without an ADP.
+                  const byAdp = (a, b) => (a.adp != null ? a.adp : (a.posRank || 999) + 500) - (b.adp != null ? b.adp : (b.posRank || 999) + 500);
+                  eliteList.sort(byAdp); starterList.sort(byAdp); depthList.sort(byAdp);
+                  // PROGRESSIVE TIERS: only surface a tier when it's actually part of the current decision.
+                  // Early, with a pile of starters still on the board, "4 depth" is noise — depth only appears
+                  // once starters run thin (≤5) or out. Same idea up top: once the elite tier is empty it
+                  // stops being a number and becomes a small "elite gone" note.
+                  const showDepth = starter <= 5;
+                  return { pos, elite, starter, depth, total: pool.length, eliteList, starterList, depthList, showDepth };
                 });
-                const maxBar = Math.max(1, ...rows.map((r) => r.elite + r.starter + Math.min(r.depth, 10)));
+                const maxBar = Math.max(1, ...rows.map((r) => r.elite + r.starter + (r.showDepth ? Math.min(r.depth, 10) : 0)));
                 const listTip = (label, pos, arr, tone) => (e) => showTip(e, [
                   { kind: "take", tone, x: `${pos} — ${label} (${arr.length})` },
                   ...(arr.length
@@ -16601,21 +16610,25 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 3 }}>
                             <span style={{ fontWeight: 800, color: POS_COLOR[r.pos], fontSize: 13 }}>{r.pos}</span>
                             <span className="num" style={{ fontSize: 11.5 }}>
-                              <span style={{ cursor: "help" }} onMouseEnter={listTip("Elite", r.pos, r.eliteList, "good")} onMouseLeave={hideTip}><b style={{ color: r.elite > 0 ? "var(--gold)" : "var(--mut)" }}>{r.elite}</b><span className="mut"> elite</span></span><span className="mut"> · </span>
-                              <span style={{ cursor: "help" }} onMouseEnter={listTip("Starters (real NFL role)", r.pos, r.starterList, r.starter > 0 ? "neutral" : "bad")} onMouseLeave={hideTip}><b style={{ color: r.starter > 0 ? "var(--ink)" : "var(--mut)" }}>{r.starter}</b><span className="mut"> starter</span></span><span className="mut"> · </span>
-                              <span style={{ cursor: "help" }} onMouseEnter={listTip("Depth", r.pos, r.depthList, "neutral")} onMouseLeave={hideTip}><b style={{ color: "var(--mut)" }}>{r.depth}</b><span className="mut"> depth</span></span>
+                              {r.elite > 0
+                                ? <span style={{ cursor: "help" }} onMouseEnter={listTip("Elite", r.pos, r.eliteList, "good")} onMouseLeave={hideTip}><b style={{ color: "var(--gold)" }}>{r.elite}</b><span className="mut"> elite</span></span>
+                                : <span className="mut" style={{ fontStyle: "italic", fontSize: 10.5 }}>elite gone</span>}
+                              <span className="mut"> · </span>
+                              <span style={{ cursor: "help" }} onMouseEnter={listTip("Starters (real NFL role)", r.pos, r.starterList, r.starter > 0 ? "neutral" : "bad")} onMouseLeave={hideTip}><b style={{ color: r.starter > 0 ? "var(--ink)" : "var(--mut)" }}>{r.starter}</b><span className="mut"> starter</span></span>
+                              {r.showDepth && (<><span className="mut"> · </span>
+                              <span style={{ cursor: "help" }} onMouseEnter={listTip("Depth", r.pos, r.depthList, "neutral")} onMouseLeave={hideTip}><b style={{ color: "var(--mut)" }}>{r.depth}</b><span className="mut"> depth</span></span></>)}
                             </span>
                           </div>
                           <div style={{ display: "flex", height: 8, borderRadius: 4, overflow: "hidden", background: "var(--panel2)", cursor: "help" }}
                             onMouseEnter={(e) => showTip(e, [
-                              { kind: "take", tone: r.elite > 0 ? "good" : r.starter > 0 ? "neutral" : "bad", x: `${r.pos} on the board — ${r.elite} elite · ${r.starter} starter · ${r.depth} depth` },
-                              ...(r.eliteList.length ? [{ kind: "altheader", x: "Elite" }, { kind: "playertable", cols: ["rank", "name", "team", "age", "pts"], players: r.eliteList.slice(0, 5) }] : []),
-                              ...(r.starterList.length ? [{ kind: "altheader", x: "Starters (real NFL role)" }, { kind: "playertable", cols: ["rank", "name", "team", "role", "pts"], players: r.starterList.slice(0, 6) }] : [{ kind: "altheader", x: "Starters" }, { t: "—", x: "none left" }]),
-                              ...(r.depthList.length ? [{ kind: "altheader", x: "Depth" }, { kind: "playertable", cols: ["rank", "name", "team", "pts"], players: r.depthList.slice(0, 4) }] : []),
+                              { kind: "take", tone: r.elite > 0 ? "good" : r.starter > 0 ? "neutral" : "bad", x: `${r.pos} on the board — ${r.elite} elite · ${r.starter} starter${r.showDepth ? ` · ${r.depth} depth` : ""}` },
+                              ...(r.eliteList.length ? [{ kind: "altheader", x: "Elite (by ADP)" }, { kind: "playertable", cols: ["rank", "name", "team", "age", "pts"], players: r.eliteList.slice(0, 5) }] : []),
+                              ...(r.starterList.length ? [{ kind: "altheader", x: "Starters (real NFL role, by ADP)" }, { kind: "playertable", cols: ["rank", "name", "team", "role", "pts"], players: r.starterList.slice(0, 6) }] : [{ kind: "altheader", x: "Starters" }, { t: "—", x: "none left" }]),
+                              ...(r.showDepth && r.depthList.length ? [{ kind: "altheader", x: "Depth (by ADP)" }, { kind: "playertable", cols: ["rank", "name", "team", "pts"], players: r.depthList.slice(0, 4) }] : []),
                             ])} onMouseLeave={hideTip}>
                             <div style={{ width: `${(r.elite / maxBar) * 100}%`, background: "var(--gold)" }} />
                             <div style={{ width: `${(r.starter / maxBar) * 100}%`, background: POS_COLOR[r.pos], opacity: 0.7 }} />
-                            <div style={{ width: `${(Math.min(r.depth, 10) / maxBar) * 100}%`, background: POS_COLOR[r.pos], opacity: 0.28 }} />
+                            {r.showDepth && <div style={{ width: `${(Math.min(r.depth, 10) / maxBar) * 100}%`, background: POS_COLOR[r.pos], opacity: 0.28 }} />}
                           </div>
                           {gone && <div className="mut" style={{ fontSize: 10, marginTop: 2, color: "var(--red)" }}>No startable {r.pos} left — depth/streaming only</div>}
                         </div>
@@ -16624,7 +16637,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     <div style={{ display: "flex", gap: 12, marginTop: 2, fontSize: 10.5 }}>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 8, borderRadius: 2, background: "var(--gold)" }} /><span className="mut">Elite</span></span>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 8, borderRadius: 2, background: "var(--mut)", opacity: 0.7 }} /><span className="mut">Starter</span></span>
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 8, borderRadius: 2, background: "var(--mut)", opacity: 0.3 }} /><span className="mut">Depth</span></span>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 8, borderRadius: 2, background: "var(--mut)", opacity: 0.3 }} /><span className="mut">Depth (shows once starters run thin)</span></span>
                     </div>
                   </div>
                 );
@@ -18521,8 +18534,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         {rows.map((p, i) => {
                           const top = i === 0;
                           return (
-                            <tr key={p.id} style={top ? { background: "rgba(242,182,60,.16)", boxShadow: "inset 3px 0 0 var(--gold)" } : undefined}>
-                              <td style={{ ...td, fontWeight: top ? 800 : 500, color: top ? "var(--gold)" : "var(--ink)" }}>{top && <i className="ti ti-star-filled" style={{ fontSize: 10, marginRight: 5 }} aria-hidden="true" />}{p.name} <span className="mut" style={{ fontWeight: 400 }}>{p.team}</span></td>
+                            <tr key={p.id} style={top ? { background: "rgba(242,182,60,.16)" } : undefined}>
+                              <td style={{ ...td, boxShadow: `inset 3px 0 0 ${top ? "var(--gold)" : (POS_COLOR[p.pos] || "var(--line2)")}` }}>{top && <i className="ti ti-star-filled" style={{ fontSize: 10, marginRight: 5, color: "var(--gold)" }} aria-hidden="true" />}<PosName p={p} /> <span className="mut" style={{ fontWeight: 400 }}>{p.team}</span></td>
                               <td style={{ ...td, color: POS_COLOR[p.pos] || "var(--ink)", fontWeight: 700 }}>{p.pos}</td>
                               <td style={tdR}>{p.posRank != null ? `${p.pos}${p.posRank}` : "—"}</td>
                               <td style={tdR}>{p.adp != null ? Math.round(p.adp * 10) / 10 : "—"}</td>
@@ -18549,7 +18562,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700, marginBottom: 4 }}>Every pick since your last</div>
                     <div style={{ maxHeight: 210, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8 }}>
                       <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                        <thead><tr><th style={th}>Pick</th><th style={th}>Pos</th><th style={th}>Player</th><th style={th}>Drafted by</th><th style={thR}>ADP</th><th style={thR}>± ADP</th></tr></thead>
+                        <thead><tr><th style={th}>Pick</th><th style={th}>Pos</th><th style={th}>Player</th><th style={th}>Drafted by</th><th style={thR}>ADP</th><th style={thR} title="+ = fell past ADP (value for the drafter) · − = taken ahead of ADP (reach)">± ADP</th></tr></thead>
                         <tbody>
                           {recap.since.map((sr) => (
                             <tr key={sr.o}>
@@ -18558,7 +18571,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               <td style={td}>{sr.p.name} <span className="mut">{sr.p.team}</span></td>
                               <td style={{ ...td, maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis" }} className="mut">{sr.by}</td>
                               <td style={tdR}>{sr.p.adp != null ? Math.round(sr.p.adp * 10) / 10 : "—"}</td>
-                              <td style={{ ...tdR, fontWeight: 700, color: sr.delta <= -5 ? "var(--green)" : sr.delta >= 5 ? "#F2655C" : "var(--mut)" }}>{sr.delta > 0 ? `+${sr.delta}` : sr.delta}</td>
+                              <td style={{ ...tdR, fontWeight: 700, color: sr.delta >= 5 ? "var(--green)" : sr.delta <= -5 ? "#F2655C" : "var(--mut)" }}>{sr.delta > 0 ? `+${sr.delta}` : sr.delta}</td>
                             </tr>
                           ))}
                         </tbody>
