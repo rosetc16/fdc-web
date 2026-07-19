@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18g";
+const BUILD_TAG = "2026.07.18h";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -15203,7 +15203,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-gauge" style={{ fontSize: 11, color: "var(--gold)" }} aria-hidden="true" /><span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--gold)", fontWeight: 800 }}>How you're doing</span><i className="ti ti-info-circle" style={{ fontSize: 10, color: "var(--mut)", cursor: "help" }} aria-hidden="true" onMouseEnter={(e) => showTip(e, [{ kind: "take", tone: "neutral", x: "How you're doing" }, { t: "What this shows", x: "A per-position read on your roster: how many starters you have vs. need (red = unfilled), where you rank at that position in the league, a quick strength Read, and the best player still available there. Up top: your build lane (win-now vs. rebuild) and projected finish." }, { t: "Tip", x: "Hover any position row for its full breakdown and your players there." }])} onMouseLeave={hideTip} /></div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}><i className={`ti ${lane.i}`} style={{ fontSize: 11, color: lane.c }} aria-hidden="true" /><span style={{ fontSize: 10.5, fontWeight: 700, color: lane.c }}>{showBuild ? lane.t : "…"}</span></span>
+                      <span onMouseEnter={(e) => showTip(e, [
+                        { kind: "take", tone: "neutral", x: `Build mode — ${showBuild ? lane.t : "forming"}` },
+                        { t: "How it's decided", x: isReDraft
+                          ? "Redraft leagues are ALWAYS Win-now: the roster resets after this season, so the engine drafts purely for this year's points."
+                          : "Dynasty/keeper: after ~4 skill-position picks, the engine reads the weighted average age of your core (early picks count more). Young core (≤24.5 avg) that ISN'T projected to contend → Rebuild; young core that IS contending (top ~45% projected finish) → Balanced; veteran core (≥27.5 avg) → Win-now; in between → Balanced. Confidence grows as more picks come in." },
+                        ...(!isReDraft && myWindow.decided ? [{ t: "Your inputs", x: `Avg core age ${myWindow.avgAge != null ? myWindow.avgAge.toFixed(1) : "—"} across ${myWindow.picksIn} skill picks${finish != null ? ` · projected ${ordinal(finish)} of ${TEAMS}` : ""}` }] : []),
+                        { t: "What it changes", x: "Sets the My-Build lens and the advice tilt: Rebuild lifts young players and rookies, Win-now lifts proven veterans, Balanced takes pure value." },
+                      ])} onMouseLeave={hideTip} style={{ display: "inline-flex", alignItems: "center", gap: 3, cursor: "help" }}><i className={`ti ${lane.i}`} style={{ fontSize: 11, color: lane.c }} aria-hidden="true" /><span style={{ fontSize: 10.5, fontWeight: 700, color: lane.c }}>{showBuild ? lane.t : "…"}</span></span>
                       <span onMouseEnter={finishTip} onMouseLeave={finishTip ? hideTip : undefined} style={{ display: "inline-flex", alignItems: "baseline", gap: 2, cursor: finishTip ? "help" : "default" }}><span style={{ fontSize: 14, fontWeight: 800, color: finishColor, lineHeight: 1 }}>{finish != null ? ordinal(finish) : "—"}</span><span className="mut" style={{ fontSize: 8.5 }}>/{TEAMS}</span></span>
                     </div>
                   </div>
@@ -15375,7 +15382,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             {/* ===== ZONE 2: LAST PICKS ===== */}
             {(() => {
               const dynasty = isDynastyCfg(cfg);
-              const recent = picks.slice(-6).map((pk, i) => ({ pk, o: picks.length - Math.min(6, picks.length) + i })).reverse();
+              const recent = picks.slice(-5).map((pk, i) => ({ pk, o: picks.length - Math.min(5, picks.length) + i })).reverse();
               const moreTip = (e) => showTip(e, [
                 { kind: "take", tone: "neutral", x: `Recent picks — draft Score (value vs. where he went)` },
                 { kind: "playertable", cols: ["pick", "pos", "name", "drafter", "adp", "score", "valread"], players: picks.slice(-22).map((pk, i) => { const oo = Math.max(0, picks.length - Math.min(22, picks.length)) + i; const pp = players[pk]; if (!pp) return null; const gap = pp.adp != null ? Math.round((oo + 1) - pp.adp) : 0; const vr = gap >= 8 ? { t: "steal", c: "#5FD0A8" } : gap <= -8 ? { t: "reach", c: "#F2655C" } : { t: "fair", c: "var(--mut)" }; const mine = teamAt(oo) === userIdx; return { ...pp, pickNo: oo + 1, pickScore: (graded[oo] ? graded[oo].val : pickValue(pp, oo, cfg)), drafter: mine ? "You" : teamFullLabel(teamAt(oo)), valRead: vr, rec: mine, star: mine }; }).filter(Boolean).reverse() },
@@ -15450,7 +15457,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               const cur = path && path[0] ? path[0] : null;
               const allCands = cur && cur.cands5 && cur.cands5.length ? cur.cands5 : null;
               const projPick = allCands ? allCands[0] : null;       // the engine's projected pick (or your top rec)
-              const alts = allCands ? allCands.slice(1, 4) : null;   // 3 alternatives
+              const alts = allCands ? allCands.slice(1, 3) : null;   // 2 alternatives (vertical space)
               const curTip = currentPred ? (e) => showTip(e, (() => {
                 const cAll = cur && cur.cands5 && cur.cands5.length ? cur.cands5 : null;
                 return [
@@ -15459,15 +15466,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 ];
               })()) : undefined;
               return (
-                <div className="tickcard clock" style={{ borderColor: isYou ? "var(--gold)" : "#33476B", padding: "5px 10px", cursor: curTip ? "help" : "default", height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }} onMouseEnter={curTip} onMouseLeave={curTip ? hideTip : undefined}>
+                <div className="tickcard clock" style={{ borderColor: isYou ? "var(--gold)" : "#33476B", borderWidth: isYou ? 2 : 1, background: isYou ? "linear-gradient(165deg, rgba(242,182,60,.16), rgba(24,31,40,1) 58%)" : undefined, boxShadow: isYou ? "0 0 16px rgba(242,182,60,.30), inset 0 0 26px rgba(242,182,60,.05)" : undefined, padding: "5px 10px", cursor: curTip ? "help" : "default", height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }} onMouseEnter={curTip} onMouseLeave={curTip ? hideTip : undefined}>
+                  {/* ONE compact header row: pick + overall on the left, team name (and live timer) on the
+                      right. The old second row (team / overall / "YOUR PICK" pill) is gone — when it's your
+                      pick, the whole card goes loud gold instead, which reads faster than a pill. */}
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-                    <span style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: isYou ? "var(--gold)" : "var(--mut)", fontWeight: 700 }}>On the clock · {pickLabel(picks.length)}</span>
-                    {connected && (liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? <span className="num mut" style={{ fontSize: 13 }}>no timer</span> : clock <= 0 ? <span className="num" style={{ fontSize: 20, color: "var(--red)", fontWeight: 800, letterSpacing: ".02em" }}>overdue</span> : <span className="num" style={{ fontSize: 22, lineHeight: 1, color: clock <= 15 ? "var(--red)" : "var(--ink)", fontWeight: 800, letterSpacing: ".02em", background: clock <= 15 ? "rgba(242,101,92,.16)" : "rgba(255,255,255,.06)", padding: "3px 9px", borderRadius: 6, fontVariantNumeric: "tabular-nums" }}>{fmtClock(clock)}</span>)}
-                  </div>
-                  <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 3 }}>
-                    <span title={isYou ? "Your team" : teamFullLabel(onClock)} style={{ fontSize: 14, fontWeight: 800, color: isYou ? "var(--gold)" : "var(--ink)", cursor: "help" }}>{isYou ? "YOU" : (TEAM_NAMES[onClock] || `Team ${onClock + 1}`).split(" ")[0]}</span>
-                    <span className="mut" style={{ fontSize: 9 }}>overall {picks.length + 1}</span>
-                    {isYou && <span style={{ marginLeft: "auto", fontSize: 8.5, fontWeight: 700, color: "var(--gold)", background: "rgba(242,182,60,.14)", padding: "1px 6px", borderRadius: 4, textTransform: "uppercase", letterSpacing: ".04em" }}>Your pick</span>}
+                    <span style={{ fontSize: isYou ? 10 : 9, textTransform: "uppercase", letterSpacing: ".05em", color: isYou ? "var(--gold)" : "var(--mut)", fontWeight: 800 }}>{isYou ? "You're on the clock" : "On the clock"} · {pickLabel(picks.length)} <span style={{ opacity: .7 }}>({picks.length + 1})</span></span>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                      <span title={isYou ? "Your team" : teamFullLabel(onClock)} style={{ fontSize: 11, fontWeight: 800, color: isYou ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 96, cursor: "help" }}>{isYou ? "YOU" : (TEAM_NAMES[onClock] || `Team ${onClock + 1}`).split(" ")[0]}</span>
+                      {connected && (liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? <span className="num mut" style={{ fontSize: 13 }}>no timer</span> : clock <= 0 ? <span className="num" style={{ fontSize: 20, color: "var(--red)", fontWeight: 800, letterSpacing: ".02em" }}>overdue</span> : <span className="num" style={{ fontSize: 22, lineHeight: 1, color: clock <= 15 ? "var(--red)" : "var(--ink)", fontWeight: 800, letterSpacing: ".02em", background: clock <= 15 ? "rgba(242,101,92,.16)" : "rgba(255,255,255,.06)", padding: "3px 9px", borderRadius: 6, fontVariantNumeric: "tabular-nums" }}>{fmtClock(clock)}</span>)}
+                    </span>
                   </div>
                   {/* projected pick (with photo) + 3 alternatives */}
                   <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4, flex: 1 }}>
@@ -15531,7 +15539,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               // Use the full projected path (path[0] is the on-clock pick shown separately), so we can show a
               // deep look-ahead here regardless of the compact displayPath used elsewhere.
               const upSource = path.slice(1).filter((s) => s && s.o > picks.length && s.p);
-              const upcoming = upSource.slice(0, 6);
+              const upcoming = upSource.slice(0, 5);
               const untilMine = myNextOverall != null ? Math.max(0, myNextOverall - picks.length) : null;
               const untilColor = untilMine == null ? "var(--mut)" : untilMine <= 1 ? "#F2655C" : untilMine <= 3 ? "var(--gold)" : "#5FD0A8";
               // second upcoming user pick — "then N" — so you can see the full gap before you're back after your next
@@ -16055,6 +16063,19 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 // Only surface NON-OBVIOUS reads (the pick number is already in the selector; the two recs are
                 // right below). Priority order — we cap at 3.
                 // 1) Positional run in progress (actionable: tiers thinning at a position).
+                // 0) ALWAYS-ON: your build mode, stated plainly so the lens behind every rec is explicit.
+                {
+                  const isReDraftHere = !(isDynastyCfg(cfg));
+                  const laneMapD = { rebuild: { i: "ti-seedling", c: "#5FD0A8", t: "Rebuild" }, winnow: { i: "ti-flame", c: "#F2655C", t: "Win-now" }, balanced: { i: "ti-scale", c: "var(--gold)", t: "Balanced" } };
+                  const lk = isReDraftHere ? "winnow" : (myWindow.decided ? myWindow.lane : null);
+                  const lmeta = lk ? laneMapD[lk] : { i: "ti-loader", c: "var(--mut)", t: "Forming" };
+                  const why = isReDraftHere ? "redraft drafts for this season only"
+                    : !myWindow.decided ? `reads your window after ~4 skill picks (${myWindow.picksIn} in)`
+                    : lk === "rebuild" ? `young core (avg age ${myWindow.avgAge != null ? myWindow.avgAge.toFixed(1) : "—"}), not projected to contend — youth & rookies lifted`
+                    : lk === "winnow" ? (isReDraftHere ? "" : `veteran core (avg age ${myWindow.avgAge != null ? myWindow.avgAge.toFixed(1) : "—"}) — proven producers lifted`)
+                    : `avg age ${myWindow.avgAge != null ? myWindow.avgAge.toFixed(1) : "—"}${myWindow.avgAge != null && myWindow.avgAge <= 25 ? ", young but competing" : ""} — taking pure value`;
+                  summaryBits.push({ i: lmeta.i, c: lmeta.c, t: `Build mode: ${lmeta.t} — ${why}.` });
+                }
                 if (run && run.count >= 3) summaryBits.push({ i: "ti-flame", c: "#F2655C", t: `${run.pos} run underway — ${run.count} of the last 8 picks. That tier is thinning.` });
                 // 2) A value cliff / last-of-tier at the recommended position.
                 const gapNote = (() => {
@@ -16074,7 +16095,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 if (fallerNote && summaryBits.length < 3) summaryBits.push(fallerNote);
                 // 4) Fallback if we somehow have room and nothing above fired: the biggest roster need.
                 if (summaryBits.length < 2 && need.length) summaryBits.push({ i: "ti-clipboard-list", c: "var(--gold)", t: `Biggest hole: still need a starter at ${need.join(", ")}.` });
-                const summaryBitsCapped = summaryBits.slice(0, 3);
+                const summaryBitsCapped = summaryBits.slice(0, 4); // build mode + up to 3 actionable reads
 
                 // ---- Recommendation duo (headshots): balanced + my-build top pick ----
                 const recCard = (p, label, accent, both) => {
@@ -17727,7 +17748,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 // ---- additional awards computed across all teams ----
                 const nm = (i) => i === userIdx ? "Your team" : (TEAM_NAMES[i] || `Team ${i + 1}`);
                 // total draft value (sum of pickValue) per team
-                const teamVal = Array.from({ length: TEAMS }, (_, i) => ({ i, v: graded.filter((g) => g.t === i).reduce((s, g) => s + g.val, 0) }));
+                // Use the SAME normalized value the final grades speak in (valByTeam), not raw ADP spots —
+                // so "Most total value +77" here matches the "+77 draft value" on the grade card exactly.
+                const teamVal = Array.from({ length: TEAMS }, (_, i) => ({ i, v: valByTeam[i] || 0 }));
                 const valKing = teamVal.slice().sort((a, b) => b.v - a.v)[0];
                 // best projected starting lineup (uses proj rosters)
                 let lineupKing = null;
@@ -17763,7 +17786,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   <div className="superlative-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 }}>
                     {steal && steal.val > 0 && award("ti-diamond", "Best value", steal.p.name, `${steal.p.pos}${steal.p.posRank} to ${steal.t === userIdx ? "you" : TEAM_NAMES[steal.t]} — ${steal.val.toFixed(0)} spots past ADP`, "var(--green)", steal.t === focusIdx, [{ kind: "take", tone: "good", x: `Best value — ${steal.p.name}` }, { kind: "playercard", p: steal.p, extraChips: [`+${steal.val.toFixed(0)} spots past ADP`] }])}
                     {reach && reach.val < 0 && award("ti-flame", "Biggest reach", reach.p.name, `${reach.p.pos}${reach.p.posRank} by ${reach.t === userIdx ? "you" : TEAM_NAMES[reach.t]} — ${Math.abs(reach.val).toFixed(0)} spots early`, "var(--red)", reach.t === focusIdx, [{ kind: "take", tone: "bad", x: `Biggest reach — ${reach.p.name}` }, { kind: "playercard", p: reach.p, extraChips: [`${Math.abs(reach.val).toFixed(0)} spots early`] }])}
-                    {valKing && valKing.v > 0 && award("ti-coins", "Value champ", nm(valKing.i), `Most total draft value — +${valKing.v.toFixed(0)} spots across the board`, "var(--green)", valKing.i === focusIdx, tt(`${nm(valKing.i)} — best value picks`, teamValuePicks(valKing.i).slice(0, 8), ["rank", "name", "team", "pts", "value"]))}
+                    {valKing && valKing.v > 0 && award("ti-coins", "Value champ", nm(valKing.i), `Most total draft value — +${valKing.v.toFixed(0)} draft value (same scale as the final grades)`, "var(--green)", valKing.i === focusIdx, tt(`${nm(valKing.i)} — best value picks`, teamValuePicks(valKing.i).slice(0, 8), ["rank", "name", "team", "pts", "value"]))}
                     {lineupKing && award("ti-crown", "Best on paper", nm(lineupKing.i), `Top projected starting lineup — ${Math.round(lineupKing.v)} pts`, "var(--gold)", lineupKing.i === focusIdx, tt(`${nm(lineupKing.i)} — starting lineup (${Math.round(lineupKing.v)} pts)`, teamStarters(lineupKing.i), ["slot", "rank", "name", "team", "pts"]))}
                     {powerhouse && award("ti-bolt", `${powerhouse.pos} powerhouse`, nm(powerhouse.i), `Loaded at ${powerhouse.pos} — ${powerhouse.names}`, POS_COLOR[powerhouse.pos], powerhouse.i === focusIdx, tt(`${nm(powerhouse.i)} — ${powerhouse.pos} corps`, teamDrafted(powerhouse.i).filter((p) => p.pos === powerhouse.pos).sort((a, b) => (b.vbd || 0) - (a.vbd || 0)), ["rank", "name", "team", "age", "pts", "vbd"]))}
                     {youngest && award("ti-seedling", "Youth movement", nm(youngest.i), `Youngest core — ${youngest.avg.toFixed(1)} avg age`, "var(--green)", youngest.i === focusIdx, tt(`${nm(youngest.i)} — youngest players`, teamDrafted(youngest.i).filter((p) => p.age).sort((a, b) => a.age - b.age).slice(0, 8), ["rank", "name", "team", "age", "pts"]))}
