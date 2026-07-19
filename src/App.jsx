@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18c";
+const BUILD_TAG = "2026.07.18d";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -130,6 +130,27 @@ function migrateRankSets(user) {
     });
   }
   return { ...user, rankSets: sets, season: user.season || CURRENT_SEASON };
+}
+// ---- RANK LIST PERSISTENCE (names, not ids) -----------------------------------------------------
+// A rank set's stored `list` persists NORMALIZED PLAYER NAMES. It used to persist raw player ids —
+// but ids are just the player's index in the data array at build time, so every data refresh could
+// silently remap a saved ranking onto DIFFERENT players (the "my top-ranked players are names I've
+// never heard of" corruption). Names are stable across rebuilds. In-session we still work with ids
+// (fast + what the UI already uses): convert on load with rankNamesToIds and on save with
+// rankIdsToNames. Legacy numeric entries are mapped through the current pool (best we can do) and
+// get rewritten as names on the next save, which permanently stops the drift.
+function rankNamesToIds(list, players) {
+  if (!list || !list.length) return [];
+  const byN = {}; players.forEach((p) => { byN[normName(p.name)] = p.id; });
+  const out = []; const seen = new Set();
+  list.forEach((e) => {
+    const id = typeof e === "string" ? byN[e] : (players[e] ? e : null);
+    if (id != null && !seen.has(id)) { out.push(id); seen.add(id); }
+  });
+  return out;
+}
+function rankIdsToNames(ids, players) {
+  return (ids || []).map((id) => (players[id] ? normName(players[id].name) : null)).filter(Boolean);
 }
 
 const setTeams = (n) => { TEAMS = Math.max(2, Math.min(20, n || 12)); };
@@ -1767,6 +1788,7 @@ function buildPlayers(cfg) {
   // period). We keep p.vbd as this raw number so the "VBD" column always means what people expect. The
   // dynasty-specific re-weighting lives in p.value (below), not in VBD.
   ps.forEach((p) => { p.vbd = VBD_POS.includes(p.pos) ? Math.round((p.pts - repl[p.pos]) * 10) / 10 : -50; p.vbd0 = p.vbd; });
+  FLEX_BASE = Math.max(repl.RB || 0, repl.WR || 0) || null; // flex slot's replacement level (see marginalVbd)
   // ---- DYNASTY VALUE ADJUSTMENT --------------------------------------------------------------
   // "Value" is the composite ranking number. In REDRAFT, value === VBD (you're just trying to win now). In
   // DYNASTY, value weighs age / long-term outlook on top of VBD, because you're also banking future seasons.
@@ -2440,7 +2462,22 @@ function marginalVbd(c, counts, sf) {
   let surplus = 0; ["RB","WR","TE"].forEach((p) => (surplus += Math.max(0, counts[p] - req[p])));
   if (superOnly > 0) surplus += Math.max(0, counts.QB - req.QB);
   const eligible = c.pos !== "QB" || superOnly > 0 || sf;
-  if (surplus < G && eligible) return c.vbd;
+  if (surplus < G && eligible) {
+    // ===== FLEX-BASIS CORRECTION (RB/WR/TE whose starting slots are FILLED, heading for FLEX) =====
+    // Positional VBD compares a player to HIS OWN position's replacement level — the right measure for
+    // a starting slot, but flattering for a FLEX candidate from a low-baseline position (TE above all).
+    // A TE with +37 TE-VBD can project FEWER raw points than a WR with +19 WR-VBD, yet the flex slot
+    // only cares about points: whichever body you slot there displaces the same flex-replacement
+    // alternative. So a flex-bound candidate is valued at points above the FLEX replacement level
+    // (the higher of the RB/WR baselines), with a small floor of positional VBD retained for backup/
+    // bye utility at his own position. Starting-slot candidates are untouched — full positional VBD —
+    // and best ball keeps full VBD too (depth genuinely scores there via auto-start spike weeks).
+    if (!BB && FLEX_BASE != null && c.pts != null && (c.pos === "RB" || c.pos === "WR" || c.pos === "TE")) {
+      const flexVbd = Math.round((c.pts - FLEX_BASE) * 10) / 10;
+      return Math.max(flexVbd, c.vbd * 0.3);
+    }
+    return c.vbd;
+  }
   // SPECIAL CASE — surplus QB in a 1-QB (non-superflex) league. A QB past your starter can't fill FLEX or a
   // bye the way a surplus RB/WR/TE can, so in a SHALLOW league his real roster value is tiny. BUT the size of
   // that discount depends on the league:
@@ -2487,6 +2524,10 @@ function setByeLoad(load, counts) { BYE_LOAD = load || {}; BYE_COUNTS = counts |
 // NOW so a high-leverage run doesn't freeze you out of it. Keyed by position; 0 = no scarcity pressure.
 let SCARCITY_PREM = { QB: 0, RB: 0, WR: 0, TE: 0 };
 function setScarcityPrem(m) { SCARCITY_PREM = m || { QB: 0, RB: 0, WR: 0, TE: 0 }; }
+// FLEX replacement level (season points). Set by buildPlayers from the same repl[] the VBD baselines
+// use: the flex slot's real alternative is the best widely-available flex body, i.e. the HIGHER of the
+// RB/WR baselines. Used by marginalVbd to value flex-bound candidates on a common basis.
+let FLEX_BASE = null;
 // Rookie-only drafts are dynasty by definition (they only exist inside a dynasty/keeper league), so every
 // value/strength read should treat them with the age-aware dynasty model rather than raw this-year VBD.
 function isDynastyCfg(cfg) { return !!(cfg && (cfg.type === "dynasty" || cfg.type === "keeper" || cfg.type === "rookie")); }
@@ -3342,7 +3383,10 @@ function Tooltip({ tip, children }) {
   const anchorY = tip.anchorY != null ? tip.anchorY : tip.y;
   // Flip horizontally if we're close to the right edge; vertically centre on the cursor but clamp near edges.
   const flipX = tip.x > W * 0.6;
-  const nearTop = anchorY < H * 0.25;
+  // Grow DOWN from the cursor across the whole upper half of the screen (was only the top 25%):
+  // centering (-50%) a tall tip anchored at ~30% height pushed its top clean off the page — the
+  // "hover the top Last Picks row and the tip bleeds off" bug. Down-growth + maxHeight always fits.
+  const nearTop = anchorY < H * 0.48;
   const nearBottom = anchorY > H * 0.75;
   const tx = flipX ? "calc(-100% - 12px)" : "12px";
   const ty = nearTop ? "0" : nearBottom ? "-100%" : "-50%";
@@ -10469,14 +10513,14 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
   const byId = useMemo(() => { const m = {}; players.forEach((p) => (m[p.id] = p)); return m; }, [players]);
   const byAdp = useMemo(() => players.slice().sort((a, b) => a.adp - b.adp), [players]);
 
-  const [list, setList] = useState(set.list || []);
+  const [list, setList] = useState(rankNamesToIds(set.list || [], players));
   const [name, setName] = useState(set.name);
   const [search, setSearch] = useState("");
   const [showImport, setShowImport] = useState(false);
   const [impQ, setImpQ] = useState("");
   const [showPaste, setShowPaste] = useState(false);
   const [pasteText, setPasteText] = useState("");
-  useEffect(() => { setList(set.list || []); setName(set.name); }, [set.id]);
+  useEffect(() => { setList(rankNamesToIds(set.list || [], players)); setName(set.name); }, [set.id]);
 
   const inList = new Set(list);
   const adj = user.rankAdj || {};
@@ -10570,7 +10614,7 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
   // there), and "Clear all" empties it (unranked players fall to their consensus spot, so the board runs on
   // pure ADP with no personal overrides).
   const resetToAdp = () => { setList(byAdp.filter((p) => POS.includes(p.pos)).map((p) => p.id)); flashMsg("Reset to ADP order — tweak from here"); };
-  const saveList = () => { onSaveList(list); flashMsg("Rankings saved"); };
+  const saveList = () => { onSaveList(rankIdsToNames(list, players)); flashMsg("Rankings saved"); };
   const placedSet = new Set(list);
 
   // adjustments
@@ -10608,8 +10652,8 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
       <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="Rankings" />
       <div style={{ maxWidth: 820, margin: "0 auto", padding: "20px 20px 50px" }}>
         <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-          <button className="btn btn-mini" onClick={() => { onSaveList(list); onBackToList(); }}>← All ranking sets</button>
-          {returnToDraft && <button className="btn btn-mini btn-gold" onClick={() => { onSaveList(list); returnToDraft(); }}><i className="ti ti-arrow-back-up" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Save &amp; return to draft</button>}
+          <button className="btn btn-mini" onClick={() => { onSaveList(rankIdsToNames(list, players)); onBackToList(); }}>← All ranking sets</button>
+          {returnToDraft && <button className="btn btn-mini btn-gold" onClick={() => { onSaveList(rankIdsToNames(list, players)); returnToDraft(); }}><i className="ti ti-arrow-back-up" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Save &amp; return to draft</button>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
           <input className="gs disp" style={{ fontSize: 20, fontWeight: 700, flex: "1 1 220px", minWidth: 0 }} value={name} onChange={(e) => setName(e.target.value)} onBlur={() => name.trim() && name !== set.name && onRename(name.trim())} />
@@ -12765,7 +12809,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // taken" right after reopening a saved mock. Reopened mocks therefore start PAUSED and wait for you to hit
   // play; a fresh mock still waits for "Start mock" as before.
   const [started, setStarted] = useState((!isMock && !isDemo) || (league.picks || []).length > 0);
-  const [paused, setPaused] = useState(isMock && (league.picks || []).length > 0);
+  // Autodraft runs unless YOU pause it. This used to initialize paused=true when reopening an
+  // in-progress mock — a silent pause that made users think a CPU pick was theirs and draft for the
+  // wrong team. Now reopening resumes autodraft immediately; pausing is always an explicit click.
+  const [paused, setPaused] = useState(false);
   // Free-demo welcome modal — explains it's redraft-only, 3 rounds, and that dynasty/custom/Sleeper are paid.
   const [showDemoIntro, setShowDemoIntro] = useState(isDemo);
   // How picks are entered. Mocks AND the demo default to AUTO (engine drafts opponents, stops on
@@ -12873,6 +12920,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [endConfirm, setEndConfirm] = useState(false);
   const [ranksWarn, setRanksWarn] = useState(false);
   const [inRoomRanks, setInRoomRanks] = useState(null); // when set, an in-draft PERSONAL ranking editor (array of ids)
+  const [inRoomRanksSet, setInRoomRanksSet] = useState(null); // the SAVED set being edited in-draft (null = fresh in-room board)
   const [platEditor, setPlatEditor] = useState(null); // when set, the Platform Ranks editor: array of {id, adp}
   const [needMode, setNeedMode] = useState("strength"); // strength | filled
   const [needSort, setNeedSort] = useState({ key: "order", dir: 1 }); // league-needs table sort: key + direction (1 asc / -1 desc)
@@ -13103,13 +13151,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const list = rec && Array.isArray(rec.list) ? rec.list : null;
     if (!list || !list.length) return { has: false, map: {} };
     const map = {};
+    const byN = {}; players.forEach((p) => { byN[normName(p.name)] = p.id; });
     list.forEach((entry, i) => {
-      if (!entry || entry.id == null) return;
+      if (!entry) return;
+      // Resolve by NAME first (stable across data refreshes); fall back to the legacy raw id.
+      const id = entry.n != null ? byN[entry.n] : entry.id;
+      if (id == null) return;
       // ADP: use the typed number if present, else the player's position in the platform list (1-based).
-      map[entry.id] = entry.adp != null && entry.adp !== "" ? +entry.adp : (i + 1);
+      map[id] = entry.adp != null && entry.adp !== "" ? +entry.adp : (i + 1);
     });
     return { has: true, map };
-  }, [user, league]);
+  }, [user, league, players]);
   useEffect(() => { if (platRanks.has) setCols((c) => (c.edge && c.platAdp ? c : { ...c, edge: true, platAdp: true })); }, [platRanks.has]);
   // Everyone who is off the board: picks made, no-cost keepers, and any forced picks that live ahead of the
   // current slot (commissioner filler, early-written keepers). A forced-ahead player is genuinely owned, so he
@@ -14914,7 +14966,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         {/* For a CONNECTED live draft, Sleeper drives the picks — pausing, sim speed, manual end, undo, and
             manual save don't apply (picks sync automatically). Those controls stay for mocks/manual drafts. */}
         {!isConnectedLive && !done && <>
-          <button className="btn" onClick={() => setPaused((p) => !p)}>{paused ? "▶ Resume" : "❚❚ Pause"}</button>
+          <button className={`btn${paused ? " btn-gold" : ""}`} onClick={() => setPaused((p) => !p)} title={paused ? "Autodraft is PAUSED — CPU picks are stopped until you resume" : "Pause autodraft (CPU picks stop until you resume)"}>{paused ? "▶ Resume — PAUSED" : "❚❚ Pause"}</button>
           <button className="btn" onClick={() => setFast((f) => !f)}>{fast ? "Fast" : "Normal"}</button>
           {isMock && <button className="btn" style={{ borderColor: mockTradingOn ? "var(--gold)" : "var(--line)", color: mockTradingOn ? "var(--gold)" : "var(--ink)" }} onClick={() => setMockTradingOn((t) => !t)} title="Propose trades to CPU teams mid-mock — they only accept fair, format-aware deals">{mockTradingOn ? "Trading on" : "Trading off"}</button>}
           <button className="btn" onClick={() => setEndConfirm(true)} title="Stop here and jump to the summary & grades for the picks so far" disabled={picks.length < 6}>End draft</button>
@@ -16598,7 +16650,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const listTip = (label, pos, arr, tone) => (e) => showTip(e, [
                   { kind: "take", tone, x: `${pos} — ${label} (${arr.length})` },
                   ...(arr.length
-                    ? [{ kind: "playertable", cols: ["rank", "name", "team", "age", "pts"], players: arr.slice(0, 12) }, ...(arr.length > 12 ? [{ t: "", x: `+${arr.length - 12} more` }] : [])]
+                    ? [{ kind: "playertable", cols: ["rank", "name", "team", "adp", "pts"], players: arr.slice(0, 12) }, ...(arr.length > 12 ? [{ t: "", x: `+${arr.length - 12} more` }] : [])]
                     : [{ t: "—", x: "None left on the board" }]),
                 ]);
                 return (
@@ -16622,9 +16674,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           <div style={{ display: "flex", height: 8, borderRadius: 4, overflow: "hidden", background: "var(--panel2)", cursor: "help" }}
                             onMouseEnter={(e) => showTip(e, [
                               { kind: "take", tone: r.elite > 0 ? "good" : r.starter > 0 ? "neutral" : "bad", x: `${r.pos} on the board — ${r.elite} elite · ${r.starter} starter${r.showDepth ? ` · ${r.depth} depth` : ""}` },
-                              ...(r.eliteList.length ? [{ kind: "altheader", x: "Elite (by ADP)" }, { kind: "playertable", cols: ["rank", "name", "team", "age", "pts"], players: r.eliteList.slice(0, 5) }] : []),
-                              ...(r.starterList.length ? [{ kind: "altheader", x: "Starters (real NFL role, by ADP)" }, { kind: "playertable", cols: ["rank", "name", "team", "role", "pts"], players: r.starterList.slice(0, 6) }] : [{ kind: "altheader", x: "Starters" }, { t: "—", x: "none left" }]),
-                              ...(r.showDepth && r.depthList.length ? [{ kind: "altheader", x: "Depth (by ADP)" }, { kind: "playertable", cols: ["rank", "name", "team", "pts"], players: r.depthList.slice(0, 4) }] : []),
+                              ...(r.eliteList.length ? [{ kind: "altheader", x: "Elite (by ADP)" }, { kind: "playertable", cols: ["rank", "name", "team", "adp", "pts"], players: r.eliteList.slice(0, 5) }] : []),
+                              ...(r.starterList.length ? [{ kind: "altheader", x: "Starters (real NFL role, by ADP)" }, { kind: "playertable", cols: ["rank", "name", "team", "adp", "pts"], players: r.starterList.slice(0, 6) }] : [{ kind: "altheader", x: "Starters" }, { t: "—", x: "none left" }]),
+                              ...(r.showDepth && r.depthList.length ? [{ kind: "altheader", x: "Depth (by ADP)" }, { kind: "playertable", cols: ["rank", "name", "team", "adp", "pts"], players: r.depthList.slice(0, 4) }] : []),
                             ])} onMouseLeave={hideTip}>
                             <div style={{ width: `${(r.elite / maxBar) * 100}%`, background: "var(--gold)" }} />
                             <div style={{ width: `${(r.starter / maxBar) * 100}%`, background: POS_COLOR[r.pos], opacity: 0.7 }} />
@@ -18205,7 +18257,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         return (
         <div className="modalbg" onClick={() => setRanksWarn(false)}>
           <div className="panel" style={{ maxWidth: 520, width: "100%", padding: 22, borderColor: "var(--gold)", maxHeight: "85vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
-            <div className="disp" style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Your rankings for this draft</div>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+              <div className="disp" style={{ fontSize: 20, fontWeight: 700, marginBottom: 4, flex: 1 }}>Your rankings for this draft</div>
+              <button className="btn btn-mini" onClick={() => setRanksWarn(false)} title="Close"><i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true" /></button>
+            </div>
             <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 14 }}>Pick a saved board to use here, or build a new one. We show every <b style={{ color: "var(--ink)" }}>{typeFamily(cfg.type) === "dynasty" ? "dynasty/keeper" : typeFamily(cfg.type) === "bestball" ? "best ball" : "redraft"}</b> board you've made and flag any that don't perfectly match this league's format.</div>
 
             {sets.length > 0 ? (
@@ -18224,7 +18279,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       </div>
                       {/* per-set actions: view/edit, and delete (with confirm) */}
                       <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-                        <button className="btn btn-mini" onClick={() => { onSave(picks, preds); onEditRankSet && onEditRankSet(set.id); }} title="View and edit this ranking set">
+                        <button className="btn btn-mini" onClick={() => {
+                          // Edit IN a popup over the draft — never navigate away mid-draft. (The old behavior
+                          // routed to the Rankings hub, which silently left the draft with no obvious way back.)
+                          setInRoomRanksSet(set);
+                          setInRoomRanks(rankNamesToIds(set.list || [], players));
+                          setRanksWarn(false);
+                        }} title="View and edit this ranking set right here, over the draft">
                           <i className="ti ti-pencil" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />View / edit
                         </button>
                         <button className="btn btn-mini" style={{ color: "var(--red)", borderColor: "rgba(242,101,92,.4)" }}
@@ -18270,7 +18331,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   setRanksWarn(false);
                   // seed the platform editor from an existing saved platform list, else from the board ADP order
                   const existing = user && user.platformRanks && user.platformRanks[lgId] && Array.isArray(user.platformRanks[lgId].list) ? user.platformRanks[lgId].list : null;
-                  if (existing && existing.length) setPlatEditor(existing.map((e) => ({ id: e.id, adp: e.adp != null ? e.adp : "" })));
+                  if (existing && existing.length) { const byN = {}; players.forEach((p) => { byN[normName(p.name)] = p.id; }); setPlatEditor(existing.map((e) => ({ id: e.n != null && byN[e.n] != null ? byN[e.n] : e.id, adp: e.adp != null ? e.adp : "" })).filter((e) => e.id != null)); }
                   else setPlatEditor(players.filter((p) => POS.includes(p.pos)).slice().sort((a, b) => a.adp - b.adp).slice(0, 200).map((p) => ({ id: p.id, adp: "" })));
                 }} title="Platform Ranks: enter the ADP your league platform (Sleeper etc.) shows. Drives the Edge column — market ADP vs your platform's ADP.">
                   <i className="ti ti-clipboard-list" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Platform Ranks
@@ -18294,7 +18355,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         return (
         <div className="modalbg" onClick={() => setInRoomRanks(null)}>
           <div className="panel" style={{ maxWidth: 460, width: "100%", padding: 18, borderColor: "var(--gold)", maxHeight: "88vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
-            <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 3 }}>Build your rankings</div>
+            <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 3 }}>{inRoomRanksSet ? `Editing: ${inRoomRanksSet.name}` : "Build your rankings"}</div>
             <div className="mut" style={{ fontSize: 11.5, marginBottom: 10, lineHeight: 1.45 }}>Starting from Sleeper consensus for this format. Drag the <i className="ti ti-grip-vertical" style={{ fontSize: 11 }} aria-hidden="true" /> handle or use arrows to move players. Save attaches it to this league &amp; format and powers your Edge / My ADP / Blend columns.</div>
             <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8 }}>
               {inRoomRanks.slice(0, 120).map((id, i) => { const p = byId[id]; if (!p) return null; return (
@@ -18313,9 +18374,19 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               ); })}
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-              <button className="btn" onClick={() => setInRoomRanks(null)}>Cancel</button>
+              <button className="btn" onClick={() => { setInRoomRanks(null); setInRoomRanksSet(null); }}>Cancel</button>
               <div style={{ flex: 1 }} />
-              <button className="btn btn-gold" onClick={() => { onSaveInRoomRanks && onSaveInRoomRanks(inRoomRanks, cfg, lgId); setInRoomRanks(null); }}><i className="ti ti-device-floppy" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Save &amp; use</button>
+              <button className="btn btn-gold" onClick={() => {
+                const names = rankIdsToNames(inRoomRanks, players); // persist NAMES — stable across data refreshes
+                if (inRoomRanksSet && user) {
+                  // editing a saved set from the My Ranks popup → update THAT set in place
+                  const sets = (user.rankSets || []).map((rs) => rs.id === inRoomRanksSet.id ? { ...rs, list: names, edited: new Date().toLocaleDateString(), editedTs: Date.now() } : rs);
+                  onUpdate && onUpdate({ rankSets: sets });
+                } else {
+                  onSaveInRoomRanks && onSaveInRoomRanks(names, cfg, lgId);
+                }
+                setInRoomRanks(null); setInRoomRanksSet(null);
+              }}><i className="ti ti-device-floppy" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />{inRoomRanksSet ? "Save changes" : "Save & use"}</button>
             </div>
           </div>
         </div>
@@ -18332,7 +18403,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         const sortByAdp = () => setPlatEditor((l) => l.slice().sort((a, b) => (a.adp !== "" && a.adp != null ? +a.adp : 9999) - (b.adp !== "" && b.adp != null ? +b.adp : 9999)));
         const save = () => {
           // keep only rows that map to a real player; store id + adp (blank adp → use list position at read time)
-          const list = platEditor.filter((e) => e && byId[e.id]).map((e) => ({ id: e.id, adp: e.adp === "" || e.adp == null ? null : +e.adp }));
+          const list = platEditor.filter((e) => e && byId[e.id]).map((e) => ({ id: e.id, n: normName(byId[e.id].name), adp: e.adp === "" || e.adp == null ? null : +e.adp }));
           const pr = { ...(user.platformRanks || {}), [lgId]: { list, updated: Date.now() } };
           onUpdate && onUpdate({ platformRanks: pr });
           setPlatEditor(null);
@@ -18910,7 +18981,8 @@ function pickRankSet(user, cfg, leagueId) {
 function resolveMyRanks(players, cfg, user, rankAdj, leagueId) {
   const key = formatKey(cfg);
   const set = pickRankSet(user, cfg, leagueId);
-  const list = set && set.list && set.list.length ? set.list : null;
+  const rawList = set && set.list && set.list.length ? set.list : null;
+  const list = rawList ? rankNamesToIds(rawList, players) : null; // names (new) or legacy ids → session ids
   const hasAdj = rankAdj && Object.keys(rankAdj).length > 0;
   if ((!list || !list.length) && !hasAdj) return { map: {}, key, has: false, setName: null };
   const byAdp = players.slice().sort((a, b) => a.adp - b.adp);
