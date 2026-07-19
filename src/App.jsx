@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18e";
+const BUILD_TAG = "2026.07.18f";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5077,8 +5077,8 @@ export default function App() {
     setLeagues(next); persist({ leagues: next });
     setActiveId(lg.id); setRoute("draft");
   };
-  const saveLeague = (id, picks, preds) => {
-    const next = leagues.map((l) => (l.id === id ? { ...l, picks, preds, lastPickAt: Date.now() } : l));
+  const saveLeague = (id, picks, preds, pickNames, predNames) => {
+    const next = leagues.map((l) => (l.id === id ? { ...l, picks, preds, ...(pickNames ? { pickNames, predNames } : {}), lastPickAt: Date.now() } : l));
     setLeagues(next); persist({ leagues: next });
   };
   const updateLeagueCfg = (id, cfg) => {
@@ -5115,7 +5115,7 @@ export default function App() {
   // nothing about the market, and letting it feed trends/history would skew everything downstream. We record
   // the flag at save time so every consumer can filter consistently.
   const MOCK_MIN_PICKS_FOR_TRENDS = 24; // ~2 full rounds — enough for the board to mean something
-  const saveMock = (picks, preds) => {
+  const saveMock = (picks, preds, pickNames, predNames) => {
     if (!mockLeague) return;
     const rounds = (mockLeague.cfg && mockLeague.cfg.rounds) || 15;
     const teams = (mockLeague.cfg && mockLeague.cfg.teams) || 12;
@@ -5123,7 +5123,7 @@ export default function App() {
     const pctDone = total > 0 ? picks.length / total : 0;
     // Substantial = a real chunk of the board: at least ~2 rounds AND at least a quarter of the draft.
     const substantial = picks.length >= MOCK_MIN_PICKS_FOR_TRENDS && pctDone >= 0.25;
-    const entry = { id: mockLeague.id, picks, preds, ran: new Date().toLocaleString(), at: Date.now(), n: picks.length, total, substantial, complete: picks.length >= total };
+    const entry = { id: mockLeague.id, picks, preds, ...(pickNames ? { pickNames, predNames } : {}), ran: new Date().toLocaleString(), at: Date.now(), n: picks.length, total, substantial, complete: picks.length >= total };
     if (mockLeague.mockOf == null) {
       // standalone "fun" mock — store in the global funMocks list, not under a league
       const e2 = { ...entry, name: mockLeague.name, cfg: mockLeague.cfg };
@@ -5220,10 +5220,10 @@ export default function App() {
         onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} onGuide={() => { setHelpTab("guide"); setRoute("help"); }} onAccount={() => setRoute("account")} onAdmin={() => setRoute("admin")} onSignOut={signOut}
         onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }}
         onDraftTrends={() => setRoute("draftTrends")}
-        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null }); setActiveId(m.id); setRoute("draft"); }} onDeleteFun={deleteFunMock} />}
+        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onDeleteFun={deleteFunMock} />}
       {route === "leagueHub" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? <LeagueUmbrella user={user} league={lg} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")}
         onOfficial={(id) => { setDraftTab(null); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
-        onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null }); setActiveId(m.id); setRoute("draft"); }}
+        onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }}
         onDeleteMock={deleteMock} onDelete={(id) => { deleteLeague(id); setRoute(user.paid ? "home" : "library"); }}
         onOpenTeamHub={lg.cfg.connect && lg.cfg.connect.leagueId ? () => { setHubLeagueId(lg.cfg.connect.leagueId); setRoute("teamHub"); } : null} /> : null; })()}
       {route === "teamHub" && user && hubLeagueId && <TeamHub user={user} leagues={leagues} leagueId={hubLeagueId} onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} onUpdate={updateUser} />}
@@ -5242,11 +5242,11 @@ export default function App() {
       {route === "draftTrends" && user && <DraftTrendsPage user={user} leagues={leagues} funMocks={funMocks} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user?.paid ? "home" : "library")} onOpenLeague={(id) => { setActiveId(id); setRoute("leagueHub"); }} />}
       {route === "help" && <HelpPage user={user} biz={biz} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user ? (user.paid ? "home" : "library") : "home")} onSubmit={submitFeedback} initialTab={helpTab} />}
       {route === "checkout" && user && <Checkout biz={biz} user={user} onDone={completePurchase} onBack={() => setRoute("home")} />}
-      {route === "library" && user && <Library user={user} leagues={leagues} onNew={() => setRoute("setup")} onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onDelete={deleteLeague} onAdmin={() => setRoute("admin")} onSignOut={signOut} onHome={() => setRoute("home")} onAccount={() => setRoute("account")} onDeleteMock={deleteMock} onOpenMockView={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onDatabase={() => setRoute("database")} onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} funMockCount={funMocks.length} />}
+      {route === "library" && user && <Library user={user} leagues={leagues} onNew={() => setRoute("setup")} onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onDelete={deleteLeague} onAdmin={() => setRoute("admin")} onSignOut={signOut} onHome={() => setRoute("home")} onAccount={() => setRoute("account")} onDeleteMock={deleteMock} onOpenMockView={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onDatabase={() => setRoute("database")} onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} funMockCount={funMocks.length} />}
       {route === "database" && user && <DraftsDatabase leagues={leagues} funMocks={funMocks} user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")}
         onOpenLeague={(id) => { setActiveId(id); setRoute("draft"); }}
-        onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null }); setActiveId(m.id); setRoute("draft"); }}
-        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onTrendsTime={() => setRoute("trendsTime")} onDelete={deleteLeague} />}
+        onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }}
+        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onTrendsTime={() => setRoute("trendsTime")} onDelete={deleteLeague} />}
       {route === "trendsTime" && user && <TrendsOverTimePage user={user} leagues={leagues} funMocks={funMocks} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} onOpenLeague={(id) => { setActiveId(id); setRoute("leagueHub"); }} />}
       {route === "tradeTools" && user && <TradeToolsPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} />}
       {route === "adpIntel" && user && <AdpIntelPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} />}
@@ -5255,10 +5255,10 @@ export default function App() {
       {route === "setup" && <Setup onCreate={createLeague} onBack={() => { const r = setupReturn || (user?.paid ? "home" : "library"); setSetupReturn(null); setRoute(r); }} backLabel={setupReturn === "rankings" ? "Rankings" : user?.paid ? "Home" : "Library"} />}
       {route === "draft" && active && (
         <DraftRoom key={active.id} league={active} user={user} isMock={!!(mockLeague && active.id === mockLeague.id)} isDemo={!!active.demo} initialTab={draftTab} dataVersion={dataVersion} allLeagues={leagues} allFunMocks={funMocks}
-          onSave={(picks, preds) => {
+          onSave={(picks, preds, pickNames, predNames) => {
             if (active.id === "demo") setDemoLeague((d) => ({ ...d, picks, preds }));
-            else if (mockLeague && active.id === mockLeague.id) { setMockLeague((m) => ({ ...m, picks, preds })); saveMock(picks, preds); }
-            else saveLeague(active.id, picks, preds);
+            else if (mockLeague && active.id === mockLeague.id) { setMockLeague((m) => ({ ...m, picks, preds, pickNames, predNames })); saveMock(picks, preds, pickNames, predNames); }
+            else saveLeague(active.id, picks, preds, pickNames, predNames);
           }}
           onSaveSnap={(snap) => {
             // Persist a completion snapshot on whichever record owns this draft (see the writer in DraftRoom).
@@ -12807,6 +12807,27 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
   const [picks, setPicks] = useState(league.picks || []);
   const [preds, setPreds] = useState(league.preds || []);
+  // ---- NAME-STABLE PICK PERSISTENCE ----------------------------------------------------------
+  // Picks/preds are stored as pool ids for speed, but ids are just data-array indexes — a fresh data
+  // pack (hard refresh, new tab) can reshuffle them, silently remapping HISTORICAL picks onto
+  // different players. Saves therefore also persist each pick's normalized NAME, and on mount we
+  // remap the stored ids through the names against the CURRENT pool. Same fix as rank sets.
+  const pickNamesOf = (pks) => (pks || []).map((id) => (id != null && players[id] ? normName(players[id].name) : null));
+  useEffect(() => {
+    const remap = (arr, names) => {
+      if (!names || !names.length || !arr.length || arr.length !== names.length) return arr;
+      const byN = {}; players.forEach((p) => { byN[normName(p.name)] = p.id; });
+      let changed = false;
+      const out = arr.map((id, i) => { const nid = names[i] != null ? byN[names[i]] : undefined; if (nid != null && nid !== id) { changed = true; return nid; } return id; });
+      return changed ? out : arr;
+    };
+    if (players.length) {
+      setPicks((cur) => remap(cur, league.pickNames));
+      setPreds((cur) => remap(cur, league.predNames));
+    }
+    // mount-only: after this, the session works in current-pool ids and every save re-derives names
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // ---- HYPOTHETICAL / SCENARIO MODE -----------------------------------------------------------
   // Lets you "play out" picks on top of the live draft to see how decisions would cascade, without
   // affecting the real draft. While active, the live Sleeper sync is paused so your what-ifs aren't
@@ -13230,14 +13251,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     return { availRank: idx + 1, next, drop, startersLeft, starterLine, isLastStarter: (p.posRank || 99) <= starterLine && startersLeft <= 1 };
   };
   const done = picks.length >= TOTAL;
-  // ===== SNAPSHOT WRITER: the moment a draft completes, freeze draft-day values (ADP/VBD/value/proj)
-  // for every drafted player plus the top ~450 of the board, and persist it on the league/mock record.
-  // The players memo above overlays this forever after — so summaries, grades, and trends for a finished
-  // draft never drift as live ADP moves on. Written once (guarded by league.snap); demo drafts skip it.
-  // `retro` marks snapshots taken long after the draft actually ended (pre-feature completions) so the
-  // UI can be honest that values were locked late, not on draft day.
+  // ===== SNAPSHOT WRITER: the moment a draft STARTS (first pick lands), freeze draft-day values
+  // (ADP/VBD/value/proj) for every drafted player plus the top ~450 of the board, and persist it on the
+  // league/mock record. The players memo above overlays this from then on — which stabilizes the draft
+  // against page refreshes: a hard refresh or new tab pulls a FRESH data pack whose ADPs can differ
+  // mid-draft, silently changing recommendations, slipping reads, and grades between sessions. Locking
+  // at first pick means the whole draft — live rounds AND the post-draft summary — runs on one
+  // consistent data era. Written once (guarded by league.snap); demo drafts skip it. `retro` marks
+  // snapshots taken long after a pre-feature draft ended, so the UI can be honest about late locking.
   useEffect(() => {
-    if (!done || isDemo || league.snap || !onSaveSnap || !players.length) return;
+    if (!started || picks.length < 1 || isDemo || league.snap || !onSaveSnap || !players.length) return;
     const p = {};
     const wanted = new Set(picks.filter((id) => id != null));
     sortedAdp.slice(0, 450).forEach((pl) => wanted.add(pl.id));
@@ -13253,7 +13276,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     });
     const retro = league.lastPickAt ? (Date.now() - league.lastPickAt > 36 * 3600 * 1000) : false;
     onSaveSnap({ at: Date.now(), retro, p });
-  }, [done, isDemo, league.snap, players, sortedAdp, picks, onSaveSnap]);
+  }, [started, done, isDemo, league.snap, players, sortedAdp, picks, onSaveSnap]);
   // Demo stops after a limited number of rounds (it's not "complete" — you must purchase to continue).
   const demoCap = isDemo && cfg.demoRounds ? cfg.demoRounds * TEAMS : null;
   const demoCapped = demoCap != null && picks.length >= demoCap && !user?.paid;
@@ -13303,7 +13326,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   }, [keeperSig]);
 
   /* autosave every 5 picks and on completion */
-  useEffect(() => { if (picks.length && (picks.length % 5 === 0 || done)) onSave(picks, preds); }, [picks.length, done]);
+  useEffect(() => { if (picks.length && (picks.length % 5 === 0 || done)) onSave(picks, preds, pickNamesOf(picks), pickNamesOf(preds)); }, [picks.length, done]);
 
   // Sim count scales with how close YOUR pick is. During a fast mock, when your pick is many slots away,
   // running the full 300-path Monte Carlo on every CPU pick is what makes the cursor stutter — the main
@@ -14341,7 +14364,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const t = setInterval(() => setClock((c) => (c > 0 ? c - 1 : 0)), 1000);
     return () => clearInterval(t);
   }, [connected, done, paused, picks.length, liveClock]);
-  const exit = () => { onSave(picks, preds); onExit(); };
+  const exit = () => { onSave(picks, preds, pickNamesOf(picks), pickNamesOf(preds)); onExit(); };
 
   const hits = preds.filter((pr, i) => pr != null && pr === picks[i]).length;
   const posHits = preds.filter((pr, i) => pr != null && picks[i] != null && players[pr] && players[picks[i]] && players[pr].pos === players[picks[i]].pos).length;
@@ -14990,7 +15013,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           <button className="btn" onClick={() => setEndConfirm(true)} title="Stop here and jump to the summary & grades for the picks so far" disabled={picks.length < 6}>End draft</button>
         </>}
         {/* (single Undo lives below — an older non-connected Undo used to render here too, doubling up) */}
-        {!isConnectedLive && user && <button className="btn" onClick={() => { onSave(picks, preds); setCopied(true); setTimeout(() => setCopied(false), 1200); }}>{copied ? "Saved ✓" : "Save"}</button>}
+        {!isConnectedLive && user && <button className="btn" onClick={() => { onSave(picks, preds, pickNamesOf(picks), pickNamesOf(preds)); setCopied(true); setTimeout(() => setCopied(false), 1200); }}>{copied ? "Saved ✓" : "Save"}</button>}
         {isConnectedLive && <div className="chip" style={{ borderColor: "var(--green)", color: "var(--green)" }} title="Picks sync automatically from your Sleeper draft. There's nothing to save or pause."><i className="ti ti-bolt" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Live · auto-syncing</div>}
         {!done && (
           <button className="btn" onClick={undo} disabled={!picks.length}
@@ -17637,8 +17660,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <span className="mut" style={{ fontSize: 11.5 }}>{summaryTeam == null ? "Steals & reaches show the whole league; your roster is highlighted." : `Showing ${summaryTeam === userIdx ? "your" : TEAM_NAMES[summaryTeam] + "'s"} picks, steals & reaches.`}</span>
             {league.snap && (
               <span title={league.snap.retro
-                ? `This draft finished before value-locking existed, so its values were frozen when it was first reopened (${new Date(league.snap.at).toLocaleDateString()}) — close to, but not exactly, draft-day numbers.`
-                : `All ADPs, values, and projections on this draft were frozen at completion (${new Date(league.snap.at).toLocaleDateString()}). Nothing here drifts as live ADP changes.`}
+                ? `This draft ran before value-locking existed, so its values were frozen when it was first reopened (${new Date(league.snap.at).toLocaleDateString()}) — close to, but not exactly, draft-day numbers.`
+                : `All ADPs, values, and projections were frozen when this draft started (${new Date(league.snap.at).toLocaleDateString()}). Nothing here drifts as live ADP changes — refreshes included.`}
                 style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700, color: "var(--gold)", border: "1px solid rgba(242,182,60,.45)", background: "rgba(242,182,60,.08)", borderRadius: 20, padding: "2px 9px", cursor: "help" }}>
                 <i className="ti ti-lock" style={{ fontSize: 11 }} aria-hidden="true" />{league.snap.retro ? "Values locked (late)" : "Draft-day values locked"}
               </span>
@@ -17757,8 +17780,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const valRank = Array.from({ length: TEAMS }, (_, i) => i).sort((a, b) => valByTeam[b] - valByTeam[a]).indexOf(ti) + 1;
                 const label = (o) => `R${Math.floor(o / TEAMS) + 1}.${(o % TEAMS) + 1}`;
                 // League-wide top-5 steals & reaches (this is a full draft recap, not just your team).
-                const best5 = graded.slice().sort((a, b) => b.val - a.val).filter((g) => g.val > 0).slice(0, 5);
-                const worst5 = graded.slice().sort((a, b) => a.val - b.val).filter((g) => g.val < 0).slice(0, 5);
+                // Same metric as the "Biggest steals / reaches" panel (curve-weighted mval) so the two
+                // lists always agree — they used to sort by raw `val` and could disagree with the panel.
+                const best5 = graded.slice().sort((a, b) => b.mval - a.mval).filter((g) => g.mval > 0).slice(0, 5).map((g) => ({ ...g, val: g.mval }));
+                const worst5 = graded.slice().sort((a, b) => a.mval - b.mval).filter((g) => g.mval < 0).slice(0, 5).map((g) => ({ ...g, val: g.mval }));
                 const gradeOrder = Array.from({ length: TEAMS }, (_, i) => i).sort((a, b) => grades[b].z - grades[a].z);
                 const nm = (i) => (i === userIdx ? (TEAM_NAMES[i] || "You") : TEAM_NAMES[i]);
                 // Bottom summary line — one plain sentence of what happened.
@@ -18354,7 +18379,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 }} title="Platform Ranks: enter the ADP your league platform (Sleeper etc.) shows. Drives the Edge column — market ADP vs your platform's ADP.">
                   <i className="ti ti-clipboard-list" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Platform Ranks
                 </button>
-                <button className="btn" onClick={() => { setRanksWarn(false); onSave(picks, preds); onEditRanks && onEditRanks(); }}>Open full Rankings hub →</button>
+                <button className="btn" onClick={() => { setRanksWarn(false); onSave(picks, preds, pickNamesOf(picks), pickNamesOf(preds)); onEditRanks && onEditRanks(); }}>Open full Rankings hub →</button>
                 <div style={{ flex: 1 }} />
                 <button className="btn" onClick={() => setRanksWarn(false)}>Close</button>
               </div>
@@ -18554,7 +18579,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <div className="disp" style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>End the draft here?</div>
             <div className="mut" style={{ fontSize: 13, lineHeight: 1.55, marginBottom: 16 }}>You've made {picks.length} of {TOTAL} picks. We'll stop the draft and take you to the summary — grades, steals, reaches, and projected standings for everything drafted so far. {isMock ? "This mock stays saved in the league's history." : "You can keep reviewing the board afterward."}</div>
             <div style={{ display: "flex", gap: 8 }}>
-              <button className="btn btn-gold" onClick={() => { setEndConfirm(false); setPaused(true); onSave(picks, preds); setTab("summary"); }}>End & view summary</button>
+              <button className="btn btn-gold" onClick={() => { setEndConfirm(false); setPaused(true); onSave(picks, preds, pickNamesOf(picks), pickNamesOf(preds)); setTab("summary"); }}>End & view summary</button>
               <div style={{ flex: 1 }} />
               <button className="btn" onClick={() => setEndConfirm(false)}>Keep drafting</button>
             </div>
