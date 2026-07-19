@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18d";
+const BUILD_TAG = "2026.07.18e";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2310,6 +2310,9 @@ function buildPlayers(cfg) {
     // (the role column stays clean; the combined `usage` line carries it).
     const hasUpside = backupUpside[p.id] && p.posDepth != null && p.posDepth >= 3 && p.pos !== "QB" && !/Elite|Strong|Startable/.test(ft);
     if (hasUpside && p.role && !/upside/i.test(p.role)) p.role = `${p.role} — sleeper upside`;
+    // Durable flag for the draft engine (userScore's late-round bench logic): a backup the market drafts
+    // notably ahead of his peers, or an explicit handcuff role — the "could inherit the job" lottery tickets.
+    p.benchUpside = !!hasUpside || /handcuff/i.test(p.role || "");
     // Combined one-liner: NFL usage + fantasy expectation (skip the tier when it's redundant, e.g. deep depth).
     p.usage = p.role ? `${p.role} · ${ft} ${p.pos}` : `${ft} ${p.pos}`;
   });
@@ -2647,6 +2650,21 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build) {
   if (dynasty && c.value != null && c.vbd != null) {
     const blend = lane === "rebuild" ? 0.6 : lane === "winnow" ? 0.15 : 0.35;
     mvUse = mv * (1 - blend) + (mv + (c.value - c.vbd)) * blend;
+  }
+  // ===== LATE-ROUND BENCH BASIS ================================================================
+  // Once a position's starters are filled and the draft is deep (round 9+), a pick there is a bench
+  // lottery ticket — and MEAN projections carry almost no signal about lottery tickets. A handcuff
+  // like a rookie RB2 projects 26 points *on average* but returns a starter's season if the job
+  // breaks his way; the crowd prices exactly that contingency into ADP (which is why he goes AHEAD
+  // of higher-mean-projection players). So for bench-bound RB/WR/TE picks we progressively blend the
+  // points-based value toward (a) the market's order and (b) the engine's own bench-upside flag.
+  // Ramps in from round 9 (20%) to a 60% cap by round 11 — early and starter-slot picks untouched,
+  // best ball untouched (its depth genuinely scores on mean+spike projections).
+  if (!BB && ["RB", "WR", "TE"].includes(c.pos) && round >= 9 && counts[c.pos] >= (REQ_EFF(sf)[c.pos] || 0)) {
+    const w = Math.min(0.6, (round - 8) * 0.2);
+    const adpEdge = c.adp != null && pickNum != null ? Math.max(-25, Math.min(25, (pickNum - c.adp) * 1.2)) : 0;
+    const benchUp = c.benchUpside ? 12 : 0;
+    mvUse = mvUse * (1 - w) + w * (adpEdge + benchUp);
   }
   const needRaw = dem[c.pos] - counts[c.pos]; // >0 = still need starters here; <0 = over-stacked
   const needBonus = (BB ? 10 : 8) * Math.max(0, needRaw);
@@ -14971,7 +14989,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           {isMock && <button className="btn" style={{ borderColor: mockTradingOn ? "var(--gold)" : "var(--line)", color: mockTradingOn ? "var(--gold)" : "var(--ink)" }} onClick={() => setMockTradingOn((t) => !t)} title="Propose trades to CPU teams mid-mock — they only accept fair, format-aware deals">{mockTradingOn ? "Trading on" : "Trading off"}</button>}
           <button className="btn" onClick={() => setEndConfirm(true)} title="Stop here and jump to the summary & grades for the picks so far" disabled={picks.length < 6}>End draft</button>
         </>}
-        {!isConnectedLive && <button className="btn" onClick={undo} disabled={!picks.length} title="Undo last pick — test what-if scenarios">Undo</button>}
+        {/* (single Undo lives below — an older non-connected Undo used to render here too, doubling up) */}
         {!isConnectedLive && user && <button className="btn" onClick={() => { onSave(picks, preds); setCopied(true); setTimeout(() => setCopied(false), 1200); }}>{copied ? "Saved ✓" : "Save"}</button>}
         {isConnectedLive && <div className="chip" style={{ borderColor: "var(--green)", color: "var(--green)" }} title="Picks sync automatically from your Sleeper draft. There's nothing to save or pause."><i className="ti ti-bolt" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Live · auto-syncing</div>}
         {!done && (
