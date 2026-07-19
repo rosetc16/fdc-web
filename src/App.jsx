@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18f";
+const BUILD_TAG = "2026.07.18g";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13093,7 +13093,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // forever judged against 2026 draft-day numbers, not whatever ADP looks like months later. Keyed by
     // normalized name so it survives pool rebuilds/id shifts. (Tier chips still come from the live build;
     // the graded numbers — the part that matters — are locked.)
-    const snapP = league.snap && league.snap.p;
+    const snapP = league.snap && league.snap.v === 2 && league.snap.p; // v1 snaps could hold wrong-format data — ignore
     if (!snapP) return base;
     return base.map((p) => {
       const s = snapP[normName(p.name)];
@@ -13260,7 +13260,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // consistent data era. Written once (guarded by league.snap); demo drafts skip it. `retro` marks
   // snapshots taken long after a pre-feature draft ended, so the UI can be honest about late locking.
   useEffect(() => {
-    if (!started || picks.length < 1 || isDemo || league.snap || !onSaveSnap || !players.length) return;
+    if (!started || picks.length < 1 || isDemo || !onSaveSnap || !players.length) return;
+    if (league.snap && league.snap.v === 2) return; // already have a trustworthy snapshot
+    // CRITICAL RACE GUARD: the per-draft format-correct ADP overlay is fetched ASYNC — on first render
+    // the board may still show a DIFFERENT format's ADP (whatever league was viewed last, e.g. TE-prem).
+    // Snapshotting before the overlay settles froze those wrong-format values and then permanently
+    // overrode the correct ones when they arrived. So: only snapshot once the overlay for THIS draft's
+    // format has settled (applied, or definitively miss/rejected — never mid-load). Snaps are stamped
+    // v:2 + the format they captured; unstamped (v1) snaps from the brief buggy window are ignored by
+    // the reader below and rewritten here, which self-heals any draft that locked bad data.
+    if (hasBackend) {
+      const fmt = backendFormatKey(cfg);
+      const settled = LIVE_OVERLAY_TARGET === fmt && LIVE_OVERLAY_STATE && LIVE_OVERLAY_STATE !== "loading";
+      if (!settled) return;
+    }
     const p = {};
     const wanted = new Set(picks.filter((id) => id != null));
     sortedAdp.slice(0, 450).forEach((pl) => wanted.add(pl.id));
@@ -13275,7 +13288,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       ];
     });
     const retro = league.lastPickAt ? (Date.now() - league.lastPickAt > 36 * 3600 * 1000) : false;
-    onSaveSnap({ at: Date.now(), retro, p });
+    onSaveSnap({ v: 2, fmt: hasBackend ? backendFormatKey(cfg) : "local", at: Date.now(), retro, p });
   }, [started, done, isDemo, league.snap, players, sortedAdp, picks, onSaveSnap]);
   // Demo stops after a limited number of rounds (it's not "complete" — you must purchase to continue).
   const demoCap = isDemo && cfg.demoRounds ? cfg.demoRounds * TEAMS : null;
@@ -17658,7 +17671,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               {TEAM_NAMES.map((n, i) => <option key={i} value={i}>{i === userIdx ? "Your team" : n}</option>)}
             </select>
             <span className="mut" style={{ fontSize: 11.5 }}>{summaryTeam == null ? "Steals & reaches show the whole league; your roster is highlighted." : `Showing ${summaryTeam === userIdx ? "your" : TEAM_NAMES[summaryTeam] + "'s"} picks, steals & reaches.`}</span>
-            {league.snap && (
+            {league.snap && league.snap.v === 2 && (
               <span title={league.snap.retro
                 ? `This draft ran before value-locking existed, so its values were frozen when it was first reopened (${new Date(league.snap.at).toLocaleDateString()}) — close to, but not exactly, draft-day numbers.`
                 : `All ADPs, values, and projections were frozen when this draft started (${new Date(league.snap.at).toLocaleDateString()}). Nothing here drifts as live ADP changes — refreshes included.`}
