@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18j";
+const BUILD_TAG = "2026.07.18k";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13066,9 +13066,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const openGuide = (tab) => { setIntroTab(tab || "how"); setIntroAuto(false); setShowIntro(true); };
   // Guided spotlight tour — steps walk through the key parts of the draft room. Each step targets an element
   // by a data-tour attribute, describes it, and (optionally) switches to the tab that element lives on.
-  // Guided spotlight tour. Auto-starts on every draft-room entry unless the user permanently opted out.
-  // A "don't show again" toggle in the intro step writes that opt-out.
-  const [tourOn, setTourOn] = useState(() => !optedOutOfTour && !isDemo);
+  // Guided spotlight tour. Auto-starts on the user's FIRST draft-room entry, then remembers it was shown
+  // so it doesn't relaunch every time you re-enter a draft (it was restarting on every entry). The intro's
+  // "don't show again" still hard-opts-out; simply seeing it once now also prevents auto-restart. The Tips
+  // button reopens it on demand either way.
+  const tourSeenKey = "fdcTourSeen";
+  const alreadySawTour = (() => { try { return window.localStorage ? window.localStorage.getItem(tourSeenKey) === "1" : false; } catch (e) { return false; } })();
+  const [tourOn, setTourOn] = useState(() => !optedOutOfTour && !alreadySawTour && !isDemo);
+  // Mark the tour as seen the first time it auto-opens, so future entries don't relaunch it.
+  useEffect(() => { if (tourOn) { try { if (window.localStorage) window.localStorage.setItem(tourSeenKey, "1"); } catch (e) {} } }, [tourOn]);
   const [tourOptOut, setTourOptOut] = useState(false); // bound to the intro step's "don't show again" checkbox
   const setTourNeverShow = (on) => { setTourOptOut(on); try { if (window.localStorage) { if (on) window.localStorage.setItem(introKey, "1"); else window.localStorage.removeItem(introKey); } } catch (e) {} };
   const tourConnected = connectedPlatform === "sleeper" && !!(cfg.connect && cfg.connect.leagueId);
@@ -13736,6 +13742,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // happened since your last one (opening the draft at 1.01 has nothing to recap).
   useEffect(() => {
     if (!started || done || onClock !== userIdx) return;
+    // Don't pop the between-picks summary over the guided tour or the intro modal — let those finish
+    // first. When they close, this effect re-runs (tourOn/showIntro are deps) and the recap opens then.
+    if (tourOn || showIntro) return;
     if (recapDismissedRef.current || recapShownAtRef.current === picks.length) return;
     let prevMine = -1;
     for (let o = picks.length - 1; o >= 0; o--) { if (teamAt(o) === userIdx) { prevMine = o; break; } }
@@ -13760,7 +13769,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       verdict: advice && advice.verdict ? advice.verdict : null,
       alts: advice && advice.alts ? advice.alts.slice(0, 5) : [],
     });
-  }, [started, done, onClock, userIdx, picks, players, sortedAdp, draftedSet, advice]);
+  }, [started, done, onClock, userIdx, picks, players, sortedAdp, draftedSet, advice, tourOn, showIntro]);
   // The overall index of YOUR next pick (whether you're on the clock right now or it's coming up).
   const myPickOverall = onClock === userIdx ? picks.length : myNextOverall;
   // Recommendation for YOUR next pick under the SELECTED strategy (top line of the plaque) and, separately,
