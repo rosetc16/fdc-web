@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18i";
+const BUILD_TAG = "2026.07.18j";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4310,6 +4310,15 @@ function boardPickOutlook(p, o, cfg, ownerLabel, roster, req) {
 
 /* ---------------- styles ---------------- */
 const css = `
+/* HOVER-ANIMATION KILL SWITCH: when .gs-root also has .no-hover-anim (toggled from the top bar and
+   persisted), strip the MOTION from every hover — the translateY lifts, scale, box-shadow pops, and
+   their transitions — across all tabs. Kept deliberately: color/border hover feedback (so things still
+   read as interactive) and the flip cards' explicit click affordance are left alone via :not() below.
+   Users who find the constant micro-motion distracting get a calm board; nothing loses function. */
+.gs-root.no-hover-anim *:hover{transition:none!important;animation:none!important}
+.gs-root.no-hover-anim .btn:hover,.gs-root.no-hover-anim .hubtile:hover,.gs-root.no-hover-anim .bigact:hover,.gs-root.no-hover-anim .btn-gold:hover{transform:none!important;box-shadow:none!important;filter:none!important}
+.gs-root.no-hover-anim .flipcard:hover .flipinner,.gs-root.no-hover-anim .flipcard:focus-visible .flipinner{transform:none!important}
+`.trim() + `\n` + `
 @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&display=swap');
 .gs-root{--bg:#0E1217;--panel:#181F28;--panel2:#10151B;--panel3:#222C38;--line:#2E3A48;--line2:#3A4757;--ink:#EEF2F6;--mut:#9AA7B5;--gold:#F2B63C;--gold2:#FFD071;--red:#F2655C;--green:#5FD0A8;--blue:#6BA8E5;--mono:'DM Mono','SF Mono',ui-monospace,monospace;
   background:radial-gradient(1200px 600px at 50% -10%, #141C26 0%, var(--bg) 60%);color:var(--ink);font-family:'Barlow',system-ui,sans-serif;min-height:100vh;font-size:14px;}
@@ -4725,6 +4734,10 @@ export default function App() {
   // hard cap so a cold backend can't trap the user. `loaded` = local hydration done; `bootReady` = safe to
   // show the app AND navigate into a draft.
   const [bootReady, setBootReady] = useState(false);
+  // Global hover-animation kill switch (persisted). Applied as a class on .gs-root so the CSS above can
+  // strip motion from every tab at once; toggled from the draft-room top bar and remembered across visits.
+  const [noHoverAnim, setNoHoverAnim] = useState(() => { try { return localStorage.getItem("fdcNoHoverAnim") === "1"; } catch (e) { return false; } });
+  useEffect(() => { try { localStorage.setItem("fdcNoHoverAnim", noHoverAnim ? "1" : "0"); } catch (e) {} }, [noHoverAnim]);
   const bootStartRef = useRef(Date.now());
   const packDoneRef = useRef(false);
   const MIN_SPLASH_MS = 2600, MAX_SPLASH_MS = 7000;
@@ -5077,6 +5090,33 @@ export default function App() {
     setLeagues(next); persist({ leagues: next });
     setActiveId(lg.id); setRoute("draft");
   };
+  // AUTO-IMPORT SLEEPER: once you're signed into Sleeper, your leagues should just appear in Compass —
+  // no per-league "+ Add to Compass" step. Given a list of Sleeper league summaries, this quietly pulls
+  // each one's draft config and creates a linked Compass league for any not already imported. It does NOT
+  // navigate anywhere (unlike createLeague) — the leagues simply show up in the list. De-duped against
+  // existing links, guarded so it runs once at a time, and best-effort (a league that fails to fetch is
+  // skipped, not fatal).
+  const autoImportInFlight = useRef(false);
+  const autoImportSleeper = async (sleeperList, username) => {
+    if (!hasBackend || !username || autoImportInFlight.current) return;
+    const linkedIds = new Set();
+    leagues.forEach((l) => { [l.connect && l.connect.leagueId, l.cfg && l.cfg.connect && l.cfg.connect.leagueId, l.sleeperLeagueId].forEach((id) => { if (id != null && id !== "") linkedIds.add(String(id)); }); });
+    const toImport = (sleeperList || []).filter((sl) => sl && sl.league_id && !linkedIds.has(String(sl.league_id)));
+    if (!toImport.length) return;
+    autoImportInFlight.current = true;
+    try {
+      const built = [];
+      await Promise.all(toImport.map(async (sl) => {
+        try {
+          const d = await api.sleeperDraft(sl.league_id, username);
+          if (!d || !d.cfg) return;
+          const cfg = { ...d.cfg, name: sl.name || d.cfg.name || "Sleeper league", connect: { platform: "sleeper", leagueId: sl.league_id, username, draftId: d.draft_id || sl.draft_id || null, status: d.status || sl.draft_status || null } };
+          built.push({ id: `${Date.now()}-${sl.league_id}`, name: cfg.name, cfg, picks: d.picks || [], preds: [], connect: cfg.connect, sleeperLeagueId: sl.league_id, created: new Date().toLocaleDateString() });
+        } catch (e) { /* skip this league, keep going */ }
+      }));
+      if (built.length) { const next = [...leagues, ...built]; setLeagues(next); persist({ leagues: next }); }
+    } finally { autoImportInFlight.current = false; }
+  };
   const saveLeague = (id, picks, preds, pickNames, predNames) => {
     const next = leagues.map((l) => (l.id === id ? { ...l, picks, preds, ...(pickNames ? { pickNames, predNames } : {}), lastPickAt: Date.now() } : l));
     setLeagues(next); persist({ leagues: next });
@@ -5203,7 +5243,7 @@ export default function App() {
   if (!bootReady) return <BootSplash css={css} />;
 
   return (
-    <div className="gs-root">
+    <div className={`gs-root${noHoverAnim ? " no-hover-anim" : ""}`}>
       <style>{css}</style>
       {updateReady && (
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 200, background: "var(--gold)", color: "#151002", padding: "9px 16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, flexWrap: "wrap", boxShadow: "0 2px 12px #0006", fontSize: 13.5 }}>
@@ -5219,7 +5259,7 @@ export default function App() {
         onOfficial={(id) => { setActiveId(id); setRoute("draft"); }} onMock={startMock} onQuickMock={() => setQuickMockOpen(true)}
         onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} onGuide={() => { setHelpTab("guide"); setRoute("help"); }} onAccount={() => setRoute("account")} onAdmin={() => setRoute("admin")} onSignOut={signOut}
         onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }}
-        onDraftTrends={() => setRoute("draftTrends")}
+        onDraftTrends={() => setRoute("draftTrends")} onAutoImportSleeper={autoImportSleeper}
         onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onDeleteFun={deleteFunMock} />}
       {route === "leagueHub" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? <LeagueUmbrella user={user} league={lg} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")}
         onOfficial={(id) => { setDraftTab(null); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
@@ -5254,7 +5294,7 @@ export default function App() {
       {route === "rankings" && user && <RankingsHub user={user} leagues={leagues} openSetId={pendingRankEdit} onConsumeOpen={() => setPendingRankEdit(null)} returnToDraft={rankEditFromDraft ? () => { const rid = rankEditFromDraft; setRankEditFromDraft(null); setActiveId(rid); setRoute("draft"); } : null} onUpdate={updateUser} onSignOut={signOut} onHome={() => { setRankEditFromDraft(null); setRoute("home"); }} onBack={() => { setRankEditFromDraft(null); setRoute(user.paid ? "home" : "library"); }} onNewLeague={() => { setSetupReturn("rankings"); setRoute("setup"); }} />}
       {route === "setup" && <Setup onCreate={createLeague} onBack={() => { const r = setupReturn || (user?.paid ? "home" : "library"); setSetupReturn(null); setRoute(r); }} backLabel={setupReturn === "rankings" ? "Rankings" : user?.paid ? "Home" : "Library"} />}
       {route === "draft" && active && (
-        <DraftRoom key={active.id} league={active} user={user} isMock={!!(mockLeague && active.id === mockLeague.id)} isDemo={!!active.demo} initialTab={draftTab} dataVersion={dataVersion} allLeagues={leagues} allFunMocks={funMocks}
+        <DraftRoom key={active.id} league={active} user={user} isMock={!!(mockLeague && active.id === mockLeague.id)} isDemo={!!active.demo} initialTab={draftTab} dataVersion={dataVersion} allLeagues={leagues} allFunMocks={funMocks} noHoverAnim={noHoverAnim} onToggleHoverAnim={() => setNoHoverAnim((v) => !v)}
           onSave={(picks, preds, pickNames, predNames) => {
             if (active.id === "demo") setDemoLeague((d) => ({ ...d, picks, preds }));
             else if (mockLeague && active.id === mockLeague.id) { setMockLeague((m) => ({ ...m, picks, preds, pickNames, predNames })); saveMock(picks, preds, pickNames, predNames); }
@@ -7725,7 +7765,7 @@ function HubShell({ title, onBack, onHome, onSignOut, user, children }) {
   );
 }
 
-function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onDeleteFun, onDraftTrends }) {
+function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onDeleteFun, onDraftTrends, onAutoImportSleeper }) {
   const totalMocks = leagues.reduce((s, l) => s + (l.mocks || []).length, 0) + funMocks.length;
   const inProgress = leagues.filter((l) => l.picks.length > 0 && l.picks.length < (l.cfg.teams || 12) * l.cfg.rounds);
   const [q, setQ] = useState("");
@@ -7762,7 +7802,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
     if (hasBackend && sleeperLink.linked) {
       if (sleeperLeagues === null && !slLoading) {
         setSlLoading(true);
-        api.sleeperMyLeagues().then((r) => { if (alive) setSleeperLeagues((r && r.leagues) || []); })
+        api.sleeperMyLeagues().then((r) => { if (alive) { const list = (r && r.leagues) || []; setSleeperLeagues(list); if (onAutoImportSleeper && sleeperLink.username) onAutoImportSleeper(list, sleeperLink.username); } })
           .catch(() => { if (alive) setSleeperLeagues([]); })
           .finally(() => { if (alive) setSlLoading(false); });
       }
@@ -12746,7 +12786,7 @@ function InDraftTrends({ cfg, players, draftedSet, allLeagues, allFunMocks, onCl
 
 
 
-function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQueue, onSaveSnap, onExit, onBuy, onSettings, onEditRanks, onEditRankSet, onDeleteRankSet, onRanksOff, onUseRankSet, onColPrefs, onSaveInRoomRanks, onUpdate, dataVersion = 0, allLeagues, allFunMocks }) {
+function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQueue, onSaveSnap, onExit, onBuy, onSettings, onEditRanks, onEditRankSet, onDeleteRankSet, onRanksOff, onUseRankSet, onColPrefs, onSaveInRoomRanks, onUpdate, dataVersion = 0, allLeagues, allFunMocks, noHoverAnim, onToggleHoverAnim }) {
   const cfg = league.cfg;
   // Live per-pick ownership from a connected platform (Sleeper draft_slot). Declared here so it can
   // be applied to the engine's team-assignment BEFORE any roster/sim computation in this render.
@@ -13853,6 +13893,42 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     });
     return out;
   }, [players, picks, cfg, teamsProj, proj, userIdx, liveSlots, rostersByTeam]);
+  // DRAFTED-SO-FAR positional strength — the honest "how you're doing" read. posRankMine above scores the
+  // PROJECTED end-of-draft roster, so it can call a position "Strong" before you've drafted anyone there
+  // (it assumes you'll fill it). This version scores only what each team has ACTUALLY drafted, so an empty
+  // slot reads correctly weak — EXCEPT we add a mid-draft cushion: a position you haven't addressed isn't
+  // punished as hard while there's still comparable talent on the board for you to take. Concretely, each
+  // team's score gets a "gettable" credit = the best still-available player's value, decayed by how much of
+  // the draft remains (full early, ~0 by the end). So early on, an undrafted QB with studs left sits mid-pack
+  // (not "Thin"); by round 12 with the QB board barren, that same empty slot correctly reads Thin. Every
+  // consumer (hub How-You're-Doing, team analysis, summary) reads THIS, so the fix is uniform.
+  const posRankMineActual = useMemo(() => {
+    const eff = EFF_REQ(cfg); const fsh = flexShareOf(cfg); const dyn = isDynastyCfg(cfg);
+    const repl = slotBaselines(players, cfg, TEAMS);
+    const remainFrac = TOTAL > 0 ? Math.max(0, Math.min(1, (TOTAL - picks.length) / TOTAL)) : 0;
+    const out = {};
+    ["QB", "RB", "WR", "TE"].forEach((pos) => {
+      const req = eff[pos] || 0;
+      const bestAvailV = (() => {
+        const pool = availByPos[pos] || [];
+        if (!pool.length) return 0;
+        const p = pool[0];
+        const v = dyn ? (p.value != null ? p.value : p.vbd) : (p.vbd0 != null ? p.vbd0 : p.vbd);
+        return v != null ? v : 0;
+      })();
+      const scored = Array.from({ length: TEAMS }, (_, i) => {
+        const drafted = (rostersByTeam[i] || []).filter((p) => p && p.pos === pos);
+        const base = posQualityScore(drafted, req, { dynasty: dyn, flexShare: fsh[pos] || 0, slotBaseline: repl[pos] });
+        // Gettable cushion: unfilled starter slots at this position can still be filled from the board.
+        // Credit the best available player's value for each unfilled slot, decayed by draft-remaining.
+        const unfilled = Math.max(0, Math.ceil(req) - drafted.length);
+        const cushion = unfilled > 0 ? bestAvailV * remainFrac * Math.min(unfilled, 1) : 0;
+        return { i, v: base + cushion };
+      }).sort((a, b) => b.v - a.v);
+      out[pos] = { rank: scored.findIndex((x) => x.i === userIdx) + 1, of: TEAMS };
+    });
+    return out;
+  }, [players, picks, cfg, userIdx, rostersByTeam, availByPos, TOTAL, liveSlots]);
   const byPosMine = useMemo(() => {
     const roster = teamsProj && proj ? (proj.rosters[userIdx] || []) : (rostersByTeam[userIdx] || []);
     const m = { QB: [], RB: [], WR: [], TE: [] };
@@ -15016,6 +15092,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         {isMock && <div className="chip" style={{ borderColor: "var(--gold)", background: "rgba(242,182,60,.10)", color: "var(--gold)" }} title="This is a practice draft — it saves to this league's mock history and never changes your real draft."><i className="ti ti-dice" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />MOCK</div>}
         <div className="chip" style={{ borderColor: "var(--gold)" }}><b className="disp gold" style={{ fontSize: 15 }}>ROUND {Math.min(round, ROUNDS)} of {ROUNDS}</b></div>
         <div className="chip">{cfg.teams} teams · {cfg.sf ? "SF" : "1QB"}{cfg.tePremMult > 0 ? ` · TE+${cfg.tePremMult}` : ""} · {DRAFT_ORDERS.find((o) => o[0] === (cfg.order || "snake"))?.[1].split(" ")[0]}</div>
+        {onToggleHoverAnim && <button className="btn btn-mini" onClick={onToggleHoverAnim} title={noHoverAnim ? "Hover animations are OFF — click to re-enable motion on hover" : "Turn OFF hover animations (removes the motion/lift effects across every tab; keeps color highlights)"} style={{ borderColor: noHoverAnim ? "var(--gold)" : "var(--line2)", color: noHoverAnim ? "var(--gold)" : "var(--mut)" }}><i className={`ti ${noHoverAnim ? "ti-wand-off" : "ti-wand"}`} style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />{noHoverAnim ? "Motion off" : "Motion"}</button>}
         <div style={{ flex: 1 }} />
         {/* For a CONNECTED live draft, Sleeper drives the picks — pausing, sim speed, manual end, undo, and
             manual save don't apply (picks sync automatically). Those controls stay for mocks/manual drafts. */}
@@ -15165,7 +15242,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               superFillers = Math.max(0, superFillers - Math.min(flexSlots, flexFillers));
               const flexFilled = Math.min(flexSlots, flexFillers), superFilled = Math.min(superSlots, superFillers);
               const kHave = (have.K || 0), dstHave = (have.DST || 0);
-              const posRankByPos = posRankMine;
+              const posRankByPos = posRankMineActual; // drafted-so-far + gettable cushion (see def) — not projected end-state
               const standings = (proj && proj.rank) ? Array.from({ length: TEAMS }, (_, i) => ({ i, rank: proj.rank[i], pts: proj.pts ? proj.pts[i] : 0 })).sort((a, b) => a.rank - b.rank) : [];
               const finishTip = standings.length ? (e) => showTip(e, [
                 { kind: "take", tone: finish <= 3 ? "good" : finish <= Math.ceil(TEAMS / 2) ? "neutral" : "bad", x: `Projected finish — ${finish != null ? ordinal(finish) : "—"} of ${TEAMS}` },
@@ -17708,9 +17785,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <div className="panel" style={{ padding: 14, gridColumn: "1 / -1" }}>
               <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 10 }}>Draft superlatives <span className="mut" style={{ fontSize: 12 }}>awards so far</span></div>
               {(() => {
-                const byVal = graded.slice().sort((a, b) => b.val - a.val);
-                const steal = byVal[0];
-                const reach = byVal[byVal.length - 1];
+                // Steal/reach superlatives are about the MARKET only: how far a player fell past his ADP
+                // (steal) or was taken ahead of it (reach). Select AND display by the literal spot gap
+                // (pickNo − ADP), not `val` (the need-weighted decision score, which inflated every early
+                // pick and printed wrong "spots" — e.g. a round-1 stud at ADP 2.9 taken 4th is a ~1-spot
+                // reach, never a "23 spot" anything). Picks without an ADP can't have a gap, so exclude them.
+                const gapOf = (g) => (g && g.p && g.p.adp != null) ? ((g.o + 1) - g.p.adp) : null;
+                const withGap = graded.filter((g) => gapOf(g) != null).map((g) => ({ ...g, gap: gapOf(g) }));
+                const byGap = withGap.slice().sort((a, b) => b.gap - a.gap);
+                const steal = byGap[0];                      // biggest positive gap = fell furthest past ADP
+                const reach = byGap[byGap.length - 1];        // biggest negative gap = taken furthest early
                 // youngest & oldest team by avg age of drafted skill players
                 const ages = Array.from({ length: TEAMS }, (_, i) => {
                   const r = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => x.p && teamAt(x.o) === i && x.p.age);
@@ -17785,8 +17869,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 }
                 return (
                   <div className="superlative-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 }}>
-                    {steal && steal.val > 0 && award("ti-diamond", "Best value", steal.p.name, `${steal.p.pos}${steal.p.posRank} to ${steal.t === userIdx ? "you" : TEAM_NAMES[steal.t]} — ${steal.val.toFixed(0)} spots past ADP`, "var(--green)", steal.t === focusIdx, [{ kind: "take", tone: "good", x: `Best value — ${steal.p.name}` }, { kind: "playercard", p: steal.p, extraChips: [`+${steal.val.toFixed(0)} spots past ADP`] }])}
-                    {reach && reach.val < 0 && award("ti-flame", "Biggest reach", reach.p.name, `${reach.p.pos}${reach.p.posRank} by ${reach.t === userIdx ? "you" : TEAM_NAMES[reach.t]} — ${Math.abs(reach.val).toFixed(0)} spots early`, "var(--red)", reach.t === focusIdx, [{ kind: "take", tone: "bad", x: `Biggest reach — ${reach.p.name}` }, { kind: "playercard", p: reach.p, extraChips: [`${Math.abs(reach.val).toFixed(0)} spots early`] }])}
+                    {steal && steal.gap > 0 && award("ti-diamond", "Best value", steal.p.name, `${steal.p.pos}${steal.p.posRank} to ${steal.t === userIdx ? "you" : TEAM_NAMES[steal.t]} — ${Math.round(steal.gap)} spots past ADP (${steal.p.adp.toFixed(1)} → ${steal.o + 1})`, "var(--green)", steal.t === focusIdx, [{ kind: "take", tone: "good", x: `Best value — ${steal.p.name}` }, { kind: "playercard", p: steal.p, extraChips: [`+${Math.round(steal.gap)} spots past ADP`] }])}
+                    {reach && reach.gap < 0 && award("ti-flame", "Biggest reach", reach.p.name, `${reach.p.pos}${reach.p.posRank} by ${reach.t === userIdx ? "you" : TEAM_NAMES[reach.t]} — ${Math.abs(Math.round(reach.gap))} spots early (${reach.p.adp.toFixed(1)} → ${reach.o + 1})`, "var(--red)", reach.t === focusIdx, [{ kind: "take", tone: "bad", x: `Biggest reach — ${reach.p.name}` }, { kind: "playercard", p: reach.p, extraChips: [`${Math.abs(Math.round(reach.gap))} spots early`] }])}
                     {valKing && valKing.v > 0 && award("ti-coins", "Value champ", nm(valKing.i), `Most total draft value — +${valKing.v.toFixed(0)} draft value (same scale as the final grades)`, "var(--green)", valKing.i === focusIdx, tt(`${nm(valKing.i)} — best value picks`, teamValuePicks(valKing.i).slice(0, 8), ["rank", "name", "team", "pts", "value"]))}
                     {lineupKing && award("ti-crown", "Best on paper", nm(lineupKing.i), `Top projected starting lineup — ${Math.round(lineupKing.v)} pts`, "var(--gold)", lineupKing.i === focusIdx, tt(`${nm(lineupKing.i)} — starting lineup (${Math.round(lineupKing.v)} pts)`, teamStarters(lineupKing.i), ["slot", "rank", "name", "team", "pts"]))}
                     {powerhouse && award("ti-bolt", `${powerhouse.pos} powerhouse`, nm(powerhouse.i), `Loaded at ${powerhouse.pos} — ${powerhouse.names}`, POS_COLOR[powerhouse.pos], powerhouse.i === focusIdx, tt(`${nm(powerhouse.i)} — ${powerhouse.pos} corps`, teamDrafted(powerhouse.i).filter((p) => p.pos === powerhouse.pos).sort((a, b) => (b.vbd || 0) - (a.vbd || 0)), ["rank", "name", "team", "age", "pts", "vbd"]))}
@@ -19517,6 +19601,26 @@ function TradeToolsPage({ user, onBack, onHome, onSignOut }) {
 
 function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, showTip, hideTip, isMock, onExecuteTrade, tradingOn, proj }) {
   const [mode, setMode] = useState("values"); // values | evaluate
+  // Evaluate-mode format toggle: lets you see the trade under redraft vs dynasty valuation without
+  // changing your league. Defaults to the league's real type. evalCfg feeds the asset value + evaluate
+  // math below so switching it actually moves the numbers (the old evaluate side was hardwired to cfg
+  // and never responded to a format change).
+  const [evalType, setEvalType] = useState(isDynastyCfg(cfg) ? "dynasty" : "redraft");
+  const evalCfg = useMemo(() => ({ ...cfg, type: evalType }), [cfg, evalType]);
+  // Rebuild the pool once for the chosen evaluate format so dynasty age-weighting actually applies to
+  // p.vbd (tradeValue reads baked vbd). Keyed by name so we can re-value the current rosters/picks.
+  const evalValById = useMemo(() => {
+    let pool; try { pool = buildPlayers(evalCfg); } catch { pool = players; }
+    const byName = {}; pool.forEach((p) => { byName[normName(p.name)] = p; });
+    return byName;
+  }, [players, evalCfg]);
+  // assetVal that respects the evaluate format: for a real player, value his rebuilt (format-correct)
+  // self; picks fall back to their static asset value.
+  const assetValE = (a) => {
+    if (a && a.pickAsset) return assetVal(a, evalCfg);
+    const rp = a && a.name ? evalValById[normName(a.name)] : null;
+    return rp ? Math.round(tradeValue(rp, evalCfg)) : assetVal(a, evalCfg);
+  };
   const myRoster = picks.map((pk, o) => ({ p: players[pk], o })).filter((x) => x.p && teamAt(x.o) === userIdx).map((x) => x.p);
   const teamRosters = useMemo(() => {
     const r = Array.from({ length: TEAMS }, () => []);
@@ -19537,11 +19641,11 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
   const toggle = (arr, set, id) => set(arr.includes(id) ? arr.filter((x) => x !== id) : [...arr, id]);
 
   // Both sides are sorted by trade value, highest → lowest, so the most valuable assets are always on top.
-  const myAssets = [...myRoster, ...myPicks].sort((a, b) => assetVal(b, cfg) - assetVal(a, cfg));
-  const partnerAssets = [...teamRosters[partner], ...partnerPicks.map((p) => ({ ...p, id: `their-${p.id}` }))].sort((a, b) => assetVal(b, cfg) - assetVal(a, cfg));
+  const myAssets = [...myRoster, ...myPicks].sort((a, b) => assetValE(b) - assetValE(a));
+  const partnerAssets = [...teamRosters[partner], ...partnerPicks.map((p) => ({ ...p, id: `their-${p.id}` }))].sort((a, b) => assetValE(b) - assetValE(a));
   const giveAssets = give.map((id) => myAssets.find((a) => String(a.id) === String(id))).filter(Boolean);
   const getAssets = get.map((id) => partnerAssets.find((a) => String(a.id) === String(id))).filter(Boolean);
-  const ev = evaluateTrade(giveAssets, getAssets, cfg);
+  const ev = evaluateTrade(giveAssets, getAssets, evalCfg);
   const partnerNet = ev.giveAdj - ev.getAdj; // they win if your give is worth more to them
   const accept = Math.max(2, Math.min(98, Math.round(50 + partnerNet * 1.3)));
 
@@ -19609,7 +19713,7 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
     <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, padding: "2px 0", cursor: "pointer", opacity: a.pickAsset ? 0.92 : 1 }}>
       <input type="checkbox" checked={checked} onChange={onToggle} />
       {a.pickAsset ? <i className="ti ti-ticket" style={{ fontSize: 13, color: "var(--gold)" }} aria-hidden="true" /> : <Dot pos={a.pos} />}
-      {a.name} <span className="mut num" style={{ marginLeft: "auto" }}>{assetVal(a, cfg)}</span>
+      {a.name} <span className="mut num" style={{ marginLeft: "auto" }}>{assetValE(a)}</span>
     </label>
   );
 
@@ -19695,10 +19799,17 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
             <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>Evaluate a trade</div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span className="mut" style={{ fontSize: 12 }}>Trade with</span>
-              <select className="gs" value={partner} onChange={(e) => { setPartner(+e.target.value); setGet([]); }}>
-                {TEAM_NAMES.map((n, i) => i !== userIdx ? <option key={i} value={i}>{n}</option> : null)}
-              </select>
+              {/* Format toggle so trade values respond to redraft vs dynasty (dynasty youth-weights the
+                  values). The old Teams dropdown is gone — the "get" side just cycles teams with ‹ ›. */}
+              <span className="mut" style={{ fontSize: 12 }}>Values:</span>
+              {[["redraft", "Redraft"], ["dynasty", "Dynasty"]].map(([k, l]) => (
+                <button key={k} className="btn btn-mini" style={{ borderColor: evalType === k ? "var(--gold)" : "var(--line)", color: evalType === k ? "var(--gold)" : "var(--mut)" }} onClick={() => setEvalType(k)}>{l}</button>
+              ))}
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 6 }}>
+                <button className="btn btn-mini" title="Previous team" onClick={() => { setPartner((p) => { let n = p; do { n = (n - 1 + TEAMS) % TEAMS; } while (n === userIdx); return n; }); setGet([]); }}><i className="ti ti-chevron-left" style={{ fontSize: 13 }} aria-hidden="true" /></button>
+                <span style={{ fontSize: 12.5, fontWeight: 700, minWidth: 92, textAlign: "center" }}>{TEAM_NAMES[partner].split(" ")[0]}</span>
+                <button className="btn btn-mini" title="Next team" onClick={() => { setPartner((p) => { let n = p; do { n = (n + 1) % TEAMS; } while (n === userIdx); return n; }); setGet([]); }}><i className="ti ti-chevron-right" style={{ fontSize: 13 }} aria-hidden="true" /></button>
+              </span>
             </div>
           </div>
           {cfg.connect && cfg.connect.platform === "sleeper" && (
