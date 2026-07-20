@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18h";
+const BUILD_TAG = "2026.07.18i";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -15457,7 +15457,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               const cur = path && path[0] ? path[0] : null;
               const allCands = cur && cur.cands5 && cur.cands5.length ? cur.cands5 : null;
               const projPick = allCands ? allCands[0] : null;       // the engine's projected pick (or your top rec)
-              const alts = allCands ? allCands.slice(1, 3) : null;   // 2 alternatives (vertical space)
+              const alts = allCands ? allCands.slice(1, 4) : null;   // 3 alternatives (bottom Draft bar removed)
               const curTip = currentPred ? (e) => showTip(e, (() => {
                 const cAll = cur && cur.cands5 && cur.cands5.length ? cur.cands5 : null;
                 return [
@@ -15466,7 +15466,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 ];
               })()) : undefined;
               return (
-                <div className="tickcard clock" style={{ borderColor: isYou ? "var(--gold)" : "#33476B", borderWidth: isYou ? 2 : 1, background: isYou ? "linear-gradient(165deg, rgba(242,182,60,.16), rgba(24,31,40,1) 58%)" : undefined, boxShadow: isYou ? "0 0 16px rgba(242,182,60,.30), inset 0 0 26px rgba(242,182,60,.05)" : undefined, padding: "5px 10px", cursor: curTip ? "help" : "default", height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }} onMouseEnter={curTip} onMouseLeave={curTip ? hideTip : undefined}>
+                <div className="tickcard clock" style={{ borderColor: isYou ? "var(--gold)" : "#33476B", borderWidth: isYou ? 2 : 1, background: isYou ? "linear-gradient(165deg, rgba(242,182,60,.22), rgba(31,36,26,1) 62%)" : undefined, boxShadow: isYou ? "0 0 18px rgba(242,182,60,.34), inset 0 0 30px rgba(242,182,60,.07)" : undefined, padding: "5px 10px", cursor: curTip ? "help" : "default", height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }} onMouseEnter={curTip} onMouseLeave={curTip ? hideTip : undefined}>
                   {/* ONE compact header row: pick + overall on the left, team name (and live timer) on the
                       right. The old second row (team / overall / "YOUR PICK" pill) is gone — when it's your
                       pick, the whole card goes loud gold instead, which reads faster than a pill. */}
@@ -15529,7 +15529,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       );
                     })()}
                   </div>
-                  {isYou && !gated && currentPred && <button className="btn btn-gold btn-mini" style={{ marginTop: 6, width: "100%", padding: "4px 0", fontSize: 11 }} onClick={(e) => { e.stopPropagation(); draftPlayer(currentPred.id); }}>Draft {currentPred.name.split(" ").slice(-1)}</button>}
+                  {/* (no bottom "Draft <name>" bar — the recommendation box's Draft button is the action;
+                       the card's loud gold treatment is what signals it's your pick) */}
                 </div>
               );
             })()}
@@ -16127,26 +16128,26 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   const expanded = !!recExpanded[label];
                   const list = full.slice(0, expanded ? 10 : 5); // top 5, expandable to 10
                   const canExpand = full.length > 5;
-                  const cols = onClockNow ? "30px minmax(0,1fr) 74px 34px 30px 32px 44px" : "30px minmax(0,1fr) 78px 34px 30px 32px";
+                  // No Role column — it was squeezing player names into ellipses; the role still shows in
+                  // each row's hover outlook, and the name is the thing you actually scan.
+                  const cols = onClockNow ? "30px minmax(0,1fr) 34px 30px 32px 44px" : "30px minmax(0,1fr) 34px 30px 32px";
                   const toggle = () => setRecExpanded((m) => ({ ...m, [label]: !m[label] }));
                   return (
                     <div>
                       <div style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".05em", color: accent, marginBottom: 2, display: "flex", alignItems: "center", gap: 5 }}>{label}{sub && <span className="mut" style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, fontSize: 9 }}>· {sub}</span>}{canExpand && <span onClick={toggle} style={{ marginLeft: "auto", fontSize: 8.5, color: "var(--gold)", cursor: "pointer", fontWeight: 700, textTransform: "none", letterSpacing: 0 }}>{expanded ? "Show top 5 ⌃" : "Show top 10 ⌄"}</span>}</div>
                       {/* header row */}
                       <div style={{ display: "grid", gridTemplateColumns: cols, gap: 6, alignItems: "center", fontSize: 7.5, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, padding: "0 4px 2px" }}>
-                        <span>Rank</span><span>Player</span><span title="Team role">Role</span><span title={dynasty ? "Value (age-weighted)" : "Value above replacement"} style={{ textAlign: "right" }}>{dynasty ? "Val" : "VBD"}</span><span title="Average draft position" style={{ textAlign: "right" }}>ADP</span><span title="Chance still available at this pick" style={{ textAlign: "right" }}>Avail</span>{onClockNow && <span />}
+                        <span>Rank</span><span>Player</span><span title={dynasty ? "Value (age-weighted)" : "Value above replacement"} style={{ textAlign: "right" }}>{dynasty ? "Val" : "VBD"}</span><span title="Average draft position" style={{ textAlign: "right" }}>ADP</span><span title="Chance still available at this pick" style={{ textAlign: "right" }}>Avail</span>{onClockNow && <span />}
                       </div>
                       <div style={{ display: "flex", flexDirection: "column" }}>
                         {list.map((p, i) => {
                           const surv = survOf(p);
                           const openTip = (e) => showTip(e, makeOutlook(p, sims, false, { pickNow: pickNowN, dynasty, run, needShort: need.includes(p.pos) ? 1 : 0, scarcity: scarcityFor(p) }));
-                          const roleShort = p.role ? lowerKeepPos(p.role).replace(/[\/·].*$/, "").trim() : "—";
                           const vShow = dynasty ? (p.value ?? p.vbd) : p.vbd;
                           return (
                             <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: cols, gap: 6, alignItems: "center", fontSize: 11, padding: "3px 4px", borderRadius: 5, background: i === 0 ? "rgba(242,182,60,.10)" : "transparent", borderBottom: i < list.length - 1 ? "1px solid var(--line2)" : "none", cursor: "help" }}>
                               <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
                               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}><Dot pos={p.pos} /><b style={{ color: i === 0 ? accent : "var(--ink)" }}>{i === 0 ? "★ " : ""}{p.name}</b></span>
-                              <span className="mut" style={{ fontSize: 8.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textTransform: "capitalize" }}>{roleShort}</span>
                               <span className="num" style={{ fontWeight: 700, color: vbdColor(vShow), fontSize: 10.5, textAlign: "right" }}>{(vShow > 0 ? "+" : "") + Math.round(vShow)}</span>
                               <span className="num" style={{ fontSize: 9.5, textAlign: "right", color: adpReadColor(pickNowN, p.adp) }} title={p.adp != null ? `ADP ${p.adp.toFixed(1)} vs pick ${pickNowN} — ${pickNowN - p.adp >= 8 ? "steal" : pickNowN - p.adp <= -8 ? "reach" : "fair value"}` : ""}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
                               <span className="num" style={{ fontSize: 9.5, color: surv == null ? "var(--mut)" : surv >= 65 ? "#5FD0A8" : surv >= 35 ? "var(--gold)" : "#F2655C", textAlign: "right" }}>{surv != null ? `${surv}%` : "—"}</span>
