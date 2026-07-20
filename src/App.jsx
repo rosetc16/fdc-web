@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18k";
+const BUILD_TAG = "2026.07.18l";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4310,16 +4310,15 @@ function boardPickOutlook(p, o, cfg, ownerLabel, roster, req) {
 
 /* ---------------- styles ---------------- */
 const css = `
-/* HOVER-ANIMATION KILL SWITCH: when .gs-root also has .no-hover-anim (toggled from the top bar and
-   persisted), strip the MOTION from every hover — the translateY lifts, scale, box-shadow pops, and
-   their transitions — across all tabs. Kept deliberately: color/border hover feedback (so things still
-   read as interactive) and the flip cards' explicit click affordance are left alone via :not() below.
-   Users who find the constant micro-motion distracting get a calm board; nothing loses function. */
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&display=swap');
+/* HOVER KILL SWITCH: when .gs-root also has .no-hover-anim (toggled from the top bar and persisted),
+   strip hover MOTION across all tabs. The JS hover POPUPS (tooltips) are suppressed separately in
+   showTip. NOTE: this @import MUST stay as the first line of the CSS — a prior edit placed these
+   comment/rules above it, which per spec makes the browser ignore the @import and drops the Barlow
+   font entirely (the site fell back to a default sans-serif). Keep @import first. */
 .gs-root.no-hover-anim *:hover{transition:none!important;animation:none!important}
 .gs-root.no-hover-anim .btn:hover,.gs-root.no-hover-anim .hubtile:hover,.gs-root.no-hover-anim .bigact:hover,.gs-root.no-hover-anim .btn-gold:hover{transform:none!important;box-shadow:none!important;filter:none!important}
 .gs-root.no-hover-anim .flipcard:hover .flipinner,.gs-root.no-hover-anim .flipcard:focus-visible .flipinner{transform:none!important}
-`.trim() + `\n` + `
-@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&display=swap');
 .gs-root{--bg:#0E1217;--panel:#181F28;--panel2:#10151B;--panel3:#222C38;--line:#2E3A48;--line2:#3A4757;--ink:#EEF2F6;--mut:#9AA7B5;--gold:#F2B63C;--gold2:#FFD071;--red:#F2655C;--green:#5FD0A8;--blue:#6BA8E5;--mono:'DM Mono','SF Mono',ui-monospace,monospace;
   background:radial-gradient(1200px 600px at 50% -10%, #141C26 0%, var(--bg) 60%);color:var(--ink);font-family:'Barlow',system-ui,sans-serif;min-height:100vh;font-size:14px;}
 .gs-root *{box-sizing:border-box}
@@ -15023,6 +15022,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // Tooltip trigger. Works for mouse (hover) AND touch/click, since phones have no hover — we read coords
   // from whichever event type fired. On touch, the tip stays until the next tap elsewhere (see effect below).
   const showTip = (e, content) => {
+    if (noHoverAnim) return; // hover disabled via the top-bar toggle → suppress all hover popups
     let cx = 0, cy = 0;
     if (e) {
       if (e.touches && e.touches[0]) { cx = e.touches[0].clientX; cy = e.touches[0].clientY; }
@@ -15101,7 +15101,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         {isMock && <div className="chip" style={{ borderColor: "var(--gold)", background: "rgba(242,182,60,.10)", color: "var(--gold)" }} title="This is a practice draft — it saves to this league's mock history and never changes your real draft."><i className="ti ti-dice" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />MOCK</div>}
         <div className="chip" style={{ borderColor: "var(--gold)" }}><b className="disp gold" style={{ fontSize: 15 }}>ROUND {Math.min(round, ROUNDS)} of {ROUNDS}</b></div>
         <div className="chip">{cfg.teams} teams · {cfg.sf ? "SF" : "1QB"}{cfg.tePremMult > 0 ? ` · TE+${cfg.tePremMult}` : ""} · {DRAFT_ORDERS.find((o) => o[0] === (cfg.order || "snake"))?.[1].split(" ")[0]}</div>
-        {onToggleHoverAnim && <button className="btn btn-mini" onClick={onToggleHoverAnim} title={noHoverAnim ? "Hover animations are OFF — click to re-enable motion on hover" : "Turn OFF hover animations (removes the motion/lift effects across every tab; keeps color highlights)"} style={{ borderColor: noHoverAnim ? "var(--gold)" : "var(--line2)", color: noHoverAnim ? "var(--gold)" : "var(--mut)" }}><i className={`ti ${noHoverAnim ? "ti-wand-off" : "ti-wand"}`} style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />{noHoverAnim ? "Motion off" : "Motion"}</button>}
+        {onToggleHoverAnim && <button className="btn btn-mini" onClick={onToggleHoverAnim} title={noHoverAnim ? "Hover popups are OFF — click to turn them back on" : "Turn OFF hover popups & effects (the info tooltips and hover animations across every tab)"} style={{ borderColor: noHoverAnim ? "var(--gold)" : "var(--line2)", color: noHoverAnim ? "var(--gold)" : "var(--mut)" }}><i className={`ti ${noHoverAnim ? "ti-hand-off" : "ti-hand-finger"}`} style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />{noHoverAnim ? "Hover off" : "Hover"}</button>}
         <div style={{ flex: 1 }} />
         {/* For a CONNECTED live draft, Sleeper drives the picks — pausing, sim speed, manual end, undo, and
             manual save don't apply (picks sync automatically). Those controls stay for mocks/manual drafts. */}
@@ -15591,20 +15591,19 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           {/* 3 alternatives */}
                           {alts && alts.length > 0 && (
                             <div>
-                              <div style={{ display: "grid", gridTemplateColumns: isYou && !gated ? "30px 1fr 30px 26px 28px 40px" : "30px 1fr 30px 26px 28px", gap: "0 5px", fontSize: 7, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line2)", paddingBottom: 2, marginBottom: 1 }}>
-                                <span>Rk</span><span>Alternatives</span><span title={dyn ? "Value" : "VBD"} style={{ textAlign: "right" }}>{dyn ? "Val" : "VBD"}</span><span title="ADP" style={{ textAlign: "right" }}>ADP</span><span title={isYou ? "Chance still available" : "Chance taken"} style={{ textAlign: "right" }}>{isYou ? "Avl" : "Tk"}</span>{isYou && !gated && <span />}
+                              <div style={{ display: "grid", gridTemplateColumns: isYou && !gated ? "30px 1fr 30px 26px 40px" : "30px 1fr 30px 26px", gap: "0 5px", fontSize: 7, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line2)", paddingBottom: 2, marginBottom: 1 }}>
+                                <span>Rk</span><span>Alternatives</span><span title={dyn ? "Value" : "VBD"} style={{ textAlign: "right" }}>{dyn ? "Val" : "VBD"}</span><span title="ADP" style={{ textAlign: "right" }}>ADP</span>{isYou && !gated && <span />}
                               </div>
                               {alts.map((c) => {
                                 const p = c.p;
                                 const vShow = dyn ? (p.value ?? p.vbd) : p.vbd;
                                 const openTip = (e) => { e.stopPropagation(); showTip(e, makeOutlook(p, sims, false, { pickNow: picks.length + 1, dynasty: dyn, scarcity: scarcityFor(p) })); };
                                 return (
-                                  <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: isYou && !gated ? "30px 1fr 30px 26px 28px 40px" : "30px 1fr 30px 26px 28px", gap: "0 5px", alignItems: "center", fontSize: 10.5, padding: "1px 3px", cursor: "help" }}>
+                                  <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: isYou && !gated ? "30px 1fr 30px 26px 40px" : "30px 1fr 30px 26px", gap: "0 5px", alignItems: "center", fontSize: 10.5, padding: "1px 3px", cursor: "help" }}>
                                     <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank), fontSize: 9 }}>{p.pos}{p.posRank}</span>
                                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
                                     <span className="num" style={{ fontSize: 9, textAlign: "right", color: vbdColor(vShow) }}>{(vShow > 0 ? "+" : "") + Math.round(vShow)}</span>
                                     <span className="num" style={{ fontSize: 8.5, textAlign: "right", color: adpReadColor(picks.length + 1, p.adp) }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
-                                    <span className="num mut" style={{ fontSize: 8.5, textAlign: "right" }}>{c.prob != null ? `${c.prob}%` : ""}</span>
                                     {isYou && !gated && <button className="btn btn-mini" style={{ fontSize: 8.5, padding: "1px 5px", borderColor: "var(--gold)", color: "var(--gold)" }} onClick={(e) => { e.stopPropagation(); draftPlayer(p.id); }}>Draft</button>}
                                   </div>
                                 );
