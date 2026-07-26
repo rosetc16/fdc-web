@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18m";
+const BUILD_TAG = "2026.07.18n";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13927,10 +13927,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       const scored = Array.from({ length: TEAMS }, (_, i) => {
         const drafted = (rostersByTeam[i] || []).filter((p) => p && p.pos === pos);
         const base = posQualityScore(drafted, req, { dynasty: dyn, flexShare: fsh[pos] || 0, slotBaseline: repl[pos] });
-        // Gettable cushion: unfilled starter slots at this position can still be filled from the board.
-        // Credit the best available player's value for each unfilled slot, decayed by draft-remaining.
+        // Gettable cushion: credit for unfilled starter slots you could still fill from the board. This
+        // exists ONLY so an untouched position reads "Open" rather than falsely Strong/Thin — it must
+        // NEVER let a team that drafted nobody outrank a team holding real talent. So it's heavily
+        // discounted (0.35) AND capped below replacement-startable, meaning drafted value always
+        // dominates: hold an elite RB and you rank at/near the top, exactly as expected. A team with
+        // zero RBs gets only a faint speculative bump, not a phantom elite back.
         const unfilled = Math.max(0, Math.ceil(req) - drafted.length);
-        const cushion = unfilled > 0 ? bestAvailV * remainFrac * Math.min(unfilled, 1) : 0;
+        const cushion = unfilled > 0 ? bestAvailV * remainFrac * 0.35 * Math.min(unfilled, 1) : 0;
         return { i, v: base + cushion };
       }).sort((a, b) => b.v - a.v);
       out[pos] = { rank: scored.findIndex((x) => x.i === userIdx) + 1, of: TEAMS };
