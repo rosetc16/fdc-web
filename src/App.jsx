@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18q";
+const BUILD_TAG = "2026.07.18r";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4464,8 +4464,9 @@ table.board tbody tr td.frz{border-left:3px solid transparent}
 .num{font-variant-numeric:tabular-nums}
 .slotlbl{font-family:'Barlow Condensed';font-size:11px;letter-spacing:.08em;color:var(--mut);width:40px;display:inline-block}
 .alert{border:1px solid var(--red);background:#2A1210;border-radius:8px;padding:8px 10px;color:#FFB4AC;font-size:13px}
-input.gs,select.gs{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:8px 10px;font-family:'Barlow';font-size:13px}
-input.gs:focus,select.gs:focus{outline:2px solid var(--gold);outline-offset:0}
+input.gs,select.gs,textarea.gs{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:8px 10px;font-family:'Barlow';font-size:13px}
+input.gs:focus,select.gs:focus,textarea.gs:focus{outline:2px solid var(--gold);outline-offset:0}
+textarea.gs::placeholder,input.gs::placeholder{color:var(--mut)}
 select.gs option{background:var(--panel2);color:var(--ink)}
 .gridboard{display:grid;grid-template-columns:repeat(12,minmax(88px,1fr));gap:3px;font-size:11px}
 .cell{border-radius:5px;padding:5px 6px;background:var(--panel2);border:1px solid var(--line);min-height:44px;cursor:default}
@@ -14016,15 +14017,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // what makes the Teams tab meaningful: it shows who's actually ahead/behind at each spot, so you
   // don't see every team green. Uses current (drafted-only) or projected rosters to match the toggle.
   const posRel = useMemo(() => {
-    // Color the League Needs grid + team-analysis bars by what each team has ACTUALLY drafted, judged on
-    // ABSOLUTE quality-per-slot (not projected rosters, and not a pure league rank). Two prior bugs this
-    // fixes: (1) projected rosters made a team with 0 RBs drafted show green because the projection expected
-    // them to draft RBs later; (2) pure league-tercile ranking painted a fine RB10+RB15 team red just for
-    // being bottom-ranked, and could paint a 0-drafted team above a 1-good-RB team. Absolute tiers key each
-    // cell off drafted value vs the per-slot benchmark, so 0 drafted is always worse than 1 real starter.
+    // League Needs "Strength" coloring = league RANK terciles on ACTUAL drafted rosters (top third green,
+    // middle amber, bottom third red) — an even distribution, matching "am I upper/middle/lower tier at
+    // this position." Two prior bugs fixed: it used PROJECTED rosters (0-drafted team showed green because
+    // projection assumed future picks), and a later absolute-caliber version made "a million teams green."
+    // Terciles on real rosters give the even spread wanted, and it agrees with the How-You're-Doing rank.
     const rosters = [];
     for (let i = 0; i < TEAMS; i++) rosters.push(rostersByTeam[i] || []);
-    return posQualityTiersAbsolute(rosters, cfg, players, TEAMS).level;
+    return posQualityTiers(rosters, cfg).level;
   }, [players, picks, cfg, userIdx, liveSlots, rostersByTeam]);
   // Exact league rank (1 = best) for YOUR team at each position, plus your players per position — powers the
   // "How you're doing" positional-standing rail. Uses the same shared quality scorer as everything else.
@@ -14050,36 +14050,25 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // (not "Thin"); by round 12 with the QB board barren, that same empty slot correctly reads Thin. Every
   // consumer (hub How-You're-Doing, team analysis, summary) reads THIS, so the fix is uniform.
   const posRankMineActual = useMemo(() => {
+    // Clean league RANK per position (1 = best) by ACTUAL drafted quality only. No "gettable cushion" —
+    // this now drives the How-You're-Doing color, so it must be an honest standing: hold an elite RB and
+    // you rank near 1st; hold nothing and you tie for last. Ties (e.g. many teams with 0 at a position)
+    // are broken by total drafted value so the order is stable, and all-zero teams naturally cluster at
+    // the bottom. The "have you even started here" nuance is shown separately via the "Open" read.
     const eff = EFF_REQ(cfg); const fsh = flexShareOf(cfg); const dyn = isDynastyCfg(cfg);
     const repl = slotBaselines(players, cfg, TEAMS);
-    const remainFrac = TOTAL > 0 ? Math.max(0, Math.min(1, (TOTAL - picks.length) / TOTAL)) : 0;
     const out = {};
     ["QB", "RB", "WR", "TE"].forEach((pos) => {
       const req = eff[pos] || 0;
-      const bestAvailV = (() => {
-        const pool = availByPos[pos] || [];
-        if (!pool.length) return 0;
-        const p = pool[0];
-        const v = dyn ? (p.value != null ? p.value : p.vbd) : (p.vbd0 != null ? p.vbd0 : p.vbd);
-        return v != null ? v : 0;
-      })();
       const scored = Array.from({ length: TEAMS }, (_, i) => {
         const drafted = (rostersByTeam[i] || []).filter((p) => p && p.pos === pos);
-        const base = posQualityScore(drafted, req, { dynasty: dyn, flexShare: fsh[pos] || 0, slotBaseline: repl[pos] });
-        // Gettable cushion: credit for unfilled starter slots you could still fill from the board. This
-        // exists ONLY so an untouched position reads "Open" rather than falsely Strong/Thin — it must
-        // NEVER let a team that drafted nobody outrank a team holding real talent. So it's heavily
-        // discounted (0.35) AND capped below replacement-startable, meaning drafted value always
-        // dominates: hold an elite RB and you rank at/near the top, exactly as expected. A team with
-        // zero RBs gets only a faint speculative bump, not a phantom elite back.
-        const unfilled = Math.max(0, Math.ceil(req) - drafted.length);
-        const cushion = unfilled > 0 ? bestAvailV * remainFrac * 0.35 * Math.min(unfilled, 1) : 0;
-        return { i, v: base + cushion };
+        const v = posQualityScore(drafted, req, { dynasty: dyn, flexShare: fsh[pos] || 0, slotBaseline: repl[pos] });
+        return { i, v };
       }).sort((a, b) => b.v - a.v);
       out[pos] = { rank: scored.findIndex((x) => x.i === userIdx) + 1, of: TEAMS };
     });
     return out;
-  }, [players, picks, cfg, userIdx, rostersByTeam, availByPos, TOTAL, liveSlots]);
+  }, [players, picks, cfg, userIdx, rostersByTeam, TOTAL, liveSlots]);
   const byPosMine = useMemo(() => {
     const roster = teamsProj && proj ? (proj.rosters[userIdx] || []) : (rostersByTeam[userIdx] || []);
     const m = { QB: [], RB: [], WR: [], TE: [] };
@@ -15408,40 +15397,26 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const deficit = Math.max(0, need - has);
                 const filled = has >= need && need > 0;
                 // READ = your standing at this position, but it must not deliver a confident verdict on a
-                // position nobody has meaningfully contested yet. Two guards on top of league rank:
-                //  1) If you've drafted 0 here AND startable-caliber talent is still on the board, your rank
-                //     is noise (everyone's near-tied at zero) — show "Open": undecided, still gettable. This
-                //     stops the round-2 "Thin QB / Strong RB" nonsense when no one's drafted the position.
-                //  2) Board scarcity lives in Draft Pulse, so READ leans on what YOU'VE done: a position you
-                //     HAVE invested in reads by rank as before; an empty one reads Open until the board for it
-                //     actually dries up, at which point (few/no startable left) it correctly flips to Thin.
+                // READ + COLOR both come from your LEAGUE RANK at this position (1=best … TEAMS=worst),
+                // so the color and the rank number can never contradict each other (the old bug: "10/12 but
+                // green/Strong" happened because color came from absolute caliber while the number came from
+                // rank). Rank is a relative measure → colors distribute evenly (top third green, middle amber,
+                // bottom third red), which is exactly the "am I upper/middle/lower tier here" read wanted.
+                // Special case: a position you've drafted 0 of, with startable talent still on the board, isn't
+                // really "ranked" yet — show "Open" (blue, neutral) instead of a misleading rank verdict.
                 const startableLeft = (availByPos[pos] || []).filter((p) => {
                   const v = dynastyH ? (p.value != null ? p.value : p.vbd) : (p.vbd0 != null ? p.vbd0 : p.vbd);
-                  return v != null && v > 0; // above replacement = a real starter still available
+                  return v != null && v > 0;
                 }).length;
                 const has0 = (has || 0) === 0;
-                const boardStrong = startableLeft >= Math.max(2, Math.ceil(TEAMS / 4)); // meaningful supply left
-                // READ = caliber of what YOU'VE drafted here, same model as the League Needs grid so they
-                // always agree. An elite drafted player (top-N at his position pool) → Strong on his own
-                // (WR4/Saquon in round 1 = Strong, not diluted by empty slots). A solid starter → Middle,
-                // or Strong if you also hold a full starter complement. Nothing drafted + board stocked →
-                // Open; nothing + board dry → Thin. No cross-team ranking (that was noise early).
-                const dyn = dynastyH;
-                const myAtPos = ((byPosMine && byPosMine[pos]) || []).map((p) => (dyn ? (p.value != null ? p.value : p.vbd) : (p.vbd0 != null ? p.vbd0 : p.vbd))).filter((v) => v != null).sort((a, b) => b - a);
-                const reqN = Math.max(1, Math.round(need || 1));
-                const posPool = players.filter((p) => p && p.pos === pos).map((p) => (dyn ? (p.value != null ? p.value : p.vbd) : (p.vbd0 != null ? p.vbd0 : p.vbd))).filter((v) => v != null).sort((a, b) => b - a);
-                const caliber = (v) => { if (!posPool.length) return 2; const idx = posPool.findIndex((x) => v >= x); const rank = idx < 0 ? posPool.length : idx; return rank < TEAMS ? 0 : rank < TEAMS * 2 ? 1 : 2; };
+                const boardStrong = startableLeft >= Math.max(2, Math.ceil(TEAMS / 4));
+                const frac = rk ? (rk.rank - 1) / Math.max(1, rk.of - 1) : null; // 0 = 1st (best), 1 = last
                 let read;
-                if (has0) {
-                  read = boardStrong ? { t: "Open", c: "var(--blue)" } : startableLeft === 0 ? { t: "Thin", c: "#F2655C" } : { t: "Middle", c: "var(--gold)" };
-                } else {
-                  const bestCal = caliber(myAtPos[0]);
-                  const starterCount = myAtPos.filter((v) => caliber(v) <= 1).length;
-                  if (bestCal === 0) read = { t: "Strong", c: "#5FD0A8" };
-                  else if (bestCal === 1) read = starterCount >= reqN ? { t: "Strong", c: "#5FD0A8" } : { t: "Middle", c: "var(--gold)" };
-                  else read = (has >= reqN || !boardStrong) ? { t: "Thin", c: "#F2655C" } : { t: "Middle", c: "var(--gold)" };
-                }
-                const frac = rk ? (rk.rank - 1) / Math.max(1, rk.of - 1) : null; // kept only for focus pressure
+                if (has0 && boardStrong) read = { t: "Open", c: "var(--blue)" };
+                else if (frac == null) read = { t: "—", c: "var(--mut)" };
+                else if (frac <= 0.33) read = { t: "Strong", c: "#5FD0A8" };
+                else if (frac <= 0.66) read = { t: "Middle", c: "var(--gold)" };
+                else read = { t: "Thin", c: "#F2655C" };
                 // focus pressure: unfilled need first (by deficit), then weakest league rank
                 const pressure = (deficit > 0 ? 100 + deficit * 10 : 0) + (frac != null ? frac * 40 : 0);
                 const bestAvail = (availByPos[pos] || [])[0] || null;
