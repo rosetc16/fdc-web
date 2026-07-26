@@ -44,13 +44,23 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18n";
+const BUILD_TAG = "2026.07.18o";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
   .replace(/[.,'’]/g, "")
   .replace(/\b(jr|sr|ii|iii|iv|v)\b/g, "")
   .replace(/\s+/g, " ").trim();
+// Display surname: the last name word, but skipping a trailing generational suffix (Jr., Sr., II–V)
+// and keeping it attached — so "Marvin Harrison Jr." shows "Harrison Jr.", never just "Jr.".
+const SUFFIX_RE = /^(jr|sr|ii|iii|iv|v)\.?$/i;
+const surname = (full) => {
+  const parts = String(full || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return String(full || "");
+  const last = parts[parts.length - 1];
+  if (SUFFIX_RE.test(last) && parts.length >= 2) return `${parts[parts.length - 2]} ${last}`;
+  return last;
+};
 // Comp subscriptions granted by an admin, keyed by email. A comp can be "season" (this league
 // year only) or "forever". Returns the active comp for an email, or null. In production this
 // lives server-side; here it's stored in biz.comps and applied at sign-in.
@@ -15268,7 +15278,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const need = req[pos] || 0, has = have[pos] || 0;
                 const deficit = Math.max(0, need - has);
                 const filled = has >= need && need > 0;
-                const frac = rk ? (rk.rank - 1) / Math.max(1, rk.of - 1) : null;
                 // READ = your standing at this position, but it must not deliver a confident verdict on a
                 // position nobody has meaningfully contested yet. Two guards on top of league rank:
                 //  1) If you've drafted 0 here AND startable-caliber talent is still on the board, your rank
@@ -15283,11 +15292,36 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 }).length;
                 const has0 = (has || 0) === 0;
                 const boardStrong = startableLeft >= Math.max(2, Math.ceil(TEAMS / 4)); // meaningful supply left
+                // READ = the ABSOLUTE quality of what YOU'VE drafted at this position, judged on its own terms
+                // — NOT a 12-team rank, which is pure noise early (ranking who has the most WR points in round
+                // 3 is meaningless; it produced "2 WRs → 9th/Thin" and "0 TEs → 3rd/Strong"). We instead read
+                // your best drafted starters at this position vs the league's per-slot benchmark:
+                //   • the top ~`need` players you drafted here, each compared to a typical starter's value at
+                //     that slot (slotBaselines). Averaged, that's a "how good is my starting core here" score.
+                //   • Elite drafted talent → Strong immediately (Saquon in R1 = Strong, full stop).
+                //   • Serviceable-but-not-special → Middle. Below-starter bodies → leaning Thin.
+                //   • Nothing drafted + board still stocked → Open (undecided). Nothing + board dry → Thin.
+                // No cross-team ranking, so other teams' choices can't flip your own read illogically.
+                const dyn = dynastyH;
+                const myAtPos = ((byPosMine && byPosMine[pos]) || []).map((p) => (dyn ? (p.value != null ? p.value : p.vbd) : (p.vbd0 != null ? p.vbd0 : p.vbd))).filter((v) => v != null).sort((a, b) => b - a);
+                const reqN = Math.max(1, Math.round(need || 1));
+                const repl = slotBaselines(players, cfg, TEAMS);
+                const benchAt = (k) => (repl && repl[pos] && repl[pos][k] != null) ? repl[pos][k] : (repl && repl[pos] && repl[pos].length ? repl[pos][repl[pos].length - 1] : 0);
                 let read;
-                if (frac == null) read = { t: "—", c: "var(--mut)" };
-                else if (has0 && boardStrong) read = { t: "Open", c: "var(--blue)" };           // uncontested + gettable
-                else if (has0 && startableLeft === 0) read = { t: "Thin", c: "#F2655C" };        // never addressed + board dry
-                else read = frac <= 0.33 ? { t: "Strong", c: "#5FD0A8" } : frac <= 0.66 ? { t: "Middle", c: "var(--gold)" } : { t: "Thin", c: "#F2655C" };
+                if (has0) {
+                  read = boardStrong ? { t: "Open", c: "var(--blue)" } : startableLeft === 0 ? { t: "Thin", c: "#F2655C" } : { t: "Middle", c: "var(--gold)" };
+                } else {
+                  // ratio of your drafted starters' value to the benchmark for those slots (1.0 = league-typical)
+                  let mine = 0, bench = 0;
+                  for (let k = 0; k < reqN; k++) { mine += (myAtPos[k] != null ? myAtPos[k] : 0); bench += Math.max(1, benchAt(k)); }
+                  const ratio = bench > 0 ? mine / bench : 0;
+                  // Strong: clearly above a typical starting slot. Middle: roughly at it. Thin: below — but if
+                  // you at least have bodies and the board's still deep, don't over-punish (Middle floor).
+                  if (ratio >= 1.15) read = { t: "Strong", c: "#5FD0A8" };
+                  else if (ratio >= 0.75) read = { t: "Middle", c: "var(--gold)" };
+                  else read = (has >= reqN || !boardStrong) ? { t: "Thin", c: "#F2655C" } : { t: "Middle", c: "var(--gold)" };
+                }
+                const frac = rk ? (rk.rank - 1) / Math.max(1, rk.of - 1) : null; // kept only for focus pressure
                 // focus pressure: unfilled need first (by deficit), then weakest league rank
                 const pressure = (deficit > 0 ? 100 + deficit * 10 : 0) + (frac != null ? frac * 40 : 0);
                 const bestAvail = (availByPos[pos] || [])[0] || null;
@@ -15300,7 +15334,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const scar = best ? scarcityFor(best) : null;
                 showTip(e, [
                   { kind: "take", tone: d.frac == null ? "neutral" : d.frac <= 0.33 ? "good" : d.frac > 0.66 ? "bad" : "neutral", x: `${d.pos} — ${d.rk ? `${ordinal(d.rk.rank)} of ${d.rk.of} in the league` : "unranked"} · ${d.has}/${d.need || 0} starter${(d.need || 0) === 1 ? "" : "s"}${d.deficit > 0 ? ` · need ${Math.round(d.deficit)} more` : d.filled ? " · filled ✓" : ""}${d.pos === focusPos ? " · YOUR FOCUS" : ""}` },
-                  ...(best ? [{ kind: "altheader", x: `Best ${d.pos} available` }, { kind: "playercard", p: best }, ...(scar && scar.isLastStarter ? [{ t: "Scarcity", x: `${best.name.split(" ").slice(-1)} may be the last startable-tier ${d.pos} — steep drop after him.` }] : [])] : []),
+                  ...(best ? [{ kind: "altheader", x: `Best ${d.pos} available` }, { kind: "playercard", p: best }, ...(scar && scar.isLastStarter ? [{ t: "Scarcity", x: `${surname(best.name)} may be the last startable-tier ${d.pos} — steep drop after him.` }] : [])] : []),
                   { kind: "altheader", x: `Your ${d.pos}s` },
                   ...(plist.length ? [{ kind: "playertable", cols: ["rank", "name", "role", "age", "vbd"], players: plist }] : [{ t: "—", x: "No players here yet" }]),
                 ]);
@@ -15342,7 +15376,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             <span style={{ textAlign: "center", fontSize: 10.5, fontWeight: 700, color: d.rk ? d.read.c : "var(--mut)" }}>{d.rk ? `${d.rk.rank}/${d.rk.of}` : "—"}</span>
                             <span style={{ textAlign: "center", fontSize: 10, fontWeight: 800, color: d.read.c }}>{d.read.t}</span>
                             <span style={{ textAlign: "right", fontSize: 9.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-                              {ba ? <>{ba.name.split(" ").slice(-1)[0]} <span className="num" style={{ fontWeight: 700, color: vbdColor(baV) }}>{(baV > 0 ? "+" : "") + Math.round(baV)}</span></> : <span className="mut">—</span>}
+                              {ba ? <>{surname(ba.name)} <span className="num" style={{ fontWeight: 700, color: vbdColor(baV) }}>{(baV > 0 ? "+" : "") + Math.round(baV)}</span></> : <span className="mut">—</span>}
                             </span>
                           </div>
                         );
@@ -15436,7 +15470,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         { kind: "take", tone: (r.supply.label === "Scarce" || r.supply.label === "Top guy") ? "bad" : (r.supply.label === "Deep" || r.supply.label === "Even") ? "good" : "neutral", x: r.isRun ? `${r.pos} RUN — ${r.runPicks.length} taken in the last ${Math.min(8, picks.length)} picks` : `${r.pos} — ${r.supply.label}` },
                         ...(r.isRun && r.runPicks.length ? [{ kind: "playertable", cols: ["pick", "pos", "name", "drafter"], players: r.runPicks.map((x) => ({ ...x.p, pickNo: x.o + 1, drafter: teamAt(x.o) === userIdx ? "You" : TEAM_NAMES[teamAt(x.o)] })).reverse() }] : []),
                         { t: lateDraft ? "Depth read (late draft)" : "Startable-tier left", x: lateDraft
-                            ? (r.supply.label === "Top guy" ? `${r.best.name.split(" ").slice(-1)} is clearly the best ${r.pos} left (${r.supply.num} value over the next few) — if you want a ${r.pos}, take him now; the rest are interchangeable.` : r.supply.label === "Even" ? `The next several ${r.pos}s are about equal — no rush, you can wait and still get similar production.` : r.supply.label === "Bare" ? `Little fantasy value left at ${r.pos} — only depth/upside dart-throws remain.` : `${r.best.name.split(" ").slice(-1)} has a modest edge (${r.supply.num}) over the next ${r.pos}s.`)
+                            ? (r.supply.label === "Top guy" ? `${surname(r.best.name)} is clearly the best ${r.pos} left (${r.supply.num} value over the next few) — if you want a ${r.pos}, take him now; the rest are interchangeable.` : r.supply.label === "Even" ? `The next several ${r.pos}s are about equal — no rush, you can wait and still get similar production.` : r.supply.label === "Bare" ? `Little fantasy value left at ${r.pos} — only depth/upside dart-throws remain.` : `${surname(r.best.name)} has a modest edge (${r.supply.num}) over the next ${r.pos}s.`)
                             : (r.startersLeft != null ? `${r.startersLeft} ${r.pos}${r.startersLeft === 1 ? "" : "s"} left inside the top ${r.starterLine} at the position — after those, you're into backup tier.${r.isRun ? " A run thins this fast." : ""}` : "—") },
                         ...(r.comps.length ? [{ kind: "altheader", x: `Next ${r.pos}s on the board` }, { kind: "playertable", cols: ["rank", "name", "team", dynasty ? "dval" : "vbd", "adp"], players: r.comps }] : []),
                       ]);
@@ -16187,7 +16221,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 // 2) A value cliff / last-of-tier at the recommended position.
                 const gapNote = (() => {
                   if (!topBal) return null; const scar = scarcityFor(topBal);
-                  if (scar && scar.isLastStarter) return { i: "ti-alert-triangle", c: "#F2655C", t: `${topBal.name.split(" ").slice(-1)} may be the last startable-tier ${topBal.pos} — steep drop after him.` };
+                  if (scar && scar.isLastStarter) return { i: "ti-alert-triangle", c: "#F2655C", t: `${surname(topBal.name)} may be the last startable-tier ${topBal.pos} — steep drop after him.` };
                   if (scar && scar.drop != null && scar.drop >= 20) return { i: "ti-stairs-down", c: "var(--gold)", t: `Value cliff at ${topBal.pos}: ~${scar.drop} drop to the next one.` };
                   return null;
                 })();
@@ -16197,7 +16231,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   const cand = [topBal, topBld, ...((balAdv && balAdv.alts) || [])].filter(Boolean);
                   let best = null;
                   for (const p of cand) { if (p.adp != null) { const fall = Math.round((selOverall + 1) - p.adp); if (fall >= 20 && (!best || fall > best.fall)) best = { p, fall }; } }
-                  return best ? { i: "ti-trending-down", c: "#5FD0A8", t: `${best.p.name.split(" ").slice(-1)} is a value here — ~${best.fall} picks past his ADP (${best.p.adp.toFixed(0)}).` } : null;
+                  return best ? { i: "ti-trending-down", c: "#5FD0A8", t: `${surname(best.p.name)} is a value here — ~${best.fall} picks past his ADP (${best.p.adp.toFixed(0)}).` } : null;
                 })();
                 if (fallerNote && summaryBits.length < 3) summaryBits.push(fallerNote);
                 // 4) Fallback if we somehow have room and nothing above fired: the biggest roster need.
@@ -16406,7 +16440,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                 <div key={w.pos} onMouseEnter={tip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "58px 1fr 1fr 74px", gap: "0 8px", alignItems: "center", padding: "3px 0", borderBottom: "1px solid var(--line2)", cursor: "help" }}>
                                   <span style={{ minWidth: 0 }}>
                                     <span style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 10.5, fontWeight: 800, color: POS_COLOR[w.pos] }}><Dot pos={w.pos} />{w.pos}{w.isNeed ? <i className="ti ti-alert-circle-filled" style={{ fontSize: 8, color: "#F2655C" }} title="roster need" aria-hidden="true" /> : null}</span>
-                                    <span className="mut" style={{ fontSize: 8.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{w.bestNow.name.split(" ").slice(-1)}</span>
+                                    <span className="mut" style={{ fontSize: 8.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{surname(w.bestNow.name)}</span>
                                   </span>
                                   <span style={{ minWidth: 0 }}>
                                     <span style={{ fontSize: 10, fontWeight: 800, color: w.vbdColorR, display: "block" }}>{w.vbdRead}</span>
@@ -16457,7 +16491,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     );
                   })()}
                   <button className="btn btn-gold" style={{ width: "100%", marginTop: 9 }} onClick={() => draftPlayer(advice.verdict.id)}>
-                    Draft {advice.verdict.name.split(" ").slice(-1)}{onClock !== userIdx ? ` (to ${TEAM_NAMES[onClock].split(" ")[0]})` : ""}
+                    Draft {surname(advice.verdict.name)}{onClock !== userIdx ? ` (to ${TEAM_NAMES[onClock].split(" ")[0]})` : ""}
                   </button>
                   <div className="mut" style={{ fontSize: 11.5, margin: "10px 0 4px", textTransform: "uppercase", letterSpacing: ".07em" }}>Alternatives</div>
                   {advice.alts.map((a) => (
@@ -17893,7 +17927,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 for (let i = 0; i < TEAMS; i++) {
                   POS.forEach((pos) => {
                     const arr = (rostersByTeam[i] || []).filter((p) => p && p.pos === pos).sort((a, b) => b.vbd - a.vbd);
-                    if (arr.length >= 2) { const sc = arr[0].vbd + arr[1].vbd; if (!powerhouse || sc > powerhouse.sc) powerhouse = { i, pos, sc, names: `${arr[0].name.split(" ").slice(-1)} & ${arr[1].name.split(" ").slice(-1)}` }; }
+                    if (arr.length >= 2) { const sc = arr[0].vbd + arr[1].vbd; if (!powerhouse || sc > powerhouse.sc) powerhouse = { i, pos, sc, names: `${surname(arr[0].name)} & ${surname(arr[1].name)}` }; }
                   });
                 }
                 return (
