@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18o";
+const BUILD_TAG = "2026.07.18p";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3667,7 +3667,40 @@ function posQualityTiers(rostersByTeam, cfg) {
   });
   return { level, score: scoreByTeam };
 }
-// ── Guided spotlight tour ──────────────────────────────────────────────────────────────────────
+// ABSOLUTE positional tiers (0 strong / 1 middle / 2 thin) for the League Needs grid coloring. Unlike
+// posQualityTiers (which ranks teams against each other into forced terciles), this judges each team's
+// position on its OWN merit vs the per-slot starter benchmark — so the color means "how good is this
+// team's group here," not "where do they rank." Key properties the ranking version got wrong:
+//   • 0 drafted at a position is always Thin (red) — you can't be "strong" at nothing.
+//   • 1 genuinely good starter reads Middle/Strong, never worse than a 0-drafted team.
+//   • A serviceable full group (e.g. RB10 + RB15) reads Middle, not red, just because richer teams exist.
+function posQualityTiersAbsolute(rostersByTeam, cfg, allPlayers, teams) {
+  const n = rostersByTeam.length;
+  const req = EFF_REQ(cfg);
+  const fShare = flexShareOf(cfg);
+  const dynasty = isDynastyCfg(cfg);
+  const repl = slotBaselines(allPlayers, cfg, teams);
+  const level = {}; const score = {};
+  for (let i = 0; i < n; i++) { level[i] = {}; score[i] = {}; }
+  ["QB", "RB", "WR", "TE"].forEach((pos) => {
+    const reqN = Math.max(1, Math.round(req[pos] || 1));
+    const benchAt = (k) => (repl && repl[pos] && repl[pos][k] != null) ? repl[pos][k] : (repl && repl[pos] && repl[pos].length ? repl[pos][repl[pos].length - 1] : 0);
+    let benchSum = 0; for (let k = 0; k < reqN; k++) benchSum += Math.max(1, benchAt(k));
+    for (let i = 0; i < n; i++) {
+      const atPos = (rostersByTeam[i] || []).filter((p) => p && p.pos === pos)
+        .map((p) => (dynasty ? (p.value != null ? p.value : p.vbd) : (p.vbd0 != null ? p.vbd0 : p.vbd)))
+        .filter((v) => v != null).sort((a, b) => b - a);
+      score[i][pos] = atPos;
+      if (!atPos.length) { level[i][pos] = 2; continue; } // nothing drafted → Thin, always
+      let mine = 0; for (let k = 0; k < reqN; k++) mine += (atPos[k] != null ? atPos[k] : 0);
+      const ratio = benchSum > 0 ? mine / benchSum : 0;
+      // Absolute thresholds (same scale as the How-You're-Doing READ): clearly-above-benchmark = Strong,
+      // roughly-at = Middle, below = Thin.
+      level[i][pos] = ratio >= 1.15 ? 0 : ratio >= 0.75 ? 1 : 2;
+    }
+  });
+  return { level, score };
+}
 // A coach-mark tour that dims the whole screen, cuts a "spotlight" hole around one target element at a
 // time, and shows a tooltip card explaining it. Next/Back step through; Dismiss exits any time.
 //   steps: [{ sel: '[data-tour="board"]', title, body, tab? }]  — sel is a CSS selector for the target.
@@ -4612,12 +4645,17 @@ const Dot = ({ pos }) => <span className="posdot" title={pos} style={{ backgroun
 // the row never shows a broken-image icon. size in px.
 const PlayerPhoto = ({ sid, pos, size = 22 }) => {
   if (!sid) return null;
-  // key={sid} forces a fresh <img> per player so a node that errored for one player (display:none) is never
-  // reused for the next — which caused photos to intermittently not render after hovering a player with no image.
+  // Try the full Sleeper headshot; if it fails, fall back to Sleeper's thumbnail path before giving up to
+  // the colored position box. key={sid} forces a fresh <img> per player so a node that errored for one
+  // player is never reused for the next (which caused intermittent no-render after hovering an image-less
+  // player). NOTE: if photos are missing site-wide, test the CDN from a real browser — the URL scheme is
+  // sleepercdn.com/content/nfl/players/{sleeperId}.jpg; a site-wide failure is a CDN/hotlink issue, not this.
+  const full = `https://sleepercdn.com/content/nfl/players/${sid}.jpg`;
+  const thumb = `https://sleepercdn.com/content/nfl/players/thumb/${sid}.jpg`;
   return (
-    <img key={sid} src={`https://sleepercdn.com/content/nfl/players/${sid}.jpg`} alt="" width={size} height={size}
+    <img key={sid} src={full} data-fallback="0" alt="" width={size} height={size}
       onLoad={(e) => { e.currentTarget.style.visibility = "visible"; }}
-      onError={(e) => { e.currentTarget.style.visibility = "hidden"; }}
+      onError={(e) => { const el = e.currentTarget; if (el.getAttribute("data-fallback") === "0") { el.setAttribute("data-fallback", "1"); el.src = thumb; } else { el.style.visibility = "hidden"; } }}
       style={{ width: size, height: size, borderRadius: "50%", objectFit: "cover", objectPosition: "top center", flexShrink: 0, background: "var(--panel3)", border: `1.5px solid ${POS_COLOR[pos] || "var(--line)"}` }} />
   );
 };
@@ -13889,14 +13927,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // what makes the Teams tab meaningful: it shows who's actually ahead/behind at each spot, so you
   // don't see every team green. Uses current (drafted-only) or projected rosters to match the toggle.
   const posRel = useMemo(() => {
-    // Build each team's roster (projected or current), then rank positions with the SHARED quality score
-    // so the hub coloring matches the team-analysis coloring exactly.
+    // Color the League Needs grid + team-analysis bars by what each team has ACTUALLY drafted, judged on
+    // ABSOLUTE quality-per-slot (not projected rosters, and not a pure league rank). Two prior bugs this
+    // fixes: (1) projected rosters made a team with 0 RBs drafted show green because the projection expected
+    // them to draft RBs later; (2) pure league-tercile ranking painted a fine RB10+RB15 team red just for
+    // being bottom-ranked, and could paint a 0-drafted team above a 1-good-RB team. Absolute tiers key each
+    // cell off drafted value vs the per-slot benchmark, so 0 drafted is always worse than 1 real starter.
     const rosters = [];
-    for (let i = 0; i < TEAMS; i++) {
-      rosters.push(teamsProj && proj ? proj.rosters[i] : (rostersByTeam[i] || []));
-    }
-    return posQualityTiers(rosters, cfg).level;
-  }, [players, picks, cfg, teamsProj, proj, userIdx, liveSlots, rostersByTeam]);
+    for (let i = 0; i < TEAMS; i++) rosters.push(rostersByTeam[i] || []);
+    return posQualityTiersAbsolute(rosters, cfg, players, TEAMS).level;
+  }, [players, picks, cfg, userIdx, liveSlots, rostersByTeam]);
   // Exact league rank (1 = best) for YOUR team at each position, plus your players per position — powers the
   // "How you're doing" positional-standing rail. Uses the same shared quality scorer as everything else.
   const posRankMine = useMemo(() => {
