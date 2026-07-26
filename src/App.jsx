@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18l";
+const BUILD_TAG = "2026.07.18m";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -15265,8 +15265,25 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const deficit = Math.max(0, need - has);
                 const filled = has >= need && need > 0;
                 const frac = rk ? (rk.rank - 1) / Math.max(1, rk.of - 1) : null;
-                // read purely by league rank (not deficit) so a filled position never looks like a weakness
-                const read = frac == null ? { t: "—", c: "var(--mut)" } : frac <= 0.33 ? { t: "Strong", c: "#5FD0A8" } : frac <= 0.66 ? { t: "Middle", c: "var(--gold)" } : { t: "Thin", c: "#F2655C" };
+                // READ = your standing at this position, but it must not deliver a confident verdict on a
+                // position nobody has meaningfully contested yet. Two guards on top of league rank:
+                //  1) If you've drafted 0 here AND startable-caliber talent is still on the board, your rank
+                //     is noise (everyone's near-tied at zero) — show "Open": undecided, still gettable. This
+                //     stops the round-2 "Thin QB / Strong RB" nonsense when no one's drafted the position.
+                //  2) Board scarcity lives in Draft Pulse, so READ leans on what YOU'VE done: a position you
+                //     HAVE invested in reads by rank as before; an empty one reads Open until the board for it
+                //     actually dries up, at which point (few/no startable left) it correctly flips to Thin.
+                const startableLeft = (availByPos[pos] || []).filter((p) => {
+                  const v = dynastyH ? (p.value != null ? p.value : p.vbd) : (p.vbd0 != null ? p.vbd0 : p.vbd);
+                  return v != null && v > 0; // above replacement = a real starter still available
+                }).length;
+                const has0 = (has || 0) === 0;
+                const boardStrong = startableLeft >= Math.max(2, Math.ceil(TEAMS / 4)); // meaningful supply left
+                let read;
+                if (frac == null) read = { t: "—", c: "var(--mut)" };
+                else if (has0 && boardStrong) read = { t: "Open", c: "var(--blue)" };           // uncontested + gettable
+                else if (has0 && startableLeft === 0) read = { t: "Thin", c: "#F2655C" };        // never addressed + board dry
+                else read = frac <= 0.33 ? { t: "Strong", c: "#5FD0A8" } : frac <= 0.66 ? { t: "Middle", c: "var(--gold)" } : { t: "Thin", c: "#F2655C" };
                 // focus pressure: unfilled need first (by deficit), then weakest league rank
                 const pressure = (deficit > 0 ? 100 + deficit * 10 : 0) + (frac != null ? frac * 40 : 0);
                 const bestAvail = (availByPos[pos] || [])[0] || null;
