@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18p";
+const BUILD_TAG = "2026.07.18q";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3677,26 +3677,49 @@ function posQualityTiers(rostersByTeam, cfg) {
 function posQualityTiersAbsolute(rostersByTeam, cfg, allPlayers, teams) {
   const n = rostersByTeam.length;
   const req = EFF_REQ(cfg);
-  const fShare = flexShareOf(cfg);
   const dynasty = isDynastyCfg(cfg);
-  const repl = slotBaselines(allPlayers, cfg, teams);
+  // Position-wide value percentiles across all rostered players: an ELITE player (top of the pool at his
+  // position) should light up green on his own merit — WR4 in round 1 is obviously "strong at WR," even
+  // with your other WR slots empty. So we grade by the CALIBER of the players a team holds, not a diluted
+  // group-sum vs a median benchmark (which averaged WR4 against two empty slots down to yellow).
+  const poolByPos = {};
+  ["QB", "RB", "WR", "TE"].forEach((pos) => {
+    poolByPos[pos] = (allPlayers || [])
+      .filter((p) => p && p.pos === pos)
+      .map((p) => (dynasty ? (p.value != null ? p.value : p.vbd) : (p.vbd0 != null ? p.vbd0 : p.vbd)))
+      .filter((v) => v != null).sort((a, b) => b - a);
+  });
+  // Caliber tier of a single value: where it ranks among all startable players at the position.
+  // top ~1 starter-tier per team = elite (0); within ~2 tiers = solid (still counts toward Strong);
+  // below startable = weak.
+  const caliberOf = (pos, v) => {
+    const arr = poolByPos[pos]; if (!arr.length) return 2;
+    const idx = arr.findIndex((x) => v >= x); // rank among position (0 = best)
+    const rank = idx < 0 ? arr.length : idx;
+    if (rank < n) return 0;          // top N at the position ≈ every league's starter-tier → elite
+    if (rank < n * 2) return 1;      // second tier ≈ a real but non-elite starter
+    return 2;                        // below startable
+  };
   const level = {}; const score = {};
   for (let i = 0; i < n; i++) { level[i] = {}; score[i] = {}; }
   ["QB", "RB", "WR", "TE"].forEach((pos) => {
     const reqN = Math.max(1, Math.round(req[pos] || 1));
-    const benchAt = (k) => (repl && repl[pos] && repl[pos][k] != null) ? repl[pos][k] : (repl && repl[pos] && repl[pos].length ? repl[pos][repl[pos].length - 1] : 0);
-    let benchSum = 0; for (let k = 0; k < reqN; k++) benchSum += Math.max(1, benchAt(k));
     for (let i = 0; i < n; i++) {
       const atPos = (rostersByTeam[i] || []).filter((p) => p && p.pos === pos)
         .map((p) => (dynasty ? (p.value != null ? p.value : p.vbd) : (p.vbd0 != null ? p.vbd0 : p.vbd)))
         .filter((v) => v != null).sort((a, b) => b - a);
       score[i][pos] = atPos;
       if (!atPos.length) { level[i][pos] = 2; continue; } // nothing drafted → Thin, always
-      let mine = 0; for (let k = 0; k < reqN; k++) mine += (atPos[k] != null ? atPos[k] : 0);
-      const ratio = benchSum > 0 ? mine / benchSum : 0;
-      // Absolute thresholds (same scale as the How-You're-Doing READ): clearly-above-benchmark = Strong,
-      // roughly-at = Middle, below = Thin.
-      level[i][pos] = ratio >= 1.15 ? 0 : ratio >= 0.75 ? 1 : 2;
+      // Best-player caliber drives the read. An elite starter (top-N) → Strong. A solid starter → Middle,
+      // unless you ALSO have real quantity/quality to fill the slots, which lifts it to Strong. Below
+      // startable-caliber, or only one weak body against multiple required slots → Thin.
+      const bestCal = caliberOf(pos, atPos[0]);
+      const starterCount = atPos.filter((v) => caliberOf(pos, v) <= 1).length; // real starters held
+      let lvl;
+      if (bestCal === 0) lvl = (starterCount >= reqN || reqN <= 1) ? 0 : (starterCount >= 1 ? 0 : 1); // elite → Strong
+      else if (bestCal === 1) lvl = starterCount >= reqN ? 0 : 1;  // solid; full complement → Strong, else Middle
+      else lvl = 2;                                                // only sub-startable bodies → Thin
+      level[i][pos] = lvl;
     }
   });
   return { level, score };
@@ -4661,6 +4684,68 @@ const PlayerPhoto = ({ sid, pos, size = 22 }) => {
 };
 const PosName = ({ p }) => <span><Dot pos={p.pos} /><span className="mut" style={{ fontSize: "0.92em" }}>{p.pos}</span> <b>{p.name}</b></span>;
 
+// Floating "Report a bug" button shown on every page, plus its modal. Reuses the app's submitFeedback
+// pipeline (backend inbox → Admin window). Beta users need an obvious, always-present way to flag issues;
+// burying it in a Help page loses reports. Bottom-left so it never collides with the top-right build badge.
+function GlobalBugReport({ user, onSubmit }) {
+  const [open, setOpen] = useState(false);
+  const [topic, setTopic] = useState("Bug");
+  const [email, setEmail] = useState((user && user.email) || "");
+  const [msg, setMsg] = useState("");
+  const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (!msg.trim() || busy) return;
+    setBusy(true);
+    try { await onSubmit({ topic, email: email.trim() || (user && user.email) || null, msg: msg.trim() }); } catch (e) {}
+    setBusy(false); setSent(true); setMsg("");
+    setTimeout(() => { setSent(false); setOpen(false); }, 1800);
+  };
+  return (
+    <>
+      <button onClick={() => setOpen(true)} title="Report a bug or send feedback"
+        style={{ position: "fixed", left: 14, bottom: 14, zIndex: 90, display: "inline-flex", alignItems: "center", gap: 6, background: "var(--panel)", color: "var(--ink)", border: "1px solid var(--gold)", borderRadius: 20, padding: "7px 13px", fontSize: 12, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", boxShadow: "0 4px 14px #0007" }}>
+        <i className="ti ti-bug" style={{ fontSize: 14, color: "var(--gold)" }} aria-hidden="true" />Report a bug
+      </button>
+      {open && (
+        <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 91, background: "#000b", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+          <div className="panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440, width: "100%", padding: 0, overflow: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "13px 16px", borderBottom: "1px solid var(--line)" }}>
+              <i className="ti ti-bug" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
+              <div className="disp" style={{ fontSize: 17, fontWeight: 700, flex: 1 }}>Report a bug / feedback</div>
+              <button className="btn btn-mini" onClick={() => setOpen(false)}><i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true" /></button>
+            </div>
+            {sent ? (
+              <div style={{ padding: 26, textAlign: "center" }}>
+                <i className="ti ti-circle-check" style={{ fontSize: 30, color: "var(--green)" }} aria-hidden="true" />
+                <div style={{ fontSize: 15, fontWeight: 700, marginTop: 8 }}>Thanks — sent!</div>
+                <div className="mut" style={{ fontSize: 12, marginTop: 3 }}>We read every report.</div>
+              </div>
+            ) : (
+              <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {["Bug", "Idea", "Other"].map((t) => (
+                    <button key={t} className="btn btn-mini" style={{ borderColor: topic === t ? "var(--gold)" : "var(--line)", color: topic === t ? "var(--gold)" : "var(--mut)" }} onClick={() => setTopic(t)}>{t}</button>
+                  ))}
+                </div>
+                <div>
+                  <label className="mut" style={{ fontSize: 11, display: "block", marginBottom: 3 }}>Your email (so we can follow up)</label>
+                  <input className="gs" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" style={{ width: "100%" }} />
+                </div>
+                <div>
+                  <label className="mut" style={{ fontSize: 11, display: "block", marginBottom: 3 }}>What happened?</label>
+                  <textarea className="gs" value={msg} onChange={(e) => setMsg(e.target.value)} rows={4} placeholder="Describe the bug or idea. What were you doing when it happened?" style={{ width: "100%", resize: "vertical", fontFamily: "inherit" }} />
+                </div>
+                <button className="btn btn-gold" disabled={!msg.trim() || busy} onClick={submit} style={{ opacity: !msg.trim() || busy ? 0.5 : 1 }}>{busy ? "Sending…" : "Send report"}</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 /* ============================================================ APP SHELL */
 // A small, always-present build badge fixed to the top-right of the viewport. It renders on EVERY page (home,
 // library, admin, draft) because it's mounted once at the App root rather than inside any one screen. Hovering
@@ -5413,6 +5498,10 @@ export default function App() {
       )}
       {route === "admin" && user && (isAdminEmail(user.email) || user.admin) && <Admin biz={biz} setBiz={(b) => { setBiz(b); persist({ biz: b }); }} user={user} leagues={leagues} feedback={feedback} onRespond={respondFeedback} onDeleteFeedback={deleteFeedback} onGrantComp={grantComp} onRevokeComp={revokeComp} onBack={() => setRoute(user.paid ? "home" : "library")} />}
       {quickMockOpen && <QuickMockSetup onCancel={() => setQuickMockOpen(false)} onStart={(cfg) => { setQuickMockOpen(false); startQuickMock(cfg); }} />}
+      {/* GLOBAL "Report a bug" — a small fixed button on every page (bottom-left, out of the way of the
+          top-right version badge). Opens a lightweight modal that reuses the existing submitFeedback
+          pipeline (→ backend inbox → Admin window). Captures the submitter's email so you can reply. */}
+      <GlobalBugReport user={user} onSubmit={submitFeedback} />
       {authOpen && <AuthModal hasBackend={hasBackend} authError={authError} onClose={() => { setAuthOpen(false); setAuthError(null); }} onSignUp={async (email, password, mode) => {
         try {
           const u = await signUp(email, password, mode);
@@ -15332,33 +15421,24 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 }).length;
                 const has0 = (has || 0) === 0;
                 const boardStrong = startableLeft >= Math.max(2, Math.ceil(TEAMS / 4)); // meaningful supply left
-                // READ = the ABSOLUTE quality of what YOU'VE drafted at this position, judged on its own terms
-                // — NOT a 12-team rank, which is pure noise early (ranking who has the most WR points in round
-                // 3 is meaningless; it produced "2 WRs → 9th/Thin" and "0 TEs → 3rd/Strong"). We instead read
-                // your best drafted starters at this position vs the league's per-slot benchmark:
-                //   • the top ~`need` players you drafted here, each compared to a typical starter's value at
-                //     that slot (slotBaselines). Averaged, that's a "how good is my starting core here" score.
-                //   • Elite drafted talent → Strong immediately (Saquon in R1 = Strong, full stop).
-                //   • Serviceable-but-not-special → Middle. Below-starter bodies → leaning Thin.
-                //   • Nothing drafted + board still stocked → Open (undecided). Nothing + board dry → Thin.
-                // No cross-team ranking, so other teams' choices can't flip your own read illogically.
+                // READ = caliber of what YOU'VE drafted here, same model as the League Needs grid so they
+                // always agree. An elite drafted player (top-N at his position pool) → Strong on his own
+                // (WR4/Saquon in round 1 = Strong, not diluted by empty slots). A solid starter → Middle,
+                // or Strong if you also hold a full starter complement. Nothing drafted + board stocked →
+                // Open; nothing + board dry → Thin. No cross-team ranking (that was noise early).
                 const dyn = dynastyH;
                 const myAtPos = ((byPosMine && byPosMine[pos]) || []).map((p) => (dyn ? (p.value != null ? p.value : p.vbd) : (p.vbd0 != null ? p.vbd0 : p.vbd))).filter((v) => v != null).sort((a, b) => b - a);
                 const reqN = Math.max(1, Math.round(need || 1));
-                const repl = slotBaselines(players, cfg, TEAMS);
-                const benchAt = (k) => (repl && repl[pos] && repl[pos][k] != null) ? repl[pos][k] : (repl && repl[pos] && repl[pos].length ? repl[pos][repl[pos].length - 1] : 0);
+                const posPool = players.filter((p) => p && p.pos === pos).map((p) => (dyn ? (p.value != null ? p.value : p.vbd) : (p.vbd0 != null ? p.vbd0 : p.vbd))).filter((v) => v != null).sort((a, b) => b - a);
+                const caliber = (v) => { if (!posPool.length) return 2; const idx = posPool.findIndex((x) => v >= x); const rank = idx < 0 ? posPool.length : idx; return rank < TEAMS ? 0 : rank < TEAMS * 2 ? 1 : 2; };
                 let read;
                 if (has0) {
                   read = boardStrong ? { t: "Open", c: "var(--blue)" } : startableLeft === 0 ? { t: "Thin", c: "#F2655C" } : { t: "Middle", c: "var(--gold)" };
                 } else {
-                  // ratio of your drafted starters' value to the benchmark for those slots (1.0 = league-typical)
-                  let mine = 0, bench = 0;
-                  for (let k = 0; k < reqN; k++) { mine += (myAtPos[k] != null ? myAtPos[k] : 0); bench += Math.max(1, benchAt(k)); }
-                  const ratio = bench > 0 ? mine / bench : 0;
-                  // Strong: clearly above a typical starting slot. Middle: roughly at it. Thin: below — but if
-                  // you at least have bodies and the board's still deep, don't over-punish (Middle floor).
-                  if (ratio >= 1.15) read = { t: "Strong", c: "#5FD0A8" };
-                  else if (ratio >= 0.75) read = { t: "Middle", c: "var(--gold)" };
+                  const bestCal = caliber(myAtPos[0]);
+                  const starterCount = myAtPos.filter((v) => caliber(v) <= 1).length;
+                  if (bestCal === 0) read = { t: "Strong", c: "#5FD0A8" };
+                  else if (bestCal === 1) read = starterCount >= reqN ? { t: "Strong", c: "#5FD0A8" } : { t: "Middle", c: "var(--gold)" };
                   else read = (has >= reqN || !boardStrong) ? { t: "Thin", c: "#F2655C" } : { t: "Middle", c: "var(--gold)" };
                 }
                 const frac = rk ? (rk.rank - 1) / Math.max(1, rk.of - 1) : null; // kept only for focus pressure
