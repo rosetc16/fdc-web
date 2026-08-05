@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18y";
+const BUILD_TAG = "2026.07.18z";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13230,7 +13230,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // TIMED-MOCK CLOCK: a timed quick mock's clock must not run until the draft actually begins. The room
   // already has a "Start mock" gate (`started`), so we simply tie the clock to it — the clock begins when
   // the user starts the draft, not when the room opens. Untimed mocks and live drafts are unaffected.
-  const isTimedMock = !connected && cfg && cfg.mockTimerSec > 0;
+  // (isTimedMock is defined below, once `connected` exists — it can't be computed here.)
   // Free-demo welcome modal — explains it's redraft-only, 3 rounds, and that dynasty/custom/Sleeper are paid.
   const [showDemoIntro, setShowDemoIntro] = useState(isDemo);
   // How picks are entered. Mocks AND the demo default to AUTO (engine drafts opponents, stops on
@@ -13461,6 +13461,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [stickyHeadH, setStickyHeadH] = useState(0); // measured height of the sticky ticker+tabbar header
   const [capWarn, setCapWarn] = useState(null);
   const connected = !!cfg.connect;
+  // A timed quick mock (unconnected + a per-pick timer set). Used to gate the clock on the draft actually
+  // starting and to drive the "Time's up"/flash behavior. Defined here because it needs `connected`.
+  const isTimedMock = !connected && cfg && cfg.mockTimerSec > 0;
   const [clock, setClock] = useState(90);
 
   // Pool rebuilds when cfg changes, ADP version changes, OR live data finishes loading (dataVersion).
