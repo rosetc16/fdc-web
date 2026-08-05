@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18z";
+const BUILD_TAG = "2026.07.19a";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3956,6 +3956,11 @@ const valBg = (v) => (v === 0 ? "transparent" : v > 0 ? `rgba(124,217,178,${Math
 // Shared green→yellow→red scale for VBD / Value (points above replacement): strong ≥40, solid ≥20, fringe
 // ≥5, replacement-ish ≥0, below replacement <0. Used across hovers so strong values pop and weak ones warn.
 const vbdColor = (v) => v == null ? "var(--mut)" : v >= 40 ? "#5FD0A8" : v >= 20 ? "#9BD17E" : v >= 5 ? "#E7C24B" : v >= 0 ? "#C9A54B" : "#F2655C";
+// Format a VBD/value number for display with ONE decimal and an explicit sign. Values are stored to one
+// decimal (Math.round(x*10)/10) and the RANKINGS sort on that stored number — so displaying the integer
+// (Math.round) could show two players as identical "+29" while they rank differently (29.3 vs 28.9). Showing
+// the same one-decimal number the ranking uses keeps the display and the rank consistent by construction.
+const fmtVal = (v) => v == null ? "—" : (v > 0 ? "+" : "") + (Math.round(v * 10) / 10).toFixed(1);
 // ADP read color for a pick: compares where a player was/would be taken (overall, 1-based) to his ADP.
 // Fell 8+ past ADP → steal (green); taken 8+ early → reach (red); within ±8 → fair (grey). Used to color the
 // ADP figure in the pick-flow widgets (Draft Pulse, On the Clock, Next Picks, Your Decision) at a glance.
@@ -4027,8 +4032,8 @@ function makeOutlook(p, sims, drafted, ctx) {
   if (p.age) kv.push({ k: "Age", v: `${p.age}` });
   if (p.bye) kv.push({ k: "Bye", v: `${p.bye}` });
   if (surv != null) kv.push({ k: "Lasts to you", v: `${surv}%`, c: surv >= 65 ? "var(--green)" : surv >= 35 ? "var(--gold)" : "var(--red)" });
-  if (p.vbd != null) kv.push({ k: "VBD", v: `${p.vbd > 0 ? "+" : ""}${Math.round(p.vbd)}`, c: vbdColor(p.vbd) });
-  if (dynasty && p.value != null && Math.round(p.value) !== Math.round(p.vbd)) kv.push({ k: "Dyn value", v: `${p.value > 0 ? "+" : ""}${Math.round(p.value)}`, c: vbdColor(p.value) });
+  if (p.vbd != null) kv.push({ k: "VBD", v: fmtVal(p.vbd), c: vbdColor(p.vbd) });
+  if (dynasty && p.value != null && Math.round(p.value) !== Math.round(p.vbd)) kv.push({ k: "Dyn value", v: fmtVal(p.value), c: vbdColor(p.value) });
   out.push({ kind: "kvtable", items: kv });
   if (p.role) out.push({ t: "NFL role", x: p.role });
 
@@ -4252,11 +4257,11 @@ function OutlookCard({ content }) {
                   if (c === "team") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--mut)", textAlign: "left" }}>{p.team || "FA"}</div>;
                   if (c === "age") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--mut)", textAlign: "right" }}>{p.age || "—"}</div>;
                   if (c === "pts") return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 700, textAlign: "right" }}>{Math.round(p.pts || 0)}</div>;
-                  if (c === "vbd") return <div key={ri + "-" + ci} className="num" style={{ ...base, textAlign: "right", fontWeight: 700, color: vColor(p.vbd) }}>{p.vbd != null ? (p.vbd > 0 ? "+" : "") + Math.round(p.vbd) : "—"}</div>;
+                  if (c === "vbd") return <div key={ri + "-" + ci} className="num" style={{ ...base, textAlign: "right", fontWeight: 700, color: vColor(p.vbd) }}>{fmtVal(p.vbd)}</div>;
                   if (c === "role") return <div key={ri + "-" + ci} style={{ ...base, color: "var(--mut)", fontSize: 10.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.role || p.posSlot || "—"}</div>;
                   if (c === "bye") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--mut)", textAlign: "right" }}>{p.bye || "—"}</div>;
-                  if (c === "value") return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 700, textAlign: "right", color: (p.v || 0) > 2 ? "var(--green)" : (p.v || 0) < -2 ? "var(--red)" : "var(--mut)" }}>{p.v != null ? (p.v > 0 ? "+" : "") + Math.round(p.v) : "—"}</div>;
-                  if (c === "dval") { const dv = p.value != null ? p.value : p.vbd; return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 700, textAlign: "right", color: vColor(dv) }}>{dv != null ? (dv > 0 ? "+" : "") + Math.round(dv) : "—"}</div>; }
+                  if (c === "value") return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 700, textAlign: "right", color: (p.v || 0) > 2 ? "var(--green)" : (p.v || 0) < -2 ? "var(--red)" : "var(--mut)" }}>{fmtVal(p.v)}</div>;
+                  if (c === "dval") { const dv = p.value != null ? p.value : p.vbd; return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 700, textAlign: "right", color: vColor(dv) }}>{fmtVal(dv)}</div>; }
                   if (c === "slot") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--gold)", textAlign: "left", fontSize: 10 }}>{p.slot || "—"}</div>;
                   if (c === "pick") return <div key={ri + "-" + ci} className="num" style={{ ...base, color: "var(--mut)", textAlign: "right" }}>{p.pickNo != null ? p.pickNo : "—"}</div>;
                   if (c === "pos") return <div key={ri + "-" + ci} style={{ ...base, textAlign: "left", fontWeight: 700, color: POS_COLOR[p.pos] || "var(--ink)" }}><Dot pos={p.pos} />{p.pos}</div>;
@@ -4356,7 +4361,7 @@ function boardPickOutlook(p, o, cfg, ownerLabel, roster, req) {
     { k: "Fantasy", v: p.fantasyTier || "—" },
     { k: "Proj pts", v: `${p.pts}` },
     { k: "ADP", v: p.adp != null ? p.adp.toFixed(1) : "—" },
-    { k: "VBD", v: `${p.vbd > 0 ? "+" : ""}${Math.round(p.vbd)}`, c: p.vbd > 0 ? "var(--green)" : "var(--mut)" },
+    { k: "VBD", v: fmtVal(p.vbd), c: p.vbd > 0 ? "var(--green)" : "var(--mut)" },
     { k: "Value", v: `${v > 0 ? "+" : ""}${v}`, c: v > 2 ? "var(--green)" : v < -2 ? "var(--red)" : "var(--mut)" },
   ];
   if (p.age) kv.push({ k: "Age", v: `${p.age}` });
@@ -15700,7 +15705,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             <span style={{ textAlign: "center", fontSize: 10.5, fontWeight: 700, color: d.rk ? d.read.c : "var(--mut)" }}>{d.rk ? `${d.rk.rank}/${d.rk.of}` : "—"}</span>
                             <span style={{ textAlign: "center", fontSize: 10, fontWeight: 800, color: d.read.c }}>{d.read.t}</span>
                             <span style={{ textAlign: "right", fontSize: 9.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-                              {ba ? <>{surname(ba.name)} <span className="num" style={{ fontWeight: 700, color: vbdColor(baV) }}>{(baV > 0 ? "+" : "") + Math.round(baV)}</span></> : <span className="mut">—</span>}
+                              {ba ? <>{surname(ba.name)} <span className="num" style={{ fontWeight: 700, color: vbdColor(baV) }}>{fmtVal(baV)}</span></> : <span className="mut">—</span>}
                             </span>
                           </div>
                         );
@@ -15803,7 +15808,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           <span onMouseEnter={bestTip} onMouseLeave={hideTip} style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 800, color: POS_COLOR[r.pos], cursor: "help" }}><Dot pos={r.pos} />{r.pos}</span>
                           <span onMouseEnter={bestTip} onMouseLeave={hideTip} style={{ fontSize: 10.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "help" }}>{r.best.name} <span className="mut" style={{ fontSize: 8.5 }}>{r.best.pos}{r.best.posRank}</span></span>
                           <span onMouseEnter={bestTip} onMouseLeave={hideTip} className="num" style={{ fontSize: 10, fontWeight: 700, textAlign: "right", cursor: "help", color: vbdColor(r.best.vbd) }}>{(r.best.vbd > 0 ? "+" : "") + Math.round(r.best.vbd)}</span>
-                          {dynasty && <span onMouseEnter={bestTip} onMouseLeave={hideTip} className="num" style={{ fontSize: 10, fontWeight: 700, textAlign: "right", cursor: "help", color: vbdColor(r.best.value ?? r.best.vbd) }}>{(() => { const v = r.best.value ?? r.best.vbd; return (v > 0 ? "+" : "") + Math.round(v); })()}</span>}
+                          {dynasty && <span onMouseEnter={bestTip} onMouseLeave={hideTip} className="num" style={{ fontSize: 10, fontWeight: 700, textAlign: "right", cursor: "help", color: vbdColor(r.best.value ?? r.best.vbd) }}>{(() => { const v = r.best.value ?? r.best.vbd; return fmtVal(v); })()}</span>}
                           <span className="num" style={{ fontSize: 9.5, textAlign: "right", color: adpReadColor(picks.length + 1, r.best.adp) }} title={r.best.adp != null ? `ADP ${r.best.adp.toFixed(1)} vs current pick ${picks.length + 1} — ${(picks.length + 1) - r.best.adp >= 8 ? "steal (fell past his ADP)" : (picks.length + 1) - r.best.adp <= -8 ? "reach (earlier than ADP)" : "fair value"}` : ""}>{r.best.adp != null ? r.best.adp.toFixed(0) : "—"}</span>
                           <span onMouseEnter={supplyTip} onMouseLeave={hideTip} style={{ display: "inline-flex", alignItems: "center", justifyContent: "flex-end", gap: 3, cursor: "help" }}>
                             {r.isRun && <i className="ti ti-flame" style={{ fontSize: 9, color: "#F2655C" }} aria-hidden="true" />}
@@ -15827,7 +15832,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         </div>
                         {metric === "adp"
                           ? <span className="num mut" style={{ fontSize: 10.5, fontWeight: 800 }}>ADP {bestOverall.adp != null ? bestOverall.adp.toFixed(0) : "—"}</span>
-                          : <span className="num" style={{ fontSize: 11, fontWeight: 800, color: vbdColor(v) }}>{(v > 0 ? "+" : "") + Math.round(v)}</span>}
+                          : <span className="num" style={{ fontSize: 11, fontWeight: 800, color: vbdColor(v) }}>{fmtVal(v)}</span>}
                       </div>
                     );
                   })()}
@@ -16575,7 +16580,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         <div style={{ fontSize: 12, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
                         <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 9.5 }}>
                           <span style={{ fontWeight: 700, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
-                          <span className="num" style={{ color: vbdColor(dynasty ? (p.value ?? p.vbd) : p.vbd) }}>{(() => { const v = dynasty ? (p.value ?? p.vbd) : p.vbd; return (v > 0 ? "+" : "") + Math.round(v); })()}</span>
+                          <span className="num" style={{ color: vbdColor(dynasty ? (p.value ?? p.vbd) : p.vbd) }}>{fmtVal(dynasty ? (p.value ?? p.vbd) : p.vbd)}</span>
                           {surv != null && !isBoardPick && <span className="mut">{surv}% avail</span>}
                           {both && <span style={{ fontSize: 8, fontWeight: 700, color: "var(--blue)", background: "rgba(107,168,229,.15)", borderRadius: 3, padding: "0 4px" }}>both agree</span>}
                         </div>
@@ -17532,7 +17537,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       <span className="num mut" style={{ fontSize: 9.5, textAlign: "center" }}>{p.age || "—"}</span>
                       <span className="num" style={{ fontSize: 9.5, textAlign: "center", fontWeight: 700, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
                       <span className="num mut" style={{ fontSize: 9.5, textAlign: "right" }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
-                      <span className="num" style={{ fontSize: 9.5, textAlign: "right", color: vbdColor(p.vbd) }}>{p.vbd != null ? (p.vbd > 0 ? "+" : "") + Math.round(p.vbd) : "—"}</span>
+                      <span className="num" style={{ fontSize: 9.5, textAlign: "right", color: vbdColor(p.vbd) }}>{fmtVal(p.vbd)}</span>
                       {dynH && <span className="num" style={{ fontSize: 9.5, textAlign: "right", color: vbdColor(p.value ?? p.vbd) }}>{(p.value ?? p.vbd) != null ? ((p.value ?? p.vbd) > 0 ? "+" : "") + Math.round(p.value ?? p.vbd) : "—"}</span>}
                       <span className="num mut" style={{ fontSize: 9, textAlign: "center" }}>{p.floor != null && p.ceil != null ? `${Math.round(p.floor)}–${Math.round(p.ceil)}` : "—"}</span>
                       <span className="num" style={{ fontSize: 11, textAlign: "right", fontWeight: 800 }}>{Math.round(p.pts || 0)}</span>
