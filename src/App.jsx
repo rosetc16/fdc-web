@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18t";
+const BUILD_TAG = "2026.07.18u";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5413,7 +5413,7 @@ export default function App() {
         onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} onGuide={() => { setHelpTab("guide"); setRoute("help"); }} onAccount={() => setRoute("account")} onAdmin={() => setRoute("admin")} onSignOut={signOut}
         onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }}
         onDraftTrends={() => setRoute("draftTrends")} onAutoImportSleeper={autoImportSleeper}
-        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onDeleteFun={deleteFunMock} />}
+        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onDeleteFun={deleteFunMock} />}
       {route === "leagueHub" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? <LeagueUmbrella user={user} league={lg} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")}
         onOfficial={(id) => { setDraftTab(null); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
         onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }}
@@ -7950,9 +7950,30 @@ function HubShell({ title, onBack, onHome, onSignOut, user, children }) {
   );
 }
 
-function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onDeleteFun, onDraftTrends, onAutoImportSleeper }) {
+function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onOpenMock, onDeleteFun, onDraftTrends, onAutoImportSleeper }) {
   const totalMocks = leagues.reduce((s, l) => s + (l.mocks || []).length, 0) + funMocks.length;
   const inProgress = leagues.filter((l) => l.picks.length > 0 && l.picks.length < (l.cfg.teams || 12) * l.cfg.rounds);
+  // INCOMPLETE MOCKS surfaced for easy resume — the "hard to find an unfinished mock" fix. A mock is
+  // "resumable" if it has picks but hasn't reached the final pick. We gather both league-attached mocks and
+  // standalone quick mocks into one list, newest first, each carrying what's needed to reopen it directly.
+  const resumableMocks = (() => {
+    const out = [];
+    leagues.forEach((l) => {
+      const tot = (l.cfg.teams || 12) * l.cfg.rounds;
+      (l.mocks || []).forEach((m) => {
+        if (m.picks && m.picks.length > 0 && m.picks.length < tot) {
+          out.push({ id: m.id, kind: "league", leagueId: l.id, name: `${l.name} — mock`, cfg: l.cfg, picks: m.picks, mock: m, at: m.at || 0, pct: Math.round((m.picks.length / tot) * 100) });
+        }
+      });
+    });
+    funMocks.forEach((m) => {
+      const tot = ((m.cfg && m.cfg.teams) || 12) * ((m.cfg && m.cfg.rounds) || 15);
+      if (m.picks && m.picks.length > 0 && m.picks.length < tot) {
+        out.push({ id: m.id, kind: "fun", name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks, mock: m, at: m.at || 0, pct: Math.round((m.picks.length / tot) * 100) });
+      }
+    });
+    return out.sort((a, b) => (b.at || 0) - (a.at || 0));
+  })();
   const [q, setQ] = useState("");
   const sleeperLink = useSleeperLink(user, onUpdate);
   const firstName = (user?.name || (user?.email ? user.email.split("@")[0] : "") || "").split(/[ .]/)[0];
@@ -8057,12 +8078,31 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         <button className="btn btn-mini" onClick={onSignOut}>Sign out</button>
       </div>
 
-      {/* Personalized greeting — clearly signed in as this person */}
-      <div style={{ maxWidth: 940, margin: "0 auto", padding: "18px 20px 4px", display: "flex", alignItems: "center", gap: 14 }}>
-        <Compass size={40} spin />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div className="disp" style={{ fontSize: 25, fontWeight: 700, letterSpacing: "-.02em", lineHeight: 1.05 }}>{timeGreet}{greetName ? `, ${greetName}` : ""}.</div>
-          <div className="mut" style={{ fontSize: 13, marginTop: 2 }}>{inProgress.length ? "You've got a draft in progress — jump back in below." : leagues.length ? "Here are your leagues — pick up where you left off." : "Welcome to your draft command center."}</div>
+      {/* HERO — the "command center" opening moment. A layered banner (radial glow + subtle field-yard
+          lines) with a spinning compass, a personal greeting, and a live stat strip (leagues, in-progress
+          drafts, mocks). Gives the home page a strong identity and sense of energy instead of a bare text
+          line. Everything functional lives below, untouched. */}
+      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "16px 20px 0" }}>
+        <div style={{ position: "relative", overflow: "hidden", borderRadius: 18, border: "1px solid rgba(214,170,75,0.35)", background: "linear-gradient(135deg, #14100a 0%, #1b1710 55%, #241d0f 100%)", padding: "26px 26px 22px", boxShadow: "0 10px 40px -12px rgba(0,0,0,.6)" }}>
+          {/* layered depth: warm radial glow top-right + faint yard-line rhythm */}
+          <div aria-hidden="true" style={{ position: "absolute", top: -80, right: -60, width: 320, height: 320, background: "radial-gradient(circle, rgba(242,182,60,0.18) 0%, transparent 68%)", pointerEvents: "none" }} />
+          <div aria-hidden="true" style={{ position: "absolute", inset: 0, backgroundImage: "repeating-linear-gradient(90deg, transparent, transparent 58px, rgba(255,255,255,0.025) 58px, rgba(255,255,255,0.025) 59px)", pointerEvents: "none" }} />
+          <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
+            <div style={{ flexShrink: 0 }}><Compass size={54} spin /></div>
+            <div style={{ flex: "1 1 260px", minWidth: 0 }}>
+              <div className="disp" style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-.02em", lineHeight: 1.02, color: "var(--ink)" }}>{timeGreet}{greetName ? <>, <span style={{ color: "var(--gold2)" }}>{greetName}</span></> : ""}.</div>
+              <div className="mut" style={{ fontSize: 13.5, marginTop: 4 }}>{inProgress.length ? <>You've got <b style={{ color: "var(--ink)" }}>{inProgress.length} draft{inProgress.length === 1 ? "" : "s"} in progress</b> — jump back in below.</> : leagues.length ? "Your draft command center — pick up where you left off." : "Welcome to your draft command center."}</div>
+            </div>
+            {/* live stat strip */}
+            <div style={{ display: "flex", gap: 22, flexShrink: 0, paddingLeft: 4 }}>
+              {[[leagues.length, leagues.length === 1 ? "league" : "leagues"], [inProgress.length, "in progress"], [totalMocks, totalMocks === 1 ? "mock" : "mocks"]].map(([n, label], i) => (
+                <div key={i} style={{ textAlign: "center", minWidth: 46 }}>
+                  <div className="num" style={{ fontSize: 26, fontWeight: 800, lineHeight: 1, color: i === 1 && n > 0 ? "var(--gold2)" : "var(--ink)" }}>{n}</div>
+                  <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", marginTop: 3 }}>{label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -8091,6 +8131,32 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
           on the league card below (which has its own Resume button), so it was the same information twice —
           just more words before you reach anything actionable. */}
 
+
+      {/* RESUME A MOCK — surfaces any unfinished mock (league or standalone) so a half-done mock is never
+          lost in a submenu. Only shows when there's at least one to resume. */}
+      {resumableMocks.length > 0 && (
+        <div style={{ maxWidth: 1180, margin: "0 auto", padding: "0 20px 16px" }}>
+          <div style={{ border: "1px solid rgba(107,168,229,0.4)", borderRadius: 12, background: "linear-gradient(180deg, rgba(20,28,38,0.9), rgba(16,21,27,0.9))", padding: "12px 14px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <i className="ti ti-player-play-filled" style={{ fontSize: 15, color: "var(--blue)" }} aria-hidden="true" />
+              <span className="disp" style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)" }}>Pick up where you left off</span>
+              <span className="mut" style={{ fontSize: 12 }}>· {resumableMocks.length} unfinished mock{resumableMocks.length === 1 ? "" : "s"}</span>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {resumableMocks.slice(0, 4).map((rm) => (
+                <button key={rm.id} onClick={() => rm.kind === "fun" ? onOpenFun(rm.mock) : onOpenMock(rm.leagueId, rm.mock)} className="bigact"
+                  style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left", border: "1px solid var(--line2)", background: "var(--panel)", borderRadius: 9, padding: "8px 11px", display: "flex", flexDirection: "column", gap: 3, minWidth: 150 }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 190 }}>{rm.name}</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ flex: 1, height: 4, borderRadius: 3, background: "var(--panel3)", overflow: "hidden", minWidth: 60 }}><span style={{ display: "block", height: "100%", width: `${rm.pct}%`, background: "var(--blue)" }} /></span>
+                    <span className="num mut" style={{ fontSize: 10 }}>{rm.pct}%</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Sleeper link — a quiet one-line strip. It's an account connection, not a headline feature, so it
           shouldn't shout or carry a paragraph of explanation. */}
