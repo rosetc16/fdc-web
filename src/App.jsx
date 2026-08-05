@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18v";
+const BUILD_TAG = "2026.07.18w";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -8013,6 +8013,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
   const [showTools, setShowTools] = useState(false); // toolkit collapsed into a dropdown by default
   const [statusFilter, setStatusFilter] = useState("all"); // all | pre | drafting | complete — league status tabs
   const [showMocks, setShowMocks] = useState(false); // standalone quick-mock history dropdown
+  const [showAllLeagues, setShowAllLeagues] = useState(false); // collapse a long league list to the top few + "show more"
   const [mockQ, setMockQ] = useState(""); // search within quick mocks
   const [mockTypeF, setMockTypeF] = useState("all"); // all | redraft | dynasty | bestball | rookie
   const [mockStatusF, setMockStatusF] = useState("all"); // all | complete | progress — where a mock stands
@@ -8259,19 +8260,26 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
             </div>
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: leagues.length > 6 ? 640 : "none", overflowY: leagues.length > 6 ? "auto" : "visible", paddingRight: leagues.length > 6 ? 4 : 0 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {q.trim() && sortedLeagues.length === 0 && unimportedSleeper.length === 0 && (
               <div style={{ textAlign: "center", padding: "16px 0" }}>
                 <div className="mut" style={{ fontSize: 13, marginBottom: 8 }}>No leagues match “{q.trim()}”.</div>
                 <button className="btn btn-mini" onClick={() => setQ("")}>Clear search</button>
               </div>
             )}
-            {sortedLeagues.filter((l) => {
-              if (statusFilter === "all") return true;
-              const tot = (l.cfg.teams || 12) * l.cfg.rounds;
-              const s = l.picks.length >= tot ? "complete" : l.picks.length > 0 ? "drafting" : "pre";
-              return s === statusFilter;
-            }).map((l) => {
+            {(() => {
+              const shown = sortedLeagues.filter((l) => {
+                if (statusFilter === "all") return true;
+                const tot = (l.cfg.teams || 12) * l.cfg.rounds;
+                const s = l.picks.length >= tot ? "complete" : l.picks.length > 0 ? "drafting" : "pre";
+                return s === statusFilter;
+              });
+              // When there's no active search/filter narrowing things, collapse a long list to the two most
+              // relevant (sortedLeagues already surfaces in-progress first, then not-started, then complete)
+              // and reveal the rest behind a "Show more" button — cleaner than an in-page scrollbar.
+              const collapsible = !q.trim() && shown.length > 3;
+              const visible = collapsible && !showAllLeagues ? shown.slice(0, 2) : shown;
+              return visible.map((l) => {
               const st = leagueStatus(l);
               const isSleeper = !!(l.connect && l.connect.leagueId);
               const mocks = (l.mocks || []).length;
@@ -8317,7 +8325,24 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                   </div>
                 </div>
               );
-            })}
+              });
+            })()}
+            {/* Show more / less — reveals the rest of a long league list without an in-page scrollbar. */}
+            {(() => {
+              const shownCount = sortedLeagues.filter((l) => {
+                if (statusFilter === "all") return true;
+                const tot = (l.cfg.teams || 12) * l.cfg.rounds;
+                const s = l.picks.length >= tot ? "complete" : l.picks.length > 0 ? "drafting" : "pre";
+                return s === statusFilter;
+              }).length;
+              if (q.trim() || shownCount <= 3) return null;
+              const hidden = shownCount - 2;
+              return (
+                <button onClick={() => setShowAllLeagues((v) => !v)} style={{ cursor: "pointer", fontFamily: "inherit", background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 10, padding: "9px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, color: "var(--ink)", fontWeight: 700, fontSize: 13, marginTop: 1 }}>
+                  {showAllLeagues ? <>Show less <i className="ti ti-chevron-up" style={{ fontSize: 15 }} aria-hidden="true" /></> : <>Show {hidden} more league{hidden === 1 ? "" : "s"} <i className="ti ti-chevron-down" style={{ fontSize: 15 }} aria-hidden="true" /></>}
+                </button>
+              );
+            })()}
 
             {/* Unimported Sleeper leagues — one tap to connect */}
             {(statusFilter === "all" || statusFilter === "pre") && unimportedSleeper.map((sl) => (
