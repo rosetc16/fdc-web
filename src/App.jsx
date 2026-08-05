@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18w";
+const BUILD_TAG = "2026.07.18x";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3573,7 +3573,13 @@ function posQualityScore(playersAtPos, req, opts) {
   const withVal = (playersAtPos || []).map((p) => ({ p, v: valOf(p) })).filter((x) => x.v != null).sort((a, b) => b.v - a.v);
   const arr = withVal.map((x) => x.v);
   const effStarters = Math.max(0, req || 0) + flexShare;
-  if (effStarters <= 0 || !arr.length) return explain ? { total: 0, rows: [] } : 0;
+  if (effStarters <= 0) return explain ? { total: 0, rows: [] } : 0;
+  // NOTE: we deliberately do NOT early-return for an empty position. An empty position is scored by the same
+  // slot loop below (all slots simply unfilled), and each STARTER slot is floored at the missing-slot penalty
+  // so holding a real body is never scored worse than an empty slot. Together these guarantee "more bodies
+  // never hurt," killing the "0 WRs colored better than 1 WR" inversion (an empty slot returned a neutral 0,
+  // which outranked a weak-but-real starter's slightly-negative score). This only feeds a RANKING, so in the
+  // early rounds when everyone is empty, all teams tie low — it does not force red.
   const baseAt = (k) => {
     if (slotBaseline && slotBaseline[k] != null) return slotBaseline[k];
     if (slotBaseline && slotBaseline.length) return slotBaseline[slotBaseline.length - 1];
@@ -3589,17 +3595,23 @@ function posQualityScore(playersAtPos, req, opts) {
   //     (you only sometimes start him there).
   let starters = 0;
   for (let k = 0; k < fullStarters; k++) {
-    const mine = arr[k] != null ? arr[k] : baseAt(k) - 25; // missing a required starter is a real hole
+    const filled = arr[k] != null;
+    const mine = filled ? arr[k] : baseAt(k) - 25; // missing a required starter is a real hole
     const w = k < reqSlots ? 1.0 : 1 / (1 + (k - reqSlots + 1) * 0.6);
-    const c = (mine - baseAt(k)) * w;
+    // Floor a FILLED slot at the empty-slot penalty (-25): holding any real body is never scored worse than
+    // leaving the slot empty, so more bodies can only ever help. (An empty slot naturally yields exactly -25.)
+    const raw = mine - baseAt(k);
+    const c = (filled ? Math.max(raw, -25) : raw) * w;
     starters += c;
     if (explain) rows.push({ role: k < reqSlots ? `Starter ${k + 1}` : `Flex`, p: withVal[k] ? withVal[k].p : null, val: arr[k] != null ? arr[k] : null, typical: baseAt(k), weight: w, contrib: c });
   }
   if (partial > 0) {
     const k = fullStarters;
-    const mine = arr[k] != null ? arr[k] : baseAt(k) - 25;
+    const filled = arr[k] != null;
+    const mine = filled ? arr[k] : baseAt(k) - 25;
     const w = k < reqSlots ? 1.0 : 1 / (1 + (k - reqSlots + 1) * 0.6);
-    const c = (mine - baseAt(k)) * w * partial;
+    const raw = mine - baseAt(k);
+    const c = (filled ? Math.max(raw, -25) : raw) * w * partial;
     starters += c;
     if (explain) rows.push({ role: "Flex", p: withVal[k] ? withVal[k].p : null, val: arr[k] != null ? arr[k] : null, typical: baseAt(k), weight: w * partial, contrib: c });
   }
