@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18x";
+const BUILD_TAG = "2026.07.18y";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4541,6 +4541,8 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spin{display:inline-block;animation:spin .9s linear infinite}
 @keyframes pulseGold{0%,100%{opacity:.5}50%{opacity:1}}
+@keyframes clockFlash{0%,100%{background:rgba(242,101,92,.10);box-shadow:none}50%{background:rgba(242,101,92,.34);box-shadow:0 0 20px rgba(242,101,92,.5),inset 0 0 26px rgba(242,101,92,.14)}}
+.clock-urgent{animation:clockFlash 1s ease-in-out infinite}
 .glowline{background:linear-gradient(90deg,transparent,var(--gold),transparent);height:1px;opacity:.5}
 .hover-row{transition:background .12s}.hover-row:hover{background:#16160F}
 .team-row:hover{transition:border-color .15s, background .15s, transform .1s, box-shadow .15s}
@@ -13225,6 +13227,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // in-progress mock — a silent pause that made users think a CPU pick was theirs and draft for the
   // wrong team. Now reopening resumes autodraft immediately; pausing is always an explicit click.
   const [paused, setPaused] = useState(false);
+  // TIMED-MOCK CLOCK: a timed quick mock's clock must not run until the draft actually begins. The room
+  // already has a "Start mock" gate (`started`), so we simply tie the clock to it — the clock begins when
+  // the user starts the draft, not when the room opens. Untimed mocks and live drafts are unaffected.
+  const isTimedMock = !connected && cfg && cfg.mockTimerSec > 0;
   // Free-demo welcome modal — explains it's redraft-only, 3 rounds, and that dynasty/custom/Sleeper are paid.
   const [showDemoIntro, setShowDemoIntro] = useState(isDemo);
   // How picks are entered. Mocks AND the demo default to AUTO (engine drafts opponents, stops on
@@ -14796,21 +14802,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // Untimed/slow Sleeper draft: no countdown (Sleeper allows hours/days per pick).
     if (liveClock && liveClock.timerSec === 0) { setClock(0); return; }
     // MOCK TIMER: a quick-mock can carry cfg.mockTimerSec (0 = no timer, the default). When set, run a
-    // per-pick local countdown that resets each pick; if it hits zero on YOUR turn, auto-draft the current
-    // recommendation so the clock has teeth (mimics a real timed room). CPU picks aren't gated by it.
+    // per-pick local countdown that resets each pick. Two behaviors per Trey: (1) it does NOT start until the
+    // user has started the draft (the existing `started` gate) — the room opens paused on the clock; (2) when it hits 0 it
+    // does NOT auto-pick — it holds at 0 so the tile can go red "Time's up" and the user still makes the pick
+    // themselves. The clock resets to full when the pick count changes (handled by the effect re-running).
     if (!connected) {
       const mt = cfg && cfg.mockTimerSec ? +cfg.mockTimerSec : 0;
-      if (!mt || done) { setClock(0); return; }
+      if (!mt || done || !started) { setClock(mt || 0); return; }
       setClock(mt);
       if (paused) return;
-      const t = setInterval(() => setClock((c) => {
-        if (c <= 1) {
-          // time's up: if it's the user's pick, auto-draft the recommendation; otherwise just hold at 0
-          if (onClock === userIdx && !gated && currentPred) { try { draftPlayer(currentPred.id); } catch (e) {} }
-          return mt; // reset for the next pick
-        }
-        return c - 1;
-      }), 1000);
+      const t = setInterval(() => setClock((c) => (c > 0 ? c - 1 : 0)), 1000); // hold at 0, never auto-pick
       return () => clearInterval(t);
     }
     // Simulated/mock fallback with a live-clock hint: countdown from its timer (or 90s default).
@@ -14818,7 +14819,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     if (paused) return;
     const t = setInterval(() => setClock((c) => (c > 0 ? c - 1 : 0)), 1000);
     return () => clearInterval(t);
-  }, [connected, done, paused, picks.length, liveClock, cfg, onClock, userIdx, gated, currentPred]);
+  }, [connected, done, paused, picks.length, liveClock, cfg, onClock, userIdx, started]);
   const exit = () => { onSave(picks, preds, pickNamesOf(picks), pickNamesOf(preds)); onExit(); };
 
   const hits = preds.filter((pr, i) => pr != null && pr === picks[i]).length;
@@ -15927,7 +15928,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 ];
               })()) : undefined;
               return (
-                <div className="tickcard clock" style={{ borderColor: isYou ? "var(--gold)" : "#33476B", borderWidth: isYou ? 2 : 1, background: isYou ? "linear-gradient(165deg, rgba(242,182,60,.22), rgba(31,36,26,1) 62%)" : undefined, boxShadow: isYou ? "0 0 18px rgba(242,182,60,.34), inset 0 0 30px rgba(242,182,60,.07)" : undefined, padding: "5px 10px", cursor: curTip ? "help" : "default", height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }} onMouseEnter={curTip} onMouseLeave={curTip ? hideTip : undefined}>
+                <div className={`tickcard clock${isYou && isTimedMock && started && !paused && clock <= 15 ? " clock-urgent" : ""}`} style={{ borderColor: isYou ? (isTimedMock && started && clock <= 0 ? "var(--red)" : "var(--gold)") : "#33476B", borderWidth: isYou ? 2 : 1, background: isYou ? "linear-gradient(165deg, rgba(242,182,60,.22), rgba(31,36,26,1) 62%)" : undefined, boxShadow: isYou ? "0 0 18px rgba(242,182,60,.34), inset 0 0 30px rgba(242,182,60,.07)" : undefined, padding: "5px 10px", cursor: curTip ? "help" : "default", height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }} onMouseEnter={curTip} onMouseLeave={curTip ? hideTip : undefined}>
                   {/* ONE compact header row: pick + overall on the left, team name (and live timer) on the
                       right. The old second row (team / overall / "YOUR PICK" pill) is gone — when it's your
                       pick, the whole card goes loud gold instead, which reads faster than a pill. */}
@@ -15935,7 +15936,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     <span style={{ fontSize: isYou ? 10 : 9, textTransform: "uppercase", letterSpacing: ".05em", color: isYou ? "var(--gold)" : "var(--mut)", fontWeight: 800 }}>{isYou ? "You're on the clock" : "On the clock"} · {pickLabel(picks.length)} <span style={{ opacity: .7 }}>({picks.length + 1})</span></span>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                       <span title={isYou ? "Your team" : teamFullLabel(onClock)} style={{ fontSize: 11, fontWeight: 800, color: isYou ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 96, cursor: "help" }}>{isYou ? "YOU" : (TEAM_NAMES[onClock] || `Team ${onClock + 1}`).split(" ")[0]}</span>
-                      {(connected || (cfg && cfg.mockTimerSec > 0)) && (liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? <span className="num mut" style={{ fontSize: 13 }}>no timer</span> : clock <= 0 ? <span className="num" style={{ fontSize: 20, color: "var(--red)", fontWeight: 800, letterSpacing: ".02em" }}>overdue</span> : <span className="num" style={{ fontSize: 22, lineHeight: 1, color: clock <= 15 ? "var(--red)" : "var(--ink)", fontWeight: 800, letterSpacing: ".02em", background: clock <= 15 ? "rgba(242,101,92,.16)" : "rgba(255,255,255,.06)", padding: "3px 9px", borderRadius: 6, fontVariantNumeric: "tabular-nums" }}>{fmtClock(clock)}</span>)}
+                      {(connected || (cfg && cfg.mockTimerSec > 0)) && (liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? <span className="num mut" style={{ fontSize: 13 }}>no timer</span> : (isTimedMock && !started) ? <span className="num mut" style={{ fontSize: 12 }}>{fmtClock(cfg.mockTimerSec)}</span> : clock <= 0 ? <span className="num" style={{ fontSize: 15, color: "var(--red)", fontWeight: 800, letterSpacing: ".02em", textTransform: "uppercase" }}>{isTimedMock ? "Time's up" : "overdue"}</span> : <span className="num" style={{ fontSize: 22, lineHeight: 1, color: clock <= 15 ? "var(--red)" : "var(--ink)", fontWeight: 800, letterSpacing: ".02em", background: clock <= 15 ? "rgba(242,101,92,.16)" : "rgba(255,255,255,.06)", padding: "3px 9px", borderRadius: 6, fontVariantNumeric: "tabular-nums" }}>{fmtClock(clock)}</span>)}
                     </span>
                   </div>
                   {/* projected pick (with photo) + 3 alternatives */}
