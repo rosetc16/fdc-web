@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.18u";
+const BUILD_TAG = "2026.07.18v";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -7958,18 +7958,36 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
   // standalone quick mocks into one list, newest first, each carrying what's needed to reopen it directly.
   const resumableMocks = (() => {
     const out = [];
+    // Compact format summary for a mock card: "Redraft · 12-team · SF · TE+".
+    const fmtLine = (cfg) => {
+      if (!cfg) return "";
+      const type = cfg.type === "dynasty" ? "Dynasty" : cfg.type === "bestball" ? "Best ball" : cfg.type === "rookie" ? "Rookie" : cfg.type === "keeper" ? "Keeper" : "Redraft";
+      const bits = [type, `${cfg.teams || 12}-team`, cfg.sf ? "SF" : "1QB"];
+      if (cfg.tePremMult > 0) bits.push("TE+");
+      return bits.join(" · ");
+    };
+    // Relative "last opened" label from the mock's timestamp.
+    const whenLine = (at) => {
+      if (!at) return null;
+      const diff = Date.now() - at, day = 86400000;
+      if (diff < 3600000) { const m = Math.max(1, Math.round(diff / 60000)); return `${m}m ago`; }
+      if (diff < day) { const h = Math.round(diff / 3600000); return `${h}h ago`; }
+      if (diff < day * 7) { const d = Math.round(diff / day); return `${d}d ago`; }
+      try { return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" }); } catch (e) { return null; }
+    };
     leagues.forEach((l) => {
       const tot = (l.cfg.teams || 12) * l.cfg.rounds;
       (l.mocks || []).forEach((m) => {
         if (m.picks && m.picks.length > 0 && m.picks.length < tot) {
-          out.push({ id: m.id, kind: "league", leagueId: l.id, name: `${l.name} — mock`, cfg: l.cfg, picks: m.picks, mock: m, at: m.at || 0, pct: Math.round((m.picks.length / tot) * 100) });
+          out.push({ id: m.id, kind: "league", leagueId: l.id, name: `${l.name} — mock`, cfg: l.cfg, fmt: fmtLine(l.cfg), when: whenLine(m.at), round: Math.floor(m.picks.length / (l.cfg.teams || 12)) + 1, picks: m.picks, mock: m, at: m.at || 0, pct: Math.round((m.picks.length / tot) * 100) });
         }
       });
     });
     funMocks.forEach((m) => {
-      const tot = ((m.cfg && m.cfg.teams) || 12) * ((m.cfg && m.cfg.rounds) || 15);
+      const teams = (m.cfg && m.cfg.teams) || 12;
+      const tot = teams * ((m.cfg && m.cfg.rounds) || 15);
       if (m.picks && m.picks.length > 0 && m.picks.length < tot) {
-        out.push({ id: m.id, kind: "fun", name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks, mock: m, at: m.at || 0, pct: Math.round((m.picks.length / tot) * 100) });
+        out.push({ id: m.id, kind: "fun", name: m.name || "Quick mock", cfg: m.cfg, fmt: fmtLine(m.cfg), when: whenLine(m.at), round: Math.floor(m.picks.length / teams) + 1, picks: m.picks, mock: m, at: m.at || 0, pct: Math.round((m.picks.length / tot) * 100) });
       }
     });
     return out.sort((a, b) => (b.at || 0) - (a.at || 0));
@@ -8000,6 +8018,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
   const [mockStatusF, setMockStatusF] = useState("all"); // all | complete | progress — where a mock stands
   const [mockQbF, setMockQbF] = useState("all"); // all | 1qb | sf
   const [mockTeF, setMockTeF] = useState("all"); // all | std | tep
+  const [mockLeagueF, setMockLeagueF] = useState("all"); // all | "standalone" | a league id — unifies league mocks into Quick Mocks
   // Pull the user's Sleeper leagues so we can surface any not yet imported into FDC, right in the leagues list.
   const [sleeperLeagues, setSleeperLeagues] = useState(null);
   const [slLoading, setSlLoading] = useState(false);
@@ -8145,8 +8164,12 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               {resumableMocks.slice(0, 4).map((rm) => (
                 <button key={rm.id} onClick={() => rm.kind === "fun" ? onOpenFun(rm.mock) : onOpenMock(rm.leagueId, rm.mock)} className="bigact"
-                  style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left", border: "1px solid var(--line2)", background: "var(--panel)", borderRadius: 9, padding: "8px 11px", display: "flex", flexDirection: "column", gap: 3, minWidth: 150 }}>
-                  <span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 190 }}>{rm.name}</span>
+                  style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left", border: "1px solid var(--line2)", background: "var(--panel)", borderRadius: 10, padding: "9px 12px", display: "flex", flexDirection: "column", gap: 5, minWidth: 190, maxWidth: 230 }}>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1 }}>{rm.name}</span>
+                    {rm.when && <span className="mut" style={{ fontSize: 10, flexShrink: 0 }}>{rm.when}</span>}
+                  </div>
+                  <div className="mut" style={{ fontSize: 10.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{rm.fmt}{rm.round ? ` · round ${rm.round}` : ""}</div>
                   <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <span style={{ flex: 1, height: 4, borderRadius: 3, background: "var(--panel3)", overflow: "hidden", minWidth: 60 }}><span style={{ display: "block", height: "100%", width: `${rm.pct}%`, background: "var(--blue)" }} /></span>
                     <span className="num mut" style={{ fontSize: 10 }}>{rm.pct}%</span>
@@ -8236,7 +8259,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
             </div>
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: leagues.length > 6 ? 640 : "none", overflowY: leagues.length > 6 ? "auto" : "visible", paddingRight: leagues.length > 6 ? 4 : 0 }}>
             {q.trim() && sortedLeagues.length === 0 && unimportedSleeper.length === 0 && (
               <div style={{ textAlign: "center", padding: "16px 0" }}>
                 <div className="mut" style={{ fontSize: 13, marginBottom: 8 }}>No leagues match “{q.trim()}”.</div>
@@ -8386,32 +8409,47 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
       {/* the ruled line down the middle of the home grid (hidden when the grid collapses to one column) */}
       <div className="home-divider" style={{ alignSelf: "stretch", background: "var(--line2)", width: 1, minHeight: 120 }} />
 
-      {/* ===== STANDALONE QUICK MOCKS — the right-hand zone. Not tied to any league; saved to your account. */}
-      {funMocks && funMocks.length > 0 ? (
+      {/* ===== QUICK MOCKS — the right-hand zone. Standalone quick mocks PLUS every league's mocks, unified
+           here with a "league" filter so all your mock reps live in one place. */}
+      {(() => { const leagueMockCount = leagues.reduce((s, l) => s + (l.mocks || []).length, 0); return (funMocks && funMocks.length > 0) || leagueMockCount > 0; })() ? (
+        (() => {
+          const leagueMockCount = leagues.reduce((s, l) => s + (l.mocks || []).length, 0);
+          const combinedCount = (funMocks ? funMocks.length : 0) + leagueMockCount;
+          return (
         <div style={{ minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginBottom: 12, flexWrap: "wrap" }}>
             <i className="ti ti-dice-5" style={{ fontSize: 18, color: "#4FD1A1", alignSelf: "center" }} aria-hidden="true" />
             <span className="disp" style={{ fontSize: 20, fontWeight: 800, color: "var(--ink)", letterSpacing: ".01em" }}>Quick mocks</span>
-            <span className="mut" style={{ fontSize: 11.5, fontWeight: 700, background: "var(--panel2)", borderRadius: 99, padding: "1px 8px", alignSelf: "center" }}>{funMocks.length}</span>
+            <span className="mut" style={{ fontSize: 11.5, fontWeight: 700, background: "var(--panel2)", borderRadius: 99, padding: "1px 8px", alignSelf: "center" }}>{combinedCount}</span>
           </div>
           {onQuickMock && <button className="btn btn-gold" onClick={onQuickMock} style={{ width: "100%", fontWeight: 700, marginBottom: 8, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 }}><i className="ti ti-plus" style={{ fontSize: 13 }} aria-hidden="true" />Start a new mock</button>}
           <button onClick={() => setShowMocks((v) => !v)} style={{ width: "100%", cursor: "pointer", fontFamily: "inherit", background: "transparent", border: "1px solid var(--line)", borderRadius: 11, padding: "11px 14px", textAlign: "left", display: "flex", alignItems: "center", gap: 9, color: "var(--ink)" }}>
             <i className="ti ti-history" style={{ fontSize: 16, color: "#4FD1A1" }} aria-hidden="true" />
             <span className="disp" style={{ fontSize: 14, fontWeight: 800, flex: 1 }}>{showMocks ? "Hide saved mocks" : "Browse saved mocks"}</span>
-            <span className="mut" style={{ fontSize: 12 }}>{funMocks.length} saved</span>
+            <span className="mut" style={{ fontSize: 12 }}>{combinedCount} saved</span>
             <i className={`ti ti-chevron-${showMocks ? "up" : "down"}`} style={{ fontSize: 16, color: "var(--mut)" }} aria-hidden="true" />
           </button>
           {showMocks && (() => {
             const qbOf = (c) => ((c.start && c.start.SUPER > 0) || c.sf || (c.start && c.start.QB >= 2)) ? "sf" : "1qb";
             const totalOfMock = (m) => (m.total != null ? m.total : (((m.cfg && m.cfg.rounds) || 15) * ((m.cfg && m.cfg.teams) || 12)));
             const isComplete = (m) => (m.complete != null ? !!m.complete : ((m.picks || []).length >= totalOfMock(m)));
-            const filtered = funMocks.filter((m) => {
-              const c = m.cfg || {};
+            // UNIFIED mock pool: standalone quick mocks AND every league's mocks, each tagged with its source
+            // so one place lists them all and a "league" filter can scope to a specific league's mocks. Each
+            // item keeps the cfg from its league (league mocks) or from itself (standalone) and remembers how
+            // to reopen (kind: 'fun' → onOpenFun; 'league' → onOpenMock with leagueId).
+            const allMocks = [
+              ...funMocks.map((m) => ({ ...m, _src: "standalone", _srcLabel: "Quick mock", _leagueId: null, _cfg: m.cfg })),
+              ...leagues.flatMap((l) => (l.mocks || []).map((m) => ({ ...m, _src: "league", _srcLabel: l.name, _leagueId: l.id, _cfg: l.cfg, name: m.name || `${l.name} — mock` }))),
+            ].sort((a, b) => (b.at || 0) - (a.at || 0));
+            const filtered = allMocks.filter((m) => {
+              const c = m._cfg || m.cfg || {};
+              if (mockLeagueF === "standalone" && m._src !== "standalone") return false;
+              if (mockLeagueF !== "all" && mockLeagueF !== "standalone" && String(m._leagueId) !== String(mockLeagueF)) return false;
               if (mockTypeF !== "all" && (c.type || "redraft") !== mockTypeF) return false;
-              if (mockStatusF !== "all") { const done = isComplete(m); if ((mockStatusF === "complete") !== done) return false; }
+              if (mockStatusF !== "all") { const done = isComplete({ ...m, cfg: c }); if ((mockStatusF === "complete") !== done) return false; }
               if (mockQbF !== "all" && qbOf(c) !== mockQbF) return false;
               if (mockTeF !== "all") { const isTep = c.tePremMult > 0; if ((mockTeF === "tep") !== isTep) return false; }
-              if (mockQ.trim()) { const q = mockQ.toLowerCase(); const hay = `${m.name || ""} ${c.type || ""} ${c.teams || ""}`.toLowerCase(); if (!hay.includes(q)) return false; }
+              if (mockQ.trim()) { const q = mockQ.toLowerCase(); const hay = `${m.name || ""} ${m._srcLabel || ""} ${c.type || ""} ${c.teams || ""}`.toLowerCase(); if (!hay.includes(q)) return false; }
               return true;
             });
             const chip = (val, cur, set, label) => (
@@ -8453,6 +8491,16 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                 {chip("std", mockTeF, setMockTeF, "Standard")}
                 {chip("tep", mockTeF, setMockTeF, "TE premium")}
               </div>
+              {/* SELECT A LEAGUE — scopes the list to standalone quick mocks or a specific league's mocks. Only
+                  shown when there are league mocks to filter to (otherwise it's just standalone quick mocks). */}
+              {leagues.some((l) => (l.mocks || []).length > 0) && (
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 12 }}>
+                  <span className="mut" style={{ fontSize: 11, alignSelf: "center", marginRight: 2 }}>League</span>
+                  {chip("all", mockLeagueF, setMockLeagueF, "All")}
+                  {chip("standalone", mockLeagueF, setMockLeagueF, "Quick mocks")}
+                  {leagues.filter((l) => (l.mocks || []).length > 0).map((l) => chip(String(l.id), mockLeagueF, setMockLeagueF, l.name))}
+                </div>
+              )}
 
               <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
               {filtered.length === 0 && (
@@ -8462,7 +8510,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                 </div>
               )}
               {filtered.map((m) => {
-                const c = m.cfg || {};
+                const c = m._cfg || m.cfg || {};
                 const total = (c.teams || 12) * (c.rounds || 15);
                 const made = (m.picks || []).length;
                 const complete = made >= total;
@@ -8470,19 +8518,21 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                   ((c.start && c.start.SUPER > 0) || c.sf || (c.start && c.start.QB >= 2)) ? "SF/2QB" : "1QB",
                   c.tePremMult > 0 ? "TEP" : null, `${c.teams || 12}-team`].filter(Boolean).join(" · ");
                 const when = m.ran || (m.savedAt ? new Date(m.savedAt).toLocaleDateString() : null);
+                const openThis = () => m._src === "league" ? (onOpenMock && onOpenMock(m._leagueId, m)) : (onOpenFun && onOpenFun(m));
                 return (
-                  <div key={m.id} style={{ border: "1px solid var(--line)", background: "var(--panel)", borderRadius: 11, padding: "10px 13px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                    <div style={{ width: 34, height: 34, borderRadius: 9, background: "var(--panel3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className="ti ti-dice-5" style={{ fontSize: 15, color: "#4FD1A1" }} aria-hidden="true" /></div>
+                  <div key={`${m._src}-${m._leagueId || "s"}-${m.id}`} style={{ border: "1px solid var(--line)", background: "var(--panel)", borderRadius: 11, padding: "10px 13px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                    <div style={{ width: 34, height: 34, borderRadius: 9, background: "var(--panel3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className={`ti ${m._src === "league" ? "ti-clipboard-list" : "ti-dice-5"}`} style={{ fontSize: 15, color: m._src === "league" ? "var(--gold)" : "#4FD1A1" }} aria-hidden="true" /></div>
                     <div style={{ flex: "1 1 180px", minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <span className="disp" style={{ fontSize: 14, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{m.name || "Quick mock"}</span>
                         <span className="chip" style={{ fontSize: 9.5, color: complete ? "var(--green)" : "var(--gold)", flexShrink: 0 }}>{complete ? "Complete" : `${made}/${total}`}</span>
+                        {m._src === "league" && <span className="chip" style={{ fontSize: 9, color: "var(--blue)", flexShrink: 0 }} title={`Mock of ${m._srcLabel}`}>{m._srcLabel}</span>}
                       </div>
                       <div className="mut" style={{ fontSize: 11 }}>{fmt}{when ? ` · ${when}` : ""}</div>
                     </div>
                     <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                      <button className="btn btn-mini btn-gold" onClick={() => onOpenFun && onOpenFun(m)}><i className="ti ti-player-play" style={{ fontSize: 11, marginRight: 4 }} aria-hidden="true" />{complete ? "Review" : "Resume"}</button>
-                      {onDeleteFun && <button className="btn btn-mini" onClick={() => onDeleteFun(m.id)} title="Delete this mock"><i className="ti ti-trash" style={{ fontSize: 12 }} aria-hidden="true" /></button>}
+                      <button className="btn btn-mini btn-gold" onClick={openThis}><i className="ti ti-player-play" style={{ fontSize: 11, marginRight: 4 }} aria-hidden="true" />{complete ? "Review" : "Resume"}</button>
+                      {m._src === "standalone" && onDeleteFun && <button className="btn btn-mini" onClick={() => onDeleteFun(m.id)} title="Delete this mock"><i className="ti ti-trash" style={{ fontSize: 12 }} aria-hidden="true" /></button>}
                     </div>
                   </div>
                 );
@@ -8496,6 +8546,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
             );
           })()}
         </div>
+        ); })()
       ) : (
         /* No saved mocks yet — the column still needs to say what it's FOR and offer the action, otherwise the
            right half of the home page is just dead space to a new user. */
