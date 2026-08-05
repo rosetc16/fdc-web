@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19a";
+const BUILD_TAG = "2026.07.19b";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3232,7 +3232,7 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
     const gridScores = {}; // pos -> sorted [{i, v}]
     ["QB", "RB", "WR", "TE"].forEach((pos) => {
       const reqN = effReq[pos] || 0;
-      gridScores[pos] = rosters.map((r, i) => ({ i, v: posQualityScore(r.filter((p) => p.pos === pos), reqN, { dynasty: taDynasty, flexShare: taFlexShare[pos] || 0, slotBaseline: taRepl[pos] }) })).sort((a, b) => b.v - a.v);
+      gridScores[pos] = rosters.map((r, i) => ({ i, v: posQualityScore(r.filter((p) => p.pos === pos), reqN, { dynasty: taDynasty, flexShare: taFlexShare[pos] || 0, slotBaseline: taRepl[pos] }) })).sort((a, b) => { const d = b.v - a.v; if (Math.abs(d) > 0.5) return d; const u = userIdxOf(ctx); if (a.i === u) return -1; if (b.i === u) return 1; return a.i - b.i; });
     });
     const rankOf = (pos, ti) => gridScores[pos].findIndex((x) => x.i === ti) + 1;
     for (let ti = 0; ti < n; ti++) {
@@ -3656,7 +3656,7 @@ function slotLabelsFor(roster, cfg) {
 // Rank every team at a position by the shared quality score, then bucket into terciles:
 // 0 = top third (green/strong), 1 = middle (amber), 2 = bottom third (red/weak). This is the single
 // source of truth for position coloring across the hub and the team-analysis tab.
-function posQualityTiers(rostersByTeam, cfg) {
+function posQualityTiers(rostersByTeam, cfg, userIdx) {
   const n = rostersByTeam.length;
   const req = EFF_REQ(cfg);
   const fShare = flexShareOf(cfg);
@@ -3675,7 +3675,17 @@ function posQualityTiers(rostersByTeam, cfg) {
       const atPos = (rostersByTeam[i] || []).filter((p) => p && p.pos === pos);
       scoreByTeam[i][pos] = posQualityScore(atPos, req[pos] || 0, { dynasty, flexShare: fShare[pos] || 0, slotBaseline: repl[pos] });
     }
-    const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => scoreByTeam[b][pos] - scoreByTeam[a][pos]);
+    // Rank teams by score, with a STABLE, deterministic tiebreak so the order never flips on a tie (which is
+    // what made "I drafted the same-value guy and my rank changed" happen). Ties — including near-ties that
+    // round to the SAME displayed whole number — resolve in the USER's favor (their team ranks higher), then
+    // by lower team index. We treat scores within 0.5 as tied so the tiebreak matches what the user actually
+    // sees (whole-number values): two teams showing "+29" can't rank differently based on an invisible decimal.
+    const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => {
+      const diff = scoreByTeam[b][pos] - scoreByTeam[a][pos];
+      if (Math.abs(diff) > 0.5) return diff;              // clear difference → by score
+      if (userIdx != null) { if (a === userIdx) return -1; if (b === userIdx) return 1; } // tie → user wins
+      return a - b;                                        // otherwise deterministic by index
+    });
     order.forEach((teamIdx, rank) => {
       const frac = rank / Math.max(1, n - 1);
       level[teamIdx][pos] = frac <= 0.33 ? 0 : frac <= 0.66 ? 1 : 2;
@@ -3956,11 +3966,11 @@ const valBg = (v) => (v === 0 ? "transparent" : v > 0 ? `rgba(124,217,178,${Math
 // Shared green→yellow→red scale for VBD / Value (points above replacement): strong ≥40, solid ≥20, fringe
 // ≥5, replacement-ish ≥0, below replacement <0. Used across hovers so strong values pop and weak ones warn.
 const vbdColor = (v) => v == null ? "var(--mut)" : v >= 40 ? "#5FD0A8" : v >= 20 ? "#9BD17E" : v >= 5 ? "#E7C24B" : v >= 0 ? "#C9A54B" : "#F2655C";
-// Format a VBD/value number for display with ONE decimal and an explicit sign. Values are stored to one
-// decimal (Math.round(x*10)/10) and the RANKINGS sort on that stored number — so displaying the integer
-// (Math.round) could show two players as identical "+29" while they rank differently (29.3 vs 28.9). Showing
-// the same one-decimal number the ranking uses keeps the display and the rank consistent by construction.
-const fmtVal = (v) => v == null ? "—" : (v > 0 ? "+" : "") + (Math.round(v * 10) / 10).toFixed(1);
+// Format a VBD/value number for display as a WHOLE number with an explicit sign (e.g. "+29", "-4"). Kept as
+// a single helper so every value/VBD readout stays consistent. NOTE: display is intentionally whole-number;
+// the ranking must NOT depend on sub-integer differences the user can't see — ties are broken deterministically
+// in the ranking code (user's own team wins ties), so a flip can never happen from an invisible decimal.
+const fmtVal = (v) => v == null ? "—" : (v > 0 ? "+" : "") + Math.round(v);
 // ADP read color for a pick: compares where a player was/would be taken (overall, 1-based) to his ADP.
 // Fell 8+ past ADP → steal (green); taken 8+ early → reach (red); within ±8 → fair (grey). Used to color the
 // ADP figure in the pick-flow widgets (Draft Pulse, On the Clock, Next Picks, Your Decision) at a glance.
@@ -14247,7 +14257,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // Terciles on real rosters give the even spread wanted, and it agrees with the How-You're-Doing rank.
     const rosters = [];
     for (let i = 0; i < TEAMS; i++) rosters.push(rostersByTeam[i] || []);
-    return posQualityTiers(rosters, cfg).level;
+    return posQualityTiers(rosters, cfg, userIdx).level;
   }, [players, picks, cfg, userIdx, liveSlots, rostersByTeam]);
   // Exact league rank (1 = best) for YOUR team at each position, plus your players per position — powers the
   // "How you're doing" positional-standing rail. Uses the same shared quality scorer as everything else.
@@ -14287,7 +14297,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         const drafted = (rostersByTeam[i] || []).filter((p) => p && p.pos === pos);
         const v = posQualityScore(drafted, req, { dynasty: dyn, flexShare: fsh[pos] || 0, slotBaseline: repl[pos] });
         return { i, v };
-      }).sort((a, b) => b.v - a.v);
+      }).sort((a, b) => {
+        // Same stable tiebreak as the grid: clear score difference wins; a near-tie (within 0.5, i.e. the
+        // same displayed whole number) resolves in the USER's favor, then by team index. This is what stops
+        // "my rank changed when I drafted a same-value player" — a visual tie never reorders unpredictably.
+        const diff = b.v - a.v;
+        if (Math.abs(diff) > 0.5) return diff;
+        if (a.i === userIdx) return -1; if (b.i === userIdx) return 1;
+        return a.i - b.i;
+      });
       out[pos] = { rank: scored.findIndex((x) => x.i === userIdx) + 1, of: TEAMS };
     });
     return out;
@@ -19413,7 +19431,7 @@ function PosRankGrid({ grid, userIdx, teamNames, posColor, showTip, hideTip, ran
                 {POSS.map((pos) => {
                   const rank = row.pos[pos];
                   const players = row.players[pos] || [];
-                  const tip = players.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `${mine ? "Your" : teamNames[row.team]} ${pos}s — ${rank === 1 ? "1st" : rank + "th"} of ${n}` }, { kind: "playertable", cols: ["rank", "name", "team", "age", "pts", "vbd", "dval"], players }]) : undefined;
+                  const tip = players.length ? (e) => showTip(e, [{ kind: "take", tone: "neutral", x: `${mine ? "Your" : teamNames[row.team]} ${pos}s — ${rank === 1 ? "1st" : rank + "th"} of ${n}` }, { kind: "playertable", cols: ["rank", "name", "team", "adp", "age", "pts", "vbd", "dval"], players }]) : undefined;
                   return (
                     <td key={pos} className="num" onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}
                       style={{ textAlign: "center", padding: "3px 4px", fontWeight: 700, color: rankColor(rank), cursor: tip ? "help" : "default", background: sortPos === pos ? "rgba(255,255,255,.03)" : "transparent" }}>
