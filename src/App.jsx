@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19e";
+const BUILD_TAG = "2026.07.19f";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -79,12 +79,14 @@ const SEASONS = [2026, 2025, 2024];
 //          list:[playerId], created }. We migrate any legacy user.ranks map into named sets
 // so older accounts keep working.
 function setSettingsKey(set) {
-  const mode = set.type === "dynasty" || set.type === "keeper" ? "DYN" : set.type === "bestball" ? "BB" : "RE";
+  const mode = set.type === "dynasty" ? "DYN" : set.type === "bestball" ? "BB" : "RE";
   const te = set.teType === "tep" ? "TEP1" : "TEstd";
   return `${mode}-${set.qbType || "1QB"}-${te}`;
 }
-// Group a league type into the same family a ranking set's type belongs to (keeper rides with dynasty).
-function typeFamily(t) { return t === "dynasty" || t === "keeper" ? "dynasty" : t === "bestball" ? "bestball" : "redraft"; }
+// Group a league type into the same family a ranking set's type belongs to. A KEEPER league is a redraft
+// league where you keep a few players, so it scores in the REDRAFT family (single-season values) — NOT
+// dynasty. (Dynasty leagues that also have keepers use the dynasty type, so they still get dynasty scoring.)
+function typeFamily(t) { return t === "dynasty" ? "dynasty" : t === "bestball" ? "bestball" : "redraft"; }
 // Canonical superflex/2QB detection. A league is "QB-premium" if it starts more than one
 // QB-eligible slot — either an explicit SUPER/superflex slot, two or more dedicated QB slots,
 // or the legacy cfg.sf flag. This is the single source of truth used everywhere QB scarcity matters.
@@ -2566,7 +2568,7 @@ function setScarcityPrem(m) { SCARCITY_PREM = m || { QB: 0, RB: 0, WR: 0, TE: 0 
 let FLEX_BASE = null;
 // Rookie-only drafts are dynasty by definition (they only exist inside a dynasty/keeper league), so every
 // value/strength read should treat them with the age-aware dynasty model rather than raw this-year VBD.
-function isDynastyCfg(cfg) { return !!(cfg && (cfg.type === "dynasty" || cfg.type === "keeper" || cfg.type === "rookie")); }
+function isDynastyCfg(cfg) { return !!(cfg && (cfg.type === "dynasty" || cfg.type === "rookie")); }
 // Small bye-stack penalty: if this candidate would land on a bye week where the team ALREADY has one or more
 // starters at his position, and the team already has real depth there, nudge his score down a touch. Talent
 // dominates — this is deliberately small and never applies to a position you still need to fill.
@@ -10757,7 +10759,7 @@ function RankingsHub({ user, leagues, onUpdate, onBack, onHome, onSignOut, onNew
   const [cQb, setCQb] = useState("1QB");
   const [cTe, setCTe] = useState("std");
   const [cLeague, setCLeague] = useState("");
-  const matchLeague = (id) => { const l = leagues.find((x) => x.id === id); if (!l) return; setCType(l.cfg.type === "keeper" ? "dynasty" : l.cfg.type === "bestball" ? "bestball" : l.cfg.type === "dynasty" ? "dynasty" : "redraft"); setCQb(((l.cfg.start && l.cfg.start.SUPER > 0) || l.cfg.sf) ? "SF" : "1QB"); setCTe(l.cfg.tePremMult > 0 ? "tep" : "std"); };
+  const matchLeague = (id) => { const l = leagues.find((x) => x.id === id); if (!l) return; setCType(l.cfg.type === "dynasty" ? "dynasty" : l.cfg.type === "bestball" ? "bestball" : "redraft"); setCQb(((l.cfg.start && l.cfg.start.SUPER > 0) || l.cfg.sf) ? "SF" : "1QB"); setCTe(l.cfg.tePremMult > 0 ? "tep" : "std"); };
   const createSet = (seed) => {
     const id = `rs-${Date.now()}`;
     const set = { id, name: cName.trim() || "Untitled ranks", season, type: cType, qbType: cQb, teType: cTe, leagueId: cLeague || null, list: seed || [], created: new Date().toLocaleDateString() };
@@ -11267,7 +11269,7 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
 }
 
 
-const LEAGUE_TYPES = [["redraft","Redraft"],["dynasty","Dynasty"],["bestball","Best ball"],["rookie","Rookie only"]];
+const LEAGUE_TYPES = [["redraft","Redraft"],["keeper","Keeper"],["dynasty","Dynasty"],["bestball","Best ball"],["rookie","Rookie only"]];
 const NFL_TEAMS = ["ARI","ATL","BAL","BUF","CAR","CHI","CIN","CLE","DAL","DEN","DET","GB","HOU","IND","JAX","KC","LV","LAC","LAR","MIA","MIN","NE","NO","NYG","NYJ","PHI","PIT","SF","SEA","TB","TEN","WAS"];
 const DRAFT_ORDERS = [["snake","Snake"],["linear","Linear (same order each round)"],["3rr","Third-round reversal"]];
 // Platforms we can connect to for live sync. Sleeper is supported via its free public API. Other
@@ -11557,7 +11559,7 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
     const cfg = {
       name: f.name || "My league", type: f.type, teams: +f.teams, rounds: +f.rounds,
       slot: f.slot === "" || f.slot == null ? null : +f.slot,
-      order: f.order, excludeRookies: !!f.excludeRookies, pickTrading: !!f.pickTrading, keeper: !!f.keeper, idp: !!f.idp,
+      order: f.order, excludeRookies: !!f.excludeRookies, pickTrading: !!f.pickTrading, keeper: !!f.keeper || f.type === "keeper", idp: !!f.idp,
       sf: f.start.SUPER > 0 || (f.start.QB || 0) >= 2, tePrem: tePremMult > 0, tePremMult,
       start: f.start, caps: f.caps, scoring: f.scoring, connect: f.connect,
       draftOrder: f.draftOrder && f.draftOrder.length === +f.teams ? f.draftOrder : null,
@@ -11720,14 +11722,14 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
             <button className="btn" onClick={() => upd({ excludeRookies: !f.excludeRookies })}>{f.excludeRookies ? "No — rookies drafted separately" : "Yes — rookies in this draft pool"}</button>,
             { warn: f.excludeRookies, text: f.excludeRookies ? "Rookies are removed from this pool — use this when your league drafts rookies in a separate event." : "Rookies are included in the normal draft pool, alongside veterans." }
           )}
-          {f.type !== "rookie" && f.type !== "bestball" && f.type !== "dynasty" && Row("Keeper league?",
+          {f.type !== "rookie" && f.type !== "bestball" && f.type !== "dynasty" && f.type !== "keeper" && Row("Keeper league?",
             <button className="btn" onClick={() => upd({ keeper: !f.keeper })}>{f.keeper ? "On — a few players are kept" : "Off"}</button>,
-            f.keeper ? "A redraft league where each team keeps a few players from last season. Set who's kept (and at what pick cost) below. This is different from dynasty, where whole rosters carry over." : "Turn on if managers keep a few players from last season (this stays a redraft league otherwise)."
+            f.keeper ? "A redraft league where each team keeps a few players from last season. Set who's kept (and at what pick cost) below. This is different from dynasty, where whole rosters carry over." : "Turn on if managers keep a few players from last season, or pick the Keeper league type. This stays a redraft-style league either way."
           )}
-          {(f.keeper || typeFamily(f.type) === "dynasty") && (
+          {(f.keeper || f.type === "keeper" || typeFamily(f.type) === "dynasty") && (
             <div style={{ marginLeft: 162, marginBottom: 13 }}>
               <button className="btn btn-mini btn-gold" onClick={() => setKeeperModal(true)}><i className="ti ti-lock" style={{ fontSize: 12, marginRight: 5 }} aria-hidden="true" />{typeFamily(f.type) === "dynasty" ? "Set kept players" : "Set keepers"}{(f.keepers || []).length > 0 ? ` (${(f.keepers || []).length})` : ""}</button>
-              <div className="mut" style={{ fontSize: 11, marginTop: 5, lineHeight: 1.45 }}>{typeFamily(f.type) === "dynasty" ? "Players each team carries into this draft. " : ""}Applies to your official draft and every mock for this league.</div>
+              <div className="mut" style={{ fontSize: 11, marginTop: 5, lineHeight: 1.45 }}>{typeFamily(f.type) === "dynasty" ? "Players each team carries into this draft — add each to a specific round, or free onto their roster. " : "Add each keeper to a specific round (it costs that pick) or free onto the roster. "}Applies to your official draft and every mock for this league.</div>
             </div>
           )}
           {Row("Draft-pick trading",
@@ -19518,7 +19520,8 @@ function formatKey(cfg) {
   // comparable to redraft/dynasty ADP — they MUST live in their own category or they pollute the trends
   // (a rookie "going 1.1" in a rookie draft is not the same as him going 1.1 overall in a startup).
   const mode = (t === "rookie" || t === "rookie only") ? "ROOK"
-    : (t === "dynasty" || t === "keeper") ? "DYN"
+    : t === "dynasty" ? "DYN"
+    : t === "keeper" ? "KEEP"
     : t === "bestball" ? "BB" : "RE";
   return `${mode}-${qb}-${te}`;
 }
