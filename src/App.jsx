@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19f";
+const BUILD_TAG = "2026.07.19g";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1417,6 +1417,31 @@ const resolveTeamNames = (cfg) => {
 // Active team names for the current league (may be overridden by manual/Sleeper entry).
 let TEAM_NAMES = TEAM_NAMES_POOL.slice(0, 12);
 const setTeamNames = (names) => { TEAM_NAMES = names; };
+// KEEPER-SYNC CONFLICT DIFF (pure helper). A user can set keepers MANUALLY (cfg.keepers) before their
+// commissioner enters them in Sleeper. When Sleeper later reports keepers (cfg.connect.keepers), we must not
+// silently overwrite the user's entries — we diff the two sets so the UI can show exactly what differs and
+// let the user choose. Compared by team + normalized player name (Sleeper sends names; manual entries carry
+// ids that resolve to names via nameOf). Returns { same, added, removed, changed, hasConflict }:
+//   added   = in Sleeper, not in the user's set (Sleeper would ADD it)
+//   removed = in the user's set, not in Sleeper (Sleeper would DROP it)
+//   changed = same team+player but different keep cost (Sleeper would CHANGE the pick cost)
+// nameOf is injected so the helper stays pure/testable and works whether entries store name or playerId.
+const diffKeepers = (mine, theirs, opts = {}) => {
+  const nameOf = opts.nameOf || ((k) => k && (k.name != null ? String(k.name) : k.playerName != null ? String(k.playerName) : k.playerId != null ? String(k.playerId) : ""));
+  const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const teamOf = (k) => (k && (k.team != null ? k.team : k.slot != null ? k.slot - 1 : null));
+  const costOf = (k) => (k && (k.o != null ? `pick ${k.o}` : "free"));
+  const keyOf = (k) => `${teamOf(k)}|${norm(nameOf(k))}`;
+  const mineMap = new Map(); (mine || []).forEach((k) => mineMap.set(keyOf(k), k));
+  const theirMap = new Map(); (theirs || []).forEach((k) => theirMap.set(keyOf(k), k));
+  const added = [], removed = [], changed = [], same = [];
+  theirMap.forEach((tk, key) => {
+    if (!mineMap.has(key)) added.push(tk);
+    else { const mk = mineMap.get(key); if (costOf(mk) !== costOf(tk)) changed.push({ team: teamOf(tk), name: nameOf(tk), from: costOf(mk), to: costOf(tk), their: tk }); else same.push(tk); }
+  });
+  mineMap.forEach((mk, key) => { if (!theirMap.has(key)) removed.push(mk); });
+  return { same, added, removed, changed, hasConflict: added.length + removed.length + changed.length > 0 };
+};
 // Parallel array of Sleeper usernames per team index (from slotOwners), shown as "(username)" next to team
 // names so people who know a manager's handle but not their team name can identify teams. Empty when not a
 // Sleeper-linked league.
@@ -11689,7 +11714,43 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
                 <div className="mut" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.5 }}>The fields below are pre-filled from your league. You can adjust them, but for a connected Sleeper league you normally don't need to — just hit “Enter draft room” above.</div>
               </details>
             </div>
-          )}{Row("League name", <input className="gs" style={{ width: "100%" }} value={f.name} onChange={(e) => upd({ name: e.target.value })} />)}
+          )}
+          {/* KEEPER-SYNC CONFLICT: the user set keepers manually AND Sleeper now reports keepers that differ.
+              Rather than silently overwriting either way, show exactly what differs and let them choose. */}
+          {(() => {
+            const mine = f.keepers || [];
+            const theirs = (f.connect && Array.isArray(f.connect.keepers)) ? f.connect.keepers : [];
+            if (!mine.length || !theirs.length) return null; // nothing to reconcile unless BOTH exist
+            const idName = {}; (kPlayers || []).forEach((p) => { idName[p.id] = p.name; });
+            const nameOf = (k) => k && (k.name != null ? k.name : k.playerName != null ? k.playerName : (k.playerId != null && idName[k.playerId]) ? idName[k.playerId] : (k.playerId != null ? String(k.playerId) : ""));
+            const d = diffKeepers(mine, theirs, { nameOf });
+            if (!d.hasConflict) return null;
+            const nm = resolveTeamNames(cfgPreview);
+            const teamNm = (i) => (i != null && nm[i]) ? nm[i] : `Team ${(i ?? 0) + 1}`;
+            const costOf = (k) => (k && k.o != null ? `pick ${k.o}` : "free");
+            const sleeperToManual = () => {
+              // Convert Sleeper keepers (name+slot) into the manual cfg.keepers shape (playerId+team+o=null),
+              // resolving names→ids where possible. Sleeper keepers are free roster adds (no pick cost).
+              const byName = {}; (kPlayers || []).forEach((p) => { byName[String(p.name).toLowerCase().replace(/[^a-z0-9]/g, "")] = p.id; });
+              return theirs.map((k) => ({ playerId: byName[String(nameOf(k)).toLowerCase().replace(/[^a-z0-9]/g, "")] ?? null, team: (k.slot || 0) - 1, o: null })).filter((k) => k.playerId != null);
+            };
+            return (
+              <div style={{ margin: "0 0 16px", padding: "13px 15px", borderRadius: 10, border: "1px solid var(--gold)", background: "rgba(242,182,60,.09)" }}>
+                <div style={{ fontSize: 13.5, fontWeight: 800, color: "var(--gold)", display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}><i className="ti ti-alert-triangle" style={{ fontSize: 16 }} aria-hidden="true" />Sleeper sent different keepers than the ones you entered</div>
+                <div className="mut" style={{ fontSize: 12, lineHeight: 1.5, marginBottom: 9 }}>You set keepers by hand, and your Sleeper league now reports its own. Here's exactly what would change if you switch to Sleeper's. Choose which to keep — nothing changes until you pick.</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 11 }}>
+                  {d.added.map((k, i) => <div key={"a" + i} style={{ fontSize: 12 }}><span style={{ color: "var(--green)", fontWeight: 700 }}>+ Add</span> {nameOf(k)} <span className="mut">→ {teamNm((k.slot || 0) - 1)} ({costOf(k)})</span></div>)}
+                  {d.removed.map((k, i) => <div key={"r" + i} style={{ fontSize: 12 }}><span style={{ color: "var(--red)", fontWeight: 700 }}>− Remove</span> {nameOf(k)} <span className="mut">→ {teamNm(k.team != null ? k.team : null)} ({costOf(k)}) — you entered this; Sleeper doesn't have it</span></div>)}
+                  {d.changed.map((c, i) => <div key={"c" + i} style={{ fontSize: 12 }}><span style={{ color: "var(--gold)", fontWeight: 700 }}>~ Change</span> {c.name} <span className="mut">→ {teamNm(c.team)}: {c.from} becomes {c.to}</span></div>)}
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button className="btn btn-mini" onClick={() => upd({ keepers: mine, connect: { ...f.connect, keepers: [], keepersDismissed: true } })} title="Keep the keepers you entered; ignore Sleeper's">Keep mine ({mine.length})</button>
+                  <button className="btn btn-mini btn-gold" onClick={() => upd({ keepers: sleeperToManual(), connect: { ...f.connect, keepers: [], keepersDismissed: true } })} title="Replace your keepers with the ones from Sleeper">Use Sleeper's ({theirs.length})</button>
+                </div>
+              </div>
+            );
+          })()}
+          {Row("League name", <input className="gs" style={{ width: "100%" }} value={f.name} onChange={(e) => upd({ name: e.target.value })} />)}
           {Row("League type",
             <select className="gs" style={{ width: "100%" }} value={f.type} onChange={(e) => {
               const t = e.target.value;
