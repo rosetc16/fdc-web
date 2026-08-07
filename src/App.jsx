@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19b";
+const BUILD_TAG = "2026.07.19e";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1393,6 +1393,25 @@ function applyAdpOverlay(pack) {
 }
 
 const TEAM_NAMES_POOL = ["Gridiron Gurus","Waiver Wolves","Bye Week Blues","The Audibles","Mahomes Alone","Run CMC","Fourth & Long","Hail Marys","The Handcuffs","Mock Draft Szn","Chasing Chase","Bench Mob","Pylon Pushers","Zero RB Zealots","Gravy Train","Red Zone Rebels","Pocket Presence","Flea Flickers","Snap Counters","Garbage Time"];
+// Resolve the team-name array for a league cfg the SAME way the live draft board does, so every settings
+// editor (keepers, existing rosters) shows the names the user actually sees on the board. Priority per slot:
+// (1) a real Sleeper slot name from cfg.slotNames (1-based; skip generic "Team N" placeholders), then
+// (2) cfg.teamNames[i], then (3) the generic pool. Previously these editors used cfg.teamNames only, with a
+// strict length check that silently fell back to POOL names when it didn't match — so a Sleeper-synced league
+// showed the correct names on the board (which reads slotNames) but WRONG names in the keeper dropdown.
+const resolveTeamNames = (cfg) => {
+  const n = (cfg && cfg.teams) || 12;
+  const out = [];
+  const sn = cfg && cfg.slotNames;
+  const tn = cfg && cfg.teamNames;
+  for (let i = 0; i < n; i++) {
+    const slotNm = sn ? sn[i + 1] : null; // slotNames is 1-based
+    if (slotNm && !/^Team\s+\d+$/.test(slotNm)) { out.push(slotNm); continue; }
+    if (tn && tn[i] && !/^Team\s+\d+$/.test(tn[i])) { out.push(tn[i]); continue; }
+    out.push(TEAM_NAMES_POOL[i] || `Team ${i + 1}`);
+  }
+  return out;
+};
 // Active team names for the current league (may be overridden by manual/Sleeper entry).
 let TEAM_NAMES = TEAM_NAMES_POOL.slice(0, 12);
 const setTeamNames = (names) => { TEAM_NAMES = names; };
@@ -11701,13 +11720,14 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
             <button className="btn" onClick={() => upd({ excludeRookies: !f.excludeRookies })}>{f.excludeRookies ? "No — rookies drafted separately" : "Yes — rookies in this draft pool"}</button>,
             { warn: f.excludeRookies, text: f.excludeRookies ? "Rookies are removed from this pool — use this when your league drafts rookies in a separate event." : "Rookies are included in the normal draft pool, alongside veterans." }
           )}
-          {f.type !== "rookie" && f.type !== "bestball" && Row("Keeper league?",
-            <button className="btn" onClick={() => upd({ keeper: !f.keeper })}>{f.keeper ? "On — some players are kept" : "Off"}</button>,
-            f.keeper ? "Players carried over from last season. Set who's kept (and at what pick cost) below." : "Turn on if managers keep players from last season."
+          {f.type !== "rookie" && f.type !== "bestball" && f.type !== "dynasty" && Row("Keeper league?",
+            <button className="btn" onClick={() => upd({ keeper: !f.keeper })}>{f.keeper ? "On — a few players are kept" : "Off"}</button>,
+            f.keeper ? "A redraft league where each team keeps a few players from last season. Set who's kept (and at what pick cost) below. This is different from dynasty, where whole rosters carry over." : "Turn on if managers keep a few players from last season (this stays a redraft league otherwise)."
           )}
-          {f.keeper && (
+          {(f.keeper || typeFamily(f.type) === "dynasty") && (
             <div style={{ marginLeft: 162, marginBottom: 13 }}>
-              <button className="btn btn-mini btn-gold" onClick={() => setKeeperModal(true)}><i className="ti ti-lock" style={{ fontSize: 12, marginRight: 5 }} aria-hidden="true" />Set keepers{(f.keepers || []).length > 0 ? ` (${(f.keepers || []).length})` : ""}</button>
+              <button className="btn btn-mini btn-gold" onClick={() => setKeeperModal(true)}><i className="ti ti-lock" style={{ fontSize: 12, marginRight: 5 }} aria-hidden="true" />{typeFamily(f.type) === "dynasty" ? "Set kept players" : "Set keepers"}{(f.keepers || []).length > 0 ? ` (${(f.keepers || []).length})` : ""}</button>
+              <div className="mut" style={{ fontSize: 11, marginTop: 5, lineHeight: 1.45 }}>{typeFamily(f.type) === "dynasty" ? "Players each team carries into this draft. " : ""}Applies to your official draft and every mock for this league.</div>
             </div>
           )}
           {Row("Draft-pick trading",
@@ -12768,7 +12788,7 @@ function TradePickModal({ teams, rounds, teamNames, userIdx, ownerOf, naturalOwn
 // cfg.existingRosters as { teamSlot(1-based): [{ name?, pos }] } — the same shape Sleeper connect produces.
 function ExistingRostersEditor({ cfg, players, onChange }) {
   const teamsN = cfg.teams || 12;
-  const names = (cfg.teamNames && cfg.teamNames.length === teamsN) ? cfg.teamNames : TEAM_NAMES_POOL.slice(0, teamsN);
+  const names = resolveTeamNames(cfg);
   const [rosters, setRosters] = useState(cfg.existingRosters || {});
   const [team, setTeam] = useState(1); // 1-based slot
   const [pSearch, setPSearch] = useState("");
@@ -12793,7 +12813,7 @@ function ExistingRostersEditor({ cfg, players, onChange }) {
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
         <span className="mut" style={{ fontSize: 12 }}>Team</span>
         <select className="gs" value={team} onChange={(e) => setTeam(+e.target.value)} style={{ minWidth: 150 }}>
-          {Array.from({ length: teamsN }, (_, i) => <option key={i} value={i + 1}>{i === 0 ? `${names[i]} (you)` : names[i]}</option>)}
+          {Array.from({ length: teamsN }, (_, i) => <option key={i} value={i + 1}>{(cfg.slot ? +cfg.slot - 1 : 0) === i ? `${names[i]} (you)` : names[i]}</option>)}
         </select>
         <span className="mut" style={{ fontSize: 11.5 }}>
           {(() => { const c = posCount(team); return `${c.QB} QB · ${c.RB} RB · ${c.WR} WR · ${c.TE} TE`; })()}
@@ -12842,7 +12862,7 @@ function ExistingRostersEditor({ cfg, players, onChange }) {
 }
 function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
   const teamsN = cfg.teams || 12;
-  const names = (cfg.teamNames && cfg.teamNames.length === teamsN) ? cfg.teamNames : TEAM_NAMES_POOL.slice(0, teamsN);
+  const names = resolveTeamNames(cfg);
   const TOTAL = teamsN * cfg.rounds;
   const [keepers, setKeepers] = useState(cfg.keepers || []);
   const [trades, setTrades] = useState(cfg.pickTrades || []);
@@ -18815,6 +18835,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             Pick a section below to edit it. Everything's already set from your league{cfg.connect ? " (pulled from Sleeper)" : ""} — you only need to change something if it's wrong. Saving re-grades your board.
           </div>
           {!hasSlot && <div style={{ fontSize: 12, marginBottom: 12, color: "var(--gold)", display: "flex", alignItems: "center", gap: 6 }}><i className="ti ti-alert-triangle" style={{ fontSize: 14 }} aria-hidden="true" />Set your draft slot on the “Teams & order” section so recommendations know when you pick.</div>}
+          {(typeFamily(cfg.type) === "dynasty" || cfg.keeper) && (
+            <div style={{ marginBottom: 12, padding: "11px 13px", borderRadius: 10, border: "1px solid var(--gold)", background: "rgba(242,182,60,.08)", display: "flex", gap: 9, alignItems: "flex-start" }}>
+              <i className="ti ti-lock" style={{ fontSize: 15, color: "var(--gold)", marginTop: 1, flexShrink: 0 }} aria-hidden="true" />
+              <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+                {typeFamily(cfg.type) === "dynasty"
+                  ? <><b>Setting who each team keeps?</b> Open the <b>“Teams &amp; order”</b> section below and hit <b>Set kept players</b>. In a dynasty league whole rosters carry over — enter what each team holds and it applies to your official draft <b>and every mock</b>.</>
+                  : <><b>Setting keepers?</b> Open the <b>“Teams &amp; order”</b> section below, turn <b>Keeper league</b> on, and hit <b>Set keepers</b>. A keeper league is a redraft where a few players carry over — set them once here and they apply to your official draft <b>and every mock</b>.</>}
+              </div>
+            </div>
+          )}
           <div style={{ marginBottom: 8 }} />
           <ConfigForm initial={{ ...cfg, slot: cfg.slot == null ? "" : cfg.slot, scoring: { ...DEFAULT_SCORING, ...(cfg.scoring || {}) } }} initialMode="simple" submitLabel="Save settings" onSubmit={(newCfg) => { onSettings(newCfg); setTab("hub"); }} onCancel={() => setTab("hub")} />
         </div>
