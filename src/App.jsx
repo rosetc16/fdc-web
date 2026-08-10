@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19g";
+const BUILD_TAG = "2026.07.19h";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -11473,7 +11473,10 @@ function ConnectBox({ connect, onConnect, onClear }) {
 // Shared config form, used by both Setup (new league) and the in-draft Settings tab.
 function DraftOrderTab({ f, upd, ensureNames }) {
   const teamsN = +f.teams;
-  const names = (f.teamNames && f.teamNames.length === teamsN) ? f.teamNames : TEAM_NAMES_POOL.slice(0, teamsN);
+  // Resolve names the same way the board does: Sleeper slotNames → user-typed teamNames → pool. Using the
+  // old `length===teamsN ? f.teamNames : POOL` check showed blank/pool names once ensureNames padded the
+  // array with empty strings, which is part of what made names look like they "reverted to default" here.
+  const names = resolveTeamNames({ teams: teamsN, slotNames: f.connect && f.connect.slotNames, teamNames: f.teamNames });
   const isSet = Array.isArray(f.draftOrder) && f.draftOrder.length === teamsN;
   // current order as array of team indices (default 0..n-1)
   const ord = isSet ? f.draftOrder : Array.from({ length: teamsN }, (_, i) => i);
@@ -11563,8 +11566,14 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
 
   const ensureNames = () => {
     const n = f.teams; const names = [], favs = [];
-    for (let i = 0; i < n; i++) { names.push(f.teamNames[i] || TEAM_NAMES_POOL[i] || `Team ${i + 1}`); favs.push(f.favTeams[i] || ""); }
-    upd({ teamNames: names, favTeams: favs });
+    // IMPORTANT: do NOT bake pool default names into f.teamNames. Only carry forward names that actually
+    // exist (from a Sleeper connect or typed by the user); leave the rest EMPTY so the input's placeholder
+    // shows the pool name without it becoming real data. Baking defaults in caused two bugs: (1) a connected
+    // league whose slotNames didn't arrive showed pool names that looked "auto-filled", and (2) manual names
+    // appeared to "revert to defaults" because any gap re-filled the whole array with pool names. favTeams is
+    // structural (one slot per team) so it's safe to pad with "".
+    for (let i = 0; i < n; i++) { names.push(f.teamNames[i] || ""); favs.push(f.favTeams[i] || ""); }
+    upd({ favTeams: favs, teamNames: names });
   };
   // Populate team names whenever the user views the Teams/Pick-trades tabs (or deep-links there), so
   // those editors always render with real names. Done in an effect (after render) rather than in the
@@ -11572,7 +11581,10 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
   useEffect(() => {
     if (seg === "trades" || seg === "order") {
       const n = +f.teams;
-      const needFill = !(f.teamNames && f.teamNames.length === n && f.teamNames.every((x) => x));
+      // Only pad the arrays to the right LENGTH — don't require every slot to be filled. Empty names are
+      // valid now (the input shows a pool placeholder), so we no longer re-fill on emptiness (that was what
+      // clobbered Sleeper/manual names). Run only when the array length actually mismatches the team count.
+      const needFill = !(Array.isArray(f.teamNames) && f.teamNames.length === n) || !(Array.isArray(f.favTeams) && f.favTeams.length === n);
       if (needFill) ensureNames();
     }
     /* eslint-disable-next-line */
@@ -11923,18 +11935,18 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
       {seg === "order" && (
         <>
           <div className="disp gold" style={{ fontSize: 12, letterSpacing: ".06em", marginBottom: 4 }}>TEAMS</div>
-          <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Auto-filled when you connect a platform.</div>
+          <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>{f.connect ? "Pulled from your connected league — edit any you want to change." : "Type each team's name, or leave blank to use a placeholder."}</div>
           <div style={{ maxHeight: 200, overflowY: "auto", paddingRight: 4, marginBottom: 16 }}>
-            {Array.from({ length: +f.teams }, (_, i) => (
+            {(() => { const resolvedNames = resolveTeamNames({ ...cfgPreview, slotNames: f.connect && f.connect.slotNames, teamNames: f.teamNames }); return Array.from({ length: +f.teams }, (_, i) => (
               <div key={i} style={{ display: "flex", gap: 8, marginBottom: 7, alignItems: "center" }}>
                 <span className="mut num" style={{ width: 22, fontSize: 12 }}>{i + 1}</span>
-                <input className="gs" style={{ flex: 1 }} value={(f.teamNames && f.teamNames[i]) || ""} onChange={(e) => { const a = (f.teamNames || []).slice(); a[i] = e.target.value; upd({ teamNames: a, manual: true }); }} placeholder={TEAM_NAMES_POOL[i] || `Team ${i + 1}`} />
+                <input className="gs" style={{ flex: 1 }} value={(f.teamNames && f.teamNames[i]) || ""} onChange={(e) => { const a = (f.teamNames || []).slice(); a[i] = e.target.value; upd({ teamNames: a, manual: true }); }} placeholder={resolvedNames[i] || TEAM_NAMES_POOL[i] || `Team ${i + 1}`} />
                 <select className="gs" style={{ width: 110 }} value={(f.favTeams && f.favTeams[i]) || ""} onChange={(e) => { const a = (f.favTeams || []).slice(); a[i] = e.target.value; upd({ favTeams: a, manual: true }); }}>
                   <option value="">No fav</option>
                   {NFL_TEAMS.map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
               </div>
-            ))}
+            )); })()}
           </div>
           <div style={{ borderTop: "1px solid var(--line)", paddingTop: 14 }}>
             <div className="disp gold" style={{ fontSize: 12, letterSpacing: ".06em", marginBottom: 8 }}>DRAFT ORDER & YOUR SLOT</div>
