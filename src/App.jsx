@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19h";
+const BUILD_TAG = "2026.07.19i";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13848,6 +13848,30 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       return next;
     });
   }, [keeperSig]);
+
+  // Pick-cost keepers whose slot is AHEAD of the current pick must count and show RIGHT AWAY — not only once
+  // the draft crawls to that slot. Otherwise a keeper set in a paused mock (draft not advancing) looks like
+  // "nothing happened": it wasn't in the dense picks array yet and wasn't folded into any roster. We mirror
+  // those future keepers into `forcedAhead` (the same channel used for commissioner filler / pre-written picks),
+  // which folds them into rosters, counts, drafted-set, and the board cell immediately. Keepers at or before the
+  // current pick are handled by the reconciliation effect above (placed into the dense picks array). Only run
+  // for non-live drafts — a connected Sleeper draft's live feed owns forcedAhead (see the sync path).
+  useEffect(() => {
+    if (isConnectedLive) return; // live feed manages forcedAhead for connected drafts
+    const future = [];
+    Object.entries(keeperByPick).forEach(([oStr, kid]) => {
+      const o = +oStr;
+      if (o >= picks.length && !picks.includes(kid)) future.push({ o, id: kid, team: teamAt(o) });
+    });
+    setForcedAhead((prev) => {
+      // Preserve any non-keeper forcedAhead entries; replace the keeper-derived ones. Keeper entries are those
+      // whose (o,id) matches keeperByPick — everything else stays. In a mock there are usually none but be safe.
+      const kept = (prev || []).filter((f) => keeperByPick[f.o] !== f.id);
+      const nextArr = [...kept, ...future];
+      const a = JSON.stringify(prev || []), b = JSON.stringify(nextArr);
+      return a === b ? prev : nextArr;
+    });
+  }, [keeperSig, picks.length, isConnectedLive]);
 
   /* autosave every 5 picks and on completion */
   useEffect(() => { if (picks.length && (picks.length % 5 === 0 || done)) onSave(picks, preds, pickNamesOf(picks), pickNamesOf(preds)); }, [picks.length, done]);
