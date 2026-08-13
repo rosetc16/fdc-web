@@ -1,6 +1,28 @@
 import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from "react";
 import { api, hasBackend, setToken } from "./api.js";
 
+// Lightweight SECTION-level error boundary. The app has a full-page boundary at the root, but a render error
+// in one panel (e.g. a rare data edge case in the draft recap/superlatives) shouldn't take down the entire
+// page — the user loses access to everything else in the hub. Wrap a self-contained section in <Boundary>
+// and, if it throws during render, that section shows a compact inline fallback while the rest of the page
+// keeps working. `label` names the section in the fallback; `fallback` optionally overrides the message.
+class Boundary extends React.Component {
+  constructor(props) { super(props); this.state = { failed: false }; }
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(error, info) { try { console.error(`[FDC] section "${this.props.label || "section"}" render error:`, error, info); } catch (e) {} }
+  render() {
+    if (this.state.failed) {
+      if (this.props.fallback !== undefined) return this.props.fallback;
+      return (
+        <div className="mut" style={{ fontSize: 12.5, padding: "10px 12px", border: "1px solid var(--line)", borderRadius: 9, background: "var(--panel2)" }}>
+          This {this.props.label || "section"} couldn't load. The rest of the page still works — try refreshing if it persists.
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 
 /* ============================================================
    FANTASY DRAFT COMPASS — FULL PLATFORM PROTOTYPE
@@ -44,7 +66,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19j";
+const BUILD_TAG = "2026.07.19l";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -15486,7 +15508,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       `On the other end, ${nm(worstVal)} (${valByTeam[worstVal]}) drafted like ADP was a personal insult.`,
       `${nm(worstVal)} left the most value on the table (${valByTeam[worstVal]}). It happens. To them. A lot.`,
     ]));
-    const gr = grades[userIdx].g;
+    const gr = (grades[userIdx] && grades[userIdx].g) || "—";
     const bad = ["C+","C","C−","D","F"].includes(gr);
     L.push(pick(bad ? [
       `Your grade so far: ${gr}, projected ${ordinal(proj.rank[userIdx])}. Rough start — but drafts are long and the waiver wire forgives. Mostly.`,
@@ -15521,7 +15543,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       reach: reaches[0] ? `${reaches[0].p.name} → ${nm(reaches[0].t)} (${pickLabel(reaches[0].o)})` : "—",
       bestDraft: bestVal >= 0 ? `${nm(bestVal)} (${valByTeam[bestVal] > 0 ? "+" : ""}${valByTeam[bestVal]} value)` : "—",
       worstDraft: worstVal >= 0 ? `${nm(worstVal)} (${valByTeam[worstVal]} value)` : "—",
-      trend: myCount === 0 ? "No picks yet" : `${myCount} picks · leaning ${leanedInto[0]} (${leanedInto[1]}) · grade ${grades[userIdx].g} · projected ${ordinal(proj.rank[userIdx])}`,
+      trend: myCount === 0 ? "No picks yet" : `${myCount} picks · leaning ${(leanedInto && leanedInto[0]) || "—"} (${(leanedInto && leanedInto[1]) || 0}) · grade ${(grades[userIdx] && grades[userIdx].g) || "—"} · projected ${ordinal(proj.rank[userIdx])}`,
     };
   }, [proj, grades, graded, valByTeam, picks, players, userIdx]);
 
@@ -18294,7 +18316,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       )}
 
       {tab === "summary" && proj && grades && (() => { const focusIdx = summaryTeam == null ? userIdx : summaryTeam; return (
-        <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(310px,1fr))", gap: 12, maxWidth: 1250 }}>
+        <Boundary label="draft summary"><div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(310px,1fr))", gap: 12, maxWidth: 1250 }}>
           <div className="panel" style={{ padding: "10px 14px", gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", position: "sticky", top: stickyHeadH, zIndex: 20, boxShadow: "0 4px 14px rgba(0,0,0,.35)" }}>
             <span className="mut" style={{ fontSize: 12.5 }}>Focus on</span>
             <select className="gs" style={{ minWidth: 220 }} value={summaryTeam == null ? "" : String(summaryTeam)} onChange={(e) => setSummaryTeam(e.target.value === "" ? null : +e.target.value)}>
@@ -18910,7 +18932,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               })()}
             </div>
           )}
-          </div>
+          </div></Boundary>
       ); })()}
 
       {tab === "trade" && (
