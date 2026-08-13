@@ -7,11 +7,12 @@ import { api, hasBackend, setToken } from "./api.js";
 // and, if it throws during render, that section shows a compact inline fallback while the rest of the page
 // keeps working. `label` names the section in the fallback; `fallback` optionally overrides the message.
 class Boundary extends React.Component {
-  constructor(props) { super(props); this.state = { failed: false }; }
-  static getDerivedStateFromError() { return { failed: true }; }
+  constructor(props) { super(props); this.state = { failed: false, msg: "" }; }
+  static getDerivedStateFromError(error) { return { failed: true, msg: (error && error.message) ? String(error.message) : "Unknown error" }; }
   componentDidCatch(error, info) { try { console.error(`[FDC] section "${this.props.label || "section"}" render error:`, error, info); } catch (e) {} }
   render() {
     if (this.state.failed) {
+      if (typeof this.props.fallback === "function") return this.props.fallback(this.state.msg);
       if (this.props.fallback !== undefined) return this.props.fallback;
       return (
         <div className="mut" style={{ fontSize: 12.5, padding: "10px 12px", border: "1px solid var(--line)", borderRadius: 9, background: "var(--panel2)" }}>
@@ -66,7 +67,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19n";
+const BUILD_TAG = "2026.07.19o";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -95,6 +96,19 @@ const normalizeLeaguePicks = (picks, pool) => {
     const byNameHit = byName[normName(pk.name || "")];
     return byNameHit != null ? byNameHit : null;
   });
+};
+// Extract the REAL pick→team map from Sleeper pick objects, keyed by overall pick index (0-based) → team index
+// (draft_slot − 1). This is the source of truth for WHO made each pick — a Sleeper draft is NOT necessarily
+// snake, and picks may have been traded, so we must NEVER recompute team-from-snake for a synced draft.
+// Returns null when the picks aren't Sleeper objects or carry no draft_slot (nothing to override with).
+const slotMapFromSleeperPicks = (picks) => {
+  if (!looksLikeSleeperPicks(picks)) return null;
+  const ordered = picks.slice().sort((a, b) => ((a.pick_no || 0) - (b.pick_no || 0)));
+  const map = {}; let any = false;
+  ordered.forEach((pk, o) => {
+    if (pk && typeof pk === "object" && pk.draft_slot != null) { map[o] = pk.draft_slot - 1; any = true; }
+  });
+  return any ? map : null;
 };
 // Display surname: the last name word, but skipping a trailing generational suffix (Jr., Sr., II–V)
 // and keeping it attached — so "Marvin Harrison Jr." shows "Harrison Jr.", never just "Jr.".
@@ -5383,7 +5397,10 @@ export default function App() {
         try {
           const d = await api.sleeperDraft(sl.league_id, username);
           if (!d || !d.cfg) return;
-          const cfg = { ...d.cfg, name: sl.name || d.cfg.name || "Sleeper league", connect: { platform: "sleeper", leagueId: sl.league_id, username, draftId: d.draft_id || sl.draft_id || null, status: d.status || sl.draft_status || null } };
+          const cfg = { ...d.cfg, name: sl.name || d.cfg.name || "Sleeper league",
+            slot: (d.cfg && d.cfg.slot != null) ? d.cfg.slot : (d.yourSlot != null ? d.yourSlot : null),
+            order: (d.cfg && d.cfg.order) || (d.draftType === "linear" ? "linear" : d.draftType === "3rr" ? "3rr" : "snake"),
+            connect: { platform: "sleeper", leagueId: sl.league_id, username, draftId: d.draft_id || sl.draft_id || null, status: d.status || sl.draft_status || null, tradedPicks: d.tradedPicks || [] } };
           built.push({ id: `${Date.now()}-${sl.league_id}`, name: cfg.name, cfg, picks: d.picks || [], preds: [], connect: cfg.connect, sleeperLeagueId: sl.league_id, created: new Date().toLocaleDateString() });
         } catch (e) { /* skip this league, keep going */ }
       }));
@@ -5545,13 +5562,14 @@ export default function App() {
         onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }}
         onDeleteMock={deleteMock} onDelete={(id) => { deleteLeague(id); setRoute(user.paid ? "home" : "library"); }}
         onOpenTeamHub={lg.cfg.connect && lg.cfg.connect.leagueId ? () => { setHubLeagueId(lg.cfg.connect.leagueId); setRoute("teamHub"); } : null} /> : null; })()}
-      {route === "teamHub" && user && hubLeagueId && <Boundary label="in-season hub" fallback={
+      {route === "teamHub" && user && hubLeagueId && <Boundary label="in-season hub" fallback={(msg) => (
         <div style={{ maxWidth: 620, margin: "60px auto", padding: "0 20px", textAlign: "center" }}>
           <div className="disp" style={{ fontSize: 22, fontWeight: 700, marginBottom: 10 }}>The in-season hub hit a snag</div>
-          <div className="mut" style={{ fontSize: 13.5, lineHeight: 1.5, marginBottom: 18 }}>We couldn't load this league's live hub. This can happen when Sleeper hasn't posted this season's data yet, or the league's roster settings are still syncing. The rest of the app is unaffected.</div>
+          <div className="mut" style={{ fontSize: 13.5, lineHeight: 1.5, marginBottom: 14 }}>We couldn't load this league's live hub. This can happen when Sleeper hasn't posted this season's data yet, or the league's roster settings are still syncing. The rest of the app is unaffected.</div>
+          {msg ? <div className="mut" style={{ fontSize: 11, lineHeight: 1.5, marginBottom: 18, padding: "8px 10px", border: "1px solid var(--line)", borderRadius: 8, background: "var(--panel2)", fontFamily: "var(--mono)", wordBreak: "break-word" }}>Details (for support): {msg}</div> : null}
           <button className="btn btn-gold" onClick={() => setRoute("home")}>← Back to your leagues</button>
         </div>
-      }><TeamHub user={user} leagues={leagues} leagueId={hubLeagueId} onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} onUpdate={updateUser} /></Boundary>}
+      )}><TeamHub user={user} leagues={leagues} leagueId={hubLeagueId} onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} onUpdate={updateUser} /></Boundary>}
       {route === "teamHub" && hubLeagueId && !user && (
         <HubShell title="Team hub" onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} user={user}><HubLoading /></HubShell>
       )}
@@ -13348,8 +13366,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   })();
   const ROUNDS = cfg.rounds;
   const TOTAL = totalOf(cfg);
-  const hasSlot = cfg.slot != null && cfg.slot >= 1;
-  const userIdx = hasSlot ? cfg.slot - 1 : 0; // fallback for engine; UI nudges user to set it
+  const [syncedSlot, setSyncedSlot] = useState(null); // user's real slot pulled from Sleeper (yourSlot) when cfg.slot is missing
+  const hasSlot = (cfg.slot != null && cfg.slot >= 1) || (syncedSlot != null && syncedSlot >= 1);
+  const userIdx = (cfg.slot != null && cfg.slot >= 1) ? cfg.slot - 1 : (syncedSlot != null && syncedSlot >= 1 ? syncedSlot - 1 : 0);
 
   const [picks, setPicks] = useState(league.picks || []);
   const [preds, setPreds] = useState(league.preds || []);
@@ -13675,9 +13694,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     if (pickConvertDone.current) return;
     if (!players || !players.length) return;
     if (!looksLikeSleeperPicks(picks)) { pickConvertDone.current = true; return; }
+    // Capture the REAL pick→team map from draft_slot BEFORE converting (conversion drops the objects). This
+    // makes the board attach each pick to the team that actually made it — honoring a non-snake order AND any
+    // traded picks — instead of recomputing a snake order. Set it first so it's live when picks update.
+    const slotMap = slotMapFromSleeperPicks(picks);
     const converted = normalizeLeaguePicks(picks, players);
     if (converted !== picks) {
       pickConvertDone.current = true;
+      if (slotMap) setLiveSlots(slotMap);
       setPicks(converted);
       // In-memory conversion only. We deliberately DON'T persist here: DraftRoom's onUpdate writes to the user
       // object, not the league, so persisting picks through it would be wrong. Converting on each open is cheap.
@@ -14796,6 +14820,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           for (let s = 1; s <= N; s++) { const nm = d.slotNames[s]; if (nm && !/^Team\s+\d+$/.test(nm)) { real++; names.push(nm); } else names.push((cfg.teamNames && cfg.teamNames[s - 1]) || `Team ${s}`); }
           if (real >= Math.ceil(N / 2)) { setLiveTeamNames(names); setTeamNames(names); setNameVersion((v) => v + 1); }
         }
+        // If this league never had the user's slot set (older imports), adopt the real one Sleeper reports so
+        // "your picks" highlight the correct seat instead of defaulting to pick 1.
+        if ((cfg.slot == null || cfg.slot < 1) && d.yourSlot != null && d.yourSlot >= 1) setSyncedSlot(d.yourSlot);
+        // NOTE: we intentionally do NOT apply tradesToOwnerOverrides for a completed draft — the per-pick
+        // liveSlots map (from each pick's real draft_slot) already reflects who actually made every pick,
+        // trades included, and it's the source of truth. Trade overrides are only for projecting FUTURE picks.
       } catch (e) { /* leave fallbacks */ }
     })();
     return () => { alive = false; };
