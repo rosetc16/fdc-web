@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19q";
+const BUILD_TAG = "2026.07.19r";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -7207,7 +7207,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     // Upgrade vs YOUR weakest starter at this position — this DOES use weekly points (it's a lineup call),
     // but only counts when the free agent actually has a game this week (a 0.0 bye isn't a real upgrade).
     const slotN = Math.max(1, effDemand[p.pos] || 1);
-    const myWorstStarter = myByPos[p.pos][slotN - 1] ? myByPos[p.pos][slotN - 1].pts : 0;
+    const myPosList = myByPos[p.pos] || [];
+    const myWorstStarter = myPosList[slotN - 1] ? myPosList[slotN - 1].pts : 0;
     const upgrade = (p.noGame ? 0 : Math.max(0, (p.pts || 0) - myWorstStarter));
     const scarce = (p.pos === "QB" && isSuperflex) || (p.pos === "TE" && (cfg.tePremMult || 0) > 0);
     const needBoost = needByPos[p.pos] === 999 ? 40 : 0;
