@@ -66,13 +66,36 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19l";
+const BUILD_TAG = "2026.07.19n";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
   .replace(/[.,'’]/g, "")
   .replace(/\b(jr|sr|ii|iii|iv|v)\b/g, "")
   .replace(/\s+/g, " ").trim();
+// A league's `picks` should be a DENSE array of internal player ids (indexed by overall pick). But Sleeper
+// drafts (esp. auto-imported dynasty rookie drafts) arrive as an array of OBJECTS ({player_id, name, pick_no,
+// draft_slot, ...}). Those objects render as a BLANK board because the recap expects integer ids. This helper
+// detects that shape and converts it: it maps each Sleeper pick to an internal id by normalized name (the same
+// method the trends importer uses), preserving pick POSITION (draft_slot/pick_no order) and leaving null where a
+// name doesn't resolve, so nothing shifts. Returns the original array unchanged if it's already ids (or empty).
+const looksLikeSleeperPicks = (picks) => Array.isArray(picks) && picks.length > 0 && typeof picks[0] === "object" && picks[0] !== null && (picks[0].player_id != null || picks[0].name != null || picks[0].pick_no != null);
+const normalizeLeaguePicks = (picks, pool) => {
+  if (!looksLikeSleeperPicks(picks)) return picks; // already internal ids (or empty) — nothing to do
+  if (!Array.isArray(pool) || !pool.length) return picks; // no pool yet — leave as-is; caller retries when ready
+  const byName = {}; pool.forEach((p) => { if (p && p.name != null) byName[normName(p.name)] = p.id; });
+  const bySid = {}; pool.forEach((p) => { if (p && p.sid != null) bySid[String(p.sid)] = p.id; });
+  // Order by overall pick number when present so positions are exact; else keep array order.
+  const ordered = picks.slice().sort((a, b) => ((a.pick_no || 0) - (b.pick_no || 0)));
+  return ordered.map((pk) => {
+    if (pk == null) return null;
+    if (typeof pk === "number") return pk; // already an id
+    const bySidHit = pk.player_id != null ? bySid[String(pk.player_id)] : null;
+    if (bySidHit != null) return bySidHit;
+    const byNameHit = byName[normName(pk.name || "")];
+    return byNameHit != null ? byNameHit : null;
+  });
+};
 // Display surname: the last name word, but skipping a trailing generational suffix (Jr., Sr., II–V)
 // and keeping it attached — so "Marvin Harrison Jr." shows "Harrison Jr.", never just "Jr.".
 const SUFFIX_RE = /^(jr|sr|ii|iii|iv|v)\.?$/i;
@@ -5390,13 +5413,19 @@ export default function App() {
     const lg = leagues.find((l) => l.id === leagueId);
     if (!lg) return;
     const mockId = `mock-${Date.now()}`;
-    // If the league has a set draft order (or a fixed slot), the mock inherits it.
-    // If not, randomize the user's slot for this mock so trends can compare draft positions.
+    // Always let the user CHOOSE their slot before a mock starts (they asked for this). We seed a sensible
+    // DEFAULT: the league's fixed slot/order if one is set, otherwise a random seat. Either way the mock
+    // start screen shows a slot picker (see mockSlotPending) so nothing is silently assumed — the default is
+    // just pre-selected. slotRandomized marks "we picked this for you" so the picker explains it.
     const orderSet = Array.isArray(lg.cfg.draftOrder) && lg.cfg.draftOrder.length === (lg.cfg.teams || 12);
+    const hasFixedSlot = lg.cfg.slot != null;
     let mcfg = lg.cfg;
-    if (!orderSet && (lg.cfg.slot == null)) {
+    if (!orderSet && !hasFixedSlot) {
       const randSlot = Math.floor(Math.random() * (lg.cfg.teams || 12)) + 1;
-      mcfg = { ...lg.cfg, slot: randSlot, slotRandomized: true };
+      mcfg = { ...lg.cfg, slot: randSlot, slotRandomized: true, mockSlotPending: true };
+    } else {
+      // Order/slot known — default to it, but still surface the picker so the user can override for this mock.
+      mcfg = { ...lg.cfg, mockSlotPending: true };
     }
     setMockLeague({ id: mockId, mockOf: leagueId, name: `${lg.name} — mock`, cfg: { ...mcfg, mockSeed: (Math.random() * 1e9) | 0 }, picks: [], preds: [] });
     setDraftTab(null); setActiveId(mockId); setRoute("draft");
@@ -5510,13 +5539,19 @@ export default function App() {
         onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} onGuide={() => { setHelpTab("guide"); setRoute("help"); }} onAccount={() => setRoute("account")} onAdmin={() => setRoute("admin")} onSignOut={signOut}
         onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }}
         onDraftTrends={() => setRoute("draftTrends")} onAutoImportSleeper={autoImportSleeper}
-        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onDeleteFun={deleteFunMock} />}
+        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onDeleteFun={deleteFunMock} onDeleteMock={deleteMock} />}
       {route === "leagueHub" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? <LeagueUmbrella user={user} league={lg} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")}
         onOfficial={(id) => { setDraftTab(null); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
         onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }}
         onDeleteMock={deleteMock} onDelete={(id) => { deleteLeague(id); setRoute(user.paid ? "home" : "library"); }}
         onOpenTeamHub={lg.cfg.connect && lg.cfg.connect.leagueId ? () => { setHubLeagueId(lg.cfg.connect.leagueId); setRoute("teamHub"); } : null} /> : null; })()}
-      {route === "teamHub" && user && hubLeagueId && <TeamHub user={user} leagues={leagues} leagueId={hubLeagueId} onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} onUpdate={updateUser} />}
+      {route === "teamHub" && user && hubLeagueId && <Boundary label="in-season hub" fallback={
+        <div style={{ maxWidth: 620, margin: "60px auto", padding: "0 20px", textAlign: "center" }}>
+          <div className="disp" style={{ fontSize: 22, fontWeight: 700, marginBottom: 10 }}>The in-season hub hit a snag</div>
+          <div className="mut" style={{ fontSize: 13.5, lineHeight: 1.5, marginBottom: 18 }}>We couldn't load this league's live hub. This can happen when Sleeper hasn't posted this season's data yet, or the league's roster settings are still syncing. The rest of the app is unaffected.</div>
+          <button className="btn btn-gold" onClick={() => setRoute("home")}>← Back to your leagues</button>
+        </div>
+      }><TeamHub user={user} leagues={leagues} leagueId={hubLeagueId} onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} onUpdate={updateUser} /></Boundary>}
       {route === "teamHub" && hubLeagueId && !user && (
         <HubShell title="Team hub" onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} user={user}><HubLoading /></HubShell>
       )}
@@ -6758,7 +6793,7 @@ function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, onOp
   };
   const toggle = () => { const next = !open; setOpen(next); if (next && linked && sleeperLeagues === null) loadSleeper(); };
 
-  const linkedLeagueIds = new Set(leagues.map((l) => l.connect && l.connect.leagueId).filter(Boolean));
+  const linkedLeagueIds = new Set(leagues.map((l) => (l.connect && l.connect.leagueId) || (l.cfg && l.cfg.connect && l.cfg.connect.leagueId)).filter(Boolean));
   const unimportedSleeper = (sleeperLeagues || []).filter((sl) => !linkedLeagueIds.has(sl.league_id));
 
   const sleeperStatus = (sl) => {
@@ -6813,7 +6848,7 @@ function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, onOp
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontWeight: 700, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.name}</div>
-                      <div className="mut" style={{ fontSize: 11 }}>{l.cfg.teams || 12}-team · {(l.cfg.type || "redraft")}{l.cfg.sf ? " · SF" : ""}{l.connect && l.connect.platform === "sleeper" ? " · Sleeper" : ""}</div>
+                      <div className="mut" style={{ fontSize: 11 }}>{l.cfg.teams || 12}-team · {(l.cfg.type || "redraft")}{l.cfg.sf ? " · SF" : ""}{((l.connect && l.connect.platform === "sleeper") || (l.cfg && l.cfg.connect && l.cfg.connect.platform === "sleeper")) ? " · Sleeper" : ""}</div>
                     </div>
                     <StatusPill {...st} />
                     <i className="ti ti-chevron-right team-arrow" style={{ fontSize: 15, color: "var(--gold)", flexShrink: 0 }} aria-hidden="true" />
@@ -7047,7 +7082,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   if (err) return <HubShell title="Team hub" onBack={onBack} onHome={onHome} onSignOut={onSignOut} user={user}><div className="panel" style={{ padding: 20, margin: 20 }}><div style={{ color: "var(--red)", marginBottom: 10 }}>{err}</div><button className="btn" onClick={onBack}>← Back</button></div></HubShell>;
   if (!data || !cfg) return <HubShell title="Team hub" onBack={onBack} onHome={onHome} onSignOut={onSignOut} user={user}><div className="mut" style={{ padding: 40, textAlign: "center" }}>No data for this league.</div></HubShell>;
 
-  if (data.myRosterId == null) {
+  if (data.myRosterId == null || !myTeam) {
     return <HubShell title={data.leagueName || "Team hub"} onBack={onBack} onHome={onHome} onSignOut={onSignOut} user={user}>
       <div className="panel" style={{ padding: 20, margin: 20 }}>
         <div style={{ fontWeight: 700, marginBottom: 6 }}>We couldn't find your team in this league.</div>
@@ -8050,7 +8085,7 @@ function HubShell({ title, onBack, onHome, onSignOut, user, children }) {
   );
 }
 
-function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onOpenMock, onDeleteFun, onDraftTrends, onAutoImportSleeper }) {
+function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onOpenMock, onDeleteFun, onDeleteMock, onDraftTrends, onAutoImportSleeper }) {
   const totalMocks = leagues.reduce((s, l) => s + (l.mocks || []).length, 0) + funMocks.length;
   const inProgress = leagues.filter((l) => l.picks.length > 0 && l.picks.length < (l.cfg.teams || 12) * l.cfg.rounds);
   // INCOMPLETE MOCKS surfaced for easy resume — the "hard to find an unfinished mock" fix. A mock is
@@ -8381,7 +8416,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
               const visible = collapsible && !showAllLeagues ? shown.slice(0, 2) : shown;
               return visible.map((l) => {
               const st = leagueStatus(l);
-              const isSleeper = !!(l.connect && l.connect.leagueId);
+              const isSleeper = !!((l.connect && l.connect.leagueId) || (l.cfg && l.cfg.connect && l.cfg.connect.leagueId));
               const mocks = (l.mocks || []).length;
               const draftLive = l.picks.length > 0 && st.pct < 100;
               return (
@@ -8411,7 +8446,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                       </button>
                     )}
                     {isSleeper && onOpenHub && (
-                      <button onClick={() => onOpenHub({ league_id: l.connect.leagueId })} style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--blue)", background: "rgba(107,168,229,.10)", color: "var(--blue)", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>
+                      <button onClick={() => onOpenHub({ league_id: (l.connect && l.connect.leagueId) || (l.cfg && l.cfg.connect && l.cfg.connect.leagueId) })} style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--blue)", background: "rgba(107,168,229,.10)", color: "var(--blue)", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>
                         <i className="ti ti-user-heart" style={{ fontSize: 14 }} aria-hidden="true" />My Team
                       </button>
                     )}
@@ -8658,6 +8693,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                     <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                       <button className="btn btn-mini btn-gold" onClick={openThis}><i className="ti ti-player-play" style={{ fontSize: 11, marginRight: 4 }} aria-hidden="true" />{complete ? "Review" : "Resume"}</button>
                       {m._src === "standalone" && onDeleteFun && <button className="btn btn-mini" onClick={() => onDeleteFun(m.id)} title="Delete this mock"><i className="ti ti-trash" style={{ fontSize: 12 }} aria-hidden="true" /></button>}
+                      {m._src === "league" && onDeleteMock && <button className="btn btn-mini" onClick={() => onDeleteMock(m._leagueId, m.id)} title="Delete this mock"><i className="ti ti-trash" style={{ fontSize: 12 }} aria-hidden="true" /></button>}
                     </div>
                   </div>
                 );
@@ -13629,6 +13665,24 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       return q;
     });
   }, [cfg, adpVersion, dataVersion, connectedPlatform, draftMode, league.snap]);
+
+  // If this league's picks arrived from Sleeper as OBJECTS (auto-imported dynasty rookie/startup drafts), the
+  // board would render blank because the recap expects internal player ids. Once the player pool is built,
+  // convert them in place (by name/sid, preserving pick position). Runs once when a conversion is actually
+  // needed; after it the picks are ids and looksLikeSleeperPicks is false so it won't loop.
+  const pickConvertDone = useRef(false);
+  useEffect(() => {
+    if (pickConvertDone.current) return;
+    if (!players || !players.length) return;
+    if (!looksLikeSleeperPicks(picks)) { pickConvertDone.current = true; return; }
+    const converted = normalizeLeaguePicks(picks, players);
+    if (converted !== picks) {
+      pickConvertDone.current = true;
+      setPicks(converted);
+      // In-memory conversion only. We deliberately DON'T persist here: DraftRoom's onUpdate writes to the user
+      // object, not the league, so persisting picks through it would be wrong. Converting on each open is cheap.
+    }
+  }, [players, picks]);
   // When the pool identity changes (fallback → live data), picks/preds stored as ids must be re-pointed.
   // CRITICAL: for CONNECTED Sleeper drafts the live sync is the source of truth and re-derives picks from
   // Sleeper BY NAME on every poll, so we must NOT touch picks here — doing so races the sync and makes the
@@ -16264,6 +16318,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     <button key={m} className="btn btn-mini" title={tip} style={{ borderColor: draftMode === m ? "var(--gold)" : "var(--line)", color: draftMode === m ? "var(--gold)" : "var(--ink)", fontWeight: draftMode === m ? 700 : 400 }} onClick={() => setDraftMode(m)}>{lbl}</button>
                   ))}
                 </div>
+                {isMock && (
+                  <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center", flexWrap: "wrap" }}>
+                    <span className="mut" style={{ fontSize: 11.5, alignSelf: "center" }}><i className="ti ti-map-pin" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Draft from:</span>
+                    <select className="gs" value={cfg.slot || 1} onChange={(e) => onSettings({ ...cfg, slot: +e.target.value, slotRandomized: false })}>
+                      {Array.from({ length: cfg.teams || 12 }, (_, i) => <option key={i} value={i + 1}>Pick {i + 1}</option>)}
+                    </select>
+                    <button className="btn btn-mini" title="Pick a random seat" onClick={() => onSettings({ ...cfg, slot: Math.floor(Math.random() * (cfg.teams || 12)) + 1, slotRandomized: true })}><i className="ti ti-arrows-shuffle" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Random</button>
+                    <span className="mut" style={{ fontSize: 11 }}>{cfg.slotRandomized ? "(random seat — change it to draft from a specific spot)" : "Confirm your seat, or change it for this mock."}</span>
+                  </div>
+                )}
               </div>
               <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
                 {autoSim && <label className="mut" style={{ fontSize: 11.5, display: "flex", alignItems: "center", gap: 5 }}>
@@ -16318,7 +16382,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             </div>
           </div>
         )}
-        {isMock && hasSlot && cfg.slotRandomized && picks.length === 0 && (
+        {isMock && hasSlot && cfg.slotRandomized && started && picks.length === 0 && (
           <div style={{ padding: "12px 14px 0" }}>
             <div className="panel" style={{ padding: 12, borderColor: "var(--gold)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", background: "#16120A" }}>
               <i className="ti ti-dice" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
