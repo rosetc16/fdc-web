@@ -44,7 +44,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19i";
+const BUILD_TAG = "2026.07.19j";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5909,6 +5909,9 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
   // entirely on Sleeper must still unlock the post-draft tiles (View My Team / View the Draft).
   const connStatus = (league.cfg.connect && league.cfg.connect.status) || (league.connect && league.connect.status) || null;
   const st = (league.picks.length >= total || connStatus === "complete") ? "complete" : league.picks.length > 0 ? "progress" : "fresh";
+  // Dynasty/keeper leagues get a hub tile framed around ongoing roster/free-agent/trade tracking (the reason
+  // a dynasty manager opens the app in-season), rather than "view my team" which undersells the league-wide view.
+  const isDynastyish = league.cfg.type === "dynasty" || league.cfg.type === "keeper" || !!league.cfg.keeper;
   const mocks = league.mocks || [];
   const keepers = league.cfg.keepers || [];
   const [showMocks, setShowMocks] = useState(false);
@@ -5986,8 +5989,8 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
           {st === "complete" && connectedId && onOpenTeamHub && (
             <button className="hubtile" onClick={onOpenTeamHub} style={{ textAlign: "left", background: "rgba(79,209,161,.07)", border: "1px solid var(--green)", borderRadius: 12, padding: 18, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)" }}>
               <i className="ti ti-users" style={{ fontSize: 24, color: "var(--green)" }} aria-hidden="true" />
-              <div className="disp" style={{ fontSize: 17, fontWeight: 700, margin: "9px 0 3px" }}>View My Team</div>
-              <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>Your in-season hub — this week's matchup, roster, and league standings.</div>
+              <div className="disp" style={{ fontSize: 17, fontWeight: 700, margin: "9px 0 3px" }}>{isDynastyish ? "In-Season Hub — Rosters, Free Agents & Trades" : "View My Team"}</div>
+              <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>{isDynastyish ? "Every team's current roster, the best free agents on the wire, this week's matchup, and standings — live from Sleeper. Your tool for keeping tabs on leaguemates and finding trades." : "Your in-season hub — this week's matchup, roster, and league standings, plus every team's roster and the top free agents."}</div>
             </button>
           )}
           <button className="hubtile" onClick={() => onOfficial(league.id)} style={{ textAlign: "left", background: "rgba(242,182,60,.07)", border: "1px solid var(--gold)", borderRadius: 12, padding: 18, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)" }}>
