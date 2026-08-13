@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19r";
+const BUILD_TAG = "2026.07.19s";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13900,6 +13900,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     return { availRank: idx + 1, next, drop, startersLeft, starterLine, isLastStarter: (p.posRank || 99) <= starterLine && startersLeft <= 1 };
   };
   const done = picks.length >= TOTAL;
+  // ROOKIE-DRAFT DETECTION. In a dynasty rookie draft, players are graded against their STARTUP ADP (where
+  // they'd go in a full startup among veterans) — but a rookie taken 1.01 in a rookie draft has a startup ADP
+  // deep in the pool, so EVERY pick reads as a massive "reach" and the whole board turns red. That grading is
+  // meaningless here. Detect it: a league flagged rookie-only, OR a dynasty/keeper draft where the drafted,
+  // resolvable players are overwhelmingly rookies. When true, we suppress the steal/reach coloring + pick-value
+  // numbers on the board (there's no rookie ADP to grade against), rather than paint a misleading all-red board.
+  const isRookieDraft = useMemo(() => {
+    if (cfg.type === "rookie") return true;
+    if (!isDynastyCfg(cfg) && !cfg.keeper) return false;
+    const drafted = (picks || []).map((pk) => (pk != null ? players[pk] : null)).filter(Boolean);
+    if (drafted.length < 4) return false;
+    const rookies = drafted.filter((p) => p.rookie).length;
+    return rookies / drafted.length >= 0.6; // ≥60% rookies → it's a rookie draft
+  }, [picks, players, cfg]);
   // ===== SNAPSHOT WRITER: the moment a draft STARTS (first pick lands), freeze draft-day values
   // (ADP/VBD/value/proj) for every drafted player plus the top ~450 of the board, and persist it on the
   // league/mock record. The players memo above overlays this from then on — which stabilizes the draft
@@ -14926,7 +14940,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         for (const pk of (d.picks || [])) {
           const id = nameToId[normName(pk.name)];
           const o = (pk.pick_no != null && pk.pick_no > 0) ? pk.pick_no - 1 : mapped.length;
-          if (pk.draft_slot) slotTeam[o] = pk.draft_slot - 1;
+          // Prefer team_slot (the team that OWNED the pick — trades included) over the physical draft_slot.
+          const ownerSlot = (pk.team_slot != null) ? pk.team_slot : pk.draft_slot;
+          if (ownerSlot) slotTeam[o] = ownerSlot - 1;
           if (id == null) {
             // The feed has a pick here but we can't match the name to our player pool — an unusual name, a
             // player we don't carry, or a commissioner-entered filler entry. Previously we `continue`d, which
@@ -18212,8 +18228,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     // Steal/reach highlight: tint the cell green (steal) or red (reach) when its toggle is on,
                     // in THREE shades by magnitude — deeper = a bigger steal/reach, lighter = minimal but real.
                     const isRealPick = p && !isProjected && !isKeeper;
-                    const showSteal = isRealPick && boardHi.steals && v >= 8;
-                    const showReach = isRealPick && boardHi.reaches && v <= -8;
+                    const showSteal = isRealPick && !isRookieDraft && boardHi.steals && v >= 8;
+                    const showReach = isRealPick && !isRookieDraft && boardHi.reaches && v <= -8;
                     // Is steal/reach highlighting active at all right now? When it is, we change how YOUR picks are
                     // marked: instead of the gold background shade (which would fight the green/red tint), every
                     // one of your picks gets a BRIGHT gold BORDER so it's always easy to spot — and the inside is
@@ -18290,7 +18306,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               </span>
                               <span style={{ display: "block", marginTop: 2, whiteSpace: "normal", overflowWrap: "anywhere", lineHeight: 1.12 }}>{p.name}</span>
                             </div>
-                            {showBoardVal && !isProjected && !isKeeper && Math.abs(v) > 0 && (
+                            {showBoardVal && !isProjected && !isKeeper && !isRookieDraft && Math.abs(v) > 0 && (
                               <div className="val num" style={{ color: v > 0 ? "var(--green)" : "var(--red)" }}>{v > 0 ? `+${v}` : v}</div>
                             )}
                           </>
