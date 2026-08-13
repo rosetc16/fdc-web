@@ -8,7 +8,13 @@ import { api, hasBackend, setToken } from "./api.js";
 // keeps working. `label` names the section in the fallback; `fallback` optionally overrides the message.
 class Boundary extends React.Component {
   constructor(props) { super(props); this.state = { failed: false, msg: "" }; }
-  static getDerivedStateFromError(error) { return { failed: true, msg: (error && error.message) ? String(error.message) : "Unknown error" }; }
+  static getDerivedStateFromError(error) {
+    let msg = (error && error.message) ? String(error.message) : "Unknown error";
+    // Include the first meaningful stack frame (function name) — with minified builds this is a short symbol,
+    // but combined with the message it narrows the crash to a specific function far faster than the message alone.
+    try { const st = (error && error.stack) ? String(error.stack).split("\n").map((l) => l.trim()).filter((l) => /^at /.test(l))[0] : ""; if (st) msg += ` · ${st.replace(/^at /, "").split(" (")[0]}`; } catch (e) {}
+    return { failed: true, msg };
+  }
   componentDidCatch(error, info) { try { console.error(`[FDC] section "${this.props.label || "section"}" render error:`, error, info); } catch (e) {} }
   render() {
     if (this.state.failed) {
@@ -67,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19o";
+const BUILD_TAG = "2026.07.19p";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -106,7 +112,9 @@ const slotMapFromSleeperPicks = (picks) => {
   const ordered = picks.slice().sort((a, b) => ((a.pick_no || 0) - (b.pick_no || 0)));
   const map = {}; let any = false;
   ordered.forEach((pk, o) => {
-    if (pk && typeof pk === "object" && pk.draft_slot != null) { map[o] = pk.draft_slot - 1; any = true; }
+    // Prefer team_slot (the team that OWNED the pick — trade-accurate); fall back to draft_slot (physical seat).
+    const slot = (pk && typeof pk === "object") ? (pk.team_slot != null ? pk.team_slot : pk.draft_slot) : null;
+    if (slot != null) { map[o] = slot - 1; any = true; }
   });
   return any ? map : null;
 };
@@ -1790,6 +1798,7 @@ function buildPlayers(cfg) {
   const rookieOnly = cfg.type === "rookie"; // rookie-only draft → pool is JUST this year's rookies
   // IDP players only enter the pool when the league actually starts defensive slots.
   const SRC = RAW.filter((r) => {
+    if (!Array.isArray(r) || r.length < 2) return false; // skip a malformed/empty row rather than crash on r[0]/r[1]
     if (!useIdp && IDP_POS.includes(r[1])) return false;
     if (exclude && META[r[0]] && META[r[0]].rookie) return false;
     // Rookie drafts draft ONLY incoming rookies — veterans (Bijan, CMC, Chase, Allen) are already on
@@ -6996,13 +7005,23 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   const poolBySid = React.useMemo(() => {
     if (!cfg) return null;
     try {
+      // Reset ALL module-global engine state the scoring helpers read. The hub is NOT a draft, but it calls
+      // the same pure-ish helpers (buildPlayers, posQualityScore, etc.) that read globals like TEAMS, ORDER,
+      // LIVE_PICK_TEAM and PICK_OWNER. If a draft was opened before the hub, those globals were left set (e.g.
+      // LIVE_PICK_TEAM from a completed draft's slot map) and leaked in here, corrupting hub scoring and
+      // crashing on a stale index. Reset them the same way every other buildPlayers caller does.
+      setTeams(cfg.teams || 12);
       setSpec(cfg.start);
+      setOrder("snake");
+      setPickTrades(null);
+      setLivePickTeams(null);
+      setKeeperAdds({});
       const pool = buildPlayers(cfg);
       const bySid = new Map();
       pool.forEach((p) => { if (p.sid != null) bySid.set(String(p.sid), p); });
       return { bySid, pool };
     } catch (e) { return null; }
-  }, [cfg && JSON.stringify(cfg.start), cfg && cfg.sf, cfg && cfg.tePremMult, data && data.week]);
+  }, [cfg && JSON.stringify(cfg.start), cfg && cfg.sf, cfg && cfg.tePremMult, cfg && cfg.teams, data && data.week]);
 
   React.useEffect(() => {
     let alive = true;
@@ -7812,7 +7831,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                           <td onMouseEnter={nameTip} onMouseLeave={nameTip ? hideTip : undefined} style={{ padding: "6px", fontWeight: st.isMe ? 700 : 500, color: st.isMe ? "var(--gold)" : "var(--ink)", cursor: nameTip ? "help" : "default" }}>
                             {st.rank}. {st.teamName}{st.isMe ? " ★" : ""}{st.ownerName ? <span className="mut" style={{ fontSize: 10, fontWeight: 400 }}> (@{st.ownerName})</span> : null}
                           </td>
-                          <td style={{ textAlign: "center", padding: "6px" }}>{st.record.wins}-{st.record.losses}{st.record.ties ? `-${st.record.ties}` : ""}</td>
+                          <td style={{ textAlign: "center", padding: "6px" }}>{st.record ? `${st.record.wins}-${st.record.losses}${st.record.ties ? `-${st.record.ties}` : ""}` : "—"}</td>
                           <td style={{ textAlign: "center", padding: "6px", color: inPlayoffs ? "var(--green)" : "var(--mut)", fontWeight: 600 }}>{pj ? ordinal(pj.projRank) : "—"}</td>
                           <td style={{ textAlign: "center", padding: "6px" }}>{pr ? ordinal(pr) : "—"}</td>
                           <td style={{ textAlign: "right", padding: "6px" }} className="num">{lt.power != null ? lt.power.toFixed(2) : "—"}</td>
@@ -13369,6 +13388,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [syncedSlot, setSyncedSlot] = useState(null); // user's real slot pulled from Sleeper (yourSlot) when cfg.slot is missing
   const hasSlot = (cfg.slot != null && cfg.slot >= 1) || (syncedSlot != null && syncedSlot >= 1);
   const userIdx = (cfg.slot != null && cfg.slot >= 1) ? cfg.slot - 1 : (syncedSlot != null && syncedSlot >= 1 ? syncedSlot - 1 : 0);
+  // For VISUAL "your team" highlighting only: -1 when the slot is genuinely unknown, so we never paint team 0
+  // (the first pick) as "you" just because the engine falls back to index 0. The engine still uses userIdx.
+  const highlightIdx = hasSlot ? userIdx : -1;
 
   const [picks, setPicks] = useState(league.picks || []);
   const [preds, setPreds] = useState(league.preds || []);
@@ -18121,12 +18143,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <div className="bhead" style={{ gridTemplateColumns: `40px repeat(${TEAMS}, minmax(112px,1fr))`, minWidth: 60 + TEAMS * 116 }}>
               <div className="bteam" style={{ background: "transparent", border: "none" }} />
               {TEAM_NAMES.map((n, i) => (
-                <div key={i} className={`bteam${i === userIdx ? " you" : ""}`} title={TEAM_OWNERS[i] ? `${n} — @${TEAM_OWNERS[i]}` : n}
-                  onMouseEnter={TEAM_OWNERS[i] ? (e) => showTip(e, [{ kind: "take", tone: i === userIdx ? "good" : "neutral", x: n }, { t: "Sleeper user", x: `@${TEAM_OWNERS[i]}` }]) : undefined}
-                  onClick={TEAM_OWNERS[i] ? (e) => showTip(e, [{ kind: "take", tone: i === userIdx ? "good" : "neutral", x: n }, { t: "Sleeper user", x: `@${TEAM_OWNERS[i]}` }]) : undefined}
+                <div key={i} className={`bteam${i === highlightIdx ? " you" : ""}`} title={TEAM_OWNERS[i] ? `${n} — @${TEAM_OWNERS[i]}` : n}
+                  onMouseEnter={TEAM_OWNERS[i] ? (e) => showTip(e, [{ kind: "take", tone: i === highlightIdx ? "good" : "neutral", x: n }, { t: "Sleeper user", x: `@${TEAM_OWNERS[i]}` }]) : undefined}
+                  onClick={TEAM_OWNERS[i] ? (e) => showTip(e, [{ kind: "take", tone: i === highlightIdx ? "good" : "neutral", x: n }, { t: "Sleeper user", x: `@${TEAM_OWNERS[i]}` }]) : undefined}
                   onMouseLeave={TEAM_OWNERS[i] ? hideTip : undefined} style={{ cursor: TEAM_OWNERS[i] ? "help" : "default" }}>
-                  <div className="nm" style={{ color: i === userIdx ? "var(--gold)" : "var(--ink)" }}>{i === userIdx ? (TEAM_NAMES[i] || "Your team") : n}</div>
-                  <div className="sub mut">{i === userIdx ? "you" : `slot ${i + 1}`}</div>
+                  <div className="nm" style={{ color: i === highlightIdx ? "var(--gold)" : "var(--ink)" }}>{i === highlightIdx ? (TEAM_NAMES[i] || "Your team") : n}</div>
+                  <div className="sub mut">{i === highlightIdx ? "you" : `slot ${i + 1}`}</div>
                 </div>
               ))}
             </div>
