@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19p";
+const BUILD_TAG = "2026.07.19q";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -7300,7 +7300,15 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   const flexShLg = flexShareOf(cfg);
   // Replacement level per position from this league's whole player universe.
   const replLg = slotBaselines(poolBySid && poolBySid.pool ? poolBySid.pool : [], cfg, (data.teams || []).length || cfg.teams);
-  const leagueTeams = (data.teams || []).map((t) => {
+  // ---- League-wide analytics (wrapped) ----
+  // These aggregates fan out over every team's Sleeper roster and run the full scoring stack. A single
+  // malformed team/roster/record from Sleeper (seen in the wild for some off-season dynasty leagues) could
+  // throw deep inside and white-screen the whole hub. Compute them defensively: if anything throws, fall back
+  // to empty analytics so the hub still renders (the Summary/League tabs just show less), rather than crashing.
+  let leagueTeams = [], powerRanked = [], powerRankById = {}, projRanked = [], myPosRank = {}, strengths = [], weaknesses = [];
+  let maxPower = 1, playoffSpots = 4, myProj = null, myPowerRank = null, leverage = null, totalGames = 0;
+  try {
+    leagueTeams = (data.teams || []).map((t) => {
     const roster = resolve(t.players);
     const lu = lineupSlots(roster, cfg.sf);
     const power = Math.round(lu.slots.reduce((s, sl) => s + (sl.p ? sl.p.pts : 0), 0) * 10) / 10;
@@ -7323,12 +7331,12 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   });
   // Power rankings: overall ROSTER STRENGTH (quality × quantity across positions) — a different lens than
   // projected points, so it stays distinct from projected standings even before any games are played.
-  const powerRanked = leagueTeams.slice().map((t) => ({ ...t, powerScore: t.posQuality.QB + t.posQuality.RB + t.posQuality.WR + t.posQuality.TE })).sort((a, b) => b.powerScore - a.powerScore).map((t, i) => ({ ...t, powerRank: i + 1 }));
-  const powerRankById = {}; powerRanked.forEach((t) => { powerRankById[t.rosterId] = t.powerRank; });
+  powerRanked = leagueTeams.slice().map((t) => ({ ...t, powerScore: t.posQuality.QB + t.posQuality.RB + t.posQuality.WR + t.posQuality.TE })).sort((a, b) => b.powerScore - a.powerScore).map((t, i) => ({ ...t, powerRank: i + 1 }));
+  powerRanked.forEach((t) => { powerRankById[t.rosterId] = t.powerRank; });
   // Projected final standings: blend current wins with power (a rough season-long strength signal).
-  const totalGames = (leagueTeams[0] && leagueTeams[0].record) ? (leagueTeams[0].record.wins + leagueTeams[0].record.losses + (leagueTeams[0].record.ties || 0)) : 0;
-  const maxPower = Math.max(1, ...leagueTeams.map((t) => t.power));
-  const projRanked = leagueTeams.slice().map((t) => {
+  totalGames = (leagueTeams[0] && leagueTeams[0].record) ? (leagueTeams[0].record.wins + leagueTeams[0].record.losses + (leagueTeams[0].record.ties || 0)) : 0;
+  maxPower = Math.max(1, ...leagueTeams.map((t) => t.power));
+  projRanked = leagueTeams.slice().map((t) => {
     // expected win rate from power (relative to field) blended toward .5
     const powerWinPct = 0.5 + 0.5 * ((t.power - maxPower / 1) / maxPower); // rough
     const currentPct = totalGames > 0 ? t.wins / totalGames : 0.5;
@@ -7336,11 +7344,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     return { ...t, projWinPct: blend };
   }).sort((a, b) => b.projWinPct - a.projWinPct).map((t, i) => ({ ...t, projRank: i + 1 }));
   // Playoff cut = top half (standard). Leverage: how much this week's result swings your playoff standing.
-  const playoffSpots = Math.max(4, Math.round(leagueTeams.length / 2));
-  const myProj = projRanked.find((t) => t.isMe);
-  const myPowerRank = myProj ? powerRankById[myProj.rosterId] : null;
+  playoffSpots = Math.max(4, Math.round(leagueTeams.length / 2));
+  myProj = projRanked.find((t) => t.isMe);
+  myPowerRank = myProj ? powerRankById[myProj.rosterId] : null;
   // "Must-win" leverage this week: higher when you're near the playoff bubble.
-  let leverage = null;
   if (myProj) {
     const distToCut = Math.abs(myProj.projRank - playoffSpots);
     leverage = distToCut <= 1 ? "high" : distToCut <= 3 ? "medium" : "low";
@@ -7349,7 +7356,6 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   // ---- Strengths & weaknesses (for the Summary tab) ----
   // Rank each of your positions against the league. We already have per-team positional strength in
   // `powerRanked` (posStrength) — turn my ranks into a strong/solid/thin verdict per position.
-  const myPosRank = {};
   POS.forEach((pos) => {
     // Use the SHARED quality scorer (same as the league tab and the draft app) so the rank shown here matches
     // everywhere. Previously this ranked by raw starter points (posStrength), which disagreed with the league
@@ -7358,8 +7364,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     const idx = sorted.findIndex((t) => t.rosterId === data.myRosterId);
     myPosRank[pos] = { rank: idx >= 0 ? idx + 1 : null, of: leagueTeams.length };
   });
-  const strengths = POS.filter((pos) => myPosRank[pos].rank && myPosRank[pos].rank <= Math.ceil(leagueTeams.length / 3));
-  const weaknesses = POS.filter((pos) => myPosRank[pos].rank && myPosRank[pos].rank > Math.ceil((2 * leagueTeams.length) / 3));
+  strengths = POS.filter((pos) => myPosRank[pos] && myPosRank[pos].rank && myPosRank[pos].rank <= Math.ceil(leagueTeams.length / 3));
+  weaknesses = POS.filter((pos) => myPosRank[pos] && myPosRank[pos].rank && myPosRank[pos].rank > Math.ceil((2 * leagueTeams.length) / 3));
+  } catch (analyticsErr) {
+    // A malformed team/roster from Sleeper threw inside the analytics stack. Fall back to empty so the hub
+    // still renders; POS keys are seeded so downstream myPosRank[pos] reads never crash.
+    try { console.error("[FDC] hub analytics failed — rendering without league-wide stats:", analyticsErr); } catch (e) {}
+    POS.forEach((pos) => { if (!myPosRank[pos]) myPosRank[pos] = { rank: null, of: 0 }; });
+  }
   // Top 3 free-agent adds for the summary (only genuine adds).
   const summaryFA = faScored.filter((f) => f.verdict === "add").slice(0, 3);
   // Injury + bye concerns among your starters/roster.
@@ -14826,7 +14838,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // sync below stops once `done`, so without this a finished league would never load owner names).
   useEffect(() => {
     if (!(connectedPlatform === "sleeper" && cfg.connect && cfg.connect.leagueId && hasBackend)) return;
-    if (TEAM_OWNERS.length && TEAM_OWNERS.some(Boolean)) return; // already have them
+    // Fetch if we still need owners/names OR the trade-accurate slot map (liveSlots). A completed draft often
+    // already has owners cached but NOT liveSlots (its stored picks were flattened to IDs by an old build), so
+    // we must still fetch to rebuild correct per-pick team ownership.
+    const haveOwners = TEAM_OWNERS.length && TEAM_OWNERS.some(Boolean);
+    const haveSlotMap = liveSlots && Object.keys(liveSlots).length > 0;
+    if (haveOwners && haveSlotMap) return;
     let alive = true;
     (async () => {
       try {
@@ -14845,6 +14862,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         // If this league never had the user's slot set (older imports), adopt the real one Sleeper reports so
         // "your picks" highlight the correct seat instead of defaulting to pick 1.
         if ((cfg.slot == null || cfg.slot < 1) && d.yourSlot != null && d.yourSlot >= 1) setSyncedSlot(d.yourSlot);
+        // TRADE-ACCURATE OWNERSHIP: build the pick→team map from the freshly-fetched draft picks (each carries
+        // team_slot = the team that actually owned the pick, trades included). This is essential because a
+        // completed draft opened in an earlier build had its stored picks converted to plain IDs and autosaved,
+        // destroying the original draft_slot/team_slot — so the in-place convert-effect can't recover the map.
+        // Re-fetching here restores correct team attribution regardless of what's stored locally.
+        if (Array.isArray(d.picks) && d.picks.length && looksLikeSleeperPicks(d.picks)) {
+          const freshMap = slotMapFromSleeperPicks(d.picks);
+          if (freshMap && Object.keys(freshMap).length) setLiveSlots(freshMap);
+        }
         // NOTE: we intentionally do NOT apply tradesToOwnerOverrides for a completed draft — the per-pick
         // liveSlots map (from each pick's real draft_slot) already reflects who actually made every pick,
         // trades included, and it's the source of truth. Trade overrides are only for projecting FUTURE picks.
