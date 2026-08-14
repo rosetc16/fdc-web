@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19u";
+const BUILD_TAG = "2026.07.19v";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -15602,7 +15602,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         ["QB", "RB", "WR", "TE"].forEach((pos) => { need[pos] = (req[pos] || 0) - (counts[t][pos] || 0); });
         ctx = { need };
       }
-      const val = pickValue(p, o, cfg, ctx);
+      const val = pickValue(p, o, cfg, rookieAdpById ? { ...(ctx || {}), rookieAdp: rookieAdpById } : ctx);
       // MARKET-ONLY value: the same score with the need term switched off.
       //
       // These are two genuinely different questions and they were being answered with one number:
@@ -15614,11 +15614,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       // every roster is empty, so every pick collects the full need bonus. A player taken exactly at his ADP
       // scored ~+20 with ~+0.3 of that coming from the market — i.e. the list was ranking early picks, not
       // steals. `mval` is what the steals/reaches lists use; `val` still grades the teams.
-      const mval = pickValue(p, o, cfg, null);
+      // On a rookie draft, grade against rookie-relative ADP (not deep startup ADP) so a rookie draft doesn't
+      // read as all-reaches everywhere the summary looks.
+      const mval = pickValue(p, o, cfg, rookieAdpById ? { rookieAdp: rookieAdpById } : null);
       if (p && p.pos && counts[t] && counts[t][p.pos] != null) counts[t][p.pos]++;
       return { p, o, t, val, mval };
     });
-  }, [picks, players, cfg]);
+  }, [picks, players, cfg, rookieAdpById]);
   const valByTeamRaw = useMemo(() => Array.from({ length: TEAMS }, (_, i) => graded.filter((g) => g.t === i).reduce((s, g) => s + g.val, 0)), [graded]);
   // The raw per-pick value model is intentionally asymmetric (reaches sting more) and early-weighted, so
   // its LEAGUE SUM skews negative — most teams would show a negative total even in a normal draft. For the
@@ -18764,9 +18766,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
           <div className="panel" style={{ padding: 14 }}>
             <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Biggest steals <span className="mut" style={{ fontSize: 12 }}>{summaryTeam == null ? "(league-wide, curve-weighted)" : `(${summaryTeam === userIdx ? "your team" : TEAM_NAMES[summaryTeam]})`}</span></div>
-            <SummaryTable rows={graded.filter((g) => summaryTeam == null || g.t === summaryTeam).slice().sort((a, b) => b.mval - a.mval).filter((g) => g.mval > 0).slice(0, summaryExpand ? 40 : 8).map((g) => ({ ...g, val: g.mval }))} userIdx={userIdx} focusIdx={focusIdx} />
+            <SummaryTable rows={graded.filter((g) => summaryTeam == null || g.t === summaryTeam).slice().sort((a, b) => b.mval - a.mval).filter((g) => g.mval > 0).slice(0, summaryExpand ? 40 : 8).map((g) => ({ ...g, val: g.mval }))} userIdx={userIdx} focusIdx={focusIdx} rookieAdp={rookieAdpById || undefined} />
             <div className="disp" style={{ fontSize: 18, fontWeight: 700, margin: "14px 0 8px" }}>Biggest reaches</div>
-            <SummaryTable rows={graded.filter((g) => summaryTeam == null || g.t === summaryTeam).slice().sort((a, b) => a.mval - b.mval).filter((g) => g.mval < 0).slice(0, summaryExpand ? 40 : 8).map((g) => ({ ...g, val: g.mval }))} userIdx={userIdx} focusIdx={focusIdx} />
+            <SummaryTable rows={graded.filter((g) => summaryTeam == null || g.t === summaryTeam).slice().sort((a, b) => a.mval - b.mval).filter((g) => g.mval < 0).slice(0, summaryExpand ? 40 : 8).map((g) => ({ ...g, val: g.mval }))} userIdx={userIdx} focusIdx={focusIdx} rookieAdp={rookieAdpById || undefined} />
             <button className="btn btn-mini" style={{ marginTop: 10, width: "100%" }} onClick={() => setSummaryExpand((s) => !s)}>{summaryExpand ? "Show less" : "Show more"}</button>
           </div>
 
@@ -19809,22 +19811,24 @@ function PosRankGrid({ grid, userIdx, teamNames, posColor, showTip, hideTip, ran
   );
 }
 
-function SummaryTable({ rows, userIdx, focusIdx }) {
+function SummaryTable({ rows, userIdx, focusIdx, rookieAdp }) {
   if (!rows.length) return <div className="mut" style={{ fontSize: 12.5 }}>Nothing notable yet — the board is behaving.</div>;
   const hi = focusIdx != null ? focusIdx : userIdx;
+  const adpOf = (p) => (rookieAdp && p.id != null && rookieAdp[p.id] != null ? rookieAdp[p.id] : p.adp);
   return (
     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
       <thead><tr className="mut" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em" }}>
-        <th style={{ textAlign: "left", paddingBottom: 4 }}>Player</th><th className="num">Pick</th><th style={{ textAlign: "left", paddingLeft: 8 }}>By</th><th className="num">ADP</th><th className="num">Value</th>
+        <th style={{ textAlign: "left", paddingBottom: 4 }}>Player</th><th className="num">Pick</th><th style={{ textAlign: "left", paddingLeft: 8 }}>By</th><th className="num">{rookieAdp ? "Rk ADP" : "ADP"}</th><th className="num">Value</th>
       </tr></thead>
       <tbody>
         {rows.map((g) => {
+          const adpV = adpOf(g.p);
           return (
           <tr key={g.o}>
             <td style={{ padding: "3px 6px 3px 0" }}><span className="posdot" style={{ background: POS_COLOR[g.p.pos] }} /><b>{g.p.name}</b></td>
             <td className="num" style={{ textAlign: "right" }}>{overallPick(g.o)}<span className="mut" style={{ fontSize: 10.5, marginLeft: 4 }}>({pickLabel(g.o)})</span></td>
             <td style={{ color: g.t === hi ? "var(--gold)" : "var(--ink)", fontWeight: g.t === hi ? 700 : 400, paddingLeft: 8 }}>{g.t === userIdx ? "You" : TEAM_NAMES[g.t].split(" ")[0]}</td>
-            <td className="num" style={{ textAlign: "right" }}>{g.p.adp.toFixed(1)}</td>
+            <td className="num" style={{ textAlign: "right" }}>{adpV != null ? adpV.toFixed(1) : "—"}</td>
             <td className="num" style={{ textAlign: "right", background: valBg(g.val) }}>{g.val > 0 ? `+${g.val}` : g.val}</td>
           </tr>
         );})}
