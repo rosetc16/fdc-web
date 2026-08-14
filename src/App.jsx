@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19t";
+const BUILD_TAG = "2026.07.19u";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4470,17 +4470,21 @@ function OutlookCard({ content }) {
 // Build a scannable, color-coded outlook for a completed pick on the draft board grid.
 // `roster` = the players the drafting team already had BEFORE this pick (for need context).
 // `req` = that team's starting requirement by position (from REQ_F / cfg.start).
-function boardPickOutlook(p, o, cfg, ownerLabel, roster, req) {
+function boardPickOutlook(p, o, cfg, ownerLabel, roster, req, rookieAdpMap) {
   const out = [];
   out.push({ kind: "photo", sid: p.sid || null, name: p.name, team: p.team, pos: p.pos, posRank: p.posRank });
-  const v = pickValue(p, o, cfg); // + = steal (fell past ADP), - = reach (taken early)
-  const slip = Math.round((o + 1) - p.adp); // picks past ADP (positive = later than ADP)
+  // On a rookie draft, grade + display against rookie-relative ADP (his expected slot among rookies), not his
+  // deep startup ADP — otherwise every rookie reads as a huge reach and the numbers contradict the board.
+  const rAdp = rookieAdpMap && p.id != null && rookieAdpMap[p.id] != null ? rookieAdpMap[p.id] : null;
+  const effAdp = rAdp != null ? rAdp : p.adp;
+  const v = pickValue(p, o, cfg, rookieAdpMap ? { rookieAdp: rookieAdpMap } : undefined); // + = steal, - = reach
+  const slip = effAdp != null ? Math.round((o + 1) - effAdp) : 0; // picks past (rookie) ADP
 
   // 1) TAKE — color-coded value verdict.
   let take, tone;
   if (v > 3) { take = `Steal — fell ${Math.abs(slip)} picks past ADP.`; tone = "good"; }
   else if (v < -3) { take = `Reach — taken ${Math.abs(slip)} picks early.`; tone = "bad"; }
-  else { take = `Fair value at market (ADP ${p.adp.toFixed(1)}).`; tone = "neutral"; }
+  else { take = `Fair value at market (ADP ${effAdp != null ? effAdp.toFixed(1) : "—"}).`; tone = "neutral"; }
   out.push({ kind: "take", tone, x: take });
 
   // 2) METRICS — the same compact table as the hub player card.
@@ -4488,7 +4492,7 @@ function boardPickOutlook(p, o, cfg, ownerLabel, roster, req) {
     { k: "Pos rank", v: `${p.pos}${p.posRank}`, c: p.posRank != null ? undefined : "var(--mut)" },
     { k: "Fantasy", v: p.fantasyTier || "—" },
     { k: "Proj pts", v: `${p.pts}` },
-    { k: "ADP", v: p.adp != null ? p.adp.toFixed(1) : "—" },
+    { k: rAdp != null ? "Rookie ADP" : "ADP", v: effAdp != null ? effAdp.toFixed(1) : "—" },
     { k: "VBD", v: fmtVal(p.vbd), c: p.vbd > 0 ? "var(--green)" : "var(--mut)" },
     { k: "Value", v: `${v > 0 ? "+" : ""}${v}`, c: v > 2 ? "var(--green)" : v < -2 ? "var(--red)" : "var(--mut)" },
   ];
@@ -13403,6 +13407,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const ROUNDS = cfg.rounds;
   const TOTAL = totalOf(cfg);
   const [syncedSlot, setSyncedSlot] = useState(null); // user's real slot pulled from Sleeper (yourSlot) when cfg.slot is missing
+  // For traded picks on a completed connected board: which team actually MADE each pick (by overall index),
+  // when it differs from the pick's natural slot. Players stay in their draft-slot column; this just lets the
+  // board mark "traded — drafted by X" without moving the player. { overallIdx: { slot, name } }.
+  const [pickDrafters, setPickDrafters] = useState(null);
   const hasSlot = (cfg.slot != null && cfg.slot >= 1) || (syncedSlot != null && syncedSlot >= 1);
   const userIdx = (cfg.slot != null && cfg.slot >= 1) ? cfg.slot - 1 : (syncedSlot != null && syncedSlot >= 1 ? syncedSlot - 1 : 0);
   // For VISUAL "your team" highlighting only: -1 when the slot is genuinely unknown, so we never paint team 0
@@ -14904,6 +14912,18 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         if (Array.isArray(d.picks) && d.picks.length && looksLikeSleeperPicks(d.picks)) {
           const freshMap = slotMapFromSleeperPicks(d.picks);
           if (freshMap && Object.keys(freshMap).length) setLiveSlots(freshMap);
+          // Build the traded-pick drafter map: for any pick whose actual drafter (picked_by_slot) differs from
+          // its board slot (draft_slot), record who made it so the board can flag the trade in place.
+          const drafters = {};
+          d.picks.slice().sort((a, b) => ((a.pick_no || 0) - (b.pick_no || 0))).forEach((pk) => {
+            if (!pk || pk.pick_no == null) return;
+            const o = pk.pick_no - 1;
+            const pbSlot = pk.picked_by_slot;
+            if (pbSlot != null && pk.draft_slot != null && pbSlot !== pk.draft_slot) {
+              drafters[o] = { slot: pbSlot - 1, name: pk.pickedByName || null };
+            }
+          });
+          setPickDrafters(Object.keys(drafters).length ? drafters : null);
         }
         // NOTE: we intentionally do NOT apply tradesToOwnerOverrides for a completed draft — the per-pick
         // liveSlots map (from each pick's real draft_slot) already reflects who actually made every pick,
@@ -18228,8 +18248,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     for (let i = 0; i < TEAMS; i++) { const oo = r * TEAMS + i; if (naturalOwner(oo) === col) { o = oo; break; } }
                     if (o < 0) o = r * TEAMS + col;
                     const owner = teamAt(o);              // who owns this pick now (after trades)
-                    const traded = owner !== naturalOwner(o); // pick changed hands
-                    const ownedByYou = owner === userIdx;  // you own it (natural OR traded-for)
+                    // A pick is "traded" on this board when the team that actually DRAFTED it differs from the
+                    // slot's natural owner. We get the real drafter from pickDrafters (from Sleeper picked_by),
+                    // which keeps the player in its true board position instead of moving it to another column.
+                    const drafterInfo = pickDrafters && pickDrafters[o] ? pickDrafters[o] : null;
+                    const traded = drafterInfo ? (drafterInfo.slot !== naturalOwner(o)) : (owner !== naturalOwner(o));
+                    const drafterSlot = drafterInfo ? drafterInfo.slot : owner;
+                    const drafterName = drafterInfo && drafterInfo.name ? drafterInfo.name : (TEAM_NAMES[drafterSlot] || `Team ${drafterSlot + 1}`);
+                    // You "own" (drafted) this pick if the actual drafter is your slot — which correctly EXCLUDES
+                    // a pick at your natural slot that you traded away, and INCLUDES a pick you traded for.
+                    const ownedByYou = drafterInfo ? (drafterInfo.slot === userIdx) : (owner === userIdx);
                     // A pick the commissioner forced into a FUTURE slot lives outside the dense `picks` array
                     // (so it can't drag the board forward), but it IS a real, owned pick — it belongs in its
                     // true cell on the board, not hidden until the draft catches up to it.
@@ -18296,15 +18324,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             p, o, cfg,
                             teamAt(o) === userIdx ? "You" : TEAM_NAMES[teamAt(o)],
                             picks.slice(0, o).map((pk2, o2) => (pk2 != null && teamAt(o2) === teamAt(o)) ? players[pk2] : null).filter(Boolean),
-                            REQ_F(isSuperflex(cfg))
+                            REQ_F(isSuperflex(cfg)),
+                            rookieAdpById || undefined
                           ),
-                          ...(traded ? [{ t: "Traded pick", x: `Originally ${TEAM_NAMES[naturalOwner(o)]}'s pick, now owned by ${teamAt(o) === userIdx ? "you" : TEAM_NAMES[teamAt(o)]}.` }] : []),
+                          ...(traded ? [{ t: "Traded pick", x: `${TEAM_NAMES[naturalOwner(o)]}'s original pick — traded to ${drafterName}, who drafted ${p.name} with it.` }] : []),
                         ]) : undefined}
                         onMouseLeave={hideTip}>
                         <div className="lbl mut">
                           <span className="num">{pickLabel(o)}</span>
                           {isKeeper && <span className="gold" style={{ fontWeight: 800 }}>K</span>}
-                          {traded && <i className="ti ti-arrows-exchange" style={{ fontSize: 9, color: ownedByYou ? "var(--gold)" : "#4FD1A1" }} title={`Traded pick — now ${ownedByYou ? "yours" : TEAM_NAMES[owner]}`} aria-hidden="true" />}
+                          {traded && <i className="ti ti-arrows-exchange" style={{ fontSize: 9, color: ownedByYou ? "var(--gold)" : "#4FD1A1" }} title={`Traded pick — drafted by ${ownedByYou ? "you" : drafterName}`} aria-hidden="true" />}
                         </div>
                         {/* When a pick was traded, name who owns it now (esp. your acquired picks). */}
                         {/* Label the slot's OWNER. This used to be gated behind `traded`, so it only ever
@@ -18313,7 +18342,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             the trade arrow is extra information shown only when the pick actually moved. */}
                         {(ownedByYou || traded) && (
                           <div style={{ fontSize: 8.5, letterSpacing: ".04em", textTransform: "uppercase", color: ownedByYou ? "var(--gold)" : "var(--mut)", marginTop: -1, fontWeight: 700 }}>
-                            {ownedByYou ? "YOUR PICK" : `→ ${TEAM_NAMES[owner].split(" ")[0]}`}
+                            {ownedByYou ? "YOUR PICK" : `⇄ ${String(drafterName).split(" ")[0]}`}
                           </div>
                         )}
                         {p ? (
