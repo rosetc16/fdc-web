@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19v";
+const BUILD_TAG = "2026.07.19w";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13934,13 +13934,29 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     if (!isRookieDraft) return null;
     const rookies = players.filter((p) => p && p.rookie);
     if (!rookies.length) return null;
+    // Rank rookies the way the ROOKIE-DRAFT MARKET does. A player's startup ADP already encodes the market's
+    // read on him (rookies included), so ordering rookies by ADP gives a far truer "expected rookie slot" than
+    // our computed dynasty value did — value mis-ranked real rookie-draft assets (e.g. a WR with modest
+    // projection but heavy draft capital) dozens of spots too deep, so they read as huge phantom reaches.
+    // Players with a real ADP sort first (ascending); those missing an ADP fall to the back, ordered by value.
     const val = (p) => (p.value != null ? p.value : (p.vbd != null ? p.vbd : (p.pts || 0)));
-    // Order by value desc; where value ties/absent, fall back to lower ADP (earlier) then higher points.
-    const ordered = rookies.slice().sort((a, b) => (val(b) - val(a)) || ((a.adp || 9999) - (b.adp || 9999)) || ((b.pts || 0) - (a.pts || 0)));
+    const hasAdp = (p) => p.adp != null && p.adp > 0;
+    const ordered = rookies.slice().sort((a, b) => {
+      const aA = hasAdp(a), bA = hasAdp(b);
+      if (aA && bA) return a.adp - b.adp;            // both have ADP → market order
+      if (aA !== bA) return aA ? -1 : 1;             // real ADP always ahead of no-ADP
+      return val(b) - val(a);                         // neither has ADP → best value first
+    });
+    // Only the first ~draft-worth of rookies get a real expected slot. Beyond the draftable pool, the exact
+    // rank is noise (a 71st- vs 128th-ranked rookie are both "late fliers"), and treating a late flier taken
+    // in-draft as a massive reach is wrong — someone always takes those picks. So we CAP the expected slot at
+    // the draft size + a small buffer: every deep rookie shares the "went late" baseline instead of an
+    // impossible ADP like 128 in a 50-pick draft. This keeps the top of the board precise where it matters.
+    const cap = (typeof TOTAL === "number" && TOTAL > 0 ? TOTAL : 50);
     const map = {};
-    ordered.forEach((p, i) => { map[p.id] = i + 1; }); // 1-based expected rookie-draft position
+    ordered.forEach((p, i) => { map[p.id] = Math.min(i + 1, cap); }); // 1-based expected slot, capped at draft size
     return map;
-  }, [isRookieDraft, players]);
+  }, [isRookieDraft, players, TOTAL]);
   // ===== SNAPSHOT WRITER: the moment a draft STARTS (first pick lands), freeze draft-day values
   // (ADP/VBD/value/proj) for every drafted player plus the top ~450 of the board, and persist it on the
   // league/mock record. The players memo above overlays this from then on — which stabilizes the draft
