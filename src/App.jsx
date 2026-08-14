@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19s";
+const BUILD_TAG = "2026.07.19t";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4050,7 +4050,11 @@ function roundWeight(overall) {
 function pickValue(p, overall, cfg, ctx) {
   if (!p) return 0;                       // stale/unknown pick id — no value contribution
   const actual = overall + 1;            // where he was actually taken (1-based)
-  const adp = Math.max(1, p.adp || actual); // where the market says he should have gone
+  // In a ROOKIE draft, grading against a player's overall STARTUP ADP is meaningless (rookies sit behind all
+  // veterans there), so every pick reads as a huge reach. When the caller supplies a rookie-relative ADP for
+  // this player (his expected slot AMONG rookies), use that instead so steals/reaches reflect the rookie board.
+  const rookieAdp = ctx && ctx.rookieAdp && p.id != null ? ctx.rookieAdp[p.id] : null;
+  const adp = Math.max(1, rookieAdp != null ? rookieAdp : (p.adp || actual)); // where he "should" have gone
   const w = roundWeight(actual);
   // MARKET: how far off ADP, measured relative to WHERE WE ARE in the draft.
   //
@@ -13914,6 +13918,21 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const rookies = drafted.filter((p) => p.rookie).length;
     return rookies / drafted.length >= 0.6; // ≥60% rookies → it's a rookie draft
   }, [picks, players, cfg]);
+  // Rookie-relative ADP: on a rookie draft, a rookie's "expected" slot is his RANK AMONG ROOKIES by market
+  // value, not his overall startup ADP. Rank every rookie in the pool by dynasty value (falling back to ADP,
+  // then points) so rookie #1 is "expected 1.01", #11 "~2.01" in a 10-team, etc. This is what pickValue grades
+  // against on a rookie board, giving real steals/reaches relative to the rookie market instead of all-red.
+  const rookieAdpById = useMemo(() => {
+    if (!isRookieDraft) return null;
+    const rookies = players.filter((p) => p && p.rookie);
+    if (!rookies.length) return null;
+    const val = (p) => (p.value != null ? p.value : (p.vbd != null ? p.vbd : (p.pts || 0)));
+    // Order by value desc; where value ties/absent, fall back to lower ADP (earlier) then higher points.
+    const ordered = rookies.slice().sort((a, b) => (val(b) - val(a)) || ((a.adp || 9999) - (b.adp || 9999)) || ((b.pts || 0) - (a.pts || 0)));
+    const map = {};
+    ordered.forEach((p, i) => { map[p.id] = i + 1; }); // 1-based expected rookie-draft position
+    return map;
+  }, [isRookieDraft, players]);
   // ===== SNAPSHOT WRITER: the moment a draft STARTS (first pick lands), freeze draft-day values
   // (ADP/VBD/value/proj) for every drafted player plus the top ~450 of the board, and persist it on the
   // league/mock record. The players memo above overlays this from then on — which stabilizes the draft
@@ -18220,7 +18239,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     const isProjected = realPk == null && !keeperHere && projBoard && projBoard[o] != null;
                     const pk = realPk != null ? realPk : keeperHere ? keeperByPick[o] : (isProjected ? projBoard[o] : null);
                     const p = pk != null ? players[pk] : null;
-                    const v = p && !isProjected && !isKeeper ? pickValue(p, o, cfg) : 0;
+                    const v = p && !isProjected && !isKeeper ? pickValue(p, o, cfg, rookieAdpById ? { rookieAdp: rookieAdpById } : undefined) : 0;
                     const isUpcoming = realPk == null && !isKeeper && myAllUpcoming.has(o);
                     const isOnClock = o === picks.length && !done;
                     // Highlight a cell as "yours" whenever you own that pick — natural or traded-for.
@@ -18228,8 +18247,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     // Steal/reach highlight: tint the cell green (steal) or red (reach) when its toggle is on,
                     // in THREE shades by magnitude — deeper = a bigger steal/reach, lighter = minimal but real.
                     const isRealPick = p && !isProjected && !isKeeper;
-                    const showSteal = isRealPick && !isRookieDraft && boardHi.steals && v >= 8;
-                    const showReach = isRealPick && !isRookieDraft && boardHi.reaches && v <= -8;
+                    const showSteal = isRealPick && boardHi.steals && v >= 8;
+                    const showReach = isRealPick && boardHi.reaches && v <= -8;
                     // Is steal/reach highlighting active at all right now? When it is, we change how YOUR picks are
                     // marked: instead of the gold background shade (which would fight the green/red tint), every
                     // one of your picks gets a BRIGHT gold BORDER so it's always easy to spot — and the inside is
@@ -18306,7 +18325,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               </span>
                               <span style={{ display: "block", marginTop: 2, whiteSpace: "normal", overflowWrap: "anywhere", lineHeight: 1.12 }}>{p.name}</span>
                             </div>
-                            {showBoardVal && !isProjected && !isKeeper && !isRookieDraft && Math.abs(v) > 0 && (
+                            {showBoardVal && !isProjected && !isKeeper && Math.abs(v) > 0 && (
                               <div className="val num" style={{ color: v > 0 ? "var(--green)" : "var(--red)" }}>{v > 0 ? `+${v}` : v}</div>
                             )}
                           </>
@@ -18740,7 +18759,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const items = [{ kind: "take", tone: "neutral", x: `${p.name} — ${p.pos}${p.posRank}${p.team ? ` · ${p.team}` : ""}${p.age ? ` · age ${p.age}` : ""}` }];
                 if (drafted && o != null) {
                   const rd = Math.floor(o / TEAMS) + 1, pickInRd = (o % TEAMS) + 1;
-                  const v = pickValue(p, o, cfg);
+                  const v = pickValue(p, o, cfg, rookieAdpById ? { rookieAdp: rookieAdpById } : undefined);
                   items.push({ t: "Drafted", x: `Round ${rd}, pick ${pickInRd} (#${o + 1} overall)` });
                   items.push({ t: "ADP", x: `${p.adp != null ? p.adp.toFixed(1) : "—"} — ${v > 4 ? `steal, ${v.toFixed(0)} spots of value` : v < -4 ? `reach by ${Math.abs(v).toFixed(0)} spots` : "right around value"}`, tc: v > 4 ? "var(--green)" : v < -4 ? "var(--red)" : "var(--mut)" });
                 } else {
