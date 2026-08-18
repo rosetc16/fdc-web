@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19w";
+const BUILD_TAG = "2026.07.19y";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -86,6 +86,31 @@ const normName = (s) => String(s || "").toLowerCase()
 // detects that shape and converts it: it maps each Sleeper pick to an internal id by normalized name (the same
 // method the trends importer uses), preserving pick POSITION (draft_slot/pick_no order) and leaving null where a
 // name doesn't resolve, so nothing shifts. Returns the original array unchanged if it's already ids (or empty).
+// Union two league arrays by id so cross-device sync never loses a league that exists on only one side.
+// When the same id is on both, keep the "fresher" copy — the one with more picks (a draft that progressed),
+// then the one with more preds, else the server copy — so an in-progress draft isn't rolled back by a stale
+// device. Order: server leagues first, then any local-only leagues appended, preserving a stable listing.
+const mergeLeaguesById = (a, b) => {
+  const arrA = Array.isArray(a) ? a : [];
+  const arrB = Array.isArray(b) ? b : [];
+  const pickCount = (l) => (Array.isArray(l && l.picks) ? l.picks.filter((x) => x != null).length : 0);
+  const predCount = (l) => (Array.isArray(l && l.preds) ? l.preds.filter((x) => x != null).length : 0);
+  const fresher = (x, y) => {
+    if (!x) return y; if (!y) return x;
+    if (pickCount(x) !== pickCount(y)) return pickCount(x) > pickCount(y) ? x : y;
+    if (predCount(x) !== predCount(y)) return predCount(x) > predCount(y) ? x : y;
+    return x; // caller passes the preferred (server) copy as x on ties
+  };
+  const byId = new Map();
+  const order = [];
+  arrA.forEach((l) => { if (l && l.id != null) { byId.set(l.id, l); order.push(l.id); } });
+  arrB.forEach((l) => {
+    if (!l || l.id == null) return;
+    if (byId.has(l.id)) byId.set(l.id, fresher(byId.get(l.id), l));
+    else { byId.set(l.id, l); order.push(l.id); }
+  });
+  return order.map((id) => byId.get(id));
+};
 const looksLikeSleeperPicks = (picks) => Array.isArray(picks) && picks.length > 0 && typeof picks[0] === "object" && picks[0] !== null && (picks[0].player_id != null || picks[0].name != null || picks[0].pick_no != null);
 const normalizeLeaguePicks = (picks, pool) => {
   if (!looksLikeSleeperPicks(picks)) return picks; // already internal ids (or empty) — nothing to do
@@ -5160,14 +5185,20 @@ export default function App() {
             const sr = await api.getState();
             const srv = sr && sr.state ? sr.state : null;
             if (srv && (Array.isArray(srv.leagues) || Array.isArray(srv.funMocks))) {
-              const localLeagues = localBlob.leagues || [];
+              const localLeagues = (localBlob && Array.isArray(localBlob.leagues)) ? localBlob.leagues : [];
               const srvLeagues = Array.isArray(srv.leagues) ? srv.leagues : [];
-              if (srvLeagues.length >= localLeagues.length) {
-                if (srvLeagues.length) setLeagues(srvLeagues);
-                if (Array.isArray(srv.funMocks)) setFunMocks(srv.funMocks);
-                if (Array.isArray(srv.feedback)) setFeedback(srv.feedback);
-                try { if (window.storage) { const r = await window.storage.get("gs-state"); const cur = (r && r.value) ? JSON.parse(r.value) : {}; await window.storage.set("gs-state", JSON.stringify({ ...cur, leagues: srvLeagues.length ? srvLeagues : cur.leagues, funMocks: Array.isArray(srv.funMocks) ? srv.funMocks : cur.funMocks, feedback: Array.isArray(srv.feedback) ? srv.feedback : cur.feedback })); } } catch (e) {}
-              }
+              // Union server + local so a league created on THIS device (not yet synced) survives alongside
+              // leagues made on other devices — neither side is dropped. Server wins ties; fresher draft wins.
+              const mergedLeagues = mergeLeaguesById(srvLeagues, localLeagues);
+              const localMocks = (localBlob && Array.isArray(localBlob.funMocks)) ? localBlob.funMocks : [];
+              const mergedMocks = mergeLeaguesById(Array.isArray(srv.funMocks) ? srv.funMocks : [], localMocks);
+              if (mergedLeagues.length) setLeagues(mergedLeagues);
+              if (mergedMocks.length) setFunMocks(mergedMocks);
+              if (Array.isArray(srv.feedback)) setFeedback(srv.feedback);
+              try { if (window.storage) { const r = await window.storage.get("gs-state"); const cur = (r && r.value) ? JSON.parse(r.value) : {}; await window.storage.set("gs-state", JSON.stringify({ ...cur, leagues: mergedLeagues.length ? mergedLeagues : cur.leagues, funMocks: mergedMocks.length ? mergedMocks : cur.funMocks, feedback: Array.isArray(srv.feedback) ? srv.feedback : cur.feedback })); } } catch (e) {}
+              // If the merge added anything the server didn't have (local-only leagues), push the union up so
+              // other devices get it too. Only push when we actually have at least as much as the server.
+              try { if (mergedLeagues.length > srvLeagues.length) await api.putState({ leagues: mergedLeagues, funMocks: mergedMocks, feedback: Array.isArray(srv.feedback) ? srv.feedback : [] }); } catch (e) {}
             }
           } catch (e) {}
         });
@@ -5335,12 +5366,19 @@ export default function App() {
         try {
           const sr = await api.getState();
           const srv = sr && sr.state ? sr.state : null;
-          if (srv && Array.isArray(srv.leagues)) {
-            if (srv.leagues.length) setLeagues(srv.leagues);
-            if (Array.isArray(srv.funMocks)) setFunMocks(srv.funMocks);
-            if (Array.isArray(srv.feedback)) setFeedback(srv.feedback);
-            try { if (window.storage) { const r = await window.storage.get("gs-state"); const cur = (r && r.value) ? JSON.parse(r.value) : {}; await window.storage.set("gs-state", JSON.stringify({ ...cur, leagues: srv.leagues.length ? srv.leagues : cur.leagues, funMocks: Array.isArray(srv.funMocks) ? srv.funMocks : cur.funMocks, feedback: Array.isArray(srv.feedback) ? srv.feedback : cur.feedback, user: merged })); } } catch (e) {}
-          }
+          // Merge (union) the server blob with whatever is local so NEITHER side loses leagues: a league made
+          // on another device arrives from the server, and a league made locally-but-never-synced is preserved
+          // and pushed up. Server copies win ties (passed first to the merge), fresher drafts win by pick count.
+          const localNow = (leagues && leagues.length) ? leagues : ((localBlob && Array.isArray(localBlob.leagues)) ? localBlob.leagues : []);
+          const srvLeagues = srv && Array.isArray(srv.leagues) ? srv.leagues : [];
+          const mergedLeagues = mergeLeaguesById(srvLeagues, localNow);
+          const mergedMocks = mergeLeaguesById(srv && Array.isArray(srv.funMocks) ? srv.funMocks : [], funMocks || []);
+          if (mergedLeagues.length) setLeagues(mergedLeagues);
+          if (mergedMocks.length) setFunMocks(mergedMocks);
+          if (srv && Array.isArray(srv.feedback)) setFeedback(srv.feedback);
+          try { if (window.storage) { const r = await window.storage.get("gs-state"); const cur = (r && r.value) ? JSON.parse(r.value) : {}; await window.storage.set("gs-state", JSON.stringify({ ...cur, leagues: mergedLeagues.length ? mergedLeagues : cur.leagues, funMocks: mergedMocks.length ? mergedMocks : cur.funMocks, feedback: (srv && Array.isArray(srv.feedback)) ? srv.feedback : cur.feedback, user: merged })); } } catch (e) {}
+          // Push the merged union back so the server (and thus every other device) converges to the full set.
+          try { if (mergedLeagues.length >= srvLeagues.length) await api.putState({ leagues: mergedLeagues, funMocks: mergedMocks, feedback: (srv && Array.isArray(srv.feedback)) ? srv.feedback : (feedback || []) }); } catch (e) {}
         } catch (e) { /* server state unavailable — local copy stands */ }
         persist({ user: merged });
         return merged;
@@ -6996,11 +7034,14 @@ function HubLoading() {
 }
 function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate }) {
   const [data, setData] = useState(null);      // response from /sleeper/team-hub
+  const [viewWeek, setViewWeek] = useState(null); // week the user picked to look at; null = backend default (current/upcoming)
+  const [curWeek, setCurWeek] = useState(null);   // the backend's resolved current/upcoming week (toggle baseline)
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [posture, setPosture] = useState(null); // null until we auto-detect; user can override
   const [tab, setTab] = useState("notes");     // notes(Summary) | lineup | freeagents | roster | league
   const [posSortCol, setPosSortCol] = useState("all"); // Positional strength grid: sort by "all"|QB|RB|WR|TE
+  const [faPosFilter, setFaPosFilter] = useState("all"); // Free-agent list position filter: "all"|QB|RB|WR|TE|K|DST
   const [standSort, setStandSort] = useState({ key: "rank", dir: 1 }); // Standings table sort
   // Rich floating tooltip (same card the draft app uses) for player and positional hovers in this hub.
   const [tip, setTip] = useState(null);
@@ -7034,12 +7075,15 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   React.useEffect(() => {
     let alive = true;
     setLoading(true); setErr("");
-    api.sleeperTeamHub(leagueId).then((r) => {
+    api.sleeperTeamHub(leagueId, viewWeek || undefined).then((r) => {
       if (!alive) return;
       setData(r); setLoading(false);
+      // Remember the backend's resolved current/upcoming week as the toggle baseline. This does NOT change
+      // viewWeek (which stays null = "current"), so it won't trigger a second fetch on first load.
+      if (r && (r.defaultWeek || r.week)) setCurWeek(r.defaultWeek || r.week);
     }).catch((e) => { if (alive) { setErr(e && e.message ? e.message : "Could not load this league"); setLoading(false); } });
     return () => { alive = false; };
-  }, [leagueId]);
+  }, [leagueId, viewWeek]);
 
   // Resolve a list of Sleeper ids to enriched players. Points are the player's REAL projection for THIS
   // week's matchup (from the backend's `weekly` map, sourced from Sleeper's weekly projections) — so a
@@ -7531,6 +7575,31 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
           </div>
         )}
 
+        {/* Week selector — defaults to the current/upcoming week; step to look ahead (or back). */}
+        {(() => {
+          const shownWeek = (data && data.week) || curWeek || 1;
+          const minW = (data && data.minWeek) || 1;
+          const maxW = (data && data.maxWeek) || 18;
+          const atCurrent = curWeek != null && shownWeek === curWeek;
+          const go = (w) => { const nw = Math.min(maxW, Math.max(minW, w)); if (nw !== shownWeek) setViewWeek(nw); };
+          return (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+              <span className="mut" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700 }}>Week</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 2, background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 99, padding: 2 }}>
+                <button className="btn btn-mini" disabled={shownWeek <= minW || loading} onClick={() => go(shownWeek - 1)}
+                  style={{ padding: "2px 9px", borderRadius: 99, opacity: shownWeek <= minW ? 0.4 : 1, cursor: shownWeek <= minW ? "default" : "pointer" }} title="Previous week" aria-label="Previous week">‹</button>
+                <span className="num" style={{ minWidth: 74, textAlign: "center", fontWeight: 800, fontSize: 13 }}>Week {shownWeek}</span>
+                <button className="btn btn-mini" disabled={shownWeek >= maxW || loading} onClick={() => go(shownWeek + 1)}
+                  style={{ padding: "2px 9px", borderRadius: 99, opacity: shownWeek >= maxW ? 0.4 : 1, cursor: shownWeek >= maxW ? "default" : "pointer" }} title="Look ahead" aria-label="Next week">›</button>
+              </div>
+              {atCurrent
+                ? <span className="chip" style={{ fontSize: 10.5, color: "var(--green)" }}><i className="ti ti-calendar-check" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />current</span>
+                : (curWeek != null && <button className="btn btn-mini" onClick={() => setViewWeek(curWeek)} style={{ fontSize: 11, padding: "2px 10px" }}>↩ Back to week {curWeek}</button>)}
+              {shownWeek > (curWeek || 1) && <span className="mut" style={{ fontSize: 10.5 }}>looking ahead — projections only</span>}
+            </div>
+          );
+        })()}
+
         {/* Tabs */}
         <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
           {[["notes", "Summary", "ti-clipboard-text"], ["lineup", "Matchup", "ti-swords"], ["freeagents", "Free agents", "ti-user-plus"], ["roster", "My roster", "ti-users"], ["league", "League", "ti-trophy"]].map(([k, label, icon]) => (
@@ -7676,14 +7745,43 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
         )}
 
         {/* ---- FREE AGENTS TAB ---- */}
-        {tab === "freeagents" && (
+        {tab === "freeagents" && (() => {
+          // Which positions can appear here: always the skill four; add K / DST only when this league actually
+          // starts them (from the roster settings) AND at least one is in the available pool. This keeps the
+          // filter honest — no empty K/DST tabs for leagues that don't use them.
+          const startCfg = (cfg && cfg.start) || {};
+          const usesK = (startCfg.K || 0) > 0;
+          const usesDST = (startCfg.DST || 0) > 0;
+          const poolPositions = new Set(faScored.map((f) => f.p.pos));
+          const filterPositions = ["QB", "RB", "WR", "TE"]
+            .concat(usesK && poolPositions.has("K") ? ["K"] : [])
+            .concat(usesDST && (poolPositions.has("DST") || poolPositions.has("DEF")) ? ["DST"] : []);
+          const matchPos = (p) => faPosFilter === "all" ? true : (faPosFilter === "DST" ? (p.pos === "DST" || p.pos === "DEF") : p.pos === faPosFilter);
+          // When filtering to a single position, show more of that position (the top-15 overall would often hide
+          // kickers/defenses entirely behind skill players).
+          const faFiltered = faScored.filter((f) => matchPos(f.p)).slice(0, faPosFilter === "all" ? 15 : 20);
+          return (
           <div className="panel" style={{ padding: 16 }}>
             <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 3 }}>Best available</div>
             <div className="mut" style={{ fontSize: 12, marginBottom: 12 }}>
               Ranked for your team{isDynasty ? ` in ${postureLabel[activePosture].toLowerCase()} mode` : ""} — factoring your positional needs and how much each upgrades your current starters.
             </div>
+            {/* Position filter — K/DST appear only when the league rosters them. */}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+              {["all", ...filterPositions].map((pos) => {
+                const on = faPosFilter === pos;
+                return (
+                  <button key={pos} onClick={() => setFaPosFilter(pos)} className="btn btn-mini"
+                    style={{ padding: "3px 11px", fontSize: 11.5, fontWeight: 700, borderRadius: 99, cursor: "pointer",
+                      background: on ? "var(--gold)" : "var(--panel2)", color: on ? "#1a1400" : "var(--mut)",
+                      border: `1px solid ${on ? "var(--gold)" : "var(--line)"}` }}>
+                    {pos === "all" ? "All" : pos}
+                  </button>
+                );
+              })}
+            </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              {topFA.map(({ p, upgrade, verdict, reason, worstOnRoster }) => {
+              {faFiltered.map(({ p, upgrade, verdict, reason, worstOnRoster }) => {
                 const vc = verdict === "add" ? { c: "var(--green)", bg: "rgba(95,208,168,.10)", label: "Add" } : verdict === "stream" ? { c: "var(--gold)", bg: "rgba(242,182,60,.10)", label: "Stream" } : { c: "var(--mut)", bg: "transparent", label: "Hold" };
                 return (
                   <div key={p.sid} onMouseEnter={(e) => showPlayerTip(e, p)} onMouseLeave={hideTip} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", cursor: "help", background: vc.bg !== "transparent" ? vc.bg : "var(--panel2)", border: `1px solid ${verdict === "add" ? "var(--green)" : "var(--line)"}`, borderRadius: 8 }}>
@@ -7702,13 +7800,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                   </div>
                 );
               })}
-              {!topFA.length && <div className="mut">No available players found — your league pool may be fully rostered.</div>}
+              {!faFiltered.length && <div className="mut">{faPosFilter === "all" ? "No available players found — your league pool may be fully rostered." : `No available ${faPosFilter} found.`}</div>}
             </div>
             <div className="mut" style={{ fontSize: 10.5, marginTop: 10, lineHeight: 1.45 }}>
               <b style={{ color: "var(--green)" }}>Add</b> = worth a roster move for your team{isDynasty ? ` in ${postureLabel[activePosture].toLowerCase()} mode` : ""}. <b style={{ color: "var(--gold)" }}>Stream</b> = only in a bye/injury pinch. <b>Hold</b> = not better than what you have.
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* ---- ROSTER TAB ---- */}
         {tab === "roster" && (
