@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.19y";
+const BUILD_TAG = "2026.07.19z";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1818,6 +1818,8 @@ function buildPlayers(cfg) {
   const sf = isSuperflex(cfg); // canonical: covers cfg.sf, SUPER slot, or 2+ QB slots
   const twoQb = is2QB(cfg);    // TRUE 2-QB (two dedicated QB slots) → even stronger QB premium than superflex
   const useIdp = idpOn(cfg);
+  const useK = !!(cfg.start && cfg.start.K > 0);       // kickers only enter the pool when the league starts one
+  const useDst = !!(cfg.start && cfg.start.DST > 0);   // same for team defenses
   const sc = { ...DEFAULT_SCORING, ...(cfg.scoring || {}) };
   const exclude = !!cfg.excludeRookies;
   const rookieOnly = cfg.type === "rookie"; // rookie-only draft → pool is JUST this year's rookies
@@ -1825,6 +1827,8 @@ function buildPlayers(cfg) {
   const SRC = RAW.filter((r) => {
     if (!Array.isArray(r) || r.length < 2) return false; // skip a malformed/empty row rather than crash on r[0]/r[1]
     if (!useIdp && IDP_POS.includes(r[1])) return false;
+    if (!useK && r[1] === "K") return false;             // no kicker slot → keep kickers out of the pool
+    if (!useDst && (r[1] === "DST" || r[1] === "DEF")) return false; // no DST slot → keep defenses out
     if (exclude && META[r[0]] && META[r[0]].rookie) return false;
     // Rookie drafts draft ONLY incoming rookies — veterans (Bijan, CMC, Chase, Allen) are already on
     // rosters and are not in a rookie draft pool. Keep only players flagged rookie.
@@ -6598,13 +6602,13 @@ function QuickMockSetup({ onStart, onCancel }) {
   const [rounds, setRounds] = useState(15);
   // Starting roster — the SF toggle is gone; superflex is simply "SUPER >= 1". Editing this fully
   // determines the format, so there's one source of truth for the lineup.
-  const [roster, setRoster] = useState({ QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0 });
+  const [roster, setRoster] = useState({ QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0, DST: 0, K: 0 });
   const TYPES = [["redraft", "Redraft"], ["dynasty", "Dynasty"], ["bestball", "Best ball"], ["rookie", "Rookie only"]];
-  const ROSTER_SLOTS = [["QB", "QB"], ["RB", "RB"], ["WR", "WR"], ["TE", "TE"], ["FLEX", "Flex"], ["SUPER", "Superflex"]];
-  const setSlotCount = (k, d) => setRoster((r) => ({ ...r, [k]: Math.max(0, Math.min(k === "SUPER" ? 2 : 4, (r[k] || 0) + d)) }));
+  const ROSTER_SLOTS = [["QB", "QB"], ["RB", "RB"], ["WR", "WR"], ["TE", "TE"], ["FLEX", "Flex"], ["SUPER", "Superflex"], ["DST", "DST"], ["K", "K"]];
+  const setSlotCount = (k, d) => setRoster((r) => ({ ...r, [k]: Math.max(0, Math.min(k === "SUPER" ? 2 : (k === "DST" || k === "K") ? 2 : 4, (r[k] || 0) + d)) }));
 
   const launch = () => {
-    const start = { QB: roster.QB, RB: roster.RB, WR: roster.WR, TE: roster.TE, FLEX: roster.FLEX, SUPER: roster.SUPER, DST: 0, K: 0 };
+    const start = { QB: roster.QB, RB: roster.RB, WR: roster.WR, TE: roster.TE, FLEX: roster.FLEX, SUPER: roster.SUPER, DST: roster.DST || 0, K: roster.K || 0 };
     const sf = roster.SUPER >= 1 || roster.QB >= 2; // superflex is derived from the roster now
     const scoring = { ...DEFAULT_SCORING };
     if (te === "tep") scoring.recTE = (scoring.rec || 0) + 0.5;
@@ -15430,7 +15434,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       const rec = arr.find((p) => p.id === recIdForRows);
       return rec ? [...cut, rec] : cut;
     };
-    if (posFilter !== "ALL") list = list.filter((p) => p.pos === posFilter);
+    if (posFilter !== "ALL") list = list.filter((p) => posFilter === "DST" ? (p.pos === "DST" || p.pos === "DEF") : p.pos === posFilter);
     if (rookieOnly) list = list.filter((p) => p.rookie);
     if (queueOnly) list = list.filter((p) => queue.has(p.name));
     if (search) { const q = search.toLowerCase(); list = list.filter((p) => p.name.toLowerCase().includes(q)); }
@@ -16677,7 +16681,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <button className="btn btn-mini" style={{ borderColor: "var(--gold)", color: "var(--gold)" }}
                 onClick={() => openGuide("how")} title="How to use the draft room, power-user tips, and the guided tour">
                 <i className="ti ti-book" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Tips &amp; tour</button>
-              {["ALL", ...POS].map((p) => (
+              {["ALL", ...POS, ...((cfg.start && cfg.start.DST) > 0 ? ["DST"] : []), ...((cfg.start && cfg.start.K) > 0 ? ["K"] : [])].map((p) => (
                 <button key={p} className="btn btn-mini" style={{ borderColor: posFilter === p ? "var(--gold)" : "var(--line)" }} onClick={() => setPosFilter(p)}>{p}</button>
               ))}
               <button className="btn btn-mini" style={{ borderColor: rookieOnly ? "var(--gold)" : "var(--line)", color: rookieOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => setRookieOnly((r) => !r)}>Rookies</button>
