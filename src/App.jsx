@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20a";
+const BUILD_TAG = "2026.07.20b";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -12821,6 +12821,10 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
                 <button className="btn" disabled={busy} onClick={() => runJob("refresh")}>
                   <i className={`ti ti-${runningJob === "refresh" ? "loader-2 spin" : "refresh"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
                   {runningJob === "refresh" ? "Working…" : "Full refresh (slower)"}
+                </button>
+                <button className="btn" disabled={busy} onClick={() => runJob("byes")} title="Fast: sets every player's bye week from the current NFL schedule (~1 second). Run this after the schedule is released.">
+                  <i className={`ti ti-${runningJob === "byes" ? "loader-2 spin" : "calendar-event"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
+                  {runningJob === "byes" ? "Working…" : "Sync bye weeks"}
                 </button>
                 {jobProgress && <span style={{ fontSize: 12, color: jobProgress.startsWith("Done") ? "var(--green)" : "var(--gold)", fontWeight: 600 }}>{jobProgress}</span>}
               </div>
