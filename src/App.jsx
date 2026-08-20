@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20f";
+const BUILD_TAG = "2026.07.20g";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5574,7 +5574,12 @@ export default function App() {
   const updateUser = (patch) => { const merged = { ...user, ...patch }; const u = { ...merged, admin: isAdminEmail(merged.email) }; setUser(u); persist({ user: u }); };
 
   const startDemo = () => {
-    setDemoLeague({ id: "demo", demo: true, name: "Free demo draft", cfg: { name: "Free demo draft", type: "redraft", teams: 12, rounds: 15, demoRounds: 3, slot: 5, sf: false, tePrem: false, tePremMult: 0, caps: {}, start: { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0, DST: 0, K: 0 }, demo: true }, picks: [], preds: [] });
+    const demoCfg = { name: "Free demo draft", type: "redraft", teams: 12, rounds: 15, demoRounds: 3, slot: 5, sf: false, tePrem: false, tePremMult: 0, caps: {}, start: { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0, DST: 0, K: 0 }, demo: true };
+    // Reset the engine module-globals to the DEMO's own settings before entering, so nothing (K/DST slots,
+    // team count, order, trades, keepers) leaks in from a quick mock or league the user just had open — that
+    // leak made the demo show K/DST chips it doesn't actually roster, then an empty list when they were clicked.
+    try { setTeams(demoCfg.teams); setSpec(demoCfg.start); setOrder("snake"); setPickTrades(null); setLivePickTeams(null); setKeeperAdds({}); setTeamNames(TEAM_NAMES_POOL.slice(0, demoCfg.teams)); } catch (e) {}
+    setDemoLeague({ id: "demo", demo: true, name: "Free demo draft", cfg: demoCfg, picks: [], preds: [] });
     setRoute("draft"); setActiveId("demo");
   };
 
