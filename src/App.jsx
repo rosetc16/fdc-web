@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20g";
+const BUILD_TAG = "2026.07.20h";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5443,6 +5443,32 @@ export default function App() {
     persistPendingRef.current = null;
     persistNow(payload);
   };
+
+  // Manual cross-device sync: force-pull the account's server blob and MERGE it with what's local (union by
+  // id, never dropping either side), then push the union back so all devices converge. This is the reliable
+  // escape hatch when the automatic sign-in sync didn't bring a device's leagues over — the user can trigger
+  // it themselves. Returns a small result so the UI can report what happened.
+  const syncFromCloud = async () => {
+    if (!hasBackend || !user || !user.email) return { ok: false, reason: "not-signed-in" };
+    try {
+      const sr = await api.getState();
+      const srv = sr && sr.state ? sr.state : null;
+      const srvLeagues = srv && Array.isArray(srv.leagues) ? srv.leagues : [];
+      const srvMocks = srv && Array.isArray(srv.funMocks) ? srv.funMocks : [];
+      const mergedLeagues = mergeLeaguesById(srvLeagues, leagues || []);
+      const mergedMocks = mergeLeaguesById(srvMocks, funMocks || []);
+      const added = mergedLeagues.length - (leagues || []).length;
+      setLeagues(mergedLeagues);
+      setFunMocks(mergedMocks);
+      if (srv && Array.isArray(srv.feedback)) setFeedback(srv.feedback);
+      try { if (window.storage) { const r = await window.storage.get("gs-state"); const cur = (r && r.value) ? JSON.parse(r.value) : {}; await window.storage.set("gs-state", JSON.stringify({ ...cur, leagues: mergedLeagues, funMocks: mergedMocks })); } } catch (e) {}
+      // Push the union back so the other devices (and the server) converge to the full set.
+      try { await api.putState({ leagues: mergedLeagues, funMocks: mergedMocks, feedback: (srv && Array.isArray(srv.feedback)) ? srv.feedback : (feedback || []) }); } catch (e) {}
+      return { ok: true, total: mergedLeagues.length, added: Math.max(0, added) };
+    } catch (e) {
+      return { ok: false, reason: (e && e.message) || "error" };
+    }
+  };
   // Never lose a pending write because the tab went away.
   useEffect(() => {
     const flush = () => { try { persist.flush(); } catch (e) {} };
@@ -5672,28 +5698,34 @@ export default function App() {
   // existing picks stay valid). This is what stops an SF-dynasty global pack from putting QBs in round 1
   // of a 1QB redraft mock. Falls back silently to the loaded board if the format's ADP is unavailable.
   const activeFmt = (route === "draft" && active && active.cfg) ? backendFormatKey(active.cfg) : null;
+  // The backend format key intentionally ignores K/DST/IDP (those don't change scoring/ADP for skill players).
+  // But the player PACK does differ: K/DST/IDP are only included when requested. So the CACHE must key on the
+  // roster flags too, or a league that starts a K/DST gets served a previously-cached kicker-less pack for the
+  // same format (the exact "K and DST don't show up" bug). packKey = format + which extra positions we asked for.
+  const packFlags = (() => { const st = (active && active.cfg && active.cfg.start) || {}; return `${st.K > 0 ? "k" : ""}${st.DST > 0 ? "d" : ""}${((st.DL || 0) + (st.LB || 0) + (st.DB || 0) + (st.IDPFLEX || 0)) > 0 ? "i" : ""}`; })();
+  const packKey = activeFmt ? `${activeFmt}#${packFlags}` : null;
   useEffect(() => {
     if (!hasBackend || !activeFmt) return;
     LIVE_OVERLAY_TARGET = activeFmt; // the format this draft SHOULD be showing (for the badge diagnostic)
-    if (adpOverlayApplied.current === activeFmt) { LIVE_OVERLAY_STATE = "applied"; return; }
+    if (adpOverlayApplied.current === packKey) { LIVE_OVERLAY_STATE = "applied"; return; }
     LIVE_OVERLAY_STATE = "loading";
     const cache = adpOverlayCache.current;
     const applyPack = (pack) => {
-      if (pack && applyAdpOverlay(pack)) { adpOverlayApplied.current = activeFmt; LIVE_OVERLAY_STATE = "applied"; setDataVersion((v) => v + 1); }
+      if (pack && applyAdpOverlay(pack)) { adpOverlayApplied.current = packKey; LIVE_OVERLAY_STATE = "applied"; setDataVersion((v) => v + 1); }
       else { LIVE_OVERLAY_STATE = "rejected"; }
     };
-    if (cache[activeFmt] && cache[activeFmt] !== "pending" && cache[activeFmt] !== "miss") { applyPack(cache[activeFmt]); return; }
-    if (cache[activeFmt] === "pending") return;
-    if (cache[activeFmt] === "miss") { LIVE_OVERLAY_STATE = "miss"; return; }
-    cache[activeFmt] = "pending";
+    if (cache[packKey] && cache[packKey] !== "pending" && cache[packKey] !== "miss") { applyPack(cache[packKey]); return; }
+    if (cache[packKey] === "pending") return;
+    if (cache[packKey] === "miss") { LIVE_OVERLAY_STATE = "miss"; return; }
+    cache[packKey] = "pending";
     const st = (active.cfg && active.cfg.start) || {};
-    const opts = { k: !!(st.K > 0), dst: !!(st.DST > 0) };
+    const opts = { k: !!(st.K > 0), dst: !!(st.DST > 0), idp: !!(((st.DL || 0) + (st.LB || 0) + (st.DB || 0) + (st.IDPFLEX || 0)) > 0) };
     let alive = true;
     api.playerPack(activeFmt, undefined, opts)
-      .then((pack) => { if (!alive) return; if (pack && Array.isArray(pack.players) && pack.players.length) { cache[activeFmt] = pack; applyPack(pack); } else { cache[activeFmt] = "miss"; LIVE_OVERLAY_STATE = "miss"; LIVE_OVERLAY_REASON = "backend returned no players for " + activeFmt; } })
-      .catch((e) => { cache[activeFmt] = "miss"; LIVE_OVERLAY_STATE = "miss"; LIVE_OVERLAY_REASON = "pack request failed: " + (e && e.message || e); });
+      .then((pack) => { if (!alive) return; if (pack && Array.isArray(pack.players) && pack.players.length) { cache[packKey] = pack; applyPack(pack); } else { cache[packKey] = "miss"; LIVE_OVERLAY_STATE = "miss"; LIVE_OVERLAY_REASON = "backend returned no players for " + activeFmt; } })
+      .catch((e) => { cache[packKey] = "miss"; LIVE_OVERLAY_STATE = "miss"; LIVE_OVERLAY_REASON = "pack request failed: " + (e && e.message || e); });
     return () => { alive = false; };
-  }, [activeFmt]);
+  }, [activeFmt, packKey]);
 
   if (!bootReady) return <BootSplash css={css} />;
 
@@ -5744,7 +5776,7 @@ export default function App() {
       {route === "draftTrends" && user && <DraftTrendsPage user={user} leagues={leagues} funMocks={funMocks} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user?.paid ? "home" : "library")} onOpenLeague={(id) => { setActiveId(id); setRoute("leagueHub"); }} />}
       {route === "help" && <HelpPage user={user} biz={biz} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user ? (user.paid ? "home" : "library") : "home")} onSubmit={submitFeedback} initialTab={helpTab} />}
       {route === "checkout" && user && <Checkout biz={biz} user={user} onDone={completePurchase} onBack={() => setRoute("home")} />}
-      {route === "library" && user && <Library user={user} leagues={leagues} onNew={() => setRoute("setup")} onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onDelete={deleteLeague} onAdmin={() => setRoute("admin")} onSignOut={signOut} onHome={() => setRoute("home")} onAccount={() => setRoute("account")} onDeleteMock={deleteMock} onOpenMockView={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onDatabase={() => setRoute("database")} onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} funMockCount={funMocks.length} />}
+      {route === "library" && user && <Library user={user} leagues={leagues} onSyncCloud={syncFromCloud} onNew={() => setRoute("setup")} onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onDelete={deleteLeague} onAdmin={() => setRoute("admin")} onSignOut={signOut} onHome={() => setRoute("home")} onAccount={() => setRoute("account")} onDeleteMock={deleteMock} onOpenMockView={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onDatabase={() => setRoute("database")} onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} funMockCount={funMocks.length} />}
       {route === "database" && user && <DraftsDatabase leagues={leagues} funMocks={funMocks} user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")}
         onOpenLeague={(id) => { setActiveId(id); setRoute("draft"); }}
         onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }}
@@ -10874,7 +10906,18 @@ function LeagueCard({ l, onUmbrella, onDelete, onOpenMockView, onDeleteMock }) {
   );
 }
 
-function Library({ user, leagues, onNew, onUmbrella, onDelete, onAdmin, onSignOut, onHome, onAccount, onDeleteMock, onOpenMockView, onQuickMock, onDatabase, onTrends, onHelp, funMockCount }) {
+function Library({ user, leagues, onSyncCloud, onNew, onUmbrella, onDelete, onAdmin, onSignOut, onHome, onAccount, onDeleteMock, onOpenMockView, onQuickMock, onDatabase, onTrends, onHelp, funMockCount }) {
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState(null);
+  const doSync = async () => {
+    if (syncing || !onSyncCloud) return;
+    setSyncing(true); setSyncMsg(null);
+    const r = await onSyncCloud();
+    setSyncing(false);
+    if (r && r.ok) setSyncMsg(r.added > 0 ? `Synced — added ${r.added} league${r.added > 1 ? "s" : ""} from your account.` : "You're up to date.");
+    else setSyncMsg("Couldn't sync right now — try again in a moment.");
+    setTimeout(() => setSyncMsg(null), 4000);
+  };
   const [q, setQ] = useState("");
   const [sort, setSort] = useState("date");
   const [filter, setFilter] = useState("all");
@@ -10892,12 +10935,14 @@ function Library({ user, leagues, onNew, onUmbrella, onDelete, onAdmin, onSignOu
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
           <div className="disp" style={{ fontSize: 26, fontWeight: 700 }}>Your leagues</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {onSyncCloud && <button className="btn" onClick={doSync} disabled={syncing} title="Pull your leagues from your account — use this if a league you made on another device isn't showing here"><i className={`ti ti-${syncing ? "loader-2 spin" : "cloud-download"}`} style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />{syncing ? "Syncing…" : "Sync from cloud"}</button>}
             <button className="btn" onClick={() => onDatabase()} title="Browse all drafts in a table"><i className="ti ti-database" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Drafts database</button>
             {onTrends && <button className="btn" onClick={() => onTrends()} title="Recent market trends"><i className="ti ti-rss" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Recent trends</button>}
             <button className="btn" onClick={() => onQuickMock()} title="Run a standalone mock with simple defaults — not tied to a league"><i className="ti ti-dice" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Quick mock</button>
             <button className="btn btn-gold" onClick={onNew}>+ New draft</button>
           </div>
         </div>
+        {syncMsg && <div className="mut" style={{ fontSize: 12.5, marginTop: -6, marginBottom: 12, color: "var(--green)" }}>{syncMsg}</div>}
         {leagues.length > 0 && (
           <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
             <div style={{ position: "relative", flex: "1 1 200px" }}>
