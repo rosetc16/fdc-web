@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20b";
+const BUILD_TAG = "2026.07.20c";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -12039,6 +12039,27 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
             <div className="mut" style={{ fontSize: 11.5, marginLeft: 162, marginBottom: 10 }}><i className="ti ti-circle-check" style={{ fontSize: 12, marginRight: 4, color: "var(--green)" }} aria-hidden="true" />Existing rosters imported from Sleeper — recommendations already account for them.</div>
           )}
           <div className="mut" style={{ fontSize: 11.5, margin: "6px 0 0" }}>Connecting a league auto-fills all settings from the platform and lets you pick which of your leagues to view.</div>
+
+          {/* STARTING ROSTER — shown right here in Simple so the positions are visible/editable without opening
+              Complex. Mirrors the Quick-mock setup: compact +/- steppers per slot (incl. DST & K). Superflex ≥ 1
+              makes it a superflex league. Full per-position roster caps / IDP live under Complex → Roster. */}
+          <div style={{ marginTop: 18, paddingTop: 16, borderTop: "1px solid var(--line)" }}>
+            <div className="mut" style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 8, letterSpacing: ".03em" }}>STARTING ROSTER <span style={{ opacity: 0.7, fontWeight: 400 }}>· sets your format (superflex ≥ 1 makes it a superflex league)</span></div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {[["QB","QB"],["RB","RB"],["WR","WR"],["TE","TE"],["FLEX","FLEX"],["SUPER","SUPERFLEX"],["DST","D/ST"],["K","K"]].map(([k, lbl]) => (
+                <div key={k} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, background: "var(--panel2)", borderRadius: 9, padding: "8px 10px", minWidth: 74 }}>
+                  <span style={{ fontSize: 10.5, fontWeight: 700, color: POS_COLOR[k] || (k === "FLEX" ? "var(--blue)" : k === "SUPER" ? "#c79cff" : "var(--ink)") }}>{lbl}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <button className="bigact" onClick={() => updStart(k, Math.max(0, (f.start[k] || 0) - 1))} disabled={(f.start[k] || 0) <= 0} style={{ cursor: "pointer", border: "1px solid var(--line)", background: "var(--panel)", color: "var(--ink)", borderRadius: 6, width: 22, height: 22, fontSize: 15, fontWeight: 700, opacity: (f.start[k] || 0) <= 0 ? 0.4 : 1 }}>−</button>
+                    <span className="num" style={{ fontSize: 15, fontWeight: 700, minWidth: 14, textAlign: "center" }}>{f.start[k] || 0}</span>
+                    <button className="bigact" onClick={() => updStart(k, Math.min(k === "SUPER" ? 2 : (k === "DST" || k === "K") ? 2 : 6, (f.start[k] || 0) + 1))} style={{ cursor: "pointer", border: "1px solid var(--line)", background: "var(--panel)", color: "var(--ink)", borderRadius: 6, width: 22, height: 22, fontSize: 15, fontWeight: 700 }}>+</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {f.start.SUPER > 0 && <div className="gold" style={{ fontSize: 11, marginTop: 8 }}>⚑ Superflex / 2QB format active — QB values surge across the entire board.</div>}
+            <div className="mut" style={{ fontSize: 10.5, marginTop: 8 }}>Need bench caps or IDP slots? Switch to <b>Complex → Roster</b> for full control.</div>
+          </div>
         </>
       )}
 
