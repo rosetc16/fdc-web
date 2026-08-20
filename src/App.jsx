@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20c";
+const BUILD_TAG = "2026.07.20d";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -12201,7 +12201,7 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
       {seg === "trades" && (
         <>
           <div className="mut" style={{ fontSize: 12.5, marginBottom: 6 }}><b style={{ color: "var(--ink)" }}>Traded draft picks are optional.</b> Leave this empty if no picks have changed hands. Anything you set flows into the official draft and every mock, and turns on pick-trading in the trade tools for this league.</div>
-          <KeepersEditor cfg={{ ...cfgPreview, keepers: f.keepers, pickTrades: f.pickTrades }} players={kPlayers} embedded section="trades" onChange={(newCfg) => upd({ keepers: newCfg.keepers, pickTrades: newCfg.pickTrades, pickTrading: (newCfg.pickTrades || []).length > 0 ? true : f.pickTrading })} />
+          <KeepersEditor cfg={{ ...cfgPreview, teamNames: f.teamNames, slotNames: f.connect && f.connect.slotNames, keepers: f.keepers, pickTrades: f.pickTrades }} players={kPlayers} embedded section="trades" onChange={(newCfg) => upd({ keepers: newCfg.keepers, pickTrades: newCfg.pickTrades, pickTrading: (newCfg.pickTrades || []).length > 0 ? true : f.pickTrading })} />
         </>
       )}
 
@@ -12220,7 +12220,7 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
               <button className="btn btn-mini" onClick={() => setKeeperModal(false)}>Done</button>
             </div>
             <div className="mut" style={{ fontSize: 12, marginBottom: 14 }}>Add each player a team is keeping, and whether it costs a draft pick. These apply to the official draft and every mock for this league.</div>
-            <KeepersEditor cfg={{ ...cfgPreview, keepers: f.keepers, pickTrades: f.pickTrades }} players={kPlayers} embedded section="keepers" onChange={(newCfg) => upd({ keepers: newCfg.keepers, pickTrades: newCfg.pickTrades })} />
+            <KeepersEditor cfg={{ ...cfgPreview, teamNames: f.teamNames, slotNames: f.connect && f.connect.slotNames, keepers: f.keepers, pickTrades: f.pickTrades }} players={kPlayers} embedded section="keepers" onChange={(newCfg) => upd({ keepers: newCfg.keepers, pickTrades: newCfg.pickTrades })} />
           </div>
         </div>
       )}
@@ -12233,7 +12233,7 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
               <button className="btn btn-mini btn-gold" onClick={() => setRosterModal(false)}>Done</button>
             </div>
             <div className="mut" style={{ fontSize: 12, marginBottom: 14 }}>Enter what each team already rosters going into this {f.type === "rookie" ? "rookie" : "dynasty"} draft. The engine uses this so recommendations respect roster construction — a team already deep at a position won't be steered toward more of it. You don't have to fill in every team; even just your own helps.</div>
-            <ExistingRostersEditor cfg={cfgPreview} players={kPlayers} onChange={(er) => upd({ existingRosters: er })} />
+            <ExistingRostersEditor cfg={{ ...cfgPreview, teamNames: f.teamNames, slotNames: f.connect && f.connect.slotNames }} players={kPlayers} onChange={(er) => upd({ existingRosters: er })} />
           </div>
         </div>
       )}
