@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20d";
+const BUILD_TAG = "2026.07.20f";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4869,6 +4869,80 @@ const PlayerPhoto = ({ sid, pos, size = 22 }) => {
 };
 const PosName = ({ p }) => <span><Dot pos={p.pos} /><span className="mut" style={{ fontSize: "0.92em" }}>{p.pos}</span> <b>{p.name}</b></span>;
 
+// Shown once to a signed-in user who has no active pass and isn't comped: explains that full access needs a
+// season pass, points them to the demo, and — importantly — gives a clear "I already paid" path that files a
+// feedback report, so anyone accidentally mis-categorized can flag it rather than being silently locked out.
+function FreeAccessNotice({ user, biz, onGetPass, onDemo, onReport, onClose }) {
+  const [reporting, setReporting] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+  const price = (biz && biz.price != null) ? biz.price.toFixed(2) : null;
+  const sendReport = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await onReport({
+        topic: "Billing",
+        email: (user && user.email) || null,
+        msg: `[Access help] ${(user && user.email) || "user"} believes their account should have full access.${msg.trim() ? ` Note: ${msg.trim()}` : ""}`,
+      });
+    } catch (e) {}
+    setBusy(false); setSent(true);
+    setTimeout(() => { setSent(false); onClose(); }, 2200);
+  };
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 200, background: "#000c", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div className="panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460, width: "100%", padding: 0, overflow: "hidden" }}>
+        <div style={{ padding: "18px 20px 14px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 10 }}>
+          <i className="ti ti-lock" style={{ fontSize: 20, color: "var(--gold)" }} aria-hidden="true" />
+          <div className="disp" style={{ fontSize: 18, fontWeight: 700, flex: 1 }}>Your account needs a season pass</div>
+          <button className="btn btn-mini" onClick={onClose}><i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true" /></button>
+        </div>
+        {sent ? (
+          <div style={{ padding: 30, textAlign: "center" }}>
+            <i className="ti ti-circle-check" style={{ fontSize: 32, color: "var(--green)" }} aria-hidden="true" />
+            <div style={{ fontSize: 15.5, fontWeight: 700, marginTop: 10 }}>Thanks — we'll look into it.</div>
+            <div className="mut" style={{ fontSize: 12.5, marginTop: 4 }}>We'll follow up at {(user && user.email) || "your email"} as soon as we can.</div>
+          </div>
+        ) : reporting ? (
+          <div style={{ padding: "16px 20px 20px" }}>
+            <div className="mut" style={{ fontSize: 13, lineHeight: 1.55, marginBottom: 12 }}>
+              If you believe you already paid for full access, let us know and we'll sort it out. No need to do anything else — we'll check your account and make it right.
+            </div>
+            <label className="mut" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>Anything that helps us find your payment (optional) — e.g. the email or card you used</label>
+            <textarea className="gs" value={msg} onChange={(e) => setMsg(e.target.value)} rows={3} placeholder="I paid on… / I used the email…" style={{ width: "100%", resize: "vertical", marginBottom: 12 }} />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="btn" onClick={() => setReporting(false)} disabled={busy}>Back</button>
+              <button className="btn btn-gold" onClick={sendReport} disabled={busy}>{busy ? "Sending…" : "Send to support"}</button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ padding: "16px 20px 20px" }}>
+            <div style={{ fontSize: 13.5, lineHeight: 1.6, marginBottom: 8 }}>
+              Hi{user && user.email ? ` ${user.email.split("@")[0]}` : ""} — your account is currently on the <b>free tier</b>, which includes the mock-draft demo. To unlock the full app — your live drafts, the in-season hub, trends, and trade tools — you'll need a season pass{price ? ` (${"$" + price})` : ""}.
+            </div>
+            <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 16 }}>
+              We're just getting things set up, so if this looks wrong to you — <b style={{ color: "var(--ink)" }}>especially if you think you already paid</b> — please tell us and we'll fix it right away. We don't want anyone losing access they paid for.
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <button className="btn btn-gold" style={{ padding: "11px 18px", fontSize: 14.5, fontWeight: 700 }} onClick={onGetPass}>
+                <i className="ti ti-ticket" style={{ fontSize: 15, marginRight: 7 }} aria-hidden="true" />Get the season pass{price ? ` — $${price}` : ""}
+              </button>
+              <button className="btn" style={{ padding: "10px 18px", fontSize: 13.5 }} onClick={onDemo}>
+                <i className="ti ti-player-play" style={{ fontSize: 14, marginRight: 6 }} aria-hidden="true" />Run the free mock draft
+              </button>
+              <button className="btn" style={{ padding: "9px 18px", fontSize: 12.5, border: "none", color: "var(--gold)" }} onClick={() => setReporting(true)}>
+                I already paid — this looks wrong
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Floating "Report a bug" button shown on every page, plus its modal. Reuses the app's submitFeedback
 // pipeline (backend inbox → Admin window). Beta users need an obvious, always-present way to flag issues;
 // burying it in a Help page loses reports. Bottom-left so it never collides with the top-right build badge.
@@ -5084,6 +5158,8 @@ export default function App() {
   const [demoLeague, setDemoLeague] = useState(null); // unsaved demo draft from homepage
   const [mockLeague, setMockLeague] = useState(null); // transient mock draft running against a saved league
   const [quickMockOpen, setQuickMockOpen] = useState(false); // quick-mock pre-draft prompt
+  const [freeNoticeOpen, setFreeNoticeOpen] = useState(false); // paywall notice for signed-in free (unpaid) users
+  const freeNoticeShown = useRef(false); // only auto-open once per session
   const [funMocks, setFunMocks] = useState([]); // standalone mocks not tied to a league
   const [feedback, setFeedback] = useState([]); // user-submitted feedback {id,email,topic,msg,ts,status,reply}
   const [updateReady, setUpdateReady] = useState(false); // a newer build is deployed; prompt user to refresh
@@ -5105,7 +5181,26 @@ export default function App() {
     // The free demo draft intentionally runs WITHOUT a signed-in user (it's the pre-signup trial), so
     // don't bounce it home — only redirect a userless "draft" route when it isn't the demo.
     if (NEEDS_USER.includes(route) && !user && !(route === "draft" && activeId === "demo")) setRoute("home");
+    // ACCESS TIERS: only paid or comped users reach the real app. A signed-in but unpaid ("free") user is
+    // sent back to the marketing home — their only real-app entry is the demo (which needs no signup at all).
+    // Account/checkout/help/admin stay reachable so they can pay, get help, or (for admins) administer.
+    const NEEDS_PAID = ["library", "leagueHub", "draft", "rankings", "trendsTime", "tradeTools", "adpIntel", "trends", "draftTrends", "database", "setup", "teamHub"];
+    const isAdminUser = user && (isAdminEmail(user.email) || user.admin);
+    if (user && !user.paid && !isAdminUser && NEEDS_PAID.includes(route) && !(route === "draft" && activeId === "demo")) setRoute("home");
   }, [bootReady, route, user, activeId]);
+
+  // FREE-ACCOUNT NOTICE. When a signed-in user has no active pass and isn't comped or an admin, show a clear,
+  // friendly one-time notice that full access needs a pass — with a path to report it if they believe they
+  // already paid (guards against any mis-categorization). Auto-opens once per session; not while in the demo.
+  useEffect(() => {
+    if (!bootReady) return;
+    const isAdminUser = user && (isAdminEmail(user.email) || user.admin);
+    const isFree = user && !user.paid && !isAdminUser;
+    if (isFree && !freeNoticeShown.current && !(route === "draft" && activeId === "demo")) {
+      freeNoticeShown.current = true;
+      setFreeNoticeOpen(true);
+    }
+  }, [bootReady, user, route, activeId]);
 
   // Update detector: periodically fetch the freshly-deployed version marker (cache-busted). When the site
   // has been redeployed to a newer build than the one currently running in this tab, we surface a gentle
@@ -5639,7 +5734,7 @@ export default function App() {
         </div>
       )}
       {route === "home" && !user?.paid && <HomePage biz={biz} user={user} onSignIn={() => setAuthOpen(true)} onDemo={startDemo} onBuy={() => (user ? setRoute("checkout") : setAuthOpen(true))} onApp={() => setRoute("library")} onHelp={(t) => { setHelpTab(t || null); setRoute("help"); }} />}
-      {route === "learn" && <HomePage biz={biz} user={user} onSignIn={() => setAuthOpen(true)} onDemo={startDemo} onBuy={() => (user ? setRoute("checkout") : setAuthOpen(true))} onApp={() => setRoute(user?.paid ? "home" : "library")} onHelp={(t) => { setHelpTab(t || null); setRoute("help"); }} initialTab="how" />}
+      {route === "learn" && <HomePage biz={biz} user={user} onSignIn={() => setAuthOpen(true)} onDemo={startDemo} onBuy={() => (user ? setRoute("checkout") : setAuthOpen(true))} onApp={() => setRoute(user?.paid ? "home" : "home")} onHelp={(t) => { setHelpTab(t || null); setRoute("help"); }} initialTab="how" />}
       {route === "trends" && user && <TrendsPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user?.paid ? "home" : "library")} />}
       {route === "draftTrends" && user && <DraftTrendsPage user={user} leagues={leagues} funMocks={funMocks} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user?.paid ? "home" : "library")} onOpenLeague={(id) => { setActiveId(id); setRoute("leagueHub"); }} />}
       {route === "help" && <HelpPage user={user} biz={biz} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user ? (user.paid ? "home" : "library") : "home")} onSubmit={submitFeedback} initialTab={helpTab} />}
@@ -5732,6 +5827,15 @@ export default function App() {
           top-right version badge). Opens a lightweight modal that reuses the existing submitFeedback
           pipeline (→ backend inbox → Admin window). Captures the submitter's email so you can reply. */}
       <GlobalBugReport user={user} onSubmit={submitFeedback} />
+      {freeNoticeOpen && user && !user.paid && (
+        <FreeAccessNotice
+          user={user} biz={biz}
+          onGetPass={() => { setFreeNoticeOpen(false); setRoute("checkout"); }}
+          onDemo={() => { setFreeNoticeOpen(false); startDemo(); }}
+          onReport={submitFeedback}
+          onClose={() => setFreeNoticeOpen(false)}
+        />
+      )}
       {authOpen && <AuthModal hasBackend={hasBackend} authError={authError} onClose={() => { setAuthOpen(false); setAuthError(null); }} onSignUp={async (email, password, mode) => {
         try {
           const u = await signUp(email, password, mode);
