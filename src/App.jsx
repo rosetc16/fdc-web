@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20h";
+const BUILD_TAG = "2026.07.20i";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13693,8 +13693,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // when it differs from the pick's natural slot. Players stay in their draft-slot column; this just lets the
   // board mark "traded — drafted by X" without moving the player. { overallIdx: { slot, name } }.
   const [pickDrafters, setPickDrafters] = useState(null);
-  const hasSlot = (cfg.slot != null && cfg.slot >= 1) || (syncedSlot != null && syncedSlot >= 1);
-  const userIdx = (cfg.slot != null && cfg.slot >= 1) ? cfg.slot - 1 : (syncedSlot != null && syncedSlot >= 1 ? syncedSlot - 1 : 0);
+  // syncedSlot comes ONLY from Sleeper's live yourSlot, so when it's present it's the source of truth and wins
+  // over a possibly-stale saved cfg.slot (e.g. the user changed their draft order in Sleeper after importing).
+  const hasSlot = (syncedSlot != null && syncedSlot >= 1) || (cfg.slot != null && cfg.slot >= 1);
+  const userIdx = (syncedSlot != null && syncedSlot >= 1) ? syncedSlot - 1 : ((cfg.slot != null && cfg.slot >= 1) ? cfg.slot - 1 : 0);
   // For VISUAL "your team" highlighting only: -1 when the slot is genuinely unknown, so we never paint team 0
   // (the first pick) as "you" just because the engine falls back to index 0. The engine still uses userIdx.
   const highlightIdx = hasSlot ? userIdx : -1;
@@ -15199,9 +15201,34 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           for (let s = 1; s <= N; s++) { const nm = d.slotNames[s]; if (nm && !/^Team\s+\d+$/.test(nm)) { real++; names.push(nm); } else names.push((cfg.teamNames && cfg.teamNames[s - 1]) || `Team ${s}`); }
           if (real >= Math.ceil(N / 2)) { setLiveTeamNames(names); setTeamNames(names); setNameVersion((v) => v + 1); }
         }
-        // If this league never had the user's slot set (older imports), adopt the real one Sleeper reports so
-        // "your picks" highlight the correct seat instead of defaulting to pick 1.
-        if ((cfg.slot == null || cfg.slot < 1) && d.yourSlot != null && d.yourSlot >= 1) setSyncedSlot(d.yourSlot);
+        // SLOT: for a connected league, Sleeper's draft_order is the source of truth. Adopt the live yourSlot
+        // whenever it's present and differs from what we have — the user may have changed the draft order in
+        // Sleeper after the initial import, and the stale saved cfg.slot must not win. (For non-connected or
+        // when Sleeper doesn't report a slot, we keep whatever was set.) syncedSlot overrides cfg.slot below.
+        if (d.yourSlot != null && d.yourSlot >= 1 && d.yourSlot !== cfg.slot) setSyncedSlot(d.yourSlot);
+        else if ((cfg.slot == null || cfg.slot < 1) && d.yourSlot != null && d.yourSlot >= 1) setSyncedSlot(d.yourSlot);
+        // Re-sync the draft ORDER + TRADED-PICK ownership from Sleeper on refresh (pre-draft only). If the
+        // commissioner changed the order or a pick trade after import, the saved cfg.order and the stored trade
+        // overrides go stale — and stale order makes tradesToOwnerOverrides map a traded pick onto the wrong
+        // overall pick (i.e. the wrong team), which is exactly the "extra pick attached to the wrong team" bug.
+        // Recompute against the fresh data. (For a draft in progress / done, the live per-pick map is truth, so
+        // we skip this.) Guarded by onSettings so we only persist when we actually have a settings handler.
+        if (onSettings && !done && (!Array.isArray(d.picks) || d.picks.length === 0)) {
+          const freshOrder = d.draftType || cfg.order || "snake";
+          const N = cfg.teams || 12;
+          const patch = {};
+          if (freshOrder && freshOrder !== cfg.order) patch.order = freshOrder;
+          if (Array.isArray(d.tradedPicks)) {
+            const incoming = JSON.stringify(d.tradedPicks);
+            const have = JSON.stringify((cfg.connect && cfg.connect.tradedPicks) || []);
+            if (incoming !== have || (freshOrder !== cfg.order)) {
+              patch.pickTrades = tradesToOwnerOverrides(d.tradedPicks, N, freshOrder);
+              patch.pickTrading = patch.pickTrades.length > 0 || cfg.pickTrading;
+              patch.connect = { ...cfg.connect, tradedPicks: d.tradedPicks };
+            }
+          }
+          if (Object.keys(patch).length) onSettings({ ...cfg, ...patch });
+        }
         // TRADE-ACCURATE OWNERSHIP: build the pick→team map from the freshly-fetched draft picks (each carries
         // team_slot = the team that actually owned the pick, trades included). This is essential because a
         // completed draft opened in an earlier build had its stored picks converted to plain IDs and autosaved,
