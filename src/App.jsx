@@ -78,7 +78,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20z";
+const BUILD_TAG = "2026.07.20aa";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -14933,7 +14933,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         .filter((p) => !draftedSet.has(p.id) && !inPool.has(p.id) && p.adp != null && p.adp <= pickNum + 6)
         .slice(0, 8)
         .map((p) => ({ name: p.name, pos: p.pos, adp: p.adp, vbd: p.vbd, survived: survivesToPick(p.id), legalCapped: (myCounts[p.pos] || 0) >= (capsOf(cfg)[p.pos] || 99) }));
-      dbgRows = { rows: dbgRows, excluded: notablesOut, myPosVbds };
+      dbgRows = { rows: dbgRows, excluded: notablesOut, myPosVbds, myCounts: { ...myCounts }, dem: { QB: +(dem.QB || 0).toFixed(2), RB: +(dem.RB || 0).toFixed(2), WR: +(dem.WR || 0).toFixed(2), TE: +(dem.TE || 0).toFixed(2) } };
     }
     return { bestNow, waitCost, waitDetail, verdict, alts, impacts, run, myCounts, strat, expBestPlayer: simState.expBestPlayer || {}, dbgRows };
   };
@@ -17739,6 +17739,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             </div>
                           )}
                           <div style={{ marginTop: 4, color: "var(--mut)" }}>myPosVbds: {["QB","RB","WR","TE"].map((p) => `${p}[${(balAdv.dbgRows.myPosVbds[p] || []).join(",")}]`).join(" ")}</div>
+                          {balAdv.dbgRows.myCounts && <div style={{ marginTop: 2, color: "var(--mut)" }}>counts: {["QB","RB","WR","TE"].map((p) => `${p} ${balAdv.dbgRows.myCounts[p]}`).join(" · ")}　|　dem: {["QB","RB","WR","TE"].map((p) => `${p} ${balAdv.dbgRows.dem[p]}`).join(" · ")}</div>}
                         </div>
                       )}
                     </div>
