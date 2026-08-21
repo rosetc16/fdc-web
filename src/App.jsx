@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20p";
+const BUILD_TAG = "2026.07.20q";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1717,6 +1717,14 @@ const seedKeeperCounts = (players, teamIdx, counts) => { keeperAddIds(teamIdx).f
 const seedKeeperRoster = (players, teamIdx, arr) => { keeperAddIds(teamIdx).forEach((id) => { if (players[id]) arr.push(players[id]); }); };
 // every no-cost keeper id (all teams) — these are unavailable to draft
 const allKeeperAddIds = () => Object.values(KEEPER_ADDS).flat();
+// PICK-COST keepers: players kept in a specific draft slot (on the board via keeperByPick/forcedAhead). Unlike
+// no-cost keepers (KEEPER_ADDS), these aren't a roster "add" — they occupy a real pick — but they are STILL
+// off the board and must never be recommended or appear as available in the sims. The DraftRoom keeps this in
+// sync with its keeperByPick/forcedAhead so module-level engine code (runSims) can exclude them too.
+let PICK_KEEPER_IDS = new Set();
+const setPickKeeperIds = (ids) => { PICK_KEEPER_IDS = ids instanceof Set ? ids : new Set(ids || []); };
+// every keeper id that is off the board — no-cost adds PLUS pick-cost placements.
+const allUnavailableKeeperIds = () => [...allKeeperAddIds(), ...PICK_KEEPER_IDS];
 
 // EXISTING ROSTERS (rookie / dynasty / keeper drafts): each team's current holdings BEFORE this draft.
 // Unlike keepers, these players are NOT in this draft's pool (they're already rostered elsewhere) — we
@@ -2986,7 +2994,7 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
   const baseCounts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
   picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; baseDrafted[pk] = 1; const c = baseCounts[teamAt(o)]; if (c[pl.pos] != null) c[pl.pos]++; });
   for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, baseCounts[t]); seedRosterCounts(t, baseCounts[t]); }
-  allKeeperAddIds().forEach((id) => { baseDrafted[id] = 1; });
+  allUnavailableKeeperIds().forEach((id) => { baseDrafted[id] = 1; });
   const baseRecent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   // PERF: survival and best-available only matter for players who could plausibly be drafted before your last
   // simulated pick. Everyone below that has ~100% survival and never wins "best available", so touching them
@@ -3091,7 +3099,7 @@ function survivalAtPick(players, sortedAdp, picks, targetOverall, cfg, nSims) {
   const baseCounts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
   picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; baseDrafted[pk] = 1; const c = baseCounts[teamAt(o)]; if (c[pl.pos] != null) c[pl.pos]++; });
   for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, baseCounts[t]); seedRosterCounts(t, baseCounts[t]); }
-  allKeeperAddIds().forEach((id) => { baseDrafted[id] = 1; });
+  allUnavailableKeeperIds().forEach((id) => { baseDrafted[id] = 1; });
   const baseRecent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   // Count, per player, how many sims they SURVIVE past `target`. One simulation per sim run,
   // stopping at the target boundary — anyone still undrafted survived. Single shared random
@@ -3122,7 +3130,7 @@ function projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId)
   const rosters = Array.from({ length: TEAMS }, () => []);
   picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; drafted[pk] = 1; rosters[teamAt(o)].push(pl); });
   for (let t = 0; t < TEAMS; t++) { seedKeeperRoster(players, t, rosters[t]); }
-  allKeeperAddIds().forEach((id) => { drafted[id] = 1; });
+  allUnavailableKeeperIds().forEach((id) => { drafted[id] = 1; });
   let recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   let userFirstDone = false;
   // How many picks ahead get FULL candidate scoring. Beyond this, rosters still fill (the projected lineup and
@@ -3184,7 +3192,7 @@ function projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, forcedI
   const counts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
   picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; drafted[pk] = 1; const c = counts[teamAt(o)]; if (c[pl.pos] != null) c[pl.pos]++; });
   for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, counts[t]); seedRosterCounts(t, counts[t]); }
-  allKeeperAddIds().forEach((id) => { drafted[id] = 1; });
+  allUnavailableKeeperIds().forEach((id) => { drafted[id] = 1; });
   let recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   let userFirstDone = false;
   const board = new Array(TOTAL).fill(undefined);
@@ -3233,7 +3241,7 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
   const counts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
   picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; drafted[pk] = 1; const c = counts[teamAt(o)]; if (c[pl.pos] != null) c[pl.pos]++; });
   for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, counts[t]); seedRosterCounts(t, counts[t]); }
-  allKeeperAddIds().forEach((id) => { drafted[id] = 1; });
+  allUnavailableKeeperIds().forEach((id) => { drafted[id] = 1; });
   let recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
   const path = []; let passedUser = false, afterUser = 0;
   // How far past YOUR next pick to keep projecting. We show a healthy look-ahead by default (the board
@@ -13714,6 +13722,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     else if (k.team != null) (noCostByTeam[k.team] = noCostByTeam[k.team] || []).push(k.playerId);
   });
   setKeeperAdds(noCostByTeam);
+  // Mirror the pick-cost keeper ids (players kept in specific draft slots) to the engine global so runSims and
+  // the projections treat them as off the board — otherwise another team's kept player (e.g. a keeper at 4.06)
+  // shows up as an available recommendation/alternative even though he can never be drafted.
+  setPickKeeperIds(new Set(Object.values(keeperByPick)));
   // Team names: live Sleeper names (pulled during the draft) win over the saved cfg names, which win over
   // stock names. The live set can arrive/improve after connect (e.g. once a pre-draft league sets its order),
   // so once we have it we keep using it across re-renders instead of resetting to the stored cfg names.
