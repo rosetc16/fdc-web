@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20n";
+const BUILD_TAG = "2026.07.20o";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -14389,13 +14389,19 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // NOT marked complete — you'd continue if you bought). Non-demo unpaid drafts gate after 5 picks.
   const gated = !user?.paid && (isDemo ? demoCapped : (userPicksMade >= 5 && !done));
 
-  // Auto-place any pick-cost keeper the instant the draft reaches its slot (before normal
-  // drafting decides that pick). Runs at start and after every pick, for any team's slot.
+  // Auto-place any pick-cost keeper the instant the draft reaches its slot (before normal drafting decides
+  // that pick). Runs at start and after every pick, for ANY team's slot. NOTE: we check `picks` directly, not
+  // draftedSet — draftedSet also counts forcedAhead (the future-preview channel that shows an upcoming keeper
+  // on the board before the draft crawls to it). If we skipped when draftedSet had the id, a CPU team's keeper
+  // that was being previewed via forcedAhead would never get committed into the dense picks array, so
+  // picks.length could never advance past that slot — the draft stalled there and put the CPU "on the clock"
+  // on its own keeper (and let the user replace it). Placing it here (and forcedAhead drops it once it's in
+  // picks) is what lets the draft roll through every keeper automatically.
   useEffect(() => {
     if (done) return;
     const next = picks.length;
     const kid = keeperByPick[next];
-    if (kid != null && !draftedSet.has(kid)) {
+    if (kid != null && !picks.includes(kid)) {
       setPreds((pp) => [...pp, null]); // keepers aren't "predicted"
       setPicks((prev) => [...prev, kid]);
     }
