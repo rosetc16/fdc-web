@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20s";
+const BUILD_TAG = "2026.07.20t";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1723,6 +1723,11 @@ const allKeeperAddIds = () => Object.values(KEEPER_ADDS).flat();
 // sync with its keeperByPick/forcedAhead so module-level engine code (runSims) can exclude them too.
 let PICK_KEEPER_IDS = new Set();
 const setPickKeeperIds = (ids) => { PICK_KEEPER_IDS = ids instanceof Set ? ids : new Set(ids || []); };
+// overall-pick-index -> keeper id, for pick-cost keepers (kept players occupying a real draft slot). Projections
+// read this to place the keeper AT its slot (consuming that pick) instead of drafting a new body there and
+// leaving the keeper off the roster entirely. Kept in sync by DraftRoom alongside PICK_KEEPER_IDS.
+let PICK_KEEPER_AT = {};
+const setPickKeeperAt = (map) => { PICK_KEEPER_AT = map || {}; };
 // every keeper id that is off the board — no-cost adds PLUS pick-cost placements.
 const allUnavailableKeeperIds = () => [...allKeeperAddIds(), ...PICK_KEEPER_IDS];
 
@@ -3146,6 +3151,16 @@ function projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId)
   const liveCounts = rosters.map((r) => { const c = { QB: 0, RB: 0, WR: 0, TE: 0 }; r.forEach((p) => { if (c[p.pos] != null) c[p.pos]++; }); return c; });
   for (let o = picks.length; o < TOTAL; o++) {
     const t = teamAt(o), round = Math.floor(o / TEAMS) + 1, pickNum = o + 1;
+    // Pick-cost keeper occupying this slot: place the kept player here (it consumes this pick) rather than
+    // drafting a new body — otherwise the keeper never lands on the roster and the team gets an extra player.
+    const kAt = PICK_KEEPER_AT[o];
+    if (kAt != null) {
+      const kp = players[kAt];
+      // kp was pre-marked drafted (so no other team grabbed it before its slot); at ITS slot we still place it
+      // on the owner's roster. Guard only against double-placing if it's somehow already on this roster.
+      if (kp && !rosters[t].some((x) => x.id === kp.id)) { drafted[kAt] = 1; rosters[t].push(kp); if (liveCounts[t][kp.pos] != null) liveCounts[t][kp.pos]++; recent = [...recent.slice(-7), kp.pos]; }
+      continue;
+    }
     const counts = liveCounts[t];
     let choice = null;
     const cheap = o >= scoreUntil;
@@ -13748,6 +13763,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // the projections treat them as off the board — otherwise another team's kept player (e.g. a keeper at 4.06)
   // shows up as an available recommendation/alternative even though he can never be drafted.
   setPickKeeperIds(new Set(Object.values(keeperByPick)));
+  // Also give projections the slot→keeper map so they place each pick-cost keeper AT its pick (see projectAll).
+  setPickKeeperAt(keeperByPick);
   // Team names: live Sleeper names (pulled during the draft) win over the saved cfg names, which win over
   // stock names. The live set can arrive/improve after connect (e.g. once a pre-draft league sets its order),
   // so once we have it we keep using it across re-renders instead of resetting to the stored cfg names.
@@ -17921,8 +17938,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     const rowsModel = TEAM_NAMES.map((n, i) => {
                       const counts = { QB: 0, RB: 0, WR: 0, TE: 0 };
                       const posPlayersRow = { QB: [], RB: [], WR: [], TE: [] };
+                      // Use the FULL roster (picks + no-cost keepers + previewed pick-cost keepers), same source as
+                      // the rank grid, so League needs counts a team's KEPT players too — not just drafted picks.
+                      // Otherwise a team's keepers were invisible here (counts read 0) even though they're rostered.
+                      const teamRoster = rostersByTeam[i] || [];
                       const drafted = picks.filter((pk, o) => teamAt(o) === i).length;
-                      picks.forEach((pk, o) => { if (teamAt(o) === i) { const p = players[pk]; if (p && counts[p.pos] != null) { counts[p.pos]++; posPlayersRow[p.pos].push(p); } } });
+                      teamRoster.forEach((p) => { if (p && counts[p.pos] != null) { counts[p.pos]++; posPlayersRow[p.pos].push(p); } });
                       POS.forEach((pos) => posPlayersRow[pos].sort((a, b) => (b.pts || 0) - (a.pts || 0)));
                       const totalN = counts.QB + counts.RB + counts.WR + counts.TE;
                       const rank = (proj && proj.rank && proj.rank[i] != null) ? proj.rank[i] : null;
@@ -18351,7 +18372,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             })()}
 
             {!leagueOpen && (<>
-            <div className="myteam-grid" style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+            <div className="myteam-grid" style={{ display: "flex", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
               <div className="ta-colL" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
             <div className="panel" style={{ padding: 14 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
@@ -18690,8 +18711,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               )}
             </div>
               </div>
-              {/* Bye-week outlook — moved to the very bottom of Team Analysis (full width), per request */}
-              <ByeWeekWidget roster={selRoster} req={REQ_F(isSuperflex(cfg))} isDynasty={isDynastyCfg(cfg)} />
+              {/* Bye-week outlook — full-width row under both columns. It lives inside the myteam-grid flex row,
+                  so flexBasis:100% forces it onto its own line (full width) instead of squishing as a 3rd column. */}
+              <div style={{ flexBasis: "100%", width: "100%", order: 2 }}>
+                <ByeWeekWidget roster={selRoster} req={REQ_F(isSuperflex(cfg))} isDynasty={isDynastyCfg(cfg)} />
+              </div>
             </div>
             </>)}
           </div>
