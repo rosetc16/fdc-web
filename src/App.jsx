@@ -90,7 +90,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20ad";
+const BUILD_TAG = "2026.07.20ae";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1967,6 +1967,39 @@ function buildPlayers(cfg) {
     p.adpMarket = adpTransform(p.adp0, p.pos); p.adp = p.adpMarket;
     p.consensus = adpTransform(p.consensus0, p.pos); // field-wide ADP for value comparison
   });
+  // QB ADP SANITY GUARD. The harvested/live ADP feed occasionally binds a badly wrong ADP to a QB — usually a
+  // name/team mismatch after a trade (e.g. Geno Smith surfacing at ADP ~55 when every projection ranks him
+  // ~QB8). A bogus-low QB ADP makes him float up the user's board AND makes CPU bots draft him early over
+  // better QBs. We can't fix the upstream feed here, so we detect the anomaly on its face: compare each QB's
+  // ADP-implied rank among QBs to his POINTS-implied rank. When ADP says he's dramatically better than his own
+  // projection supports (off by a large margin), pull his ADP toward the ADP of the QB his points actually
+  // rank him next to. Fires ONLY on severe mismatches so ordinary ADP-vs-points disagreement is untouched.
+  {
+    const qbs = ps.filter((p) => p.pos === "QB");
+    if (qbs.length >= 6) {
+      const byAdp = qbs.slice().sort((a, b) => (a.adp || 999) - (b.adp || 999));   // QB order the market implies
+      const byPts = qbs.slice().sort((a, b) => (b.pts || 0) - (a.pts || 0));        // QB order the projection implies
+      const adpRankOf = new Map(byAdp.map((p, i) => [p.id, i]));                     // 0 = ADP's QB1
+      const ptsRankOf = new Map(byPts.map((p, i) => [p.id, i]));                     // 0 = points' QB1
+      qbs.forEach((p) => {
+        const aR = adpRankOf.get(p.id), pR = ptsRankOf.get(p.id);
+        // Anomaly = market ranks him much HIGHER than his points do (aR far smaller than pR). Require a big gap
+        // (≥4 QB spots) AND that points put him outside the top tier, so we only touch clear data errors.
+        if (pR - aR >= 4 && pR >= 5) {
+          // Target ADP: what the QB sitting at his POINTS rank is going for (blend toward it, don't fully snap,
+          // so a genuinely-rising QB isn't over-corrected). Never move him EARLIER than his points peer.
+          const peer = byPts[Math.min(pR, byPts.length - 1)];
+          const peerAdp = (byAdp[Math.min(pR, byAdp.length - 1)] || {}).adp;
+          const target = peerAdp != null ? peerAdp : p.adp;
+          if (target > p.adp) {
+            p.adp = Math.round((p.adp * 0.25 + target * 0.75) * 10) / 10;            // pull most of the way toward points-consistent
+            p.adpMarket = p.adp;
+            p.adpFixed = true;                                                       // marker for debugging
+          }
+        }
+      });
+    }
+  }
   const counts = sf ? { QB: 24, RB: 30, WR: 36, TE: 14 } : { QB: 14, RB: 30, WR: 36, TE: 14 };
   const repl = {};
   POS.forEach((pos) => { const s = ps.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts); repl[pos] = s.length ? s[Math.min(counts[pos] - 1, s.length - 1)].pts : 0; });
@@ -18910,73 +18943,99 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
       {tab === "league" && (() => {
         const useProj = teamsProj && proj;
-        const rq = REQ_F(isSuperflex(cfg));
+        // Rosters per team: Current = rostersByTeam (keeper-aware); Projected = proj.rosters (fully drafted out).
+        const rostersFor = (i) => (useProj ? (proj.rosters[i] || []) : (rostersByTeam[i] || []));
+        // Ranking: Projected uses projectAll's finish (proj.rank/pts); Current ranks by current starting-lineup pts.
         const curPts = [];
-        for (let i = 0; i < TEAMS; i++) curPts.push(lineupPts(rostersByTeam[i] || [], cfg.sf));
+        for (let i = 0; i < TEAMS; i++) curPts.push(lineupSlots(rostersByTeam[i] || [], cfg.sf).slots.reduce((s, x) => s + (x.p ? (x.p.pts || 0) : 0), 0));
         const curOrder = curPts.map((v, i) => ({ v, i })).sort((a, b) => b.v - a.v);
         const curRank = new Array(TEAMS); curOrder.forEach((e, idx) => (curRank[e.i] = idx + 1));
-        const rows = [];
-        for (let i = 0; i < TEAMS; i++) {
-          const roster = useProj ? (proj.rosters[i] || []) : (rostersByTeam[i] || []);
-          const counts = { QB: 0, RB: 0, WR: 0, TE: 0, DST: 0, K: 0 };
-          roster.forEach((p) => { if (p && counts[p.pos] != null) counts[p.pos]++; });
-          rows.push({
-            i, name: i === userIdx ? "You" : (TEAM_NAMES[i] || `Team ${i + 1}`),
-            mine: i === userIdx,
-            pts: useProj ? Math.round(proj.pts[i]) : Math.round(curPts[i]),
-            rank: useProj ? proj.rank[i] : curRank[i],
-            counts,
-          });
-        }
-        rows.sort((a, b) => a.rank - b.rank);
-        const th = { fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", fontWeight: 700, padding: "0 8px 6px", textAlign: "center" };
-        const thL = { ...th, textAlign: "left" };
-        const posCell = (n, pos, need) => {
-          const short = n < need;
-          return <td style={{ padding: "7px 8px", textAlign: "center", fontVariantNumeric: "tabular-nums" }}><span style={{ display: "inline-block", minWidth: 22, fontWeight: n === 0 ? 400 : 700, color: n === 0 ? "var(--line2)" : short ? "var(--red)" : POS_COLOR[pos] || "var(--ink)" }}>{n}</span></td>;
-        };
+        // Position-group strength tiers (0 strong / 1 middle / 2 thin) for the badges atop each card — computed
+        // over the SAME rosters we're showing (current or projected) so the colors match the view.
+        const tierRosters = []; for (let i = 0; i < TEAMS; i++) tierRosters.push(rostersFor(i));
+        const tiers = posQualityTiers(tierRosters, cfg, userIdx).level;
+        const tierRGB = (lv) => lv === 0 ? "95,208,168" : lv === 1 ? "242,182,60" : "242,101,92"; // green / gold / red
+        const tierSolid = (lv) => lv === 0 ? "var(--green)" : lv === 1 ? "var(--gold)" : "var(--red)";
+        const tierLabel = (lv) => lv === 0 ? "Strong" : lv === 1 ? "Middle" : "Thin";
+        const order = Array.from({ length: TEAMS }, (_, i) => i).sort((a, b) => (useProj ? proj.rank[a] - proj.rank[b] : curRank[a] - curRank[b]));
+        const showDST = !!(cfg.start && cfg.start.DST > 0), showK = !!(cfg.start && cfg.start.K > 0);
         return (
           <div style={{ padding: 16 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 4 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
               <div>
-                <div className="disp" style={{ fontSize: 17, fontWeight: 700 }}>League overview</div>
-                <div className="mut" style={{ fontSize: 12, marginTop: 2 }}>Every team side by side — {useProj ? "projected finish once the draft plays out" : "where they stand right now"}. Compare who has what at each position.</div>
+                <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>League — every team</div>
+                <div className="mut" style={{ fontSize: 12, marginTop: 2 }}>One place to see everyone's roster, ranked by {useProj ? "projected" : "current"} points. Player color = strength at his position; the badges up top rate each team's position group vs the league.</div>
               </div>
-              <div style={{ display: "flex", gap: 0, border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }}>
+              <div style={{ display: "flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }}>
                 <button className="btn" style={{ borderRadius: 0, border: "none", background: !teamsProj ? "var(--gold)" : "transparent", color: !teamsProj ? "#151002" : "var(--ink)", fontWeight: !teamsProj ? 700 : 400 }} onClick={() => setTeamsProj(false)}>Current</button>
                 <button className="btn" style={{ borderRadius: 0, border: "none", background: teamsProj ? "var(--gold)" : "transparent", color: teamsProj ? "#151002" : "var(--ink)", fontWeight: teamsProj ? 700 : 400 }} onClick={() => setTeamsProj(true)}>Projected</button>
               </div>
             </div>
-            {useProj && <div className="mut" style={{ fontSize: 11, marginBottom: 10, fontStyle: "italic" }}>Projected = the engine drafts out every team's remaining picks, then ranks final starting lineups. Your keepers and everyone's are included.</div>}
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 620 }}>
-                <thead>
-                  <tr style={{ borderBottom: "1px solid var(--line)" }}>
-                    <th style={thL}>#</th>
-                    <th style={thL}>Team</th>
-                    <th style={{ ...th, textAlign: "right" }}>{useProj ? "Proj pts" : "Lineup pts"}</th>
-                    <th style={th}>QB</th><th style={th}>RB</th><th style={th}>WR</th><th style={th}>TE</th>
-                    {(cfg.start && cfg.start.DST > 0) ? <th style={th}>DST</th> : null}
-                    {(cfg.start && cfg.start.K > 0) ? <th style={th}>K</th> : null}
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r) => (
-                    <tr key={r.i} style={{ borderBottom: "1px solid var(--line2)", background: r.mine ? "rgba(242,182,60,.10)" : undefined }}>
-                      <td style={{ padding: "7px 8px", fontWeight: 800, color: r.rank <= 3 ? "var(--gold)" : "var(--mut)", fontVariantNumeric: "tabular-nums" }}>{ordinal(r.rank)}</td>
-                      <td style={{ padding: "7px 8px", fontWeight: r.mine ? 800 : 600, color: r.mine ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 200 }}>{r.mine && <i className="ti ti-star-filled" style={{ fontSize: 10, marginRight: 5 }} aria-hidden="true" />}{r.name}</td>
-                      <td style={{ padding: "7px 8px", textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{r.pts}</td>
-                      {posCell(r.counts.QB, "QB", rq.QB)}{posCell(r.counts.RB, "RB", rq.RB)}{posCell(r.counts.WR, "WR", rq.WR)}{posCell(r.counts.TE, "TE", rq.TE)}
-                      {(cfg.start && cfg.start.DST > 0) ? posCell(r.counts.DST, "DST", cfg.start.DST) : null}
-                      {(cfg.start && cfg.start.K > 0) ? posCell(r.counts.K, "K", cfg.start.K) : null}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 12 }} className="league-grid">
+              {order.map((i) => {
+                const roster = rostersFor(i);
+                const { slots, bench } = lineupSlots(roster, cfg.sf);
+                const rank = useProj ? proj.rank[i] : curRank[i];
+                const pts = useProj ? Math.round(proj.pts[i]) : Math.round(curPts[i]);
+                const mine = i === userIdx;
+                const name = mine ? "You" : (TEAM_NAMES[i] || `Team ${i + 1}`);
+                const teamTiers = tiers[i] || {};
+                const playerRow = (label, p, isBench) => (
+                  <div key={label + (p ? p.id : "empty")} style={{ display: "grid", gridTemplateColumns: "38px 1fr auto", gap: 6, alignItems: "center", padding: "2px 0", opacity: isBench ? 0.72 : 1 }}>
+                    <span className="mut" style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".03em" }}>{label}</span>
+                    {p ? (
+                      <>
+                        <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0, fontSize: 12 }}>
+                          <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: 2, background: POS_COLOR[p.pos] || "var(--mut)", marginRight: 6, verticalAlign: "middle" }} />
+                          <span style={{ fontWeight: mine ? 600 : 500 }}>{p.name}</span>
+                        </span>
+                        <span style={{ fontSize: 10.5, fontWeight: 700, color: rankTierColor(p.pos, p.posRank), fontVariantNumeric: "tabular-nums", textAlign: "right" }}>{p.pos}{p.posRank || "—"}</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="mut" style={{ fontSize: 11, fontStyle: "italic" }}>empty</span>
+                        <span />
+                      </>
+                    )}
+                  </div>
+                );
+                return (
+                  <div key={i} style={{ border: `1px solid ${mine ? "var(--gold)" : "var(--line)"}`, borderRadius: 10, background: mine ? "rgba(242,182,60,.05)" : "var(--panel2)", padding: 12, display: "flex", flexDirection: "column", minWidth: 0 }}>
+                    {/* header: rank + name + points */}
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8 }}>
+                      <span style={{ fontSize: 15, fontWeight: 800, color: rank <= 3 ? "var(--gold)" : "var(--mut)", fontVariantNumeric: "tabular-nums" }}>{ordinal(rank)}</span>
+                      <span style={{ fontWeight: mine ? 800 : 700, color: mine ? "var(--gold)" : "var(--ink)", fontSize: 13.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0, flex: 1 }}>{mine && <i className="ti ti-star-filled" style={{ fontSize: 10, marginRight: 4 }} aria-hidden="true" />}{name}</span>
+                      <span style={{ textAlign: "right" }}><span className="num" style={{ fontWeight: 800, fontSize: 14 }}>{pts}</span><span className="mut" style={{ fontSize: 9, marginLeft: 3 }}>{useProj ? "proj" : "pts"}</span></span>
+                    </div>
+                    {/* position-group strength badges */}
+                    <div style={{ display: "flex", gap: 4, marginBottom: 10 }}>
+                      {["QB", "RB", "WR", "TE"].map((pos) => (
+                        <div key={pos} title={`${pos}: ${tierLabel(teamTiers[pos])}`} style={{ flex: 1, textAlign: "center", padding: "3px 0", borderRadius: 5, background: `rgba(${tierRGB(teamTiers[pos])},.16)`, border: `1px solid rgba(${tierRGB(teamTiers[pos])},.45)` }}>
+                          <div style={{ fontSize: 9, fontWeight: 800, color: tierSolid(teamTiers[pos]), letterSpacing: ".03em" }}>{pos}</div>
+                          <div style={{ fontSize: 8, color: tierSolid(teamTiers[pos]), textTransform: "uppercase", letterSpacing: ".02em" }}>{tierLabel(teamTiers[pos])}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {/* starters */}
+                    <div>
+                      {slots.map((s) => playerRow(s.slot, s.p, false))}
+                      {showDST && playerRow("DST", roster.filter((p) => p.pos === "DST").sort((a, b) => (b.pts || 0) - (a.pts || 0))[0] || null, false)}
+                      {showK && playerRow("K", roster.filter((p) => p.pos === "K").sort((a, b) => (b.pts || 0) - (a.pts || 0))[0] || null, false)}
+                    </div>
+                    {/* bench */}
+                    {bench.length > 0 && (
+                      <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--line2)" }}>
+                        <div className="mut" style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700, marginBottom: 3 }}>Bench</div>
+                        {bench.map((p) => playerRow("BN", p, true))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-            <div className="mut" style={{ fontSize: 11, marginTop: 10, display: "flex", gap: 16, flexWrap: "wrap" }}>
-              <span><span style={{ color: "var(--red)", fontWeight: 700 }}>Red</span> = below the starting requirement at that position</span>
-              <span>Open <b>Team analysis</b> for any one team's full breakdown</span>
+            <div className="mut" style={{ fontSize: 11, marginTop: 12, display: "flex", gap: 16, flexWrap: "wrap" }}>
+              <span><span style={{ color: "var(--green)", fontWeight: 700 }}>Green</span> / <span style={{ color: "var(--gold)", fontWeight: 700 }}>amber</span> / <span style={{ color: "var(--red)", fontWeight: 700 }}>red</span> = player's strength at his position (and each team's position-group tier up top)</span>
+              <span>Rank badges show top-3 in gold. Toggle Current / Projected above.</span>
             </div>
           </div>
         );
