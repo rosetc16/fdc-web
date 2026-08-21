@@ -90,7 +90,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20ah";
+const BUILD_TAG = "2026.07.20ai";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3019,7 +3019,16 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build, posVbds, dbg) {
     dbg.reach = Math.round(reachPenalty(c, pickNum)); dbg.buildScore = Math.round(buildScore);
     dbg.market = Math.round(market); dbg.mktW = +mktW.toFixed(2); dbg.total = Math.round(market * mktW + buildScore * (1 - mktW));
   }
-  return market * mktW + buildScore * (1 - mktW);
+  let finalScore = market * mktW + buildScore * (1 - mktW);
+  // SURPLUS-QB BACKSTOP (1-QB, non-SF). Once your one QB slot is filled, a 2nd QB this side of the late rounds
+  // is dead weight — you can only start one and QB2..QB12 are viable streamers, so RB/WR depth (or a real need)
+  // should win. Hold a surplus QB below the value of a startable skill player so he can't top the board early,
+  // regardless of how his market/VBD got inflated upstream. Fades out by the late rounds when a backup is fine.
+  if (c.pos === "QB" && !sf && (SPEC.SUPER || 0) === 0 && (counts.QB || 0) >= 1 && round <= 11) {
+    finalScore = Math.min(finalScore, 12 - Math.max(0, counts.QB - 1) * 8); // ≤12 for a 2nd QB, lower for a 3rd+
+  }
+  if (dbg && typeof dbg === "object") dbg.total = Math.round(finalScore);
+  return finalScore;
 }
 // cost of drafting a player well before the market would — grows the earlier you are
 // (a round-1 reach is far more wasteful than a round-12 reach) and with the gap size.
