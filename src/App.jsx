@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20r";
+const BUILD_TAG = "2026.07.20s";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3359,12 +3359,19 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
   let posRankByPos = {}, overallRank = null, leagueSize = cfg.teams || TEAMS_FALLBACK, startingPtsRankPct = null, allTeamStartPts = [], profileRanks = null;
   if (ctx && ctx.allPicks && ctx.players && ctx.teamAtFn) {
     const n = cfg.teams || TEAMS_FALLBACK;
+    // Reconstruct every team's roster IDENTICALLY to the hub's rostersByTeam so all three RB/pos-rank surfaces
+    // (hub "How you're doing", "Where you rank", and the "Positional rankings by team" grid) score the exact
+    // same roster. That means THREE sources, not just picks:
+    //   1) allPicks — drafted players + pick-cost keepers already placed in the dense picks array
+    //   2) noCostByTeam — no-cost keepers (kept, not occupying a draft slot)
+    //   3) forcedAhead — FUTURE pick-cost keepers previewed on the board but not yet reached by the draft
+    // Missing #3 was the bug: at the start of a keeper draft your kept RBs sit AHEAD of the current pick (in
+    // forcedAhead, not yet in picks), so the hub counted them but team-analysis didn't → different RB ranks.
     const rosters = Array.from({ length: n }, () => []);
     ctx.allPicks.forEach((pk, o) => { const pl = ctx.players[pk]; if (pl) { const t = ctx.teamAtFn(o); if (t != null && rosters[t]) rosters[t].push(pl); } });
-    // Add NO-COST keepers (KEEPER_ADDS) — they're kept players not sitting in a draft slot, so they aren't in
-    // allPicks, but they ARE on the roster and must count toward positional strength (the hub's rostersByTeam
-    // includes them, so without this the two disagreed). Pick-cost keepers are already in allPicks above.
-    for (let t = 0; t < n; t++) { keeperAddIds(t).forEach((id) => { const pl = ctx.players[id]; if (pl && !rosters[t].some((x) => x.id === pl.id)) rosters[t].push(pl); }); }
+    const ncbt = ctx.noCostByTeam || {};
+    Object.entries(ncbt).forEach(([t, ids]) => { (ids || []).forEach((id) => { const pl = ctx.players[id]; if (pl && rosters[+t] && !rosters[+t].some((x) => x.id === pl.id)) rosters[+t].push(pl); }); });
+    (ctx.forcedAhead || []).forEach((f) => { const pl = ctx.players[f.id]; if (pl && rosters[f.team] && !rosters[f.team].some((x) => x.id === pl.id)) rosters[f.team].push(pl); });
     // position strength per team = SHARED quality score (quality × quantity, starter-focused with drop-off
     // credit) so this ranking matches the hub/overview coloring exactly.
     // Replacement level per position, from the league's whole player pool — the honest "value of the last
@@ -3374,7 +3381,12 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
       const reqN = effReq[pos] || 0;
       const scoreOfTeam = (rosterArr) => posQualityScore(rosterArr.filter((p) => p.pos === pos), reqN, { dynasty: taDynasty, flexShare: taFlexShare[pos] || 0, slotBaseline: taRepl[pos] });
       const mine = scoreOfTeam(rosters[userIdxOf(ctx)]);
-      const all = rosters.map((r, i) => ({ i, v: scoreOfTeam(r) })).sort((a, b) => b.v - a.v);
+      // SAME stable, user-favored tiebreak as the grid below AND the hub's posRankMineActual: a clear score gap
+      // wins; a near-tie (within 0.5 → same displayed whole number) resolves in the user's favor, then by team
+      // index. Without this, "Where you rank" used a plain sort and could show a DIFFERENT rank than the grid
+      // for the identical roster (e.g. 8th here vs 5th in the grid).
+      const uIdx = userIdxOf(ctx);
+      const all = rosters.map((r, i) => ({ i, v: scoreOfTeam(r) })).sort((a, b) => { const d = b.v - a.v; if (Math.abs(d) > 0.5) return d; if (a.i === uIdx) return -1; if (b.i === uIdx) return 1; return a.i - b.i; });
       const rank = all.findIndex((x) => x.i === userIdxOf(ctx)) + 1;
       posRankByPos[pos] = { rank: rank || n, of: n, mine: Math.round(mine) };
     });
@@ -18100,7 +18112,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         // Build the selected team's drafted roster from picks.
         const selRoster = rostersByTeam[selTeam] || [];
         const posColor = { QB: POS_COLOR.QB, RB: POS_COLOR.RB, WR: POS_COLOR.WR, TE: POS_COLOR.TE };
-        const ta = teamAnalysis(selRoster, cfg, isMe ? myWindow : null, isMe ? advice : null, path, { allPicks: picks, players, teamAtFn: teamAt, userIdx: selTeam, projRosters: (proj && proj.rosters) || null });
+        const ta = teamAnalysis(selRoster, cfg, isMe ? myWindow : null, isMe ? advice : null, path, { allPicks: picks, players, teamAtFn: teamAt, userIdx: selTeam, projRosters: (proj && proj.rosters) || null, forcedAhead, noCostByTeam });
         const myProjView = myTeamView === "projected";
         // Projected view = the SAME full-roster projection the hub uses (proj.rosters), which simulates
         // every remaining round — not just the next pick or two. Previously this only appended the short
@@ -18112,7 +18124,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         // The set of players that are projected (not yet actually drafted) — used to mark them in the UI.
         const draftedIdSet = new Set(selRoster.map((p) => p.id));
         const projectedAdds = projRosterFull ? projRosterFull.filter((p) => !draftedIdSet.has(p.id)) : [];
-        const taShown = teamAnalysis(shownRoster, cfg, isMe ? myWindow : null, isMe ? advice : null, path, { allPicks: picks, players, teamAtFn: teamAt, userIdx: selTeam, projRosters: (proj && proj.rosters) || null });
+        const taShown = teamAnalysis(shownRoster, cfg, isMe ? myWindow : null, isMe ? advice : null, path, { allPicks: picks, players, teamAtFn: teamAt, userIdx: selTeam, projRosters: (proj && proj.rosters) || null, forcedAhead, noCostByTeam });
         // Next-pick targets (only meaningful for your own team). Use YOUR next-pick advice (mySelAdvice) — which
         // is computed with YOUR roster counts and cap-filters positions you've maxed — NOT the generic on-clock
         // `advice` (that's for whoever is currently on the board and uses THEIR counts, so it can surface a
