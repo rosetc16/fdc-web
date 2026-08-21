@@ -90,7 +90,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20ai";
+const BUILD_TAG = "2026.07.20aj";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -14891,40 +14891,38 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       const isEarlyEnough = pl.adp <= pickN * 0.6;          // his cost is well inside where we are now
       return isEarlyEnough && (pickN - pl.adp) >= 12;        // and he's slid a clear margin past it
     };
+    // ===== THE ROSTER THE RECOMMENDATION SCORES AGAINST — ONE SOURCE, THE SAME ONE THE UI SHOWS =====
+    // A team's roster lives in four separate channels (drafted picks, no-cost keepers, pick-cost keepers held
+    // at future slots, existing platform holdings) and nearly every widget used to re-derive it from scratch.
+    // Every time one of those re-derivations missed a channel, the same failure appeared: a position that is
+    // actually FULL reads EMPTY here, so a candidate there collects the empty-starter premium, keeps his full
+    // positional VBD, dodges the over-stack and surplus-QB penalties, and floats to #1 over a position the
+    // team genuinely needs — while "How you're doing" sits three inches away showing the position filled.
+    // FIX: build ONE deduped roster from every channel at once, STARTING from rostersByTeam — the exact array
+    // "How you're doing", the League tab and Team Analysis all render — then union in the channels it doesn't
+    // carry. Counts and held-VBDs both come off that single list, so the recommendation can no longer disagree
+    // with the roster on screen. Union semantics mean this can only ever count MORE than the old code, never
+    // less, so it cannot re-open the over-counting bug that dedup was added to prevent.
+    const myRoster = [];
+    const seenRosterId = new Set();
+    const addRosterPl = (pl) => { if (pl && pl.id != null && !seenRosterId.has(pl.id)) { seenRosterId.add(pl.id); myRoster.push(pl); } };
+    ((rostersByTeam && rostersByTeam[forTeam]) || []).forEach(addRosterPl);                       // picks + no-cost keepers + forced-ahead, exactly as rendered
+    picks.forEach((pk, o) => { if (teamAt(o) === forTeam) addRosterPl(players[pk]); });           // drafted picks
+    (keeperAddIds(forTeam) || []).forEach((id) => addRosterPl(players[id]));                      // no-cost keepers (engine global)
+    Object.entries(keeperByPick).forEach(([o, id]) => { if (teamAt(+o) === forTeam) addRosterPl(players[id]); }); // pick-cost keepers at their slot
+    (forcedAhead || []).forEach((f) => { if (f && f.team === forTeam) addRosterPl(players[f.id]); });             // pick-cost keepers previewed ahead
     const myCounts = { QB: 0, RB: 0, WR: 0, TE: 0 };
-    picks.forEach((pk, o) => { const pl = players[pk]; if (teamAt(o) === forTeam && pl && myCounts[pl.pos] != null) myCounts[pl.pos]++; });
+    myRoster.forEach((pl) => { if (myCounts[pl.pos] != null) myCounts[pl.pos]++; });
+    // Existing platform holdings (ROSTER_ADDS) carry no player id, so they can't be deduped by id — seed them
+    // the same way every other surface does.
+    seedRosterCounts(forTeam, myCounts);
     // Fold in what THIS team's own projected earlier picks would add before the analyzed pick, so a future
     // pick's needs reflect the roster you'll actually have then — not the one you have now.
     POS.forEach((pos) => { if (myCounts[pos] != null) myCounts[pos] += (myProjectedByPos[pos] || 0); });
-    // Also count what this team ALREADY holds outside this draft — existing-roster players (rookie/dynasty/
-    // keeper drafts connected to a platform) and no-cost keepers. Without this, the recommendation for a
-    // rookie or keeper draft would ignore that you already roster, say, 3 QBs and might still push a QB.
-    seedRosterCounts(forTeam, myCounts);
-    seedKeeperCounts(players, forTeam, myCounts);
-    // Count PICK-COST keepers this team holds at FUTURE slots too (kept in a draft slot via keeperByPick /
-    // previewed in forcedAhead). They aren't in `picks` yet (the draft hasn't reached their slot) and aren't
-    // no-cost keepers, so without this myCounts UNDERCOUNTS the roster — e.g. a TE kept in round 11 didn't count,
-    // so at pick 4.03 the engine thought the user had 1 TE not 2 and recommended a 3rd TE as a flex-fill instead
-    // of penalizing it as an over-stack. Dedup against players already counted from picks.
-    {
-      const countedIds = new Set();
-      picks.forEach((pk, o) => { if (teamAt(o) === forTeam) countedIds.add(pk); });
-      const bump = (id) => { const pl = players[id]; if (pl && !countedIds.has(id) && myCounts[pl.pos] != null) { myCounts[pl.pos]++; countedIds.add(id); } };
-      Object.entries(keeperByPick).forEach(([o, id]) => { if (teamAt(+o) === forTeam) bump(id); });
-      (forcedAhead || []).forEach((f) => { if (f && f.team === forTeam) bump(f.id); });
-    }
-    // Collect the VBDs this team ALREADY holds at each position — from ALL sources so the starter-upgrade check
-    // actually sees the roster: drafted picks, no-cost keepers (KEEPER_ADDS), AND pick-cost keepers (kept in a
-    // draft slot, tracked in keeperByPick / previewed in forcedAhead). The last group was the miss that made the
-    // 20v fix inert for Trey — his keepers are pick-cost and sit at FUTURE slots pre-draft, so they were in
-    // neither `picks` nor keeperAddIds, leaving myPosVbds empty and isStarterUpgrade permanently false.
+    // The VBDs this team already holds at each position come off that SAME list, so the starter-upgrade check
+    // can never see a different roster than the counts above.
     const myPosVbds = { QB: [], RB: [], WR: [], TE: [] };
-    const seenVbdId = new Set();
-    const addVbd = (pl) => { if (pl && myPosVbds[pl.pos] && !seenVbdId.has(pl.id)) { seenVbdId.add(pl.id); myPosVbds[pl.pos].push(pl.vbd || 0); } };
-    picks.forEach((pk, o) => { if (teamAt(o) === forTeam) addVbd(players[pk]); });
-    (keeperAddIds(forTeam) || []).forEach((id) => addVbd(players[id]));
-    Object.entries(keeperByPick).forEach(([o, id]) => { if (teamAt(+o) === forTeam) addVbd(players[id]); });
-    (forcedAhead || []).forEach((f) => { if (f && f.team === forTeam) addVbd(players[f.id]); });
+    myRoster.forEach((pl) => { if (myPosVbds[pl.pos]) myPosVbds[pl.pos].push(pl.vbd || 0); });
     POS.forEach((pos) => myPosVbds[pos].sort((a, b) => a - b)); // ascending → [0] is the weakest current body
     const bestNow = { QB: null, RB: null, WR: null, TE: null };
     for (const p of sortedAdp) if (!goneSet.has(p.id) && (!bestNow[p.pos] || p.vbd > bestNow[p.pos].vbd)) bestNow[p.pos] = p;
@@ -15073,8 +15071,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           .filter((p) => p && !draftedSet.has(p.id) && !inPool.has(p.id) && p.adp != null && p.adp <= pickNum + 6)
           .slice(0, 8)
           .map((p) => ({ name: p.name, pos: p.pos, adp: p.adp, vbd: p.vbd, survived: (() => { try { return survivesToPick(p.id); } catch (e) { return null; } })(), legalCapped: (myCounts[p.pos] || 0) >= (capsOf(cfg)[p.pos] || 99) }));
-        dbgRows = { rows, excluded: notablesOut, myPosVbds, myCounts: { ...myCounts }, dem: { QB: +(dem.QB || 0).toFixed(2), RB: +(dem.RB || 0).toFixed(2), WR: +(dem.WR || 0).toFixed(2), TE: +(dem.TE || 0).toFixed(2) } };
-      } catch (e) { dbgRows = { rows: [], excluded: [], myPosVbds: {}, myCounts: {}, dem: {}, error: String(e && e.message || e) }; }
+        // WHOSE roster is being scored, and exactly which players are in it. When a recommendation looks wrong
+        // the cause is almost always here rather than in the scoring math — either the advice is being built
+        // for the wrong team, or a channel of the roster went missing — and both are invisible without this.
+        dbgRows = { rows, excluded: notablesOut, myPosVbds, myCounts: { ...myCounts }, forTeam, userIdx, sfFlag: !!cfg.sf, superSlots: SPEC.SUPER || 0, roster: myRoster.map((p) => `${p.name}·${p.pos}`), dem: { QB: +(dem.QB || 0).toFixed(2), RB: +(dem.RB || 0).toFixed(2), WR: +(dem.WR || 0).toFixed(2), TE: +(dem.TE || 0).toFixed(2) } };
+      } catch (e) { dbgRows = { rows: [], excluded: [], myPosVbds: {}, myCounts: {}, roster: [], dem: {}, error: String(e && e.message || e) }; }
     }
     return { bestNow, waitCost, waitDetail, verdict, alts, impacts, run, myCounts, strat, expBestPlayer: simState.expBestPlayer || {}, dbgRows };
   };
@@ -15082,7 +15083,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // NOTE: adviceFor reads `strategy` internally (via strat = strategyOverride || strategy), so it MUST be a
   // dependency here. Without it this memo served a stale recommendation after a strategy change, which is how
   // the "On the clock" alternatives could disagree with the "Your decision" panel for the very same pick.
-  const advice = useMemo(() => adviceFor(picks.length, onClock, sims), [sims, picks, players, sortedAdp, draftedSet, onClock, cfg, strategy, done, dem, forcedAhead]);
+  const advice = useMemo(() => adviceFor(picks.length, onClock, sims), [sims, picks, players, sortedAdp, draftedSet, onClock, cfg, strategy, done, dem, forcedAhead, rostersByTeam, keeperByPick]);
   // Open the between-picks summary the moment you land on the clock. Fires once per turn (guarded by
   // recapShownAtRef), never after a per-draft dismissal, and only when at least one pick actually
   // happened since your last one (opening the draft at 1.01 has nothing to recap).
@@ -15122,7 +15123,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // under the "My build" strategy (bottom line). BOTH come from adviceFor — the same engine that produces
   // the real recommendation — so the "My build" line is always exactly the My-build recommendation, and the
   // top line always matches the selected strategy (identical to the build line when "My build" is selected).
-  const mySelAdvice = useMemo(() => adviceFor(myPickOverall, userIdx, sims), [sims, picks, players, sortedAdp, draftedSet, userIdx, myPickOverall, cfg, strategy, done, dem]);
+  const mySelAdvice = useMemo(() => adviceFor(myPickOverall, userIdx, sims), [sims, picks, players, sortedAdp, draftedSet, userIdx, myPickOverall, cfg, strategy, done, dem, forcedAhead, rostersByTeam, keeperByPick]);
   // PERF: `myBuildAdvice` used to be computed here on every render and then never read — its only reference was
   // an alias (`buildAdvice`) that nothing consumed. Each adviceFor call runs a full draft-path projection plus
   // impact projections, so that was an entire wasted simulation per pick. Removed.
@@ -15136,7 +15137,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     [mySelAdvice, sims, picks, players, sortedAdp, draftedSet, userIdx, myPickOverall, cfg, done, dem]
   );
   // Recommendation specifically for YOUR next pick (may be the same as current if you're on the clock).
-  const myAdvice = useMemo(() => (onClock === userIdx ? null : adviceFor(myNextOverall, userIdx, sims)), [sims, picks, players, sortedAdp, draftedSet, onClock, userIdx, myNextOverall, cfg, strategy, done, dem]);
+  const myAdvice = useMemo(() => (onClock === userIdx ? null : adviceFor(myNextOverall, userIdx, sims)), [sims, picks, players, sortedAdp, draftedSet, onClock, userIdx, myNextOverall, cfg, strategy, done, dem, forcedAhead, rostersByTeam, keeperByPick]);
 
   // SELECTIVE insight tags. The whole point is to pull your eye to the few players you should
   // actually be locked into right now — not to label half the board. We build a small, capped set
@@ -17883,6 +17884,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           )}
                           <div style={{ marginTop: 4, color: "var(--mut)" }}>myPosVbds: {["QB","RB","WR","TE"].map((p) => `${p}[${(balAdv.dbgRows.myPosVbds[p] || []).join(",")}]`).join(" ")}</div>
                           {balAdv.dbgRows.myCounts && <div style={{ marginTop: 2, color: "var(--mut)" }}>counts: {["QB","RB","WR","TE"].map((p) => `${p} ${balAdv.dbgRows.myCounts[p]}`).join(" · ")}　|　dem: {["QB","RB","WR","TE"].map((p) => `${p} ${balAdv.dbgRows.dem[p]}`).join(" · ")}</div>}
+                          <div style={{ marginTop: 2, color: "var(--mut)" }}>scoring for team {balAdv.dbgRows.forTeam}{balAdv.dbgRows.forTeam === balAdv.dbgRows.userIdx ? " (YOU)" : ` — YOU are team ${balAdv.dbgRows.userIdx}`} · sf {String(balAdv.dbgRows.sfFlag)} · super {balAdv.dbgRows.superSlots}</div>
+                          <div style={{ marginTop: 2, color: "var(--mut)", whiteSpace: "normal" }}>roster seen ({(balAdv.dbgRows.roster || []).length}): {(balAdv.dbgRows.roster || []).join(", ") || "—"}</div>
                         </div>
                       )}
                     </div>
