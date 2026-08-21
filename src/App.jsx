@@ -90,7 +90,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20aj";
+const BUILD_TAG = "2026.07.20ak";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2851,7 +2851,7 @@ function windowFit(c, lane, dynasty) {
   if (lane === "winnow") return Math.max(0, age - 24) * 2 - (c.rookie ? 8 : 0) - Math.max(0, assetGap) * 0.25;
   return 0;
 }
-function userScore(c, counts, dem, strategy, sf, pickNum, build, posVbds, dbg) {
+function userScore(c, counts, dem, strategy, sf, pickNum, build, posVbds, dbg, posTilt) {
   if (strategy === "adp") {
     // "Strict ADP" = follow the board order (best available by ADP). But it still shouldn't hand you a player
     // at a position you literally can't use — e.g. a 6th QB in a superflex league where you already start your
@@ -2973,7 +2973,15 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build, posVbds, dbg) {
   const deadQB = c.pos === "QB" && !sf && (SPEC.SUPER || 0) === 0 && counts.QB >= 2 && !(Math.max(0, ROSTER_ROUNDS - startersTot) >= 12) && !dynasty;
   const adpValue = deadQB ? 0 : Math.min(45, adpFall * 0.7);
 
-  let buildScore = mvUse + needBonus - overStack - flexEarly - qbDead
+  // QUALITY-WEIGHTED POSITIONAL NEED. `needBonus`/`overStack` above only ever counted BODIES; this term adds
+  // the other half of need — how good the room those bodies form actually is, relative to the rest of the
+  // league. Set by adviceFor (recommendation only); sims and projections pass nothing, so it's inert there
+  // and every team still drafts on the same neutral model. Depth picks only: a candidate who'd fill an empty
+  // dedicated starter slot is priced by emptyStarterPremium and is deliberately left alone.
+  const isDepthPick = (counts[c.pos] || 0) >= (REQ_EFF(sf)[c.pos] || 0);
+  const qualityTilt = (posTilt && isDepthPick) ? (posTilt[c.pos] || 0) : 0;
+
+  let buildScore = mvUse + needBonus - overStack - flexEarly - qbDead + qualityTilt
     + emptyStarterPremium(c, counts, sf)
     + (SCARCITY_PREM[c.pos] || 0)
     + windowFit(c, lane, dynasty)
@@ -3014,7 +3022,7 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build, posVbds, dbg) {
     dbg.pos = c.pos; dbg.vbd = c.vbd; dbg.adp = c.adp; dbg.mv = Math.round(mv); dbg.mvUse = Math.round(mvUse);
     dbg.isStarterUpgrade = !!isStarterUpgrade; dbg.weakestHeld = weakestHeld;
     dbg.needBonus = Math.round(needBonus); dbg.overStack = Math.round(overStack); dbg.flexEarly = Math.round(flexEarly);
-    dbg.qbDead = Math.round(qbDead); dbg.emptyStarter = Math.round(emptyStarterPremium(c, counts, sf));
+    dbg.qbDead = Math.round(qbDead); dbg.qual = Math.round(qualityTilt); dbg.emptyStarter = Math.round(emptyStarterPremium(c, counts, sf));
     dbg.scarcity = Math.round(SCARCITY_PREM[c.pos] || 0); dbg.adpValue = Math.round(adpValue);
     dbg.reach = Math.round(reachPenalty(c, pickNum)); dbg.buildScore = Math.round(buildScore);
     dbg.market = Math.round(market); dbg.mktW = +mktW.toFixed(2); dbg.total = Math.round(market * mktW + buildScore * (1 - mktW));
@@ -3024,8 +3032,13 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build, posVbds, dbg) {
   // is dead weight — you can only start one and QB2..QB12 are viable streamers, so RB/WR depth (or a real need)
   // should win. Hold a surplus QB below the value of a startable skill player so he can't top the board early,
   // regardless of how his market/VBD got inflated upstream. Fades out by the late rounds when a backup is fine.
-  if (c.pos === "QB" && !sf && (SPEC.SUPER || 0) === 0 && (counts.QB || 0) >= 1 && round <= 11) {
-    finalScore = Math.min(finalScore, 12 - Math.max(0, counts.QB - 1) * 8); // ≤12 for a 2nd QB, lower for a 3rd+
+  // Gate on how many QBs this format actually STARTS (REQ_EFF folds in superflex/2QB/OP) rather than on the
+  // sf + SUPER booleans. Same behaviour in a 1-QB league — cap once you hold a QB — but it now generalises:
+  // superflex only caps from the THIRD QB, and a league whose format flags disagree with its roster slots
+  // can't accidentally switch the whole guard off.
+  const qbSlots = Math.max(1, Math.round(REQ_EFF(sf).QB || 1));
+  if (c.pos === "QB" && (counts.QB || 0) >= qbSlots && round <= 11) {
+    finalScore = Math.min(finalScore, 12 - Math.max(0, (counts.QB || 0) - qbSlots) * 8); // ≤12 for the first surplus QB, lower beyond
   }
   if (dbg && typeof dbg === "object") dbg.total = Math.round(finalScore);
   return finalScore;
@@ -14476,6 +14489,29 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     (forcedAhead || []).forEach((f) => { const p = players[f.id]; if (p && out[f.team] && !out[f.team].some((x) => x.id === p.id)) out[f.team].push(p); });
     return out;
   }, [picks, players, noCostByTeam, forcedAhead, liveSlots, cfg]);
+  // LEAGUE-RELATIVE POSITIONAL RANK per team (1 = best room in the league … TEAMS = worst) at each position,
+  // from the SAME shared scorer the hub rail, the rankings grid and Team Analysis use — so "you're 7th at RB"
+  // means one thing everywhere, and the recommendation can finally read it. Defined HERE, above adviceFor, so
+  // the advice memos can use it without a temporal-dead-zone crash.
+  const posRankByTeam = useMemo(() => {
+    try {
+      const { score } = posQualityTiers(rostersByTeam, cfg, userIdx);
+      const out = {};
+      POS.forEach((pos) => {
+        // Same stable, user-favored tiebreak as every other rank surface (scores within 0.5 display as the
+        // same whole number, so they must not rank differently on an invisible decimal).
+        const order = Array.from({ length: TEAMS }, (_, i) => i).sort((a, b) => {
+          const d = ((score[b] && score[b][pos]) || 0) - ((score[a] && score[a][pos]) || 0);
+          if (Math.abs(d) > 0.5) return d;
+          if (a === userIdx) return -1;
+          if (b === userIdx) return 1;
+          return a - b;
+        });
+        order.forEach((t, i) => { (out[t] = out[t] || {})[pos] = i + 1; });
+      });
+      return out;
+    } catch (e) { return {}; }
+  }, [rostersByTeam, cfg, userIdx, TEAMS]);
   // Forced-ahead picks keyed by their real overall slot, so the draft board can render them in place.
   const forcedAheadByPick = useMemo(() => {
     const m = {};
@@ -15020,7 +15056,37 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const pool = legalCands(pool0, myCounts, cfg);
     // The recommendation follows the given strategy (defaults to the selected one). We compute one for the
     // selected strategy AND a second for "My build", shown side by side in the tracker.
-    const scoreOf = (p) => userScore(p, myCounts, dem, strat, cfg.sf, pickNum, null, myPosVbds) + 0.6 * Math.max(0, waitCost[p.pos]);
+    // ===== POSITIONAL NEED BY QUALITY, NOT JUST QUANTITY =====
+    // Need has always been a COUNTING question here: do you have 2 RB? Then RB is "full" and the next RB is
+    // just depth. But two teams holding 3 RB can be in completely different situations — one owns the best
+    // back room in the league, the other the 7th-best — and the honest answer to "what do I need" has to
+    // include how GOOD the room is, not just how many bodies are in it. So tilt DEPTH picks by this team's
+    // league-relative rank at the position, read from the same scorer that prints "RB 7/10" on the hub rail.
+    // Crucially the tilt is weighted by how much a surplus body at that position can actually PLAY in THIS
+    // format — being "thin" somewhere only matters if another body there would get in the lineup:
+    //   • RB / WR — flex-eligible, injury-exposed, always usable: full weight.
+    //   • TE — you start one and almost never flex a backup: a fraction of the weight (its real flex share).
+    //   • QB in a 1-QB league — a surplus QB NEVER starts, so a thin QB room is not a reason to draft a
+    //     second one: zero weight. (Superflex, where the 2nd QB genuinely starts, keeps a share.)
+    // Only DEPTH picks are tilted — a candidate at a position whose dedicated starter slots are still open is
+    // already handled by the empty-starter premium and must not be re-priced here. Capped so it re-orders
+    // near-equals (a needed 3rd RB vs a 4th WR) and can never overturn a real value gap.
+    const posTilt = { QB: 0, RB: 0, WR: 0, TE: 0 };
+    {
+      const ranks = posRankByTeam[forTeam];
+      const nT = Math.max(2, TEAMS || 10);
+      const sfQB = !!cfg.sf || (SPEC.SUPER || 0) > 0;
+      const fShare = flexShareOf(cfg);
+      const TILT_W = { RB: 1, WR: 1, TE: Math.min(1, 0.25 + (fShare.TE || 0)), QB: sfQB ? 0.5 : 0 };
+      const TILT_MAX = 18; // full-weight swing from best room in the league to worst
+      if (ranks) POS.forEach((pos) => {
+        const rk = ranks[pos];
+        if (rk == null) return;
+        const weakness = (rk - 1) / (nT - 1);                       // 0 = best room in league … 1 = worst
+        posTilt[pos] = ((TILT_W[pos] || 0) * TILT_MAX * (weakness - 0.5) * 2) || 0; // `|| 0` also normalises -0
+      });
+    }
+    const scoreOf = (p) => userScore(p, myCounts, dem, strat, cfg.sf, pickNum, null, myPosVbds, null, posTilt) + 0.6 * Math.max(0, waitCost[p.pos]);
     let ranked = pool.slice().sort((a, b) => scoreOf(b) - scoreOf(a));
     // HEADLINE guard (future picks only): the #1 recommendation shouldn't be a player who's very unlikely to
     // still be on the board at this pick. If the top-scored guy has low survival AND a near-equal-scored
@@ -15065,7 +15131,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     let dbgRows = null;
     if (dbgOn()) {
       try {
-        const rows = ranked.slice(0, 12).map((p) => { const d = {}; try { userScore(p, myCounts, dem, strat, cfg.sf, pickNum, null, myPosVbds, d); } catch (e) {} return { name: (p && p.name) || "?", wait: Math.round(0.6 * Math.max(0, waitCost[p.pos] || 0)), ...d }; });
+        const rows = ranked.slice(0, 12).map((p) => { const d = {}; try { userScore(p, myCounts, dem, strat, cfg.sf, pickNum, null, myPosVbds, d, posTilt); } catch (e) {} return { name: (p && p.name) || "?", wait: Math.round(0.6 * Math.max(0, waitCost[p.pos] || 0)), ...d }; });
         const inPool = new Set(pool.map((p) => p.id));
         const notablesOut = sortedAdp
           .filter((p) => p && !draftedSet.has(p.id) && !inPool.has(p.id) && p.adp != null && p.adp <= pickNum + 6)
@@ -15074,7 +15140,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         // WHOSE roster is being scored, and exactly which players are in it. When a recommendation looks wrong
         // the cause is almost always here rather than in the scoring math — either the advice is being built
         // for the wrong team, or a channel of the roster went missing — and both are invisible without this.
-        dbgRows = { rows, excluded: notablesOut, myPosVbds, myCounts: { ...myCounts }, forTeam, userIdx, sfFlag: !!cfg.sf, superSlots: SPEC.SUPER || 0, roster: myRoster.map((p) => `${p.name}·${p.pos}`), dem: { QB: +(dem.QB || 0).toFixed(2), RB: +(dem.RB || 0).toFixed(2), WR: +(dem.WR || 0).toFixed(2), TE: +(dem.TE || 0).toFixed(2) } };
+        dbgRows = { rows, excluded: notablesOut, myPosVbds, myCounts: { ...myCounts }, forTeam, userIdx, sfFlag: !!cfg.sf, superSlots: SPEC.SUPER || 0, posRanks: posRankByTeam[forTeam] || null, posTilt: { QB: Math.round(posTilt.QB), RB: Math.round(posTilt.RB), WR: Math.round(posTilt.WR), TE: Math.round(posTilt.TE) }, roster: myRoster.map((p) => `${p.name}·${p.pos}`), dem: { QB: +(dem.QB || 0).toFixed(2), RB: +(dem.RB || 0).toFixed(2), WR: +(dem.WR || 0).toFixed(2), TE: +(dem.TE || 0).toFixed(2) } };
       } catch (e) { dbgRows = { rows: [], excluded: [], myPosVbds: {}, myCounts: {}, roster: [], dem: {}, error: String(e && e.message || e) }; }
     }
     return { bestNow, waitCost, waitDetail, verdict, alts, impacts, run, myCounts, strat, expBestPlayer: simState.expBestPlayer || {}, dbgRows };
@@ -17864,14 +17930,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           <div style={{ fontWeight: 800, color: "var(--gold)", marginBottom: 4 }}>RECO DIAGNOSTIC (dbg=1)</div>
                           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9.5, whiteSpace: "nowrap" }}>
                             <thead><tr style={{ color: "var(--mut)" }}>
-                              {["player","pos","vbd","mv","mvUse","up","weak","need","flex","qbD","empty","scar","adpV","reach","build","mkt","mktW","wait","TOTAL"].map((h) => <th key={h} style={{ padding: "1px 4px", textAlign: h === "player" ? "left" : "right" }}>{h}</th>)}
+                              {["player","pos","vbd","mv","mvUse","up","weak","need","qual","flex","qbD","empty","scar","adpV","reach","build","mkt","mktW","wait","TOTAL"].map((h) => <th key={h} style={{ padding: "1px 4px", textAlign: h === "player" ? "left" : "right" }}>{h}</th>)}
                             </tr></thead>
                             <tbody>
                               {balAdv.dbgRows.rows.map((r, i) => (
                                 <tr key={i} style={{ borderTop: "1px solid #ffffff14", textAlign: "right" }}>
                                   <td style={{ textAlign: "left", padding: "1px 4px", color: "var(--ink)" }}>{r.name}</td>
                                   <td>{r.pos}</td><td>{r.vbd}</td><td>{r.mv}</td><td>{r.mvUse}</td><td style={{ color: r.isStarterUpgrade ? "var(--green)" : "var(--mut)" }}>{r.isStarterUpgrade ? "Y" : "·"}</td><td>{r.weakestHeld == null ? "—" : r.weakestHeld}</td>
-                                  <td>{r.needBonus}</td><td style={{ color: r.flexEarly ? "var(--red)" : "inherit" }}>{r.flexEarly ? -r.flexEarly : 0}</td><td>{r.qbDead ? -r.qbDead : 0}</td><td>{r.emptyStarter}</td><td>{r.scarcity}</td><td>{r.adpValue}</td><td style={{ color: r.reach ? "var(--red)" : "inherit" }}>{r.reach ? -r.reach : 0}</td>
+                                  <td>{r.needBonus}</td><td style={{ color: r.qual > 0 ? "var(--green)" : r.qual < 0 ? "var(--red)" : "inherit" }}>{r.qual || 0}</td><td style={{ color: r.flexEarly ? "var(--red)" : "inherit" }}>{r.flexEarly ? -r.flexEarly : 0}</td><td>{r.qbDead ? -r.qbDead : 0}</td><td>{r.emptyStarter}</td><td>{r.scarcity}</td><td>{r.adpValue}</td><td style={{ color: r.reach ? "var(--red)" : "inherit" }}>{r.reach ? -r.reach : 0}</td>
                                   <td>{r.buildScore}</td><td>{r.market}</td><td>{r.mktW}</td><td>{r.wait}</td><td style={{ fontWeight: 800, color: "var(--gold)" }}>{r.total + r.wait}</td>
                                 </tr>
                               ))}
@@ -17884,6 +17950,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           )}
                           <div style={{ marginTop: 4, color: "var(--mut)" }}>myPosVbds: {["QB","RB","WR","TE"].map((p) => `${p}[${(balAdv.dbgRows.myPosVbds[p] || []).join(",")}]`).join(" ")}</div>
                           {balAdv.dbgRows.myCounts && <div style={{ marginTop: 2, color: "var(--mut)" }}>counts: {["QB","RB","WR","TE"].map((p) => `${p} ${balAdv.dbgRows.myCounts[p]}`).join(" · ")}　|　dem: {["QB","RB","WR","TE"].map((p) => `${p} ${balAdv.dbgRows.dem[p]}`).join(" · ")}</div>}
+                          {balAdv.dbgRows.posRanks && <div style={{ marginTop: 2, color: "var(--mut)" }}>league rank: {["QB","RB","WR","TE"].map((p) => `${p} ${balAdv.dbgRows.posRanks[p]}/${TEAMS}`).join(" · ")}　|　quality tilt: {["QB","RB","WR","TE"].map((p) => `${p} ${balAdv.dbgRows.posTilt[p] > 0 ? "+" : ""}${balAdv.dbgRows.posTilt[p]}`).join(" · ")}</div>}
                           <div style={{ marginTop: 2, color: "var(--mut)" }}>scoring for team {balAdv.dbgRows.forTeam}{balAdv.dbgRows.forTeam === balAdv.dbgRows.userIdx ? " (YOU)" : ` — YOU are team ${balAdv.dbgRows.userIdx}`} · sf {String(balAdv.dbgRows.sfFlag)} · super {balAdv.dbgRows.superSlots}</div>
                           <div style={{ marginTop: 2, color: "var(--mut)", whiteSpace: "normal" }}>roster seen ({(balAdv.dbgRows.roster || []).length}): {(balAdv.dbgRows.roster || []).join(", ") || "—"}</div>
                         </div>
