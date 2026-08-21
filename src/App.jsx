@@ -90,7 +90,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20ae";
+const BUILD_TAG = "2026.07.20af";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2744,7 +2744,7 @@ function marginalVbd(c, counts, sf) {
   // discount by how DEEP you already are past the starting requirement at THIS position (each extra body beyond
   // the first surplus one is worth steeply less — a 4th at a 1-slot position collapses; a 3rd RB barely dips).
   if (BB) return c.vbd * 0.7;
-  const overBy = Math.max(1, (counts[c.pos] || 0) - (req[c.pos] || 0)); // bodies past the starting requirement (≥1)
+  const overBy = Math.max(1, (counts[c.pos] || 0) + 1 - (req[c.pos] || 0)); // where the CANDIDATE lands: he's body #(counts+1), so (counts+1-req) past the requirement
   // Position-aware redundancy falloff. A surplus body's worth is flex/bye insurance, and how much a FURTHER
   // body helps depends on the position's realistic usage beyond its starter slot:
   //   • TE: you start one and, with RB/WR flex options available, almost never flex a backup TE — so a 2nd
@@ -3272,6 +3272,27 @@ function projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId)
       continue;
     }
     const counts = liveCounts[t];
+    // FORCE K/DST FILL near the end. Bots (and the user projection) skip K/DST all draft because they're
+    // low-value, but a real roster is legal by season start — so the projected finish must assume every team
+    // ends with its K and DST filled, or teams that "skipped" them score artificially low and the standings
+    // skew. Once a team's remaining picks are just enough to cover its still-empty mandatory K/DST slots, draft
+    // the best available one first. (dstNeed/kNeed are 0 in leagues that don't start them, so this is inert there.)
+    const needDST = Math.max(0, (cfg.start && cfg.start.DST || 0) - rosters[t].filter((p) => p.pos === "DST").length);
+    const needK = Math.max(0, (cfg.start && cfg.start.K || 0) - rosters[t].filter((p) => p.pos === "K").length);
+    if (needDST + needK > 0) {
+      // How many more picks does THIS team have after this one, to the end of the draft?
+      let picksLeft = 0; for (let oo = o; oo < TOTAL; oo++) if (teamAt(oo) === t && PICK_KEEPER_AT[oo] == null) picksLeft++;
+      if (picksLeft <= needDST + needK) {
+        const wantPos = needDST > 0 ? "DST" : "K";
+        let bestDK = null; for (const p of sortedAdp) { if (!drafted[p.id] && p.pos === wantPos) { bestDK = p; break; } }
+        if (bestDK) {
+          drafted[bestDK.id] = 1; rosters[t].push(bestDK);
+          if (liveCounts[t][bestDK.pos] != null) liveCounts[t][bestDK.pos]++;
+          recent = [...recent.slice(-7), bestDK.pos];
+          continue;
+        }
+      }
+    }
     let choice = null;
     const cheap = o >= scoreUntil;
     if (t === userIdx) {
@@ -3431,14 +3452,15 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
 }
 
 function lineupPts(roster, sf) {
-  const by = { QB: [], RB: [], WR: [], TE: [] };
+  const by = { QB: [], RB: [], WR: [], TE: [], DST: [], K: [] };
   roster.forEach((p) => { if (by[p.pos]) by[p.pos].push(p.pts); });
-  POS.forEach((k) => by[k].sort((a, b) => b - a));
-  let pts = 0; const used = { QB: 0, RB: 0, WR: 0, TE: 0 };
+  ["QB", "RB", "WR", "TE", "DST", "K"].forEach((k) => by[k].sort((a, b) => b - a));
+  let pts = 0; const used = { QB: 0, RB: 0, WR: 0, TE: 0, DST: 0, K: 0 };
   const take = (pos, n) => { for (let i = 0; i < n; i++) if (by[pos][used[pos]] != null) { pts += by[pos][used[pos]]; used[pos]++; } };
   take("QB", SPEC.QB); take("RB", SPEC.RB); take("WR", SPEC.WR); take("TE", SPEC.TE);
   for (let i = 0; i < (SPEC.FLEX || 0); i++) { let f = null; ["RB","WR","TE"].forEach((pos) => { const v = by[pos][used[pos]]; if (v != null && (f == null || v > f.v)) f = { pos, v }; }); if (f) { pts += f.v; used[f.pos]++; } }
   for (let i = 0; i < (SPEC.SUPER || 0); i++) { let b = null; POS.forEach((pos) => { const v = by[pos][used[pos]]; if (v != null && (b == null || v > b.v)) b = { pos, v }; }); if (b) { pts += b.v; used[b.pos]++; } }
+  take("DST", SPEC.DST || 0); take("K", SPEC.K || 0);
   return Math.round(pts);
 }
 function lineupSlots(roster, sf) {
