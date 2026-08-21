@@ -78,7 +78,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20x";
+const BUILD_TAG = "2026.07.20y";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -14474,30 +14474,44 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // NOT marked complete — you'd continue if you bought). Non-demo unpaid drafts gate after 5 picks.
   const gated = !user?.paid && (isDemo ? demoCapped : (userPicksMade >= 5 && !done));
 
-  // Auto-place any pick-cost keeper the instant the draft reaches its slot (before normal drafting decides
-  // that pick). Runs at start and after every pick, for ANY team's slot. NOTE: we check `picks` directly, not
-  // draftedSet — draftedSet also counts forcedAhead (the future-preview channel that shows an upcoming keeper
-  // on the board before the draft crawls to it). If we skipped when draftedSet had the id, a CPU team's keeper
-  // that was being previewed via forcedAhead would never get committed into the dense picks array, so
-  // picks.length could never advance past that slot — the draft stalled there and put the CPU "on the clock"
-  // on its own keeper (and let the user replace it). Placing it here (and forcedAhead drops it once it's in
-  // picks) is what lets the draft roll through every keeper automatically.
+  const keeperSig = JSON.stringify(keepers); // signature of all keepers; changes when keepers are edited mid-draft
+
+  // Auto-place any pick-cost keeper the instant the draft reaches its slot (before normal drafting decides that
+  // pick). Runs at start and after every pick, for ANY team's slot. Places ALL consecutive keepers in one pass:
+  // the previous one-per-render version relied on this effect re-firing once per keeper, which could stall on
+  // the SECOND of back-to-back keeper slots (a race with the CPU auto-draft effect, or React batching the
+  // picks.length change so the effect didn't re-run). Looping here fills every keeper from the current slot
+  // forward in a single update, so the draft can never park on a keeper. NOTE: we check the array we're
+  // building, not draftedSet — draftedSet also counts forcedAhead (the future-preview channel), and skipping on
+  // that would leave a previewed keeper uncommitted so picks.length could never advance past it.
   useEffect(() => {
     if (done) return;
-    const next = picks.length;
-    const kid = keeperByPick[next];
-    if (kid != null && !picks.includes(kid)) {
-      setPreds((pp) => [...pp, null]); // keepers aren't "predicted"
-      setPicks((prev) => [...prev, kid]);
-    }
-  }, [picks.length, done, cfg]);
+    if (keeperByPick[picks.length] == null) return; // current slot isn't a keeper → nothing to auto-place
+    setPicks((prev) => {
+      const next = prev.slice();
+      while (true) {
+        const kid = keeperByPick[next.length];
+        if (kid == null || next.includes(kid)) break; // stop at a non-keeper slot (or an already-placed id)
+        next.push(kid);
+      }
+      return next;
+    });
+    // Pad preds with one null per keeper we just placed (keepers aren't "predicted"), keeping preds aligned to
+    // picks. Count how many consecutive keepers start at the current slot the same way the picks loop did.
+    setPreds((pp) => {
+      const out = pp.slice();
+      const seen = new Set(pp); // guard parity with the picks loop's `next.includes(kid)` stop condition
+      let o = picks.length;
+      while (keeperByPick[o] != null && !seen.has(keeperByPick[o])) { out.push(null); seen.add(keeperByPick[o]); o++; }
+      return out;
+    });
+  }, [picks.length, done, cfg, keeperSig]);
 
   // Reconcile keepers set or changed MID-draft: a keeper overrides whatever happened before.
   // For every pick-cost keeper whose slot was already drafted past, force that slot to hold the
   // kept player. If the kept player was taken elsewhere, we SWAP the two slots (always board-safe).
   // If he wasn't on the board yet, the player sitting in the keeper's slot is bumped back to the
   // live pool and that slot becomes the keeper — handled by replacing in place (no re-indexing).
-  const keeperSig = JSON.stringify(keepers);
   useEffect(() => {
     const fixes = [];
     Object.entries(keeperByPick).forEach(([oStr, kid]) => {
@@ -20160,7 +20174,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   <div style={{ border: "1px solid rgba(242,182,60,.4)", background: "rgba(242,182,60,.05)", borderRadius: 10, overflow: "hidden" }}>
                     <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700, padding: "8px 12px 2px" }}>Your decision</div>
                     <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                      <thead><tr><th style={th}>Player</th><th style={th}>Pos</th><th style={thR}>Pos rk</th><th style={thR}>ADP</th><th style={thR}>VBD</th><th style={thR}>Value</th><th style={thR}>Proj</th></tr></thead>
+                      <thead><tr><th style={th}>Player</th><th style={th}>Pos</th><th style={thR}>Pos rk</th><th style={thR}>ADP</th><th style={thR}>VBD</th><th style={thR}>Value</th><th style={thR}>Proj</th><th style={thR}></th></tr></thead>
                       <tbody>
                         {rows.map((p, i) => {
                           const top = i === 0;
@@ -20173,6 +20187,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               <td style={tdR}>{p.vbd != null ? Math.round(p.vbd) : "—"}</td>
                               <td style={tdR}>{p.value != null ? Math.round(p.value) : "—"}</td>
                               <td style={tdR}>{p.pts != null ? Math.round(p.pts) : "—"}</td>
+                              <td style={{ ...tdR, paddingRight: 10 }}><button className={top ? "btn btn-gold btn-mini" : "btn btn-mini"} onClick={() => { draftPlayer(p.id); closeRecap(); }}>Draft</button></td>
                             </tr>
                           );
                         })}
