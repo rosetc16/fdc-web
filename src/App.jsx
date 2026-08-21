@@ -90,7 +90,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20ab";
+const BUILD_TAG = "2026.07.20ac";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1975,11 +1975,20 @@ function buildPlayers(cfg) {
   const idpCounts = { DL: 24, LB: 30, DB: 24 };
   if (useIdp) IDP_POS.forEach((pos) => { const s = ps.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts); repl[pos] = s.length ? s[Math.min(idpCounts[pos] - 1, s.length - 1)].pts : 0; });
   const VBD_POS = useIdp ? [...POS, ...IDP_POS] : POS;
+  // K/DST replacement levels — so kickers and defenses get REAL, VARYING VBD within their own group instead of
+  // a flat sentinel. Baseline = roughly the last startable one across the league (one K and one DST per team,
+  // a couple deep for streaming). Only meaningful when the league actually starts that position; if it doesn't,
+  // they keep the low sentinel below so they never outrank a real skill player.
+  const startsDST = useDst, startsK = useK;
+  const dkTeams = (cfg && cfg.teams) || 12;
+  const dkCounts = { DST: Math.round(dkTeams * 1.2) || 12, K: Math.round(dkTeams * 1.2) || 12 };
+  ["DST", "K"].forEach((pos) => { const on = pos === "DST" ? startsDST : startsK; if (!on) return; const s = ps.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts); if (s.length) repl[pos] = s[Math.min(dkCounts[pos] - 1, s.length - 1)].pts; });
+  const scoredPos = [...VBD_POS, ...(startsDST ? ["DST"] : []), ...(startsK ? ["K"] : [])];
   // TRUE VBD — points above the positional replacement level. This is the textbook definition and is the
   // SAME in redraft and dynasty (Derek Henry's 234-pt season is worth more raw VBD than a 169-pt rookie's,
   // period). We keep p.vbd as this raw number so the "VBD" column always means what people expect. The
   // dynasty-specific re-weighting lives in p.value (below), not in VBD.
-  ps.forEach((p) => { p.vbd = VBD_POS.includes(p.pos) ? Math.round((p.pts - repl[p.pos]) * 10) / 10 : -50; p.vbd0 = p.vbd; });
+  ps.forEach((p) => { p.vbd = (scoredPos.includes(p.pos) && repl[p.pos] != null) ? Math.round((p.pts - repl[p.pos]) * 10) / 10 : -50; p.vbd0 = p.vbd; });
   FLEX_BASE = Math.max(repl.RB || 0, repl.WR || 0) || null; // flex slot's replacement level (see marginalVbd)
   // ---- DYNASTY VALUE ADJUSTMENT --------------------------------------------------------------
   // "Value" is the composite ranking number. In REDRAFT, value === VBD (you're just trying to win now). In
@@ -2693,10 +2702,31 @@ function marginalVbd(c, counts, sf) {
     if (isDynastyGlobal) mult = Math.max(mult, already >= 2 ? 0.5 : 0.7); // dynasty QBs hold asset value
     return c.vbd * mult;
   }
-  // Past the generic slots: in best ball, depth still scores (the platform auto-starts spike weeks), so the
-  // falloff is gentle — a strong bench piece keeps most of its value. In redraft a surplus body is mostly
-  // wasted, so it's discounted hard.
-  return c.vbd * (BB ? 0.7 : 0.25);
+  // Past the generic slots (truly surplus at this position). In best ball depth still scores (auto-start), so
+  // stay gentle. In redraft a surplus body's ONLY value is flex/bye insurance — which, like the flex-basis
+  // case above, is a POINTS question, not a positional-VBD one: a 4th TE with a flattering +37 TE-VBD is nearly
+  // worthless (you start one TE and would never flex a 4th TE over your RB/WR), whereas a 3rd RB feeds the flex
+  // and covers a thin, injury-prone position. Valuing raw positional VBD*0.25 got this exactly backwards
+  // (recommended a 4th TE over a needed 3rd RB). So: value surplus by points above the FLEX replacement, then
+  // discount by how DEEP you already are past the starting requirement at THIS position (each extra body beyond
+  // the first surplus one is worth steeply less — a 4th at a 1-slot position collapses; a 3rd RB barely dips).
+  if (BB) return c.vbd * 0.7;
+  const overBy = Math.max(1, (counts[c.pos] || 0) - (req[c.pos] || 0)); // bodies past the starting requirement (≥1)
+  // Position-aware redundancy falloff. A surplus body's worth is flex/bye insurance, and how much a FURTHER
+  // body helps depends on the position's realistic usage beyond its starter slot:
+  //   • TE: you start one and, with RB/WR flex options available, almost never flex a backup TE — so a 2nd
+  //     surplus TE (your 3rd overall) is nearly pointless and a 3rd surplus collapses. Steep falloff.
+  //   • RB: scarcest, injury-prone, best flex feeder — a surplus RB retains real value. Gentle falloff.
+  //   • WR: plentiful and good flex depth, but you can only play so many — moderate falloff.
+  //   • QB (non-SF handled above): treated as steep here for completeness.
+  const falloff = c.pos === "TE" ? 0.62 : c.pos === "WR" ? 0.34 : c.pos === "RB" ? 0.22 : 0.5;
+  const depthMult = Math.max(0.05, 1 - falloff * (overBy - 1)); // 1st surplus:1.0; each further body drops by `falloff`
+  if (FLEX_BASE != null && c.pts != null && (c.pos === "RB" || c.pos === "WR" || c.pos === "TE")) {
+    const flexVal = Math.round((c.pts - FLEX_BASE) * 10) / 10; // points above flex replacement (can be negative)
+    const base = Math.max(flexVal, c.vbd * 0.2);               // small positional-VBD floor for backup/bye use
+    return Math.max(0, base * depthMult);
+  }
+  return c.vbd * 0.25 * depthMult;
 }
 // Best-ball value adjustment, added on top of any strategy's score when BB mode is on. Two effects:
 //  (1) CEILING OVER FLOOR — best ball auto-starts a player's good weeks, so his upside (ceil above his mean
@@ -3561,7 +3591,7 @@ function ordinalOf(n) { const s = ["th", "st", "nd", "rd"], v = n % 100; return 
 // itself fully on-screen (estimating height was unreliable for tall hovers, which leaked off the bottom).
 function positionTip(cx, cy, content) {
   const W = typeof window !== "undefined" ? window.innerWidth : 1200;
-  const TW = 472; // tooltip width + margin
+  const TW = 572; // tooltip width + margin
   let x = cx + 16;
   if (x + TW > W) x = Math.max(8, cx - TW);
   return { x, y: cy, anchorY: cy, content };
@@ -4487,7 +4517,7 @@ function OutlookCard({ content }) {
           const cols = l.cols || ["rank", "name", "team", "age", "pts"];
           const rowsP = l.players || [];
           const headLabel = { rank: "Rk", name: "Player", team: "Tm", age: "Age", pts: "Proj", vbd: "VBD", role: "Role", bye: "Bye", value: "Value", dval: "Value", slot: "Slot", prob: l.probLabel || "Avail", adp: "ADP", pick: "Pick", pos: "Pos", drafter: "Drafted by", valread: "Read", score: "Score" };
-          const gridCols = cols.map((c) => c === "name" ? "1fr" : c === "role" ? "1.1fr" : "auto").join(" ");
+          const gridCols = cols.map((c) => c === "name" ? "minmax(90px, 1.4fr)" : c === "role" ? "1.1fr" : c === "drafter" ? "minmax(0, 0.9fr)" : "auto").join(" ");
           const hasPosCol = cols.includes("pos"); // if a dedicated Pos column shows the icon, don't double it on the name
           const vColor = vbdColor;
           return (
@@ -4502,7 +4532,7 @@ function OutlookCard({ content }) {
                 {rowsP.map((p, ri) => cols.map((c, ci) => {
                   const recBg = p.rec ? { background: "rgba(242,182,60,.12)" } : {};
                   const firstCell = ci === 0, lastCell = ci === cols.length - 1;
-                  const base = { fontSize: 11.5, padding: p.rec ? "5px 0" : "3px 0", borderBottom: ri < rowsP.length - 1 ? "1px solid var(--line2)" : "none", lineHeight: 1.2, ...recBg, ...(p.rec && firstCell ? { borderTopLeftRadius: 6, borderBottomLeftRadius: 6, paddingLeft: 5 } : {}), ...(p.rec && lastCell ? { borderTopRightRadius: 6, borderBottomRightRadius: 6, paddingRight: 5 } : {}) };
+                  const base = { minWidth: 0, fontSize: 11.5, padding: p.rec ? "5px 0" : "3px 0", borderBottom: ri < rowsP.length - 1 ? "1px solid var(--line2)" : "none", lineHeight: 1.2, ...recBg, ...(p.rec && firstCell ? { borderTopLeftRadius: 6, borderBottomLeftRadius: 6, paddingLeft: 5 } : {}), ...(p.rec && lastCell ? { borderTopRightRadius: 6, borderBottomRightRadius: 6, paddingRight: 5 } : {}) };
                   if (c === "rank") return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 800, color: rankTierColor(p.pos, p.posRank), textAlign: "right" }}>{p.pos}{p.posRank}</div>;
                   if (c === "name") return <div key={ri + "-" + ci} style={{ ...base, fontWeight: 600, color: p.star ? "var(--gold)" : "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.star ? "★ " : ""}{p.pos && !hasPosCol ? <Dot pos={p.pos} /> : null}{p.name}</div>;
                   if (c === "prob") return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 700, textAlign: "right", color: p.prob == null ? "var(--mut)" : p.prob >= 65 ? "var(--green)" : p.prob >= 35 ? "var(--gold)" : "var(--red)" }}>{p.prob != null ? `${p.prob}%` : "—"}</div>;
@@ -4786,7 +4816,7 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .availpct .txt{position:relative;z-index:1}
 .availhead{display:grid;gap:10px;padding:6px 12px;font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);font-weight:700}
 .posbadge{display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:20px;border-radius:5px;font-size:9.5px;font-weight:800;color:#0a0a0a}
-.tooltip{position:fixed;z-index:90;width:460px;max-width:460px;max-height:92vh;overflow-y:auto;background:#10151B;border:1px solid var(--line2);border-radius:10px;padding:13px 16px;font-size:12.5px;line-height:1.5;pointer-events:none;box-shadow:0 12px 40px #000D}
+.tooltip{position:fixed;z-index:90;width:560px;max-width:560px;max-height:92vh;overflow-y:auto;background:#10151B;border:1px solid var(--line2);border-radius:10px;padding:13px 16px;font-size:12.5px;line-height:1.5;pointer-events:none;box-shadow:0 12px 40px #000D}
 .needcell{text-align:center;border-radius:5px;padding:3px 0;font-size:12px}
 .info{cursor:help;border-bottom:1px dotted var(--mut)}
 .hero-h{font-size:58px;font-weight:700;line-height:1.0}
@@ -20165,7 +20195,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 16px", borderBottom: "1px solid var(--line)", background: "linear-gradient(180deg, rgba(242,182,60,.10), transparent)" }}>
               <i className="ti ti-alarm" style={{ fontSize: 20, color: "var(--gold)" }} aria-hidden="true" />
               <div style={{ flex: 1 }}>
-                <div className="disp" style={{ fontSize: 17, fontWeight: 700 }}>You're on the clock — pick {pickLabel(recap.pickNum - 1)}</div>
+                <div className="disp" style={{ fontSize: 17, fontWeight: 700 }}>You're on the clock — pick {pickLabel(recap.pickNum - 1)} <span className="mut" style={{ fontWeight: 600 }}>(overall {recap.pickNum})</span></div>
                 <div className="mut" style={{ fontSize: 11.5 }}>{recap.sinceN} pick{recap.sinceN === 1 ? "" : "s"} since your last turn</div>
               </div>
               <button className="btn btn-mini" onClick={closeRecap} title="Close"><i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true" /></button>
