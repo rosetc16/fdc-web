@@ -78,7 +78,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20y";
+const BUILD_TAG = "2026.07.20z";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -14491,8 +14491,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       const next = prev.slice();
       while (true) {
         const kid = keeperByPick[next.length];
-        if (kid == null || next.includes(kid)) break; // stop at a non-keeper slot (or an already-placed id)
-        next.push(kid);
+        if (kid == null) break;              // current slot isn't a keeper → stop
+        if (next.includes(kid)) break;       // keeper already on the board (stale state) — reconciliation fixes placement
+        next.push(kid);                      // commit the keeper at his slot and advance
       }
       return next;
     });
@@ -15330,6 +15331,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         const drafted = new Set(next);
         const batchedPreds = [];
         Object.values(noCostByTeam).flat().forEach((id) => drafted.add(id));
+        // Reserve every PICK-COST keeper too — they belong to their owner at a specific future slot and must
+        // never be drafted early by a CPU team. Without this a bot could grab a keeper (e.g. Achane) before his
+        // keeper slot; then the auto-fill couldn't place him at that slot (already taken) and the draft STALLED
+        // there. The auto-fill owns each keeper slot; here we just make sure the player is still available for it.
+        Object.values(keeperByPick).forEach((id) => { if (id != null) drafted.add(id); });
         // Fill until it's the user's turn (or the draft ends). A hard cap keeps a pathological config from
         // locking the thread; the timer simply picks up where this left off.
         let guard = 0;
