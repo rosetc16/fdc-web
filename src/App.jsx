@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20l";
+const BUILD_TAG = "2026.07.20m";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5623,7 +5623,9 @@ export default function App() {
     const conn = (lg.cfg && lg.cfg.connect) || lg.connect;
     if (hasBackend && conn && conn.leagueId) {
       try {
-        const d = await api.sleeperDraft(conn.leagueId, conn.username);
+        const uname = conn.username || (user && user.sleeperUsername) || null;
+        const uid = conn.userId || conn.sleeperUserId || (user && user.sleeperUserId) || null;
+        const d = await api.sleeperDraft(conn.leagueId, uname, uid);
         if (d) {
           const N = lg.cfg.teams || 12;
           const patch = {};
@@ -13730,6 +13732,55 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const ROUNDS = cfg.rounds;
   const TOTAL = totalOf(cfg);
   const [syncedSlot, setSyncedSlot] = useState(null); // user's real slot pulled from Sleeper (yourSlot) when cfg.slot is missing
+  const [sleeperPulling, setSleeperPulling] = useState(false);
+  const [sleeperPullMsg, setSleeperPullMsg] = useState(null);
+  // Explicit "pull from Sleeper" for a connected league: fetch the live draft and apply order / your seat /
+  // keepers / traded picks. Same logic as the auto-sync, but user-triggered with visible feedback — so a user
+  // whose slot/keepers didn't auto-apply (e.g. username mismatch) has a reliable one-click way to force it.
+  const pullFromSleeper = async () => {
+    const conn = cfg.connect;
+    if (!conn || !conn.leagueId || sleeperPulling) return;
+    setSleeperPulling(true); setSleeperPullMsg(null);
+    try {
+      const uname = conn.username || null;
+      const uid = conn.userId || conn.sleeperUserId || null;
+      const d = await api.sleeperDraft(conn.leagueId, uname, uid);
+      if (!d) { setSleeperPullMsg({ ok: false, text: "Couldn't reach Sleeper — try again." }); setSleeperPulling(false); return; }
+      const N = cfg.teams || 12;
+      const patch = {};
+      let notes = [];
+      const freshOrder = d.draftType || cfg.order || "snake";
+      if (freshOrder !== cfg.order) { patch.order = freshOrder; notes.push("order"); }
+      if (d.yourSlot != null && d.yourSlot >= 1) { patch.slot = d.yourSlot; setSyncedSlot(d.yourSlot); if (d.yourSlot !== cfg.slot) notes.push(`seat → ${d.yourSlot}`); }
+      if (Array.isArray(d.tradedPicks) && d.tradedPicks.length) {
+        patch.pickTrades = tradesToOwnerOverrides(d.tradedPicks, N, patch.order || cfg.order || "snake");
+        patch.pickTrading = patch.pickTrades.length > 0;
+        patch.connect = { ...conn, tradedPicks: d.tradedPicks };
+        notes.push(`${d.tradedPicks.length} traded pick${d.tradedPicks.length > 1 ? "s" : ""}`);
+      }
+      const isPreDraft = d.status === "pre_draft" || d.status === "no_draft" || (Array.isArray(d.picks) && !d.picks.some((pk) => pk && pk.is_keeper === false) && d.status !== "drafting" && d.status !== "complete");
+      const keeperSrc = (Array.isArray(d.picks) ? d.picks : []).filter((pk) => pk && pk.pick_no > 0 && (pk.is_keeper || isPreDraft));
+      if (keeperSrc.length) {
+        const byPid = {}, byNm = {};
+        (players || []).forEach((p) => { if (p.sid != null) byPid[String(p.sid)] = p.id; byNm[normName(p.name)] = p.id; });
+        const keepers = [];
+        keeperSrc.forEach((pk) => {
+          const pid = (pk.player_id != null && byPid[String(pk.player_id)] != null) ? byPid[String(pk.player_id)] : (pk.name ? byNm[normName(pk.name)] : null);
+          if (pid != null) keepers.push({ playerId: pid, team: (pk.draft_slot || 1) - 1, o: pk.pick_no - 1, src: "sleeper" });
+        });
+        if (keepers.length) { const manual = (cfg.keepers || []).filter((k) => k.src !== "sleeper"); patch.keepers = [...manual, ...keepers]; patch.keeper = true; notes.push(`${keepers.length} keeper${keepers.length > 1 ? "s" : ""}`); }
+      }
+      if (Object.keys(patch).length && onSettings) {
+        onSettings({ ...cfg, ...patch });
+        setSleeperPullMsg({ ok: true, text: `Pulled from Sleeper: ${notes.join(", ") || "up to date"}.` });
+      } else {
+        setSleeperPullMsg({ ok: true, text: d.yourSlot == null ? "Pulled — but Sleeper didn't return your seat (check your Sleeper username on the league)." : "Already up to date with Sleeper." });
+      }
+    } catch (e) {
+      setSleeperPullMsg({ ok: false, text: "Sleeper pull failed — " + ((e && e.message) || "try again") });
+    }
+    setSleeperPulling(false);
+  };
   // For traded picks on a completed connected board: which team actually MADE each pick (by overall index),
   // when it differs from the pick's natural slot. Players stay in their draft-slot column; this just lets the
   // board mark "traded — drafted by X" without moving the player. { overallIdx: { slot, name } }.
@@ -16847,6 +16898,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     </select>
                     <button className="btn btn-mini" title="Pick a random seat" onClick={() => onSettings({ ...cfg, slot: Math.floor(Math.random() * (cfg.teams || 12)) + 1, slotRandomized: true })}><i className="ti ti-arrows-shuffle" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Random</button>
                     <span className="mut" style={{ fontSize: 11 }}>{cfg.slotRandomized ? "(random seat — change it to draft from a specific spot)" : "Confirm your seat, or change it for this mock."}</span>
+                  </div>
+                )}
+                {(cfg.connect && cfg.connect.leagueId) && (
+                  <div style={{ display: "flex", gap: 10, marginTop: 12, alignItems: "center", flexWrap: "wrap", paddingTop: 12, borderTop: "1px solid var(--line)" }}>
+                    <button className="btn" disabled={sleeperPulling} onClick={pullFromSleeper} title="Fetch the current draft order, your seat, keepers, and traded picks straight from Sleeper and apply them here.">
+                      <i className={`ti ti-${sleeperPulling ? "loader-2 spin" : "cloud-download"}`} style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />
+                      {sleeperPulling ? "Pulling from Sleeper…" : "Pull latest from Sleeper"}
+                    </button>
+                    {sleeperPullMsg && <span className="mut" style={{ fontSize: 11.5, color: sleeperPullMsg.ok ? "var(--green)" : "var(--red)" }}>{sleeperPullMsg.text}</span>}
+                    {!sleeperPullMsg && <span className="mut" style={{ fontSize: 11 }}>Connected to Sleeper — pull the live order, your seat, and keepers.</span>}
                   </div>
                 )}
               </div>
