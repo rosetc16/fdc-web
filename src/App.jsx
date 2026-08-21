@@ -63,8 +63,20 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 
 // Recommendation diagnostic: when ?dbg=1 is in the URL, adviceFor attaches a per-candidate score breakdown
 // (dbgRows) and the Your-Decision panel renders it. Lets us see the ACTUAL scoring live instead of guessing.
-let DBG_RECO = false;
-try { DBG_RECO = typeof window !== "undefined" && /[?&]dbg=1\b/.test(window.location.search || ""); } catch (e) {}
+// Recommendation diagnostic. Toggled by ?dbg=1 in the URL, but the app's client-side routing rewrites the URL
+// (dropping the query) on navigation, so we LATCH it into sessionStorage the first time we see it and read from
+// either source thereafter. dbgOn() is a live getter (not a one-time const) so entering a draft after the URL
+// changed still reports the right state.
+const dbgOn = () => {
+  try {
+    if (typeof window === "undefined") return false;
+    if (/[?&]dbg=1\b/.test(window.location.search || "") || /[?&]dbg=1\b/.test(window.location.hash || "")) {
+      try { window.sessionStorage.setItem("fdc_dbg", "1"); } catch (e) {}
+      return true;
+    }
+    return window.sessionStorage.getItem("fdc_dbg") === "1";
+  } catch (e) { return false; }
+};
 
 // Global navigation hook. The App wires this once (setGlobalNav) so shared chrome like AppHeader can always
 // route — e.g. an admin's "Admin" button works on EVERY page, even ones that didn't explicitly thread an
@@ -78,7 +90,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20aa";
+const BUILD_TAG = "2026.07.20ab";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -14774,6 +14786,18 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // rookie or keeper draft would ignore that you already roster, say, 3 QBs and might still push a QB.
     seedRosterCounts(forTeam, myCounts);
     seedKeeperCounts(players, forTeam, myCounts);
+    // Count PICK-COST keepers this team holds at FUTURE slots too (kept in a draft slot via keeperByPick /
+    // previewed in forcedAhead). They aren't in `picks` yet (the draft hasn't reached their slot) and aren't
+    // no-cost keepers, so without this myCounts UNDERCOUNTS the roster — e.g. a TE kept in round 11 didn't count,
+    // so at pick 4.03 the engine thought the user had 1 TE not 2 and recommended a 3rd TE as a flex-fill instead
+    // of penalizing it as an over-stack. Dedup against players already counted from picks.
+    {
+      const countedIds = new Set();
+      picks.forEach((pk, o) => { if (teamAt(o) === forTeam) countedIds.add(pk); });
+      const bump = (id) => { const pl = players[id]; if (pl && !countedIds.has(id) && myCounts[pl.pos] != null) { myCounts[pl.pos]++; countedIds.add(id); } };
+      Object.entries(keeperByPick).forEach(([o, id]) => { if (teamAt(+o) === forTeam) bump(id); });
+      (forcedAhead || []).forEach((f) => { if (f && f.team === forTeam) bump(f.id); });
+    }
     // Collect the VBDs this team ALREADY holds at each position — from ALL sources so the starter-upgrade check
     // actually sees the roster: drafted picks, no-cost keepers (KEEPER_ADDS), AND pick-cost keepers (kept in a
     // draft slot, tracked in keeperByPick / previewed in forcedAhead). The last group was the miss that made the
@@ -14926,14 +14950,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // inspectable live (which term is lifting a QB over an elite WR, whether a name is even in the pool, etc.).
     // Also record which notable available players were EXCLUDED from the pool and why-adjacent info.
     let dbgRows = null;
-    if (DBG_RECO) {
-      dbgRows = ranked.slice(0, 12).map((p) => { const d = {}; userScore(p, myCounts, dem, strat, cfg.sf, pickNum, null, myPosVbds, d); return { name: p.name, wait: Math.round(0.6 * Math.max(0, waitCost[p.pos] || 0)), ...d }; });
-      const inPool = new Set(pool.map((p) => p.id));
-      const notablesOut = sortedAdp
-        .filter((p) => !draftedSet.has(p.id) && !inPool.has(p.id) && p.adp != null && p.adp <= pickNum + 6)
-        .slice(0, 8)
-        .map((p) => ({ name: p.name, pos: p.pos, adp: p.adp, vbd: p.vbd, survived: survivesToPick(p.id), legalCapped: (myCounts[p.pos] || 0) >= (capsOf(cfg)[p.pos] || 99) }));
-      dbgRows = { rows: dbgRows, excluded: notablesOut, myPosVbds, myCounts: { ...myCounts }, dem: { QB: +(dem.QB || 0).toFixed(2), RB: +(dem.RB || 0).toFixed(2), WR: +(dem.WR || 0).toFixed(2), TE: +(dem.TE || 0).toFixed(2) } };
+    if (dbgOn()) {
+      try {
+        const rows = ranked.slice(0, 12).map((p) => { const d = {}; try { userScore(p, myCounts, dem, strat, cfg.sf, pickNum, null, myPosVbds, d); } catch (e) {} return { name: (p && p.name) || "?", wait: Math.round(0.6 * Math.max(0, waitCost[p.pos] || 0)), ...d }; });
+        const inPool = new Set(pool.map((p) => p.id));
+        const notablesOut = sortedAdp
+          .filter((p) => p && !draftedSet.has(p.id) && !inPool.has(p.id) && p.adp != null && p.adp <= pickNum + 6)
+          .slice(0, 8)
+          .map((p) => ({ name: p.name, pos: p.pos, adp: p.adp, vbd: p.vbd, survived: (() => { try { return survivesToPick(p.id); } catch (e) { return null; } })(), legalCapped: (myCounts[p.pos] || 0) >= (capsOf(cfg)[p.pos] || 99) }));
+        dbgRows = { rows, excluded: notablesOut, myPosVbds, myCounts: { ...myCounts }, dem: { QB: +(dem.QB || 0).toFixed(2), RB: +(dem.RB || 0).toFixed(2), WR: +(dem.WR || 0).toFixed(2), TE: +(dem.TE || 0).toFixed(2) } };
+      } catch (e) { dbgRows = { rows: [], excluded: [], myPosVbds: {}, myCounts: {}, dem: {}, error: String(e && e.message || e) }; }
     }
     return { bestNow, waitCost, waitDetail, verdict, alts, impacts, run, myCounts, strat, expBestPlayer: simState.expBestPlayer || {}, dbgRows };
   };
