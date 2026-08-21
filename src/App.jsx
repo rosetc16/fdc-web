@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20u";
+const BUILD_TAG = "2026.07.20v";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2771,7 +2771,7 @@ function windowFit(c, lane, dynasty) {
   if (lane === "winnow") return Math.max(0, age - 24) * 2 - (c.rookie ? 8 : 0) - Math.max(0, assetGap) * 0.25;
   return 0;
 }
-function userScore(c, counts, dem, strategy, sf, pickNum, build) {
+function userScore(c, counts, dem, strategy, sf, pickNum, build, posVbds) {
   if (strategy === "adp") {
     // "Strict ADP" = follow the board order (best available by ADP). But it still shouldn't hand you a player
     // at a position you literally can't use — e.g. a 6th QB in a superflex league where you already start your
@@ -2848,13 +2848,27 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build) {
   const overStack = surplus > 0
     ? surplus * (BB ? (c.pos === "QB" || c.pos === "TE" ? 6 : 4) : (c.pos === "QB" || c.pos === "TE" ? 24 : 15))
     : 0;
+  // STARTER UPGRADE: is this candidate clearly better than the WEAKEST body you already roster at his position?
+  // If so he doesn't merely add flex depth — he takes a starting slot and bumps that weak body down. This is the
+  // fix for "my two RB slots are filled by mediocre keepers, so the engine treats an elite RB as flex-scraps and
+  // floats a reach QB to #1." When the candidate out-values the weakest current body by a real margin, we (a)
+  // restore his marginal value toward full VBD (he's starting, not flexing) and (b) waive the early-flex penalty.
+  const myAtPos = posVbds && posVbds[c.pos] ? posVbds[c.pos] : null;
+  const weakestHeld = myAtPos && myAtPos.length ? myAtPos[0] : null; // ascending, so [0] = weakest
+  const isStarterUpgrade = ["RB", "WR", "TE"].includes(c.pos) && weakestHeld != null && c.vbd != null
+    && (c.vbd - weakestHeld) >= 15; // a clear margin over the worst body you'd bench in his favor
+  if (isStarterUpgrade) {
+    // He'd start over your weakest body — value him near his real VBD rather than the flex-replacement haircut.
+    mvUse = Math.max(mvUse, c.vbd - Math.max(0, weakestHeld) * 0.35);
+  }
   // FLEXIBILITY guard: taking a 3rd+ flex-eligible body (RB/WR/TE) in the first ~3 rounds spends roster
-  // flexibility you'd rather keep. Penalize it EARLY unless the raw value is absurd (a true top-tier faller).
+  // flexibility you'd rather keep. Penalize it EARLY unless the raw value is absurd (a true top-tier faller) OR
+  // he's a clear starter upgrade over a weak body you hold (then it isn't "extra depth" at all).
   let flexEarly = 0;
   if (round <= 3 && ["RB", "WR", "TE"].includes(c.pos)) {
     const already = counts[c.pos] || 0;
     const absurdValue = (c.adp != null && pickNum != null && (pickNum - c.adp) >= 18); // a big faller is still worth it
-    if (already >= 2 && !absurdValue) flexEarly = 30 * (already - 1);
+    if (already >= 2 && !absurdValue && !isStarterUpgrade) flexEarly = 30 * (already - 1);
   }
   // Surplus-QB dead weight in a shallow 1-QB league (relaxes for deep rosters / dynasty).
   let qbDead = 0;
@@ -4143,16 +4157,22 @@ function pickValue(p, overall, cfg, ctx) {
   // catastrophically worse. Normalizing by draft position fixes that: at pick 1 a 235-spot reach is 235x the
   // pick's own cost and scores accordingly, while the same 10-spot miss at pick 100 stays minor.
   const spotGap = actual - adp;             // >0 = fell past ADP (steal), <0 = reached
-  const rel = spotGap / Math.max(12, actual * 0.85);
-  let market = rel * 42 * w;
-  if (market < 0) market *= 1.2;            // reaches sting ~20% more than equal steals reward
+  // MARKET magnitude tracks the SPOT GAP (how many picks past/ahead of ADP), normalized by a CONSTANT scale so
+  // the number means the same thing everywhere in the draft. The old denominator scaled with the pick number
+  // (actual*0.85), which made an identical spot gap read far larger early than late — so a 23-spot REACH at
+  // pick 12 (−84) dwarfed a 44-spot STEAL at pick 62 (+18), the opposite of reality. A gentle round weight
+  // still lets an early miss matter a bit more, without letting it invert the ordering by gap size.
+  const wGap = 0.55 + 0.45 * Math.pow(0.985, Math.max(1, actual) - 1); // 1.0 @1 → ~0.72 @24 → ~0.62 @62 → ~0.57 @110
+  const rel = spotGap / 14;                  // ~14 spots off ADP = one unit of value
+  let market = rel * 12 * wGap;
+  if (market < 0) market *= 1.15;            // reaches sting ~15% more than equal steals reward
   // NEED: reward filling a starting hole, mildly penalize stacking a position that's already full. Scaled by
   // round weight too — a needs-based decision matters more early. Capped so it shapes, never dominates, market.
   let need = 0;
   if (ctx && ctx.need && p.pos) {
     const deficit = ctx.need[p.pos] || 0;   // >0 = still needs starters at this position
-    if (deficit > 0) need = Math.min(2, deficit) * 10 * w;        // filled a real need → positive
-    else if (deficit <= -1) need = Math.max(-2, deficit) * 6 * w; // piled onto a full position → negative
+    if (deficit > 0) need = Math.min(2, deficit) * 4 * w;         // filled a real need → positive
+    else if (deficit <= -1) need = Math.max(-2, deficit) * 2.5 * w; // piled onto a full position → negative
   }
   return Math.round(market + need);
 }
@@ -14725,6 +14745,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // rookie or keeper draft would ignore that you already roster, say, 3 QBs and might still push a QB.
     seedRosterCounts(forTeam, myCounts);
     seedKeeperCounts(players, forTeam, myCounts);
+    // Collect the VBDs this team ALREADY holds at each position (drafted picks + no-cost keepers). Used to
+    // judge whether a candidate would START over a current body (a genuine upgrade worth its full value) rather
+    // than just pad the flex. Without this, an elite RB behind two WEAK keeper RBs was valued as flex-scraps and
+    // buried under a reach QB — the Josh-Allen-at-2.03 case. (Existing-roster dynasty holdings aren't in
+    // `players` by id here, so we use what we can resolve; keepers + picks cover the keeper-league case.)
+    const myPosVbds = { QB: [], RB: [], WR: [], TE: [] };
+    picks.forEach((pk, o) => { const pl = players[pk]; if (teamAt(o) === forTeam && pl && myPosVbds[pl.pos]) myPosVbds[pl.pos].push(pl.vbd || 0); });
+    (keeperAddIds(forTeam) || []).forEach((id) => { const pl = players[id]; if (pl && myPosVbds[pl.pos]) myPosVbds[pl.pos].push(pl.vbd || 0); });
+    POS.forEach((pos) => myPosVbds[pos].sort((a, b) => a - b)); // ascending → [0] is the weakest current body
     const bestNow = { QB: null, RB: null, WR: null, TE: null };
     for (const p of sortedAdp) if (!goneSet.has(p.id) && (!bestNow[p.pos] || p.vbd > bestNow[p.pos].vbd)) bestNow[p.pos] = p;
     // Best-ball stacks: gather the NFL teams this drafter already has a QB / pass-catcher from, so the
@@ -14821,7 +14850,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const pool = legalCands(pool0, myCounts, cfg);
     // The recommendation follows the given strategy (defaults to the selected one). We compute one for the
     // selected strategy AND a second for "My build", shown side by side in the tracker.
-    const scoreOf = (p) => userScore(p, myCounts, dem, strat, cfg.sf, pickNum) + 0.6 * Math.max(0, waitCost[p.pos]);
+    const scoreOf = (p) => userScore(p, myCounts, dem, strat, cfg.sf, pickNum, null, myPosVbds) + 0.6 * Math.max(0, waitCost[p.pos]);
     let ranked = pool.slice().sort((a, b) => scoreOf(b) - scoreOf(a));
     // HEADLINE guard (future picks only): the #1 recommendation shouldn't be a player who's very unlikely to
     // still be on the board at this pick. If the top-scored guy has low survival AND a near-equal-scored
