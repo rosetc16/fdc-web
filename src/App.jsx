@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20q";
+const BUILD_TAG = "2026.07.20r";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3361,6 +3361,10 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
     const n = cfg.teams || TEAMS_FALLBACK;
     const rosters = Array.from({ length: n }, () => []);
     ctx.allPicks.forEach((pk, o) => { const pl = ctx.players[pk]; if (pl) { const t = ctx.teamAtFn(o); if (t != null && rosters[t]) rosters[t].push(pl); } });
+    // Add NO-COST keepers (KEEPER_ADDS) — they're kept players not sitting in a draft slot, so they aren't in
+    // allPicks, but they ARE on the roster and must count toward positional strength (the hub's rostersByTeam
+    // includes them, so without this the two disagreed). Pick-cost keepers are already in allPicks above.
+    for (let t = 0; t < n; t++) { keeperAddIds(t).forEach((id) => { const pl = ctx.players[id]; if (pl && !rosters[t].some((x) => x.id === pl.id)) rosters[t].push(pl); }); }
     // position strength per team = SHARED quality score (quality × quantity, starter-focused with drop-off
     // credit) so this ranking matches the hub/overview coloring exactly.
     // Replacement level per position, from the league's whole player pool — the honest "value of the last
@@ -3375,8 +3379,14 @@ function teamAnalysis(roster, cfg, window, advice, nextPath, ctx) {
       posRankByPos[pos] = { rank: rank || n, of: n, mine: Math.round(mine) };
     });
     // ALL = overall roster rank by projected starting-lineup points (computed just below as overallRank).
-    // overall = rank by projected starting lineup points
-    allTeamStartPts = rosters.map((r, i) => ({ i, v: lineupSlots(r, sf).slots.reduce((s, x) => s + (x.p ? x.p.pts || 0 : 0), 0) }));
+    // overall = rank by projected starting lineup points.
+    // IMPORTANT: rank the FINISH by each team's PROJECTED FULL roster (everyone drafts out their lineup), not by
+    // the current partial rosters. Otherwise a team holding more keepers looks like the "leader" in early rounds
+    // purely because it has more bodies on the board than teams with one keeper — even though every team will
+    // fill the same number of starters. Using the projected full rosters makes the finish apples-to-apples.
+    // Fall back to the current rosters only when no projection is available.
+    const finishRosters = (ctx.projRosters && ctx.projRosters.length === n) ? ctx.projRosters : rosters;
+    allTeamStartPts = finishRosters.map((r, i) => ({ i, v: lineupSlots(r || [], sf).slots.reduce((s, x) => s + (x.p ? x.p.pts || 0 : 0), 0) }));
     const sortedStart = allTeamStartPts.slice().sort((a, b) => b.v - a.v);
     overallRank = sortedStart.findIndex((x) => x.i === userIdxOf(ctx)) + 1;
     leagueSize = n;
@@ -18090,7 +18100,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         // Build the selected team's drafted roster from picks.
         const selRoster = rostersByTeam[selTeam] || [];
         const posColor = { QB: POS_COLOR.QB, RB: POS_COLOR.RB, WR: POS_COLOR.WR, TE: POS_COLOR.TE };
-        const ta = teamAnalysis(selRoster, cfg, isMe ? myWindow : null, isMe ? advice : null, path, { allPicks: picks, players, teamAtFn: teamAt, userIdx: selTeam });
+        const ta = teamAnalysis(selRoster, cfg, isMe ? myWindow : null, isMe ? advice : null, path, { allPicks: picks, players, teamAtFn: teamAt, userIdx: selTeam, projRosters: (proj && proj.rosters) || null });
         const myProjView = myTeamView === "projected";
         // Projected view = the SAME full-roster projection the hub uses (proj.rosters), which simulates
         // every remaining round — not just the next pick or two. Previously this only appended the short
@@ -18102,7 +18112,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         // The set of players that are projected (not yet actually drafted) — used to mark them in the UI.
         const draftedIdSet = new Set(selRoster.map((p) => p.id));
         const projectedAdds = projRosterFull ? projRosterFull.filter((p) => !draftedIdSet.has(p.id)) : [];
-        const taShown = teamAnalysis(shownRoster, cfg, isMe ? myWindow : null, isMe ? advice : null, path, { allPicks: picks, players, teamAtFn: teamAt, userIdx: selTeam });
+        const taShown = teamAnalysis(shownRoster, cfg, isMe ? myWindow : null, isMe ? advice : null, path, { allPicks: picks, players, teamAtFn: teamAt, userIdx: selTeam, projRosters: (proj && proj.rosters) || null });
         // Next-pick targets (only meaningful for your own team). Use YOUR next-pick advice (mySelAdvice) — which
         // is computed with YOUR roster counts and cap-filters positions you've maxed — NOT the generic on-clock
         // `advice` (that's for whoever is currently on the board and uses THEIR counts, so it can surface a
