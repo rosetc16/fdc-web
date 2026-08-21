@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20k";
+const BUILD_TAG = "2026.07.20l";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5611,23 +5611,61 @@ export default function App() {
 
   // Run a mock draft against a saved league's exact settings, tracked separately from the
   // league's real draft. The result snapshots into that league's `mocks` history (last 50).
-  const startMock = (leagueId) => {
+  const startMock = async (leagueId) => {
     const lg = leagues.find((l) => l.id === leagueId);
     if (!lg) return;
     const mockId = `mock-${Date.now()}`;
-    // Always let the user CHOOSE their slot before a mock starts (they asked for this). We seed a sensible
-    // DEFAULT: the league's fixed slot/order if one is set, otherwise a random seat. Either way the mock
-    // start screen shows a slot picker (see mockSlotPending) so nothing is silently assumed — the default is
-    // just pre-selected. slotRandomized marks "we picked this for you" so the picker explains it.
-    const orderSet = Array.isArray(lg.cfg.draftOrder) && lg.cfg.draftOrder.length === (lg.cfg.teams || 12);
-    const hasFixedSlot = lg.cfg.slot != null;
-    let mcfg = lg.cfg;
+    // For a CONNECTED league, Sleeper is the source of truth: pull the live draft state first and fold the
+    // current order / your slot / keepers / traded picks into the mock cfg. Otherwise the mock ran off the
+    // stale saved cfg (e.g. old slot 2, no keepers) even after the user set all of that in Sleeper. Best-effort:
+    // on any failure we fall back to the saved cfg. The user can still override the slot on the start screen.
+    let baseCfg = lg.cfg;
+    const conn = (lg.cfg && lg.cfg.connect) || lg.connect;
+    if (hasBackend && conn && conn.leagueId) {
+      try {
+        const d = await api.sleeperDraft(conn.leagueId, conn.username);
+        if (d) {
+          const N = lg.cfg.teams || 12;
+          const patch = {};
+          if (d.draftType && d.draftType !== lg.cfg.order) patch.order = d.draftType;
+          if (d.yourSlot != null && d.yourSlot >= 1) patch.slot = d.yourSlot;
+          if (Array.isArray(d.tradedPicks) && d.tradedPicks.length) {
+            patch.pickTrades = tradesToOwnerOverrides(d.tradedPicks, N, patch.order || lg.cfg.order || "snake");
+            patch.pickTrading = patch.pickTrades.length > 0;
+            patch.connect = { ...conn, tradedPicks: d.tradedPicks };
+          }
+          // Pre-draft keeper-picks: before the real draft starts, every pick Sleeper returns IS a keeper
+          // placement (works with the deployed backend via status, no is_keeper flag needed). Map to board slot.
+          const isPreDraft = d.status === "pre_draft" || d.status === "no_draft" || (Array.isArray(d.picks) && !d.picks.some((pk) => pk && pk.is_keeper === false) && d.status !== "drafting" && d.status !== "complete");
+          const keeperSrc = (Array.isArray(d.picks) ? d.picks : []).filter((pk) => pk && pk.pick_no > 0 && (pk.is_keeper || isPreDraft));
+          if (keeperSrc.length) {
+            const pool = (() => { try { setTeams(N); setSpec(lg.cfg.start); setOrder(patch.order || lg.cfg.order || "snake"); setPickTrades(null); setKeeperAdds({}); return buildPlayers({ ...lg.cfg }); } catch (e) { return []; } })();
+            const byPid = {}, byNm = {};
+            pool.forEach((p) => { if (p.sid != null) byPid[String(p.sid)] = p.id; byNm[normName(p.name)] = p.id; });
+            const keepers = [];
+            keeperSrc.forEach((pk) => {
+              const pid = (pk.player_id != null && byPid[String(pk.player_id)] != null) ? byPid[String(pk.player_id)] : (pk.name ? byNm[normName(pk.name)] : null);
+              if (pid != null) keepers.push({ playerId: pid, team: (pk.draft_slot || 1) - 1, o: pk.pick_no - 1, src: "sleeper" });
+            });
+            if (keepers.length) {
+              const manual = (lg.cfg.keepers || []).filter((k) => k.src !== "sleeper");
+              patch.keepers = [...manual, ...keepers];
+              patch.keeper = true;
+            }
+          }
+          if (Object.keys(patch).length) baseCfg = { ...lg.cfg, ...patch };
+        }
+      } catch (e) { /* fall back to saved cfg */ }
+    }
+    const orderSet = Array.isArray(baseCfg.draftOrder) && baseCfg.draftOrder.length === (baseCfg.teams || 12);
+    const hasFixedSlot = baseCfg.slot != null;
+    let mcfg = baseCfg;
     if (!orderSet && !hasFixedSlot) {
-      const randSlot = Math.floor(Math.random() * (lg.cfg.teams || 12)) + 1;
-      mcfg = { ...lg.cfg, slot: randSlot, slotRandomized: true, mockSlotPending: true };
+      const randSlot = Math.floor(Math.random() * (baseCfg.teams || 12)) + 1;
+      mcfg = { ...baseCfg, slot: randSlot, slotRandomized: true, mockSlotPending: true };
     } else {
       // Order/slot known — default to it, but still surface the picker so the user can override for this mock.
-      mcfg = { ...lg.cfg, mockSlotPending: true };
+      mcfg = { ...baseCfg, mockSlotPending: true };
     }
     setMockLeague({ id: mockId, mockOf: leagueId, name: `${lg.name} — mock`, cfg: { ...mcfg, mockSeed: (Math.random() * 1e9) | 0 }, picks: [], preds: [] });
     setDraftTab(null); setActiveId(mockId); setRoute("draft");
@@ -15216,12 +15254,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         // overall pick (i.e. the wrong team), which is exactly the "extra pick attached to the wrong team" bug.
         // Recompute against the fresh data. (For a draft in progress / done, the live per-pick map is truth, so
         // we skip this.) Guarded by onSettings so we only persist when we actually have a settings handler.
-        // "Pre-draft" = no REAL picks yet. A keeper league pre-places keeper-picks (is_keeper) in d.picks
-        // before the draft starts, so we must not treat those as "the draft started" — otherwise the order/
-        // trade re-sync below gets skipped for exactly the keeper leagues that need it. Only a non-keeper pick
-        // means live drafting has begun (then the live per-pick map is truth and we leave order/trades alone).
-        const realPickMade = Array.isArray(d.picks) && d.picks.some((pk) => pk && !pk.is_keeper);
-        if (onSettings && !done && !realPickMade) {
+        // "Pre-draft" = the real draft hasn't started. Sleeper's status is the reliable signal (works with the
+        // currently-deployed backend). In pre_draft, any picks present are keeper placements, not live picks.
+        const isPreDraft = d.status === "pre_draft" || d.status === "no_draft" || (Array.isArray(d.picks) && !d.picks.some((pk) => pk && pk.is_keeper === false) && d.status !== "drafting" && d.status !== "complete");
+        if (onSettings && !done && isPreDraft) {
           const freshOrder = d.draftType || cfg.order || "snake";
           const N = cfg.teams || 12;
           const patch = {};
@@ -15235,11 +15271,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               patch.connect = { ...cfg.connect, tradedPicks: d.tradedPicks };
             }
           }
-          // KEEPERS placed into draft slots in Sleeper arrive as is_keeper picks (each with pick_no + player).
-          // Convert them to cfg.keepers with o = pick_no-1 so they lock into their exact board slots — including
-          // a keeper sitting on a traded pick. Resolve player_id/name → our internal id via the pool. Only
-          // rewrite when the set actually changed, and only touch keepers we derived from Sleeper (tagged src).
-          const keeperPicks = (Array.isArray(d.picks) ? d.picks : []).filter((pk) => pk && pk.is_keeper && pk.pick_no > 0);
+          // KEEPERS placed into draft slots in Sleeper arrive as picks. In pre_draft, every pick present is a
+          // keeper placement (so this works with the currently-deployed backend, no is_keeper flag needed).
+          const keeperPicks = (Array.isArray(d.picks) ? d.picks : []).filter((pk) => pk && pk.pick_no > 0 && (pk.is_keeper || isPreDraft));
           if (keeperPicks.length) {
             const byPid = {}; const byNm = {};
             (players || []).forEach((p) => { if (p.sid != null) byPid[String(p.sid)] = p.id; byNm[normName(p.name)] = p.id; });
