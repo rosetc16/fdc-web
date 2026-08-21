@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20t";
+const BUILD_TAG = "2026.07.20u";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -16099,8 +16099,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // a position you'd already filled, and stacking a set position is dinged.
     const req = REQ_F ? REQ_F(cfg.sf) : { QB: 1, RB: 2, WR: 2, TE: 1 };
     const counts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
-    return picks.map((pk, o) => {
-      const p = players[pk];
+    // Build a per-overall-index map of what each team holds on the board: drafted picks PLUS keepers not yet in
+    // the dense picks array. A keeper must grade like any pick (a keeper kept well below his ADP is a genuine
+    // steal) and count toward the running need context BEFORE the draft reaches its slot — otherwise the whole
+    // Summary tab (grades, steals/reaches, team projections, draft card, your picks, how the draft flowed)
+    // ignored keepers until they were formally drafted.
+    const byOverall = {}; // o -> { id, keeper:bool }
+    picks.forEach((pk, o) => { if (pk != null) byOverall[o] = { id: pk, keeper: !!keeperByPick[o] }; });
+    (forcedAhead || []).forEach((f) => { if (f && f.id != null && byOverall[f.o] == null) byOverall[f.o] = { id: f.id, keeper: true }; });
+    const totalPicks = totalOf(cfg);
+    const out = [];
+    for (let o = 0; o < totalPicks; o++) {
+      const entry = byOverall[o];
+      if (!entry) continue;
+      const p = players[entry.id];
       const t = teamAt(o);
       let ctx = null;
       if (p && p.pos && counts[t]) {
@@ -16108,25 +16120,27 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         ["QB", "RB", "WR", "TE"].forEach((pos) => { need[pos] = (req[pos] || 0) - (counts[t][pos] || 0); });
         ctx = { need };
       }
+      // `val` = decision-quality score (market gap AND whether it filled a need) — grades the teams.
+      // `mval` = MARKET-ONLY (need term off) — this is what the steals/reaches lists use, so an at-ADP pick
+      // isn't mistaken for a steal just because an early roster is empty. On a rookie draft, grade vs rookie-
+      // relative ADP so it doesn't read as all-reaches.
       const val = pickValue(p, o, cfg, rookieAdpById ? { ...(ctx || {}), rookieAdp: rookieAdpById } : ctx);
-      // MARKET-ONLY value: the same score with the need term switched off.
-      //
-      // These are two genuinely different questions and they were being answered with one number:
-      //   • "Was this a good DECISION?" — market gap AND whether it filled a hole. That's `val`, and it's the
-      //     right basis for grading a team's draft.
-      //   • "Was this a STEAL or a REACH?" — purely how far the player fell past (or was taken ahead of) his
-      //     market price. Need has nothing to do with it.
-      // Using the decision score for the steals list made every round-1 pick look like a huge steal: early on
-      // every roster is empty, so every pick collects the full need bonus. A player taken exactly at his ADP
-      // scored ~+20 with ~+0.3 of that coming from the market — i.e. the list was ranking early picks, not
-      // steals. `mval` is what the steals/reaches lists use; `val` still grades the teams.
-      // On a rookie draft, grade against rookie-relative ADP (not deep startup ADP) so a rookie draft doesn't
-      // read as all-reaches everywhere the summary looks.
       const mval = pickValue(p, o, cfg, rookieAdpById ? { rookieAdp: rookieAdpById } : null);
       if (p && p.pos && counts[t] && counts[t][p.pos] != null) counts[t][p.pos]++;
-      return { p, o, t, val, mval };
+      out.push({ p, o, t, val, mval, keeper: !!entry.keeper });
+    }
+    // No-cost keepers (no draft slot): fold into their team's counts and add a roster entry so team views show
+    // them, but with o=null and val/mval=0 so they never enter the gap-based steals/reaches lists.
+    Object.entries(noCostByTeam || {}).forEach(([tStr, ids]) => {
+      const t = +tStr;
+      (ids || []).forEach((id) => {
+        const p = players[id]; if (!p) return;
+        if (p.pos && counts[t] && counts[t][p.pos] != null) counts[t][p.pos]++;
+        out.push({ p, o: null, t, val: 0, mval: 0, keeper: true, noCost: true });
+      });
     });
-  }, [picks, players, cfg, rookieAdpById]);
+    return out;
+  }, [picks, players, cfg, rookieAdpById, forcedAhead, noCostByTeam]);
   const valByTeamRaw = useMemo(() => Array.from({ length: TEAMS }, (_, i) => graded.filter((g) => g.t === i).reduce((s, g) => s + g.val, 0)), [graded]);
   // The raw per-pick value model is intentionally asymmetric (reaches sting more) and early-weighted, so
   // its LEAGUE SUM skews negative — most teams would show a negative total even in a normal draft. For the
@@ -16165,8 +16179,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     let seed = picks.reduce((a, id, i) => (a + id * (i + 7)) % 2147483647, picks.length * 13 + TEAMS);
     const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
     const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
-    const steals = graded.filter((g) => g.p).slice().sort((a, b) => b.val - a.val);
-    const reaches = graded.filter((g) => g.p).slice().sort((a, b) => a.val - b.val);
+    const steals = graded.filter((g) => g.p && g.o != null).slice().sort((a, b) => b.val - a.val);
+    const reaches = graded.filter((g) => g.p && g.o != null).slice().sort((a, b) => a.val - b.val);
     const bestVal = valByTeam.indexOf(Math.max(...valByTeam));
     const worstVal = valByTeam.indexOf(Math.min(...valByTeam));
     const leader = proj.rank.indexOf(1);
@@ -16221,8 +16235,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const recapHead = useMemo(() => {
     if (!proj || !grades || picks.length < 6) return null;
     const nm = (i) => (i === userIdx ? "You" : TEAM_NAMES[i]);
-    const steals = graded.filter((g) => g.p).slice().sort((a, b) => b.val - a.val);
-    const reaches = graded.filter((g) => g.p).slice().sort((a, b) => a.val - b.val);
+    const steals = graded.filter((g) => g.p && g.o != null).slice().sort((a, b) => b.val - a.val);
+    const reaches = graded.filter((g) => g.p && g.o != null).slice().sort((a, b) => a.val - b.val);
     const bestVal = valByTeam.indexOf(Math.max(...valByTeam));
     const worstVal = valByTeam.indexOf(Math.min(...valByTeam));
     const leader = proj.rank.indexOf(1);
@@ -19076,7 +19090,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 // (pickNo − ADP), not `val` (the need-weighted decision score, which inflated every early
                 // pick and printed wrong "spots" — e.g. a round-1 stud at ADP 2.9 taken 4th is a ~1-spot
                 // reach, never a "23 spot" anything). Picks without an ADP can't have a gap, so exclude them.
-                const gapOf = (g) => (g && g.p && g.p.adp != null) ? ((g.o + 1) - g.p.adp) : null;
+                const gapOf = (g) => (g && g.p && g.o != null && g.p.adp != null) ? ((g.o + 1) - g.p.adp) : null;
                 const withGap = graded.filter((g) => gapOf(g) != null).map((g) => ({ ...g, gap: gapOf(g) }));
                 const byGap = withGap.slice().sort((a, b) => b.gap - a.gap);
                 const steal = byGap[0];                      // biggest positive gap = fell furthest past ADP
@@ -20348,7 +20362,7 @@ function SummaryTable({ rows, userIdx, focusIdx, rookieAdp }) {
           const adpV = adpOf(g.p);
           return (
           <tr key={g.o}>
-            <td style={{ padding: "3px 6px 3px 0" }}><span className="posdot" style={{ background: POS_COLOR[g.p.pos] }} /><b>{g.p.name}</b></td>
+            <td style={{ padding: "3px 6px 3px 0" }}><span className="posdot" style={{ background: POS_COLOR[g.p.pos] }} /><b>{g.p.name}</b>{g.keeper && <span className="mut" style={{ fontSize: 9, marginLeft: 5, padding: "0 4px", borderRadius: 3, border: "1px solid var(--line)", letterSpacing: ".04em", verticalAlign: "middle" }}>K</span>}</td>
             <td className="num" style={{ textAlign: "right" }}>{overallPick(g.o)}<span className="mut" style={{ fontSize: 10.5, marginLeft: 4 }}>({pickLabel(g.o)})</span></td>
             <td style={{ color: g.t === hi ? "var(--gold)" : "var(--ink)", fontWeight: g.t === hi ? 700 : 400, paddingLeft: 8 }}>{g.t === userIdx ? "You" : TEAM_NAMES[g.t].split(" ")[0]}</td>
             <td className="num" style={{ textAlign: "right" }}>{adpV != null ? adpV.toFixed(1) : "—"}</td>
