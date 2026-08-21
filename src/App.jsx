@@ -61,6 +61,11 @@ let TEAMS = 12;
 const ADMIN_EMAILS = ["rosetc16@gmail.com", "trey.rose@pirates.com"];
 const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase()).includes(String(email).trim().toLowerCase());
 
+// Recommendation diagnostic: when ?dbg=1 is in the URL, adviceFor attaches a per-candidate score breakdown
+// (dbgRows) and the Your-Decision panel renders it. Lets us see the ACTUAL scoring live instead of guessing.
+let DBG_RECO = false;
+try { DBG_RECO = typeof window !== "undefined" && /[?&]dbg=1\b/.test(window.location.search || ""); } catch (e) {}
+
 // Global navigation hook. The App wires this once (setGlobalNav) so shared chrome like AppHeader can always
 // route — e.g. an admin's "Admin" button works on EVERY page, even ones that didn't explicitly thread an
 // onAdmin handler through. Falls back gracefully to a no-op before the App mounts.
@@ -73,7 +78,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20v";
+const BUILD_TAG = "2026.07.20w";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2771,7 +2776,7 @@ function windowFit(c, lane, dynasty) {
   if (lane === "winnow") return Math.max(0, age - 24) * 2 - (c.rookie ? 8 : 0) - Math.max(0, assetGap) * 0.25;
   return 0;
 }
-function userScore(c, counts, dem, strategy, sf, pickNum, build, posVbds) {
+function userScore(c, counts, dem, strategy, sf, pickNum, build, posVbds, dbg) {
   if (strategy === "adp") {
     // "Strict ADP" = follow the board order (best available by ADP). But it still shouldn't hand you a player
     // at a position you literally can't use — e.g. a 6th QB in a superflex league where you already start your
@@ -2921,6 +2926,15 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build, posVbds) {
   // (already inside `build`). Market weight ~0.85 in round 1 → ~0.5 at round 3 → ~0 by round 6-7. Redraft and
   // dynasty share the SAME handoff shape; dynasty's extra complexity lives inside `build` (window/age/lane).
   const mktW = pickNum != null ? Math.max(0, Math.min(0.85, 0.85 - (round - 1) * 0.17)) : 0;
+  if (dbg && typeof dbg === "object") {
+    dbg.pos = c.pos; dbg.vbd = c.vbd; dbg.adp = c.adp; dbg.mv = Math.round(mv); dbg.mvUse = Math.round(mvUse);
+    dbg.isStarterUpgrade = !!isStarterUpgrade; dbg.weakestHeld = weakestHeld;
+    dbg.needBonus = Math.round(needBonus); dbg.overStack = Math.round(overStack); dbg.flexEarly = Math.round(flexEarly);
+    dbg.qbDead = Math.round(qbDead); dbg.emptyStarter = Math.round(emptyStarterPremium(c, counts, sf));
+    dbg.scarcity = Math.round(SCARCITY_PREM[c.pos] || 0); dbg.adpValue = Math.round(adpValue);
+    dbg.reach = Math.round(reachPenalty(c, pickNum)); dbg.buildScore = Math.round(buildScore);
+    dbg.market = Math.round(market); dbg.mktW = +mktW.toFixed(2); dbg.total = Math.round(market * mktW + buildScore * (1 - mktW));
+  }
   return market * mktW + buildScore * (1 - mktW);
 }
 // cost of drafting a player well before the market would — grows the earlier you are
@@ -14745,14 +14759,18 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // rookie or keeper draft would ignore that you already roster, say, 3 QBs and might still push a QB.
     seedRosterCounts(forTeam, myCounts);
     seedKeeperCounts(players, forTeam, myCounts);
-    // Collect the VBDs this team ALREADY holds at each position (drafted picks + no-cost keepers). Used to
-    // judge whether a candidate would START over a current body (a genuine upgrade worth its full value) rather
-    // than just pad the flex. Without this, an elite RB behind two WEAK keeper RBs was valued as flex-scraps and
-    // buried under a reach QB — the Josh-Allen-at-2.03 case. (Existing-roster dynasty holdings aren't in
-    // `players` by id here, so we use what we can resolve; keepers + picks cover the keeper-league case.)
+    // Collect the VBDs this team ALREADY holds at each position — from ALL sources so the starter-upgrade check
+    // actually sees the roster: drafted picks, no-cost keepers (KEEPER_ADDS), AND pick-cost keepers (kept in a
+    // draft slot, tracked in keeperByPick / previewed in forcedAhead). The last group was the miss that made the
+    // 20v fix inert for Trey — his keepers are pick-cost and sit at FUTURE slots pre-draft, so they were in
+    // neither `picks` nor keeperAddIds, leaving myPosVbds empty and isStarterUpgrade permanently false.
     const myPosVbds = { QB: [], RB: [], WR: [], TE: [] };
-    picks.forEach((pk, o) => { const pl = players[pk]; if (teamAt(o) === forTeam && pl && myPosVbds[pl.pos]) myPosVbds[pl.pos].push(pl.vbd || 0); });
-    (keeperAddIds(forTeam) || []).forEach((id) => { const pl = players[id]; if (pl && myPosVbds[pl.pos]) myPosVbds[pl.pos].push(pl.vbd || 0); });
+    const seenVbdId = new Set();
+    const addVbd = (pl) => { if (pl && myPosVbds[pl.pos] && !seenVbdId.has(pl.id)) { seenVbdId.add(pl.id); myPosVbds[pl.pos].push(pl.vbd || 0); } };
+    picks.forEach((pk, o) => { if (teamAt(o) === forTeam) addVbd(players[pk]); });
+    (keeperAddIds(forTeam) || []).forEach((id) => addVbd(players[id]));
+    Object.entries(keeperByPick).forEach(([o, id]) => { if (teamAt(+o) === forTeam) addVbd(players[id]); });
+    (forcedAhead || []).forEach((f) => { if (f && f.team === forTeam) addVbd(players[f.id]); });
     POS.forEach((pos) => myPosVbds[pos].sort((a, b) => a - b)); // ascending → [0] is the weakest current body
     const bestNow = { QB: null, RB: null, WR: null, TE: null };
     for (const p of sortedAdp) if (!goneSet.has(p.id) && (!bestNow[p.pos] || p.vbd > bestNow[p.pos].vbd)) bestNow[p.pos] = p;
@@ -14889,7 +14907,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
     let run = null;
     POS.forEach((pos) => { const c = recent.filter((x) => x === pos).length; if (c >= 3 && (!run || c > run.count)) run = { pos, count: c }; });
-    return { bestNow, waitCost, waitDetail, verdict, alts, impacts, run, myCounts, strat, expBestPlayer: simState.expBestPlayer || {} };
+    // ADMIN DIAGNOSTIC: capture the full score breakdown for the top candidates so the recommendation math is
+    // inspectable live (which term is lifting a QB over an elite WR, whether a name is even in the pool, etc.).
+    // Also record which notable available players were EXCLUDED from the pool and why-adjacent info.
+    let dbgRows = null;
+    if (DBG_RECO) {
+      dbgRows = ranked.slice(0, 12).map((p) => { const d = {}; userScore(p, myCounts, dem, strat, cfg.sf, pickNum, null, myPosVbds, d); return { name: p.name, wait: Math.round(0.6 * Math.max(0, waitCost[p.pos] || 0)), ...d }; });
+      const inPool = new Set(pool.map((p) => p.id));
+      const notablesOut = sortedAdp
+        .filter((p) => !draftedSet.has(p.id) && !inPool.has(p.id) && p.adp != null && p.adp <= pickNum + 6)
+        .slice(0, 8)
+        .map((p) => ({ name: p.name, pos: p.pos, adp: p.adp, vbd: p.vbd, survived: survivesToPick(p.id), legalCapped: (myCounts[p.pos] || 0) >= (capsOf(cfg)[p.pos] || 99) }));
+      dbgRows = { rows: dbgRows, excluded: notablesOut, myPosVbds };
+    }
+    return { bestNow, waitCost, waitDetail, verdict, alts, impacts, run, myCounts, strat, expBestPlayer: simState.expBestPlayer || {}, dbgRows };
   };
   // Recommendation for the CURRENT pick on the clock (whoever it is).
   // NOTE: adviceFor reads `strategy` internally (via strat = strategyOverride || strategy), so it MUST be a
@@ -17753,6 +17784,32 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       </span>
                     </div>
                   ))}
+                  {advice.dbgRows && (
+                    <div style={{ marginTop: 12, padding: 8, border: "1px solid var(--gold)", borderRadius: 6, fontSize: 10, overflowX: "auto" }}>
+                      <div style={{ fontWeight: 800, color: "var(--gold)", marginBottom: 4 }}>RECO DIAGNOSTIC (dbg=1)</div>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9.5, whiteSpace: "nowrap" }}>
+                        <thead><tr style={{ textAlign: "right", color: "var(--mut)" }}>
+                          {["player","pos","vbd","mv","mvUse","up","weak","need","flex","qbD","empty","scar","adpV","reach","build","mkt","mktW","wait","TOTAL"].map((h) => <th key={h} style={{ padding: "1px 4px", textAlign: h === "player" ? "left" : "right" }}>{h}</th>)}
+                        </tr></thead>
+                        <tbody>
+                          {advice.dbgRows.rows.map((r, i) => (
+                            <tr key={i} style={{ borderTop: "1px solid #ffffff14", textAlign: "right" }}>
+                              <td style={{ textAlign: "left", padding: "1px 4px", color: "var(--ink)" }}>{r.name}</td>
+                              <td>{r.pos}</td><td>{r.vbd}</td><td>{r.mv}</td><td>{r.mvUse}</td><td style={{ color: r.isStarterUpgrade ? "var(--green)" : "var(--mut)" }}>{r.isStarterUpgrade ? "Y" : "·"}</td><td>{r.weakestHeld == null ? "—" : r.weakestHeld}</td>
+                              <td>{r.needBonus}</td><td style={{ color: r.flexEarly ? "var(--red)" : "inherit" }}>{r.flexEarly ? -r.flexEarly : 0}</td><td>{r.qbDead ? -r.qbDead : 0}</td><td>{r.emptyStarter}</td><td>{r.scarcity}</td><td>{r.adpValue}</td><td style={{ color: r.reach ? "var(--red)" : "inherit" }}>{r.reach ? -r.reach : 0}</td>
+                              <td>{r.buildScore}</td><td>{r.market}</td><td>{r.mktW}</td><td>{r.wait}</td><td style={{ fontWeight: 800, color: "var(--gold)" }}>{r.total + r.wait}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {advice.dbgRows.excluded && advice.dbgRows.excluded.length > 0 && (
+                        <div style={{ marginTop: 6, color: "var(--mut)" }}>
+                          <b>Excluded from pool (ADP ≤ pick+6):</b> {advice.dbgRows.excluded.map((e) => `${e.name}(${e.pos},adp${e.adp},vbd${e.vbd},${e.survived ? "surv" : "GONE"}${e.legalCapped ? ",CAPPED" : ""})`).join("  ·  ")}
+                        </div>
+                      )}
+                      <div style={{ marginTop: 4, color: "var(--mut)" }}>myPosVbds: {["QB","RB","WR","TE"].map((p) => `${p}[${(advice.dbgRows.myPosVbds[p] || []).join(",")}]`).join(" ")}</div>
+                    </div>
+                  )}
                   <div className="mut" style={{ fontSize: 11.5, margin: "10px 0 4px", textTransform: "uppercase", letterSpacing: ".07em" }}>
                     <span className="info" onClick={(e) => showTip(e, [
                       { t: "Take now vs. wait", x: "For each position: the best player on the board RIGHT NOW versus the best the simulations expect to survive to YOUR NEXT PICK." },
