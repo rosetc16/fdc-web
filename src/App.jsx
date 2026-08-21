@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20o";
+const BUILD_TAG = "2026.07.20p";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -14741,14 +14741,22 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         const drop = wd.deltaPts2 || wd.deltaPts || 0;                 // pts lost waiting to your next pick(s)
         const surv = wd.nowSurvives != null ? wd.nowSurvives : 100;    // % chance best-now survives to next pick
         const gone = Math.max(0, 100 - surv) / 100;                     // 0 (safe) → 1 (almost certainly gone)
-        // Position scarcity weight: premium QB (SF) and TE (TEP) are hardest to replace late.
-        const scarceW = (pos === "QB" && (cfg.sf || (SPEC.SUPER || 0) > 0)) ? 1.0
+        // Position scarcity weight: premium QB (SF) and TE (TEP) are hardest to replace late. In a 1-QB,
+        // non-superflex league QB is the OPPOSITE of scarce — you start exactly one and QB2…QB12 are all viable
+        // streamers, so a QB1-to-QB2 cliff must NOT pull a QB above elite RB/WR value early. Give single-QB
+        // leagues a much lower weight than a flex position. (Superflex/2QB keep the full 1.0 — QB is genuinely
+        // scarce there.)
+        const isSuperflexQB = cfg.sf || (SPEC.SUPER || 0) > 0;
+        const scarceW = (pos === "QB" && isSuperflexQB) ? 1.0
+          : (pos === "QB") ? 0.15
           : (pos === "TE" && SPEC.tePrem) ? 0.85
           : (pos === "TE") ? 0.6 : 0.5;
         // Only meaningful when there's a real drop-off AND real risk it's gone. Capped so it nudges, never
-        // dominates — a truly elite value elsewhere can still win.
+        // dominates — a truly elite value elsewhere can still win. A single-QB league also gets a much lower
+        // absolute cap so it can only ever be a gentle nudge, never a reason to reach a full round early.
         const raw = drop * gone * scarceW * 0.55 * Math.min(2, owe);
-        prem[pos] = Math.min(pos === "QB" ? 60 : 45, raw);
+        const cap = (pos === "QB") ? (isSuperflexQB ? 60 : 14) : 45;
+        prem[pos] = Math.min(cap, raw);
       });
       setScarcityPrem(prem);
     }
