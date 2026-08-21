@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20i";
+const BUILD_TAG = "2026.07.20k";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13359,7 +13359,10 @@ function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
 
   const usedPlayerIds = new Set(keepers.map((k) => k.playerId));
   const usedPicks = new Set(keepers.filter((k) => k.o != null).map((k) => k.o));
-  const playerOpts = useMemo(() => players.filter((p) => POS.includes(p.pos) && !usedPlayerIds.has(p.id) && (!pSearch || p.name.toLowerCase().includes(pSearch.toLowerCase()))).slice(0, 40), [players, pSearch, keepers]);
+  const playerOpts = useMemo(() => {
+    const q = pSearch.trim().toLowerCase();
+    return players.filter((p) => !usedPlayerIds.has(p.id) && (!q || p.name.toLowerCase().includes(q) || (p.team && p.team.toLowerCase().includes(q)) || (p.pos && p.pos.toLowerCase() === q))).slice(0, 60);
+  }, [players, pSearch, keepers]);
 
   const addKeeper = () => {
     if (kPlayer === "") return;
@@ -15213,7 +15216,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         // overall pick (i.e. the wrong team), which is exactly the "extra pick attached to the wrong team" bug.
         // Recompute against the fresh data. (For a draft in progress / done, the live per-pick map is truth, so
         // we skip this.) Guarded by onSettings so we only persist when we actually have a settings handler.
-        if (onSettings && !done && (!Array.isArray(d.picks) || d.picks.length === 0)) {
+        // "Pre-draft" = no REAL picks yet. A keeper league pre-places keeper-picks (is_keeper) in d.picks
+        // before the draft starts, so we must not treat those as "the draft started" — otherwise the order/
+        // trade re-sync below gets skipped for exactly the keeper leagues that need it. Only a non-keeper pick
+        // means live drafting has begun (then the live per-pick map is truth and we leave order/trades alone).
+        const realPickMade = Array.isArray(d.picks) && d.picks.some((pk) => pk && !pk.is_keeper);
+        if (onSettings && !done && !realPickMade) {
           const freshOrder = d.draftType || cfg.order || "snake";
           const N = cfg.teams || 12;
           const patch = {};
@@ -15226,6 +15234,24 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               patch.pickTrading = patch.pickTrades.length > 0 || cfg.pickTrading;
               patch.connect = { ...cfg.connect, tradedPicks: d.tradedPicks };
             }
+          }
+          // KEEPERS placed into draft slots in Sleeper arrive as is_keeper picks (each with pick_no + player).
+          // Convert them to cfg.keepers with o = pick_no-1 so they lock into their exact board slots — including
+          // a keeper sitting on a traded pick. Resolve player_id/name → our internal id via the pool. Only
+          // rewrite when the set actually changed, and only touch keepers we derived from Sleeper (tagged src).
+          const keeperPicks = (Array.isArray(d.picks) ? d.picks : []).filter((pk) => pk && pk.is_keeper && pk.pick_no > 0);
+          if (keeperPicks.length) {
+            const byPid = {}; const byNm = {};
+            (players || []).forEach((p) => { if (p.sid != null) byPid[String(p.sid)] = p.id; byNm[normName(p.name)] = p.id; });
+            const fromSleeper = [];
+            keeperPicks.forEach((pk) => {
+              const pid = (pk.player_id != null && byPid[String(pk.player_id)] != null) ? byPid[String(pk.player_id)] : (pk.name ? byNm[normName(pk.name)] : null);
+              if (pid != null) fromSleeper.push({ playerId: pid, team: (pk.draft_slot || 1) - 1, o: pk.pick_no - 1, src: "sleeper" });
+            });
+            // Keep any manually-added keepers (no src tag); replace the Sleeper-derived set with the fresh one.
+            const manual = (cfg.keepers || []).filter((k) => k.src !== "sleeper");
+            const merged = [...manual, ...fromSleeper];
+            if (JSON.stringify(merged) !== JSON.stringify(cfg.keepers || [])) { patch.keepers = merged; patch.keeper = true; }
           }
           if (Object.keys(patch).length) onSettings({ ...cfg, ...patch });
         }
