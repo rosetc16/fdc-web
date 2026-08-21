@@ -73,7 +73,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20m";
+const BUILD_TAG = "2026.07.20n";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -134,11 +134,16 @@ const normalizeLeaguePicks = (picks, pool) => {
 // Returns null when the picks aren't Sleeper objects or carry no draft_slot (nothing to override with).
 const slotMapFromSleeperPicks = (picks) => {
   if (!looksLikeSleeperPicks(picks)) return null;
-  const ordered = picks.slice().sort((a, b) => ((a.pick_no || 0) - (b.pick_no || 0)));
   const map = {}; let any = false;
-  ordered.forEach((pk, o) => {
-    // Prefer team_slot (the team that OWNED the pick — trade-accurate); fall back to draft_slot (physical seat).
-    const slot = (pk && typeof pk === "object") ? (pk.team_slot != null ? pk.team_slot : pk.draft_slot) : null;
+  (picks || []).forEach((pk) => {
+    if (!pk || typeof pk !== "object") return;
+    // Key by the pick's REAL overall index (pick_no - 1), NOT its position in the array. Using the array
+    // position was the bug: in a keeper league the picks are a handful of keeper placements at scattered
+    // pick_no values (e.g. 71, 78), and indexing them 0,1,2… mapped them onto the wrong board slots and
+    // scrambled the entire round-1 layout. Prefer team_slot (trade-accurate owner); fall back to draft_slot.
+    const o = (pk.pick_no != null && pk.pick_no > 0) ? pk.pick_no - 1 : null;
+    if (o == null) return;
+    const slot = pk.team_slot != null ? pk.team_slot : pk.draft_slot;
     if (slot != null) { map[o] = slot - 1; any = true; }
   });
   return any ? map : null;
@@ -18635,10 +18640,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 </div>
               </div>
               )}
-              {/* Bye-week outlook — below the outlook panel; redraft-focused, graceful when byes unannounced */}
-              <ByeWeekWidget roster={selRoster} req={REQ_F(isSuperflex(cfg))} isDynasty={isDynastyCfg(cfg)} />
             </div>
               </div>
+              {/* Bye-week outlook — moved to the very bottom of Team Analysis (full width), per request */}
+              <ByeWeekWidget roster={selRoster} req={REQ_F(isSuperflex(cfg))} isDynasty={isDynastyCfg(cfg)} />
             </div>
             </>)}
           </div>
