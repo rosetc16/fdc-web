@@ -90,7 +90,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20ag";
+const BUILD_TAG = "2026.07.20ah";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2935,8 +2935,17 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build, posVbds, dbg) {
   // restore his marginal value toward full VBD (he's starting, not flexing) and (b) waive the early-flex penalty.
   const myAtPos = posVbds && posVbds[c.pos] ? posVbds[c.pos] : null;
   const weakestHeld = myAtPos && myAtPos.length ? myAtPos[0] : null; // ascending, so [0] = weakest
-  const isStarterUpgrade = ["RB", "WR", "TE"].includes(c.pos) && weakestHeld != null && c.vbd != null
-    && (c.vbd - weakestHeld) >= 15; // a clear margin over the worst body you'd bench in his favor
+  const reqEff = REQ_EFF(sf);
+  const posStarterOpen = (counts[c.pos] || 0) < (reqEff[c.pos] || 0); // still need a pure starter at his position
+  // STARTER UPGRADE applies ONLY to a DEDICATED open starter slot at the candidate's position — e.g. your RB
+  // slots are filled by weak keepers and an elite RB is available; he starts, so value him at real VBD, not the
+  // flex-replacement haircut. A candidate who'd only reach a FLEX spot is deliberately NOT restored here: the
+  // flex is contested across RB/WR/TE and its value is a POINTS question, which marginalVbd's flex-basis branch
+  // already captures (points above flex replacement) — and that margin is usually small. Overriding it floated a
+  // 3rd TE (marginal flex upgrade, ~10 pts/yr over a filled flex) to #1 over an empty QB / thin RB. The
+  // opportunity cost of skipping a real need dwarfs a tiny flex bump, so we let marginalVbd's points value stand.
+  const isStarterUpgrade = ["RB", "WR", "TE"].includes(c.pos) && posStarterOpen && weakestHeld != null && c.vbd != null
+    && (c.vbd - weakestHeld) >= 15; // clear margin over the body he'd bench — and he fills a real starter slot
   if (isStarterUpgrade) {
     // He'd start over your weakest body — value him near his real VBD rather than the flex-replacement haircut.
     mvUse = Math.max(mvUse, c.vbd - Math.max(0, weakestHeld) * 0.35);
@@ -18972,6 +18981,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         const useProj = teamsProj && proj;
         // Rosters per team: Current = rostersByTeam (keeper-aware); Projected = proj.rosters (fully drafted out).
         const rostersFor = (i) => (useProj ? (proj.rosters[i] || []) : (rostersByTeam[i] || []));
+        // IDs already really on rosters (drafted picks + keepers). In the Projected view we tint players NOT in
+        // this set — i.e. the ones the projection filled in, who aren't actually on the team yet — so they're
+        // easy to tell apart from players already secured.
+        const realIds = new Set();
+        for (let i = 0; i < TEAMS; i++) (rostersByTeam[i] || []).forEach((p) => { if (p) realIds.add(p.id); });
         // Ranking: Projected uses projectAll's finish (proj.rank/pts); Current ranks by current starting-lineup pts.
         const curPts = [];
         for (let i = 0; i < TEAMS; i++) curPts.push(lineupSlots(rostersByTeam[i] || [], cfg.sf).slots.reduce((s, x) => s + (x.p ? (x.p.pts || 0) : 0), 0));
@@ -19007,14 +19021,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const mine = i === userIdx;
                 const name = mine ? "You" : (TEAM_NAMES[i] || `Team ${i + 1}`);
                 const teamTiers = tiers[i] || {};
-                const playerRow = (label, p, isBench) => (
-                  <div key={label + (p ? p.id : "empty")} style={{ display: "grid", gridTemplateColumns: "38px 1fr auto", gap: 6, alignItems: "center", padding: "2px 0", opacity: isBench ? 0.72 : 1 }}>
+                const playerRow = (label, p, isBench) => {
+                  const projOnly = useProj && p && !realIds.has(p.id); // filled by the projection, not really on the team yet
+                  return (
+                  <div key={label + (p ? p.id : "empty")} style={{ display: "grid", gridTemplateColumns: "38px 1fr auto", gap: 6, alignItems: "center", padding: "2px 4px", borderRadius: 4, opacity: isBench ? 0.72 : 1, background: projOnly ? "rgba(242,182,60,.10)" : undefined }}>
                     <span className="mut" style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".03em" }}>{label}</span>
                     {p ? (
                       <>
                         <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0, fontSize: 12 }}>
                           <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: 2, background: POS_COLOR[p.pos] || "var(--mut)", marginRight: 6, verticalAlign: "middle" }} />
-                          <span style={{ fontWeight: mine ? 600 : 500 }}>{p.name}</span>
+                          <span style={{ fontWeight: projOnly ? 600 : (mine ? 600 : 500), color: projOnly ? "var(--gold)" : undefined }}>{p.name}</span>
                         </span>
                         <span style={{ fontSize: 10.5, fontWeight: 700, color: rankTierColor(p.pos, p.posRank), fontVariantNumeric: "tabular-nums", textAlign: "right" }}>{p.pos}{p.posRank || "—"}</span>
                       </>
@@ -19025,7 +19041,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       </>
                     )}
                   </div>
-                );
+                  );
+                };
                 return (
                   <div key={i} style={{ border: `1px solid ${mine ? "var(--gold)" : "var(--line)"}`, borderRadius: 10, background: mine ? "rgba(242,182,60,.05)" : "var(--panel2)", padding: 12, display: "flex", flexDirection: "column", minWidth: 0 }}>
                     {/* header: rank + name + points */}
@@ -19063,6 +19080,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <div className="mut" style={{ fontSize: 11, marginTop: 12, display: "flex", gap: 16, flexWrap: "wrap" }}>
               <span><span style={{ color: "var(--green)", fontWeight: 700 }}>Green</span> / <span style={{ color: "var(--gold)", fontWeight: 700 }}>amber</span> / <span style={{ color: "var(--red)", fontWeight: 700 }}>red</span> = player's strength at his position (and each team's position-group tier up top)</span>
               <span>Rank badges show top-3 in gold. Toggle Current / Projected above.</span>
+              {useProj && <span><span style={{ color: "var(--gold)", fontWeight: 700 }}>Gold names</span> = projected picks not yet drafted</span>}
             </div>
           </div>
         );
