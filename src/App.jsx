@@ -78,7 +78,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20w";
+const BUILD_TAG = "2026.07.20x";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -17695,6 +17695,32 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     {/* single recommendation list — full top 10, market → build blended */}
                     <div>
                       {recTable(balAdv, "var(--gold)", "For this pick", strategy === "adp" ? "strict ADP order" : strategy === "value" ? "max VBD" : strategy === "upside" ? "upside / breakout" : "smart · market early → your build by round 5")}
+                      {balAdv && balAdv.dbgRows && (
+                        <div style={{ marginTop: 12, padding: 8, border: "1px solid var(--gold)", borderRadius: 6, fontSize: 10, overflowX: "auto" }}>
+                          <div style={{ fontWeight: 800, color: "var(--gold)", marginBottom: 4 }}>RECO DIAGNOSTIC (dbg=1)</div>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9.5, whiteSpace: "nowrap" }}>
+                            <thead><tr style={{ color: "var(--mut)" }}>
+                              {["player","pos","vbd","mv","mvUse","up","weak","need","flex","qbD","empty","scar","adpV","reach","build","mkt","mktW","wait","TOTAL"].map((h) => <th key={h} style={{ padding: "1px 4px", textAlign: h === "player" ? "left" : "right" }}>{h}</th>)}
+                            </tr></thead>
+                            <tbody>
+                              {balAdv.dbgRows.rows.map((r, i) => (
+                                <tr key={i} style={{ borderTop: "1px solid #ffffff14", textAlign: "right" }}>
+                                  <td style={{ textAlign: "left", padding: "1px 4px", color: "var(--ink)" }}>{r.name}</td>
+                                  <td>{r.pos}</td><td>{r.vbd}</td><td>{r.mv}</td><td>{r.mvUse}</td><td style={{ color: r.isStarterUpgrade ? "var(--green)" : "var(--mut)" }}>{r.isStarterUpgrade ? "Y" : "·"}</td><td>{r.weakestHeld == null ? "—" : r.weakestHeld}</td>
+                                  <td>{r.needBonus}</td><td style={{ color: r.flexEarly ? "var(--red)" : "inherit" }}>{r.flexEarly ? -r.flexEarly : 0}</td><td>{r.qbDead ? -r.qbDead : 0}</td><td>{r.emptyStarter}</td><td>{r.scarcity}</td><td>{r.adpValue}</td><td style={{ color: r.reach ? "var(--red)" : "inherit" }}>{r.reach ? -r.reach : 0}</td>
+                                  <td>{r.buildScore}</td><td>{r.market}</td><td>{r.mktW}</td><td>{r.wait}</td><td style={{ fontWeight: 800, color: "var(--gold)" }}>{r.total + r.wait}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                          {balAdv.dbgRows.excluded && balAdv.dbgRows.excluded.length > 0 && (
+                            <div style={{ marginTop: 6, color: "var(--mut)" }}>
+                              <b>Excluded from pool (ADP ≤ pick+6):</b> {balAdv.dbgRows.excluded.map((e) => `${e.name}(${e.pos},adp${e.adp},vbd${e.vbd},${e.survived ? "surv" : "GONE"}${e.legalCapped ? ",CAPPED" : ""})`).join("  ·  ")}
+                            </div>
+                          )}
+                          <div style={{ marginTop: 4, color: "var(--mut)" }}>myPosVbds: {["QB","RB","WR","TE"].map((p) => `${p}[${(balAdv.dbgRows.myPosVbds[p] || []).join(",")}]`).join(" ")}</div>
+                        </div>
+                      )}
                     </div>
                     {/* take now vs wait — per position (below My build): two reads side by side */}
                     {waitByPos.length > 0 && (
@@ -17784,32 +17810,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       </span>
                     </div>
                   ))}
-                  {advice.dbgRows && (
-                    <div style={{ marginTop: 12, padding: 8, border: "1px solid var(--gold)", borderRadius: 6, fontSize: 10, overflowX: "auto" }}>
-                      <div style={{ fontWeight: 800, color: "var(--gold)", marginBottom: 4 }}>RECO DIAGNOSTIC (dbg=1)</div>
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9.5, whiteSpace: "nowrap" }}>
-                        <thead><tr style={{ textAlign: "right", color: "var(--mut)" }}>
-                          {["player","pos","vbd","mv","mvUse","up","weak","need","flex","qbD","empty","scar","adpV","reach","build","mkt","mktW","wait","TOTAL"].map((h) => <th key={h} style={{ padding: "1px 4px", textAlign: h === "player" ? "left" : "right" }}>{h}</th>)}
-                        </tr></thead>
-                        <tbody>
-                          {advice.dbgRows.rows.map((r, i) => (
-                            <tr key={i} style={{ borderTop: "1px solid #ffffff14", textAlign: "right" }}>
-                              <td style={{ textAlign: "left", padding: "1px 4px", color: "var(--ink)" }}>{r.name}</td>
-                              <td>{r.pos}</td><td>{r.vbd}</td><td>{r.mv}</td><td>{r.mvUse}</td><td style={{ color: r.isStarterUpgrade ? "var(--green)" : "var(--mut)" }}>{r.isStarterUpgrade ? "Y" : "·"}</td><td>{r.weakestHeld == null ? "—" : r.weakestHeld}</td>
-                              <td>{r.needBonus}</td><td style={{ color: r.flexEarly ? "var(--red)" : "inherit" }}>{r.flexEarly ? -r.flexEarly : 0}</td><td>{r.qbDead ? -r.qbDead : 0}</td><td>{r.emptyStarter}</td><td>{r.scarcity}</td><td>{r.adpValue}</td><td style={{ color: r.reach ? "var(--red)" : "inherit" }}>{r.reach ? -r.reach : 0}</td>
-                              <td>{r.buildScore}</td><td>{r.market}</td><td>{r.mktW}</td><td>{r.wait}</td><td style={{ fontWeight: 800, color: "var(--gold)" }}>{r.total + r.wait}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                      {advice.dbgRows.excluded && advice.dbgRows.excluded.length > 0 && (
-                        <div style={{ marginTop: 6, color: "var(--mut)" }}>
-                          <b>Excluded from pool (ADP ≤ pick+6):</b> {advice.dbgRows.excluded.map((e) => `${e.name}(${e.pos},adp${e.adp},vbd${e.vbd},${e.survived ? "surv" : "GONE"}${e.legalCapped ? ",CAPPED" : ""})`).join("  ·  ")}
-                        </div>
-                      )}
-                      <div style={{ marginTop: 4, color: "var(--mut)" }}>myPosVbds: {["QB","RB","WR","TE"].map((p) => `${p}[${(advice.dbgRows.myPosVbds[p] || []).join(",")}]`).join(" ")}</div>
-                    </div>
-                  )}
                   <div className="mut" style={{ fontSize: 11.5, margin: "10px 0 4px", textTransform: "uppercase", letterSpacing: ".07em" }}>
                     <span className="info" onClick={(e) => showTip(e, [
                       { t: "Take now vs. wait", x: "For each position: the best player on the board RIGHT NOW versus the best the simulations expect to survive to YOUR NEXT PICK." },
