@@ -67,6 +67,7 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // (dropping the query) on navigation, so we LATCH it into sessionStorage the first time we see it and read from
 // either source thereafter. dbgOn() is a live getter (not a one-time const) so entering a draft after the URL
 // changed still reports the right state.
+let LAST_DBG_SIG = null; // content signature of the last diagnostic logged, so re-renders don't flood the console
 const dbgOn = () => {
   try {
     if (typeof window === "undefined") return false;
@@ -90,7 +91,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20ak";
+const BUILD_TAG = "2026.07.20al";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -15140,8 +15141,28 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         // WHOSE roster is being scored, and exactly which players are in it. When a recommendation looks wrong
         // the cause is almost always here rather than in the scoring math — either the advice is being built
         // for the wrong team, or a channel of the roster went missing — and both are invisible without this.
-        dbgRows = { rows, excluded: notablesOut, myPosVbds, myCounts: { ...myCounts }, forTeam, userIdx, sfFlag: !!cfg.sf, superSlots: SPEC.SUPER || 0, posRanks: posRankByTeam[forTeam] || null, posTilt: { QB: Math.round(posTilt.QB), RB: Math.round(posTilt.RB), WR: Math.round(posTilt.WR), TE: Math.round(posTilt.TE) }, roster: myRoster.map((p) => `${p.name}·${p.pos}`), dem: { QB: +(dem.QB || 0).toFixed(2), RB: +(dem.RB || 0).toFixed(2), WR: +(dem.WR || 0).toFixed(2), TE: +(dem.TE || 0).toFixed(2) } };
-      } catch (e) { dbgRows = { rows: [], excluded: [], myPosVbds: {}, myCounts: {}, roster: [], dem: {}, error: String(e && e.message || e) }; }
+        // Everything below is flattened to PLAIN STRINGS here, inside the try. The panel then renders strings
+        // and nothing else: no property drilling in JSX, so a missing field can't throw during render and take
+        // the page down with it (a black screen while debugging a bad recommendation is the worst of both worlds).
+        const pr = posRankByTeam[forTeam] || null;
+        const four = (o, f) => ["QB", "RB", "WR", "TE"].map((k) => f(k, o ? o[k] : undefined)).join(" · ");
+        const lines = [
+          `counts: ${four(myCounts, (k, v) => `${k} ${v == null ? "?" : v}`)}　|　demand: ${four(dem, (k, v) => `${k} ${v == null ? "?" : (+v).toFixed(2)}`)}`,
+          `scoring for team ${forTeam}${forTeam === userIdx ? " (YOU)" : ` — but YOU are team ${userIdx}  ⚠ MISMATCH`} · sf ${String(!!cfg.sf)} · super ${SPEC.SUPER || 0} · qb slots ${REQ_EFF(cfg.sf).QB}`,
+          pr ? `league rank: ${four(pr, (k, v) => `${k} ${v == null ? "?" : v}/${TEAMS}`)}　|　quality tilt: ${four(posTilt, (k, v) => `${k} ${v > 0 ? "+" : ""}${Math.round(v || 0)}`)}` : "league rank: (unavailable)",
+          `held vbd: ${four(myPosVbds, (k, v) => `${k}[${(v || []).join(",")}]`)}`,
+          `roster seen (${myRoster.length}): ${myRoster.map((x) => `${x.name}·${x.pos}`).join(", ") || "—"}`,
+          `excluded from pool: ${notablesOut.map((e) => `${e.name}(${e.pos},adp${e.adp},vbd${e.vbd},${e.survived ? "surv" : "GONE"}${e.legalCapped ? ",CAPPED" : ""})`).join("  ·  ") || "—"}`,
+        ];
+        // Mirror to the console. If the panel ever fails to paint — a crash, a slow render, a layout problem —
+        // the numbers are still recoverable with F12, and the console can't be broken by a render error.
+        // Throttled on content so re-renders during a pick don't flood it.
+        try {
+          const sig = lines.join("|");
+          if (sig !== LAST_DBG_SIG) { LAST_DBG_SIG = sig; console.log("[FDC dbg] pick " + pickNum + "\n" + lines.join("\n") + "\n" + rows.slice(0, 8).map((r) => `${r.name} (${r.pos}) total ${Math.round((r.total || 0) + (r.wait || 0))}  mv ${r.mvUse} need ${r.needBonus} qual ${r.qual} qbDead ${r.qbDead} empty ${r.emptyStarter} scar ${r.scarcity} reach ${r.reach}`).join("\n")); }
+        } catch (e) {}
+        dbgRows = { rows, lines };
+      } catch (e) { dbgRows = { rows: [], lines: ["diagnostic failed: " + String((e && e.message) || e)] }; }
     }
     return { bestNow, waitCost, waitDetail, verdict, alts, impacts, run, myCounts, strat, expBestPlayer: simState.expBestPlayer || {}, dbgRows };
   };
@@ -15149,7 +15170,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // NOTE: adviceFor reads `strategy` internally (via strat = strategyOverride || strategy), so it MUST be a
   // dependency here. Without it this memo served a stale recommendation after a strategy change, which is how
   // the "On the clock" alternatives could disagree with the "Your decision" panel for the very same pick.
-  const advice = useMemo(() => adviceFor(picks.length, onClock, sims), [sims, picks, players, sortedAdp, draftedSet, onClock, cfg, strategy, done, dem, forcedAhead, rostersByTeam, keeperByPick]);
+  const advice = useMemo(() => adviceFor(picks.length, onClock, sims), [sims, picks, players, sortedAdp, draftedSet, onClock, cfg, strategy, done, dem, forcedAhead]);
   // Open the between-picks summary the moment you land on the clock. Fires once per turn (guarded by
   // recapShownAtRef), never after a per-draft dismissal, and only when at least one pick actually
   // happened since your last one (opening the draft at 1.01 has nothing to recap).
@@ -15189,7 +15210,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // under the "My build" strategy (bottom line). BOTH come from adviceFor — the same engine that produces
   // the real recommendation — so the "My build" line is always exactly the My-build recommendation, and the
   // top line always matches the selected strategy (identical to the build line when "My build" is selected).
-  const mySelAdvice = useMemo(() => adviceFor(myPickOverall, userIdx, sims), [sims, picks, players, sortedAdp, draftedSet, userIdx, myPickOverall, cfg, strategy, done, dem, forcedAhead, rostersByTeam, keeperByPick]);
+  const mySelAdvice = useMemo(() => adviceFor(myPickOverall, userIdx, sims), [sims, picks, players, sortedAdp, draftedSet, userIdx, myPickOverall, cfg, strategy, done, dem, forcedAhead]);
   // PERF: `myBuildAdvice` used to be computed here on every render and then never read — its only reference was
   // an alias (`buildAdvice`) that nothing consumed. Each adviceFor call runs a full draft-path projection plus
   // impact projections, so that was an entire wasted simulation per pick. Removed.
@@ -15203,7 +15224,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     [mySelAdvice, sims, picks, players, sortedAdp, draftedSet, userIdx, myPickOverall, cfg, done, dem]
   );
   // Recommendation specifically for YOUR next pick (may be the same as current if you're on the clock).
-  const myAdvice = useMemo(() => (onClock === userIdx ? null : adviceFor(myNextOverall, userIdx, sims)), [sims, picks, players, sortedAdp, draftedSet, onClock, userIdx, myNextOverall, cfg, strategy, done, dem, forcedAhead, rostersByTeam, keeperByPick]);
+  const myAdvice = useMemo(() => (onClock === userIdx ? null : adviceFor(myNextOverall, userIdx, sims)), [sims, picks, players, sortedAdp, draftedSet, onClock, userIdx, myNextOverall, cfg, strategy, done, dem, forcedAhead]);
 
   // SELECTIVE insight tags. The whole point is to pull your eye to the few players you should
   // actually be locked into right now — not to label half the board. We build a small, capped set
@@ -17926,34 +17947,31 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     <div>
                       {recTable(balAdv, "var(--gold)", "For this pick", strategy === "adp" ? "strict ADP order" : strategy === "value" ? "max VBD" : strategy === "upside" ? "upside / breakout" : "smart · market early → your build by round 5")}
                       {balAdv && balAdv.dbgRows && (
-                        <div style={{ marginTop: 12, padding: 8, border: "1px solid var(--gold)", borderRadius: 6, fontSize: 10, overflowX: "auto" }}>
-                          <div style={{ fontWeight: 800, color: "var(--gold)", marginBottom: 4 }}>RECO DIAGNOSTIC (dbg=1)</div>
-                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9.5, whiteSpace: "nowrap" }}>
-                            <thead><tr style={{ color: "var(--mut)" }}>
-                              {["player","pos","vbd","mv","mvUse","up","weak","need","qual","flex","qbD","empty","scar","adpV","reach","build","mkt","mktW","wait","TOTAL"].map((h) => <th key={h} style={{ padding: "1px 4px", textAlign: h === "player" ? "left" : "right" }}>{h}</th>)}
-                            </tr></thead>
-                            <tbody>
-                              {balAdv.dbgRows.rows.map((r, i) => (
-                                <tr key={i} style={{ borderTop: "1px solid #ffffff14", textAlign: "right" }}>
-                                  <td style={{ textAlign: "left", padding: "1px 4px", color: "var(--ink)" }}>{r.name}</td>
-                                  <td>{r.pos}</td><td>{r.vbd}</td><td>{r.mv}</td><td>{r.mvUse}</td><td style={{ color: r.isStarterUpgrade ? "var(--green)" : "var(--mut)" }}>{r.isStarterUpgrade ? "Y" : "·"}</td><td>{r.weakestHeld == null ? "—" : r.weakestHeld}</td>
-                                  <td>{r.needBonus}</td><td style={{ color: r.qual > 0 ? "var(--green)" : r.qual < 0 ? "var(--red)" : "inherit" }}>{r.qual || 0}</td><td style={{ color: r.flexEarly ? "var(--red)" : "inherit" }}>{r.flexEarly ? -r.flexEarly : 0}</td><td>{r.qbDead ? -r.qbDead : 0}</td><td>{r.emptyStarter}</td><td>{r.scarcity}</td><td>{r.adpValue}</td><td style={{ color: r.reach ? "var(--red)" : "inherit" }}>{r.reach ? -r.reach : 0}</td>
-                                  <td>{r.buildScore}</td><td>{r.market}</td><td>{r.mktW}</td><td>{r.wait}</td><td style={{ fontWeight: 800, color: "var(--gold)" }}>{r.total + r.wait}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                          {balAdv.dbgRows.excluded && balAdv.dbgRows.excluded.length > 0 && (
-                            <div style={{ marginTop: 6, color: "var(--mut)" }}>
-                              <b>Excluded from pool (ADP ≤ pick+6):</b> {balAdv.dbgRows.excluded.map((e) => `${e.name}(${e.pos},adp${e.adp},vbd${e.vbd},${e.survived ? "surv" : "GONE"}${e.legalCapped ? ",CAPPED" : ""})`).join("  ·  ")}
-                            </div>
-                          )}
-                          <div style={{ marginTop: 4, color: "var(--mut)" }}>myPosVbds: {["QB","RB","WR","TE"].map((p) => `${p}[${(balAdv.dbgRows.myPosVbds[p] || []).join(",")}]`).join(" ")}</div>
-                          {balAdv.dbgRows.myCounts && <div style={{ marginTop: 2, color: "var(--mut)" }}>counts: {["QB","RB","WR","TE"].map((p) => `${p} ${balAdv.dbgRows.myCounts[p]}`).join(" · ")}　|　dem: {["QB","RB","WR","TE"].map((p) => `${p} ${balAdv.dbgRows.dem[p]}`).join(" · ")}</div>}
-                          {balAdv.dbgRows.posRanks && <div style={{ marginTop: 2, color: "var(--mut)" }}>league rank: {["QB","RB","WR","TE"].map((p) => `${p} ${balAdv.dbgRows.posRanks[p]}/${TEAMS}`).join(" · ")}　|　quality tilt: {["QB","RB","WR","TE"].map((p) => `${p} ${balAdv.dbgRows.posTilt[p] > 0 ? "+" : ""}${balAdv.dbgRows.posTilt[p]}`).join(" · ")}</div>}
-                          <div style={{ marginTop: 2, color: "var(--mut)" }}>scoring for team {balAdv.dbgRows.forTeam}{balAdv.dbgRows.forTeam === balAdv.dbgRows.userIdx ? " (YOU)" : ` — YOU are team ${balAdv.dbgRows.userIdx}`} · sf {String(balAdv.dbgRows.sfFlag)} · super {balAdv.dbgRows.superSlots}</div>
-                          <div style={{ marginTop: 2, color: "var(--mut)", whiteSpace: "normal" }}>roster seen ({(balAdv.dbgRows.roster || []).length}): {(balAdv.dbgRows.roster || []).join(", ") || "—"}</div>
-                        </div>
+                        <Boundary label="diagnostic">
+                          <div style={{ marginTop: 12, padding: 8, border: "1px solid var(--gold)", borderRadius: 6, fontSize: 10, overflowX: "auto" }}>
+                            <div style={{ fontWeight: 800, color: "var(--gold)", marginBottom: 4 }}>RECO DIAGNOSTIC (dbg=1)</div>
+                            {/* Plain strings only — every value was formatted upstream inside a try/catch, so
+                                nothing here can throw and blank the page. Also printed to the browser console. */}
+                            {(balAdv.dbgRows.lines || []).map((t, i) => (
+                              <div key={i} style={{ marginBottom: 2, color: i === 1 && /MISMATCH/.test(t) ? "var(--red)" : "var(--mut)", whiteSpace: "normal", fontWeight: i === 1 && /MISMATCH/.test(t) ? 800 : 400 }}>{t}</div>
+                            ))}
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9.5, whiteSpace: "nowrap", marginTop: 6 }}>
+                              <thead><tr style={{ color: "var(--mut)" }}>
+                                {["player","pos","vbd","mv","mvUse","up","weak","need","qual","flex","qbD","empty","scar","adpV","reach","build","mkt","mktW","wait","TOTAL"].map((h) => <th key={h} style={{ padding: "1px 4px", textAlign: h === "player" ? "left" : "right" }}>{h}</th>)}
+                              </tr></thead>
+                              <tbody>
+                                {(balAdv.dbgRows.rows || []).map((r, i) => (
+                                  <tr key={i} style={{ borderTop: "1px solid #ffffff14", textAlign: "right" }}>
+                                    <td style={{ textAlign: "left", padding: "1px 4px", color: "var(--ink)" }}>{r.name}</td>
+                                    <td>{r.pos}</td><td>{r.vbd}</td><td>{r.mv}</td><td>{r.mvUse}</td><td style={{ color: r.isStarterUpgrade ? "var(--green)" : "var(--mut)" }}>{r.isStarterUpgrade ? "Y" : "·"}</td><td>{r.weakestHeld == null ? "—" : r.weakestHeld}</td>
+                                    <td>{r.needBonus}</td><td style={{ color: r.qual > 0 ? "var(--green)" : r.qual < 0 ? "var(--red)" : "inherit" }}>{r.qual || 0}</td><td style={{ color: r.flexEarly ? "var(--red)" : "inherit" }}>{r.flexEarly ? -r.flexEarly : 0}</td><td>{r.qbDead ? -r.qbDead : 0}</td><td>{r.emptyStarter}</td><td>{r.scarcity}</td><td>{r.adpValue}</td><td style={{ color: r.reach ? "var(--red)" : "inherit" }}>{r.reach ? -r.reach : 0}</td>
+                                    <td>{r.buildScore}</td><td>{r.market}</td><td>{r.mktW}</td><td>{r.wait}</td><td style={{ fontWeight: 800, color: "var(--gold)" }}>{Math.round((r.total || 0) + (r.wait || 0))}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </Boundary>
                       )}
                     </div>
                     {/* take now vs wait — per position (below My build): two reads side by side */}
