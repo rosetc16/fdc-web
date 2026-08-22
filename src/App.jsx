@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20at";
+const BUILD_TAG = "2026.07.20au";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1775,6 +1775,210 @@ const fmtClock = (secs) => {
 };
 const ordinal = (n) => { const s = ["th","st","nd","rd"], v = n % 100; return n + (s[(v-20)%10] || s[v] || s[0]); };
 const totalOf = (cfg) => TEAMS * cfg.rounds;
+
+/* ============================================================================================
+   SHAREABLE DRAFT RECAP IMAGE
+   A draft card only travels if it can be posted, and league chats take images, not text. This
+   draws the whole recap as a portrait poster (1080px wide — the size every chat app wants) on a
+   canvas using system fonts, so nothing has to load and it works offline.
+   Everything it needs is passed in as plain data; it never reaches into component scope, which
+   keeps it testable and means a missing field degrades to a blank row instead of a crash.
+   ============================================================================================ */
+function drawRecapCard(d) {
+  const C = { bg: "#0B0F14", panel: "#161D26", panel2: "#111820", line: "#2A3542", ink: "#EEF2F6", mut: "#93A1B0", gold: "#F2B63C", green: "#5FD0A8", red: "#F2655C", blue: "#6BA8E5" };
+  const PC = { QB: "#EF6A6A", RB: "#4FD1A1", WR: "#5BA8F5", TE: "#F2A35C", K: "#8B96A3", DST: "#8B96A3" };
+  const W = 1080, PAD = 64;
+  const CW = W - PAD * 2;                       // content width
+  const starters = (d.starters || []).slice(0, 12);
+  const rows = d.leagueRows || [];
+  const HERO_H = 430;
+  const leftH = 44 + starters.length * 48 + 118;
+  const rightH = 44 + rows.length * 38;
+  const BODY_H = Math.max(leftH, rightH);
+  const BAND_H = d.cards && d.cards.length ? 196 : 0;
+  const H = HERO_H + BODY_H + 36 + BAND_H + 96;
+
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  const x = cv.getContext("2d");
+  const F = (sz, w) => { x.font = `${w || 600} ${sz}px system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif`; };
+  const track = (px) => { try { x.letterSpacing = px ? `${px}px` : "0px"; } catch (e) {} };
+  const rr = (px, py, w, h, r) => {
+    const rad = Math.min(r, w / 2, h / 2);
+    x.beginPath();
+    x.moveTo(px + rad, py);
+    x.arcTo(px + w, py, px + w, py + h, rad);
+    x.arcTo(px + w, py + h, px, py + h, rad);
+    x.arcTo(px, py + h, px, py, rad);
+    x.arcTo(px, py, px + w, py, rad);
+    x.closePath();
+  };
+  const clip = (t, maxW) => {
+    let s = String(t == null ? "" : t);
+    if (x.measureText(s).width <= maxW) return s;
+    while (s.length > 1 && x.measureText(s + "…").width > maxW) s = s.slice(0, -1);
+    return s + "…";
+  };
+  const text = (t, px, py, color, size, weight, maxW, align) => {
+    F(size, weight); x.fillStyle = color; x.textAlign = align || "left";
+    x.fillText(maxW ? clip(t, maxW) : String(t == null ? "" : t), px, py);
+    x.textAlign = "left";
+  };
+  // Headline text shrinks to fit before it will truncate — a team name is the one thing on this card
+  // nobody wants clipped.
+  const fitText = (t, px, py, color, size, weight, maxW, floor, align) => {
+    let sz = size;
+    F(sz, weight);
+    while (sz > (floor || 30) && x.measureText(String(t == null ? "" : t)).width > maxW) { sz -= 1; F(sz, weight); }
+    text(t, px, py, color, sz, weight, maxW, align);
+    return sz;
+  };
+
+  // ---- ground + hero wash -------------------------------------------------------------------
+  x.fillStyle = C.bg; x.fillRect(0, 0, W, H);
+  const g1 = x.createLinearGradient(0, 0, W * 0.85, HERO_H);
+  g1.addColorStop(0, "rgba(242,182,60,.20)"); g1.addColorStop(0.55, "rgba(242,182,60,.05)"); g1.addColorStop(1, "rgba(242,182,60,0)");
+  x.fillStyle = g1; x.fillRect(0, 0, W, HERO_H);
+  // Fade the wash back into the ground so the hero doesn't end on a hard horizontal seam.
+  const g2 = x.createLinearGradient(0, HERO_H - 150, 0, HERO_H);
+  g2.addColorStop(0, "rgba(11,15,20,0)"); g2.addColorStop(1, C.bg);
+  x.fillStyle = g2; x.fillRect(0, HERO_H - 150, W, 150);
+  x.fillStyle = C.gold; x.fillRect(0, 0, W, 6);
+
+  // ---- hero ---------------------------------------------------------------------------------
+  const BADGE = 176, badgeX = W - PAD - BADGE;
+  track(2.6);
+  text(String(d.eyebrow || "DRAFT RECAP").toUpperCase(), PAD, 92, C.gold, 21, 800, badgeX - PAD - 24);
+  track(0);
+  fitText(d.teamName || "Your team", PAD, 168, C.ink, 60, 800, badgeX - PAD - 24, 32);
+  text(d.subline || "", PAD, 210, C.mut, 23, 500, badgeX - PAD - 24);
+
+  // grade badge
+  x.fillStyle = "rgba(242,182,60,.10)"; rr(badgeX, 84, BADGE, BADGE, 22); x.fill();
+  x.strokeStyle = "rgba(242,182,60,.55)"; x.lineWidth = 2; rr(badgeX + 1, 85, BADGE - 2, BADGE - 2, 21); x.stroke();
+  x.textAlign = "center";
+  text(d.grade || "—", badgeX + BADGE / 2, 196, C.gold, 86, 800, BADGE - 16, "center");
+  track(2.2);
+  text("DRAFT GRADE", badgeX + BADGE / 2, 232, "rgba(242,182,60,.75)", 15, 700, BADGE - 8, "center");
+  track(0);
+
+  // stat strip
+  const SY = 288, SH = 104;
+  x.fillStyle = C.panel2; rr(PAD, SY, CW, SH, 16); x.fill();
+  x.strokeStyle = C.line; x.lineWidth = 1; rr(PAD + 0.5, SY + 0.5, CW - 1, SH - 1, 16); x.stroke();
+  (d.stats || []).slice(0, 3).forEach((s, i, arr) => {
+    const cw = CW / arr.length, cx = PAD + cw * i;
+    if (i) { x.strokeStyle = C.line; x.beginPath(); x.moveTo(cx, SY + 20); x.lineTo(cx, SY + SH - 20); x.stroke(); }
+    track(1.8);
+    text(String(s.k || "").toUpperCase(), cx + 26, SY + 38, C.mut, 15, 700, cw - 52);
+    track(0);
+    text(s.v, cx + 26, SY + 80, s.c || C.ink, 34, 800, cw - 52);
+  });
+
+  // ---- left column: starting lineup + position mix ------------------------------------------
+  const LX = PAD, LW = 560;
+  let ly = HERO_H + 22;
+  track(2);
+  text("STARTING LINEUP", LX, ly, C.ink, 19, 800);
+  track(0);
+  if (d.lineupPts) text(`${d.lineupPts} proj pts`, LX + LW, ly, C.mut, 18, 600, 200, "right");
+  ly += 30;
+  starters.forEach((p, i) => {
+    const ry = ly + i * 48;
+    if (i % 2 === 0) { x.fillStyle = "rgba(255,255,255,.028)"; rr(LX - 10, ry - 4, LW + 20, 44, 10); x.fill(); }
+    const pc = PC[p.pos] || C.mut;
+    x.fillStyle = pc + "26"; rr(LX, ry + 2, 66, 30, 8); x.fill();
+    text(p.slot || p.pos || "—", LX + 33, ry + 24, pc, 15, 800, 60, "center");
+    text(p.name || "—", LX + 80, ry + 24, C.ink, 24, 600, 286);
+    text(`${p.pos || ""}${p.posRank || ""}${p.team ? " · " + p.team : ""}`, LX + 376, ry + 24, C.mut, 17, 500, 128);
+    text(p.pts != null ? String(Math.round(p.pts)) : "—", LX + LW, ry + 24, C.ink, 21, 700, 90, "right");
+  });
+  ly += starters.length * 48 + 30;
+  track(2);
+  text("POSITION MIX", LX, ly, C.ink, 19, 800);
+  track(0);
+  if (d.benchNote) text(d.benchNote, LX + LW, ly, C.mut, 17, 500, 240, "right");
+  ly += 20;
+  const mix = (d.posMix || []).filter((m) => m.n > 0);
+  const totalN = mix.reduce((s, m) => s + m.n, 0) || 1;
+  let bx = LX;
+  x.save(); rr(LX, ly, LW, 28, 8); x.clip();
+  mix.forEach((m) => { const w = (LW * m.n) / totalN; x.fillStyle = PC[m.pos] || C.mut; x.fillRect(bx, ly, w, 28); bx += w; });
+  x.restore();
+  ly += 52;
+  let lx2 = LX;
+  mix.forEach((m) => {
+    x.fillStyle = PC[m.pos] || C.mut; rr(lx2, ly - 12, 12, 12, 3); x.fill();
+    F(18, 600); const t = `${m.pos} ${m.n}`;
+    text(t, lx2 + 19, ly, C.mut, 18, 600);
+    lx2 += 19 + x.measureText(t).width + 22;
+  });
+
+  // ---- right column: league grade board -----------------------------------------------------
+  const RX = PAD + 616, RW = CW - 616;
+  let ry0 = HERO_H + 22;
+  track(2);
+  text("LEAGUE GRADES", RX, ry0, C.ink, 19, 800);
+  track(0);
+  ry0 += 30;
+  rows.forEach((r, i) => {
+    const yy = ry0 + i * 38;
+    if (r.you) {
+      x.fillStyle = "rgba(242,182,60,.11)"; rr(RX - 12, yy - 20, RW + 12, 34, 9); x.fill();
+      x.fillStyle = C.gold; rr(RX - 12, yy - 20, 3, 34, 2); x.fill();
+    }
+    text(r.grade || "—", RX + 4, yy + 4, r.color || C.ink, 21, 800, 56);
+    text(r.name || "—", RX + 62, yy + 4, r.you ? C.ink : "#C6D0DA", 19, r.you ? 700 : 500, RW - 62 - 60);
+    text(r.right || "", RX + RW - 8, yy + 4, C.mut, 17, 600, 70, "right");
+  });
+
+  // ---- bottom band: headline picks ----------------------------------------------------------
+  let by = HERO_H + BODY_H + 36;
+  (d.cards || []).slice(0, 3).forEach((c, i, arr) => {
+    const gap = 22, cw = (CW - gap * (arr.length - 1)) / arr.length, cx = PAD + (cw + gap) * i;
+    x.fillStyle = C.panel; rr(cx, by, cw, 156, 16); x.fill();
+    x.strokeStyle = C.line; x.lineWidth = 1; rr(cx + 0.5, by + 0.5, cw - 1, 155, 16); x.stroke();
+    x.fillStyle = c.tone || C.gold; rr(cx, by, cw, 4, 2); x.fill();
+    track(1.8);
+    text(String(c.k || "").toUpperCase(), cx + 22, by + 40, c.tone || C.gold, 14.5, 800, cw - 44);
+    track(0);
+    fitText(c.name || "—", cx + 22, by + 84, C.ink, 27, 700, cw - 44, 19);
+    text(c.sub || "", cx + 22, by + 114, C.mut, 17, 500, cw - 44);
+    if (c.big) text(c.big, cx + cw - 22, by + 134, c.tone || C.gold, 26, 800, cw - 44, "right");
+  });
+  by += BAND_H;
+
+  // ---- footer -------------------------------------------------------------------------------
+  x.strokeStyle = C.line; x.lineWidth = 1;
+  x.beginPath(); x.moveTo(PAD, by + 8); x.lineTo(W - PAD, by + 8); x.stroke();
+  track(2.4);
+  text("FANTASY DRAFT COMPASS", PAD, by + 50, C.gold, 18, 800);
+  track(0);
+  text(d.footer || "fantasydraftcompass.com", W - PAD, by + 50, C.mut, 18, 600, 420, "right");
+  return cv;
+}
+
+// Hand a generated card to the user: the phone share sheet when it exists (that's how it reaches the
+// league chat in one tap), otherwise a plain download.
+function deliverCard(canvas, filename) {
+  canvas.toBlob(async (blob) => {
+    if (!blob) return;
+    const file = (() => { try { return new File([blob], filename, { type: "image/png" }); } catch (e) { return null; } })();
+    try {
+      if (file && navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
+        await navigator.share({ files: [file] });
+        return;
+      }
+    } catch (e) { /* user dismissed the sheet, or sharing failed — fall through to the download */ }
+    try {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (e) {}
+  }, "image/png");
+}
 // Clipboard with a textarea fallback (the artifact iframe often blocks the async API).
 function copyText(text) {
   try { if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).catch(() => fallbackCopy(text)); return true; } } catch (e) {}
@@ -5047,7 +5251,14 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 /* The tracker only stacks into a column on PHONES. On a narrow desktop window it stays a single scrollable row
    (see the 641-1279px block below) — stacking there buried the board under a tall header. */
 @media(max-width:640px){.decision-grid{flex-direction:column!important}.decision-group-a,.decision-group-b{flex:1 1 auto!important}.decision-divider{display:none!important}}
-@media(max-width:980px){.cols{flex-direction:column}.rail{width:100%!important}.hero-h{font-size:38px}.myteam-grid{grid-template-columns:1fr!important;flex-direction:column!important}.needteam-row{grid-template-columns:1fr!important}.recap-row{grid-template-columns:1fr!important}.superlative-grid{grid-template-columns:repeat(2,1fr)!important}.decision-group-b{grid-template-columns:1fr 1fr!important}}
+/* THE PHONE FREEZE-PANE FIX. .cols is the draft room's main/rail flex row, and it carries
+   align-items:flex-start so the two columns don't stretch to equal height. Once it stacks into a COLUMN on a
+   narrow screen, that same align-items stops the children filling the width — so the player-pool panel sized
+   itself to the table's full ~1270px, blew the whole document out sideways, and the pool's own scroll box
+   never scrolled. That's what killed the frozen Player column: position:sticky sticks to its scroll
+   container, and here the container never moved — the PAGE did. Stretching the stacked children back to full
+   width puts the horizontal scroll back inside the pool, where the freeze works. */
+@media(max-width:980px){.cols{flex-direction:column;align-items:stretch!important}.cols>*{min-width:0;max-width:100%}.rail{width:100%!important}.hero-h{font-size:38px}.myteam-grid{grid-template-columns:1fr!important;flex-direction:column!important;align-items:stretch!important}.myteam-grid>*{min-width:0;max-width:100%}.needteam-row{grid-template-columns:1fr!important}.recap-row{grid-template-columns:1fr!important}.superlative-grid{grid-template-columns:repeat(2,1fr)!important}.decision-group-b{grid-template-columns:1fr 1fr!important}}
 @media(max-width:640px){.decision-group-a,.decision-group-b{grid-template-columns:1fr!important}}
 /* Narrow DESKTOP windows (not phones): the draft tracker's four zones used to wrap and stack on top of each
    other, which makes the whole header unusable — you lose the at-a-glance dashboard and have to scroll past a
@@ -5090,6 +5301,21 @@ select.gs option{background:var(--panel2);color:var(--ink)}
   .decision-divider{display:none!important}
   /* wide tables scroll inside their panel rather than blowing out the page */
   .tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  /* Team analysis' lineup grid is 11 fixed columns — it cannot shrink to a phone. Hold it at its natural
+     width and let the panel scroll, so the page itself never goes sideways. */
+  .lineup-scroll>*{min-width:440px}
+  .lineup-scroll.lineup-wide>*{min-width:500px}
+  /* PLAYER POOL ON A PHONE. The Player column is frozen (position:sticky) so it stays put while you swipe
+     the stats sideways — but frozen only helps if it leaves room for the numbers. On a 390px screen the
+     full-width name cell ate the whole viewport, so cap it and let a long name ellipsis instead. */
+  [data-tour="pool"]{max-height:72vh!important;-webkit-overflow-scrolling:touch}
+  table.board th.frz,table.board td.frz{max-width:212px;padding-left:6px;padding-right:6px}
+  table.board td.frz>div{gap:5px!important}
+  table.board td.frz .pnamewrap{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+  /* the name is what has to survive: the star and the insight chip give up their pixels on a phone */
+  table.board td.frz .qstar,table.board td.frz .itag,table.board td.frz .pteam{display:none}
+  /* a swipeable table needs to look swipeable: a soft edge on the frozen column's right */
+  table.board td.frz,table.board th.frz{box-shadow:2px 0 6px rgba(0,0,0,.45),1px 0 0 var(--line)}
   /* collapse the ADP-intel / trade two-column layouts to one column on phones */
   .adp-grid{grid-template-columns:1fr!important}
   .adp-grid .adp-list{max-height:200px!important}
@@ -6081,6 +6307,76 @@ export default function App() {
 
   const active = activeId === "demo" ? demoLeague : (mockLeague && activeId === mockLeague.id) ? mockLeague : leagues.find((l) => l.id === activeId);
 
+  // ---- REFRESH-SAFE DRAFT RESTORE ------------------------------------------------------------------
+  // THE BLACK SCREEN. A mock draft runs out of transient component state (`mockLeague`), which a page
+  // refresh wipes — but the saved nav still says {route:"draft", activeId:<that mock's id>}. So `active`
+  // came back undefined, every route guard below fell through, and the page rendered nothing but the
+  // floating "Report a bug" button. Mocks ARE persisted (funMocks / league.mocks), so rebuild the
+  // transient record from storage and drop the user straight back into their draft. This re-runs when the
+  // saved data changes, because the cloud merge can land a few seconds after local hydration.
+  const [restoring, setRestoring] = useState(false);
+  useEffect(() => {
+    // Only interesting when a route that NEEDS a record doesn't have one.
+    const draftMiss = route === "draft" && !!activeId && !active;
+    const hubMiss = route === "leagueHub" && !!activeId && !(leagues || []).some((l) => l && l.id === activeId);
+    if (!loaded || (!draftMiss && !hubMiss)) { if (restoring) setRestoring(false); return; }
+    if (draftMiss && activeId !== "demo") {
+      const fun = (funMocks || []).find((m) => m && m.id === activeId);
+      if (fun) {
+        setMockLeague({ id: fun.id, mockOf: null, name: fun.name || "Quick mock", cfg: fun.cfg, picks: fun.picks || [], preds: fun.preds || [], snap: fun.snap || null, pickNames: fun.pickNames || null, predNames: fun.predNames || null });
+        return;
+      }
+      for (const lg of leagues || []) {
+        const m = ((lg && lg.mocks) || []).find((x) => x && x.id === activeId);
+        if (m) {
+          setMockLeague({ id: m.id, mockOf: lg.id, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null });
+          return;
+        }
+      }
+    }
+    // Nothing matched. Either the cloud merge is still in flight (wait, then re-check) or this draft can
+    // genuinely not be restored — the free demo is deliberately never saved, so it's gone on refresh.
+    // Either way the user sees a "picking up where you left off" card, never an empty page.
+    setRestoring(true);
+    const wait = activeId === "demo" ? 700 : 6000;
+    const t = setTimeout(() => {
+      setRestoring(false); setMockLeague(null); setDraftTab(null); setActiveId(null);
+      setRoute(user ? (user.paid ? "home" : "library") : "home");
+    }, wait);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, route, activeId, active, leagues, funMocks, user]);
+
+  // ---- BLANK-PAGE WATCHDOG -------------------------------------------------------------------------
+  // Belt and braces for the above: whatever the cause, if the app shell ends up with no visible content,
+  // show a recovery card instead of a black screen. It never navigates on its own (that could yank someone
+  // out of a live draft) — it just gives them a way out, and clears itself the moment content appears.
+  const shellRef = useRef(null);
+  const [blank, setBlank] = useState(false);
+  useEffect(() => {
+    if (!bootReady) return;
+    // Two passes. The early one can only CLEAR the card (so a slow-mounting page never flashes it); only
+    // the later one, when the page has had every chance to render, is allowed to raise it.
+    const check = (mayRaise) => {
+      try {
+        const el = shellRef.current;
+        if (!el) return;
+        let content = 0;
+        Array.prototype.forEach.call(el.children, (n) => {
+          if (!n || n.nodeType !== 1 || n.tagName === "STYLE") return;
+          if (n.getAttribute && n.getAttribute("data-chrome") === "1") return;   // the bug button / recovery card
+          const r = n.getBoundingClientRect ? n.getBoundingClientRect() : null;
+          if (r && r.height > 4) content++;
+        });
+        if (content) setBlank(false);
+        else if (mayRaise) setBlank(true);
+      } catch (e) { /* never let the watchdog itself break the page */ }
+    };
+    const t1 = setTimeout(() => check(false), 1200);
+    const t2 = setTimeout(() => check(true), 3500);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, [bootReady, route, activeId, user, restoring, active]);
+
   // ---- Per-draft, format-correct ADP ----
   // When a draft opens (mock, demo, or real) whose format differs from what's currently overlaid on the
   // board, fetch that format's published Sleeper ADP and overlay it (name-matched, index-preserving, so
@@ -6119,8 +6415,20 @@ export default function App() {
   if (!bootReady) return <BootSplash css={css} />;
 
   return (
-    <div className={`gs-root${noHoverAnim ? " no-hover-anim" : ""}`}>
+    <div ref={shellRef} className={`gs-root${noHoverAnim ? " no-hover-anim" : ""}`}>
       <style>{css}</style>
+      {restoring && (
+        <div style={{ maxWidth: 520, margin: "80px auto", padding: "0 20px", textAlign: "center" }}>
+          <i className="ti ti-loader-2 spin" style={{ fontSize: 26, color: "var(--gold)", marginBottom: 14, display: "inline-block" }} aria-hidden="true" />
+          <div className="disp" style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Picking up where you left off…</div>
+          <div className="mut" style={{ fontSize: 13.5, lineHeight: 1.55 }}>
+            {activeId === "demo"
+              ? "The free demo draft isn't saved, so a refresh starts it fresh. Taking you back home — sign in and every draft after that is saved automatically."
+              : "Restoring this draft from your saved data. If it doesn't come back in a few seconds we'll take you to your leagues."}
+          </div>
+          <button className="btn" style={{ marginTop: 18 }} onClick={() => { setRestoring(false); setMockLeague(null); setDraftTab(null); setActiveId(null); setRoute(user ? (user.paid ? "home" : "library") : "home"); }}>Go to my leagues</button>
+        </div>
+      )}
       {updateReady && (
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 200, background: "var(--gold)", color: "#151002", padding: "9px 16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, flexWrap: "wrap", boxShadow: "0 2px 12px #0006", fontSize: 13.5 }}>
           <i className="ti ti-sparkles" style={{ fontSize: 16 }} aria-hidden="true" />
@@ -6252,7 +6560,22 @@ export default function App() {
       {/* GLOBAL "Report a bug" — a small fixed button on every page (bottom-left, out of the way of the
           top-right version badge). Opens a lightweight modal that reuses the existing submitFeedback
           pipeline (→ backend inbox → Admin window). Captures the submitter's email so you can reply. */}
-      <GlobalBugReport user={user} onSubmit={submitFeedback} />
+      <div data-chrome="1"><GlobalBugReport user={user} onSubmit={submitFeedback} /></div>
+      {/* Last line of defence against a blank page (see the watchdog above). Never navigates on its own. */}
+      {blank && (
+        <div data-chrome="1" style={{ position: "fixed", inset: 0, zIndex: 95, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "var(--bg, #0E1217)" }}>
+          <div style={{ maxWidth: 460, textAlign: "center" }}>
+            <div className="disp" style={{ fontSize: 21, fontWeight: 700, marginBottom: 8 }}>This page didn't load</div>
+            <div className="mut" style={{ fontSize: 13.5, lineHeight: 1.55, marginBottom: 18 }}>
+              Nothing rendered here — your leagues and drafts are saved, so nothing is lost. Head back and reopen it.
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+              <button className="btn btn-gold" onClick={() => { setBlank(false); setMockLeague(null); setDraftTab(null); setActiveId(null); setRoute(user ? (user.paid ? "home" : "library") : "home"); }}>← Back to my leagues</button>
+              <button className="btn" onClick={() => { try { sessionStorage.removeItem("gs-nav"); } catch (e) {} const u = new URL(window.location.href); u.searchParams.set("_r", Date.now().toString()); window.location.replace(u.toString()); }}>Reload the app</button>
+            </div>
+          </div>
+        </div>
+      )}
       {freeNoticeOpen && user && !user.paid && (
         <FreeAccessNotice
           user={user} biz={biz}
@@ -18131,7 +18454,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       <tr key={p.id} ref={isKb ? kbRowRef : undefined} className={`${gone ? "struck" : ""}${isRec ? " recrow" : ""}${isKb ? " kbrow" : ""}`.trim()}>
                         <td className="frz" style={{ borderLeft: `3px solid ${gone ? "transparent" : (POS_COLOR[p.pos] || "transparent")}` }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                            <button onClick={() => toggleQueue(p.name)} title={queue.has(p.name) ? "Starred — in your priority queue. Click to remove." : "Star this player to add him to your priority queue."}
+                            <button className="qstar" onClick={() => toggleQueue(p.name)} title={queue.has(p.name) ? "Starred — in your priority queue. Click to remove." : "Star this player to add him to your priority queue."}
                               style={{ background: "none", border: "none", cursor: "pointer", padding: 0, flexShrink: 0, lineHeight: 1, color: queue.has(p.name) ? "var(--gold)" : "var(--mut)", opacity: queue.has(p.name) ? 1 : 0.5 }}>
                               <i className="ti ti-star" style={{ fontSize: 15, fontWeight: queue.has(p.name) ? 700 : 400 }} aria-hidden="true" />
                             </button>
@@ -18140,13 +18463,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                   ? <button className="btn btn-mini" disabled title={`Roster maximum reached — ${onClock === userIdx ? "your team has" : "this team has"} the league limit of ${cappedPos[p.pos]} at ${p.pos}. You can't draft another.`} style={{ flexShrink: 0, border: "1.5px solid #F2655C", background: "rgba(242,101,92,.16)", color: "#F2655C", fontWeight: 800, cursor: "not-allowed" }}>Max</button>
                                   : <button className={`btn btn-mini${(onClock === userIdx || isRec) ? " btn-gold" : ""}`} style={{ flexShrink: 0, border: (onClock === userIdx || isRec) ? "none" : "1.5px solid #fff", fontWeight: 700 }} onClick={() => draftPlayer(p.id)}>{onClock === userIdx ? "Draft" : "Pick"}</button>)
                               : <span style={{ width: 38, flexShrink: 0 }} />}
-                            <span onClick={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: isDynastyCfg(cfg), run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: isDynastyCfg(cfg), run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseLeave={hideTip} style={{ cursor: "help", whiteSpace: "nowrap" }}>
-                              <PosName p={p} /> <span className="mut">{p.team}</span>
+                            <span onClick={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: isDynastyCfg(cfg), run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: isDynastyCfg(cfg), run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseLeave={hideTip} className="pnamewrap" style={{ cursor: "help", whiteSpace: "nowrap" }}>
+                              <PosName p={p} /> <span className="mut pteam">{p.team}</span>
                             </span>
                             {injInfo && <span onClick={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note }])} onMouseEnter={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note }])} onMouseLeave={hideTip}
                               style={{ flexShrink: 0, height: 14, borderRadius: 3, background: injInfo.color, color: "#fff", fontSize: 8.5, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "help", padding: "0 4px", letterSpacing: ".02em" }} title="">{injInfo.abbr}</span>}
                             {p.rookie && <span style={{ flexShrink: 0, fontSize: 9, color: "var(--gold)", border: "1px solid var(--gold)", borderRadius: 3, padding: "0 3px" }}>R</span>}
-                            {!gone && (() => { const tag = insightTag(p); return tag ? <span style={{ flexShrink: 0, fontSize: 8.5, fontWeight: 700, letterSpacing: ".02em", color: tag.color, border: `1px solid ${tag.color}66`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>{tag.label}</span> : null; })()}
+                            {!gone && (() => { const tag = insightTag(p); return tag ? <span className="itag" style={{ flexShrink: 0, fontSize: 8.5, fontWeight: 700, letterSpacing: ".02em", color: tag.color, border: `1px solid ${tag.color}66`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>{tag.label}</span> : null; })()}
                           </div>
                         </td>
                         {activeCols.map((c) => <td key={c.key} className="num" style={sectionStart[c.key] ? { borderLeft: "2px solid var(--line)" } : undefined}>{cellFor(p, c.key, gone)}</td>)}
@@ -19319,7 +19642,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 // starter totals for a footer
                 const starterPtsSum = taShown.slots.reduce((s, x) => s + (x.p ? (x.p.pts || 0) : 0), 0);
                 return (
-                  <div>
+                  // 11 columns of lineup detail can't shrink below ~500px, so on a phone this scrolls
+                  // sideways inside its own panel instead of dragging the whole page with it.
+                  <div className="tablewrap lineup-scroll lineup-wide">
                     {header}
                     <div style={{ display: "flex", flexDirection: "column" }}>
                       {taShown.slots.map((s, i) => row(s.p, s.slot, myProjView && s.p && projectedAdds.includes(s.p), false, "s" + i, i === taShown.slots.length - 1))}
@@ -19514,7 +19839,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         {(() => {
                           const TCOLS = "42px minmax(0,1fr) 30px 28px 28px 36px 40px 40px 58px 38px";
                           return (
-                            <>
+                            // ten fixed columns — scrolls inside its panel on a phone (see .lineup-scroll)
+                            <div className="tablewrap lineup-scroll">
                               <div style={{ display: "grid", gridTemplateColumns: TCOLS, gap: "0 6px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".03em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line)", padding: "0 4px 3px" }}>
                                 <span>Rank</span><span>Player</span><span style={{ textAlign: "right" }}>Tm</span><span style={{ textAlign: "center" }}>Bye</span><span style={{ textAlign: "center" }}>Age</span><span style={{ textAlign: "right" }}>ADP</span><span style={{ textAlign: "right" }} title="Value over replacement">{dyn ? "Val" : "VBD"}</span><span style={{ textAlign: "right" }}>Proj</span><span style={{ textAlign: "center" }} title="Floor–ceiling">Fl–Cl</span><span style={{ textAlign: "right" }} title="Chance available at your pick">Avail</span>
                               </div>
@@ -19538,7 +19864,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                   );
                                 })}
                               </div>
-                            </>
+                            </div>
                           );
                         })()}
                         <div className="mut" style={{ fontSize: 9.5, lineHeight: 1.4, marginTop: 6 }}>★ = the Smart model's top pick for your build. Avail = chance he's still on the board at your pick. Hover any row for the full breakdown.</div>
@@ -20242,49 +20568,47 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           {/* SHAREABLE RECAP IMAGE. A draft card only spreads if it can be posted, and league
                               chats take images, not text. Drawn on a canvas with system fonts so nothing has
                               to load, sized 2x for retina, and downloaded straight to the device. */}
-                          <button className="btn btn-mini" onClick={() => {
-                            const W = 620, H = 460, S = 2;
-                            const cv = document.createElement("canvas");
-                            cv.width = W * S; cv.height = H * S;
-                            const x = cv.getContext("2d");
-                            x.scale(S, S);
-                            const F = (sz, w) => `${w || 600} ${sz}px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif`;
-                            x.fillStyle = "#0E1217"; x.fillRect(0, 0, W, H);
-                            const g = x.createLinearGradient(0, 0, W, 150);
-                            g.addColorStop(0, "rgba(242,182,60,.18)"); g.addColorStop(1, "rgba(242,182,60,.02)");
-                            x.fillStyle = g; x.fillRect(0, 0, W, 150);
-                            x.fillStyle = "#F2B63C"; x.font = F(12, 800);
-                            x.fillText((isYou ? "MY DRAFT" : String(teamName || "").toUpperCase()) + " — " + String(league.name || "").toUpperCase(), 28, 40);
-                            x.fillStyle = "#EEF2F6"; x.font = F(46, 800);
-                            x.fillText(`Grade ${myGrade}`, 28, 92);
-                            x.font = F(17, 600); x.fillStyle = "#9AA7B5";
-                            x.fillText(`${myRank ? ordinal(myRank) : "—"} of ${TEAMS} projected${myPts ? ` · ${myPts} pts` : ""}`, 28, 120);
-                            x.fillStyle = myVal > 0 ? "#5FD0A8" : myVal < 0 ? "#F2655C" : "#9AA7B5";
-                            x.font = F(17, 700);
-                            x.fillText(`${myVal > 0 ? "+" : ""}${myVal} draft value`, 28, 144);
-                            const col = (title, list, color, ox) => {
-                              x.fillStyle = color; x.font = F(11, 800);
-                              x.fillText(title, ox, 196);
-                              x.font = F(14, 500);
-                              (list || []).slice(0, 5).forEach((gg, i) => {
-                                const nm = (gg && gg.p && gg.p.name) || (gg && gg.name) || "—";
-                                x.fillStyle = "#EEF2F6";
-                                x.fillText(`${i + 1}. ${nm.length > 22 ? nm.slice(0, 21) + "…" : nm}`, ox, 222 + i * 26);
+                          <button className="btn btn-mini" title="Download a full-size recap poster (or share it straight to a chat on mobile)" onClick={() => {
+                            try {
+                              const roster = (proj && proj.rosters && proj.rosters[ti]) || (rostersByTeam[ti] || []);
+                              const starters = lineupSlots(roster, cfg.sf).slots.filter((s) => s.p).map((s) => ({ slot: s.slot, name: s.p.name, pos: s.p.pos, posRank: s.p.posRank, team: s.p.team, pts: s.p.pts }));
+                              const lineupPts = starters.reduce((s, p) => s + (p.pts || 0), 0);
+                              const drafted = (rostersByTeam[ti] || []);
+                              const mixOrder = ["QB", "RB", "WR", "TE", "K", "DST"];
+                              const posMix = mixOrder.map((pos) => ({ pos, n: drafted.filter((p) => p && p.pos === pos).length })).filter((m) => m.n > 0);
+                              const gradeCol = (z) => (z >= 0.7 ? "#5FD0A8" : z >= 0.12 ? "#9BD17E" : z >= -0.45 ? "#F2B63C" : "#F2655C");
+                              const leagueRows = gradeOrder.map((i) => ({
+                                grade: grades[i].g, color: gradeCol(grades[i].z),
+                                name: i === userIdx ? (TEAM_NAMES[i] || "Your team") : (TEAM_NAMES[i] || `Team ${i + 1}`),
+                                right: proj && proj.rank ? ordinal(proj.rank[i]) : "", you: i === ti,
+                              }));
+                              const myBest = myPicks.slice().sort((a, b) => b.mval - a.mval)[0];
+                              const myWorst = myPicks.slice().sort((a, b) => a.mval - b.mval)[0];
+                              const topSteal = best5[0];
+                              const pickCard = (k, g, tone) => (g && g.p ? { k, tone, name: g.p.name, sub: `${g.p.pos}${g.p.posRank || ""} · ${label(g.o)}${k === "League's top steal" ? ` · ${nm(g.t)}` : ""}`, big: `${g.mval > 0 ? "+" : ""}${g.mval.toFixed(0)}` } : null);
+                              const cards = [
+                                pickCard("Your best value", myBest, "#5FD0A8"),
+                                pickCard("Your biggest reach", myWorst, "#F2655C"),
+                                pickCard("League's top steal", topSteal, "#F2B63C"),
+                              ].filter(Boolean);
+                              const scoring = (cfg.scoring && cfg.scoring.rec >= 1) ? "PPR" : (cfg.scoring && cfg.scoring.rec > 0) ? "Half-PPR" : "Standard";
+                              const cv = drawRecapCard({
+                                eyebrow: `${CURRENT_SEASON} draft recap · ${league.name || "League"}`,
+                                teamName: isYou ? (TEAM_NAMES[ti] || "My team") : teamName,
+                                subline: `${TEAMS}-team ${scoring}${cfg.sf ? " superflex" : ""} · ${cfg.rounds} rounds · ${new Date().toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`,
+                                grade: myGrade,
+                                stats: [
+                                  { k: "Projected finish", v: `${myRank ? ordinal(myRank) : "—"} of ${TEAMS}`, c: myRank && myRank <= Math.ceil(TEAMS / 3) ? "#5FD0A8" : myRank && myRank <= Math.ceil((2 * TEAMS) / 3) ? "#F2B63C" : "#F2655C" },
+                                  { k: "Projected points", v: myPts ? Number(myPts).toLocaleString() : "—" },
+                                  { k: "Draft value", v: `${myVal > 0 ? "+" : ""}${myVal} · ${ordinal(valRank)}`, c: myVal > 0 ? "#5FD0A8" : myVal < 0 ? "#F2655C" : "#EEF2F6" },
+                                ],
+                                starters, lineupPts: Math.round(lineupPts),
+                                benchNote: `${drafted.length} drafted · ${Math.max(0, drafted.length - starters.length)} on the bench`,
+                                posMix, leagueRows, cards,
+                                footer: "fantasydraftcompass.com",
                               });
-                            };
-                            col("TOP STEALS", best5, "#5FD0A8", 28);
-                            col("BIGGEST REACHES", worst5, "#F2655C", 330);
-                            x.strokeStyle = "rgba(255,255,255,.09)"; x.beginPath(); x.moveTo(28, H - 54); x.lineTo(W - 28, H - 54); x.stroke();
-                            x.fillStyle = "#6b7683"; x.font = F(13, 600);
-                            x.fillText("fantasydraftcompass.com", 28, H - 28);
-                            cv.toBlob((blob) => {
-                              if (!blob) return;
-                              const url = URL.createObjectURL(blob);
-                              const a2 = document.createElement("a");
-                              a2.href = url; a2.download = `${String(league.name || "draft").replace(/[^\w-]+/g, "-").toLowerCase()}-recap.png`;
-                              document.body.appendChild(a2); a2.click(); document.body.removeChild(a2);
-                              setTimeout(() => URL.revokeObjectURL(url), 2000);
-                            }, "image/png");
+                              deliverCard(cv, `${String(league.name || "draft").replace(/[^\w-]+/g, "-").toLowerCase()}-recap.png`);
+                            } catch (e) { try { console.error("[FDC] recap image failed:", e); } catch (e2) {} }
                           }}><i className="ti ti-photo-down" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Image</button>
                           <button className="btn btn-gold btn-mini" onClick={() => {
                             const ok = copyText(shareText);
