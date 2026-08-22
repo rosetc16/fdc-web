@@ -61,17 +61,15 @@ let TEAMS = 12;
 const ADMIN_EMAILS = ["rosetc16@gmail.com", "trey.rose@pirates.com"];
 const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase()).includes(String(email).trim().toLowerCase());
 
-// Recommendation diagnostic: when ?dbg=1 is in the URL, adviceFor attaches a per-candidate score breakdown
-// (dbgRows) and the Your-Decision panel renders it. Lets us see the ACTUAL scoring live instead of guessing.
-// Recommendation diagnostic. Toggled by ?dbg=1 in the URL, but the app's client-side routing rewrites the URL
-// (dropping the query) on navigation, so we LATCH it into sessionStorage the first time we see it and read from
-// either source thereafter. dbgOn() is a live getter (not a one-time const) so entering a draft after the URL
-// changed still reports the right state.
+// ===== RECOMMENDATION DIAGNOSTIC =============================================================
+// Shows, live, exactly what the recommendation engine believes: whose roster it is scoring, what it thinks
+// is on that roster, and the per-term score breakdown. This is ADMIN ONLY and always available to admins —
+// no URL parameter, because every screen of this app lives at the same address, which made a query string
+// both awkward to reach and easy to leave stuck on. (An earlier version latched the flag into
+// sessionStorage; that meant one bad visit poisoned the whole tab until it was closed.)
+//   dbgOn()    → admin, full stop. Nothing a non-admin can type reveals it.
+//   dbgHeavy() → admin AND ?dbg=1: adds the expensive per-candidate table and pool-exclusion list.
 let LAST_DBG_SIG = null; // content signature of the last diagnostic logged, so re-renders don't flood the console
-// ADMIN DIAGNOSTIC. Signed-in admins always get the recommendation breakdown — no URL parameter to remember
-// and nothing to type, which matters because every screen in this app lives at the same address. `?dbg=1`
-// still works for anyone (it additionally turns on the expensive per-candidate table), but it is no longer
-// latched into sessionStorage: latching meant one bad visit poisoned the whole tab until it was closed.
 let DBG_ADMIN = false;
 const setDbgAdmin = (v) => { DBG_ADMIN = !!v; };
 const dbgUrlFlag = () => {
@@ -81,8 +79,10 @@ const dbgUrlFlag = () => {
   } catch (e) { return false; }
 };
 const dbgOn = () => {
-  try { return DBG_ADMIN || dbgUrlFlag(); } catch (e) { return false; }
+  try { return DBG_ADMIN; } catch (e) { return false; }
 };
+// The expensive per-candidate table additionally needs ?dbg=1 — and still requires admin.
+const dbgHeavy = () => { try { return DBG_ADMIN && dbgUrlFlag(); } catch (e) { return false; } };
 
 // Global navigation hook. The App wires this once (setGlobalNav) so shared chrome like AppHeader can always
 // route — e.g. an admin's "Admin" button works on EVERY page, even ones that didn't explicitly thread an
@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20am";
+const BUILD_TAG = "2026.07.20an";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2690,12 +2690,15 @@ function legalCands(cands, counts, cfg) {
   const caps = capsOf(cfg), req = REQ_F(cfg.sf);
   const remaining = cfg.rounds - POS.reduce((s, p) => s + counts[p], 0);
   const mustFill = unfilledStarters(counts, cfg.sf) >= remaining;
-  const ok = cands.filter((c) => {
-    if (counts[c.pos] >= caps[c.pos]) return false;
-    if (mustFill) { const needs = counts[c.pos] < req[c.pos] || (["RB","WR","TE"].includes(c.pos) && flexOpen(counts, req)); if (!needs) return false; }
-    return true;
-  });
-  return ok.length ? ok : cands;
+  const underCap = cands.filter((c) => counts[c.pos] < caps[c.pos]);
+  const ok = !mustFill ? underCap : underCap.filter((c) => counts[c.pos] < req[c.pos] || (["RB","WR","TE"].includes(c.pos) && flexOpen(counts, req)));
+  // Relax in STAGES rather than all at once. The old single fallback ("if nothing qualifies, return every
+  // candidate") meant that the moment counts were wrong enough to put EVERY position over its cap, the entire
+  // filter switched itself off silently — the failure mode looked like a scoring bug rather than a count bug.
+  // Now we drop the must-fill-your-starters constraint first, and only then the caps.
+  if (ok.length) return ok;
+  if (underCap.length) return underCap;
+  return cands;
 }
 function marginalVbd(c, counts, sf) {
   const req = REQ_EFF(sf); // SF-aware: counts the superflex slot as a 2nd required QB starter
@@ -13922,7 +13925,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [liveTeamNames, setLiveTeamNames] = useState(null); // real names pulled live from Sleeper (win over cfg)
   const [liveTeamOwners, setLiveTeamOwners] = useState(null); // Sleeper usernames per slot, pulled live
   // set active team count + names for this league before any engine call
-  setDbgAdmin(!!(user && (user.admin || isAdminEmail(user.email))));
+  const isAdminUser = !!(user && (user.admin || isAdminEmail(user.email)));
+  setDbgAdmin(isAdminUser);
   setTeams(cfg.teams || 12);
   setSpec(cfg.start);
   setOrder(cfg.order || "snake");
@@ -14308,7 +14312,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [recExpanded, setRecExpanded] = useState({}); // "Your decision" rec tables expanded to top-10 (keyed by label)
   const [pulseMetric, setPulseMetric] = useState(null); // Draft Pulse ranking basis: "vbd" | "value" | "adp"; null = auto (value for dynasty, vbd for redraft)
   const stickyHeadRef = useRef(null);
-  const [diagOpen, setDiagOpen] = useState(true); // admin recommendation diagnostic strip, collapsible
+  const [diagOpen, setDiagOpen] = useState(false); // admin recommendation diagnostic strip — collapsed until asked for
   const [stickyHeadH, setStickyHeadH] = useState(0); // measured height of the sticky ticker+tabbar header
   const [capWarn, setCapWarn] = useState(null);
   const connected = !!cfg.connect;
@@ -14419,7 +14423,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // Both use the same shape: { teamSlot(1-based): [{ name?, pos }] }. Manual entry is how a rookie/dynasty
     // draft that ISN'T platform-connected still gets roster-aware recommendations.
     const er = (cfg.connect && cfg.connect.existingRosters) || cfg.existingRosters || null;
-    if (!er) { setRosterAdds({}); return; }
+    // ONLY for drafts where those players are genuinely OFF the board — a rookie draft (only rookies are in
+    // the pool) or a dynasty league carrying rosters over. In a redraft or keeper draft every one of those
+    // players IS in the draft pool and gets drafted normally, so treating them as already-rostered counts
+    // the same team twice. A mock started from a connected league inherits cfg.connect.existingRosters, which
+    // is how a 10-team keeper mock ended up crediting the user with an extra 15-man in-season roster.
+    if (!er || !isDynastyCfg(cfg)) { setRosterAdds({}); return; }
     const POS_OK = { QB: 1, RB: 1, WR: 1, TE: 1 };
     const map = {};
     Object.entries(er).forEach(([slot, list]) => {
@@ -14957,9 +14966,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     (forcedAhead || []).forEach((f) => { if (f && f.team === forTeam) addRosterPl(players[f.id]); });             // pick-cost keepers previewed ahead
     const myCounts = { QB: 0, RB: 0, WR: 0, TE: 0 };
     myRoster.forEach((pl) => { if (myCounts[pl.pos] != null) myCounts[pl.pos]++; });
-    // Existing platform holdings (ROSTER_ADDS) carry no player id, so they can't be deduped by id — seed them
-    // the same way every other surface does.
-    seedRosterCounts(forTeam, myCounts);
+    // Existing platform holdings (ROSTER_ADDS) carry no player id, so they can't be deduped against myRoster.
+    // That makes them safe to add ONLY when they're genuinely off-board holdings — a rookie/dynasty draft.
+    // Second, independent guard on top of the one where ROSTER_ADDS is built: these engine globals persist
+    // across component mounts and leagues, so a stale map from another league must not be able to inflate
+    // this team's counts. (myWindow hit exactly this and settled on "count the roster alone" for the same reason.)
+    if (isDynastyCfg(cfg)) seedRosterCounts(forTeam, myCounts);
     // Fold in what THIS team's own projected earlier picks would add before the analyzed pick, so a future
     // pick's needs reflect the roster you'll actually have then — not the one you have now.
     POS.forEach((pos) => { if (myCounts[pos] != null) myCounts[pos] += (myProjectedByPos[pos] || 0); });
@@ -15144,7 +15156,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         // nothing. The expensive half (a full re-score of the top candidates, plus checking availability of
         // everyone excluded from the pool) only runs behind ?dbg=1, so leaving the strip on all draft long
         // can't slow the room down.
-        const heavy = dbgUrlFlag();
+        const heavy = dbgHeavy();
         const rows = heavy
           ? ranked.slice(0, 12).map((p) => { const d = {}; try { userScore(p, myCounts, dem, strat, cfg.sf, pickNum, null, myPosVbds, d, posTilt); } catch (e) {} return { name: (p && p.name) || "?", wait: Math.round(0.6 * Math.max(0, waitCost[p.pos] || 0)), ...d }; })
           : [];
@@ -17277,12 +17289,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           line turns red if the advice is being built for a different team than the one the app calls "you",
           and the two rostersByTeam lines let you see at a glance whether the roster the engine used matches
           the roster the rest of the UI is rendering. Wrapped in a Boundary so it can only ever break itself. */}
-      {dbgOn() && advice && advice.dbgRows && (
+      {isAdminUser && dbgOn() && advice && advice.dbgRows && (
         <Boundary label="diagnostic">
           <div style={{ borderTop: "1px solid var(--line2)", borderBottom: "1px solid var(--gold)", background: "rgba(242,182,60,.06)", padding: "5px 10px", fontSize: 10.5, lineHeight: 1.5 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: diagOpen ? 4 : 0 }}>
-              <span style={{ fontWeight: 800, color: "var(--gold)", letterSpacing: ".04em", fontSize: 9.5, textTransform: "uppercase" }}>Reco diagnostic — admin</span>
-              <span className="mut" style={{ fontSize: 9 }}>{DBG_ADMIN ? "always on for admins" : "via ?dbg=1"}</span>
+              <span style={{ fontWeight: 800, color: "var(--gold)", letterSpacing: ".04em", fontSize: 9.5, textTransform: "uppercase" }}>Reco diagnostic</span>
+              <span className="mut" style={{ fontSize: 9 }}>admin only{diagOpen ? "" : " · hidden"}</span>
               <button className="btn btn-mini" style={{ marginLeft: "auto", fontSize: 9, padding: "1px 7px" }} onClick={() => setDiagOpen((v) => !v)}>{diagOpen ? "Hide" : "Show"}</button>
             </div>
             {diagOpen && (
@@ -17988,7 +18000,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     {/* single recommendation list — full top 10, market → build blended */}
                     <div>
                       {recTable(balAdv, "var(--gold)", "For this pick", strategy === "adp" ? "strict ADP order" : strategy === "value" ? "max VBD" : strategy === "upside" ? "upside / breakout" : "smart · market early → your build by round 5")}
-                      {balAdv && balAdv.dbgRows && (balAdv.dbgRows.rows || []).length > 0 && (
+                      {isAdminUser && balAdv && balAdv.dbgRows && (balAdv.dbgRows.rows || []).length > 0 && (
                         <Boundary label="diagnostic">
                           <div style={{ marginTop: 12, padding: 8, border: "1px solid var(--gold)", borderRadius: 6, fontSize: 10, overflowX: "auto" }}>
                             <div style={{ fontWeight: 800, color: "var(--gold)", marginBottom: 4 }}>RECO DIAGNOSTIC (dbg=1)</div>
