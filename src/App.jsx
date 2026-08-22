@@ -96,13 +96,49 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20aw";
+const BUILD_TAG = "2026.07.20ax";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
   .replace(/[.,'’]/g, "")
   .replace(/\b(jr|sr|ii|iii|iv|v)\b/g, "")
   .replace(/\s+/g, " ").trim();
+/* ============================================================================================
+   KEEPER IDENTITY — READ THIS BEFORE TOUCHING cfg.keepers
+   A keeper is saved on the league and has to survive months of live data updates. It used to be stored
+   as `playerId`, which is a POSITIONAL INDEX into the pool buildPlayers() constructs — and that pool is
+   rebuilt from the live pack every session and re-filtered per league (kickers and defenses are only in
+   it when the league starts them). One player added upstream, or one mock run under different roster
+   settings, shifts every index and silently repoints every keeper at somebody else. That is exactly how
+   a keeper list of quarterbacks came back as a list of wide receivers with the draft picks unchanged.
+   The NAME is the stable key. The id is now a per-pool lookup, resolved fresh every time, and kept on
+   saved keepers only as a fallback for entries written before names were stored.
+   ============================================================================================ */
+function keeperNameIndex(players) {
+  const m = new Map();
+  (players || []).forEach((p) => { if (p && p.name != null && !m.has(normName(p.name))) m.set(normName(p.name), p.id); });
+  return m;
+}
+// Returns the keepers with `playerId` re-resolved against THIS pool. A keeper whose player isn't in the
+// pool at all (a kicker in a league that doesn't start one) resolves to null and is flagged `unresolved`,
+// rather than silently becoming whoever happens to occupy that index.
+function resolveKeepers(keepers, players, idx) {
+  if (!keepers || !keepers.length) return [];
+  const byName = idx || keeperNameIndex(players);
+  return keepers.map((k) => {
+    if (!k) return k;
+    const nm = k.name != null ? k.name : (k.playerName != null ? k.playerName : null);
+    if (nm != null) {
+      const id = byName.get(normName(nm));
+      return { ...k, playerId: id != null ? id : null, unresolved: id == null };
+    }
+    // Legacy entry with no name: fall back to the stored index once, and stamp the name it lands on so it
+    // can never drift again from here.
+    const p = (k.playerId != null && players) ? players[k.playerId] : null;
+    return p ? { ...k, name: p.name, pos: p.pos } : { ...k, unresolved: true };
+  });
+}
+
 // A league's `picks` should be a DENSE array of internal player ids (indexed by overall pick). But Sleeper
 // drafts (esp. auto-imported dynasty rookie drafts) arrive as an array of OBJECTS ({player_id, name, pick_no,
 // draft_slot, ...}). Those objects render as a BLANK board because the recap expects integer ids. This helper
@@ -2600,7 +2636,9 @@ function buildPlayers(cfg) {
   // KEEPER-ADJUSTED ADP (compact-up). If players are kept, they're off the board — so the
   // remaining players' effective draft position rises to fill the vacated slots. Example:
   // keep the top-3 ADP players and the old #4 now effectively goes near the top of the board.
-  const keptIds = new Set((cfg.keepers || []).map((k) => k.playerId).filter((x) => x != null));
+  // Resolved by NAME against the pool we just built — see the keeper-identity note near normName. Using the
+  // stored index here is what compacted ADP around the wrong players after any pool change.
+  const keptIds = new Set(resolveKeepers(cfg.keepers || [], ps, keeperNameIndex(ps)).map((k) => k && k.playerId).filter((x) => x != null));
   if (keptIds.size) {
     ps.forEach((p) => { p.adpOriginal = p.adp; p.isKept = keptIds.has(p.id); });
     // The set of ADP "slots" that actually exist on the board, in ascending order. After
@@ -5448,7 +5486,12 @@ const Dot = ({ pos }) => <span className="posdot" title={pos} style={{ backgroun
 // Small round headshot from Sleeper's CDN. Hides itself if the image is missing (rookies/odd ids) so
 // the row never shows a broken-image icon. size in px.
 const PlayerPhoto = ({ sid, pos, size = 22 }) => {
-  if (!sid) return null;
+  // ⚠ NEVER return null. Most callers put this in a flex row where a missing node is harmless, but the
+  // team-analysis lineup is a fixed-column GRID — dropping the cell there shifts every column after it one
+  // to the left, so the name lands in the 28px photo column and reads "Jo…" while the team abbreviation
+  // sits under PLAYER. Render an empty avatar of the same size and the grid stays aligned whether or not
+  // the player has a photo id.
+  if (!sid) return <span aria-hidden="true" style={{ display: "inline-block", width: size, height: size, borderRadius: "50%", flexShrink: 0, background: "var(--panel3)", border: `1.5px solid ${POS_COLOR[pos] || "var(--line)"}` }} />;
   // Try the full Sleeper headshot; if it fails, fall back to Sleeper's thumbnail path before giving up to
   // the colored position box. key={sid} forces a fresh <img> per player so a node that errored for one
   // player is never reused for the next (which caused intermittent no-render after hovering an image-less
@@ -6243,7 +6286,7 @@ export default function App() {
             const keepers = [];
             keeperSrc.forEach((pk) => {
               const pid = (pk.player_id != null && byPid[String(pk.player_id)] != null) ? byPid[String(pk.player_id)] : (pk.name ? byNm[normName(pk.name)] : null);
-              if (pid != null) keepers.push({ playerId: pid, team: (pk.draft_slot || 1) - 1, o: pk.pick_no - 1, src: "sleeper" });
+              if (pid != null) keepers.push({ playerId: pid, name: (pool[pid] && pool[pid].name) || null, team: (pk.draft_slot || 1) - 1, o: pk.pick_no - 1, src: "sleeper" });
             });
             if (keepers.length) {
               const manual = (lg.cfg.keepers || []).filter((k) => k.src !== "sleeper");
@@ -13664,8 +13707,13 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
       draftOrder: f.draftOrder && f.draftOrder.length === +f.teams ? f.draftOrder : null,
       keepers: f.keepers || [], pickTrades: f.pickTrades || [],
       existingRosters: (f.existingRosters && Object.keys(f.existingRosters).length) ? f.existingRosters : null,
-      teamNames: f.manual && f.teamNames.length === +f.teams ? f.teamNames : null,
-      favTeams: f.manual && f.favTeams.length === +f.teams ? f.favTeams : null,
+      // ⚠ THESE USED TO BE GATED ON `f.manual`, WHICH IS NEVER PERSISTED. submit() doesn't write `manual`,
+      // so reopening a league's settings always started with manual:false — and saving anything at all (a
+      // keeper, a roster slot) then wrote teamNames:null and silently deleted every custom team name. The
+      // real question is simply whether names exist: keep them whenever at least one is filled in. ensureNames
+      // pads with "" rather than pool defaults, so this can never bake stock names into saved data.
+      teamNames: (Array.isArray(f.teamNames) && f.teamNames.length === +f.teams && f.teamNames.some((x) => String(x || "").trim())) ? f.teamNames : null,
+      favTeams: (Array.isArray(f.favTeams) && f.favTeams.length === +f.teams && f.favTeams.some((x) => String(x || "").trim())) ? f.favTeams : null,
     };
     onSubmit(cfg);
   };
@@ -13689,7 +13737,7 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
   const SEGS = [["basics","Basics"],["roster","Roster"],["scoring","Scoring"],["order","Teams & order"],["trades","Pick trades"]];
 
   // players for keeper/trade tabs, built from the current config-in-progress
-  const cfgPreview = useMemo(() => ({ teams: +f.teams, rounds: +f.rounds, type: f.type, sf: f.start.SUPER > 0 || (f.start.QB || 0) >= 2, tePremMult: (f.scoring.recTE != null && f.scoring.recTE > f.scoring.rec) ? +(f.scoring.recTE - f.scoring.rec).toFixed(2) : 0, start: f.start, caps: f.caps, scoring: f.scoring, order: f.order, slot: f.slot === "" ? null : +f.slot, teamNames: f.manual ? f.teamNames : null }), [f]);
+  const cfgPreview = useMemo(() => ({ teams: +f.teams, rounds: +f.rounds, type: f.type, sf: f.start.SUPER > 0 || (f.start.QB || 0) >= 2, tePremMult: (f.scoring.recTE != null && f.scoring.recTE > f.scoring.rec) ? +(f.scoring.recTE - f.scoring.rec).toFixed(2) : 0, start: f.start, caps: f.caps, scoring: f.scoring, order: f.order, slot: f.slot === "" ? null : +f.slot, teamNames: (Array.isArray(f.teamNames) && f.teamNames.some((x) => String(x || "").trim())) ? f.teamNames : null }), [f]);
   const kPlayers = useMemo(() => { try { setTeams(+f.teams); setSpec(f.start); setOrder(f.order || "snake"); setPickTrades(null); setKeeperAdds({}); return buildPlayers(cfgPreview); } catch (e) { return []; } }, [cfgPreview]);
 
   return (
@@ -15043,7 +15091,10 @@ function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
   const [kPick, setKPick] = useState("");
   const [pSearch, setPSearch] = useState("");
 
-  const usedPlayerIds = new Set(keepers.map((k) => k.playerId));
+  // Everything below reads the RESOLVED list: the saved name wins over the saved index, so an old league
+  // opened after any pool change still lists the players its owner actually chose.
+  const keepersR = useMemo(() => resolveKeepers(keepers, players), [keepers, players]);
+  const usedPlayerIds = new Set(keepersR.map((k) => k.playerId).filter((x) => x != null));
   const usedPicks = new Set(keepers.filter((k) => k.o != null).map((k) => k.o));
   const playerOpts = useMemo(() => {
     const q = pSearch.trim().toLowerCase();
@@ -15053,8 +15104,12 @@ function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
   const addKeeper = () => {
     if (kPlayer === "") return;
     const pid = +kPlayer;
-    if (kMode === "pick") { if (kPick === "") return; setKeepers((ks) => [...ks, { playerId: pid, team: kTeam, o: +kPick }]); }
-    else setKeepers((ks) => [...ks, { playerId: pid, team: kTeam, o: null }]);
+    // Store the NAME alongside the id. The id is a positional index into a pool that gets rebuilt from live
+    // data, so on its own it does not survive to next week — see the keeper-identity note near normName.
+    const pl = players[pid];
+    const stamp = pl ? { name: pl.name, pos: pl.pos } : {};
+    if (kMode === "pick") { if (kPick === "") return; setKeepers((ks) => [...ks, { playerId: pid, ...stamp, team: kTeam, o: +kPick }]); }
+    else setKeepers((ks) => [...ks, { playerId: pid, ...stamp, team: kTeam, o: null }]);
     setKPlayer(""); setKPick(""); setPSearch("");
   };
   const removeKeeper = (i) => setKeepers((ks) => ks.filter((_, j) => j !== i));
@@ -15135,10 +15190,10 @@ function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
         {kMode === "pick" && ownedForKeeper.length === 0 && <div className="mut" style={{ fontSize: 11, marginTop: 6 }}>{names[kTeam]} has no remaining picks — they've traded them away or used them on other keepers. Use “nothing (free keeper)” instead.</div>}
       </div>
 
-      {keepers.length > 0 ? <div>
-        <div className="disp mut" style={{ fontSize: 10.5, letterSpacing: ".06em", marginBottom: 4 }}>KEEPERS SET ({keepers.length})</div>
-        {keepers.map((k, i) => {
-          const p = players[k.playerId];
+      {keepersR.length > 0 ? <div>
+        <div className="disp mut" style={{ fontSize: 10.5, letterSpacing: ".06em", marginBottom: 4 }}>KEEPERS SET ({keepersR.length})</div>
+        {keepersR.map((k, i) => {
+          const p = k.playerId != null ? players[k.playerId] : null;
           // ===== IS THIS KEEPER WORTH ITS PRICE? ==================================================
           // The first question every keeper league asks, and the app has never answered it. A keeper kept
           // at pick N costs you that pick, so the honest measure is what that pick would otherwise have
@@ -15163,7 +15218,13 @@ function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
           const vColor = !verdict ? "var(--mut)" : verdict.tone === "good" ? "var(--green)" : verdict.tone === "bad" ? "#F2655C" : "var(--gold)";
           return (
             <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, padding: "4px 8px", borderRadius: 6, marginBottom: 3, border: "1px solid var(--line)" }}>
-              {p && <Dot pos={p.pos} />}<span style={{ flex: 1, minWidth: 0 }}>{p ? p.name : "?"} <span className="mut">— {names[k.team]}</span></span>
+              {p && <Dot pos={p.pos} />}
+              <span style={{ flex: 1, minWidth: 0 }}>
+                {p ? p.name : (k.name || "?")} <span className="mut">— {names[k.team]}</span>
+                {/* A keeper whose player isn't in THIS pool (a kicker in a league that doesn't start one,
+                    a rookie in an exclude-rookies draft). Says so instead of silently showing someone else. */}
+                {!p && <span title="This player isn't in this league's pool — check the league's roster settings, or remove and re-add him." style={{ marginLeft: 6, fontSize: 9.5, fontWeight: 700, color: "var(--red)", border: "1px solid var(--red)", borderRadius: 4, padding: "0 4px" }}>not in pool</span>}
+              </span>
               {verdict && (
                 <span
                   title={`Kept at ${pickLabel(k.o)} (overall ${verdict.costPick}). The market drafts him around ${p.adp.toFixed(0)}, so you're ${verdict.gain >= 0 ? `getting him ${verdict.gain} picks later than he normally goes` : `paying ${-verdict.gain} picks more than he normally costs`}.${verdict.alt ? `\n\nAt that pick you'd otherwise expect ${verdict.alt.name}${verdict.vGain != null ? `, so keeping him is worth about ${verdict.vGain >= 0 ? "+" : ""}${verdict.vGain} points of value above replacement` : ""}.` : ""}`}
@@ -15377,22 +15438,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // When connected and synced, the real draft_slot of each pick is the source of truth for who made
   // it — this makes 3rd-round-reversal, custom orders, and traded picks all correct automatically.
   setLivePickTeams(liveSlots);
-  // Keepers: pick-cost keepers occupy a board slot; no-cost keepers default onto a roster.
-  const keepers = cfg.keepers || [];
-  const keeperByPick = {}; // overall pick index -> playerId (pick-cost keepers)
-  const noCostByTeam = {}; // teamIdx -> [playerId] (no-cost keepers)
-  keepers.forEach((k) => {
-    if (k.playerId == null) return;
-    if (k.o != null) keeperByPick[k.o] = k.playerId;
-    else if (k.team != null) (noCostByTeam[k.team] = noCostByTeam[k.team] || []).push(k.playerId);
-  });
-  setKeeperAdds(noCostByTeam);
-  // Mirror the pick-cost keeper ids (players kept in specific draft slots) to the engine global so runSims and
-  // the projections treat them as off the board — otherwise another team's kept player (e.g. a keeper at 4.06)
-  // shows up as an available recommendation/alternative even though he can never be drafted.
-  setPickKeeperIds(new Set(Object.values(keeperByPick)));
-  // Also give projections the slot→keeper map so they place each pick-cost keeper AT its pick (see projectAll).
-  setPickKeeperAt(keeperByPick);
   // Team names: live Sleeper names (pulled during the draft) win over the saved cfg names, which win over
   // stock names. The live set can arrive/improve after connect (e.g. once a pre-draft league sets its order),
   // so once we have it we keep using it across re-renders instead of resetting to the stored cfg names.
@@ -15450,7 +15495,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         const keepers = [];
         keeperSrc.forEach((pk) => {
           const pid = (pk.player_id != null && byPid[String(pk.player_id)] != null) ? byPid[String(pk.player_id)] : (pk.name ? byNm[normName(pk.name)] : null);
-          if (pid != null) keepers.push({ playerId: pid, team: (pk.draft_slot || 1) - 1, o: pk.pick_no - 1, src: "sleeper" });
+          if (pid != null) keepers.push({ playerId: pid, name: (players[pid] && players[pid].name) || pk.name || null, team: (pk.draft_slot || 1) - 1, o: pk.pick_no - 1, src: "sleeper" });
         });
         if (keepers.length) { const manual = (cfg.keepers || []).filter((k) => k.src !== "sleeper"); patch.keepers = [...manual, ...keepers]; patch.keeper = true; notes.push(`${keepers.length} keeper${keepers.length > 1 ? "s" : ""}`); }
       }
@@ -15803,6 +15848,24 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // board would render blank because the recap expects internal player ids. Once the player pool is built,
   // convert them in place (by name/sid, preserving pick position). Runs once when a conversion is actually
   // needed; after it the picks are ids and looksLikeSleeperPicks is false so it won't loop.
+  // Keepers: pick-cost keepers occupy a board slot; no-cost keepers default onto a roster.
+  // Re-resolved against THIS draft's pool every time (see the keeper-identity note near normName).
+  const keepers = resolveKeepers(cfg.keepers || [], players);
+  const keeperByPick = {}; // overall pick index -> playerId (pick-cost keepers)
+  const noCostByTeam = {}; // teamIdx -> [playerId] (no-cost keepers)
+  keepers.forEach((k) => {
+    if (k.playerId == null) return;
+    if (k.o != null) keeperByPick[k.o] = k.playerId;
+    else if (k.team != null) (noCostByTeam[k.team] = noCostByTeam[k.team] || []).push(k.playerId);
+  });
+  setKeeperAdds(noCostByTeam);
+  // Mirror the pick-cost keeper ids (players kept in specific draft slots) to the engine global so runSims and
+  // the projections treat them as off the board — otherwise another team's kept player (e.g. a keeper at 4.06)
+  // shows up as an available recommendation/alternative even though he can never be drafted.
+  setPickKeeperIds(new Set(Object.values(keeperByPick)));
+  // Also give projections the slot→keeper map so they place each pick-cost keeper AT its pick (see projectAll).
+  setPickKeeperAt(keeperByPick);
+
   const pickConvertDone = useRef(false);
   useEffect(() => {
     if (pickConvertDone.current) return;
@@ -17265,7 +17328,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             const fromSleeper = [];
             keeperPicks.forEach((pk) => {
               const pid = (pk.player_id != null && byPid[String(pk.player_id)] != null) ? byPid[String(pk.player_id)] : (pk.name ? byNm[normName(pk.name)] : null);
-              if (pid != null) fromSleeper.push({ playerId: pid, team: (pk.draft_slot || 1) - 1, o: pk.pick_no - 1, src: "sleeper" });
+              if (pid != null) fromSleeper.push({ playerId: pid, name: (players[pid] && players[pid].name) || pk.name || null, team: (pk.draft_slot || 1) - 1, o: pk.pick_no - 1, src: "sleeper" });
             });
             // Keep any manually-added keepers (no src tag); replace the Sleeper-derived set with the fresh one.
             const manual = (cfg.keepers || []).filter((k) => k.src !== "sleeper");
@@ -20218,10 +20281,34 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         // full projected roster for the selected team (your team projects your future picks; other teams
         // use their simulated picks too) so the projected view matches the hub's projected roster exactly.
         const projRosterFull = (myProjView && proj && proj.rosters[selTeam]) ? proj.rosters[selTeam] : null;
-        const shownRoster = projRosterFull ? projRosterFull : selRoster;
+        // ===== RECONCILE THE TWO PROJECTIONS =====
+        // There are two of them and they used to contradict each other on screen. `proj.rosters` comes from
+        // projectAll, a full simulation of every remaining round; `path` is the near-term pick-by-pick
+        // outlook, and it's the one that's reconciled against the live recommendation and shown in the Next
+        // Picks ticker and its popout. So the projected lineup could hand you a back that the popout, three
+        // inches away, had going to another team two picks earlier.
+        // `path` wins for the picks it covers — it's the higher-fidelity, user-visible projection — and
+        // projectAll fills in beyond its horizon. Roster LENGTH is preserved so the lineup doesn't change size.
+        const reconciledProj = (() => {
+          if (!projRosterFull) return null;
+          const future = (path || []).filter((st) => st && st.p && st.o >= picks.length);
+          if (!future.length) return projRosterFull;
+          const mineFromPath = future.filter((st) => st.t === selTeam).map((st) => st.p);
+          const takenElsewhere = new Set(future.filter((st) => st.t !== selTeam).map((st) => st.p.id));
+          const out = selRoster.slice();
+          const seen = new Set(out.map((p) => p.id));
+          mineFromPath.forEach((p) => { if (!seen.has(p.id)) { out.push(p); seen.add(p.id); } });
+          for (const p of projRosterFull) {
+            if (out.length >= projRosterFull.length) break;
+            if (seen.has(p.id) || takenElsewhere.has(p.id)) continue;
+            out.push(p); seen.add(p.id);
+          }
+          return out;
+        })();
+        const shownRoster = reconciledProj || selRoster;
         // The set of players that are projected (not yet actually drafted) — used to mark them in the UI.
         const draftedIdSet = new Set(selRoster.map((p) => p.id));
-        const projectedAdds = projRosterFull ? projRosterFull.filter((p) => !draftedIdSet.has(p.id)) : [];
+        const projectedAdds = reconciledProj ? reconciledProj.filter((p) => !draftedIdSet.has(p.id)) : [];
         const taShown = teamAnalysis(shownRoster, cfg, isMe ? myWindow : null, isMe ? advice : null, path, { allPicks: picks, players, teamAtFn: teamAt, userIdx: selTeam, projRosters: (proj && proj.rosters) || null, forcedAhead, noCostByTeam });
         // Next-pick targets (only meaningful for your own team). Use YOUR next-pick advice (mySelAdvice) — which
         // is computed with YOUR roster counts and cap-filters positions you've maxed — NOT the generic on-clock
