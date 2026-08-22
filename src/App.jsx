@@ -68,15 +68,20 @@ const isAdminEmail = (email) => !!email && ADMIN_EMAILS.map((e) => e.toLowerCase
 // either source thereafter. dbgOn() is a live getter (not a one-time const) so entering a draft after the URL
 // changed still reports the right state.
 let LAST_DBG_SIG = null; // content signature of the last diagnostic logged, so re-renders don't flood the console
-const dbgOn = () => {
+// ADMIN DIAGNOSTIC. Signed-in admins always get the recommendation breakdown — no URL parameter to remember
+// and nothing to type, which matters because every screen in this app lives at the same address. `?dbg=1`
+// still works for anyone (it additionally turns on the expensive per-candidate table), but it is no longer
+// latched into sessionStorage: latching meant one bad visit poisoned the whole tab until it was closed.
+let DBG_ADMIN = false;
+const setDbgAdmin = (v) => { DBG_ADMIN = !!v; };
+const dbgUrlFlag = () => {
   try {
     if (typeof window === "undefined") return false;
-    if (/[?&]dbg=1\b/.test(window.location.search || "") || /[?&]dbg=1\b/.test(window.location.hash || "")) {
-      try { window.sessionStorage.setItem("fdc_dbg", "1"); } catch (e) {}
-      return true;
-    }
-    return window.sessionStorage.getItem("fdc_dbg") === "1";
+    return /[?&]dbg=1\b/.test(window.location.search || "") || /[?&]dbg=1\b/.test(window.location.hash || "");
   } catch (e) { return false; }
+};
+const dbgOn = () => {
+  try { return DBG_ADMIN || dbgUrlFlag(); } catch (e) { return false; }
 };
 
 // Global navigation hook. The App wires this once (setGlobalNav) so shared chrome like AppHeader can always
@@ -91,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20al";
+const BUILD_TAG = "2026.07.20am";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13917,6 +13922,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [liveTeamNames, setLiveTeamNames] = useState(null); // real names pulled live from Sleeper (win over cfg)
   const [liveTeamOwners, setLiveTeamOwners] = useState(null); // Sleeper usernames per slot, pulled live
   // set active team count + names for this league before any engine call
+  setDbgAdmin(!!(user && (user.admin || isAdminEmail(user.email))));
   setTeams(cfg.teams || 12);
   setSpec(cfg.start);
   setOrder(cfg.order || "snake");
@@ -14302,6 +14308,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [recExpanded, setRecExpanded] = useState({}); // "Your decision" rec tables expanded to top-10 (keyed by label)
   const [pulseMetric, setPulseMetric] = useState(null); // Draft Pulse ranking basis: "vbd" | "value" | "adp"; null = auto (value for dynasty, vbd for redraft)
   const stickyHeadRef = useRef(null);
+  const [diagOpen, setDiagOpen] = useState(true); // admin recommendation diagnostic strip, collapsible
   const [stickyHeadH, setStickyHeadH] = useState(0); // measured height of the sticky ticker+tabbar header
   const [capWarn, setCapWarn] = useState(null);
   const connected = !!cfg.connect;
@@ -15132,34 +15139,43 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     let dbgRows = null;
     if (dbgOn()) {
       try {
-        const rows = ranked.slice(0, 12).map((p) => { const d = {}; try { userScore(p, myCounts, dem, strat, cfg.sf, pickNum, null, myPosVbds, d, posTilt); } catch (e) {} return { name: (p && p.name) || "?", wait: Math.round(0.6 * Math.max(0, waitCost[p.pos] || 0)), ...d }; });
-        const inPool = new Set(pool.map((p) => p.id));
-        const notablesOut = sortedAdp
-          .filter((p) => p && !draftedSet.has(p.id) && !inPool.has(p.id) && p.adp != null && p.adp <= pickNum + 6)
-          .slice(0, 8)
-          .map((p) => ({ name: p.name, pos: p.pos, adp: p.adp, vbd: p.vbd, survived: (() => { try { return survivesToPick(p.id); } catch (e) { return null; } })(), legalCapped: (myCounts[p.pos] || 0) >= (capsOf(cfg)[p.pos] || 99) }));
-        // WHOSE roster is being scored, and exactly which players are in it. When a recommendation looks wrong
-        // the cause is almost always here rather than in the scoring math — either the advice is being built
-        // for the wrong team, or a channel of the roster went missing — and both are invisible without this.
-        // Everything below is flattened to PLAIN STRINGS here, inside the try. The panel then renders strings
-        // and nothing else: no property drilling in JSX, so a missing field can't throw during render and take
-        // the page down with it (a black screen while debugging a bad recommendation is the worst of both worlds).
+        // TWO TIERS. The admin strip always shows the CHEAP half — which roster is being scored and what is
+        // in it — because that is where every bad recommendation so far has actually come from, and it costs
+        // nothing. The expensive half (a full re-score of the top candidates, plus checking availability of
+        // everyone excluded from the pool) only runs behind ?dbg=1, so leaving the strip on all draft long
+        // can't slow the room down.
+        const heavy = dbgUrlFlag();
+        const rows = heavy
+          ? ranked.slice(0, 12).map((p) => { const d = {}; try { userScore(p, myCounts, dem, strat, cfg.sf, pickNum, null, myPosVbds, d, posTilt); } catch (e) {} return { name: (p && p.name) || "?", wait: Math.round(0.6 * Math.max(0, waitCost[p.pos] || 0)), ...d }; })
+          : [];
+        let excludedLine = "";
+        if (heavy) {
+          const inPool = new Set(pool.map((p) => p.id));
+          excludedLine = sortedAdp
+            .filter((p) => p && !draftedSet.has(p.id) && !inPool.has(p.id) && p.adp != null && p.adp <= pickNum + 6)
+            .slice(0, 8)
+            .map((p) => `${p.name}(${p.pos},adp${p.adp},vbd${p.vbd},${(() => { try { return survivesToPick(p.id) ? "surv" : "GONE"; } catch (e) { return "?"; } })()}${(myCounts[p.pos] || 0) >= (capsOf(cfg)[p.pos] || 99) ? ",CAPPED" : ""})`)
+            .join("  ·  ");
+        }
+        // Everything is flattened to PLAIN STRINGS here, inside the try. The panel renders strings and nothing
+        // else — no property drilling in JSX — so a missing field can't throw during render and blank the page.
         const pr = posRankByTeam[forTeam] || null;
         const four = (o, f) => ["QB", "RB", "WR", "TE"].map((k) => f(k, o ? o[k] : undefined)).join(" · ");
         const lines = [
           `counts: ${four(myCounts, (k, v) => `${k} ${v == null ? "?" : v}`)}　|　demand: ${four(dem, (k, v) => `${k} ${v == null ? "?" : (+v).toFixed(2)}`)}`,
-          `scoring for team ${forTeam}${forTeam === userIdx ? " (YOU)" : ` — but YOU are team ${userIdx}  ⚠ MISMATCH`} · sf ${String(!!cfg.sf)} · super ${SPEC.SUPER || 0} · qb slots ${REQ_EFF(cfg.sf).QB}`,
+          `scoring for team ${forTeam}${forTeam === userIdx ? " (YOU)" : ` — but YOU are team ${userIdx}  ⚠ MISMATCH`} · pick ${pickNum} · sf ${String(!!cfg.sf)} · super ${SPEC.SUPER || 0} · qb slots ${REQ_EFF(cfg.sf).QB} · te slots ${REQ_EFF(cfg.sf).TE} · te cap ${capsOf(cfg).TE}`,
           pr ? `league rank: ${four(pr, (k, v) => `${k} ${v == null ? "?" : v}/${TEAMS}`)}　|　quality tilt: ${four(posTilt, (k, v) => `${k} ${v > 0 ? "+" : ""}${Math.round(v || 0)}`)}` : "league rank: (unavailable)",
           `held vbd: ${four(myPosVbds, (k, v) => `${k}[${(v || []).join(",")}]`)}`,
           `roster seen (${myRoster.length}): ${myRoster.map((x) => `${x.name}·${x.pos}`).join(", ") || "—"}`,
-          `excluded from pool: ${notablesOut.map((e) => `${e.name}(${e.pos},adp${e.adp},vbd${e.vbd},${e.survived ? "surv" : "GONE"}${e.legalCapped ? ",CAPPED" : ""})`).join("  ·  ") || "—"}`,
+          `rostersByTeam[${forTeam}] (${((rostersByTeam && rostersByTeam[forTeam]) || []).length}): ${((rostersByTeam && rostersByTeam[forTeam]) || []).map((x) => `${x.name}·${x.pos}`).join(", ") || "—"}`,
+          `rostersByTeam[you=${userIdx}] (${((rostersByTeam && rostersByTeam[userIdx]) || []).length}): ${((rostersByTeam && rostersByTeam[userIdx]) || []).map((x) => `${x.name}·${x.pos}`).join(", ") || "—"}`,
         ];
-        // Mirror to the console. If the panel ever fails to paint — a crash, a slow render, a layout problem —
-        // the numbers are still recoverable with F12, and the console can't be broken by a render error.
-        // Throttled on content so re-renders during a pick don't flood it.
+        if (heavy) lines.push(`excluded from pool: ${excludedLine || "—"}`);
+        // Mirror to the console too. If the strip ever fails to paint, the numbers are still recoverable with
+        // F12. Throttled on content so re-renders during a pick don't flood it.
         try {
           const sig = lines.join("|");
-          if (sig !== LAST_DBG_SIG) { LAST_DBG_SIG = sig; console.log("[FDC dbg] pick " + pickNum + "\n" + lines.join("\n") + "\n" + rows.slice(0, 8).map((r) => `${r.name} (${r.pos}) total ${Math.round((r.total || 0) + (r.wait || 0))}  mv ${r.mvUse} need ${r.needBonus} qual ${r.qual} qbDead ${r.qbDead} empty ${r.emptyStarter} scar ${r.scarcity} reach ${r.reach}`).join("\n")); }
+          if (sig !== LAST_DBG_SIG) { LAST_DBG_SIG = sig; console.log("[FDC dbg] " + lines.join("\n")); }
         } catch (e) {}
         dbgRows = { rows, lines };
       } catch (e) { dbgRows = { rows: [], lines: ["diagnostic failed: " + String((e && e.message) || e)] }; }
@@ -17254,6 +17270,32 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         </div>
       )}
 
+      {/* ===== ADMIN RECOMMENDATION DIAGNOSTIC =====================================================
+          Always on for signed-in admins — no URL parameter, because every screen of this app lives at the
+          same address and a query string turned out to be a fragile way to switch it on. Shows the one thing
+          that has explained every wrong recommendation so far: WHICH roster the engine is scoring. The team
+          line turns red if the advice is being built for a different team than the one the app calls "you",
+          and the two rostersByTeam lines let you see at a glance whether the roster the engine used matches
+          the roster the rest of the UI is rendering. Wrapped in a Boundary so it can only ever break itself. */}
+      {dbgOn() && advice && advice.dbgRows && (
+        <Boundary label="diagnostic">
+          <div style={{ borderTop: "1px solid var(--line2)", borderBottom: "1px solid var(--gold)", background: "rgba(242,182,60,.06)", padding: "5px 10px", fontSize: 10.5, lineHeight: 1.5 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: diagOpen ? 4 : 0 }}>
+              <span style={{ fontWeight: 800, color: "var(--gold)", letterSpacing: ".04em", fontSize: 9.5, textTransform: "uppercase" }}>Reco diagnostic — admin</span>
+              <span className="mut" style={{ fontSize: 9 }}>{DBG_ADMIN ? "always on for admins" : "via ?dbg=1"}</span>
+              <button className="btn btn-mini" style={{ marginLeft: "auto", fontSize: 9, padding: "1px 7px" }} onClick={() => setDiagOpen((v) => !v)}>{diagOpen ? "Hide" : "Show"}</button>
+            </div>
+            {diagOpen && (
+              <div style={{ overflowX: "auto" }}>
+                {(advice.dbgRows.lines || []).map((t, i) => (
+                  <div key={i} style={{ color: /MISMATCH/.test(t) ? "#F2655C" : "var(--mut)", fontWeight: /MISMATCH/.test(t) ? 800 : 400, whiteSpace: "normal", marginBottom: 1 }}>{t}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Boundary>
+      )}
+
       <div className="hairline tabbar" data-tour="tabs" style={{ display: "flex", padding: "0 10px", overflowX: "auto", background: "var(--panel3)", borderTop: "1px solid var(--line2)", borderBottom: "1px solid var(--line2)", boxShadow: "inset 0 1px 0 rgba(255,255,255,.03)" }}>
         {[["hub","Hub"],["myteam","Team analysis"],["league","League"],["board","Draft board"],["depth","Depth charts"],["trade","Trade"],["summary","Summary"],["settings","Settings"]].map(([k, label]) => (
           <button key={k} className={`tab ${tab === k ? "on" : ""}`} data-tour={`tab-${k}`} onClick={() => setTab(k)}>{label}</button>
@@ -17946,7 +17988,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     {/* single recommendation list — full top 10, market → build blended */}
                     <div>
                       {recTable(balAdv, "var(--gold)", "For this pick", strategy === "adp" ? "strict ADP order" : strategy === "value" ? "max VBD" : strategy === "upside" ? "upside / breakout" : "smart · market early → your build by round 5")}
-                      {balAdv && balAdv.dbgRows && (
+                      {balAdv && balAdv.dbgRows && (balAdv.dbgRows.rows || []).length > 0 && (
                         <Boundary label="diagnostic">
                           <div style={{ marginTop: 12, padding: 8, border: "1px solid var(--gold)", borderRadius: 6, fontSize: 10, overflowX: "auto" }}>
                             <div style={{ fontWeight: 800, color: "var(--gold)", marginBottom: 4 }}>RECO DIAGNOSTIC (dbg=1)</div>
