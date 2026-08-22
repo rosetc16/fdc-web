@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.23b";
+const BUILD_TAG = "2026.07.24a";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -125,15 +125,44 @@ function listStorageKey(prefix, league) {
     : (cfg.name ? `nm-${String(cfg.name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}` : null);
   return `${prefix}-${stable || (league && league.id) || "default"}`;
 }
-// Read a league's saved do-not-draft list the same way everywhere: the copy on the league object wins
-// (it survives sign-out and syncs across devices), with localStorage as the fallback.
-function readAvoidList(league) {
+// ---- DO-NOT-DRAFT: TWO SCOPES --------------------------------------------------------------------
+// A player you'll never touch (the half-season injury, the holdout) is usually a decision about the PLAYER,
+// not about one league — so there is a MASTER list on the account that applies everywhere. A league can
+// also have its own list, for the ones that are format- or room-specific. And because a master ban still
+// has to be escapable in one league (he's worth it at superflex, say), a league can carry EXCEPTIONS.
+//
+//   effective(league) = (master − league.avoidAllow) ∪ league.avoidList
+//
+// Everything downstream reads that one function, so the board, the recommendation engine and the editor
+// can never disagree about who is actually on the list.
+function readLeagueAvoid(league) {
   try {
-    if (Array.isArray(league && league.avoidList) && league.avoidList.length) return league.avoidList;
+    if (Array.isArray(league && league.avoidList)) return league.avoidList;
     const ls = JSON.parse(localStorage.getItem(listStorageKey("fdc-avoid", league)) || "[]");
     return Array.isArray(ls) ? ls : [];
   } catch { return []; }
 }
+function readMasterAvoid(user) {
+  try {
+    if (Array.isArray(user && user.avoidMaster)) return user.avoidMaster;
+    const ls = JSON.parse(localStorage.getItem("fdc-avoid-master") || "[]");
+    return Array.isArray(ls) ? ls : [];
+  } catch { return []; }
+}
+function readAvoidAllow(league) {
+  return Array.isArray(league && league.avoidAllow) ? league.avoidAllow : [];
+}
+// The list the board actually honours.
+function effectiveAvoid(league, user) {
+  const allow = new Set(readAvoidAllow(league));
+  const out = [];
+  const seen = new Set();
+  readMasterAvoid(user).forEach((n) => { if (!allow.has(n) && !seen.has(n)) { seen.add(n); out.push(n); } });
+  readLeagueAvoid(league).forEach((n) => { if (!seen.has(n)) { seen.add(n); out.push(n); } });
+  return out;
+}
+// Kept for the older single-scope call sites; now just the effective list without a user in hand.
+function readAvoidList(league, user) { return effectiveAvoid(league, user); }
 
 function keeperNameIndex(players) {
   const m = new Map();
@@ -6666,7 +6695,9 @@ export default function App() {
         onOfficial={(id) => { setDraftTab(null); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
         onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }}
         onDeleteMock={deleteMock} onRankings={() => setRoute("rankings")} onDelete={(id) => { deleteLeague(id); setRoute(user.paid ? "home" : "library"); }}
-        onSaveAvoid={(id, arr) => { const next = leagues.map((l) => (l.id === id ? { ...l, avoidList: arr } : l)); setLeagues(next); persist({ leagues: next }); }}
+        allLeagues={leagues}
+        onSaveAvoid={(id, arr, allowArr) => { const next = leagues.map((l) => (l.id === id ? { ...l, avoidList: arr, ...(allowArr ? { avoidAllow: allowArr } : {}) } : l)); setLeagues(next); persist({ leagues: next }); }}
+        onSaveMasterAvoid={(arr) => updateUser({ avoidMaster: arr })}
         onOpenTeamHub={lg.cfg.connect && lg.cfg.connect.leagueId ? () => { setHubLeagueId(lg.cfg.connect.leagueId); setRoute("teamHub"); } : null} /> : null; })()}
       {route === "teamHub" && user && hubLeagueId && <Boundary label="in-season hub" fallback={(msg) => (
         <div style={{ maxWidth: 620, margin: "60px auto", padding: "0 20px", textAlign: "center" }}>
@@ -6726,13 +6757,14 @@ export default function App() {
             const next = leagues.map((l) => (l.id === active.id ? { ...l, snap } : l));
             setLeagues(next); persist({ leagues: next });
           }}
-          onSaveAvoid={(avoidArr) => {
-            // DO-NOT-DRAFT list, persisted exactly like the priority queue it mirrors. Stored on the league
-            // object so it survives sign-out and follows the league across devices.
-            if (active.id === "demo") setDemoLeague((d) => ({ ...d, avoidList: avoidArr }));
-            else if (mockLeague && active.id === mockLeague.id) setMockLeague((m) => ({ ...m, avoidList: avoidArr }));
+          onSaveAvoid={(avoidArr, allowArr) => {
+            // DO-NOT-DRAFT list, persisted like the priority queue it mirrors. `avoidAllow` carries this
+            // league's exceptions to the account-wide master list.
+            const patch = (l) => ({ ...l, avoidList: avoidArr, ...(allowArr ? { avoidAllow: allowArr } : {}) });
+            if (active.id === "demo") setDemoLeague((d) => patch(d));
+            else if (mockLeague && active.id === mockLeague.id) setMockLeague((m) => patch(m));
             else {
-              const next = leagues.map((l) => (l.id === active.id ? { ...l, avoidList: avoidArr } : l));
+              const next = leagues.map((l) => (l.id === active.id ? patch(l) : l));
               setLeagues(next); persist({ leagues: next });
             }
           }}
@@ -7123,26 +7155,49 @@ function TrendsPage({ user, onBack, onHome, onSignOut }) {
 }
 
 // ---- DO-NOT-DRAFT EDITOR -------------------------------------------------------------------------
-// Reached from the league's prep checklist. The list can also be built one player at a time inside the
-// draft room (the ⊘ on each row), but that only helps once you're already drafting — the point of prep is
-// to have this settled BEFORE the clock starts, and for that you need search, not a board.
+// Two scopes, because "I will never draft this guy" is usually a judgement about the PLAYER and only
+// sometimes about the league:
+//   · EVERY LEAGUE (master) — lives on the account, applies to every league you have, now and future.
+//   · THIS LEAGUE — format- or room-specific.
+// A master ban can be lifted for one league without touching the others (an EXCEPTION), because the
+// player you won't take in a 1-QB redraft may be fine at superflex.
 //
-// Deliberately a modal over the league page rather than a route: it is a small editing task you come back
+// Also imports another league's list, so a list built once doesn't have to be rebuilt by hand.
+//
+// Deliberately a modal over the league page rather than a route: it's a small editing task you come back
 // from, and the app never changes its URL, so a route here would be a dead end on refresh.
-function AvoidListModal({ league, initial, onSave, onClose }) {
-  const [list, setList] = useState(() => (Array.isArray(initial) ? initial.slice() : []));
+function AvoidListModal({ league, allLeagues, user, onSave, onSaveMaster, onClose }) {
+  const [leagueList, setLeagueList] = useState(() => readLeagueAvoid(league).slice());
+  const [master, setMaster] = useState(() => readMasterAvoid(user).slice());
+  const [allow, setAllow] = useState(() => readAvoidAllow(league).slice());
+  const [scope, setScope] = useState("league");     // where a NEW addition goes
   const [q, setQ] = useState("");
   const [pos, setPos] = useState("ALL");
+  const [limit, setLimit] = useState(60);           // results shown; expandable
+  const [importOpen, setImportOpen] = useState(false);
   const inputRef = useRef(null);
   useEffect(() => { if (inputRef.current) inputRef.current.focus(); }, []);
+  useEffect(() => { setLimit(60); }, [q, pos]);      // a new search starts from the top again
 
-  // Build this league's real pool, so the names, positions and ADP match the board exactly — including
-  // whether kickers and defenses are even draftable here.
+  // This league's real pool, so names, positions and ADP match the board exactly — including whether
+  // kickers and defenses are even draftable here.
   const players = useMemo(() => {
     try { return buildPlayers(league.cfg || {}) || []; } catch { return []; }
   }, [league.cfg]);
+  const byName = useMemo(() => { const m = new Map(); players.forEach((p) => m.set(p.name, p)); return m; }, [players]);
 
-  const listSet = useMemo(() => new Set(list), [list]);
+  const allowSet = useMemo(() => new Set(allow), [allow]);
+  const masterSet = useMemo(() => new Set(master), [master]);
+  const leagueSet = useMemo(() => new Set(leagueList), [leagueList]);
+  // What the board will actually honour, in the order it reads: master first, then league-only.
+  const effective = useMemo(() => {
+    const out = [];
+    master.forEach((n) => { if (!allowSet.has(n)) out.push({ name: n, scope: "master" }); });
+    leagueList.forEach((n) => { if (!out.some((x) => x.name === n)) out.push({ name: n, scope: "league" }); });
+    return out;
+  }, [master, leagueList, allowSet]);
+  const onListSet = useMemo(() => new Set(effective.map((e) => e.name)), [effective]);
+
   const POSSES = useMemo(() => {
     const st = (league.cfg && league.cfg.start) || {};
     const base = ["QB", "RB", "WR", "TE"];
@@ -7151,59 +7206,125 @@ function AvoidListModal({ league, initial, onSave, onClose }) {
     return ["ALL", ...base];
   }, [league.cfg]);
 
-  const results = useMemo(() => {
+  // Everything that matches, unsliced — so the footer can say honestly how many are being held back.
+  const matches = useMemo(() => {
     const needle = normName(q);
     return players
-      .filter((p) => p && p.name && !listSet.has(p.name))
+      .filter((p) => p && p.name && !onListSet.has(p.name))
       .filter((p) => pos === "ALL" || p.pos === pos)
       .filter((p) => (needle ? normName(p.name).includes(needle) : true))
-      .sort((a, b) => (a.adp ?? 999) - (b.adp ?? 999))
-      .slice(0, needle || pos !== "ALL" ? 60 : 40);
-  }, [players, q, pos, listSet]);
+      .sort((a, b) => (a.adp ?? 999) - (b.adp ?? 999));
+  }, [players, q, pos, onListSet]);
+  const results = useMemo(() => matches.slice(0, limit), [matches, limit]);
 
-  // Keep the saved list in the order it was added, so it reads like a list someone wrote rather than a
-  // re-sorted set that shuffles under them.
-  const add = (name) => setList((L) => (L.includes(name) ? L : [...L, name]));
-  const remove = (name) => setList((L) => L.filter((x) => x !== name));
-  const byName = useMemo(() => { const m = new Map(); players.forEach((p) => m.set(p.name, p)); return m; }, [players]);
+  const add = (name) => {
+    if (scope === "master") { setMaster((L) => (L.includes(name) ? L : [...L, name])); setAllow((A) => A.filter((x) => x !== name)); }
+    else setLeagueList((L) => (L.includes(name) ? L : [...L, name]));
+  };
+  const removeEverywhere = (name) => { setMaster((L) => L.filter((x) => x !== name)); setLeagueList((L) => L.filter((x) => x !== name)); setAllow((A) => A.filter((x) => x !== name)); };
+  const allowHere = (name) => setAllow((A) => (A.includes(name) ? A : [...A, name]));
+  const removeFromLeague = (name) => setLeagueList((L) => L.filter((x) => x !== name));
+  const promote = (name) => { setLeagueList((L) => L.filter((x) => x !== name)); setMaster((M) => (M.includes(name) ? M : [...M, name])); };
 
-  const save = () => { onSave(list); onClose(); };
-  const dirty = JSON.stringify(list) !== JSON.stringify(Array.isArray(initial) ? initial : []);
+  // Import another league's list into the scope currently selected.
+  const importable = (allLeagues || []).filter((l) => l && l.id !== league.id && (readLeagueAvoid(l) || []).length > 0);
+  const importFrom = (l) => {
+    const names = readLeagueAvoid(l);
+    if (scope === "master") setMaster((M) => [...M, ...names.filter((n) => !M.includes(n))]);
+    else setLeagueList((L) => [...L, ...names.filter((n) => !L.includes(n))]);
+    setImportOpen(false);
+  };
 
-  const row = (name, action) => {
+  const save = () => {
+    onSave(leagueList, allow);
+    if (typeof onSaveMaster === "function") onSaveMaster(master);
+    onClose();
+  };
+  const dirty = JSON.stringify(leagueList) !== JSON.stringify(readLeagueAvoid(league))
+    || JSON.stringify(master) !== JSON.stringify(readMasterAvoid(user))
+    || JSON.stringify(allow) !== JSON.stringify(readAvoidAllow(league));
+
+  const meta = (name) => {
     const p = byName.get(name);
-    return (
-      <div key={name} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderBottom: "1px solid var(--line)", fontSize: 13 }}>
-        {p ? <PosName p={p} /> : <span><b>{name}</b> <span className="mut" style={{ fontSize: 11 }}>· not in this league's pool</span></span>}
-        {p && <span className="mut num" style={{ fontSize: 11, marginLeft: 4 }}>{p.team || ""}{p.adp != null ? ` · ADP ${p.adp.toFixed(0)}` : ""}</span>}
-        <span style={{ flex: 1 }} />
-        {action}
-      </div>
-    );
+    if (!p) return <span className="mut" style={{ fontSize: 11 }}>· not in this league's pool</span>;
+    return <span className="mut num" style={{ fontSize: 11 }}>{p.team || ""}{p.adp != null ? ` · ADP ${p.adp.toFixed(0)}` : ""}</span>;
   };
 
   return (
     <div className="modalbg" onClick={onClose}>
-      <div className="panel" style={{ maxWidth: 620, width: "100%", maxHeight: "86vh", display: "flex", flexDirection: "column", padding: 0, overflow: "hidden" }} onClick={(e) => e.stopPropagation()}>
+      <div className="panel" style={{ maxWidth: 660, width: "100%", maxHeight: "88vh", display: "flex", flexDirection: "column", padding: 0, overflow: "hidden" }} onClick={(e) => e.stopPropagation()}>
         <div style={{ padding: "18px 20px 12px", borderBottom: "1px solid var(--line)" }}>
           <div className="disp" style={{ fontSize: 20, fontWeight: 700, marginBottom: 3 }}>Do-not-draft list</div>
           <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55 }}>
-            Players you won't take at any price — the half-season injury, the holdout, the one you can't watch.
-            They <b style={{ color: "var(--ink)" }}>stay on your board</b> (you still need to see when the room takes them, and you can change your mind), but they'll never be recommended to you.
+            Players you won't take at any price. They <b style={{ color: "var(--ink)" }}>stay on your board</b> — you still need to see when the room takes them, and you can change your mind — but they'll never be recommended to you.
           </div>
         </div>
 
-        {list.length > 0 && (
-          <div style={{ padding: "12px 20px 0" }}>
-            <div className="disp" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--red)", fontWeight: 800, marginBottom: 4 }}>On the list · {list.length}</div>
-            <div style={{ maxHeight: 170, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8 }}>
-              {list.map((n) => row(n, (
-                <button className="btn btn-mini" onClick={() => remove(n)} title="Take him off the list">Remove</button>
-              )))}
+        {/* ---- where a new addition goes ---- */}
+        <div style={{ padding: "12px 20px 0", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span className="mut" style={{ fontSize: 11.5, fontWeight: 700 }}>Add to</span>
+          {[["league", "This league", `Only ${league.name || "this league"}`], ["master", "Every league", "Your account-wide list — applies to every league, including ones you make later"]].map(([k, label, tip]) => (
+            <button key={k} className="btn btn-mini" title={tip}
+              style={{ borderColor: scope === k ? "var(--gold)" : "var(--line)", color: scope === k ? "var(--gold)" : "var(--ink)" }}
+              onClick={() => setScope(k)}>{label}</button>
+          ))}
+          <span style={{ flex: 1 }} />
+          {importable.length > 0 && (
+            <button className="btn btn-mini" onClick={() => setImportOpen((v) => !v)} title="Copy another league's do-not-draft list into the scope selected above">
+              <i className="ti ti-download" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Import from a league
+            </button>
+          )}
+        </div>
+        {importOpen && (
+          <div style={{ padding: "8px 20px 0" }}>
+            <div className="panel" style={{ padding: 8, background: "var(--panel2)" }}>
+              <div className="mut" style={{ fontSize: 11, marginBottom: 6 }}>Copy into <b style={{ color: "var(--ink)" }}>{scope === "master" ? "every league" : "this league"}</b>. Nothing is removed — names you already have are skipped.</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {importable.map((l) => (
+                  <button key={l.id} className="btn btn-mini" style={{ textAlign: "left", justifyContent: "flex-start" }} onClick={() => importFrom(l)}>
+                    {l.name} <span className="mut" style={{ marginLeft: 6 }}>· {readLeagueAvoid(l).length} player{readLeagueAvoid(l).length === 1 ? "" : "s"}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         )}
 
+        {/* ---- what's on the list ---- */}
+        {effective.length > 0 && (
+          <div style={{ padding: "12px 20px 0" }}>
+            <div className="disp" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--red)", fontWeight: 800, marginBottom: 4 }}>On the list · {effective.length}</div>
+            <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8 }}>
+              {effective.map(({ name, scope: sc }) => (
+                <div key={name} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderBottom: "1px solid var(--line)", fontSize: 13 }}>
+                  {byName.get(name) ? <PosName p={byName.get(name)} /> : <b>{name}</b>}
+                  {meta(name)}
+                  <span className="chip" style={{ fontSize: 8.5, borderColor: sc === "master" ? "var(--gold)" : "var(--line2)", color: sc === "master" ? "var(--gold)" : "var(--mut)" }}>
+                    {sc === "master" ? "EVERY LEAGUE" : "THIS LEAGUE"}
+                  </span>
+                  <span style={{ flex: 1 }} />
+                  {sc === "master" ? (<>
+                    <button className="btn btn-mini" onClick={() => allowHere(name)} title="Keep him banned everywhere else, but allow him in this league">Allow here</button>
+                    <button className="btn btn-mini" onClick={() => removeEverywhere(name)} title="Remove from every league">Remove</button>
+                  </>) : (<>
+                    <button className="btn btn-mini" onClick={() => promote(name)} title="Apply him to every league instead">All leagues</button>
+                    <button className="btn btn-mini" onClick={() => removeFromLeague(name)} title="Take him off this league's list">Remove</button>
+                  </>)}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {allow.length > 0 && (
+          <div style={{ padding: "8px 20px 0" }}>
+            <div className="mut" style={{ fontSize: 11, lineHeight: 1.5 }}>
+              <b style={{ color: "var(--ink)" }}>Allowed here despite the master list:</b> {allow.join(", ")}.{" "}
+              <button className="btn-link" style={{ background: "none", border: "none", color: "var(--gold)", cursor: "pointer", fontFamily: "inherit", fontSize: 11, padding: 0 }} onClick={() => setAllow([])}>Undo</button>
+            </div>
+          </div>
+        )}
+
+        {/* ---- search ---- */}
         <div style={{ padding: "14px 20px 0" }}>
           <div style={{ position: "relative", marginBottom: 8 }}>
             <i className="ti ti-search" style={{ position: "absolute", left: 11, top: 10, fontSize: 15, color: "var(--mut)" }} aria-hidden="true" />
@@ -7216,18 +7337,34 @@ function AvoidListModal({ league, initial, onSave, onClose }) {
           </div>
         </div>
 
-        <div style={{ flex: 1, minHeight: 120, overflowY: "auto", padding: "0 20px" }}>
+        <div style={{ flex: 1, minHeight: 140, overflowY: "auto", padding: "0 20px" }}>
           {results.length === 0
             ? <div className="mut" style={{ fontSize: 12.5, padding: "14px 2px" }}>{q.trim() ? `No player matching “${q.trim()}”${pos !== "ALL" ? ` at ${pos}` : ""}.` : "No players to show."}</div>
-            : results.map((p) => row(p.name, (
-                <button className="btn btn-mini" style={{ borderColor: "var(--red)", color: "var(--red)" }} onClick={() => add(p.name)} title={`Add ${p.name} to the do-not-draft list`}>
-                  <i className="ti ti-ban" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Don't draft
-                </button>
-              )))}
+            : results.map((p) => (
+                <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderBottom: "1px solid var(--line)", fontSize: 13 }}>
+                  <PosName p={p} />{meta(p.name)}
+                  <span style={{ flex: 1 }} />
+                  <button className="btn btn-mini" style={{ borderColor: "var(--red)", color: "var(--red)" }} onClick={() => add(p.name)}
+                    title={`Add ${p.name} to ${scope === "master" ? "your every-league list" : "this league's list"}`}>
+                    <i className="ti ti-ban" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Don't draft
+                  </button>
+                </div>
+              ))}
+          {/* NO SILENT TRUNCATION. If the list is cut, say by how much and offer the rest. */}
+          {matches.length > results.length && (
+            <div style={{ padding: "10px 2px 14px", textAlign: "center" }}>
+              <button className="btn btn-mini" onClick={() => setLimit((n) => n + 200)}>
+                Show more — {matches.length - results.length} more {pos === "ALL" ? "player" : pos}{matches.length - results.length === 1 ? "" : "s"}
+              </button>
+            </div>
+          )}
         </div>
 
-        <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "12px 20px", borderTop: "1px solid var(--line)" }}>
-          <span className="mut" style={{ fontSize: 11.5 }}>{list.length ? `${list.length} player${list.length === 1 ? "" : "s"} on the list` : "Nobody on the list yet"}</span>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "12px 20px", borderTop: "1px solid var(--line)", flexWrap: "wrap" }}>
+          <span className="mut" style={{ fontSize: 11.5 }}>
+            {effective.length ? `${effective.length} on this league's board` : "Nobody on the list yet"}
+            {master.length ? ` · ${master.length} account-wide` : ""}
+          </span>
           <span style={{ flex: 1 }} />
           <button className="btn btn-mini" onClick={onClose}>Cancel</button>
           <button className="btn btn-gold" onClick={save} disabled={!dirty}>{dirty ? "Save list" : "Saved"}</button>
@@ -7237,7 +7374,7 @@ function AvoidListModal({ league, initial, onSave, onClose }) {
   );
 }
 
-function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, onMock, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings, onSaveAvoid }) {
+function LeagueUmbrella({ user, league, allLeagues, onBack, onHome, onSignOut, onOfficial, onMock, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings, onSaveAvoid, onSaveMasterAvoid }) {
   const total = (league.cfg.teams || 12) * league.cfg.rounds;
   // A league is "complete" if the LOCAL pick log is full OR the connected platform says the draft is
   // done — the local log only fills when the draft room is opened, so a Sleeper league that finished
@@ -7271,7 +7408,8 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
   // change what "value" means in your room) → reps.
   // Read through the shared helper so this agrees with the draft room even when the list only exists in
   // localStorage (saved before the league object carried it).
-  const avoidSaved = readAvoidList(league);
+  // The checklist row counts what the BOARD will honour — master plus this league's own, minus exceptions.
+  const avoidSaved = effectiveAvoid(league, user);
   const avoidCount = avoidSaved.length;
   const [avoidOpen, setAvoidOpen] = useState(false);
   const prepRows = (() => {
@@ -7368,12 +7506,17 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
       {avoidOpen && (
         <AvoidListModal
           league={league}
-          initial={avoidSaved}
+          allLeagues={allLeagues}
+          user={user}
           onClose={() => setAvoidOpen(false)}
-          onSave={(arr) => {
-            // Write BOTH stores, exactly as the draft room does, so whichever one is read first agrees.
+          onSave={(arr, allowArr) => {
+            // Write BOTH stores, exactly as the draft room does, so whichever is read first agrees.
             try { localStorage.setItem(listStorageKey("fdc-avoid", league), JSON.stringify(arr)); } catch {}
-            if (typeof onSaveAvoid === "function") onSaveAvoid(league.id, arr);
+            if (typeof onSaveAvoid === "function") onSaveAvoid(league.id, arr, allowArr);
+          }}
+          onSaveMaster={(arr) => {
+            try { localStorage.setItem("fdc-avoid-master", JSON.stringify(arr)); } catch {}
+            if (typeof onSaveMasterAvoid === "function") onSaveMasterAvoid(arr);
           }}
         />
       )}
@@ -16427,19 +16570,39 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // draft room, and the board must already reflect it.
   useEffect(() => {
     try {
-      const arr = readAvoidList(league);
+      const arr = effectiveAvoid(league, user);
       setAvoid(new Set(arr));
-      try { localStorage.setItem(avoidKey, JSON.stringify(arr)); } catch {}
+      // Mirror only the LEAGUE-scoped part locally; the master list has its own key and must not be
+      // duplicated into every league (that would resurrect a master entry the user later removed).
+      try { localStorage.setItem(avoidKey, JSON.stringify(readLeagueAvoid(league))); } catch {}
     } catch { setAvoid(new Set()); }
-  }, [avoidKey, league?.id, league?.avoidList]);
-  const toggleAvoid = (name) => setAvoid((prev) => {
-    const next = new Set(prev);
-    if (next.has(name)) next.delete(name); else next.add(name);
-    const arr = [...next];
-    try { localStorage.setItem(avoidKey, JSON.stringify(arr)); } catch {}
-    try { if (typeof onSaveAvoid === "function") onSaveAvoid(arr); } catch {}
-    return next;
-  });
+  }, [avoidKey, league?.id, league?.avoidList, league?.avoidAllow, user?.avoidMaster]);
+  // The ⊘ in the room always edits THIS league — the least surprising thing a click on a board row can do.
+  // Un-banning someone who is on the account-wide master list therefore can't just remove him from the
+  // league list (he isn't on it); it records an EXCEPTION, so the other leagues keep their ban.
+  const toggleAvoid = (name) => {
+    const master = new Set(readMasterAvoid(user));
+    const leagueArr = readLeagueAvoid(league);
+    const allowArr = readAvoidAllow(league);
+    const on = avoid.has(name);
+    let nextLeague = leagueArr, nextAllow = allowArr;
+    if (on) {
+      nextLeague = leagueArr.filter((x) => x !== name);
+      if (master.has(name) && !allowArr.includes(name)) nextAllow = [...allowArr, name];
+    } else {
+      nextAllow = allowArr.filter((x) => x !== name);
+      if (!master.has(name) && !leagueArr.includes(name)) nextLeague = [...leagueArr, name];
+    }
+    setAvoid(() => {
+      const allow = new Set(nextAllow);
+      const out = new Set();
+      readMasterAvoid(user).forEach((n) => { if (!allow.has(n)) out.add(n); });
+      nextLeague.forEach((n) => out.add(n));
+      return out;
+    });
+    try { localStorage.setItem(avoidKey, JSON.stringify(nextLeague)); } catch {}
+    try { if (typeof onSaveAvoid === "function") onSaveAvoid(nextLeague, nextAllow); } catch {}
+  };
   const [myTeamView, setMyTeamView] = useState("current"); // Team analysis tab: "current" | "projected"
   const [analysisTeam, setAnalysisTeam] = useState(null);   // which team the analysis tab shows; null = you
   const [leagueOpen, setLeagueOpen] = useState(false);      // Team analysis: League Overview dropdown open?
