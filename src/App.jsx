@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20an";
+const BUILD_TAG = "2026.07.20ao";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2838,7 +2838,18 @@ function emptyStarterPremium(c, counts, sf) {
   const owed = Math.max(0, (req[c.pos] || 0) - (counts[c.pos] || 0)); // required starters still unfilled at c.pos
   if (owed <= 0) return 0;
   // scarcer positions (QB in SF, TE) get a bigger premium since replacements are harder to find later
-  const scarce = c.pos === "TE" ? 34 : (c.pos === "QB" && (sf || (SPEC.SUPER || 0) > 0)) ? 30 : 22;
+  // How much is locking this slot down actually worth? That depends on what you can fill it with LATER:
+  //   • TE (34) — thin; the drop from a real TE to the waiver tier is severe.
+  //   • QB in superflex/2QB (30) — you must start two, so QBs are genuinely scarce there.
+  //   • QB in a 1-QB league (10) — the most replaceable start on the roster. You play exactly one and QB2
+  //     through QB12 are all viable, so the slot must be filled EVENTUALLY but paying a starter-slot premium
+  //     to fill it early is how an elite RB/WR gets passed over in round 2. (20p cut the QB scarcity premium
+  //     for the same reason but left this one at the RB/WR level, which is what kept floating a round-2 QB1.)
+  //   • RB/WR (22) — flex-eligible and the backbone of a lineup.
+  const scarce = c.pos === "TE" ? 34
+    : (c.pos === "QB" && (sf || (SPEC.SUPER || 0) > 0)) ? 30
+    : (c.pos === "QB") ? 10
+    : 22;
   return scarce * Math.min(owed, 2);
 }
 // Contention-window fit: in a dynasty REBUILD, an old replacement-level vet does nothing for you even if his
@@ -2860,7 +2871,7 @@ function windowFit(c, lane, dynasty) {
   if (lane === "winnow") return Math.max(0, age - 24) * 2 - (c.rookie ? 8 : 0) - Math.max(0, assetGap) * 0.25;
   return 0;
 }
-function userScore(c, counts, dem, strategy, sf, pickNum, build, posVbds, dbg, posTilt) {
+function userScore(c, counts, dem, strategy, sf, pickNum, build, posVbds, dbg, posTilt, softSlots) {
   if (strategy === "adp") {
     // "Strict ADP" = follow the board order (best available by ADP). But it still shouldn't hand you a player
     // at a position you literally can't use — e.g. a 6th QB in a superflex league where you already start your
@@ -2953,8 +2964,16 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build, posVbds, dbg, p
   // already captures (points above flex replacement) — and that margin is usually small. Overriding it floated a
   // 3rd TE (marginal flex upgrade, ~10 pts/yr over a filled flex) to #1 over an empty QB / thin RB. The
   // opportunity cost of skipping a real need dwarfs a tiny flex bump, so we let marginalVbd's points value stand.
-  const isStarterUpgrade = ["RB", "WR", "TE"].includes(c.pos) && posStarterOpen && weakestHeld != null && c.vbd != null
-    && (c.vbd - weakestHeld) >= 15; // clear margin over the body he'd bench — and he fills a real starter slot
+  // A required slot counts as filled by NAME only when the body in it is actually startable. A keeper sitting
+  // at or below replacement (Chris Godwin at −3 VBD) occupies your WR2 slot on paper but is bench material by
+  // the middle rounds — so a genuinely good receiver isn't "flex depth" behind him, he TAKES that slot and
+  // pushes the weak body out of the lineup. Treat such a slot as open for the starter-upgrade test. Note this
+  // reads only the bodies actually IN the required slots (the best `req` of them), so a redundant 3rd TE
+  // behind a good starter still gets no upgrade — the 20ah behaviour is untouched.
+  const softAtPos = softSlots ? (softSlots[c.pos] || 0) : 0;
+  const isStarterUpgrade = ["RB", "WR", "TE"].includes(c.pos) && (posStarterOpen || softAtPos > 0) && weakestHeld != null && c.vbd != null
+    && c.vbd > 0                       // he has to be startable himself to be an upgrade
+    && (c.vbd - weakestHeld) >= 15;    // clear margin over the body he'd bench
   if (isStarterUpgrade) {
     // He'd start over your weakest body — value him near his real VBD rather than the flex-replacement haircut.
     mvUse = Math.max(mvUse, c.vbd - Math.max(0, weakestHeld) * 0.35);
@@ -15091,6 +15110,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // Only DEPTH picks are tilted — a candidate at a position whose dedicated starter slots are still open is
     // already handled by the empty-starter premium and must not be re-priced here. Capped so it re-orders
     // near-equals (a needed 3rd RB vs a 4th WR) and can never overturn a real value gap.
+    // SOFT STARTER SLOTS — "filled" is not the same as "filled well". For each position, look at the bodies
+    // actually occupying its REQUIRED slots (the best `req` of them) and count how many are at or below
+    // replacement level. Those slots are filled on paper and empty in practice: that body is bench material
+    // by the middle rounds, so the position is still a real need and a good player there is a STARTER, not
+    // spare depth. Deliberately ignores bodies beyond the required slots, so a redundant 3rd TE behind a good
+    // starting TE is not mistaken for a hole.
+    const softSlots = { QB: 0, RB: 0, WR: 0, TE: 0 };
+    {
+      const reqF = REQ_F(cfg.sf);
+      POS.forEach((pos) => {
+        const held = (myPosVbds[pos] || []).slice().sort((a, b) => b - a); // best first
+        const slots = Math.max(0, Math.round(reqF[pos] || 0));
+        let soft = 0;
+        for (let i = 0; i < Math.min(slots, held.length); i++) if (held[i] <= 0) soft++;
+        softSlots[pos] = soft;
+      });
+    }
     const posTilt = { QB: 0, RB: 0, WR: 0, TE: 0 };
     {
       const ranks = posRankByTeam[forTeam];
@@ -15103,10 +15139,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         const rk = ranks[pos];
         if (rk == null) return;
         const weakness = (rk - 1) / (nT - 1);                       // 0 = best room in league … 1 = worst
-        posTilt[pos] = ((TILT_W[pos] || 0) * TILT_MAX * (weakness - 0.5) * 2) || 0; // `|| 0` also normalises -0
+        let t = (TILT_W[pos] || 0) * TILT_MAX * (weakness - 0.5) * 2;
+        // League rank is an AGGREGATE, and an aggregate hides a hole: one superstar plus a replacement-level
+        // body can rank near the top of the league while the second slot is a genuine weakness. So for every
+        // soft required slot, give back a chunk of any "you're already strong here" discount. This is what
+        // stops a keeper who happens to occupy WR2 from reading as a reason to stop drafting receivers.
+        t += (softSlots[pos] || 0) * 12 * (TILT_W[pos] || 0);
+        posTilt[pos] = t || 0; // `|| 0` also normalises -0
       });
     }
-    const scoreOf = (p) => userScore(p, myCounts, dem, strat, cfg.sf, pickNum, null, myPosVbds, null, posTilt) + 0.6 * Math.max(0, waitCost[p.pos]);
+    // Waiting costs you the drop-off to the next man up — but how much that MATTERS depends on the format.
+    // A 1-QB league starts exactly one quarterback, so even a real cliff at the top of the QB board is worth
+    // far less than the same cliff at a position you start two or three of. Same reasoning as the scarcity
+    // premium (20p) and the empty-slot premium, applied to the last place it hadn't been.
+    const sfQBFmt = !!cfg.sf || (SPEC.SUPER || 0) > 0;
+    const waitW = { QB: sfQBFmt ? 1 : 0.45, RB: 1, WR: 1, TE: 1 };
+    const scoreOf = (p) => userScore(p, myCounts, dem, strat, cfg.sf, pickNum, null, myPosVbds, null, posTilt, softSlots)
+      + 0.6 * (waitW[p.pos] != null ? waitW[p.pos] : 1) * Math.max(0, waitCost[p.pos]);
     let ranked = pool.slice().sort((a, b) => scoreOf(b) - scoreOf(a));
     // HEADLINE guard (future picks only): the #1 recommendation shouldn't be a player who's very unlikely to
     // still be on the board at this pick. If the top-scored guy has low survival AND a near-equal-scored
@@ -15158,7 +15207,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         // can't slow the room down.
         const heavy = dbgHeavy();
         const rows = heavy
-          ? ranked.slice(0, 12).map((p) => { const d = {}; try { userScore(p, myCounts, dem, strat, cfg.sf, pickNum, null, myPosVbds, d, posTilt); } catch (e) {} return { name: (p && p.name) || "?", wait: Math.round(0.6 * Math.max(0, waitCost[p.pos] || 0)), ...d }; })
+          ? ranked.slice(0, 12).map((p) => { const d = {}; try { userScore(p, myCounts, dem, strat, cfg.sf, pickNum, null, myPosVbds, d, posTilt, softSlots); } catch (e) {} return { name: (p && p.name) || "?", wait: Math.round(0.6 * (waitW[p.pos] != null ? waitW[p.pos] : 1) * Math.max(0, waitCost[p.pos] || 0)), ...d }; })
           : [];
         let excludedLine = "";
         if (heavy) {
@@ -15178,6 +15227,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           `scoring for team ${forTeam}${forTeam === userIdx ? " (YOU)" : ` — but YOU are team ${userIdx}  ⚠ MISMATCH`} · pick ${pickNum} · sf ${String(!!cfg.sf)} · super ${SPEC.SUPER || 0} · qb slots ${REQ_EFF(cfg.sf).QB} · te slots ${REQ_EFF(cfg.sf).TE} · te cap ${capsOf(cfg).TE}`,
           pr ? `league rank: ${four(pr, (k, v) => `${k} ${v == null ? "?" : v}/${TEAMS}`)}　|　quality tilt: ${four(posTilt, (k, v) => `${k} ${v > 0 ? "+" : ""}${Math.round(v || 0)}`)}` : "league rank: (unavailable)",
           `held vbd: ${four(myPosVbds, (k, v) => `${k}[${(v || []).join(",")}]`)}`,
+          `soft starter slots (filled by a replacement-level body): ${four(softSlots, (k, v) => `${k} ${v || 0}`)}`,
           `roster seen (${myRoster.length}): ${myRoster.map((x) => `${x.name}·${x.pos}`).join(", ") || "—"}`,
           `rostersByTeam[${forTeam}] (${((rostersByTeam && rostersByTeam[forTeam]) || []).length}): ${((rostersByTeam && rostersByTeam[forTeam]) || []).map((x) => `${x.name}·${x.pos}`).join(", ") || "—"}`,
           `rostersByTeam[you=${userIdx}] (${((rostersByTeam && rostersByTeam[userIdx]) || []).length}): ${((rostersByTeam && rostersByTeam[userIdx]) || []).map((x) => `${x.name}·${x.pos}`).join(", ") || "—"}`,
