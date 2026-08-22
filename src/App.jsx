@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20av";
+const BUILD_TAG = "2026.07.20aw";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5307,6 +5307,11 @@ select.gs option{background:var(--panel2);color:var(--ink)}
   .hubbar{gap:8px!important;padding:10px 12px!important;row-gap:6px!important}
   .hubbar>div[style*="flex: 1"]{flex-basis:100%!important;height:0!important}
   .hubbar .chip{font-size:10px;padding:3px 7px}
+  /* The home action bar grows to five items in season; on a phone the items wrap to two rows instead of
+     squeezing five labels onto one. */
+  .actionbar>button{flex:1 1 46%!important;padding:11px 8px!important}
+  .actionbar>button .disp{font-size:13px!important}
+  .actionbar>div[style*="width: 1px"]{display:none}
   /* Close-call cards and the optimizer nudges stack on a phone rather than squeezing two player cards
      into 390px and pushing the page sideways. */
   .ccgrid{grid-template-columns:1fr!important}
@@ -5340,7 +5345,14 @@ select.gs option{background:var(--panel2);color:var(--ink)}
   .btn,.btn-mini{min-height:38px}
   .menuitem{min-height:44px}
   /* header wraps instead of overflowing, with a little breathing room */
-  .appheader{flex-wrap:wrap;row-gap:6px}
+  .appheader{flex-wrap:wrap;row-gap:6px;gap:8px!important;padding-left:12px!important;padding-right:12px!important}
+  .appheader .chip{font-size:10px;padding:3px 7px}
+  /* A league card carries up to four actions; on a phone they wrap under the name instead of forcing the
+     whole home page wider than the screen. */
+  .lgactions{flex-shrink:1!important;width:100%}
+  .lgactions>button{flex:1 1 auto;justify-content:center}
+  /* the spacer that pushes the right-hand controls away collapses so the wrap is tidy, not ragged */
+  .appheader>div[style*="flex: 1"]{flex-basis:100%!important;height:0!important}
   /* the player-list / board tables get a horizontal scroll region so they don't blow out the viewport */
   table{max-width:100%}
   /* The view toolbar has grown (Cheat sheet / Tiers / Compact / Columns …). Wrapping it on a phone stacks
@@ -8208,6 +8220,102 @@ function simSeason(o) {
   }));
 }
 
+// Which NFL week it is right now, or null in the off-season. The app spends most of the year as a draft
+// tool and the rest of it as an in-season tool; this is the switch between those two personalities.
+// Anchored on Week 1's Tuesday (weeks roll at Tuesday ~4am ET, which is how every platform counts them).
+const NFL_WEEK1_TUESDAY = { 2025: "2025-09-02T08:00:00Z", 2026: "2026-09-08T08:00:00Z" };
+const REG_SEASON_WEEKS = 18;
+function nflWeekNow(now, season) {
+  try {
+    const yr = season || CURRENT_SEASON;
+    const anchor = NFL_WEEK1_TUESDAY[yr];
+    if (!anchor) return null;
+    const t = (now != null ? now : Date.now());
+    const start = Date.parse(anchor);
+    if (!(t >= start)) return null;                       // pre-season: still a draft tool
+    const wk = Math.floor((t - start) / (7 * 24 * 3600 * 1000)) + 1;
+    return wk >= 1 && wk <= REG_SEASON_WEEKS ? wk : null; // after week 18 it's the off-season again
+  } catch (e) { return null; }
+}
+
+// What the next several weeks do to your lineup. The hub could already LOOK at a future week one at a
+// time; nothing ever answered "which week is going to hurt, and what should I do about it now" — which is
+// the whole point of knowing byes in advance.
+function byeOutlook(roster, fromWeek, toWeek, sf) {
+  const out = [];
+  const all = (roster || []).filter(Boolean);
+  if (!all.length) return out;
+  const fullSlots = lineupSlots(all, sf).slots;
+  const fullPts = fullSlots.reduce((s, x) => s + (x.p ? (x.p.pts || 0) : 0), 0);
+  for (let w = fromWeek; w <= toWeek; w++) {
+    const outThisWeek = all.filter((p) => p.bye === w);
+    if (!outThisWeek.length) { out.push({ week: w, out: [], empty: [], starters: 0, loss: 0 }); continue; }
+    const available = all.filter((p) => p.bye !== w);
+    const l = lineupSlots(available, sf);
+    const empty = l.slots.filter((s) => !s.p).map((s) => s.slot);
+    const pts = l.slots.reduce((s, x) => s + (x.p ? (x.p.pts || 0) : 0), 0);
+    // How many of the players you'd normally START are gone — a bye for your WR5 is not news.
+    const startingSids = new Set(fullSlots.filter((s) => s.p).map((s) => s.p.sid));
+    const startersOut = outThisWeek.filter((p) => startingSids.has(p.sid));
+    out.push({
+      week: w,
+      out: outThisWeek,
+      starters: startersOut.length,
+      empty,
+      loss: Math.round(Math.max(0, fullPts - pts) * 10) / 10,
+    });
+  }
+  return out;
+}
+
+// THE WEEKLY BRIEF. Draft tools get opened for three weeks a year; in-season tools get opened seventeen
+// — but only if there's a reason to open them. This is that reason, in one screen: what this week is,
+// what's wrong with your lineup, what's worth a claim, and what's coming. Pure data in, so the same
+// function can render the panel, the copy-for-the-league-chat text, and (once the backend can send mail)
+// the Sunday-morning email, with no chance of the three drifting apart.
+function buildDigest(o) {
+  const S = [];
+  const push = (k, title, lines, tone) => { const l = (lines || []).filter(Boolean); if (l.length) S.push({ k, title, lines: l, tone }); };
+  const n1 = (x) => (Math.round((x || 0) * 10) / 10);
+
+  push("matchup", "This week", [
+    o.oppName
+      ? `${o.teamName} ${n1(o.mePts)} vs ${o.oppName} ${n1(o.oppPts)} — projected ${o.mePts >= o.oppPts ? "win" : "loss"} by ${n1(Math.abs((o.mePts || 0) - (o.oppPts || 0)))}.`
+      : `${o.teamName} projects ${n1(o.mePts)} this week.`,
+    o.odds != null ? `Playoff odds ${o.odds}% — ${o.playoffCut} of ${o.teams} make it.` : null,
+  ], o.oppName && o.mePts >= o.oppPts ? "good" : "neutral");
+
+  push("lineup", "Your lineup", o.leftOnBench > 0
+    ? [`You're leaving ${n1(o.leftOnBench)} points on your bench.`]
+      .concat((o.swaps || []).map((s) => `Start ${s.in} (${n1(s.inPts)}) over ${s.out} (${n1(s.outPts)}).`))
+      .concat(o.oddsFromLineup ? [`Fixing it is worth about +${o.oddsFromLineup}% playoff odds a week.`] : [])
+    : ["Your lineup is already optimal — nothing to change."],
+    o.leftOnBench > 0 ? "bad" : "good");
+
+  push("calls", "Close calls", (o.calls || []).map((c) => `${c.slot}: ${c.startName} ${c.win}% over ${c.altName} ${n1(100 - c.win)}% — ${c.win >= 56 ? "a lean" : "a coin flip"}.`), "neutral");
+
+  push("waivers", "Waiver targets", (o.adds || []).map((a) => `${a.name} (${a.pos}${a.posRank || ""}) — ${a.bid}${a.rivals ? `, ${a.rivals} rival${a.rivals > 1 ? "s" : ""} also thin at ${a.pos}` : ", no competition"}.`), "neutral");
+
+  const painful = (o.byes || []).filter((b) => b.starters > 0);
+  push("byes", "Byes ahead", painful.slice(0, 3).map((b) => {
+    const who = b.out.slice(0, 3).join(", ");
+    return `Week ${b.week}: ${b.starters} starter${b.starters > 1 ? "s" : ""} out (${who})${b.empty.length ? ` — ${b.empty.join(" and ")} can't be filled` : ""}${b.loss ? `, about ${n1(b.loss)} points` : ""}.`;
+  }), painful.some((b) => b.empty.length) ? "bad" : "neutral");
+
+  push("health", "Health", (o.injuries || []).map((i) => `${i.name} — ${i.status}.`), "bad");
+
+  const headline = o.leftOnBench > 0
+    ? `${n1(o.leftOnBench)} points are sitting on your bench`
+    : (painful.find((b) => b.empty.length) ? `Week ${painful.find((b) => b.empty.length).week} leaves a hole you should fill now`
+      : (o.adds && o.adds.length ? `${o.adds.length} waiver target${o.adds.length > 1 ? "s" : ""} worth a claim` : "You're set for this week"));
+
+  const text = [`${o.leagueName || "League"} — Week ${o.week} brief`, ""]
+    .concat(S.flatMap((s) => [`${s.title.toUpperCase()}:`, ...s.lines.map((l) => `  ${l}`), ""]))
+    .concat(["→ fantasydraftcompass.com"]).join("\n");
+
+  return { headline, sections: S, text };
+}
+
 // Memo for the hub's expensive engines. They run AFTER the hub's early returns, where a React hook is not
 // legal — and every tooltip hover sets state, so without this a mouse move would re-run a 1,500-season
 // Monte Carlo. Keyed on the inputs; bounded so it can't grow across leagues and weeks.
@@ -8251,7 +8359,9 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [posture, setPosture] = useState(null); // null until we auto-detect; user can override
-  const [tab, setTab] = useState("notes");     // notes(Summary) | lineup | freeagents | roster | league
+  const [tab, setTab] = useState("notes");     // notes(Summary) | lineup | freeagents | trades | roster | league
+  const [briefOpen, setBriefOpen] = useState(false); // the weekly brief modal
+  const [briefCopied, setBriefCopied] = useState(false);
   const [posSortCol, setPosSortCol] = useState("all"); // Positional strength grid: sort by "all"|QB|RB|WR|TE
   const [faPosFilter, setFaPosFilter] = useState("all"); // Free-agent list position filter: "all"|QB|RB|WR|TE|K|DST
   const [standSort, setStandSort] = useState({ key: "rank", dir: 1 }); // Standings table sort
@@ -8728,6 +8838,16 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     { sf: cfg.sf, max: 10, depth: 14 },
   )) : [];
 
+  // ---- BYES AHEAD ----
+  // The week selector could always LOOK at a future week; nothing ever said which one is going to hurt.
+  // A bye you find out about on Sunday is a hole; a bye you see six weeks out is a waiver claim.
+  const byeRows = byeOutlook(myRoster, (data.week || 1) + 1, Math.min(regSeasonWeeks, (data.week || 1) + 6), cfg.sf);
+  const byeTrouble = byeRows.filter((b) => b.starters > 0);
+  // Component-scope week jump. (The week selector below has its own `go`, but that one lives inside an IIFE
+  // and is not reachable from the tab bodies.)
+  const gotoWeek = (w) => { const lo = (data && data.minWeek) || 1, hi = (data && data.maxWeek) || 18; setViewWeek(Math.min(hi, Math.max(lo, w))); };
+
+
   // Data status: are we showing real weekly projections, or off-season/pre-week estimates? And is
   // defense-vs-position matchup data available yet? Drives a small explainer banner so an empty matchup
   // section is never a mystery (e.g. in the off-season there are simply no games to project or grade).
@@ -8810,6 +8930,31 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
       oppSwapsOut,
     };
   }
+
+  // ---- THE WEEKLY BRIEF ----
+  const digest = buildDigest({
+    week: data.week, teams: leagueSize, playoffCut,
+    teamName: myTeam.teamName, leagueName: data.leagueName,
+    oppName: matchupView ? matchupView.oppName : null,
+    mePts: matchupView ? matchupView.mePts : currentPts,
+    oppPts: matchupView ? matchupView.oppPts : null,
+    odds: myOdds ? myOdds.odds : null,
+    leftOnBench,
+    oddsFromLineup,
+    swaps: swapsIn.map((p, i) => ({ in: p.name, inPts: p.pts, out: swapsOut[i] ? swapsOut[i].name : "an empty slot", outPts: swapsOut[i] ? swapsOut[i].pts : 0 })),
+    calls: calls.map((c) => ({ slot: c.slot, startName: c.start.name, altName: c.alt.name, win: c.win })),
+    adds: summaryFA.map(({ p, upgrade, verdict }) => {
+      const bid = bidFor({ p, upgrade, verdict });
+      return { name: p.name, pos: p.pos, posRank: p.posRank, bid: faabLeft != null ? `bid $${bid.loAbs}–${bid.hiAbs}` : `bid ${bid.lo}–${bid.hi}% of budget`, rivals: rivalsThinAt[p.pos] || 0 };
+    }),
+    byes: byeTrouble.map((b) => ({ week: b.week, starters: b.starters, out: b.out.map((p) => p.name), empty: b.empty, loss: b.loss })),
+    injuries: injuredRoster.map((p) => ({ name: p.name, status: p.wkInj || p.inj })),
+  });
+  // A new week is the moment this screen is worth opening. Remembered per league on the user record, so
+  // the nudge appears once per week per league and not on every visit.
+  const lastSeenWeek = (user && user.hubSeen && user.hubSeen[leagueId]) || 0;
+  const weekIsNew = (data.week || 0) > lastSeenWeek && (data.week || 0) === (curWeek || data.week);
+  const markWeekSeen = () => { if (onUpdate && weekIsNew) onUpdate({ hubSeen: { ...((user && user.hubSeen) || {}), [leagueId]: data.week } }); };
 
   return (
     <HubShell title={data.leagueName || "Team hub"} onBack={onBack} onHome={onHome} onSignOut={onSignOut} user={user}>
@@ -8897,6 +9042,23 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
           );
         })()}
 
+        {/* ===== NEW WEEK NUDGE =====
+             A draft tool gets opened three weeks a year; an in-season tool gets opened seventeen — but only
+             if there's a reason. A new week with something to fix IS the reason. Shown once per week per
+             league (remembered on the user record), and it always says what's actually wrong, never just
+             "week 10 is here". */}
+        {weekIsNew && (
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", border: "1px solid var(--gold)", background: "linear-gradient(90deg, rgba(242,182,60,.14), rgba(242,182,60,.04))", borderRadius: 11, padding: "11px 14px", marginBottom: 12 }}>
+            <i className="ti ti-calendar-event" style={{ fontSize: 17, color: "var(--gold)" }} aria-hidden="true" />
+            <div style={{ flex: "1 1 240px", minWidth: 0 }}>
+              <div className="disp" style={{ fontSize: 14.5, fontWeight: 800 }}>Week {data.week} is live</div>
+              <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.45 }}>{digest.headline}.</div>
+            </div>
+            <button className="btn btn-gold btn-mini" onClick={() => { setBriefOpen(true); markWeekSeen(); }} style={{ flexShrink: 0 }}>Open this week's brief</button>
+            <button className="btn btn-mini" onClick={markWeekSeen} style={{ flexShrink: 0 }} title="Dismiss until next week">Dismiss</button>
+          </div>
+        )}
+
         {/* Tabs */}
         <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
           {[["notes", "Summary", "ti-clipboard-text"], ["lineup", "Matchup", "ti-swords"], ["freeagents", "Free agents", "ti-user-plus"], ["trades", "Trades", "ti-arrows-exchange"], ["roster", "My roster", "ti-users"], ["league", "League", "ti-trophy"]].map(([k, label, icon]) => (
@@ -8904,7 +9066,48 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
               <i className={`ti ${icon}`} style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />{label}
             </button>
           ))}
+          <div style={{ flex: 1, minWidth: 0 }} />
+          <button className="btn btn-mini" onClick={() => { setBriefOpen(true); markWeekSeen(); }} title="Everything worth knowing about this week, in one card you can paste into the league chat"
+            style={{ borderColor: "var(--gold)", color: "var(--gold)", flexShrink: 0 }}>
+            <i className="ti ti-clipboard-text" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Weekly brief
+          </button>
         </div>
+
+        {/* ===== THE WEEKLY BRIEF =====
+             Built from the same buildDigest() that will feed the Sunday-morning email once the backend can
+             send one — so the two can never drift apart. */}
+        {briefOpen && (
+          <div onClick={() => setBriefOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 80, background: "#000b", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "5vh 16px", overflow: "auto" }}>
+            <div className="panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560, width: "100%", padding: 0, overflow: "hidden" }}>
+              <div style={{ padding: "14px 16px", background: "linear-gradient(135deg, rgba(242,182,60,.15), rgba(242,182,60,.03))", borderBottom: "1px solid var(--line)" }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="disp" style={{ fontSize: 11, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--gold)" }}>{data.leagueName} · Week {data.week}</div>
+                    <div className="disp" style={{ fontSize: 19, fontWeight: 800, marginTop: 3, lineHeight: 1.2 }}>{digest.headline}</div>
+                  </div>
+                  <button onClick={() => setBriefOpen(false)} style={{ background: "transparent", border: "none", color: "var(--mut)", cursor: "pointer", padding: 4, flexShrink: 0 }} aria-label="Close"><i className="ti ti-x" style={{ fontSize: 17 }} aria-hidden="true" /></button>
+                </div>
+              </div>
+              <div style={{ padding: "12px 16px 14px", display: "flex", flexDirection: "column", gap: 12 }}>
+                {digest.sections.map((s) => (
+                  <div key={s.k}>
+                    <div className="disp" style={{ fontSize: 10.5, letterSpacing: ".07em", textTransform: "uppercase", marginBottom: 4, color: s.tone === "bad" ? "var(--red)" : s.tone === "good" ? "var(--green)" : "var(--mut)" }}>{s.title}</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                      {s.lines.map((l, i) => <div key={i} style={{ fontSize: 12.5, lineHeight: 1.5 }}>{l}</div>)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ padding: "10px 16px 14px", borderTop: "1px solid var(--line)", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <button className="btn btn-gold btn-mini" onClick={() => { const okc = copyText(digest.text); if (okc !== false) { setBriefCopied(true); setTimeout(() => setBriefCopied(false), 1600); } }}>{briefCopied ? "Copied ✓" : "Copy for the league chat"}</button>
+                <button className="btn btn-mini" onClick={() => { setBriefOpen(false); setTab("lineup"); }}>Go fix my lineup</button>
+                <span className="mut" style={{ fontSize: 10.5, flex: "1 1 100%", lineHeight: 1.45, marginTop: 2 }}>
+                  Written from your live roster every week. Once the backend can send mail this same brief lands in your inbox on Sunday morning.
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ---- MATCHUP TAB (side-by-side lineups) ---- */}
         {tab === "lineup" && (
@@ -9625,6 +9828,51 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
               ) : <div style={{ fontSize: 12.5, color: "var(--green)" }}>✓ Your lineup is already optimal for this week.</div>}
             </div>
 
+            {/* ===== BYES AHEAD =====
+                 The week selector could always LOOK at a future week, one at a time. Nothing ever said WHICH
+                 week is going to hurt — and a bye you find out about on Sunday is a hole, while a bye you see
+                 five weeks out is a waiver claim you make today. */}
+            {byeRows.length > 0 && (
+              <div className="panel" style={{ padding: 16 }}>
+                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+                  <div className="disp" style={{ fontSize: 15, fontWeight: 700 }}>Byes ahead</div>
+                  <span className="mut" style={{ fontSize: 11 }}>next {byeRows.length} week{byeRows.length > 1 ? "s" : ""} · hover a week for who's out</span>
+                </div>
+                <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                  {byeRows.map((b) => {
+                    const bad = b.empty.length > 0, warn = b.starters > 0;
+                    const col = bad ? "var(--red)" : warn ? "var(--gold)" : "var(--line2)";
+                    return (
+                      <button key={b.week} onClick={() => gotoWeek(b.week)}
+                        onMouseEnter={(e) => showTip(e, [
+                          { kind: "take", tone: bad ? "bad" : warn ? "neutral" : "good", x: `Week ${b.week} — ${b.starters ? `${b.starters} starter${b.starters > 1 ? "s" : ""} on bye` : "no starters on bye"}` },
+                          ...(b.out.length ? [{ t: "Out that week", x: b.out.map((p) => `${p.name} (${p.pos})`).join(", ") }] : []),
+                          ...(b.empty.length ? [{ t: "Can't be filled", x: `${b.empty.join(", ")} — you don't have a legal body for ${b.empty.length > 1 ? "those slots" : "that slot"} that week. That's a waiver claim to make NOW, not the morning of.` }] : []),
+                          ...(b.loss ? [{ t: "Cost", x: `About ${b.loss} projected points versus a full-strength week.` }] : []),
+                          { t: "Tip", x: "Click to jump the whole hub to that week and see the lineup you'd actually field." },
+                        ])}
+                        onMouseLeave={hideTip}
+                        style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left", minWidth: 74, border: `1px solid ${col}`, background: bad ? "rgba(242,101,92,.10)" : warn ? "rgba(242,182,60,.08)" : "var(--panel2)", borderRadius: 9, padding: "7px 10px" }}>
+                        <div className="disp" style={{ fontSize: 10, letterSpacing: ".06em", color: "var(--mut)" }}>WK {b.week}</div>
+                        <div className="num" style={{ fontSize: 17, fontWeight: 800, color: col === "var(--line2)" ? "var(--mut)" : col }}>{b.starters || "—"}</div>
+                        <div className="mut" style={{ fontSize: 9.5 }}>{bad ? `${b.empty.length} slot${b.empty.length > 1 ? "s" : ""} empty` : b.starters ? `starter${b.starters > 1 ? "s" : ""} out` : "clear"}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+                {byeTrouble.length ? (
+                  <div className="mut" style={{ fontSize: 11.5, marginTop: 10, lineHeight: 1.5 }}>
+                    {(() => {
+                      const worst = byeTrouble.slice().sort((a, b) => (b.empty.length - a.empty.length) || (b.loss - a.loss))[0];
+                      return worst.empty.length
+                        ? <>Your problem week is <b style={{ color: "var(--red)" }}>Week {worst.week}</b> — {worst.empty.join(" and ")} can't be filled from your roster. Grab a body before then; a bench spot now is cheaper than a zero later.</>
+                        : <>Nothing unfillable coming up. <b>Week {worst.week}</b> is the thinnest at {worst.starters} starter{worst.starters > 1 ? "s" : ""} out (about {worst.loss} points).</>;
+                    })()}
+                  </div>
+                ) : <div className="mut" style={{ fontSize: 11.5, marginTop: 10 }}>No starters on bye in the next {byeRows.length} weeks — nothing to plan around.</div>}
+              </div>
+            )}
+
             {/* ===== Free agents to consider ===== */}
             <div className="panel" style={{ padding: 16 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
@@ -9768,6 +10016,22 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
   const hour = new Date().getHours();
   const timeGreet = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
 
+  // ===== SEASON PIVOT =====
+  // THE CALL: yes, the home page switches — but by REORDERING, never by hiding. From Week 1 the page leads
+  // with your live teams and "This week"; every draft tool, and every completed draft, stays exactly where
+  // it was, one row further down, with a permanent Draft results entry added to the action bar. A manual
+  // Season/Draft toggle sits next to the greeting, because a keeper league drafting in October should not
+  // have to argue with the calendar. Reasoning: a draft board is worth opening for ~3 weeks a year and a
+  // roster for ~17 — but losing your draft history is unforgivable, so nothing is removed to make room.
+  const nflWk = nflWeekNow();
+  const seasonLive = nflWk != null;
+  const homeView = (user && user.homeView) || "auto";      // auto | season | draft
+  const hubIdOf = (l) => (l.connect && l.connect.leagueId) || (l.cfg && l.cfg.connect && l.cfg.connect.leagueId) || null;
+  const seasonTeams = leagues.filter((l) => hubIdOf(l));
+  const seasonFirst = homeView === "season" || (homeView === "auto" && seasonLive && seasonTeams.length > 0);
+  const openThisWeek = () => { const t = seasonTeams[0]; if (t && onOpenHub) onOpenHub({ league_id: hubIdOf(t) }); };
+  const setHomeView = (v) => { if (onUpdate) onUpdate({ homeView: v }); };
+
   const matchedLeagues = q.trim() ? leagues.filter((l) => l.name.toLowerCase().includes(q.toLowerCase())) : leagues;
   // surface in-progress first, then not-started, then complete
   const sortedLeagues = matchedLeagues.slice().sort((a, b) => {
@@ -9856,7 +10120,9 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
 
   return (
     <div>
-      <div className="hairline" style={{ display: "flex", alignItems: "center", gap: 16, padding: "12px 20px" }}>
+      {/* Home's own header row. It carried no wrap, so on a phone it needed ~560px and dragged the whole
+          home page sideways — the same bug the in-season hub's header had. Shares the .appheader rules. */}
+      <div className="hairline appheader" style={{ display: "flex", alignItems: "center", gap: 16, padding: "12px 20px", flexWrap: "wrap" }}>
         <Wordmark size={20} />
         <div style={{ flex: 1 }} />
         <span className="chip" style={{ color: "var(--green)" }}><i className="ti ti-circle-check" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Season pass active</span>
@@ -9880,7 +10146,25 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
             <div style={{ flexShrink: 0 }}><Compass size={54} spin /></div>
             <div style={{ flex: "1 1 260px", minWidth: 0 }}>
               <div className="disp" style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-.02em", lineHeight: 1.02, color: "var(--ink)" }}>{timeGreet}{greetName ? <>, <span style={{ color: "var(--gold2)" }}>{greetName}</span></> : ""}.</div>
-              <div className="mut" style={{ fontSize: 13.5, marginTop: 4 }}>{inProgress.length ? <>You've got <b style={{ color: "var(--ink)" }}>{inProgress.length} draft{inProgress.length === 1 ? "" : "s"} in progress</b> — jump back in below.</> : leagues.length ? "Your draft command center — pick up where you left off." : "Welcome to your draft command center."}</div>
+              <div className="mut" style={{ fontSize: 13.5, marginTop: 4 }}>{
+                seasonFirst ? (nflWk
+                  ? <>NFL <b style={{ color: "var(--ink)" }}>Week {nflWk}</b> — your teams are live. Draft rooms and results are still right below.</>
+                  : <>Season view — your teams lead. Draft rooms and results are still right below.</>)
+                : inProgress.length ? <>You've got <b style={{ color: "var(--ink)" }}>{inProgress.length} draft{inProgress.length === 1 ? "" : "s"} in progress</b> — jump back in below.</>
+                : leagues.length ? "Your draft command center — pick up where you left off." : "Welcome to your draft command center."
+              }</div>
+              {/* Reversible: the calendar is a good default, not an argument. */}
+              {(seasonLive || homeView !== "auto") && seasonTeams.length > 0 && (
+                <div style={{ display: "inline-flex", marginTop: 9, border: "1px solid var(--line2)", borderRadius: 8, overflow: "hidden" }}>
+                  {[["season", "Season"], ["draft", "Draft"]].map(([v, label]) => {
+                    const on = seasonFirst === (v === "season");
+                    return (
+                      <button key={v} onClick={() => setHomeView(v)} title={v === "season" ? "Lead with your live teams" : "Lead with drafts and mocks"}
+                        style={{ cursor: "pointer", fontFamily: "inherit", border: "none", borderLeft: v === "draft" ? "1px solid var(--line2)" : "none", background: on ? "var(--gold)" : "transparent", color: on ? "#151002" : "var(--mut)", fontWeight: on ? 700 : 500, fontSize: 11.5, padding: "4px 12px" }}>{label}</button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
             {/* live stat strip */}
             <div style={{ display: "flex", gap: 22, flexShrink: 0, paddingLeft: 4 }}>
@@ -9897,11 +10181,61 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
 
       {/* QUICK ACTIONS — equal-weight menu items, subtly highlighted as the primary zone. Sticky so the
           core actions stay reachable as you scroll the leagues/mocks lists below. */}
+      {/* ===== YOUR TEAMS, THIS WEEK — the season-first lead. Only in season, only when you have a live
+           team, and it never displaces anything: the draft sections all still follow. ===== */}
+      {seasonFirst && (
+        <div style={{ maxWidth: 1180, margin: "0 auto", padding: "16px 20px 0" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginBottom: 10, flexWrap: "wrap" }}>
+            <i className="ti ti-calendar-stats" style={{ fontSize: 18, color: "var(--blue)", alignSelf: "center" }} aria-hidden="true" />
+            <span className="disp" style={{ fontSize: 20, fontWeight: 800, letterSpacing: ".01em" }}>This week</span>
+            {nflWk && <span className="mut" style={{ fontSize: 11.5, fontWeight: 700, background: "var(--panel2)", borderRadius: 99, padding: "1px 8px", alignSelf: "center" }}>NFL Week {nflWk}</span>}
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {seasonTeams.map((l) => {
+              const done = l.picks.length >= (l.cfg.teams || 12) * l.cfg.rounds;
+              return (
+                <div key={l.id} style={{ flex: "1 1 260px", maxWidth: 420, minWidth: 0, border: "1px solid var(--line2)", borderRadius: 12, background: "var(--panel)", padding: "12px 14px" }}>
+                  <div className="disp" style={{ fontSize: 15, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.name}</div>
+                  <div className="mut" style={{ fontSize: 11, marginTop: 2 }}>{l.cfg.teams || 12}-team · {l.cfg.sf ? "Superflex" : "1QB"}{l.cfg.tePremMult > 0 ? " · TE+" : ""}</div>
+                  <div style={{ display: "flex", gap: 7, marginTop: 10, flexWrap: "wrap" }}>
+                    <button onClick={() => onOpenHub && onOpenHub({ league_id: hubIdOf(l) })} className="btn btn-gold btn-mini" style={{ padding: "7px 13px", fontSize: 12.5 }}>
+                      <i className="ti ti-user-heart" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Open my team
+                    </button>
+                    {done && onOfficial && (
+                      <button onClick={() => onOfficial(l.id)} className="btn btn-mini" title="Your completed draft — board, grades and recap, still locked to draft-day values" style={{ padding: "7px 13px", fontSize: 12.5 }}>
+                        <i className="ti ti-flag-3" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />View draft
+                      </button>
+                    )}
+                    <button onClick={() => onUmbrella(l.id)} className="btn btn-mini" style={{ padding: "7px 13px", fontSize: 12.5 }}>League hub</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div style={{ position: "sticky", top: 0, zIndex: 20, maxWidth: 940, margin: "0 auto", padding: "14px 20px 18px", background: "linear-gradient(180deg, var(--bg) 82%, transparent)" }}>
-        <div style={{ display: "flex", alignItems: "stretch", border: "1px solid rgba(214,170,75,0.45)", borderRadius: 12, overflow: "hidden", background: "linear-gradient(180deg, rgba(38,32,18,0.98), rgba(28,26,20,0.98))", boxShadow: "0 6px 20px -6px rgba(0,0,0,.5)" }}>
+        <div className="actionbar" style={{ display: "flex", alignItems: "stretch", flexWrap: "wrap", border: "1px solid rgba(214,170,75,0.45)", borderRadius: 12, overflow: "hidden", background: "linear-gradient(180deg, rgba(38,32,18,0.98), rgba(28,26,20,0.98))", boxShadow: "0 6px 20px -6px rgba(0,0,0,.5)" }}>
+          {/* In season the bar leads with the week and, crucially, a permanent DRAFT RESULTS entry — the
+              pivot must never be the reason someone can't find their draft. */}
+          {seasonFirst && (
+            <>
+              <button onClick={openThisWeek} className="menuitem" style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: "transparent", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
+                <i className="ti ti-user-heart" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
+                <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>This Week</span>
+              </button>
+              <div style={{ width: 1, background: "rgba(214,170,75,0.30)" }} />
+              <button onClick={() => onDatabase()} className="menuitem" title="Every draft you've run — each one locked to the values that were live on its draft day" style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: "transparent", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
+                <i className="ti ti-flag-3" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
+                <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Draft Results</span>
+              </button>
+              <div style={{ width: 1, background: "rgba(214,170,75,0.30)" }} />
+            </>
+          )}
           <button onClick={() => onNewLeague()} className="menuitem" style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: "transparent", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
             <i className="ti ti-plus" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
-            <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Create New League</span>
+            <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>{seasonFirst ? "New League" : "Create New League"}</span>
           </button>
           <div style={{ width: 1, background: "rgba(214,170,75,0.30)" }} />
           <button onClick={() => onQuickMock()} className="menuitem" style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: "transparent", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
@@ -10063,6 +10397,16 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                       <span className="disp" style={{ fontSize: 15.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{l.name}</span>
                       {isSleeper && <span className="chip" style={{ fontSize: 8.5, color: "var(--blue)" }}>Sleeper</span>}
                       {mocks > 0 && <span className="chip" style={{ fontSize: 8.5 }}>{mocks} mock{mocks === 1 ? "" : "s"}</span>}
+                      {/* The draft's own era. Reopening a completed draft shows the ADP, values and
+                          projections that were live on ITS draft day — this says so from the outside, so
+                          you can tell at a glance that an old draft isn't quietly being re-judged against
+                          today's market. */}
+                      {l.snap && l.snap.v === 2 && l.snap.at && (
+                        <span className="chip" style={{ fontSize: 8.5, color: "var(--gold)" }}
+                          title={`Draft-day values locked ${new Date(l.snap.at).toLocaleDateString()}${l.snap.retro ? " (this draft ran before value-locking existed, so its numbers were frozen the first time it was reopened — close to, but not exactly, draft-day)" : ""}. ADP, value, projections and positional ranks all read as they did that day, however long ago it was.`}>
+                          <i className="ti ti-lock" style={{ fontSize: 9, marginRight: 3 }} aria-hidden="true" />{new Date(l.snap.at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                        </span>
+                      )}
                     </div>
                     <div className="mut" style={{ fontSize: 11, marginTop: 2, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                       <span>{l.cfg.teams || 12}T · {l.cfg.sf ? "Superflex" : "1QB"}{l.cfg.tePremMult > 0 ? " · TE+" : ""} · {l.cfg.rounds} rds</span>
@@ -10070,7 +10414,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                     </div>
                   </div>
                   {/* actions */}
-                  <div style={{ display: "flex", gap: 7, flexShrink: 0, alignItems: "center" }}>
+                  <div className="lgactions" style={{ display: "flex", gap: 7, flexShrink: 0, alignItems: "center", flexWrap: "wrap" }}>
                     <button onClick={() => onUmbrella(l.id)} style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: `1px solid ${draftLive ? "var(--gold)" : "var(--line2)"}`, background: draftLive ? "var(--gold)" : "var(--panel3)", color: draftLive ? "#151002" : "var(--ink)", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>
                       <i className="ti ti-clipboard-text" style={{ fontSize: 14 }} aria-hidden="true" />{draftLive ? "Resume" : st.pct === 100 ? "League hub" : "Draft room"}
                     </button>
@@ -12081,10 +12425,10 @@ function DraftsDatabase({ leagues, funMocks, onBack, onOpenLeague, onOpenMock, o
     const out = [];
     leagues.forEach((l) => {
       const total = (l.cfg.teams || 12) * l.cfg.rounds;
-      out.push({ k: "official", league: l, leagueId: l.id, name: l.name, type: l.cfg.type, teams: l.cfg.teams || 12, rounds: l.cfg.rounds, sf: l.cfg.sf, n: l.picks.length, total, when: l.created, ts: l.id, complete: l.picks.length >= total });
-      (l.mocks || []).forEach((m) => out.push({ k: "mock", league: l, leagueId: l.id, mock: m, name: `${l.name} · mock`, type: l.cfg.type, teams: l.cfg.teams || 12, rounds: l.cfg.rounds, sf: l.cfg.sf, n: m.n, total, when: m.ran, ts: +(m.id.split("-")[1] || 0) }));
+      out.push({ k: "official", league: l, leagueId: l.id, name: l.name, type: l.cfg.type, teams: l.cfg.teams || 12, rounds: l.cfg.rounds, sf: l.cfg.sf, n: l.picks.length, total, when: l.created, ts: l.id, complete: l.picks.length >= total, snap: l.snap || null });
+      (l.mocks || []).forEach((m) => out.push({ k: "mock", league: l, leagueId: l.id, mock: m, name: `${l.name} · mock`, type: l.cfg.type, teams: l.cfg.teams || 12, rounds: l.cfg.rounds, sf: l.cfg.sf, n: m.n, total, when: m.ran, ts: +(m.id.split("-")[1] || 0), snap: m.snap || null }));
     });
-    funMocks.forEach((m) => { const total = (m.cfg.teams || 12) * m.cfg.rounds; out.push({ k: "fun", fun: m, name: m.name || "Quick mock", type: m.cfg.type, teams: m.cfg.teams || 12, rounds: m.cfg.rounds, sf: m.cfg.sf, n: m.n, total, when: m.ran, ts: +(m.id.split("-")[1] || 0) }); });
+    funMocks.forEach((m) => { const total = (m.cfg.teams || 12) * m.cfg.rounds; out.push({ k: "fun", fun: m, name: m.name || "Quick mock", type: m.cfg.type, teams: m.cfg.teams || 12, rounds: m.cfg.rounds, sf: m.cfg.sf, n: m.n, total, when: m.ran, ts: +(m.id.split("-")[1] || 0), snap: m.snap || null }); });
     return out;
   }, [leagues, funMocks]);
 
@@ -12156,7 +12500,17 @@ function DraftsDatabase({ leagues, funMocks, onBack, onOpenLeague, onOpenMock, o
                         <td className="mut" style={{ fontSize: 12 }}>{LEAGUE_TYPES.find((t) => t[0] === r.type)?.[1] || "Redraft"}{r.sf ? " · SF" : ""}</td>
                         <td className="num">{r.teams}</td>
                         <td className="num">{r.complete ? <span className="gold">complete</span> : `${r.n}/${r.total}`}</td>
-                        <td className="mut" style={{ fontSize: 12 }}>{r.when}</td>
+                        <td className="mut" style={{ fontSize: 12 }}>
+                          {r.when}
+                          {/* Draft-day era. Opening any of these replays the ADP, values, projections and
+                              positional ranks that were live on that day, not today's market. */}
+                          {r.snap && r.snap.v === 2 && r.snap.at && (
+                            <span title={`Values locked ${new Date(r.snap.at).toLocaleDateString()} — this draft is judged against the market as it was that day, not today's.`}
+                              style={{ marginLeft: 6, color: "var(--gold)", whiteSpace: "nowrap" }}>
+                              <i className="ti ti-lock" style={{ fontSize: 10 }} aria-hidden="true" />
+                            </span>
+                          )}
+                        </td>
                         <td><div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
                           <button className="btn btn-mini" onClick={() => open(r)}>open</button>
                           {onDelete && r.k === "official" && (delConfirm === r.leagueId
@@ -15440,6 +15794,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       if (s[1] != null) q.vbd = s[1];
       if (s[2] != null) q.value = s[2];
       if (s[3] != null) q.pts = s[3];
+      if (s[4] != null) q.posRank = s[4];   // absent in snapshots written before posRank was captured
       return q;
     });
   }, [cfg, adpVersion, dataVersion, connectedPlatform, draftMode, league.snap]);
@@ -15772,6 +16127,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         pl.vbd != null ? Math.round(pl.vbd) : null,
         pl.value != null ? Math.round(pl.value) : null,
         pl.pts != null ? Math.round(pl.pts) : null,
+        // Positional rank at draft time. Without it a 2026 draft reopened in November says "WR41" next to a
+        // player who was WR12 on the day — the numbers were locked but the label that frames them wasn't.
+        // Appended, so v2 snapshots written before this stay readable (the reader treats index 4 as optional).
+        pl.posRank != null ? pl.posRank : null,
       ];
     });
     const retro = league.lastPickAt ? (Date.now() - league.lastPickAt > 36 * 3600 * 1000) : false;
