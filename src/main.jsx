@@ -50,7 +50,7 @@ import './storage.js';          // installs window.storage (localStorage-backed)
   window.addEventListener('load', () => { setTimeout(() => { try { sessionStorage.removeItem(KEY); } catch (e) {} }, 4000); });
 })();
 
-import '@tabler/icons-webfont/dist/tabler-icons.min.css'; // bundle icons locally (no slow CDN fetch)
+import './icons.css'; // icon SUBSET (148 of ~5,175 glyphs, woff2 only) — see tools/icons-build.mjs
 import './index.css';
 import React from 'react';
 import { createRoot } from 'react-dom/client';

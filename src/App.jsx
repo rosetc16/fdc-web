@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20aq";
+const BUILD_TAG = "2026.07.20ar";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4828,6 +4828,27 @@ const css = `
 .btn{background:var(--panel3);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer;font-family:'Barlow';font-size:13px}
 .btn:hover{transition:border-color .15s,background .15s,transform .1s,box-shadow .15s}
 .btn:hover,.btn-mini:hover{border-color:var(--gold);background:#2B3340}
+/* Toolbar toggle in its ON state — the board has several of these and none of them used to look pressed. */
+.btn.on,.btn-mini.on{border-color:var(--gold);color:var(--gold);background:rgba(242,182,60,.12)}
+/* Compact board density: same information, ~a third more rows on screen. */
+.dense-board td{padding-top:2px!important;padding-bottom:2px!important;font-size:11.5px}
+.dense-board th{padding-top:2px!important;padding-bottom:2px!important}
+.tierbreak td{user-select:none}
+/* Keyboard-highlighted row. Distinct from the gold "recommended" row on purpose — this one is where
+   YOUR cursor is, and pressing Enter drafts it. */
+.kbrow>td{background:rgba(107,168,229,.14)!important;box-shadow:inset 2px 0 0 #5BA8F5}
+/* PRINTABLE CHEAT SHEET. Hiding "everything but one node" is unreliable with display:none once that node
+   is nested deep in the app tree, so we flip visibility instead — the sheet and its descendants stay
+   visible, everything else goes invisible but keeps its box, and the sheet is lifted to the page origin. */
+@media print{
+  body.printing *{visibility:hidden!important}
+  body.printing .printsheet,body.printing .printsheet *{visibility:visible!important}
+  body.printing .printsheet{position:absolute!important;left:0;top:0;width:100%;max-height:none!important;overflow:visible!important;border:none!important;background:#fff!important;color:#000!important}
+  body.printing .printsheet .noprint{display:none!important}
+  body.printing .printsheet td,body.printing .printsheet th{color:#000!important;border-color:#bbb!important}
+  body.printing .printsheet .sheettier{background:#eee!important;color:#000!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  @page{margin:12mm}
+}
 select.gs{cursor:pointer}
 select.gs:hover{border-color:var(--gold)}
 .btn:hover{border-color:var(--gold);background:#15140d;transform:translateY(-1px);box-shadow:0 2px 10px #0006}
@@ -13847,9 +13868,39 @@ function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
         <div className="disp mut" style={{ fontSize: 10.5, letterSpacing: ".06em", marginBottom: 4 }}>KEEPERS SET ({keepers.length})</div>
         {keepers.map((k, i) => {
           const p = players[k.playerId];
+          // ===== IS THIS KEEPER WORTH ITS PRICE? ==================================================
+          // The first question every keeper league asks, and the app has never answered it. A keeper kept
+          // at pick N costs you that pick, so the honest measure is what that pick would otherwise have
+          // bought: the market says the player at ADP ≈ N. Two reads, because they can disagree and the
+          // disagreement is informative:
+          //   • MARKET  — how many picks earlier than his cost the field is taking him. Pure surplus.
+          //   • POINTS  — his value above replacement minus that of the player actually available there,
+          //               which is what the surplus is worth in the standings.
+          // A free keeper has no cost, so he's pure profit and just reads "free".
+          const verdict = (() => {
+            if (!p || k.o == null || p.adp == null) return null;
+            const costPick = k.o + 1;                       // 1-based overall pick this keeper burns
+            const gain = costPick - p.adp;                  // >0 = you're getting him later than the market would
+            // the player the market says you'd otherwise land at that pick
+            const alt = players
+              .filter((x) => x && x.adp != null && !usedPlayerIds.has(x.id))
+              .reduce((best, x) => (best == null || Math.abs(x.adp - costPick) < Math.abs(best.adp - costPick) ? x : best), null);
+            const vGain = alt && p.vbd != null && alt.vbd != null ? Math.round(p.vbd - alt.vbd) : null;
+            const tone = gain >= 12 ? "good" : gain <= -6 ? "bad" : "fair";
+            return { gain: Math.round(gain), vGain, alt, tone, costPick };
+          })();
+          const vColor = !verdict ? "var(--mut)" : verdict.tone === "good" ? "var(--green)" : verdict.tone === "bad" ? "#F2655C" : "var(--gold)";
           return (
             <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, padding: "4px 8px", borderRadius: 6, marginBottom: 3, border: "1px solid var(--line)" }}>
-              {p && <Dot pos={p.pos} />}<span style={{ flex: 1 }}>{p ? p.name : "?"} <span className="mut">— {names[k.team]}</span></span>
+              {p && <Dot pos={p.pos} />}<span style={{ flex: 1, minWidth: 0 }}>{p ? p.name : "?"} <span className="mut">— {names[k.team]}</span></span>
+              {verdict && (
+                <span
+                  title={`Kept at ${pickLabel(k.o)} (overall ${verdict.costPick}). The market drafts him around ${p.adp.toFixed(0)}, so you're ${verdict.gain >= 0 ? `getting him ${verdict.gain} picks later than he normally goes` : `paying ${-verdict.gain} picks more than he normally costs`}.${verdict.alt ? `\n\nAt that pick you'd otherwise expect ${verdict.alt.name}${verdict.vGain != null ? `, so keeping him is worth about ${verdict.vGain >= 0 ? "+" : ""}${verdict.vGain} points of value above replacement` : ""}.` : ""}`}
+                  className="num"
+                  style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".02em", padding: "1px 5px", borderRadius: 4, cursor: "help", color: vColor, border: `1px solid ${vColor}55`, whiteSpace: "nowrap" }}>
+                  {verdict.gain >= 0 ? "+" : ""}{verdict.gain} picks{verdict.vGain != null ? ` · ${verdict.vGain >= 0 ? "+" : ""}${verdict.vGain} val` : ""}
+                </span>
+              )}
               <span className="num" style={{ fontSize: 11, color: k.o != null ? "var(--ink)" : "var(--gold)" }}>{k.o != null ? `costs ${pickLabel(k.o)}` : "free"}</span>
               <button className="btn btn-mini" style={{ padding: "1px 7px" }} onClick={() => removeKeeper(i)}>✕</button>
             </div>
@@ -14325,6 +14376,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // ~20 column cells (each running cellFor), so 130 rows meant ~2,600 cells rebuilt per pick — which a trace
   // matched almost exactly to a 2,265-element style recalculation and ~17k dirty layout objects. Nobody reads
   // row 130 while deciding a pick; 40 covers the realistic decision window, and "Show more" is one click away.
+  const searchRef = useRef(null);                    // draft-room player search, for keyboard control
+  const [kbSel, setKbSel] = useState(-1);           // keyboard-highlighted row index (-1 = none)
+  const [sheetOpen, setSheetOpen] = useState(false); // printable / exportable cheat sheet
+  const [showTiers, setShowTiers] = useState(true);  // tier dividers in the player list
+  const [dense, setDense] = useState(false);        // compact row height for the board
   const [rowLimit, setRowLimit] = useState(40);
   // PRIORITY QUEUE: players you've starred for this league. Persisted to localStorage keyed by league id
   // so it survives refreshes and is separate per league. `queueOnly` filters the board to just these.
@@ -14658,6 +14714,47 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   }, [forcedAhead]);
   // Available players per position, best-first by VBD — powers the "scarcity" note in player blurbs (last
   // startable-tier guy on the board, steep drop to the next, etc.).
+  // ===== KEYBOARD CONTROL ======================================================================
+  // Drafting is a timed activity and the mouse is the slow part. Three keys cover the whole loop:
+  //   /  or any letter  → jump to search        ↑ ↓ → move through the board        Enter → draft
+  // Everything is skipped while you're typing in another field, and Enter never fires on a drafted
+  // player or when it isn't your pick, so the shortcut can't take a turn you didn't mean to take.
+  const moveKbSel = (delta) => setKbSel((i) => {
+    const n = rowsRef.current.length;
+    if (!n) return -1;
+    let next = i < 0 ? (delta > 0 ? 0 : n - 1) : i + delta;
+    // step over players already off the board — they can't be drafted, so they can't be selected
+    for (let guard = 0; guard < n && next >= 0 && next < n; guard++) {
+      const p = rowsRef.current[next];
+      if (p && !draftedSetRef.current.has(p.id)) break;
+      next += delta;
+    }
+    return Math.max(0, Math.min(n - 1, next));
+  });
+  const rowsRef = useRef([]);
+  const draftedSetRef = useRef(new Set());
+  const kbRowRef = useRef(null);
+  useEffect(() => { if (kbRowRef.current && kbRowRef.current.scrollIntoView) kbRowRef.current.scrollIntoView({ block: "nearest" }); }, [kbSel]);
+  useEffect(() => {
+    const onKey = (e) => {
+      const t = e.target;
+      const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (typing) return;                                  // the search box handles its own keys
+      if (e.key === "/" || (/^[a-z0-9]$/i.test(e.key) && tab === "hub")) {
+        if (searchRef.current) { e.preventDefault(); searchRef.current.focus(); if (e.key !== "/") setSearch(e.key); setKbSel(-1); }
+        return;
+      }
+      if (tab !== "hub") return;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); moveKbSel(e.key === "ArrowDown" ? 1 : -1); }
+      else if (e.key === "Enter" && kbSel >= 0) {
+        const p = rowsRef.current[kbSel];
+        if (p && !draftedSetRef.current.has(p.id)) { e.preventDefault(); draftPlayer(p.id); setKbSel(-1); }
+      } else if (e.key === "Escape") setKbSel(-1);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
   const availByPos = useMemo(() => {
     const m = { QB: [], RB: [], WR: [], TE: [] };
     players.forEach((p) => { if (m[p.pos] && !draftedSet.has(p.id)) m[p.pos].push(p); });
@@ -16381,6 +16478,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     list.sort((a, b) => scoreFor(b) - scoreFor(a));
     return capToLimit(list);
   }, [players, posFilter, search, showDrafted, sortState, manualSort, strategy, draftedSet, sims, rookieOnly, myWindow, rowLimit, targetSurv, queue, queueOnly, mySelAdvice]);
+  // Mirror the rendered board into refs so the window-level key handler always reads the CURRENT list
+  // without re-binding the listener on every keystroke.
+  useEffect(() => { rowsRef.current = rows; if (kbSel >= rows.length) setKbSel(rows.length ? rows.length - 1 : -1); }, [rows]);
+  useEffect(() => { draftedSetRef.current = draftedSet; }, [draftedSet]);
 
   // Column registry. group: "draft" (board intelligence) or "stat" (projection inputs).
   // section groups columns under labeled dividers in the table + columns menu.
@@ -17603,9 +17704,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         <div className="cols" style={{ display: "flex", gap: 14, padding: 14, alignItems: "flex-start" }}>
           <div className="panel" style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", gap: 8, padding: 10, flexWrap: "wrap", alignItems: "center", position: "relative" }} className="hairline">
-              <input className="gs" style={{ width: 200 }} placeholder="Search for a player"
-                value={search} onChange={(e) => setSearch(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") { const hit = rows.find((p) => !draftedSet.has(p.id)); if (hit) draftPlayer(hit.id); } }} />
+              <input ref={searchRef} className="gs" style={{ width: 200 }} placeholder="Search for a player  ( / )"
+                value={search} onChange={(e) => { setSearch(e.target.value); setKbSel(-1); }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { const hit = rows[kbSel >= 0 ? kbSel : rows.findIndex((p) => !draftedSet.has(p.id))]; if (hit && !draftedSet.has(hit.id)) draftPlayer(hit.id); }
+                  else if (e.key === "Escape") { setSearch(""); setKbSel(-1); e.currentTarget.blur(); }
+                  else if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); moveKbSel(e.key === "ArrowDown" ? 1 : -1); }
+                }} />
               <button className="btn btn-mini" style={{ borderColor: "var(--gold)", color: "var(--gold)" }}
                 onClick={() => openGuide("how")} title="How to use the draft room, power-user tips, and the guided tour">
                 <i className="ti ti-book" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Tips &amp; tour</button>
@@ -17647,6 +17752,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <button className="btn btn-mini" onClick={() => setTrendsOpen(true)} title="See how the board is moving across your other drafts in this format — who's going early, who's sliding, and positional runs by round"><i className="ti ti-chart-histogram" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trends</button>
               <button className="btn btn-mini" data-tour="myranks" onClick={() => setRanksWarn(true)} title="My Ranks (your personal board → My ADP & Blend) and Platform Ranks (your platform's ADP → the Edge column)"><i className="ti ti-list-numbers" style={{ fontSize: 13 }} aria-hidden="true" /> My ranks</button>
               <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — who traded which pick to whom. The board updates instantly."><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks</button>
+              <button className="btn btn-mini" onClick={() => setSheetOpen(true)} title="Take this board with you — print it, or download it as a CSV. Uses your current filters, sort and columns, grouped by tier.">
+                <i className="ti ti-file-download" style={{ fontSize: 13 }} aria-hidden="true" /> Cheat sheet
+              </button>
+              <button className={`btn btn-mini${showTiers ? " on" : ""}`} onClick={() => setShowTiers((v) => !v)} title="Group the board into value tiers and show how many undrafted players are left in each. The number that matters on the clock isn't who's best — it's how many acceptable players remain before the drop.">
+                <i className="ti ti-layers-intersect" style={{ fontSize: 13 }} aria-hidden="true" /> Tiers
+              </button>
+              <button className={`btn btn-mini${dense ? " on" : ""}`} onClick={() => setDense((v) => !v)} title="Compact rows — fits roughly a third more of the board on screen.">
+                <i className="ti ti-baseline-density-medium" style={{ fontSize: 13 }} aria-hidden="true" /> Compact
+              </button>
               <button className="btn btn-mini" data-tour="columns" onClick={() => setColMenu((m) => !m)}><i className="ti ti-columns" style={{ fontSize: 13 }} aria-hidden="true" /> Columns</button>
               </div>
               {colMenu && (
@@ -17711,7 +17825,88 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               )}
             </div>
             <div data-tour="pool" style={{ maxHeight: 540, overflow: "auto" }}>
-              <table className="board">
+              {/* ===== CHEAT SHEET — print or download the board you're actually looking at ==========
+                  Plenty of drafts happen in a room, off paper, or on a phone with the site closed. This takes
+                  the CURRENT board — your filters, your sort, your ranks — and makes it portable, grouped by
+                  tier so it reads the way you draft. */}
+              {sheetOpen && (() => {
+                const marketSort = sortState.key === "adp" || sortState.key === "consensus" || sortState.key === "blendAdp";
+                const tKey = marketSort ? "adpTier" : "vbdTier";
+                const dyn = isDynastyCfg(cfg);
+                const sheetRows = rows.filter((p) => !draftedSet.has(p.id));
+                const cols = [
+                  ["#", (p, i) => i + 1],
+                  ["Player", (p) => p.name],
+                  ["Pos", (p) => `${p.pos}${p.posRank || ""}`],
+                  ["Tm", (p) => p.team || ""],
+                  ["Bye", (p) => p.bye || ""],
+                  ["ADP", (p) => (p.adp != null ? p.adp.toFixed(1) : "")],
+                  ["My rank", (p) => { const r = myRanks && myRanks.map && myRanks.map[p.id]; return r ? r.rank : ""; }],
+                  ["Proj", (p) => (p.pts != null ? Math.round(p.pts) : "")],
+                  [dyn ? "Value" : "VBD", (p) => { const v = dyn ? (p.value ?? p.vbd) : p.vbd; return v != null ? Math.round(v) : ""; }],
+                  ["Tier", (p) => p[tKey] ?? ""],
+                ];
+                const downloadCsv = () => {
+                  const esc = (v) => { const t = String(v ?? ""); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+                  const lines = [cols.map((c) => esc(c[0])).join(",")];
+                  sheetRows.forEach((p, i) => lines.push(cols.map((c) => esc(c[1](p, i))).join(",")));
+                  const blob = new Blob(["\ufeff" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `${(league.name || "draft").replace(/[^\w-]+/g, "-").toLowerCase()}-cheat-sheet.csv`;
+                  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                  setTimeout(() => URL.revokeObjectURL(url), 2000);
+                };
+                const doPrint = () => {
+                  document.body.classList.add("printing");
+                  const done = () => { document.body.classList.remove("printing"); window.removeEventListener("afterprint", done); };
+                  window.addEventListener("afterprint", done);
+                  setTimeout(() => { window.print(); setTimeout(done, 800); }, 30);
+                };
+                let lastT = null;
+                return (
+                  <div onClick={() => setSheetOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+                    <div className="panel printsheet" onClick={(e) => e.stopPropagation()} style={{ width: "min(760px,100%)", maxHeight: "88vh", overflow: "auto", padding: 0 }}>
+                      <div className="noprint" style={{ position: "sticky", top: 0, background: "var(--panel)", borderBottom: "1px solid var(--line)", padding: "12px 16px", display: "flex", alignItems: "center", gap: 8, zIndex: 2 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div className="disp" style={{ fontSize: 16, fontWeight: 700 }}>Cheat sheet</div>
+                          <div className="mut" style={{ fontSize: 11 }}>{sheetRows.length} available players · your current filters and sort · grouped by tier</div>
+                        </div>
+                        <button className="btn btn-mini" onClick={downloadCsv}><i className="ti ti-download" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />CSV</button>
+                        <button className="btn btn-mini btn-gold" onClick={doPrint}><i className="ti ti-printer" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Print</button>
+                        <button className="btn btn-mini" onClick={() => setSheetOpen(false)}>Close</button>
+                      </div>
+                      <div style={{ padding: "10px 16px 18px" }}>
+                        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 2 }}>{league.name} — draft cheat sheet</div>
+                        <div className="mut" style={{ fontSize: 10.5, marginBottom: 8 }}>
+                          {cfg.teams || 12} teams · {cfg.sf ? "Superflex" : "1QB"} · {cfg.rounds} rounds{cfg.slot ? ` · your slot ${cfg.slot}` : ""} · fantasydraftcompass.com
+                        </div>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+                          <thead><tr>{cols.map((c) => <th key={c[0]} style={{ textAlign: c[0] === "Player" ? "left" : "right", padding: "3px 5px", borderBottom: "1px solid var(--line)", fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)" }}>{c[0]}</th>)}</tr></thead>
+                          <tbody>
+                            {sheetRows.map((p, i) => {
+                              const t = p[tKey];
+                              const head = t != null && t !== lastT ? (lastT = t) : null;
+                              return (
+                                <React.Fragment key={p.id}>
+                                  {head != null && (
+                                    <tr className="sheettier"><td colSpan={cols.length} style={{ background: "rgba(255,255,255,.05)", padding: "3px 5px", fontSize: 9.5, fontWeight: 800, letterSpacing: ".05em", color: "var(--gold)" }}>TIER {head}</td></tr>
+                                  )}
+                                  <tr>
+                                    {cols.map((c, ci) => <td key={c[0]} className={ci ? "num" : ""} style={{ textAlign: ci === 1 ? "left" : "right", padding: "2px 5px", borderBottom: "1px solid var(--line2)", whiteSpace: "nowrap" }}>{c[1](p, i)}</td>)}
+                                  </tr>
+                                </React.Fragment>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+              <table className={`board${dense ? " dense-board" : ""}`}>
                 <thead>
                   <tr className="sechead">
                     <th className="frz" style={{ background: "var(--panel)" }} />
@@ -17801,6 +17996,29 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     let availSeen = 0;
                     const nCols = 1 + activeCols.length;
                     const outRows = [];
+                    // ===== TIER BREAKS =========================================================
+                    // Experienced drafters don't think "who's best", they think "how many acceptable players
+                    // are left before the drop". The engine has computed tiers all along (vbdTier / adpTier)
+                    // and then buried them in a sortable column. Draw the break instead, and say how many
+                    // UNDRAFTED players remain inside each one — that count is the actual decision input.
+                    // Only meaningful while the list is in a board order (value or market), so tiers are
+                    // suppressed under any other sort, where a divider would be noise.
+                    // Market sorts read the ADP tier; value sorts read the VBD tier — the divider should always
+                    // describe the axis you're actually looking down.
+                    const marketSort = sortState.key === "adp" || sortState.key === "consensus" || sortState.key === "blendAdp";
+                    const tierKey = marketSort ? "adpTier" : "vbdTier";
+                    const BOARD_SORTS = ["adp", "consensus", "blendAdp", "vbd", "value", "rank", "proj"];
+                    // `manualSort` means the list is in a plain column order. When it's off, the board is
+                    // strategy-scored and tiers would interleave, so we hide them rather than mislead.
+                    const tiersOn = showTiers && manualSort && BOARD_SORTS.includes(sortState.key) && !queueOnly;
+                    const tierLeft = new Map();   // tier -> how many undrafted players it still holds
+                    if (tiersOn) players.forEach((p) => {
+                      const t = p[tierKey];
+                      if (t == null || draftedSet.has(p.id)) return;
+                      if (posFilter !== "ALL" && !(posFilter === "DST" ? (p.pos === "DST" || p.pos === "DEF") : p.pos === posFilter)) return;
+                      tierLeft.set(t, (tierLeft.get(t) || 0) + 1);
+                    });
+                    let lastTier = null;
                     // The player the engine is recommending right now — highlight his row so it's easy to spot in
                     // the full list. Prefer YOUR next-pick recommendation; fall back to the on-clock verdict.
                     // The player the engine recommends for YOUR pick — highlighted so it's easy to spot in the
@@ -17810,12 +18028,33 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     const recId = (mySelAdvice && mySelAdvice.verdict && mySelAdvice.verdict.id != null)
                       ? mySelAdvice.verdict.id
                       : (onClock === userIdx && advice && advice.verdict && advice.verdict.id != null ? advice.verdict.id : null);
-                    rows.forEach((p) => {
+                    rows.forEach((p, rowIdx) => {
                       const gone = draftedSet.has(p.id);
                       const isRec = !gone && p.id === recId;
+                      const isKb = rowIdx === kbSel;
                       const injInfo = injuryView(p);
+                      if (tiersOn && p[tierKey] != null && p[tierKey] !== lastTier) {
+                        lastTier = p[tierKey];
+                        const left = tierLeft.get(lastTier) || 0;
+                        // Thin at ≤3 is the moment a tier stops being a queue and becomes a decision.
+                        const thin = left > 0 && left <= 3;
+                        outRows.push(
+                          <tr key={`tier-${lastTier}`} className="tierbreak">
+                            <td colSpan={nCols} style={{ padding: 0 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 10px", borderTop: `1px solid ${thin ? "rgba(242,101,92,.5)" : "var(--line)"}`, background: thin ? "rgba(242,101,92,.07)" : "rgba(255,255,255,.022)" }}>
+                                <b className="num" style={{ fontSize: 10, letterSpacing: ".06em", color: thin ? "#F2655C" : "var(--mut)" }}>TIER {lastTier}</b>
+                                <span className="mut" style={{ fontSize: 10, opacity: 0.55 }}>·</span>
+                                <span style={{ fontSize: 10.5, fontWeight: thin ? 800 : 500, color: thin ? "#F2655C" : "var(--mut)" }}>
+                                  {left === 0 ? "none left" : `${left} left`}
+                                </span>
+                                {thin && <span style={{ fontSize: 9.5, color: "#F2655C", opacity: .85 }}>tier is about to break</span>}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      }
                       outRows.push(
-                      <tr key={p.id} className={`${gone ? "struck" : ""}${isRec ? " recrow" : ""}`.trim()}>
+                      <tr key={p.id} ref={isKb ? kbRowRef : undefined} className={`${gone ? "struck" : ""}${isRec ? " recrow" : ""}${isKb ? " kbrow" : ""}`.trim()}>
                         <td className="frz" style={{ borderLeft: `3px solid ${gone ? "transparent" : (POS_COLOR[p.pos] || "transparent")}` }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
                             <button onClick={() => toggleQueue(p.name)} title={queue.has(p.name) ? "Starred — in your priority queue. Click to remove." : "Star this player to add him to your priority queue."}
@@ -17991,6 +18230,22 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           <span style={{ fontWeight: 700, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
                           <span className="num" style={{ color: vbdColor(dynasty ? (p.value ?? p.vbd) : p.vbd) }}>{fmtVal(dynasty ? (p.value ?? p.vbd) : p.vbd)}</span>
                           {surv != null && !isBoardPick && <span className="mut">{surv}% avail</span>}
+                          {/* TIER SCARCITY — the number that actually decides "now or later". Counts undrafted
+                              players sharing this player's tier AT HIS POSITION: three left is a queue, one
+                              left is a cliff. Uses the same tiers the board draws breaks on. */}
+                          {(() => {
+                            const t = dynasty ? p.vbdTier : (p.vbdTier != null ? p.vbdTier : p.adpTier);
+                            if (t == null) return null;
+                            const left = (availByPos[p.pos] || []).filter((x) => (dynasty ? x.vbdTier : (x.vbdTier != null ? x.vbdTier : x.adpTier)) === t).length;
+                            if (!left) return null;
+                            const thin = left <= 3;
+                            return (
+                              <span title={`${left} undrafted ${p.pos}${left === 1 ? "" : "s"} share this tier. When a tier empties the drop to the next one is the real cost of waiting.`}
+                                style={{ fontSize: 8.5, fontWeight: 800, letterSpacing: ".02em", padding: "0 4px", borderRadius: 3, cursor: "help", color: thin ? "#F2655C" : "var(--mut)", background: thin ? "rgba(242,101,92,.15)" : "rgba(255,255,255,.06)" }}>
+                                T{t} · {left} left
+                              </span>
+                            );
+                          })()}
                           {both && <span style={{ fontSize: 8, fontWeight: 700, color: "var(--blue)", background: "rgba(107,168,229,.15)", borderRadius: 3, padding: "0 4px" }}>both agree</span>}
                         </div>
                       </div>
@@ -19907,10 +20162,59 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             {myPts ? <><b style={{ color: "var(--ink)" }}>{myPts}</b> proj pts · </> : ""}<b style={{ color: myVal > 0 ? "var(--green)" : myVal < 0 ? "var(--red)" : "var(--ink)" }}>{myVal > 0 ? "+" : ""}{myVal}</b> draft value <span style={{ opacity: .8 }}>({ordinal(valRank)} in league)</span>
                           </div>
                         </div>
-                        <button className="btn btn-gold btn-mini" style={{ flexShrink: 0 }} onClick={() => {
-                          const ok = copyText(shareText);
-                          if (ok !== false) { setCopied(true); setTimeout(() => setCopied(false), 1600); }
-                        }}>{copied ? "Copied ✓" : "Copy card"}</button>
+                        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                          {/* SHAREABLE RECAP IMAGE. A draft card only spreads if it can be posted, and league
+                              chats take images, not text. Drawn on a canvas with system fonts so nothing has
+                              to load, sized 2x for retina, and downloaded straight to the device. */}
+                          <button className="btn btn-mini" onClick={() => {
+                            const W = 620, H = 460, S = 2;
+                            const cv = document.createElement("canvas");
+                            cv.width = W * S; cv.height = H * S;
+                            const x = cv.getContext("2d");
+                            x.scale(S, S);
+                            const F = (sz, w) => `${w || 600} ${sz}px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif`;
+                            x.fillStyle = "#0E1217"; x.fillRect(0, 0, W, H);
+                            const g = x.createLinearGradient(0, 0, W, 150);
+                            g.addColorStop(0, "rgba(242,182,60,.18)"); g.addColorStop(1, "rgba(242,182,60,.02)");
+                            x.fillStyle = g; x.fillRect(0, 0, W, 150);
+                            x.fillStyle = "#F2B63C"; x.font = F(12, 800);
+                            x.fillText((isYou ? "MY DRAFT" : String(teamName || "").toUpperCase()) + " — " + String(league.name || "").toUpperCase(), 28, 40);
+                            x.fillStyle = "#EEF2F6"; x.font = F(46, 800);
+                            x.fillText(`Grade ${myGrade}`, 28, 92);
+                            x.font = F(17, 600); x.fillStyle = "#9AA7B5";
+                            x.fillText(`${myRank ? ordinal(myRank) : "—"} of ${TEAMS} projected${myPts ? ` · ${myPts} pts` : ""}`, 28, 120);
+                            x.fillStyle = myVal > 0 ? "#5FD0A8" : myVal < 0 ? "#F2655C" : "#9AA7B5";
+                            x.font = F(17, 700);
+                            x.fillText(`${myVal > 0 ? "+" : ""}${myVal} draft value`, 28, 144);
+                            const col = (title, list, color, ox) => {
+                              x.fillStyle = color; x.font = F(11, 800);
+                              x.fillText(title, ox, 196);
+                              x.font = F(14, 500);
+                              (list || []).slice(0, 5).forEach((gg, i) => {
+                                const nm = (gg && gg.p && gg.p.name) || (gg && gg.name) || "—";
+                                x.fillStyle = "#EEF2F6";
+                                x.fillText(`${i + 1}. ${nm.length > 22 ? nm.slice(0, 21) + "…" : nm}`, ox, 222 + i * 26);
+                              });
+                            };
+                            col("TOP STEALS", best5, "#5FD0A8", 28);
+                            col("BIGGEST REACHES", worst5, "#F2655C", 330);
+                            x.strokeStyle = "rgba(255,255,255,.09)"; x.beginPath(); x.moveTo(28, H - 54); x.lineTo(W - 28, H - 54); x.stroke();
+                            x.fillStyle = "#6b7683"; x.font = F(13, 600);
+                            x.fillText("fantasydraftcompass.com", 28, H - 28);
+                            cv.toBlob((blob) => {
+                              if (!blob) return;
+                              const url = URL.createObjectURL(blob);
+                              const a2 = document.createElement("a");
+                              a2.href = url; a2.download = `${String(league.name || "draft").replace(/[^\w-]+/g, "-").toLowerCase()}-recap.png`;
+                              document.body.appendChild(a2); a2.click(); document.body.removeChild(a2);
+                              setTimeout(() => URL.revokeObjectURL(url), 2000);
+                            }, "image/png");
+                          }}><i className="ti ti-photo-down" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Image</button>
+                          <button className="btn btn-gold btn-mini" onClick={() => {
+                            const ok = copyText(shareText);
+                            if (ok !== false) { setCopied(true); setTimeout(() => setCopied(false), 1600); }
+                          }}>{copied ? "Copied ✓" : "Copy card"}</button>
+                        </div>
                       </div>
                     </div>
 
