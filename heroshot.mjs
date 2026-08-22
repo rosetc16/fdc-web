@@ -1,0 +1,12 @@
+import { chromium } from 'playwright';
+const W = Number(process.env.VW || 1440);
+const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const page = await b.newPage({ viewport: { width: W, height: W < 700 ? 1500 : 1050 }, isMobile: W < 700, hasTouch: W < 700 });
+await page.goto('http://localhost:4173/', { waitUntil: 'domcontentloaded' });
+await page.waitForTimeout(11000);
+await page.screenshot({ path: `/home/claude/work/mkt-hero-${W < 700 ? 'm' : 'd'}.png` });
+await page.evaluate(() => window.scrollTo(0, 1500));
+await page.waitForTimeout(900);
+await page.screenshot({ path: `/home/claude/work/mkt-bar-${W < 700 ? 'm' : 'd'}.png` });
+console.log('captured');
+await b.close();

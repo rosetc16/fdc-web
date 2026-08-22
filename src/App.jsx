@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.23a";
+const BUILD_TAG = "2026.07.23b";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -114,6 +114,27 @@ const normName = (s) => String(s || "").toLowerCase()
    The NAME is the stable key. The id is now a per-pool lookup, resolved fresh every time, and kept on
    saved keepers only as a fallback for entries written before names were stored.
    ============================================================================================ */
+// STORAGE KEY for a league's per-user player lists (priority queue, do-not-draft). Extracted to module
+// level because these lists are now edited from TWO places — inside the draft room and from the league's
+// prep checklist — and if those two computed the key differently you would edit one list and read another.
+// Keyed off the most STABLE identifier available: the connected platform league id, then a slug of the
+// league name, then the internal id (which can change when leagues reload from the backend).
+function listStorageKey(prefix, league) {
+  const cfg = (league && league.cfg) || {};
+  const stable = (cfg.connect && cfg.connect.leagueId) ? `sl-${cfg.connect.leagueId}`
+    : (cfg.name ? `nm-${String(cfg.name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}` : null);
+  return `${prefix}-${stable || (league && league.id) || "default"}`;
+}
+// Read a league's saved do-not-draft list the same way everywhere: the copy on the league object wins
+// (it survives sign-out and syncs across devices), with localStorage as the fallback.
+function readAvoidList(league) {
+  try {
+    if (Array.isArray(league && league.avoidList) && league.avoidList.length) return league.avoidList;
+    const ls = JSON.parse(localStorage.getItem(listStorageKey("fdc-avoid", league)) || "[]");
+    return Array.isArray(ls) ? ls : [];
+  } catch { return []; }
+}
+
 function keeperNameIndex(players) {
   const m = new Map();
   (players || []).forEach((p) => { if (p && p.name != null && !m.has(normName(p.name))) m.set(normName(p.name), p.id); });
@@ -5146,6 +5167,8 @@ const css = `
    dozen panel headings competed with the recommendation the page exists to deliver. */
 .gs-root h1,.gs-root h2,.gs-root h3{margin:0}
 .qstar:hover,.qban:hover{opacity:1!important;transform:scale(1.15);transition:opacity .12s,transform .12s}
+/* Both are pinned bottom-left, so the bug button rides above the sticky buy bar while it is showing. */
+body.buybar-open .bugbtn{bottom:76px!important}
 .hairline{border-bottom:1px solid var(--line)} .mut{color:var(--mut)} .gold{color:var(--gold)}
 .btn{background:var(--panel3);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer;font-family:'Barlow';font-size:13px}
 .btn:hover{transition:border-color .15s,background .15s,transform .1s,box-shadow .15s}
@@ -5386,6 +5409,12 @@ select.gs option{background:var(--panel2);color:var(--ink)}
   .stepgrid{grid-template-columns:repeat(2,minmax(0,1fr))!important}
   /* The status filter chips are already a wrapping row; just stop them scrolling the page sideways. */
   .filterchips{margin-left:-2px;margin-right:-2px}
+  /* The sticky buy bar stacks its label above the two buttons rather than squeezing all three onto a
+     phone row; the buttons then split the width evenly. */
+  .buybar{gap:8px!important;padding:9px 14px!important}
+  .buybar>div[style*="flex: 1"]{display:none!important}
+  .buybar>div:first-child{flex:1 1 100%!important}
+  .buybar>button{flex:1 1 0!important}
   .actionbar>button{flex:1 1 46%!important;padding:11px 8px!important}
   .actionbar>button .disp{font-size:13px!important}
   .actionbar>div[style*="width: 1px"]{display:none}
@@ -5640,8 +5669,8 @@ function GlobalBugReport({ user, onSubmit }) {
   };
   return (
     <>
-      <button onClick={() => setOpen(true)} title="Report a bug or send feedback"
-        style={{ position: "fixed", left: 14, bottom: 14, zIndex: 90, display: "inline-flex", alignItems: "center", gap: 6, background: "var(--panel)", color: "var(--ink)", border: "1px solid var(--gold)", borderRadius: 20, padding: "7px 13px", fontSize: 12, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", boxShadow: "0 4px 14px #0007" }}>
+      <button onClick={() => setOpen(true)} title="Report a bug or send feedback" className="bugbtn"
+        style={{ position: "fixed", left: 14, bottom: 14, zIndex: 90, transition: "bottom .28s cubic-bezier(.2,.7,.3,1)", display: "inline-flex", alignItems: "center", gap: 6, background: "var(--panel)", color: "var(--ink)", border: "1px solid var(--gold)", borderRadius: 20, padding: "7px 13px", fontSize: 12, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", boxShadow: "0 4px 14px #0007" }}>
         <i className="ti ti-bug" style={{ fontSize: 14, color: "var(--gold)" }} aria-hidden="true" />Report a bug
       </button>
       {open && (
@@ -6637,6 +6666,7 @@ export default function App() {
         onOfficial={(id) => { setDraftTab(null); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
         onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }}
         onDeleteMock={deleteMock} onRankings={() => setRoute("rankings")} onDelete={(id) => { deleteLeague(id); setRoute(user.paid ? "home" : "library"); }}
+        onSaveAvoid={(id, arr) => { const next = leagues.map((l) => (l.id === id ? { ...l, avoidList: arr } : l)); setLeagues(next); persist({ leagues: next }); }}
         onOpenTeamHub={lg.cfg.connect && lg.cfg.connect.leagueId ? () => { setHubLeagueId(lg.cfg.connect.leagueId); setRoute("teamHub"); } : null} /> : null; })()}
       {route === "teamHub" && user && hubLeagueId && <Boundary label="in-season hub" fallback={(msg) => (
         <div style={{ maxWidth: 620, margin: "60px auto", padding: "0 20px", textAlign: "center" }}>
@@ -7092,7 +7122,122 @@ function TrendsPage({ user, onBack, onHome, onSignOut }) {
   );
 }
 
-function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, onMock, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings }) {
+// ---- DO-NOT-DRAFT EDITOR -------------------------------------------------------------------------
+// Reached from the league's prep checklist. The list can also be built one player at a time inside the
+// draft room (the ⊘ on each row), but that only helps once you're already drafting — the point of prep is
+// to have this settled BEFORE the clock starts, and for that you need search, not a board.
+//
+// Deliberately a modal over the league page rather than a route: it is a small editing task you come back
+// from, and the app never changes its URL, so a route here would be a dead end on refresh.
+function AvoidListModal({ league, initial, onSave, onClose }) {
+  const [list, setList] = useState(() => (Array.isArray(initial) ? initial.slice() : []));
+  const [q, setQ] = useState("");
+  const [pos, setPos] = useState("ALL");
+  const inputRef = useRef(null);
+  useEffect(() => { if (inputRef.current) inputRef.current.focus(); }, []);
+
+  // Build this league's real pool, so the names, positions and ADP match the board exactly — including
+  // whether kickers and defenses are even draftable here.
+  const players = useMemo(() => {
+    try { return buildPlayers(league.cfg || {}) || []; } catch { return []; }
+  }, [league.cfg]);
+
+  const listSet = useMemo(() => new Set(list), [list]);
+  const POSSES = useMemo(() => {
+    const st = (league.cfg && league.cfg.start) || {};
+    const base = ["QB", "RB", "WR", "TE"];
+    if ((st.K || 0) > 0) base.push("K");
+    if ((st.DST || 0) > 0) base.push("DST");
+    return ["ALL", ...base];
+  }, [league.cfg]);
+
+  const results = useMemo(() => {
+    const needle = normName(q);
+    return players
+      .filter((p) => p && p.name && !listSet.has(p.name))
+      .filter((p) => pos === "ALL" || p.pos === pos)
+      .filter((p) => (needle ? normName(p.name).includes(needle) : true))
+      .sort((a, b) => (a.adp ?? 999) - (b.adp ?? 999))
+      .slice(0, needle || pos !== "ALL" ? 60 : 40);
+  }, [players, q, pos, listSet]);
+
+  // Keep the saved list in the order it was added, so it reads like a list someone wrote rather than a
+  // re-sorted set that shuffles under them.
+  const add = (name) => setList((L) => (L.includes(name) ? L : [...L, name]));
+  const remove = (name) => setList((L) => L.filter((x) => x !== name));
+  const byName = useMemo(() => { const m = new Map(); players.forEach((p) => m.set(p.name, p)); return m; }, [players]);
+
+  const save = () => { onSave(list); onClose(); };
+  const dirty = JSON.stringify(list) !== JSON.stringify(Array.isArray(initial) ? initial : []);
+
+  const row = (name, action) => {
+    const p = byName.get(name);
+    return (
+      <div key={name} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderBottom: "1px solid var(--line)", fontSize: 13 }}>
+        {p ? <PosName p={p} /> : <span><b>{name}</b> <span className="mut" style={{ fontSize: 11 }}>· not in this league's pool</span></span>}
+        {p && <span className="mut num" style={{ fontSize: 11, marginLeft: 4 }}>{p.team || ""}{p.adp != null ? ` · ADP ${p.adp.toFixed(0)}` : ""}</span>}
+        <span style={{ flex: 1 }} />
+        {action}
+      </div>
+    );
+  };
+
+  return (
+    <div className="modalbg" onClick={onClose}>
+      <div className="panel" style={{ maxWidth: 620, width: "100%", maxHeight: "86vh", display: "flex", flexDirection: "column", padding: 0, overflow: "hidden" }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ padding: "18px 20px 12px", borderBottom: "1px solid var(--line)" }}>
+          <div className="disp" style={{ fontSize: 20, fontWeight: 700, marginBottom: 3 }}>Do-not-draft list</div>
+          <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55 }}>
+            Players you won't take at any price — the half-season injury, the holdout, the one you can't watch.
+            They <b style={{ color: "var(--ink)" }}>stay on your board</b> (you still need to see when the room takes them, and you can change your mind), but they'll never be recommended to you.
+          </div>
+        </div>
+
+        {list.length > 0 && (
+          <div style={{ padding: "12px 20px 0" }}>
+            <div className="disp" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--red)", fontWeight: 800, marginBottom: 4 }}>On the list · {list.length}</div>
+            <div style={{ maxHeight: 170, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8 }}>
+              {list.map((n) => row(n, (
+                <button className="btn btn-mini" onClick={() => remove(n)} title="Take him off the list">Remove</button>
+              )))}
+            </div>
+          </div>
+        )}
+
+        <div style={{ padding: "14px 20px 0" }}>
+          <div style={{ position: "relative", marginBottom: 8 }}>
+            <i className="ti ti-search" style={{ position: "absolute", left: 11, top: 10, fontSize: 15, color: "var(--mut)" }} aria-hidden="true" />
+            <input ref={inputRef} className="gs" style={{ width: "100%", paddingLeft: 34 }} placeholder="Search players to add…" value={q} onChange={(e) => setQ(e.target.value)} />
+          </div>
+          <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 8 }}>
+            {POSSES.map((k) => (
+              <button key={k} className="btn btn-mini" style={{ borderColor: pos === k ? "var(--gold)" : "var(--line)", color: pos === k ? "var(--gold)" : "var(--ink)" }} onClick={() => setPos(k)}>{k}</button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ flex: 1, minHeight: 120, overflowY: "auto", padding: "0 20px" }}>
+          {results.length === 0
+            ? <div className="mut" style={{ fontSize: 12.5, padding: "14px 2px" }}>{q.trim() ? `No player matching “${q.trim()}”${pos !== "ALL" ? ` at ${pos}` : ""}.` : "No players to show."}</div>
+            : results.map((p) => row(p.name, (
+                <button className="btn btn-mini" style={{ borderColor: "var(--red)", color: "var(--red)" }} onClick={() => add(p.name)} title={`Add ${p.name} to the do-not-draft list`}>
+                  <i className="ti ti-ban" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Don't draft
+                </button>
+              )))}
+        </div>
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "12px 20px", borderTop: "1px solid var(--line)" }}>
+          <span className="mut" style={{ fontSize: 11.5 }}>{list.length ? `${list.length} player${list.length === 1 ? "" : "s"} on the list` : "Nobody on the list yet"}</span>
+          <span style={{ flex: 1 }} />
+          <button className="btn btn-mini" onClick={onClose}>Cancel</button>
+          <button className="btn btn-gold" onClick={save} disabled={!dirty}>{dirty ? "Save list" : "Saved"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, onMock, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings, onSaveAvoid }) {
   const total = (league.cfg.teams || 12) * league.cfg.rounds;
   // A league is "complete" if the LOCAL pick log is full OR the connected platform says the draft is
   // done — the local log only fills when the draft room is opened, so a Sleeper league that finished
@@ -7124,7 +7269,11 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
   // ORDER = IMPACT: settings (every number on the board is computed from them) → your slot (nothing knows
   // when you're up without it) → keepers (they change who's available) → league ADP and rankings (they
   // change what "value" means in your room) → reps.
-  const avoidCount = Array.isArray(league.avoidList) ? league.avoidList.length : 0;
+  // Read through the shared helper so this agrees with the draft room even when the list only exists in
+  // localStorage (saved before the league object carried it).
+  const avoidSaved = readAvoidList(league);
+  const avoidCount = avoidSaved.length;
+  const [avoidOpen, setAvoidOpen] = useState(false);
   const prepRows = (() => {
     const connected = !!connectedId;
     const stt = league.cfg.start || {};
@@ -7186,8 +7335,8 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
       key: "avoid", title: "Do-not-draft list", optional: true,
       status: avoidCount ? `${avoidCount} player${avoidCount === 1 ? "" : "s"}` : "None",
       done: avoidCount > 0,
-      hint: "Players you've decided you won't take at any price — the guy with the half-season injury, the holdout, the one you just can't watch. They stay on the board (you still need to see when the room takes them, and you can always change your mind), but they'll never be recommended to you.\n\nAdd them from the draft room: the ⊘ next to any player's name.",
-      go: () => onOfficial(league.id),
+      hint: "Players you've decided you won't take at any price — the guy with the half-season injury, the holdout, the one you just can't watch. They stay on the board (you still need to see when the room takes them, and you can always change your mind), but they'll never be recommended to you.\n\nOpens a searchable list. You can also add players one at a time in the draft room with the ⊘ beside their name.",
+      go: () => setAvoidOpen(true),
     });
     return rows;
   })();
@@ -7216,6 +7365,18 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
   return (
     <div>
       <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="League" />
+      {avoidOpen && (
+        <AvoidListModal
+          league={league}
+          initial={avoidSaved}
+          onClose={() => setAvoidOpen(false)}
+          onSave={(arr) => {
+            // Write BOTH stores, exactly as the draft room does, so whichever one is read first agrees.
+            try { localStorage.setItem(listStorageKey("fdc-avoid", league), JSON.stringify(arr)); } catch {}
+            if (typeof onSaveAvoid === "function") onSaveAvoid(league.id, arr);
+          }}
+        />
+      )}
       <div style={{ maxWidth: 820, margin: "0 auto", padding: "24px 20px 50px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginBottom: 6 }}>
           <Compass size={40} />
@@ -11179,6 +11340,124 @@ function AvailDemo() {
   );
 }
 
+// Appears after the hero scrolls away. IntersectionObserver rather than a scroll listener so it costs
+// nothing per frame, with a scroll fallback for anything that lacks it.
+function StickyBuyBar({ price, onBuy, onDemo }) {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    const target = document.querySelector(".hero-h");
+    if (!target || typeof IntersectionObserver === "undefined") {
+      const onScroll = () => setShow(window.scrollY > 520);
+      window.addEventListener("scroll", onScroll, { passive: true });
+      onScroll();
+      return () => window.removeEventListener("scroll", onScroll);
+    }
+    const io = new IntersectionObserver(([e]) => setShow(!e.isIntersecting), { rootMargin: "-40px 0px 0px 0px" });
+    io.observe(target);
+    return () => io.disconnect();
+  }, []);
+  // Tell the page the bar is up, so the floating bug button can get out of its way.
+  useEffect(() => {
+    try { document.body.classList.toggle("buybar-open", show); } catch {}
+    return () => { try { document.body.classList.remove("buybar-open"); } catch {} };
+  }, [show]);
+  return (
+    <div aria-hidden={!show} style={{
+      position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 60,
+      transform: show ? "translateY(0)" : "translateY(110%)",
+      transition: "transform .28s cubic-bezier(.2,.7,.3,1)",
+      background: "linear-gradient(180deg, rgba(11,15,20,.86), var(--bg) 55%)",
+      borderTop: "1px solid var(--line2)", backdropFilter: "blur(8px)",
+      pointerEvents: show ? "auto" : "none",
+    }}>
+      <div className="buybar" style={{ maxWidth: 1080, margin: "0 auto", padding: "11px 20px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+        <div style={{ minWidth: 0 }}>
+          <div className="disp" style={{ fontSize: 15, fontWeight: 800, lineHeight: 1.15 }}>Season Pass — <span className="gold num">${price.toFixed(2)}</span></div>
+          <div className="mut" style={{ fontSize: 11.5 }}>Unlimited leagues and mocks, every feature, through March 1.</div>
+        </div>
+        <div style={{ flex: 1 }} />
+        <button className="btn" style={{ padding: "9px 16px", fontSize: 13.5 }} onClick={onDemo}>Try a free mock</button>
+        <button className="btn btn-gold" style={{ padding: "9px 20px", fontSize: 13.5, fontWeight: 700 }} onClick={onBuy}>Get the pass</button>
+      </div>
+    </div>
+  );
+}
+
+// HERO PICK CARD — the marketing page's proof of product.
+//
+// Built from the SAME buildPlayers the draft room uses, on a plausible 12-team PPR board with the first
+// eight picks gone, so every name, VBD and ADP on it is real. Nothing here is hand-written copy dressed up
+// as a screenshot; if the engine changes, this changes. Static (no sims) because a landing page must not
+// pay for a Monte Carlo — the availability figures are the engine's own board-outlook numbers.
+function HeroPickCard() {
+  const data = useMemo(() => {
+    try {
+      const cfg = { type: "redraft", teams: 12, rounds: 15, slot: 9, sf: false, tePremMult: 0,
+        start: { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0, K: 0, DST: 0 }, scoring: { rec: 1 }, caps: {} };
+      const ps = (buildPlayers(cfg) || []).filter((p) => p && p.name && p.adp != null);
+      if (ps.length < 12) return null;
+      const board = ps.slice().sort((a, b) => a.adp - b.adp);
+      // Pretend the first eight are off the board, then show the best of what's left by value.
+      const left = board.slice(8);
+      const byVal = left.slice().sort((a, b) => (b.vbd ?? -99) - (a.vbd ?? -99));
+      const pick = byVal[0];
+      if (!pick) return null;
+      const alts = byVal.slice(1, 4);
+      // Availability: how likely each is to still be there at pick 21 (the next turn on a 12-team wheel from
+      // slot 9). A player whose ADP is well past that pick is likely to survive; one going before it isn't.
+      const survives = (p) => Math.max(4, Math.min(96, Math.round(100 / (1 + Math.exp((21 - (p.adp || 21)) / 3.2)))));
+      return { pick, alts, survives };
+    } catch { return null; }
+  }, []);
+
+  if (!data) return <Compass size={170} spin />;
+  const { pick, alts, survives } = data;
+  const row = (p, top) => (
+    <div key={p.id} style={{ display: "grid", gridTemplateColumns: "42px minmax(0,1fr) 46px 42px", gap: 8, alignItems: "center", padding: "7px 10px", fontSize: 12.5, borderTop: top ? "none" : "1px solid var(--line)" }}>
+      <span className="num" style={{ fontWeight: 800, color: POS_COLOR[p.pos] || "var(--ink)", fontSize: 11.5 }}>{p.pos}{p.posRank || ""}</span>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{top && <span style={{ color: "var(--gold)" }}>★ </span>}<b style={{ color: top ? "var(--gold)" : "var(--ink)" }}>{p.name}</b> <span className="mut" style={{ fontSize: 11 }}>{p.team}</span></span>
+      <span className="num" style={{ textAlign: "right", fontWeight: 700, color: "var(--green)", fontSize: 11.5 }}>+{Math.round(p.vbd)}</span>
+      <span className="num" style={{ textAlign: "right", fontSize: 11.5, color: survives(p) >= 65 ? "var(--green)" : survives(p) >= 35 ? "var(--gold)" : "var(--red)" }}>{survives(p)}%</span>
+    </div>
+  );
+
+  return (
+    <div className="panel" style={{ overflow: "hidden", boxShadow: "0 18px 44px -18px rgba(0,0,0,.75)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", background: "var(--panel2)", borderBottom: "1px solid var(--line)" }}>
+        <span style={{ width: 7, height: 7, borderRadius: 99, background: "var(--green)", flexShrink: 0 }} />
+        <span className="disp" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--mut)", fontWeight: 800 }}>On the clock · 2.09</span>
+        <span style={{ flex: 1 }} />
+        <span className="num mut" style={{ fontSize: 10.5 }}>12-team · PPR</span>
+      </div>
+      <div style={{ padding: "12px 12px 10px", background: "rgba(224,166,60,.055)" }}>
+        <div className="disp" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--gold)", fontWeight: 800, marginBottom: 3 }}>The pick</div>
+        <div className="disp" style={{ fontSize: 21, fontWeight: 800, lineHeight: 1.15 }}>{pick.name}</div>
+        {/* Say what the number MEANS. "4% to reach your next pick" is the strongest possible reason to take
+            him now, but as a bare figure it reads like a warning — which is the wrong first impression on a
+            card whose job is to show the product making a confident call. */}
+        <div className="mut" style={{ fontSize: 11.5, marginTop: 3, lineHeight: 1.5 }}>
+          <b style={{ color: POS_COLOR[pick.pos] || "var(--ink)" }}>{pick.pos}{pick.posRank || ""}</b>
+          <span className="num"> · +{Math.round(pick.vbd)} value over replacement</span>
+          <br />
+          {(() => {
+            const s = survives(pick);
+            if (s < 25) return <span style={{ color: "var(--red)" }}>Won't last — {s}% chance he's still there at your next pick.</span>;
+            if (s < 60) return <span style={{ color: "var(--gold)" }}>Coin flip — {s}% chance he's still there at your next pick.</span>;
+            return <span style={{ color: "var(--green)" }}>Can wait — {s}% chance he's still there at your next pick.</span>;
+          })()}
+        </div>
+      </div>
+      <div style={{ padding: "7px 12px 3px" }}>
+        <div className="disp" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--mut)", fontWeight: 800 }}>Also considered</div>
+      </div>
+      <div>{alts.map((p, i) => row(p, i === -1))}</div>
+      <div className="mut" style={{ fontSize: 10.5, padding: "8px 12px 10px", borderTop: "1px solid var(--line)", lineHeight: 1.45 }}>
+        Live from the real engine — the same board you'd be looking at on the clock.
+      </div>
+    </div>
+  );
+}
+
 function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTab }) {
   // Interactive preview: a live mini board. Hover any player to see the real AI outlook
   // the tool shows; the compass needle swings to "point at" the highlighted pick.
@@ -11242,11 +11521,25 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
           <div className="mut" style={{ fontSize: 12, marginTop: 11 }}>{paid ? "Your season pass is active — jump into your leagues anytime." : "Free mock draft — no signup, no card, 30 seconds to start. Draft three rounds on the real engine."}</div>
         </div>
 
-        <div style={{ flex: "0 0 300px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16 }}>
-          <Compass size={190} spin />
-          <div className="disp" style={{ fontSize: 12, letterSpacing: ".18em", color: "var(--mut)", textAlign: "center" }}>TRUE NORTH ON EVERY PICK</div>
+        {/* THE HERO'S RIGHT HALF. It used to be a spinning compass and a tagline — a logo, in the one spot
+            where a stranger decides whether this is a real product. The thing being sold is the pick
+            recommendation, so that is what goes here: the actual on-the-clock card, built from the real
+            engine on a real board, at the size it appears in the room. The compass moves down to the
+            caption, where a mark belongs. */}
+        <div style={{ flex: "1 1 330px", minWidth: 0, display: "flex", flexDirection: "column", gap: 12 }}>
+          <HeroPickCard />
+          <div style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: "center" }}>
+            <Compass size={26} />
+            <div className="disp" style={{ fontSize: 11, letterSpacing: ".18em", color: "var(--mut)" }}>TRUE NORTH ON EVERY PICK</div>
+          </div>
         </div>
       </div>
+
+      {/* STICKY BUY BAR. The price used to live ~80% down a long page, so someone who scrolled past the
+          hero had no way to buy without hunting for it. This appears once the hero is out of view and
+          follows them down: what it costs, what it covers, and both doors (try free / buy). It never
+          shows to someone who already has a pass. */}
+      {!paid && <StickyBuyBar price={biz.price} onBuy={onBuy} onDemo={onDemo} />}
 
       {/* ===== OVERVIEW BODY — contained sections with consistent rhythm ===== */}
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: "20px 20px 50px", display: "flex", flexDirection: "column", gap: 20 }}>
@@ -16091,11 +16384,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // and page reloads: the connected Sleeper league id first, then a slug of the league name, then the
   // internal id. (Keying only by the internal league.id was fragile — it can change when leagues reload
   // from the backend, orphaning the saved queue.)
-  const queueKey = useMemo(() => {
-    const stable = (cfg.connect && cfg.connect.leagueId) ? `sl-${cfg.connect.leagueId}`
-      : (cfg.name ? `nm-${String(cfg.name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}` : null);
-    return `fdc-queue-${stable || league?.id || "default"}`;
-  }, [cfg.connect, cfg.name, league?.id]);
+  const queueKey = useMemo(() => listStorageKey("fdc-queue", league), [cfg.connect, cfg.name, league?.id]);
   const [queue, setQueue] = useState(() => new Set());
   // Load order of preference: (1) the queue saved INTO the league object — survives sign-out and rides
   // with the league's own persistence; (2) localStorage under the stable key; (3) the legacy league.id
@@ -16133,18 +16422,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const avoidKey = useMemo(() => queueKey.replace("fdc-queue-", "fdc-avoid-"), [queueKey]);
   const [avoid, setAvoid] = useState(() => new Set());
   const [avoidOnly, setAvoidOnly] = useState(false);
+  // One reader shared with the standalone editor on the league page, so a list built there is the same
+  // list the board honours. `league.avoidList` is the dep that matters: edit the list, come back into the
+  // draft room, and the board must already reflect it.
   useEffect(() => {
     try {
-      let raw = Array.isArray(league?.avoidList) ? league.avoidList : null;
-      if (!raw || raw.length === 0) {
-        const ls = JSON.parse(localStorage.getItem(avoidKey) || "[]");
-        if (Array.isArray(ls) && ls.length) raw = ls;
-      }
-      const arr = Array.isArray(raw) ? raw : [];
+      const arr = readAvoidList(league);
       setAvoid(new Set(arr));
       try { localStorage.setItem(avoidKey, JSON.stringify(arr)); } catch {}
     } catch { setAvoid(new Set()); }
-  }, [avoidKey, league?.id]);
+  }, [avoidKey, league?.id, league?.avoidList]);
   const toggleAvoid = (name) => setAvoid((prev) => {
     const next = new Set(prev);
     if (next.has(name)) next.delete(name); else next.add(name);
