@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20ax";
+const BUILD_TAG = "2026.07.22a";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5313,12 +5313,21 @@ select.gs option{background:var(--panel2);color:var(--ink)}
   .decision-group-b{grid-template-columns:minmax(155px,0.8fr) minmax(170px,0.9fr) minmax(175px,0.92fr)!important;min-width:540px}
   .decision-divider{display:block!important}
 }
+@media(max-width:1100px){
+  /* Five get-started cards across needs ~165px each plus gaps; below this they'd be unreadable slivers, so
+     drop to three and let the last two sit on a second row (3 + 2 reads as intentional; 4 + 1 reads broken). */
+  .stepgrid{grid-template-columns:repeat(3,minmax(0,1fr))!important}
+}
 @media(max-width:900px){
   /* Home page: leagues + quick mocks sit side by side on desktop, but two columns aren't readable on a narrow
      screen — stack them so each gets the full width, leagues first (they're first in the DOM). The vertical
      rule between them makes no sense once stacked, so it's hidden. */
   .home-grid{grid-template-columns:1fr!important}
   .home-divider{display:none!important}
+  /* The Sleeper strip's flexible spacer exists to push the link control to the far right on a wide screen.
+     Once things wrap it just injects a blank row, so it collapses. */
+  .linkstrip>div[style*="flex: 1 1 auto"]{display:none!important}
+  .linkstrip>div[style*="flex: 0 1 300px"]{flex:1 1 100%!important}
 }
 @media(max-width:640px){
   .hero-h{font-size:30px!important}
@@ -5347,6 +5356,9 @@ select.gs option{background:var(--panel2);color:var(--ink)}
   .hubbar .chip{font-size:10px;padding:3px 7px}
   /* The home action bar grows to five items in season; on a phone the items wrap to two rows instead of
      squeezing five labels onto one. */
+  .stepgrid{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  /* The status filter chips are already a wrapping row; just stop them scrolling the page sideways. */
+  .filterchips{margin-left:-2px;margin-right:-2px}
   .actionbar>button{flex:1 1 46%!important;padding:11px 8px!important}
   .actionbar>button .disp{font-size:13px!important}
   .actionbar>div[style*="width: 1px"]{display:none}
@@ -5664,7 +5676,8 @@ function VersionBadge() {
       onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
       <span
         onClick={() => setOpen((o) => !o)}
-        style={{ display: "inline-block", fontSize: 10, lineHeight: "16px", color: "var(--mut)", opacity: 0.7,
+        style={{ display: "inline-block", fontSize: 9.5, lineHeight: "14px", padding: "2px 7px", borderRadius: 99,
+          border: "1px solid var(--line2)", background: "var(--panel2)", color: "var(--mut)", opacity: 0.85,
           fontFamily: "var(--mono)", fontVariantNumeric: "tabular-nums", cursor: "help", userSelect: "none" }}>
         v{BUILD_TAG}
       </span>
@@ -5766,6 +5779,15 @@ export default function App() {
   setGlobalNav(setRoute);
   const [user, setUser] = useState(null); // {email, paid, admin}
   const [authOpen, setAuthOpen] = useState(false);
+  // A password-reset link lands as /?reset=<token>. Read it ONCE at module-mount time and strip it from the
+  // address bar immediately: a live reset token sitting in the URL gets copied, bookmarked and shared.
+  const [resetToken, setResetToken] = useState(() => {
+    try {
+      const t = new URLSearchParams(window.location.search).get("reset");
+      if (t) window.history.replaceState({}, "", window.location.pathname);
+      return t || null;
+    } catch { return null; }
+  });
   const [authError, setAuthError] = useState(null);
   const [leagues, setLeagues] = useState([]);
   const [activeId, setActiveId] = useState(nav0.activeId || null);
@@ -6649,6 +6671,11 @@ export default function App() {
           onClose={() => setFreeNoticeOpen(false)}
         />
       )}
+      {resetToken && <ResetPasswordModal token={resetToken} onClose={() => setResetToken(null)} onDone={(u) => {
+        const admin = isAdminEmail(u.email);
+        setUser(migrateRankSets({ ...u, rankSets: u.rankSets || [], admin, paid: u.paid || admin }));
+        setResetToken(null); setAuthOpen(false); setRoute("home");
+      }} />}
       {authOpen && <AuthModal hasBackend={hasBackend} authError={authError} onClose={() => { setAuthOpen(false); setAuthError(null); }} onSignUp={async (email, password, mode) => {
         try {
           const u = await signUp(email, password, mode);
@@ -6672,7 +6699,7 @@ function GuideGraphic({ kind }) {
   );
   if (kind === "create") return (
     <svg viewBox="0 0 240 96" style={box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-      {["ESPN", "Sleeper", "Yahoo"].map((t, i) => (<g key={i}><rect x={18 + i * 52} y="20" width="46" height="24" rx="6" fill="var(--panel2)" stroke="var(--line)" strokeWidth="1" /><text x={41 + i * 52} y="35" fontSize="8.5" fill="var(--mut)" textAnchor="middle" fontFamily="var(--mono)">{t}</text></g>))}
+      {[["Sleeper", 1], ["Manual", 0], ["Any site", 0]].map(([t, hot], i) => (<g key={i}><rect x={18 + i * 52} y="20" width="46" height="24" rx="6" fill="var(--panel2)" stroke={hot ? g : "var(--line)"} strokeWidth={hot ? 1.5 : 1} /><text x={41 + i * 52} y="35" fontSize="8.5" fill={hot ? g : "var(--mut)"} textAnchor="middle" fontFamily="var(--mono)">{t}</text></g>))}
       <path d="M120 52 v10 M120 62 h-44 M120 62 h44 M76 62 v8 M164 62 v8 M120 62 v8" stroke={g} strokeWidth="1.5" fill="none" opacity="0.6" />
       <rect x="86" y="70" width="68" height="20" rx="6" fill={g} /><text x="120" y="83" fontSize="9" fontWeight="700" fill="rgba(242,182,60,.10)" textAnchor="middle">Your league</text>
     </svg>
@@ -6750,7 +6777,7 @@ function HelpPage({ user, biz, onBack, onHome, onSignOut, onSubmit, initialTab }
     ["How do the predictions work?", "We read thousands of real drafts in your exact format to learn how the board actually behaves — runs, slides, reaches — then run simulations to turn that into live availability odds and pick recommendations. It updates after every selection."],
     ["Is my draft data private?", "Yes. Your leagues, drafts, mock drafts, and personal rankings are tied to your account and are never shared with or visible to other users."],
     ["What does the season pass cover?", "One pass covers unlimited leagues and unlimited mock drafts with every feature through the March 1 league-year cutoff. You'll always see the current price — including any active promo — on the home page and at checkout before you pay anything."],
-    ["Which platforms sync automatically?", "Sleeper syncs automatically at launch — picks, traded picks, rosters, and depth charts flow in. Every other platform (ESPN, Yahoo, manual leagues) works through fast manual entry."],
+    ["Which platforms sync automatically?", "Sleeper is the one that syncs picks live — picks, traded picks, rosters, and depth charts all flow in. A public ESPN league can import its settings (teams, roster slots, scoring, draft order) so you don't type them, but ESPN has no pick feed, so the draft itself is manual entry. Yahoo, CBS and everything else is manual entry too."],
     ["Can I set keepers and traded picks?", "Yes — in any draft's Settings tab. Keepers can be kept at a specific pick or added free to a roster, and you can reassign traded picks between teams. These apply to the official draft and every mock for that league."],
     ["How do I get help fast?", "Use the form on this page. It reaches the team directly, and replies come to the email you submit with."],
   ];
@@ -6794,7 +6821,7 @@ function HelpPage({ user, biz, onBack, onHome, onSignOut, onSubmit, initialTab }
             </div>
             {[
               ["rankings", "ti-list-numbers", "Set your rankings", "Two separate tools. My Ranks is your own board — tell the tool where you disagree with the market and your ranks become a “My ADP” column plus a “Blend” (your read tempered by the market). Platform Ranks (entered in the draft room) is your platform's ADP, and it powers the “Edge” column — how much value you're getting versus where your platform ranks a player. One global injury/news tweak ripples across every board at once."],
-              ["create", "ti-plus", "Create or connect a league", "Connect Sleeper, ESPN, or Yahoo to auto-import — or build one by hand in a minute. Set the real rules: teams, scoring, roster slots, SuperFlex, TE premium, draft order, keepers, traded picks. Everything downstream is computed from these, so a SuperFlex 0.5-PPR board looks nothing like a standard 1QB one."],
+              ["create", "ti-plus", "Create or connect a league", "Connect Sleeper for full live sync, import a public ESPN league's settings, or build any league by hand in a minute. Set the real rules: teams, scoring, roster slots, SuperFlex, TE premium, draft order, keepers, traded picks. Everything downstream is computed from these, so a SuperFlex 0.5-PPR board looks nothing like a standard 1QB one."],
               ["open", "ti-stack-2", "Open an existing league", "Everything you've built lives in one place. Jump back into any league to draft, mock, edit settings, or review past drafts — your keepers, pick trades, and rankings all travel with it."],
               ["mock", "ti-dice-5", "Run a mock", "Mocks are your highest-leverage habit — reps on your exact settings. Each one is scored and saved, and “My Mock Insights” surfaces your tendencies across them (where you reach, the values you keep missing), kept separate by format. The more you run, the sharper the read."],
               ["draft", "ti-trophy", "Draft for real", "On the clock, the hub is mission control: projected picks, live availability odds (“will he make it back to you?”), take-now-vs-wait math, selective insight tags on the players that matter, and your custom columns — all recalculating after every selection. Trust the odds to time your picks."],
@@ -6854,7 +6881,7 @@ function HelpPage({ user, biz, onBack, onHome, onSignOut, onSubmit, initialTab }
             </div>
             <button className="btn btn-gold" onClick={submit} disabled={!email.includes("@") || msg.trim().length < 3}>Submit feedback</button>
             {sent && <div style={{ marginTop: 12, color: "var(--green)", fontSize: 13 }}><i className="ti ti-check" style={{ marginRight: 5 }} aria-hidden="true" />Thanks — your message was received. We'll reply to {email} if it needs a response.</div>}
-            <div className="mut" style={{ fontSize: 11, marginTop: 14 }}>In this prototype, submissions are stored to the admin feedback inbox; in production they'd also notify the team and route replies to your email automatically.</div>
+            <div className="mut" style={{ fontSize: 11, marginTop: 14 }}>{hasBackend ? "Every message lands in our inbox and we read all of them. If you left an email we'll reply there." : "Demo mode — this message is saved in your browser only. Sign in on the live site to reach us."}</div>
           </div>
         )}
 
@@ -6877,7 +6904,7 @@ function HelpPage({ user, biz, onBack, onHome, onSignOut, onSubmit, initialTab }
                 <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.6 }}>{b}</div>
               </div>
             ))}
-            <div className="mut" style={{ fontSize: 11, marginTop: 8 }}>This is a friendly summary for a prototype, not legal advice — have an attorney review final terms before launch.</div>
+            <div className="mut" style={{ fontSize: 11, marginTop: 8 }}>This is a plain-English summary of how we operate, not the binding terms and not legal advice.</div>
           </div>
         )}
       </div>
@@ -6947,7 +6974,7 @@ function TrendsPage({ user, onBack, onHome, onSignOut }) {
           <Section icon="ti-bandage" title="Injury wire" items={f.injuries} render={(x) => noteRow(x, INJURY_INFO[x.sev].color)} />
         </div>
 
-        <div className="mut" style={{ fontSize: 11.5, marginTop: 18 }}>In production this page refreshes daily from public ADP movement (Sleeper, FantasyPros, ESPN), transaction and depth-chart feeds, and injury wires — nothing here is entered by hand. The sample above shows the layout and the categories the live feed populates.</div>
+        <div className="mut" style={{ fontSize: 11.5, marginTop: 18 }}>These are the categories the daily feed tracks: ADP movement out of our Sleeper draft harvest, transactions and signings, depth-chart changes, and the injury wire. The entries above are a worked example of the format — the live feed is being wired in now.</div>
       </div>
     </div>
   );
@@ -7838,7 +7865,10 @@ function useSleeperLink(user, onUpdate) {
 // The Sleeper link control — a compact pill that sits NEXT TO the teams dropdown. When not linked it shows
 // an inline username field; when linked it shows who's connected with a single Unlink button. Unlinking
 // reveals the username field again so you can link a different account. All linking happens right here.
-function SleeperLinkControl({ link, unlink, linked, username }) {
+// `compact` is for the home-page strip, where the surrounding line ALREADY says what this is. Repeating
+// "Link your Sleeper account" inside a bordered panel two inches from "Connect Sleeper to pull in your
+// real leagues" read as two unrelated widgets stacked at opposite ends of an empty row.
+function SleeperLinkControl({ link, unlink, linked, username, compact }) {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -7867,6 +7897,16 @@ function SleeperLinkControl({ link, unlink, linked, username }) {
     );
   }
   // Not linked: inline username field to link (or link a different account after unlinking).
+  if (compact) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+        <input className="gs" style={{ flex: "1 1 150px", minWidth: 0, fontSize: 12.5, padding: "6px 9px" }} placeholder="Sleeper username" value={input}
+          onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") doLink(); }} />
+        <button className="btn btn-gold btn-mini" style={{ flexShrink: 0 }} onClick={doLink} disabled={busy || !input.trim()}>{busy ? "…" : "Link"}</button>
+        {err && <div style={{ color: "var(--red)", fontSize: 11, flexBasis: "100%" }}>{err}</div>}
+      </div>
+    );
+  }
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 7, border: "1px solid var(--line)", background: "var(--panel)", borderRadius: 12, padding: "9px 12px", minHeight: 56 }}>
       <div style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(107,168,229,.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
@@ -10154,7 +10194,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
   const anyMock = totalMocks > 0;
   const steps = [
     { n: 1, icon: "ti-list-numbers", title: "Set your rankings", note: "Optional, but do it first if you want your own values driving the board.", action: onRankings, done: (user?.rankSets || []).length > 0 },
-    { n: 2, icon: "ti-plus", title: "Create or connect a league", note: "Connect Sleeper/ESPN/Yahoo, or build one by hand. Settings, keepers, and drafts live here.", action: onNewLeague, done: leagues.length > 0 },
+    { n: 2, icon: "ti-plus", title: "Create or connect a league", note: "Connect Sleeper, or build any league by hand. Settings, keepers, and drafts live here.", action: onNewLeague, done: leagues.length > 0 },
     { n: 3, icon: "ti-stack-2", title: "Open an existing league", note: leagues.length ? `Jump into one of your ${leagues.length} league${leagues.length === 1 ? "" : "s"}.` : "Once you have a league, open it here.", action: () => (leagues.length ? openLeagueFlow() : onNewLeague()), done: false },
     { n: 4, icon: "ti-dice-5", title: "Run a mock", note: "A quick mock, an existing mock, or a mock of a specific league.", action: openMockPanel, done: anyMock },
     { n: 5, icon: "ti-trophy", title: "Draft for real", note: "Open your league and start the official draft.", action: () => (leagues.length ? openLeagueFlow() : onNewLeague()), done: leagues.some((l) => l.picks.length >= (l.cfg.teams || 12) * l.cfg.rounds) },
@@ -10258,38 +10298,39 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
         </div>
       )}
 
-      <div style={{ position: "sticky", top: 0, zIndex: 20, maxWidth: 940, margin: "0 auto", padding: "14px 20px 18px", background: "linear-gradient(180deg, var(--bg) 82%, transparent)" }}>
+      {/* PRIMARY ACTIONS. One bar, but not a flat one: the action you most likely came here for carries a
+          gold wash and gold label, the rest sit quiet. Previously all three (or five) segments were
+          identical, so "My Rankings" pulled as hard as "Create New League" and the bar read as a tab strip.
+          Width now matches the content below it (1180) instead of floating at a narrower 940. */}
+      <div style={{ position: "sticky", top: 0, zIndex: 20, maxWidth: 1180, margin: "0 auto", padding: "14px 20px 18px", background: "linear-gradient(180deg, var(--bg) 82%, transparent)" }}>
         <div className="actionbar" style={{ display: "flex", alignItems: "stretch", flexWrap: "wrap", border: "1px solid rgba(214,170,75,0.45)", borderRadius: 12, overflow: "hidden", background: "linear-gradient(180deg, rgba(38,32,18,0.98), rgba(28,26,20,0.98))", boxShadow: "0 6px 20px -6px rgba(0,0,0,.5)" }}>
-          {/* In season the bar leads with the week and, crucially, a permanent DRAFT RESULTS entry — the
-              pivot must never be the reason someone can't find their draft. */}
-          {seasonFirst && (
-            <>
-              <button onClick={openThisWeek} className="menuitem" style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: "transparent", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
-                <i className="ti ti-user-heart" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
-                <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>This Week</span>
-              </button>
-              <div style={{ width: 1, background: "rgba(214,170,75,0.30)" }} />
-              <button onClick={() => onDatabase()} className="menuitem" title="Every draft you've run — each one locked to the values that were live on its draft day" style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: "transparent", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
-                <i className="ti ti-flag-3" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
-                <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Draft Results</span>
-              </button>
-              <div style={{ width: 1, background: "rgba(214,170,75,0.30)" }} />
-            </>
-          )}
-          <button onClick={() => onNewLeague()} className="menuitem" style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: "transparent", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
-            <i className="ti ti-plus" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
-            <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>{seasonFirst ? "New League" : "Create New League"}</span>
-          </button>
-          <div style={{ width: 1, background: "rgba(214,170,75,0.30)" }} />
-          <button onClick={() => onQuickMock()} className="menuitem" style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: "transparent", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
-            <i className="ti ti-dice-5" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
-            <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Quick Mock</span>
-          </button>
-          <div style={{ width: 1, background: "rgba(214,170,75,0.30)" }} />
-          <button onClick={() => onRankings()} className="menuitem" style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: "transparent", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
-            <i className="ti ti-list-numbers" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
-            <span className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>My Rankings</span>
-          </button>
+          {(() => {
+            // In season the bar leads with the week and, crucially, a permanent DRAFT RESULTS entry — the
+            // pivot must never be the reason someone can't find their draft.
+            const items = seasonFirst
+              ? [
+                { k: "week", icon: "ti-user-heart", label: "This Week", onClick: openThisWeek, primary: true },
+                { k: "results", icon: "ti-flag-3", label: "Draft Results", onClick: () => onDatabase(), title: "Every draft you've run — each one locked to the values that were live on its draft day" },
+                { k: "new", icon: "ti-plus", label: "New League", onClick: () => onNewLeague() },
+                { k: "mock", icon: "ti-dice-5", label: "Quick Mock", onClick: () => onQuickMock() },
+                { k: "ranks", icon: "ti-list-numbers", label: "My Rankings", onClick: () => onRankings() },
+              ]
+              : [
+                { k: "new", icon: "ti-plus", label: "Create New League", onClick: () => onNewLeague(), primary: true },
+                { k: "mock", icon: "ti-dice-5", label: "Quick Mock", onClick: () => onQuickMock() },
+                { k: "ranks", icon: "ti-list-numbers", label: "My Rankings", onClick: () => onRankings() },
+              ];
+            return items.map((it, i) => (
+              <React.Fragment key={it.k}>
+                {i > 0 && <div style={{ width: 1, background: "rgba(214,170,75,0.30)" }} />}
+                <button onClick={it.onClick} className="menuitem" title={it.title || undefined}
+                  style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: it.primary ? "rgba(214,170,75,0.13)" : "transparent", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
+                  <i className={`ti ${it.icon}`} style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
+                  <span className="disp" style={{ fontSize: 15.5, fontWeight: it.primary ? 800 : 700, color: it.primary ? "var(--gold)" : "var(--ink)" }}>{it.label}</span>
+                </button>
+              </React.Fragment>
+            ));
+          })()}
         </div>
       </div>
 
@@ -10331,13 +10372,14 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
       {/* Sleeper link — a quiet one-line strip. It's an account connection, not a headline feature, so it
           shouldn't shout or carry a paragraph of explanation. */}
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "0 20px 16px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", borderBottom: "1px solid var(--line2)", paddingBottom: 12 }}>
-          <i className="ti ti-plug-connected" style={{ fontSize: 14, color: sleeperLink.linked ? "#4FD1A1" : "var(--mut)" }} aria-hidden="true" />
-          <span className="mut" style={{ fontSize: 12.5, flex: "1 1 auto", minWidth: 0 }}>
+        <div className="linkstrip" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", borderBottom: "1px solid var(--line2)", paddingBottom: 12 }}>
+          <i className="ti ti-plug-connected" style={{ fontSize: 14, color: sleeperLink.linked ? "#4FD1A1" : "var(--mut)", flexShrink: 0 }} aria-hidden="true" />
+          <span className="mut" style={{ fontSize: 12.5, minWidth: 0 }}>
             {sleeperLink.linked ? <>Sleeper connected — leagues sync automatically.</> : <>Connect Sleeper to pull in your real leagues.</>}
           </span>
-          <div style={{ width: 220, maxWidth: "100%", flexShrink: 0 }}>
-            <SleeperLinkControl link={sleeperLink.link} unlink={sleeperLink.unlink} linked={sleeperLink.linked} username={sleeperLink.username} />
+          <div style={{ flex: "1 1 auto", minWidth: 0 }} />
+          <div style={{ flex: "0 1 300px", minWidth: 0 }}>
+            <SleeperLinkControl compact link={sleeperLink.link} unlink={sleeperLink.unlink} linked={sleeperLink.linked} username={sleeperLink.username} />
           </div>
         </div>
       </div>
@@ -10346,7 +10388,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
            Stacked, the mocks section sank below a long league list and got lost. Side by side, both are visible
            at a glance. A ruled divider runs down the middle so the two zones read as genuinely separate things
            rather than one long column of cards. `home-grid` collapses to a single column on narrow screens. */}
-      <div className="home-grid" style={{ maxWidth: 1180, margin: "0 auto", padding: "0 20px 8px", display: "grid", gridTemplateColumns: "minmax(0,1.3fr) 1px minmax(0,1fr)", gap: 24, alignItems: "start" }}>
+      <div className="home-grid" style={{ maxWidth: 1180, margin: "0 auto", padding: "0 20px 8px", display: "grid", gridTemplateColumns: "minmax(0,1.65fr) 1px minmax(0,1fr)", gap: 26, alignItems: "start" }}>
       {/* ===== YOUR LEAGUES — front and center, no dropdown. Each league: clear Draft room + My Team. ===== */}
       <div data-teams-anchor style={{ minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginBottom: 12, flexWrap: "wrap" }}>
@@ -10375,20 +10417,28 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
             ["drafting", "Drafting", "ti-player-play", "var(--gold)", "Live right now — jump back in and pick."],
             ["complete", "Post-draft", "ti-circle-check", "var(--green)", "Draft done — review, manage, and set lineups."],
           ];
+          // These are FILTERS, not content. As full-width cards with descriptions they outweighed the
+          // leagues underneath — four heavy rows above three real ones. A chip row says the same thing in
+          // one line; the descriptions move to tooltips rather than disappearing.
           return (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+            <div className="filterchips" style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
               {rows.map(([k, label, icon, c, detail]) => {
                 const active = statusFilter === k;
                 const n = counts[k];
                 if (k !== "all" && n === 0) return null; // hide empty statuses
+                const tint = k === "all" ? "var(--ink)" : c;
                 return (
-                  <button key={k} onClick={() => setStatusFilter(k)} style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 11, padding: "10px 13px", borderRadius: 11, border: `1px solid ${active ? c : "var(--line)"}`, background: active ? (k === "all" ? "var(--panel2)" : c + "14") : "transparent", color: "var(--ink)" }}>
-                    <div style={{ width: 30, height: 30, borderRadius: 8, background: k === "all" ? "var(--panel3)" : c + "22", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className={`ti ${icon}`} style={{ fontSize: 16, color: k === "all" ? "var(--ink)" : c }} aria-hidden="true" /></div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className="disp" style={{ fontSize: 14, fontWeight: 700, color: active && k !== "all" ? c : "var(--ink)" }}>{label} <span className="mut" style={{ fontSize: 12, fontWeight: 500 }}>· {n} league{n === 1 ? "" : "s"}</span></div>
-                      <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.35 }}>{detail}</div>
-                    </div>
-                    {active && <i className="ti ti-check" style={{ fontSize: 15, color: k === "all" ? "var(--ink)" : c, flexShrink: 0 }} aria-hidden="true" />}
+                  <button key={k} onClick={() => setStatusFilter(k)} title={detail} aria-pressed={active}
+                    style={{
+                      cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 6,
+                      padding: "6px 11px", borderRadius: 99, fontSize: 12.5, fontWeight: 600, lineHeight: 1,
+                      border: `1px solid ${active ? tint : "var(--line)"}`,
+                      background: active ? (k === "all" ? "var(--panel3)" : c + "1A") : "transparent",
+                      color: active ? tint : "var(--mut)",
+                    }}>
+                    <i className={`ti ${icon}`} style={{ fontSize: 14, color: active ? tint : "var(--mut)" }} aria-hidden="true" />
+                    {label}
+                    <span className="num" style={{ fontSize: 11, fontWeight: 700, padding: "1px 6px", borderRadius: 99, background: active ? "rgba(255,255,255,.10)" : "var(--panel2)", color: active ? tint : "var(--mut)" }}>{n}</span>
                   </button>
                 );
               })}
@@ -10746,7 +10796,9 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
       )}
       </div>
 
-      <div style={{ maxWidth: 940, margin: "0 auto", padding: "26px 20px 64px", display: "flex", flexDirection: "column", gap: 22 }}>
+      {/* These two collapsible sections used to sit on a 940 rail while the header, action bar and league
+          grid all sat on 1180 — a 240px step-in that read as misalignment rather than as a narrower column. */}
+      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "18px 20px 56px", display: "flex", flexDirection: "column", gap: 14 }}>
 
         {/* RESUME banner now lives at the very top, above Your leagues */}
 
@@ -10765,7 +10817,9 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
             <div className="mut" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 10 }}>See it in action</div>
             <HeroShowcase />
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(165px,1fr))", gap: 10 }}>
+          {/* Five steps, so an auto-fit grid wrapped 4 + 1 and left a lone orphan card on its own row. The
+              step class name drives an explicit 5 / 3 / 2 column count at each breakpoint instead. */}
+          <div className="stepgrid" style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 10 }}>
             {steps.map((s) => {
               const isNext = s.n === nextStep.n;
               const accent = s.done ? "var(--green)" : isNext ? "var(--gold)" : "var(--mut)";
@@ -11112,7 +11166,7 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
           <div className="disp" style={{ fontSize: 17, fontWeight: 700, textAlign: "center", marginBottom: 3 }}>Built for your league — whatever it is</div>
           <div className="mut" style={{ fontSize: 12.5, textAlign: "center", marginBottom: 14 }}>Every format reprices the board. If you play it, the compass speaks it.</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
-            {["Redraft", "Dynasty", "Keeper", "Best ball", "Rookie-only", "1QB", "SuperFlex / 2QB", "PPR / Half / Standard", "TE premium"].map((t) => (
+            {["Redraft", "Dynasty", "Keeper", "Best ball", "Rookie-only", "1QB", "SuperFlex / 2QB", "PPR / Half / Standard", "TE premium", "IDP"].map((t) => (
               <span key={t} className="chip" style={{ fontSize: 12 }}>{t}</span>
             ))}
           </div>
@@ -11190,15 +11244,17 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
         <div className="hubsection" style={{ maxWidth: 760, width: "100%", margin: "0 auto" }}>
           <div className="disp" style={{ fontSize: 24, fontWeight: 700, marginBottom: 14 }}>FAQ</div>
           {[
-            ["Which platforms does it work with?", "Live auto-sync with Sleeper at launch — every pick in the room, traded picks, rosters, and depth charts flow in automatically and the board updates within seconds. Note: you still make your pick inside Sleeper (their draft is the source of truth); we read it live and tell you what to do — we don't draft for you. Every other platform (ESPN, Yahoo, anywhere) works through fast manual entry: type a few letters, hit Enter, done."],
+            ["Which platforms does it work with?", "Live auto-sync with Sleeper at launch — every pick in the room, traded picks, rosters, and depth charts flow in automatically and the board updates within seconds. Note: you still make your pick inside Sleeper (their draft is the source of truth); we read it live and tell you what to do — we don't draft for you. ESPN is halfway there: if your league is public we import its settings so you don't retype them, but ESPN has no pick feed, so the draft is manual. Yahoo and everywhere else is manual entry start to finish: type a few letters, hit Enter, done."],
             ["What makes the predictions different?", "We don't just read public ADP — we read thousands of real completed drafts in your format to learn actual board behavior: runs, slides, reaches, and weekly trends. Then 1,000 simulations per pick turn that into live availability odds and recommendations."],
             ["What formats are supported?", "Redraft, dynasty, keeper, best ball, and rookie-only drafts. 1QB and Superflex/2QB. PPR variants and adjustable TE premium. Your league's exact scoring drives every number you see."],
-            ["Do you support IDP (individual defensive players)?", "Not at this time. Fantasy Draft Compass is built for offensive skill positions plus team D/ST and kickers. IDP leagues — where you start individual DL, LB, and DB — aren't supported, since reliable IDP projections and draft-trend data are limited and defensive scoring varies widely. We may revisit it down the road."],
+            ["Do you support IDP (individual defensive players)?", "Yes. Turn IDP on in your league settings and set how many DL, LB, DB and DP slots you start — the board adds defensive players, prices them against defensive replacement level the same way it does skill positions, and gives IDP its own scoring section so tackles, sacks and takeaways count the way your league counts them. Fair warning: IDP projections across the industry are looser than skill-position ones, so treat the defensive tiers as a guide rather than gospel."],
             ["Is my payment information safe?", "Yes — because we never have it. Checkout is handled entirely by our payment processor; card numbers go directly to them and we store only a token. We support card, PayPal, Venmo, and wallets."],
             ["What happens when the season ends?", "Passes run to the March 1 league-year cutoff, then everyone renews together before next draft season. Your leagues and draft history stay saved on your account."],
           ].map((q, i) => <Faq key={i} q={q[0]} a={q[1]} />)}
-          <div className="mut" style={{ fontSize: 11.5, marginTop: 24, textAlign: "center" }}>
-            Prototype: payments and accounts are simulated; the production build uses a payment processor and managed authentication exactly as described. Player data and depth charts shown here are a static sample — the live product pulls current Sleeper data daily. Accuracy stats reflect the prior tool's track record; the new engine's numbers are measured on real drafts and displayed live in-app.
+          <div className="mut" style={{ fontSize: 11.5, marginTop: 24, textAlign: "center", maxWidth: 640, marginLeft: "auto", marginRight: "auto", lineHeight: 1.6 }}>
+            {hasBackend
+              ? "Player and depth-chart data refreshes daily from Sleeper. Accuracy figures are measured on real completed drafts and shown live inside the app, so you can check them yourself rather than take our word for it."
+              : "You're viewing a local demo build — accounts and payments here are simulated and the player data is a fixed sample."}
           </div>
         </div>
       </div>
@@ -11210,7 +11266,7 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
           <div className="mut" style={{ fontSize: 14, marginBottom: 24, maxWidth: 640 }}>Five steps from zero to drafting. Set it up, get your reps, then let the compass do the heavy lifting on the clock.</div>
           {[
             ["rankings", "ti-list-numbers", "Set your rankings", "Two tools, kept separate. My Ranks is your own board — tell the tool where you disagree with the market and your ranks become a “My ADP” column plus a “Blend” (your read tempered by the market). Platform Ranks is the ADP your platform shows, and it powers the “Edge” column so you can see where you're getting value. One global injury/news tweak ripples a player across every board at once."],
-            ["create", "ti-plug-connected", "Create or connect a league", "Link Sleeper, ESPN, or Yahoo and we pull in teams, roster slots, scoring, and your draft slot automatically — or build one by hand in under a minute. Your scoring drives every number: add a SuperFlex slot and the whole board re-prices for 2QB; bump TE reception value and tight ends climb."],
+            ["create", "ti-plug-connected", "Create or connect a league", "Link Sleeper and we pull in teams, roster slots, scoring, and your draft slot automatically. A public ESPN league imports the same settings (picks stay manual — ESPN has no feed). Anywhere else, build it by hand in under a minute — same engine, you just enter the picks. Your scoring drives every number: add a SuperFlex slot and the whole board re-prices for 2QB; bump TE reception value and tight ends climb."],
             ["open", "ti-stack-2", "Open your league", "Everything you've built lives in one place. Jump into any league to draft, mock, edit settings, or review past drafts — your keepers, pick trades, and rankings all travel with it."],
             ["mock", "ti-dice-5", "Run a mock", "Mocks are your reps on your exact settings. Each one is scored and saved, and the tool surfaces your tendencies across them — where you reach, the values you keep missing — kept separate by format. The more you run, the sharper the read."],
             ["draft", "ti-clock-play", "Draft live, on the clock", "The hub becomes mission control: your recommended pick, the cost of waiting at each position, live availability odds for everyone you're eyeing, runs and slides forming in real time, and selective tags on the players that matter — all recalculating after every pick in the room. Connected to Sleeper, every pick syncs in automatically within seconds; you still make your selection in Sleeper, and the compass reads it live to keep your board current."],
@@ -11394,6 +11450,52 @@ function Faq({ q, a }) {
 }
 
 /* ============================================================ AUTH + CHECKOUT */
+// Landing screen for the link in a password-reset email. Deliberately its own component rather than a
+// fifth mode inside AuthModal: it is reached from a URL with no prior state, it has a token to honour, and
+// it should not offer "sign up" or "forgot username" alternatives while the user is mid-reset.
+function ResetPasswordModal({ token, onClose, onDone }) {
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [show, setShow] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const tooShort = pw.length > 0 && pw.length < 6;
+  const mismatch = pw2.length > 0 && pw !== pw2;
+  const ready = pw.length >= 6 && pw === pw2;
+
+  const submit = async () => {
+    if (!ready || busy) return;
+    setErr(null); setBusy(true);
+    try {
+      const user = await api.resetPassword(token, pw);
+      onDone(user);
+    } catch (e) {
+      setErr((e && e.data && e.data.error) || (e && e.message) || "Could not reset the password. Request a new link.");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.72)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2147482000, padding: 16 }}>
+      <div className="panel" style={{ width: 400, maxWidth: "100%", padding: 22 }}>
+        <div className="disp" style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Choose a new password</div>
+        <div className="mut" style={{ fontSize: 12.5, marginBottom: 16, lineHeight: 1.5 }}>Pick something at least 6 characters. You'll be signed in as soon as it's saved.</div>
+        <div style={{ position: "relative", marginBottom: 10 }}>
+          <input className="gs" type={show ? "text" : "password"} autoFocus style={{ width: "100%", paddingRight: 62 }} placeholder="New password" value={pw}
+            onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
+          <button onClick={() => setShow((v) => !v)} style={{ position: "absolute", right: 8, top: 7, background: "transparent", border: "none", color: "var(--mut)", fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>{show ? "Hide" : "Show"}</button>
+        </div>
+        <input className="gs" type={show ? "text" : "password"} style={{ width: "100%", marginBottom: 10 }} placeholder="Confirm new password" value={pw2}
+          onChange={(e) => setPw2(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
+        {tooShort && <div className="mut" style={{ fontSize: 11.5, marginBottom: 8 }}>A little longer — 6 characters minimum.</div>}
+        {mismatch && <div style={{ color: "var(--red)", fontSize: 11.5, marginBottom: 8 }}>Those don't match.</div>}
+        {err && <div style={{ color: "var(--red)", fontSize: 12, marginBottom: 10, lineHeight: 1.45 }}>{err}</div>}
+        <button className="btn btn-gold" style={{ width: "100%", padding: 11 }} disabled={!ready || busy} onClick={submit}>{busy ? "Saving…" : "Save and sign in"}</button>
+        <button className="btn-link" style={{ background: "none", border: "none", color: "var(--mut)", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", padding: 0, display: "block", margin: "12px auto 0" }} onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 function AuthModal({ onClose, onSignUp, hasBackend, authError }) {
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
@@ -11402,6 +11504,19 @@ function AuthModal({ onClose, onSignUp, hasBackend, authError }) {
   const [mode, setMode] = useState("signin"); // signin | signup | forgotpw | forgotuser
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [resetErr, setResetErr] = useState(null);
+  // Ask the server for a real reset email. This button used to just flip `sent` and tell the user a link
+  // was on its way — no request was ever made, so anyone who forgot their password was locked out for good.
+  const sendReset = async () => {
+    setResetErr(null); setBusy(true);
+    try {
+      if (!hasBackend) { setResetErr("Password reset needs the live site — you're on a local demo build."); return; }
+      await api.forgotPassword(email.trim().toLowerCase());
+      setSent(true);
+    } catch (e) {
+      setResetErr((e && e.data && e.data.error) || (e && e.message) || "Couldn't start a reset. Try again in a moment.");
+    } finally { setBusy(false); }
+  };
   const title = mode === "signup" ? "Create your account" : mode === "forgotpw" ? "Reset your password" : mode === "forgotuser" ? "Find your username" : "Sign in";
   const pwMismatch = mode === "signup" && pw2.length > 0 && pw !== pw2;
   const canSubmit = email.includes("@") && pw.length >= 6 && (mode !== "signup" || pw === pw2);
@@ -11454,10 +11569,11 @@ function AuthModal({ onClose, onSignUp, hasBackend, authError }) {
               <div style={{ fontSize: 13, marginTop: 6 }}>If an account exists for <b>{email || "that email"}</b>, a reset link is on its way. Check your inbox and spam.</div>
             </div>
           ) : <>
-            <input className="gs" style={{ width: "100%", marginBottom: 12 }} placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
-            <button className="btn btn-gold" style={{ width: "100%", padding: 10 }} disabled={!email.includes("@")} onClick={() => setSent(true)}>Send reset link</button>
+            <input className="gs" style={{ width: "100%", marginBottom: 12 }} placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && email.includes("@") && !busy) sendReset(); }} />
+            <button className="btn btn-gold" style={{ width: "100%", padding: 10 }} disabled={busy || !email.includes("@")} onClick={sendReset}>{busy ? "Sending…" : "Send reset link"}</button>
+            {resetErr && <div style={{ color: "var(--red)", fontSize: 12, marginTop: 10, lineHeight: 1.45 }}>{resetErr}</div>}
           </>}
-          <div className="mut" style={{ fontSize: 11, marginTop: 10, textAlign: "center" }}>Simulated — production sends a real email via the auth provider.</div>
           <button className="btn-link" style={{ background: "none", border: "none", color: "var(--gold)", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", padding: 0, marginTop: 10, display: "block", margin: "10px auto 0" }} onClick={() => setMode("signin")}>← Back to sign in</button>
         </>}
 
@@ -12702,7 +12818,7 @@ function Library({ user, leagues, onSyncCloud, onNew, onUmbrella, onDelete, onAd
           {view.map((l) => <LeagueCard key={l.id} l={l} onUmbrella={onUmbrella} onDelete={onDelete} onDeleteMock={onDeleteMock} onOpenMockView={onOpenMockView} />)}
         </div>
         {leagues.length > 0 && view.length === 0 && <div className="mut" style={{ textAlign: "center", padding: 20 }}>No leagues match your search.</div>}
-        <div className="mut" style={{ fontSize: 11.5, marginTop: 20 }}>In the full product this library also holds connected Sleeper leagues (auto-imported settings, rosters, live pick sync), keepers, trades, personal ranks, and mock imports per league.</div>
+        <div className="mut" style={{ fontSize: 11.5, marginTop: 20 }}>Your library holds every league you build or connect — settings, keepers, pick trades, personal ranks, and every draft and mock you've run, each locked to the values that were live that day.</div>
       </div>
     </div>
   );
@@ -12808,7 +12924,7 @@ function Account({ user, onUpdate, onBack, onHome, onSignOut, onRankings, onAdmi
         <button className="btn btn-mini" onClick={onBack} style={{ marginBottom: 14 }}>← Library</button>
         <div className="panel" style={{ padding: 24 }}>
           <div className="disp" style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>Account settings</div>
-          <div className="mut" style={{ fontSize: 12, marginBottom: 18 }}>Simulated in this prototype — production stores these via the managed auth provider; passwords are hashed and never visible to us.</div>
+          <div className="mut" style={{ fontSize: 12, marginBottom: 18 }}>{hasBackend ? "Your password is stored hashed and is never visible to us — not even in the admin console." : "Demo mode — this account lives in your browser only."}</div>
           <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid var(--line)", marginBottom: 14 }}>
             <span className="mut" style={{ fontSize: 13 }}>Membership</span>
             <span style={{ color: user.paid ? "var(--green)" : "var(--gold)" }}>{user.paid ? "Season pass active — valid through Mar 1" : "Free demo"}</span>
@@ -13407,15 +13523,20 @@ const DRAFT_ORDERS = [["snake","Snake"],["linear","Linear (same order each round
 // draft with fast manual entry — which has the exact same engine, advice, and tracking.
 const PLATFORMS = [
   { id: "sleeper", name: "Sleeper", field: "Sleeper username", hint: "We read your leagues from Sleeper's free public API and sync your draft live.", icon: "ti-moon" },
+  { id: "espn", name: "ESPN", field: "ESPN league ID", hint: "We import a PUBLIC ESPN league's settings — teams, roster slots, scoring, draft order. ESPN has no live pick feed, so on draft night you enter picks here as they happen.", icon: "ti-ball-football" },
 ];
 
-// League-connect box: pick a platform, provide its credential. Sleeper does a REAL fetch of your
-// leagues so you can pick which one to connect (and sync live). Other platforms are still simulated.
+// League-connect box: pick a platform, provide its credential.
+//   Sleeper — fetches your leagues, imports the draft, and syncs picks live.
+//   ESPN    — imports a public league's SETTINGS only. There is no ESPN pick sync and this UI must
+//             never suggest there is; see the backend's src/lib/espn.js for the full reasoning.
 function ConnectBox({ connect, onConnect, onClear }) {
   const [open, setOpen] = useState(false);
-  // When Sleeper is the only platform, skip the platform picker entirely and go straight to the
-  // username step — one fewer click on the path everyone takes.
-  const [sel, setSel] = useState(PLATFORMS.length === 1 ? PLATFORMS[0] : null);
+  // Land on Sleeper, not on a platform picker: it's the path almost everyone takes and the only one
+  // with live sync. "← Other platform" is one click away for the ESPN import.
+  const [sel, setSel] = useState(PLATFORMS[0]);
+  // ESPN import: null = nothing fetched yet, else the mapped league awaiting a team choice.
+  const [espn, setEspn] = useState(null);
   // Remember previously-used Sleeper usernames so we can autofill the last one and offer a dropdown.
   const remembered = (() => { try { const r = JSON.parse(localStorage.getItem("fdc-sleeper-users") || "[]"); return Array.isArray(r) ? r : []; } catch { return []; } })();
   const [val, setVal] = useState(remembered[0] || "");
@@ -13436,7 +13557,7 @@ function ConnectBox({ connect, onConnect, onClear }) {
         <i className={`ti ${p?.icon || "ti-link"}`} style={{ fontSize: 20, color: "var(--green)" }} aria-hidden="true" />
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 600, color: "var(--green)" }}>Connected to {p?.name}{connect.leagueName ? ` · ${connect.leagueName}` : ""}</div>
-          <div className="mut" style={{ fontSize: 11.5 }}>{connect.platform === "sleeper" ? "Picks sync live during your draft. Settings below are pre-filled from this league — adjust if needed." : "Settings, teams, rosters & live picks sync automatically. Fields below are pre-filled — adjust if needed."}</div>
+          <div className="mut" style={{ fontSize: 11.5 }}>{connect.platform === "sleeper" ? "Picks sync live during your draft. Settings below are pre-filled from this league — adjust if needed." : "Settings imported. There's no pick feed on this platform, so you'll enter picks here as they happen — adjust anything below that doesn't match."}</div>
         </div>
         <button className="btn btn-mini" onClick={onClear}>Disconnect</button>
       </div>
@@ -13468,11 +13589,45 @@ function ConnectBox({ connect, onConnect, onClear }) {
         draftType: d.draftType || "snake", tradedPicks: d.tradedPicks || [], keepers: d.keepers || [],
         existingRosters: d.existingRosters || null,
       });
-      setOpen(false); setSel(null); setVal(""); setSleeperLeagues(null);
+      setOpen(false); setSel(PLATFORMS[0]); setVal(""); setSleeperLeagues(null); setEspn(null);
     } catch (e) { setError(e.data?.error || e.message || "Couldn't load that league's draft."); }
     finally { setBusy(false); }
   };
   const doConnect = () => { setBusy(true); setTimeout(() => { setBusy(false); setOpen(false); onConnect({ platform: sel.id, credential: val || "(oauth)" }); setSel(null); setVal(""); }, 800); };
+
+  // ---- ESPN: settings-only import of a PUBLIC league --------------------------------------------
+  // Step 1 fetches and maps the league. Step 2 asks which team is theirs, because a public read gives
+  // us the whole league but no way to know which of those twelve teams the person in front of us owns.
+  const fetchEspn = async () => {
+    setError(null); setBusy(true); setEspn(null);
+    try {
+      if (!hasBackend) { setError("Importing an ESPN league needs the backend (you're running locally)."); setBusy(false); return; }
+      const r = await api.espnLeague(val.trim().replace(/\D/g, ""));
+      setEspn(r);
+    } catch (e) { setError(e.data?.error || e.message || "Couldn't import that ESPN league."); }
+    finally { setBusy(false); }
+  };
+  // The chosen team decides the draft slot. If ESPN hasn't set a draft order yet there are no slots to
+  // choose from, so we import the settings and let them set the slot in the form below.
+  const finishEspn = (team) => {
+    const cfg = espn.cfg || {};
+    const slotNames = {};
+    (espn.teams || []).forEach((t) => { if (t.slot) slotNames[t.slot] = t.name; });
+    onConnect({
+      platform: "espn", credential: String(espn.league_id || val.trim()),
+      leagueId: String(espn.league_id || val.trim()), leagueName: cfg.name || "ESPN league",
+      cfg, picks: [], status: null,
+      teams: cfg.teams || null,
+      yourSlot: team && team.slot ? team.slot : null,
+      yourTeamName: team ? team.name : null,
+      slotNames: Object.keys(slotNames).length ? slotNames : null,
+      slotOwners: null, draftType: cfg.order || "snake",
+      tradedPicks: [], keepers: [], existingRosters: null,
+      warnings: espn.warnings || [],
+      canSyncPicks: false,
+    });
+    setOpen(false); setSel(PLATFORMS[0]); setVal(""); setEspn(null);
+  };
   const statusChip = (s) => {
     if (s === "drafting") return { t: "Drafting now", c: "var(--green)" };
     if (s === "complete") return { t: "Draft complete", c: "var(--mut)" };
@@ -13484,27 +13639,27 @@ function ConnectBox({ connect, onConnect, onClear }) {
     <div style={{ marginBottom: 16 }}>
       {!open ? (
         <button className="btn btn-gold" style={{ width: "100%", padding: 13, fontSize: 14, fontWeight: 700 }} onClick={() => setOpen(true)}>
-          <i className="ti ti-brand-sleeper" style={{ fontSize: 16, marginRight: 2 }} aria-hidden="true" /><i className="ti ti-bolt" style={{ fontSize: 15 }} aria-hidden="true" /> Connect your Sleeper league — instant setup & live sync
+          <i className="ti ti-brand-sleeper" style={{ fontSize: 16, marginRight: 2 }} aria-hidden="true" /><i className="ti ti-bolt" style={{ fontSize: 15 }} aria-hidden="true" /> Connect your league — Sleeper live sync, or import ESPN settings
         </button>
       ) : (
         <div className="panel" style={{ padding: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
             <div className="disp" style={{ fontSize: 15, fontWeight: 700 }}>Connect your league</div>
-            <button className="btn btn-mini" onClick={() => { setOpen(false); setSel(PLATFORMS.length === 1 ? PLATFORMS[0] : null); setSleeperLeagues(null); setError(null); }}>Cancel</button>
+            <button className="btn btn-mini" onClick={() => { setOpen(false); setSel(PLATFORMS[0]); setSleeperLeagues(null); setEspn(null); setError(null); }}>Cancel</button>
           </div>
           {!sel ? (
             <div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(150px,1fr))", gap: 8 }}>
                 {PLATFORMS.map((p) => (
-                  <button key={p.id} className="btn" style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-start", padding: "9px 11px" }} onClick={() => { setSel(p); setVal(""); setSleeperLeagues(null); setError(null); }}>
+                  <button key={p.id} className="btn" style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-start", padding: "9px 11px" }} onClick={() => { setSel(p); setVal(""); setSleeperLeagues(null); setEspn(null); setError(null); }}>
                     <i className={`ti ${p.icon}`} style={{ fontSize: 17, color: "var(--gold)" }} aria-hidden="true" />{p.name}
                   </button>
                 ))}
               </div>
               <div className="panel" style={{ marginTop: 10, padding: "10px 12px", background: "var(--panel2)" }}>
-                <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>On another platform (ESPN, Yahoo, CBS, Fantrax, etc.)?</div>
-                <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>No problem — close this and set the league up by hand. You enter each pick as it happens (it's fast), and you get the <b style={{ color: "var(--ink)" }}>exact same</b> engine: live recommendations, availability odds, cost-of-waiting, and steal/reach grades. Live auto-sync is currently Sleeper-only.</div>
-                <button className="btn btn-mini" style={{ marginTop: 8 }} onClick={() => { setOpen(false); setSel(null); setError(null); }}>Set up manually instead</button>
+                <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>On Yahoo, CBS, Fantrax, or drafting in person?</div>
+                <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>No problem — close this and set the league up by hand. You enter each pick as it happens (it's fast), and you get the <b style={{ color: "var(--ink)" }}>exact same</b> engine: live recommendations, availability odds, cost-of-waiting, and steal/reach grades. Live pick sync is Sleeper-only; ESPN imports settings but not picks.</div>
+                <button className="btn btn-mini" style={{ marginTop: 8 }} onClick={() => { setOpen(false); setSel(PLATFORMS[0]); setEspn(null); setError(null); }}>Set up manually instead</button>
               </div>
             </div>
           ) : (
@@ -13512,7 +13667,7 @@ function ConnectBox({ connect, onConnect, onClear }) {
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
                 <i className={`ti ${sel.icon}`} style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
                 <b>{sel.name}</b>
-                {PLATFORMS.length > 1 && <button className="btn btn-mini" style={{ marginLeft: "auto" }} onClick={() => { setSel(null); setSleeperLeagues(null); setError(null); }}>← Other platform</button>}
+                {PLATFORMS.length > 1 && <button className="btn btn-mini" style={{ marginLeft: "auto" }} onClick={() => { setSel(null); setSleeperLeagues(null); setEspn(null); setError(null); setVal(""); }}>← Other platform</button>}
               </div>
               <div className="mut" style={{ fontSize: 12, marginBottom: 10 }}>{sel.hint}</div>
 
@@ -13553,6 +13708,62 @@ function ConnectBox({ connect, onConnect, onClear }) {
                         ); })}
                       </div>
                       <button className="btn btn-mini" style={{ marginTop: 8 }} onClick={() => { setSleeperLeagues(null); setError(null); }}>← Different username</button>
+                    </div>
+                  )}
+                </div>
+              ) : sel.id === "espn" ? (
+                <div>
+                  {espn == null ? (
+                    <div>
+                      <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>Enter your ESPN league ID</div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <input className="gs" autoFocus style={{ flex: 1 }} inputMode="numeric" placeholder="e.g. 1234567" value={val}
+                          onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && val.trim()) fetchEspn(); }} />
+                        <button className="btn btn-gold" onClick={fetchEspn} disabled={busy || !val.trim()}>{busy ? "Importing…" : "Import settings"}</button>
+                      </div>
+                      <div className="mut" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.5 }}>
+                        It's the number in your league's URL: <span style={{ fontFamily: "var(--mono)" }}>…/league?leagueId=<b style={{ color: "var(--gold)" }}>1234567</b></span>
+                      </div>
+                      <div className="panel" style={{ marginTop: 10, padding: "9px 11px", background: "var(--panel2)" }}>
+                        <div className="mut" style={{ fontSize: 11, lineHeight: 1.5 }}>
+                          Two things worth knowing. <b style={{ color: "var(--ink)" }}>Your league has to be public</b> for us to read it (ESPN → League Settings → Basic Settings → Visibility). And this brings in <b style={{ color: "var(--ink)" }}>settings only</b> — ESPN has no live pick feed, so on draft night you'll enter picks here as they happen, same as any manual league.
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>{(espn.cfg && espn.cfg.name) || "ESPN league"}</div>
+                      <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>
+                        {espn.cfg ? `${espn.cfg.teams} teams · ${espn.cfg.rounds} rounds · ${espn.cfg.scoringType === "ppr" ? "PPR" : espn.cfg.scoringType === "half" ? "Half PPR" : "Standard"}${espn.cfg.sf ? " · Superflex" : ""}${espn.cfg.tePrem ? ` · TE premium (+${espn.cfg.tePremMult})` : ""}${espn.cfg.keeper ? " · keeper" : ""}` : ""}
+                      </div>
+                      {/* Anything the importer wasn't sure about gets said out loud, before they commit. */}
+                      {(espn.warnings || []).length > 0 && (
+                        <div className="panel" style={{ padding: "9px 11px", marginBottom: 10, background: "#1A1408", borderColor: "var(--gold)" }}>
+                          <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--gold)", marginBottom: 4 }}><i className="ti ti-alert-triangle" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Check these before you draft</div>
+                          <ul className="mut" style={{ fontSize: 11, lineHeight: 1.5, margin: 0, paddingLeft: 16 }}>
+                            {(espn.warnings || []).map((w, i) => <li key={i}>{w}</li>)}
+                          </ul>
+                        </div>
+                      )}
+                      {(espn.teams || []).length > 0 ? (
+                        <div>
+                          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>Which team is yours?</div>
+                          <div style={{ maxHeight: 240, overflowY: "auto", display: "flex", flexDirection: "column", gap: 5 }}>
+                            {(espn.teams || []).map((t) => (
+                              <button key={t.id} className="btn" disabled={busy} onClick={() => finishEspn(t)}
+                                style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-start", padding: "9px 11px", textAlign: "left" }}>
+                                <i className="ti ti-user" style={{ fontSize: 15, color: "var(--gold)" }} aria-hidden="true" />
+                                <span style={{ flex: 1 }}>{t.name}</span>
+                                {t.slot ? <span className="chip" style={{ fontSize: 9 }}>Slot {t.slot}</span> : null}
+                              </button>
+                            ))}
+                          </div>
+                          <button className="btn btn-mini" style={{ marginTop: 8 }} onClick={() => finishEspn(null)}>Skip — I'll set my slot myself</button>
+                        </div>
+                      ) : (
+                        <button className="btn btn-gold" style={{ width: "100%", padding: 10 }} onClick={() => finishEspn(null)}>Use these settings</button>
+                      )}
+                      <button className="btn btn-mini" style={{ marginTop: 8, marginLeft: 8 }} onClick={() => { setEspn(null); setError(null); }}>← Different league ID</button>
                     </div>
                   )}
                 </div>
@@ -13791,10 +14002,20 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
               if (k.rounds) patch.rounds = k.rounds;
               if (k.type) patch.type = k.type;
               if (k.start) patch.start = { ...f.start, ...k.start };
-              if (k.scoringType) {
+              // Prefer the FULL per-stat scoring map when the platform gave us one. Both connectors
+              // build it (Sleeper's cfgFromLeague, ESPN's scoringFromItems) and it carries the things
+              // that actually move a board — 6-point passing TDs above all. Falling back to scoringType
+              // alone keeps only `rec` and silently scores every QB with our 4-point default.
+              if (k.scoring && typeof k.scoring === "object" && Object.keys(k.scoring).length) {
+                patch.scoring = { ...f.scoring, ...k.scoring };
+              } else if (k.scoringType) {
                 const rec = k.scoringType === "ppr" ? 1 : k.scoringType === "half" ? 0.5 : 0;
                 patch.scoring = { ...f.scoring, rec, recTE: k.tePrem ? rec + (k.tePremMult || 1) : rec };
               }
+              // NOTE: don't patch tePremMult here — submit() DERIVES it from scoring.recTE minus
+              // scoring.rec and ignores any field of that name, so setting it would be a no-op that
+              // reads like it does something. Importing recTE (above) is what actually turns TE premium on.
+              if (k.keeper) patch.keeper = true;
             }
             // Your draft slot
             if (c.yourSlot) patch.slot = c.yourSlot;
@@ -13835,6 +14056,24 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
                 <summary style={{ fontSize: 11.5, color: "var(--mut)", cursor: "pointer", userSelect: "none" }}>Review or tweak settings (optional)</summary>
                 <div className="mut" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.5 }}>The fields below are pre-filled from your league. You can adjust them, but for a connected Sleeper league you normally don't need to — just hit “Enter draft room” above.</div>
               </details>
+            </div>
+          )}
+          {/* ESPN import summary. Deliberately NOT styled like the Sleeper "you're done" banner: an ESPN
+              import is a head start on the form, not a finished league. Anything the importer was unsure
+              about is repeated here, because this is the last screen before they draft on it. */}
+          {f.connect && f.connect.platform === "espn" && (
+            <div className="panel" style={{ padding: "14px 16px", marginBottom: 16, marginTop: -6, background: "var(--panel2)", borderColor: "var(--gold)" }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--gold)", marginBottom: 3 }}>
+                <i className="ti ti-download" style={{ fontSize: 15, marginRight: 5 }} aria-hidden="true" />Imported from ESPN{f.connect.leagueName ? ` · ${f.connect.leagueName}` : ""}
+              </div>
+              <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>
+                Teams, roster slots, scoring{f.connect.yourSlot ? `, and your slot (${f.connect.yourSlot})` : ""} are filled in below. <b style={{ color: "var(--ink)" }}>Give them a look before you draft</b> — ESPN's data doesn't cover kicker and defense scoring, so those stayed at our defaults. On draft night you'll enter picks here as they happen; ESPN has no live feed.
+              </div>
+              {(f.connect.warnings || []).length > 0 && (
+                <ul className="mut" style={{ fontSize: 11, lineHeight: 1.5, margin: "8px 0 0", paddingLeft: 16 }}>
+                  {(f.connect.warnings || []).map((w, i) => <li key={i} style={{ color: "var(--gold)" }}>{w}</li>)}
+                </ul>
+              )}
             </div>
           )}
           {/* KEEPER-SYNC CONFLICT: the user set keepers manually AND Sleeper now reports keepers that differ.
@@ -18978,7 +19217,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 {[
                   ["manual", "ti-keyboard", "Manual entry", "Type each pick as it happens. Works for any platform or an in-person draft."],
                   ["sleeper", "ti-plug-connected", "Sync from Sleeper", "Picks flow in live from your Sleeper draft. You still select in Sleeper; we read it and advise."],
-                  ["espn", "ti-plug-connected", "Other platform", "ESPN, Yahoo, and others: connect to import settings; picks come in via fast manual entry at launch."],
+                  ["espn", "ti-keyboard", "Other platform", "ESPN imports its settings if your league is public. Yahoo, CBS and the rest: enter settings once. Either way you type picks as they happen."],
                 ].map(([m, icon, lbl, desc]) => (
                   <button key={m} onClick={() => setDraftMode(m)} className="bigact" style={{ textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", padding: 12, borderRadius: 10, border: `1.5px solid ${draftMode === m ? "var(--gold)" : "var(--line)"}`, background: draftMode === m ? "rgba(214,170,75,0.10)" : "var(--panel2)" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4 }}>
@@ -18998,7 +19237,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <div className="panel" style={{ padding: 12, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", background: "#0d1410", borderColor: "var(--green)" }}>
               <i className="ti ti-plug-connected" style={{ fontSize: 18, color: "var(--green)" }} aria-hidden="true" />
               <div style={{ flex: "1 1 240px" }}>
-                <div style={{ fontWeight: 600, color: "var(--green)" }}>{(PLATFORMS.find((x) => x.id === connectedPlatform)?.name) || "Platform"} connected — picks come in {connectedPlatform === "sleeper" ? "live" : "automatically"}</div>
+                <div style={{ fontWeight: 600, color: "var(--green)" }}>{(PLATFORMS.find((x) => x.id === connectedPlatform)?.name) || "Platform"} connected — picks come in {connectedPlatform === "sleeper" ? "live" : "as you enter them"}</div>
                 <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>{connectedPlatform === "sleeper" ? "We read your Sleeper draft as it happens and advise in real time — you still make each pick inside Sleeper." : "Your league is linked, so selections flow in from the platform. The engine advises; it never picks for the room."} Prefer to type picks yourself instead?</div>
               </div>
               <button className="btn btn-mini" onClick={() => setDraftMode("manual")} style={{ borderColor: draftMode === "manual" ? "var(--gold)" : "var(--line)", color: draftMode === "manual" ? "var(--gold)" : "var(--ink)" }}>{draftMode === "manual" ? "✓ Manual entry" : "Switch to manual"}</button>
@@ -23031,7 +23270,7 @@ function AdpIntel({ players, cfg, myRanks, compact, draftedSet }) {
         </div>
 
         <div className="mut" style={{ fontSize: 10.5, lineHeight: 1.5 }}>
-          <i className="ti ti-info-circle" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Prototype: values are a representative sample. In production this reads live, format-tagged ADP built from thousands of real Sleeper drafts — recent drafts weighted more, so the number always reflects how he's going right now. One reliable source, no fragile third-party feeds.
+          <i className="ti ti-info-circle" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />This breakdown shows how the blend is built — one source, thousands of real Sleeper drafts tagged by format, with recent drafts weighted heaviest. The segment split shown here is illustrative; the ADP used on your board is the live harvested number.
         </div>
       </div>
     </div>
@@ -23356,7 +23595,7 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
             <span className="mut" style={{ fontSize: 11.5 }}>Values are set to this league's format:</span>
             <span style={{ fontSize: 11.5, fontWeight: 600 }}>{rankSetLabel(formatKey(cfg))}{((cfg.start && cfg.start.SUPER > 0) || cfg.sf) ? " · QBs premium" : ""}{(isDynastyCfg(cfg)) ? " · youth-weighted" : ""}</span>
           </div>
-          <div className="mut" style={{ fontSize: 12.5, marginBottom: 14 }}>Values are specific to <i>this</i> league's format — Superflex inflates QBs, TE-premium lifts tight ends, dynasty weights youth — so the same player is worth different amounts in different leagues. In production these blend live consensus from FantasyCalc, FantasyPros, and DraftSharks for your exact format and refresh daily. Hover for the full outlook.</div>
+          <div className="mut" style={{ fontSize: 12.5, marginBottom: 14 }}>Values are specific to <i>this</i> league's format — Superflex inflates QBs, TE-premium lifts tight ends, dynasty weights youth — so the same player is worth different amounts in different leagues. These are our own values, computed from the same projections that drive your board — not a chart borrowed from somewhere else. Hover for the full outlook.</div>
           <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
             <div style={{ position: "relative", flex: "1 1 220px", maxWidth: 320 }}>
               <i className="ti ti-search" style={{ position: "absolute", left: 9, top: 9, fontSize: 14, color: "var(--mut)" }} aria-hidden="true" />

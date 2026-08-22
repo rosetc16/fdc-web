@@ -100,6 +100,19 @@ export const api = {
     if (!getToken()) return null;
     const r = await call('/api/auth/me'); return r.user;
   },
+  // Password reset. `forgot` answers the same way whether or not the address has an account, so never
+  // report back anything that would confirm one exists. `reset` signs the user straight in on success.
+  // retries:0 — a resend would issue a SECOND token and silently invalidate the link already in flight.
+  async forgotPassword(email) {
+    return call('/api/auth/forgot', { method: 'POST', auth: false, retries: 0, body: { email } });
+  },
+  async resetPassword(token, password) {
+    const r = await call('/api/auth/reset', { method: 'POST', auth: false, retries: 0, body: { token, password } });
+    // Guard the shape: a 200 that isn't the expected body (an old build, a proxy, a misrouted path) would
+    // otherwise sign nobody in and surface as a raw TypeError in the modal.
+    if (!r || !r.token || !r.user) throw new Error('The server did not complete the reset. Request a new link.');
+    setToken(r.token); return r.user;
+  },
   async saveRankSets(rankSets) {
     const r = await call('/api/auth/rank-sets', { method: 'POST', body: { rankSets } });
     return r.user;
@@ -199,6 +212,9 @@ export const api = {
   // the finished board of any one of them.
   async sleeperDraftHistory(leagueId) { return call(`/api/connect/sleeper/draft-history?league_id=${encodeURIComponent(leagueId)}`); },
   async sleeperDraftBoard(draftId) { return call(`/api/connect/sleeper/draft-board?draft_id=${encodeURIComponent(draftId)}`); },
+  // ESPN: settings-only import for a PUBLIC league. There is no ESPN pick sync — see src/lib/espn.js
+  // in the backend for why. Returns { cfg, teams, warnings, canSyncPicks:false }.
+  async espnLeague(leagueId, season) { return call(`/api/connect/espn/league?league_id=${encodeURIComponent(leagueId)}${season ? `&season=${encodeURIComponent(season)}` : ''}`); },
 
   // ---- feedback (public submit) ----
   async submitFeedback(payload) { return call('/api/feedback', { method: 'POST', auth: false, body: payload }); },
