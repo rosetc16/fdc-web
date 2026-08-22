@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20ap";
+const BUILD_TAG = "2026.07.20aq";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -4843,6 +4843,9 @@ select.gs:hover{border-color:var(--gold)}
 .tab:hover{color:var(--ink);border-bottom-color:var(--line2)}
 .tab.on{color:var(--ink);border-bottom-color:var(--gold)}
 .hubtile:hover{transform:translateY(-2px);border-color:var(--gold)!important;box-shadow:0 6px 20px #0008}
+.preprow{transition:background .12s ease}
+.preprow:hover{background:rgba(255,255,255,.045)}
+.preprow:hover .ti-chevron-right{color:var(--gold)!important}
 .flipcard{perspective:1000px;border:none;background:none;padding:0;cursor:pointer;font-family:inherit;color:var(--ink);height:148px}
 .flipinner{position:relative;width:100%;height:100%;transition:transform .5s;transform-style:preserve-3d}
 .flipcard:hover .flipinner,.flipcard:focus-visible .flipinner{transform:rotateY(180deg)}
@@ -6490,16 +6493,12 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
   const connectedId = (league.cfg.connect && league.cfg.connect.leagueId) || (league.connect && league.connect.leagueId);
   const dynastyLike = league.cfg.type === "dynasty" || league.cfg.type === "rookie"; // affects labeling only
   // ===== DRAFT PREP CHECKLIST ==================================================================
-  // The tools that most improve a draft are the easiest ones to never find: your league's own ADP, your
-  // own rankings, keepers. They sit one or two clicks deep and nothing ever tells you they exist. So this
-  // page — the one you land on before every draft — states the job plainly, in the order that actually
-  // moves the needle, and ticks itself off from real signals instead of asking you to keep score.
-  //
-  // ORDER = IMPACT. Settings first, because every number on the board is computed from them: one wrong
-  // starting slot or scoring rule quietly skews replacement level, VBD and every recommendation. Then your
-  // slot (without it the engine can't say when you're up or what survives to your next turn), then keepers
-  // (they change who is even available), then league ADP and your rankings (they change what "value" means
-  // in your room), then reps. NOTE this is declared AFTER connectedId above — it reads it.
+  // The tools that most improve a draft are the easiest ones to never find — your league's own ADP, your
+  // rankings, keepers. This is a glanceable status board for them, not a lecture: one line each, a short
+  // current value on the right, and the reasoning parked in the hover title where it costs no space.
+  // ORDER = IMPACT: settings (every number on the board is computed from them) → your slot (nothing knows
+  // when you're up without it) → keepers (they change who's available) → league ADP and rankings (they
+  // change what "value" means in your room) → reps.
   const prepRows = (() => {
     const connected = !!connectedId;
     const stt = league.cfg.start || {};
@@ -6511,46 +6510,52 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
     const hasLeagueAdp = !!(user && user.platformRanks && user.platformRanks[league.id]);
     const rows = [];
     rows.push({
-      key: "settings", icon: "ti-adjustments", title: "Confirm scoring & roster slots",
-      why: "Everything else is computed from these — replacement level, every player's value, every recommendation. One wrong starting slot skews the entire board without ever looking wrong.",
-      detail: `${scoreLine} · ${slotLine || "no slots set"} · ${league.cfg.teams || 12} teams · ${league.cfg.rounds} rounds${connected ? " · synced from your platform" : ""}`,
-      done: connected, state: connected ? "Synced" : "Review",
-      cta: "Open settings", go: () => onSettings(league.id),
+      key: "settings", title: "Scoring & roster",
+      // Short and uniform with every other row — the full roster string would be twice the length of
+      // anything else on the card, so it lives in the hover with the rest of the detail.
+      status: connected ? "Synced" : `${scoreLine} · ${league.cfg.teams || 12} teams`,
+      done: connected,
+      hint: `Every value on the board is computed from these — replacement level, VBD, every recommendation. One wrong starting slot skews the whole board.\n\nNow: ${scoreLine}, ${slotLine}, ${league.cfg.teams || 12} teams, ${league.cfg.rounds} rounds.${connected ? " Synced from your platform." : ""}`,
+      go: () => onSettings(league.id),
     });
     rows.push({
-      key: "slot", icon: "ti-target-arrow", title: "Set your draft slot & order",
-      why: "Without your slot the engine can't tell you when you're on the clock, who picks in between, or what has a real chance of lasting until your next turn.",
-      detail: hasSlot ? `Slot ${league.cfg.slot} · ${league.cfg.order === "linear" ? "linear" : "snake"} order${connected ? " (from your platform)" : ""}` : "No draft slot set yet",
-      done: hasSlot, cta: hasSlot ? "Change slot" : "Set your slot", go: () => onSettings(league.id),
+      key: "slot", title: "Draft slot & order",
+      status: hasSlot ? `Slot ${league.cfg.slot} · ${league.cfg.order === "linear" ? "linear" : "snake"}` : "Not set",
+      done: hasSlot,
+      hint: "Without your slot the engine can't tell you when you're on the clock, who picks in between, or what survives to your next turn.",
+      go: () => onSettings(league.id),
     });
     if (keeperLeague) rows.push({
-      key: "keepers", icon: "ti-lock", title: "Enter keepers & traded picks",
-      why: "Kept players are off the board and their pick costs shift the order. Until they're in, your board and every mock are drafting players who aren't actually available.",
-      detail: keepers.length ? `${keepers.length} keeper${keepers.length > 1 ? "s" : ""} set` : "No keepers entered yet",
-      done: keepers.length > 0, cta: keepers.length ? "Edit keepers" : "Add keepers", go: () => onSettings(league.id),
+      key: "keepers", title: "Keepers & pick trades",
+      status: keepers.length ? `${keepers.length} set` : "None",
+      done: keepers.length > 0,
+      hint: "Kept players are off the board and their pick costs shift the order. Until they're in, your board and every mock include players who aren't actually available.",
+      go: () => onSettings(league.id),
     });
     rows.push({
-      key: "adp", icon: "ti-chart-dots", title: "Add your league's own ADP",
-      why: "The site's ADP is national consensus, and your room doesn't draft like that. Paste your platform's ADP and every steal, reach and will-he-last read is measured against the people you're actually sitting with.",
-      detail: hasLeagueAdp ? "League ADP loaded" : "Lives in the draft room → My ranks → platform ADP",
-      done: hasLeagueAdp, cta: hasLeagueAdp ? "Update it" : "Open My ranks", go: () => onOfficial(league.id),
+      key: "adp", title: "Your league's ADP",
+      status: hasLeagueAdp ? "Added" : "Not added",
+      done: hasLeagueAdp,
+      hint: "Site ADP is national consensus; your room doesn't draft like that. Paste your platform's ADP and every steal, reach and will-he-last read is measured against the people you're actually drafting with.\n\nDraft room → My ranks → platform ADP.",
+      go: () => onOfficial(league.id),
     });
     rows.push({
-      key: "ranks", icon: "ti-list-numbers", title: "Build your own rankings",
-      why: "Where you disagree with consensus is exactly where picks are won. Your ranks blend into every value read on the board.",
-      detail: myRanks.length ? `${myRanks.length} ranking set${myRanks.length > 1 ? "s" : ""} available to this league` : "No custom rankings yet",
-      done: myRanks.length > 0, cta: myRanks.length ? "Edit rankings" : "Create rankings", go: onRankings || (() => onSettings(league.id)),
+      key: "ranks", title: "Your rankings",
+      status: myRanks.length ? `${myRanks.length} set${myRanks.length > 1 ? "s" : ""}` : "None",
+      done: myRanks.length > 0,
+      hint: "Where you disagree with consensus is where picks are won. Your ranks blend into every value read on the board.",
+      go: onRankings || (() => onSettings(league.id)),
     });
     rows.push({
-      key: "mock", icon: "ti-dice-5", title: "Run a mock on these exact settings",
-      why: "The highest-leverage habit there is. Each mock is scored and saved, feeds the ADP-mock column, and builds a read on your own tendencies — where you reach, and the value you keep passing up.",
-      detail: mocks.length ? `${mocks.length} mock${mocks.length > 1 ? "s" : ""} run` : "No mocks yet",
-      done: mocks.length > 0, cta: mocks.length ? "Run another" : "Run a mock", go: () => onMock(league.id),
+      key: "mock", title: "Mock drafts",
+      status: mocks.length ? `${mocks.length} run` : "None",
+      done: mocks.length > 0,
+      hint: "The highest-leverage habit there is. Each mock is scored and saved, feeds the ADP-mock column, and builds a read on your own tendencies.",
+      go: () => onMock(league.id),
     });
     return rows;
   })();
   const prepDone = prepRows.filter((r) => r.done).length;
-  const [prepOpen, setPrepOpen] = useState(prepDone < prepRows.length);
   const [histOpen, setHistOpen] = useState(false);
   const [hist, setHist] = useState(null);        // null = not loaded, [] = loaded empty
   const [histErr, setHistErr] = useState(null);
@@ -6611,63 +6616,6 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
           return null;
         })()}
 
-        {/* ===== DRAFT PREP CHECKLIST =====
-            Sits above the action tiles because it IS the pre-draft job. Hidden once the draft is done —
-            at that point prep is history and the page is about reviewing results. */}
-        {st !== "complete" && (
-          <Boundary label="prep checklist">
-            <div className="panel" style={{ marginTop: 18, padding: 0, overflow: "hidden", borderColor: prepDone === prepRows.length ? "var(--line)" : "var(--gold)" }}>
-              <button
-                onClick={() => setPrepOpen((o) => !o)}
-                style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", background: prepDone === prepRows.length ? "var(--panel2)" : "rgba(242,182,60,.07)", border: "none", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", textAlign: "left" }}
-              >
-                <i className={`ti ${prepDone === prepRows.length ? "ti-circle-check" : "ti-checklist"}`} style={{ fontSize: 19, color: prepDone === prepRows.length ? "var(--green)" : "var(--gold)", flexShrink: 0 }} aria-hidden="true" />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>
-                    {prepDone === prepRows.length ? "You're fully prepped for this draft" : "Draft prep checklist"}
-                  </div>
-                  <div className="mut" style={{ fontSize: 11.5, marginTop: 1 }}>
-                    {prepDone === prepRows.length
-                      ? "Every setup step is done — from here it's reps."
-                      : `${prepDone} of ${prepRows.length} done · ordered by how much each one changes your board`}
-                  </div>
-                </div>
-                {/* progress pips — readable at a glance without opening it */}
-                <span style={{ display: "flex", gap: 3, flexShrink: 0 }}>
-                  {prepRows.map((r) => (
-                    <span key={r.key} title={r.title} style={{ width: 16, height: 5, borderRadius: 3, background: r.done ? "var(--green)" : "rgba(255,255,255,.16)" }} />
-                  ))}
-                </span>
-                <i className={`ti ${prepOpen ? "ti-chevron-up" : "ti-chevron-down"}`} style={{ fontSize: 15, color: "var(--mut)", flexShrink: 0 }} aria-hidden="true" />
-              </button>
-              {prepOpen && (
-                <div>
-                  {prepRows.map((r, i) => (
-                    <div key={r.key} style={{ display: "flex", alignItems: "flex-start", gap: 11, padding: "11px 14px", borderTop: "1px solid var(--line)", background: r.done ? "transparent" : "rgba(255,255,255,.012)" }}>
-                      <i
-                        className={`ti ${r.done ? "ti-circle-check-filled" : r.icon}`}
-                        style={{ fontSize: 17, color: r.done ? "var(--green)" : "var(--gold)", flexShrink: 0, marginTop: 1 }}
-                        aria-hidden="true"
-                      />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
-                          <span style={{ fontSize: 13.5, fontWeight: 700, color: r.done ? "var(--mut)" : "var(--ink)" }}>{r.title}</span>
-                          {r.state && (
-                            <span style={{ fontSize: 8.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".05em", padding: "1px 6px", borderRadius: 20, color: r.done ? "var(--green)" : "var(--gold)", border: `1px solid ${r.done ? "rgba(79,209,161,.45)" : "rgba(242,182,60,.45)"}` }}>{r.state}</span>
-                          )}
-                        </div>
-                        <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.45, marginTop: 2 }}>{r.why}</div>
-                        {r.detail && <div style={{ fontSize: 11, marginTop: 3, color: r.done ? "var(--green)" : "var(--mut)" }}>{r.detail}</div>}
-                      </div>
-                      <button className="btn btn-mini" style={{ flexShrink: 0, marginTop: 1, borderColor: r.done ? "var(--line)" : "var(--gold)", color: r.done ? "var(--mut)" : "var(--gold)" }} onClick={r.go}>{r.cta}</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </Boundary>
-        )}
-
         {/* CHOICES INSIDE THE UMBRELLA. On a COMPLETED league this splits into the two things you
             actually want after draft day: your TEAM (the in-season hub — weekly matchup, roster, waivers
             context; connected leagues only) and the DRAFT itself (board, grades, recap — era-locked). */}
@@ -6695,6 +6643,41 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
             <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>Scoring, roster, draft order, keepers & pick trades — edit anytime.</div>
           </button>
         </div>
+
+        {/* ===== DRAFT PREP — status board ==========================================================
+            Sits BELOW the three actions: those are what you came to do, this is the state of your setup.
+            One line per item, current value on the right, everything else in the hover title so the card
+            stays scannable. Hidden once the draft is complete — prep is history at that point. */}
+        {st !== "complete" && (
+          <Boundary label="prep checklist">
+            <div className="panel" style={{ marginTop: 22, padding: "10px 4px 4px", overflow: "hidden" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 12px 8px" }}>
+                <span className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".07em", fontWeight: 800 }}>Draft prep</span>
+                <span style={{ flex: 1, height: 1, background: "var(--line)" }} />
+                <span className="num" style={{ fontSize: 10.5, fontWeight: 800, color: prepDone === prepRows.length ? "var(--green)" : "var(--mut)" }}>{prepDone}/{prepRows.length}</span>
+              </div>
+              {prepRows.map((r) => (
+                <button
+                  key={r.key}
+                  onClick={r.go}
+                  title={r.hint}
+                  className="preprow"
+                  style={{ width: "100%", display: "flex", alignItems: "center", gap: 9, padding: "7px 12px", background: "none", border: "none", borderRadius: 7, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}
+                >
+                  <i
+                    className={`ti ${r.done ? "ti-circle-check-filled" : "ti-circle-dashed"}`}
+                    style={{ fontSize: 15, color: r.done ? "var(--green)" : "var(--mut)", flexShrink: 0 }}
+                    aria-hidden="true"
+                  />
+                  <span style={{ fontSize: 12.5, color: "var(--ink)", whiteSpace: "nowrap" }}>{r.title}</span>
+                  <span style={{ flex: 1 }} />
+                  <span className="num" style={{ fontSize: 11, color: r.done ? "var(--mut)" : "var(--gold)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "48%" }}>{r.status}</span>
+                  <i className="ti ti-chevron-right" style={{ fontSize: 13, color: "var(--line2)", flexShrink: 0 }} aria-hidden="true" />
+                </button>
+              ))}
+            </div>
+          </Boundary>
+        )}
 
         {/* DYNASTY DRAFT HISTORY — startup + every rookie draft across seasons (connected leagues) */}
         {connectedId && (
