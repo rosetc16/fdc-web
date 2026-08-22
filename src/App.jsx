@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20as";
+const BUILD_TAG = "2026.07.20at";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5096,6 +5096,11 @@ select.gs option{background:var(--panel2);color:var(--ink)}
   /* the hub's main column + right rail stack vertically; main content is first in the DOM so it stays on top */
   .cols{flex-direction:column!important}
   .rail{width:100%!important}
+  /* Chips are nowrap by design so they read as one token — but a long one then can't fit a phone and
+     drags the whole document wider than the viewport (measured at 464px against a 390px screen, which is
+     what makes a page feel subtly broken: everything slightly zoomed out, nothing obviously wrong).
+     On a phone they wrap instead. */
+  .chip{white-space:normal!important;max-width:100%}
   /* comfortable tap targets */
   .btn,.btn-mini{min-height:38px}
   .menuitem{min-height:44px}
@@ -5103,6 +5108,21 @@ select.gs option{background:var(--panel2);color:var(--ink)}
   .appheader{flex-wrap:wrap;row-gap:6px}
   /* the player-list / board tables get a horizontal scroll region so they don't blow out the viewport */
   table{max-width:100%}
+  /* The view toolbar has grown (Cheat sheet / Tiers / Compact / Columns …). Wrapping it on a phone stacks
+     four rows of buttons above the board and pushes the players off-screen, so it becomes a single
+     horizontally-scrolling strip — the same pattern the tab bar already uses. */
+  .viewbar{flex-wrap:nowrap!important;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding-bottom:2px}
+  .viewbar::-webkit-scrollbar{display:none}
+  .viewbar>*{flex:0 0 auto}
+  /* Cheat sheet: full-bleed on a phone, and its ten columns scroll sideways inside the sheet rather than
+     squeezing every name to two characters. */
+  .printsheet{width:100%!important;max-height:92vh!important}
+  .printsheet table{min-width:560px}
+  .printsheet>div:last-child{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  /* Prep checklist rows: let the status wrap under the title instead of crushing both. */
+  .preprow{flex-wrap:wrap;row-gap:1px}
+  /* Admin diagnostic can be long — keep it scrollable rather than stretching the page. */
+  .tierbreak td>div{padding-left:8px!important;padding-right:8px!important}
   /* tooltips: fit the phone width, sit near the bottom as a sheet, and allow touch-scrolling of long content */
   /* On a phone the tooltip is pinned to the viewport edges rather than following the cursor, so the
      cursor-relative transform used on desktop must be cancelled or it would push it off-screen. */
@@ -6560,6 +6580,11 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
   const keepers = league.cfg.keepers || [];
   const [showMocks, setShowMocks] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
+  // Same styled tooltip the draft room uses, rather than the browser's — the native one is slow to appear,
+  // can't be styled, and looked out of place next to everything else in the app.
+  const [tip, setTip] = useState(null);
+  const showTip = (e, content) => { try { setTip(positionTip(e.clientX, e.clientY, content)); } catch (_) {} };
+  const hideTip = () => setTip(null);
   // ---- DYNASTY DRAFT HISTORY (connected leagues) ----
   // A dynasty league accumulates drafts: the original startup plus a rookie draft every year. Sleeper
   // chains these across seasons; the backend walks that chain, and this panel lists every draft so any
@@ -6734,7 +6759,10 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
                 <button
                   key={r.key}
                   onClick={r.go}
-                  title={r.hint}
+                  onMouseEnter={(e) => showTip(e, [{ kind: "take", tone: r.done ? "good" : "neutral", x: r.title }, { t: r.done ? "Done" : "Why this matters", x: r.hint }])}
+                  onFocus={(e) => showTip(e, [{ kind: "take", tone: r.done ? "good" : "neutral", x: r.title }, { t: r.done ? "Done" : "Why this matters", x: r.hint }])}
+                  onMouseLeave={hideTip}
+                  onBlur={hideTip}
                   className="preprow"
                   style={{ width: "100%", display: "flex", alignItems: "center", gap: 9, padding: "7px 12px", background: "none", border: "none", borderRadius: 7, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}
                 >
@@ -6825,6 +6853,13 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
               </div>
             )}
           </div>
+        )}
+
+        {/* Styled tooltip for the prep rows — same component the draft room uses. */}
+        {tip && (
+          <Tooltip tip={tip}>
+            <OutlookCard content={tip.content} />
+          </Tooltip>
         )}
 
         {/* ARCHIVED DRAFT BOARD MODAL — a past season's draft, straight from Sleeper's record. Shown as
@@ -7542,7 +7577,7 @@ function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, onOp
                 );
               })}
             </div>
-          ) : <div className="mut" style={{ fontSize: 12.5, marginBottom: 18 }}>No drafts yet — create a league to get started.</div>}
+          ) : <div className="mut" style={{ fontSize: 12.5, marginBottom: 18 }}>No drafts yet. Create a league — set the real scoring, roster slots and keepers — and every board, value and recommendation is computed from those rules.</div>}
 
           <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 9 }}>
             <i className="ti ti-plug-connected" style={{ fontSize: 14, color: linked ? "var(--blue)" : "var(--mut)" }} aria-hidden="true" />
@@ -9488,7 +9523,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
           </div>
           <div className="mut" style={{ fontSize: 12, marginBottom: 12 }}>Practice reps that aren't tied to a league — test the board, try what-ifs.</div>
           <div style={{ border: "1px dashed var(--line2)", borderRadius: 12, padding: "18px 16px", textAlign: "center" }}>
-            <div className="mut" style={{ fontSize: 12.5, marginBottom: 10 }}>No mocks yet. Run one to test your board before draft day.</div>
+            <div className="mut" style={{ fontSize: 12.5, marginBottom: 10 }}>No mocks yet. A mock runs your exact settings and keepers against the live market — it scores your picks, feeds the ADP-mock column, and starts building a read on your own tendencies.</div>
             {onQuickMock && <button className="btn btn-gold" onClick={onQuickMock} style={{ fontWeight: 700 }}><i className="ti ti-plus" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Start a mock</button>}
           </div>
         </div>
@@ -11156,7 +11191,7 @@ function TrendsOverTimePage({ user, leagues, funMocks, onBack, onHome, onSignOut
           <div className="panel" style={{ padding: 28, textAlign: "center" }}>
             <i className="ti ti-dice" style={{ fontSize: 30, color: "var(--mut)" }} aria-hidden="true" />
             <div className="disp" style={{ fontSize: 18, fontWeight: 700, margin: "10px 0 4px" }}>No mocks yet</div>
-            <div className="mut" style={{ fontSize: 13, marginBottom: 14, maxWidth: 460, margin: "0 auto 14px" }}>Run a mock and its read shows up here right away. The more you run in a given format, the sharper the patterns get.</div>
+            <div className="mut" style={{ fontSize: 13, marginBottom: 14, maxWidth: 460, margin: "0 auto 14px" }}>Run a mock and its read shows up here right away: where you reach, the value you keep passing up, and which positions you crowd. The more you run in a given format, the sharper the patterns get.</div>
             <button className="btn btn-gold" onClick={onBack}>Back to the hub</button>
           </div>
         ) : (
@@ -11272,7 +11307,7 @@ function DraftsDatabase({ leagues, funMocks, onBack, onOpenLeague, onOpenMock, o
         {view.length === 0 ? (
           <div className="panel" style={{ padding: 30, textAlign: "center" }}>
             <i className="ti ti-database-off" style={{ fontSize: 26, color: "var(--mut)" }} aria-hidden="true" />
-            <div className="mut" style={{ fontSize: 13.5, marginTop: 8 }}>{rows.length === 0 ? "No drafts yet. Run an official draft or a mock and it'll show up here." : "No drafts match your filters."}</div>
+            <div className="mut" style={{ fontSize: 13.5, marginTop: 8 }}>{rows.length === 0 ? "No drafts yet. Every official draft and every mock lands here automatically — with its board, grades, steals and reaches, locked to the values that were live on draft day." : "No drafts match your filters."}</div>
             {rows.length > 0 && <button className="btn btn-mini" style={{ marginTop: 12 }} onClick={() => { setKind("all"); setTypeF("all"); setQ(""); }}>Clear filters</button>}
           </div>
         ) : (
@@ -13959,7 +13994,7 @@ function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
             </div>
           );
         })}
-      </div> : <div className="mut" style={{ fontSize: 12 }}>No keepers set yet.</div>}
+      </div> : <div className="mut" style={{ fontSize: 12, lineHeight: 1.5 }}>No keepers yet. Add one above and it's removed from the pool everywhere — the board, every mock, and every team's projected roster. Keepers that cost a pick also lock that slot on the draft board, and each one gets priced against what that pick would otherwise buy you.</div>}
       </>}
 
       {!embedded && <button className="btn btn-gold" style={{ marginTop: 14 }} onClick={save}>Save keepers & trades to board</button>}
@@ -17792,7 +17827,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   everything below is view & action controls. The 100%-width flex item forces a line break. */}
               <div style={{ flexBasis: "100%", height: 0 }} />
               <div style={{ flexBasis: "100%", borderTop: "1px solid var(--line)", margin: "2px 0 4px" }} />
-              <div data-tour="views" style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", flexBasis: "100%" }}>
+              <div data-tour="views" className="viewbar" style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", flexBasis: "100%" }}>
               <span className="mut" style={{ fontSize: 9.5, letterSpacing: ".06em", textTransform: "uppercase", alignSelf: "center", marginRight: 2 }}>View</span>
               <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }} title="ADP always shows on the left. This switches the rest of the columns between value/info (rankings, projections, demographics, availability) and projected stats.">
                 <button className="btn btn-mini" style={{ borderRadius: 0, border: "none", background: boardMode === "info" ? "var(--gold)" : "transparent", color: boardMode === "info" ? "#151002" : "var(--ink)", fontWeight: boardMode === "info" ? 700 : 400 }} onClick={() => setBoardMode("info")} title="Rankings, projections, value, demographics & availability">Value &amp; info</button>
