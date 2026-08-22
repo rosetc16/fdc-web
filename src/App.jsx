@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20au";
+const BUILD_TAG = "2026.07.20av";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5301,6 +5301,15 @@ select.gs option{background:var(--panel2);color:var(--ink)}
   .decision-divider{display:none!important}
   /* wide tables scroll inside their panel rather than blowing out the page */
   .tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  /* The in-season hub's header row (back / wordmark / status chip / home / version / sign out) needs ~512px
+     laid out in a line, which dragged EVERY hub page sideways on a phone. It wraps now, and the spacer that
+     used to push the right-hand controls away collapses so the wrap is tidy rather than ragged. */
+  .hubbar{gap:8px!important;padding:10px 12px!important;row-gap:6px!important}
+  .hubbar>div[style*="flex: 1"]{flex-basis:100%!important;height:0!important}
+  .hubbar .chip{font-size:10px;padding:3px 7px}
+  /* Close-call cards and the optimizer nudges stack on a phone rather than squeezing two player cards
+     into 390px and pushing the page sideways. */
+  .ccgrid{grid-template-columns:1fr!important}
   /* Team analysis' lineup grid is 11 fixed columns — it cannot shrink to a phone. Hold it at its natural
      width and let the panel scroll, so the page itself never goes sideways. */
   .lineup-scroll>*{min-width:440px}
@@ -7979,6 +7988,238 @@ function postureValue(p, posture, isDynasty) {
   return pts * 0.8 + youth * 0.8 + upside * 0.2; // balanced
 }
 
+/* ==================================================================================================
+   IN-SEASON DECISION ENGINES
+   The hub already answered "what is my situation?". These four answer "what should I do, and what does
+   it cost me if I'm wrong?" — start/sit, waiver bidding, trades, and the playoff odds that price them
+   all in the only currency that matters. They are module-level and take plain data, so each one can be
+   sliced out and driven by the test batteries the same way the draft engine is.
+   ================================================================================================== */
+
+// Standard normal CDF (Abramowitz & Stegun 26.2.17). Closed form on purpose: a start/sit read must be
+// identical on every render, and Monte-Carlo noise in a "71% / 69% / 72%" number destroys trust.
+function normCdf(z) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const d = 0.3989422804014327 * Math.exp((-z * z) / 2);
+  const p = d * t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  return z > 0 ? 1 - p : p;
+}
+// A player's WEEKLY spread. Careful here: a player's floor/ceiling band divided by 17 describes how
+// uncertain his SEASON is, which is far narrower than how much he swings week to week — a 12-point back
+// routinely goes for 4 or for 22, and week-to-week noise averages out across a season. So the band sets
+// the SHAPE (steady role vs boom/bust) and a position factor sets the size.
+function weekSd(p) {
+  if (!p) return 2.2;
+  const pts = Math.max(0, p.pts || 0);
+  const WK = { QB: 0.36, RB: 0.58, WR: 0.66, TE: 0.70, K: 0.55, DST: 0.85 };
+  let sd = Math.max(2.2, pts * (WK[p.pos] != null ? WK[p.pos] : 0.6));
+  const f = p.floorWk, c = p.ceilWk;
+  if (f != null && c != null && c > f && pts > 0) {
+    const band = (c - f) / pts;                       // ~0.4 for a locked-in role, 1.5+ for a lottery ticket
+    sd *= Math.min(1.4, Math.max(0.8, 0.62 + band * 0.42));
+  }
+  return sd;
+}
+// P(a outscores b), as a percentage. THE point of this number: a 0.4-point projection edge is not a
+// decision, it's a coin flip, and saying "start him, he projects 0.4 higher" pretends otherwise.
+function startWinPct(a, b) {
+  if (!a) return 0;
+  if (!b) return 100;
+  const sa = weekSd(a), sb = weekSd(b);
+  const denom = Math.sqrt(sa * sa + sb * sb) || 1;
+  const raw = Math.round(normCdf(((a.pts || 0) - (b.pts || 0)) / denom) * 1000) / 10;
+  // Clamped: no fantasy start is ever a certainty, and printing "100%" over a football game is a lie the
+  // first blowout Sunday will collect on.
+  return Math.max(1, Math.min(99, raw));
+}
+// Which positions may fill a lineup slot ("RB2" → RB, "FLEX" → RB/WR/TE, "SFLX" → any).
+function slotEligible(slot) {
+  const s = String(slot || "");
+  if (/^FLEX/.test(s)) return ["RB", "WR", "TE"];
+  if (s === "SFLX") return ["QB", "RB", "WR", "TE"];
+  const m = s.match(/^(QB|RB|WR|TE|K|DST)/);
+  return m ? [m[1]] : [];
+}
+// This week's genuinely close lineup calls. `slots` is the OPTIMAL lineup, so the starter always projects
+// at least as high as the alternative — which means anything under ~62% is a decision the projection is
+// not actually making for you. Those are the ones worth a manager's attention; everything else is noise.
+function closeCalls(slots, bench, opts) {
+  const near = (opts && opts.near != null) ? opts.near : 60;
+  const max = (opts && opts.max != null) ? opts.max : 4;
+  const out = [], usedAlt = new Set();
+  (slots || []).forEach(({ slot, p }) => {
+    if (!p) return;
+    const elig = slotEligible(slot);
+    const alt = (bench || [])
+      .filter((b) => b && elig.includes(b.pos) && !usedAlt.has(b.sid) && !b.noGame)
+      .sort((a, b) => (b.pts || 0) - (a.pts || 0))[0];
+    if (!alt) return;
+    const win = startWinPct(p, alt);
+    if (win >= near) return;
+    usedAlt.add(alt.sid);
+    out.push({ slot, start: p, alt, win, edge: Math.round(((p.pts || 0) - (alt.pts || 0)) * 10) / 10 });
+  });
+  // Closest first, and capped: flagging seven "decisions" is the same as flagging none.
+  return out.sort((a, b) => a.win - b.win).slice(0, max);
+}
+
+// What a waiver add is worth, as a share of your REMAINING budget. "Add" without a number is the part of
+// every waiver tool that leaves the actual decision to the user.
+function faabBid(o) {
+  const weeks = Math.max(1, o.weeksLeft || 1);
+  const seasonGain = Math.max(0, o.gainPerWeek || 0) * weeks;
+  // Season points gained → share of budget, on a concave curve: the first few points of upgrade are worth
+  // far more per point than the tenth, because a roster spot has alternatives.
+  let pct = Math.min(55, Math.pow(seasonGain, 0.8) * 0.85);
+  // Need, scarcity and competition are ADDITIVE, not multiplicative. Stacked multipliers compound into
+  // "bid 65% of your budget on a tight end", which is how a bidding model loses its credibility in one week.
+  // Every rival ALSO thin at this position bids the price up — and knowing who they are is the one thing a
+  // tool without league-wide rosters can never tell you.
+  const rivalShare = (o.rivals || 0) / Math.max(1, (o.teamsN || 12) - 1);
+  const mult = Math.min(1.75, 1 + (o.need ? 0.45 : 0) + (o.scarce ? 0.2 : 0) + rivalShare * 0.85);
+  pct *= mult;
+  if (!o.startable && !o.elite) pct = Math.min(pct, 4); // a depth body is a $1-$4 claim, whatever the math says
+  if (o.elite && pct < 6) pct = 6;                     // rostered-everywhere types are never a minimum bid
+  pct = Math.max(1, Math.min(80, pct));
+  const lo = Math.max(1, Math.round(pct * 0.78));
+  const hi = Math.max(lo + 1, Math.round(pct * 1.22));
+  const bud = o.budgetLeft;
+  return {
+    pct: Math.round(pct), lo, hi,
+    loAbs: bud != null ? Math.max(1, Math.round((bud * lo) / 100)) : null,
+    hiAbs: bud != null ? Math.max(1, Math.round((bud * hi) / 100)) : null,
+  };
+}
+
+// Total projected points of a roster's best legal lineup. (lineupSlots reads the SPEC global, which the
+// hub sets from this league's roster settings before any of this runs.)
+function lineupValue(roster, sf) {
+  const l = lineupSlots(roster || [], sf);
+  return Math.round(l.slots.reduce((s, x) => s + (x.p ? (x.p.pts || 0) : 0), 0) * 10) / 10;
+}
+// Two-sided trade finder. Everyone ships a trade ANALYZER — you propose, it grades. This mines all N
+// rosters for swaps that raise BOTH teams' starting lineups, which is only possible because the hub scores
+// every roster in the league on one engine. Players carry SEASON value here, not this week's points: a
+// trade is a season decision and a bye week must not make someone look tradeable.
+function findTrades(me, others, opts) {
+  const o = opts || {};
+  const sf = o.sf, depth = o.depth || 14, max = o.max || 8;
+  const minGain = o.minGain != null ? o.minGain : 0.5;
+  if (!me || !me.roster || !me.roster.length) return [];
+  const base = lineupValue(me.roster, sf);
+  const mine = me.roster.slice().sort((a, b) => (b.pts || 0) - (a.pts || 0)).slice(0, depth);
+  const out = [];
+  (others || []).forEach((them) => {
+    if (!them || !them.roster || !them.roster.length) return;
+    const theirBase = lineupValue(them.roster, sf);
+    const theirs = them.roster.slice().sort((a, b) => (b.pts || 0) - (a.pts || 0)).slice(0, depth);
+    mine.forEach((give) => {
+      const myRest = me.roster.filter((p) => p.sid !== give.sid);
+      theirs.forEach((get) => {
+        // A same-position swap of near-equal players is a wash nobody accepts; skip the noise.
+        if (give.pos === get.pos && Math.abs((give.pts || 0) - (get.pts || 0)) < 6) return;
+        const myGain = Math.round((lineupValue(myRest.concat([get]), sf) - base) * 10) / 10;
+        if (myGain <= minGain) return;
+        const theirRest = them.roster.filter((p) => p.sid !== get.sid);
+        const theirGain = Math.round((lineupValue(theirRest.concat([give]), sf) - theirBase) * 10) / 10;
+        if (theirGain <= minGain) return;
+        out.push({ team: them, give, get, myGain, theirGain, fair: Math.min(myGain, theirGain) });
+      });
+    });
+  });
+  // Ranked by what YOU gain — that's the question being asked — but only among swaps the other side also
+  // wants. Deduped twice: one proposal per target, and at most two involving any one of your players,
+  // because you can only trade a man once and a list of five Tyjae Spears variations is one idea, not five.
+  const seenTarget = new Set(), giveCount = {}, dedup = [];
+  out.sort((a, b) => (b.myGain - a.myGain) || (b.fair - a.fair)).forEach((t) => {
+    const k = `${t.team.rosterId}|${t.get.sid}`;
+    if (seenTarget.has(k)) return;
+    if ((giveCount[t.give.sid] || 0) >= 2) return;
+    seenTarget.add(k);
+    giveCount[t.give.sid] = (giveCount[t.give.sid] || 0) + 1;
+    dedup.push(t);
+  });
+  const top = dedup.slice(0, max);
+  // Flag the one the other manager is most likely to accept — the highest gain for the WORSE-off side.
+  let bestFair = -Infinity, bestIdx = -1;
+  top.forEach((t, i) => { if (t.fair > bestFair) { bestFair = t.fair; bestIdx = i; } });
+  return top.map((t, i) => ({ ...t, likeliest: i === bestIdx }));
+}
+
+// Monte-Carlo the rest of the regular season. Everything else in the hub is measured in projected points;
+// this converts points into the only number anybody actually cares about in November.
+// SEEDED on purpose — an unseeded sim would show a different playoff percentage on every re-render.
+function simSeason(o) {
+  const teams = (o && o.teams) || [];
+  const N = teams.length;
+  if (!N) return null;
+  const runs = o.runs || 1200;
+  const spots = o.playoffSpots || Math.max(4, Math.round(N / 2));
+  const byes = o.byeSpots || 0;
+  const idx = {};
+  teams.forEach((t, i) => { idx[t.rosterId] = i; });
+  const weeks = [];
+  for (let w = o.fromWeek; w <= o.toWeek; w++) weeks.push(w);
+  let s = (o.seed || 987654321) >>> 0;
+  const rand = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+  const gauss = () => {
+    let u = 0, v = 0;
+    while (u === 0) u = rand();
+    while (v === 0) v = rand();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  };
+  const made = new Array(N).fill(0), seedSum = new Array(N).fill(0), byeHit = new Array(N).fill(0), top = new Array(N).fill(0);
+  for (let r = 0; r < runs; r++) {
+    const wins = teams.map((t) => t.wins || 0);
+    const pf = teams.map((t) => t.pointsFor || 0);
+    for (const w of weeks) {
+      let pairs = o.schedule && o.schedule[w];
+      if (!pairs || !pairs.length) {
+        // No schedule from the backend: pair the field at random each week. It's an approximation, and the
+        // UI says so — but it is far better than refusing to answer, and it converges to the same story.
+        const ids = teams.map((t) => t.rosterId);
+        for (let i = ids.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); const tmp = ids[i]; ids[i] = ids[j]; ids[j] = tmp; }
+        pairs = [];
+        for (let k = 0; k < Math.floor(ids.length / 2); k++) pairs.push([ids[k], ids[ids.length - 1 - k]]);
+      }
+      for (const [a, b] of pairs) {
+        const ia = idx[a], ib = idx[b];
+        if (ia == null || ib == null) continue;
+        const sa = Math.max(0, teams[ia].mean + gauss() * (teams[ia].sd || o.sd || 22));
+        const sb = Math.max(0, teams[ib].mean + gauss() * (teams[ib].sd || o.sd || 22));
+        pf[ia] += sa; pf[ib] += sb;
+        if (sa >= sb) wins[ia]++; else wins[ib]++;
+      }
+    }
+    const order = teams.map((t, i) => i).sort((x, y) => (wins[y] - wins[x]) || (pf[y] - pf[x]));
+    order.forEach((i, pos) => {
+      seedSum[i] += pos + 1;
+      if (pos < spots) made[i]++;
+      if (pos < byes) byeHit[i]++;
+      if (pos === 0) top[i]++;
+    });
+  }
+  return teams.map((t, i) => ({
+    rosterId: t.rosterId,
+    odds: Math.round((made[i] / runs) * 1000) / 10,
+    avgSeed: Math.round((seedSum[i] / runs) * 10) / 10,
+    byeOdds: byes ? Math.round((byeHit[i] / runs) * 1000) / 10 : null,
+    oneSeed: Math.round((top[i] / runs) * 1000) / 10,
+  }));
+}
+
+// Memo for the hub's expensive engines. They run AFTER the hub's early returns, where a React hook is not
+// legal — and every tooltip hover sets state, so without this a mouse move would re-run a 1,500-season
+// Monte Carlo. Keyed on the inputs; bounded so it can't grow across leagues and weeks.
+const HUB_MEMO = new Map();
+function hubMemo(key, fn) {
+  if (HUB_MEMO.has(key)) return HUB_MEMO.get(key);
+  if (HUB_MEMO.size > 12) HUB_MEMO.clear();
+  const v = fn();
+  HUB_MEMO.set(key, v);
+  return v;
+}
+
 // Animated loading state for the team hub — a shimmering skeleton plus a rotating status line, so a slow
 // (cold-start) backend load reads as "working" instead of a frozen screen.
 function HubLoading() {
@@ -8402,6 +8643,91 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   const injuredRoster = myRoster.filter((p) => p.wkInj || p.inj);
   const byeStarters = (opt && opt.slots ? opt.slots.map((s) => s.p).filter(Boolean) : []).filter((p) => p.bye === data.week);
 
+  // ================= IN-SEASON DECISIONS =================
+  // Everything below runs AFTER the hub's early returns, so React hooks aren't available here — and a
+  // tooltip hover must never re-run a 1,200-season Monte Carlo. hubMemo is the stand-in.
+  const GAMES_IN_SEASON = 17;
+  const regSeasonWeeks = data.regularSeasonWeeks || (data.playoffStartWeek ? data.playoffStartWeek - 1 : 14);
+  const weeksLeft = Math.max(1, regSeasonWeeks - (data.week || 1) + 1);
+  const playoffCut = data.playoffTeams || playoffSpots;
+  const leagueSize = leagueTeams.length || teamsN;
+
+  // ---- CLOSE CALLS: the lineup decisions the projection isn't actually making for you ----
+  const calls = closeCalls(opt.slots, opt.bench, {});
+
+  // ---- PLAYOFF ODDS ----
+  // Each team's weekly scoring mean is its best lineup in SEASON-average per-game terms (this week's
+  // numbers would let a bye week masquerade as a bad team). Then simulate the rest of the schedule.
+  const oddsInput = leagueTeams.map((t) => {
+    const seasonRoster = t.roster.map((p) => ({ ...p, pts: (p.ptsSeason != null ? p.ptsSeason : p.pts * GAMES_IN_SEASON) / GAMES_IN_SEASON }));
+    return {
+      rosterId: t.rosterId,
+      mean: lineupValue(seasonRoster, cfg.sf),
+      wins: t.wins || 0, losses: t.losses || 0,
+      pointsFor: t.pointsFor || 0,
+      sd: 22,
+    };
+  });
+  const haveSchedule = !!(data.schedule && Object.keys(data.schedule).length);
+  const oddsKey = `odds|${leagueId}|${data.week}|${oddsInput.map((t) => `${t.rosterId}:${Math.round(t.mean)}:${t.wins}`).join(",")}|${playoffCut}|${haveSchedule}`;
+  const oddsRows = (weeksLeft > 0 && oddsInput.length >= 4)
+    ? hubMemo(oddsKey, () => simSeason({ teams: oddsInput, schedule: data.schedule || null, fromWeek: data.week, toWeek: regSeasonWeeks, playoffSpots: playoffCut, byeSpots: data.playoffByes || 0, runs: 1500 }))
+    : null;
+  const oddsById = {};
+  (oddsRows || []).forEach((r) => { oddsById[r.rosterId] = r; });
+  const myOdds = oddsById[data.myRosterId] || null;
+  // What a decision is WORTH, in odds. Re-run the same seeded season with only my scoring mean moved, so
+  // the difference is the decision and nothing else.
+  const oddsIfMeanShifts = (delta) => {
+    if (!oddsRows || !delta) return null;
+    const key = `odds|${oddsKey}|shift${Math.round(delta * 100)}`;
+    const rows = hubMemo(key, () => simSeason({
+      teams: oddsInput.map((t) => (t.rosterId === data.myRosterId ? { ...t, mean: t.mean + delta } : t)),
+      schedule: data.schedule || null, fromWeek: data.week, toWeek: regSeasonWeeks,
+      playoffSpots: playoffCut, byeSpots: data.playoffByes || 0, runs: 1500,
+    }));
+    const mine = (rows || []).find((r) => r.rosterId === data.myRosterId);
+    return mine && myOdds ? Math.round((mine.odds - myOdds.odds) * 10) / 10 : null;
+  };
+  // Setting the optimal lineup is worth this much, every week — the single most concrete number in the hub.
+  const oddsFromLineup = leftOnBench > 0 ? oddsIfMeanShifts(leftOnBench) : null;
+
+  // ---- FAAB: who else in the league actually needs this position ----
+  // The read no tool without league-wide rosters can give you.
+  const rivalsThinAt = {};
+  POS.forEach((pos) => {
+    rivalsThinAt[pos] = leagueTeams.filter((t) => {
+      if (t.rosterId === data.myRosterId) return false;
+      const startable = (t.roster || []).filter((p) => p.pos === pos && seasonOf(p) >= startableCut[pos] * 0.92).length;
+      return startable < (effDemand[pos] || 0);
+    }).length;
+  });
+  const faabBudget = data.faabBudget != null ? data.faabBudget : null;
+  const faabSpent = (data.faabSpent && data.faabSpent[data.myRosterId] != null) ? data.faabSpent[data.myRosterId] : null;
+  const faabLeft = (faabBudget != null && faabSpent != null) ? Math.max(0, faabBudget - faabSpent) : faabBudget;
+  const bidFor = (f) => faabBid({
+    gainPerWeek: Math.max(f.upgrade || 0, f.verdict === "add" && !f.upgrade ? 1.2 : 0),
+    weeksLeft, teamsN: leagueSize,
+    need: needByPos[f.p.pos] === 999,
+    scarce: (f.p.pos === "QB" && isSuperflex) || (f.p.pos === "TE" && (cfg.tePremMult || 0) > 0),
+    startable: seasonOf(f.p) >= startableCut[f.p.pos] * 0.92,
+    elite: rosterableByAdp(f.p),
+    rivals: rivalsThinAt[f.p.pos] || 0,
+    budgetLeft: faabLeft,
+  });
+
+  // ---- TRADE FINDER ----
+  // Season value, not this week's points: a trade is a season decision, and a bye must never make a good
+  // player look expendable.
+  const tradeRoster = (t) => (t.roster || []).map((p) => ({ ...p, pts: p.ptsSeason != null ? p.ptsSeason : (p.pts || 0) * GAMES_IN_SEASON }));
+  const myLT = leagueTeams.find((t) => t.rosterId === data.myRosterId);
+  const tradeKey = `trades|${leagueId}|${data.week}|${(myLT ? myLT.roster : []).map((p) => p.sid).join(",")}`;
+  const tradeIdeas = myLT ? hubMemo(tradeKey, () => findTrades(
+    { rosterId: myLT.rosterId, teamName: myLT.teamName, roster: tradeRoster(myLT) },
+    leagueTeams.filter((t) => t.rosterId !== data.myRosterId).map((t) => ({ rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName, roster: tradeRoster(t) })),
+    { sf: cfg.sf, max: 10, depth: 14 },
+  )) : [];
+
   // Data status: are we showing real weekly projections, or off-season/pre-week estimates? And is
   // defense-vs-position matchup data available yet? Drives a small explainer banner so an empty matchup
   // section is never a mystery (e.g. in the off-season there are simply no games to project or grade).
@@ -8573,7 +8899,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-          {[["notes", "Summary", "ti-clipboard-text"], ["lineup", "Matchup", "ti-swords"], ["freeagents", "Free agents", "ti-user-plus"], ["roster", "My roster", "ti-users"], ["league", "League", "ti-trophy"]].map(([k, label, icon]) => (
+          {[["notes", "Summary", "ti-clipboard-text"], ["lineup", "Matchup", "ti-swords"], ["freeagents", "Free agents", "ti-user-plus"], ["trades", "Trades", "ti-arrows-exchange"], ["roster", "My roster", "ti-users"], ["league", "League", "ti-trophy"]].map(([k, label, icon]) => (
             <button key={k} className="btn btn-mini" style={{ background: tab === k ? "var(--gold)" : "transparent", color: tab === k ? "#151002" : "var(--ink)", fontWeight: tab === k ? 700 : 400 }} onClick={() => setTab(k)}>
               <i className={`ti ${icon}`} style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />{label}
             </button>
@@ -8604,9 +8930,81 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
               </div>
             )}
 
+            {/* ===== CLOSE CALLS =====
+                The optimizer above answers "which lineup scores most". This answers the question a manager
+                actually asks on Sunday morning — "is this even a decision?" — because a 0.4-point edge is a
+                coin flip and saying "start him, he projects higher" pretends otherwise. */}
+            {calls.length > 0 && (
+              <div style={{ border: "1px solid var(--gold)", background: "rgba(242,182,60,.06)", borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
+                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                  <div className="disp" style={{ fontSize: 14, fontWeight: 700, color: "var(--gold)" }}>
+                    <i className="ti ti-scale" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
+                    {calls.length} close call{calls.length > 1 ? "s" : ""} this week
+                  </div>
+                  <span className="mut" style={{ fontSize: 11 }}>too close for the projection to decide — your read matters here</span>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {calls.map((c) => {
+                    // Label from the lineup the manager has ACTUALLY set on the platform, not from the
+                    // optimizer's — telling someone a player is "benched" while the lineup below shows him
+                    // starting is the fastest way to lose their trust in the whole screen.
+                    const inLineup = (p) => currentSet.has(p.sid);
+                    const pair = [
+                      { p: c.start, tag: inLineup(c.start) ? "in your lineup" : "on your bench", win: c.win },
+                      { p: c.alt, tag: inLineup(c.alt) ? "in your lineup" : "on your bench", win: Math.round((100 - c.win) * 10) / 10 },
+                    ];
+                    return (
+                      <div key={c.slot} style={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 9, padding: "9px 11px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7 }}>
+                          <span className="disp" style={{ fontSize: 10.5, fontWeight: 700, color: "var(--mut)", letterSpacing: ".06em" }}>{c.slot}</span>
+                          <span className="mut" style={{ fontSize: 11 }}>· {c.win >= 56 ? "a lean" : "a genuine coin flip"} — {c.edge > 0 ? `${c.edge} projected points apart` : "level on projection"}</span>
+                        </div>
+                        <div className="ccgrid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                          {pair.map(({ p, tag, win }) => (
+                            <div key={p.sid} onMouseEnter={(e) => showPlayerTip(e, p)} onMouseLeave={hideTip}
+                              style={{ cursor: "help", padding: "8px 10px", borderRadius: 8, border: `1px solid ${win >= 50 ? "var(--green)" : "var(--line)"}`, background: win >= 50 ? "rgba(95,208,168,.07)" : "transparent" }}>
+                              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 6 }}>
+                                <span style={{ fontWeight: 600, fontSize: 12.5, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={p.pos} />{p.name}</span>
+                                <b className="num" style={{ fontSize: 15, color: win >= 50 ? "var(--green)" : "var(--mut)" }}>{win}%</b>
+                              </div>
+                              <div className="mut" style={{ fontSize: 10.5, marginTop: 3 }}>
+                                {tag} · {(p.pts || 0).toFixed(1)} proj
+                                {p.floorWk != null && p.ceilWk != null ? ` · ${p.floorWk}–${p.ceilWk} range` : ""}
+                              </div>
+                              <div className="mut" style={{ fontSize: 10.5, marginTop: 2 }}>
+                                {p.matchupStr || p.team}
+                                {p.matchupDiff ? <span style={{ color: p.matchupDiff.tier === "soft" ? "var(--green)" : p.matchupDiff.tier === "tough" ? "var(--red)" : "var(--mut)", fontWeight: 600 }}> · {p.matchupDiff.tier === "soft" ? "soft" : p.matchupDiff.tier === "tough" ? "tough" : "neutral"} matchup ({ordinal(p.matchupDiff.rank)} of {p.matchupDiff.of})</span> : null}
+                                {p.wkInj ? <span style={{ color: "var(--red)" }}> · {p.wkInj}</span> : null}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="mut" style={{ fontSize: 10.5, marginTop: 7, lineHeight: 1.4 }}>
+                          {(() => {
+                            const s = c.start, a = c.alt;
+                            const wider = weekSd(a) > weekSd(s) * 1.25 ? a : (weekSd(s) > weekSd(a) * 1.25 ? s : null);
+                            const bits = [];
+                            if (s.matchupDiff && a.matchupDiff && s.matchupDiff.tier !== a.matchupDiff.tier) {
+                              const soft = s.matchupDiff.tier === "soft" ? s : a.matchupDiff.tier === "soft" ? a : null;
+                              const tough = s.matchupDiff.tier === "tough" ? s : a.matchupDiff.tier === "tough" ? a : null;
+                              if (soft) bits.push(`${surname(soft.name)} has the softer matchup`);
+                              else if (tough) bits.push(`${surname(tough.name)} draws one of the toughest defenses against his position (${ordinal(tough.matchupDiff.rank)} of ${tough.matchupDiff.of})`);
+                            }
+                            if (wider) bits.push(`${surname(wider.name)} is the higher-variance play — better if you need points, worse if you're protecting a lead`);
+                            if (!bits.length) bits.push("nothing separates them but the projection — go with the game script you believe");
+                            return bits.join(" · ");
+                          })()}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Optimizer nudges — both teams. Shows spots each could upgrade in their set lineup. */}
             {matchupView && ((leftOnBench > 0 && swapsIn.length > 0) || (matchupView.oppLeftOnBench > 0 && matchupView.oppSwapsIn.length > 0)) && (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+              <div className="ccgrid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
                 {/* Your upgrades */}
                 <div style={{ background: (leftOnBench > 0 && swapsIn.length > 0) ? "rgba(242,101,92,.08)" : "var(--panel2)", border: `1px solid ${(leftOnBench > 0 && swapsIn.length > 0) ? "var(--red)" : "var(--line)"}`, borderRadius: 8, padding: "10px 12px" }}>
                   {leftOnBench > 0 && swapsIn.length > 0 ? <>
@@ -8767,6 +9165,27 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                       <div className="num" style={{ fontWeight: 700, fontSize: 12.5 }}>{p.pts.toFixed(2)} pts/wk</div>
                       {upgrade > 1 && <div style={{ fontSize: 10, color: "var(--green)" }}>+{(Math.round(upgrade * 10) / 10)} vs your {p.pos}</div>}
                     </div>
+                    {/* WHAT TO BID. "Add" without a number leaves the actual decision to the user — and the
+                        competition read underneath it is the one thing a tool without league-wide rosters
+                        can never tell you. */}
+                    {verdict !== "hold" && (() => {
+                      const bid = bidFor({ p, upgrade, verdict });
+                      const rivals = rivalsThinAt[p.pos] || 0;
+                      return (
+                        <div onMouseEnter={(e) => showTip(e, [
+                          { kind: "take", tone: "neutral", x: `Suggested bid — ${bid.lo}–${bid.hi}% of your remaining budget` },
+                          { t: "Why this much", x: `He upgrades your ${p.pos} by about ${Math.round(Math.max(upgrade, 1.2) * 10) / 10} points a week with ${weeksLeft} week${weeksLeft > 1 ? "s" : ""} of regular season left${needByPos[p.pos] === 999 ? `, and you're genuinely short at ${p.pos}` : ""}. A waiver bid is worth what the points are worth, not what the name is worth.` },
+                          { t: "Competition", x: rivals ? `${rivals} of the other ${leagueSize - 1} teams can't field a full ${p.pos} group from startable players either — expect real bidding, and bid at the top of the range if you need him.` : `No other team in the league is short at ${p.pos} right now, so you're unlikely to be outbid. The low end of the range should be enough.` },
+                          ...(faabLeft != null ? [{ t: "Your budget", x: `${faabLeft} of ${faabBudget} left — that's about ${bid.loAbs}–${bid.hiAbs}.` }] : [{ t: "Budget", x: "Your league's FAAB budget isn't available from the platform yet, so this is shown as a share of whatever you have left." }]),
+                        ])} onMouseLeave={hideTip}
+                          style={{ flexShrink: 0, textAlign: "right", cursor: "help", minWidth: 62 }}>
+                          <div className="num" style={{ fontSize: 12.5, fontWeight: 800, color: "var(--gold)" }}>
+                            {faabLeft != null ? `$${bid.loAbs}–${bid.hiAbs}` : `${bid.lo}–${bid.hi}%`}
+                          </div>
+                          <div className="mut" style={{ fontSize: 9.5 }}>{rivals ? `${rivals} rival${rivals > 1 ? "s" : ""} thin` : "no competition"}</div>
+                        </div>
+                      );
+                    })()}
                     <span style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 700, color: vc.c, border: `1px solid ${vc.c}`, borderRadius: 99, padding: "2px 9px" }}>{vc.label}</span>
                   </div>
                 );
@@ -8779,6 +9198,67 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
           </div>
           );
         })()}
+
+        {/* ---- TRADES TAB ----
+             Every tool ships a trade ANALYZER: you propose, it grades. This is a trade FINDER — it mines
+             all N rosters for swaps that raise BOTH starting lineups, which is only possible because the
+             hub already scores every team in the league on one engine. ---- */}
+        {tab === "trades" && (
+          <div className="panel" style={{ padding: 16 }}>
+            <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 3 }}>Trades worth proposing</div>
+            <div className="mut" style={{ fontSize: 12, marginBottom: 12, lineHeight: 1.5 }}>
+              Every swap below improves <b>both</b> starting lineups on season projections — the other manager has a reason to say yes.
+              Value is season-long, so a bye week never makes someone look expendable.
+            </div>
+            {tradeIdeas.length ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                {tradeIdeas.map((t, i) => (
+                  <div key={`${t.team.rosterId}-${t.get.sid}`} style={{ border: `1px solid ${t.likeliest ? "var(--gold)" : "var(--line)"}`, background: t.likeliest ? "rgba(242,182,60,.06)" : "var(--panel2)", borderRadius: 10, padding: "11px 13px" }}>
+                    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700 }}>
+                        {t.likeliest && <span className="disp" style={{ color: "var(--gold)", marginRight: 6, fontSize: 10.5, letterSpacing: ".06em" }}>MOST LIKELY YES</span>}
+                        with <b>{t.team.teamName}</b>{t.team.ownerName ? <span className="mut" style={{ fontWeight: 400 }}> (@{t.team.ownerName})</span> : null}
+                      </div>
+                      <span className="mut" style={{ fontSize: 11 }}>{t.likeliest ? "the biggest win for their side too" : "both sides gain"}</span>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 10, alignItems: "center" }}>
+                      <div onMouseEnter={(e) => showPlayerTip(e, t.give)} onMouseLeave={hideTip} style={{ cursor: "help", minWidth: 0 }}>
+                        <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 2 }}>You send</div>
+                        <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={t.give.pos} />{t.give.name}</div>
+                        <div className="mut" style={{ fontSize: 10.5 }}>{t.give.pos}{t.give.posRank} · {t.give.team}{t.give.age ? ` · ${t.give.age}y` : ""}</div>
+                      </div>
+                      <i className="ti ti-arrows-exchange" style={{ fontSize: 18, color: "var(--mut)" }} aria-hidden="true" />
+                      <div onMouseEnter={(e) => showPlayerTip(e, t.get)} onMouseLeave={hideTip} style={{ cursor: "help", minWidth: 0, textAlign: "right" }}>
+                        <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 2 }}>You get</div>
+                        <div style={{ fontWeight: 600, fontSize: 13, color: "var(--green)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.get.name}<Dot pos={t.get.pos} /></div>
+                        <div className="mut" style={{ fontSize: 10.5 }}>{t.get.pos}{t.get.posRank} · {t.get.team}{t.get.age ? ` · ${t.get.age}y` : ""}</div>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 14, marginTop: 9, flexWrap: "wrap", fontSize: 11.5 }}>
+                      <span><b style={{ color: "var(--green)" }}>+{t.myGain}</b> <span className="mut">to your lineup</span></span>
+                      <span><b style={{ color: "var(--ink)" }}>+{t.theirGain}</b> <span className="mut">to theirs</span></span>
+                      {(() => {
+                        const perWeek = Math.round((t.myGain / GAMES_IN_SEASON) * 10) / 10;
+                        const d = perWeek > 0 ? oddsIfMeanShifts(perWeek) : null;
+                        return d != null && d > 0 ? <span><b style={{ color: "var(--gold)" }}>+{d}%</b> <span className="mut">playoff odds</span></span> : null;
+                      })()}
+                    </div>
+                  </div>
+                ))}
+                <div className="mut" style={{ fontSize: 10.5, marginTop: 4, lineHeight: 1.45 }}>
+                  One-for-one swaps only for now, ranked by what <i>you</i> gain — but every one of them also improves
+                  their lineup, because a proposal nobody accepts isn't a trade. Hover any player for his full outlook.
+                </div>
+              </div>
+            ) : (
+              <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55 }}>
+                No swap right now improves both lineups — usually that means your roster shape already matches
+                what the rest of the league has spare. It changes as byes, injuries and waiver moves reshape
+                the other teams, so it's worth another look each week.
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ---- ROSTER TAB ---- */}
         {tab === "roster" && (
@@ -9036,18 +9516,44 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                   </div>
                 );
               })()}
-              {/* Season */}
+              {/* Season — led by playoff odds, because that's the number every other number is really about. */}
               <div className="panel" style={{ padding: 16 }}>
                 <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>Season outlook</div>
-                <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
-                  {myStanding && <div><div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{ordinal(myStanding.rank)}</div><div className="mut" style={{ fontSize: 10.5 }}>current place</div></div>}
-                  {myProj && <div><div className="num" style={{ fontSize: 22, fontWeight: 800, color: myProj.projRank <= playoffSpots ? "var(--green)" : "var(--mut)" }}>{ordinal(myProj.projRank)}</div><div className="mut" style={{ fontSize: 10.5 }}>projected finish</div></div>}
-                  {myPowerRank && <div><div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{ordinal(myPowerRank)}</div><div className="mut" style={{ fontSize: 10.5 }}>power rank</div></div>}
-                </div>
+                {myOdds ? (
+                  <div style={{ display: "flex", gap: 18, alignItems: "flex-end", flexWrap: "wrap" }}>
+                    <div
+                      onMouseEnter={(e) => showTip(e, [
+                        { kind: "take", tone: myOdds.odds >= 60 ? "good" : myOdds.odds >= 30 ? "neutral" : "bad", x: `Playoff odds — ${myOdds.odds}%` },
+                        { t: "How this is computed", x: `We simulate the rest of the regular season 1,500 times. Every team scores around its own projected weekly total with realistic week-to-week swing, ${haveSchedule ? "against its actual remaining schedule" : "against a randomly drawn opponent each week (this league's remaining schedule isn't available yet)"}. The share of those seasons where you finish in the top ${playoffCut} is your odds.` },
+                        { t: "Average seed", x: `Across those seasons you finish ${ordinal(Math.round(myOdds.avgSeed))} on average.` },
+                      ])}
+                      onMouseLeave={hideTip} style={{ cursor: "help" }}>
+                      <div className="num" style={{ fontSize: 34, fontWeight: 800, lineHeight: 1, color: myOdds.odds >= 60 ? "var(--green)" : myOdds.odds >= 30 ? "var(--gold)" : "var(--red)" }}>{myOdds.odds}%</div>
+                      <div className="mut" style={{ fontSize: 10.5, marginTop: 3 }}>playoff odds <i className="ti ti-info-circle" style={{ fontSize: 10 }} aria-hidden="true" /></div>
+                    </div>
+                    <div><div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{ordinal(Math.round(myOdds.avgSeed))}</div><div className="mut" style={{ fontSize: 10.5 }}>likely seed</div></div>
+                    {myStanding && <div><div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{ordinal(myStanding.rank)}</div><div className="mut" style={{ fontSize: 10.5 }}>current place</div></div>}
+                    {myPowerRank && <div><div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{ordinal(myPowerRank)}</div><div className="mut" style={{ fontSize: 10.5 }}>power rank</div></div>}
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+                    {myStanding && <div><div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{ordinal(myStanding.rank)}</div><div className="mut" style={{ fontSize: 10.5 }}>current place</div></div>}
+                    {myProj && <div><div className="num" style={{ fontSize: 22, fontWeight: 800, color: myProj.projRank <= playoffSpots ? "var(--green)" : "var(--mut)" }}>{ordinal(myProj.projRank)}</div><div className="mut" style={{ fontSize: 10.5 }}>projected finish</div></div>}
+                    {myPowerRank && <div><div className="num" style={{ fontSize: 22, fontWeight: 800 }}>{ordinal(myPowerRank)}</div><div className="mut" style={{ fontSize: 10.5 }}>power rank</div></div>}
+                  </div>
+                )}
                 <div style={{ fontSize: 12.5, lineHeight: 1.5, marginTop: 8 }}>
-                  {myProj && myProj.projRank <= playoffSpots ? <span style={{ color: "var(--green)" }}>On track for the playoffs ({playoffSpots} make it).</span> : <span style={{ color: "var(--gold)" }}>Outside the playoff cut ({playoffSpots} spots) — every week counts.</span>}
-                  {myStanding && myProj && myProj.projRank < myStanding.rank ? <span className="mut"> Your roster projects to climb.</span> : myStanding && myProj && myProj.projRank > myStanding.rank ? <span className="mut"> Tougher schedule ahead — hold your ground.</span> : null}
+                  {myOdds
+                    ? <>{myOdds.odds >= 85 ? <span style={{ color: "var(--green)" }}>All but locked in ({playoffCut} make it) — play for seeding.</span>
+                      : myOdds.odds >= 55 ? <span style={{ color: "var(--green)" }}>In control of your spot ({playoffCut} make it).</span>
+                      : myOdds.odds >= 25 ? <span style={{ color: "var(--gold)" }}>On the bubble ({playoffCut} spots) — every week swings this.</span>
+                      : myOdds.odds >= 5 ? <span style={{ color: "var(--red)" }}>Needs a run ({playoffCut} spots) — take the variance, not the safe floor.</span>
+                      : <span style={{ color: "var(--red)" }}>Effectively out ({playoffCut} spots) — play for next year.</span>}
+                      {oddsFromLineup != null && oddsFromLineup > 0 ? <span className="mut"> Setting your best lineup — every week — is worth <b style={{ color: "var(--green)" }}>+{oddsFromLineup}%</b>.</span> : null}</>
+                    : <>{myProj && myProj.projRank <= playoffSpots ? <span style={{ color: "var(--green)" }}>On track for the playoffs ({playoffSpots} make it).</span> : <span style={{ color: "var(--gold)" }}>Outside the playoff cut ({playoffSpots} spots) — every week counts.</span>}
+                      {myStanding && myProj && myProj.projRank < myStanding.rank ? <span className="mut"> Your roster projects to climb.</span> : myStanding && myProj && myProj.projRank > myStanding.rank ? <span className="mut"> Tougher schedule ahead — hold your ground.</span> : null}</>}
                 </div>
+                {myOdds && !haveSchedule && <div className="mut" style={{ fontSize: 10, marginTop: 7, lineHeight: 1.4 }}>Estimated — this league's remaining schedule isn't available, so each week draws a random opponent.</div>}
               </div>
             </div>
 
@@ -9199,7 +9705,7 @@ function normalizeHubCfg(c) {
 function HubShell({ title, onBack, onHome, onSignOut, user, children }) {
   return (
     <div>
-      <div className="hairline" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 20px" }}>
+      <div className="hairline hubbar" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 20px", flexWrap: "wrap" }}>
         <button className="btn btn-mini" onClick={onBack}>← Back</button>
         <Wordmark size={18} />
         <div style={{ flex: 1 }} />
