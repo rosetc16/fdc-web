@@ -50,6 +50,8 @@ import './storage.js';          // installs window.storage (localStorage-backed)
   window.addEventListener('load', () => { setTimeout(() => { try { sessionStorage.removeItem(KEY); } catch (e) {} }, 4000); });
 })();
 
+import './fonts.css'; // Barlow / Barlow Condensed / DM Mono — the stylesheet always asked for these and
+                      // nothing ever loaded them, so every heading fell back to system-ui. See fonts.css.
 import './icons.css'; // icon SUBSET (148 of ~5,175 glyphs, woff2 only) — see tools/icons-build.mjs
 import './index.css';
 import React from 'react';

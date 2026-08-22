@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.22a";
+const BUILD_TAG = "2026.07.22b";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1821,7 +1821,7 @@ const totalOf = (cfg) => TEAMS * cfg.rounds;
    keeps it testable and means a missing field degrades to a blank row instead of a crash.
    ============================================================================================ */
 function drawRecapCard(d) {
-  const C = { bg: "#0B0F14", panel: "#161D26", panel2: "#111820", line: "#2A3542", ink: "#EEF2F6", mut: "#93A1B0", gold: "#F2B63C", green: "#5FD0A8", red: "#F2655C", blue: "#6BA8E5" };
+  const C = { bg: "#0B0F14", panel: "#161D26", panel2: "#111820", line: "#2A3542", ink: "#EEF2F6", mut: "#93A1B0", gold: "#E0A63C", green: "#5FD0A8", red: "#F2655C", blue: "#6BA8E5" };
   const PC = { QB: "#EF6A6A", RB: "#4FD1A1", WR: "#5BA8F5", TE: "#F2A35C", K: "#8B96A3", DST: "#8B96A3" };
   const W = 1080, PAD = 64;
   const CW = W - PAD * 2;                       // content width
@@ -1873,7 +1873,7 @@ function drawRecapCard(d) {
   // ---- ground + hero wash -------------------------------------------------------------------
   x.fillStyle = C.bg; x.fillRect(0, 0, W, H);
   const g1 = x.createLinearGradient(0, 0, W * 0.85, HERO_H);
-  g1.addColorStop(0, "rgba(242,182,60,.20)"); g1.addColorStop(0.55, "rgba(242,182,60,.05)"); g1.addColorStop(1, "rgba(242,182,60,0)");
+  g1.addColorStop(0, "rgba(224,166,60,.20)"); g1.addColorStop(0.55, "rgba(224,166,60,.05)"); g1.addColorStop(1, "rgba(224,166,60,0)");
   x.fillStyle = g1; x.fillRect(0, 0, W, HERO_H);
   // Fade the wash back into the ground so the hero doesn't end on a hard horizontal seam.
   const g2 = x.createLinearGradient(0, HERO_H - 150, 0, HERO_H);
@@ -1890,12 +1890,12 @@ function drawRecapCard(d) {
   text(d.subline || "", PAD, 210, C.mut, 23, 500, badgeX - PAD - 24);
 
   // grade badge
-  x.fillStyle = "rgba(242,182,60,.10)"; rr(badgeX, 84, BADGE, BADGE, 22); x.fill();
-  x.strokeStyle = "rgba(242,182,60,.55)"; x.lineWidth = 2; rr(badgeX + 1, 85, BADGE - 2, BADGE - 2, 21); x.stroke();
+  x.fillStyle = "rgba(224,166,60,.10)"; rr(badgeX, 84, BADGE, BADGE, 22); x.fill();
+  x.strokeStyle = "rgba(224,166,60,.55)"; x.lineWidth = 2; rr(badgeX + 1, 85, BADGE - 2, BADGE - 2, 21); x.stroke();
   x.textAlign = "center";
   text(d.grade || "—", badgeX + BADGE / 2, 196, C.gold, 86, 800, BADGE - 16, "center");
   track(2.2);
-  text("DRAFT GRADE", badgeX + BADGE / 2, 232, "rgba(242,182,60,.75)", 15, 700, BADGE - 8, "center");
+  text("DRAFT GRADE", badgeX + BADGE / 2, 232, "rgba(224,166,60,.75)", 15, 700, BADGE - 8, "center");
   track(0);
 
   // stat strip
@@ -1960,7 +1960,7 @@ function drawRecapCard(d) {
   rows.forEach((r, i) => {
     const yy = ry0 + i * 38;
     if (r.you) {
-      x.fillStyle = "rgba(242,182,60,.11)"; rr(RX - 12, yy - 20, RW + 12, 34, 9); x.fill();
+      x.fillStyle = "rgba(224,166,60,.11)"; rr(RX - 12, yy - 20, RW + 12, 34, 9); x.fill();
       x.fillStyle = C.gold; rr(RX - 12, yy - 20, 3, 34, 2); x.fill();
     }
     text(r.grade || "—", RX + 4, yy + 4, r.color || C.ink, 21, 800, 56);
@@ -4849,7 +4849,7 @@ function OutlookCard({ content }) {
           // the player list above it.
           return (
             <div key={i} style={{ marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--line)" }}>
-              <div style={{ fontSize: 12, lineHeight: 1.45, padding: "7px 9px", background: "rgba(242,182,60,.08)", borderLeft: "2px solid var(--gold)", borderRadius: "0 6px 6px 0" }}>
+              <div style={{ fontSize: 12, lineHeight: 1.45, padding: "7px 9px", background: "rgba(224,166,60,.08)", borderLeft: "2px solid var(--gold)", borderRadius: "0 6px 6px 0" }}>
                 <span style={{ color: "var(--gold)", fontWeight: 700 }}>Why: </span><span style={{ color: "var(--ink)" }}>{l.x}</span>
               </div>
             </div>
@@ -4951,7 +4951,7 @@ function OutlookCard({ content }) {
                 ))}
                 {/* player rows */}
                 {rowsP.map((p, ri) => cols.map((c, ci) => {
-                  const recBg = p.rec ? { background: "rgba(242,182,60,.12)" } : {};
+                  const recBg = p.rec ? { background: "rgba(224,166,60,.12)" } : {};
                   const firstCell = ci === 0, lastCell = ci === cols.length - 1;
                   const base = { minWidth: 0, fontSize: 11.5, padding: p.rec ? "5px 0" : "3px 0", borderBottom: ri < rowsP.length - 1 ? "1px solid var(--line2)" : "none", lineHeight: 1.2, ...recBg, ...(p.rec && firstCell ? { borderTopLeftRadius: 6, borderBottomLeftRadius: 6, paddingLeft: 5 } : {}), ...(p.rec && lastCell ? { borderTopRightRadius: 6, borderBottomRightRadius: 6, paddingRight: 5 } : {}) };
                   if (c === "rank") return <div key={ri + "-" + ci} className="num" style={{ ...base, fontWeight: 800, color: rankTierColor(p.pos, p.posRank), textAlign: "right" }}>{p.pos}{p.posRank}</div>;
@@ -5114,17 +5114,35 @@ const css = `
 .gs-root.no-hover-anim *:hover{transition:none!important;animation:none!important}
 .gs-root.no-hover-anim .btn:hover,.gs-root.no-hover-anim .hubtile:hover,.gs-root.no-hover-anim .bigact:hover,.gs-root.no-hover-anim .btn-gold:hover{transform:none!important;box-shadow:none!important;filter:none!important}
 .gs-root.no-hover-anim .flipcard:hover .flipinner,.gs-root.no-hover-anim .flipcard:focus-visible .flipinner{transform:none!important}
-.gs-root{--bg:#0E1217;--panel:#181F28;--panel2:#10151B;--panel3:#222C38;--line:#2E3A48;--line2:#3A4757;--ink:#EEF2F6;--mut:#9AA7B5;--gold:#F2B63C;--gold2:#FFD071;--red:#F2655C;--green:#5FD0A8;--blue:#6BA8E5;--mono:'DM Mono','SF Mono',ui-monospace,monospace;
-  background:radial-gradient(1200px 600px at 50% -10%, #141C26 0%, var(--bg) 60%);color:var(--ink);font-family:'Barlow',system-ui,sans-serif;min-height:100vh;font-size:14px;}
+/* ---- PALETTE ------------------------------------------------------------------------------------
+   Retuned for depth rather than contrast. Previously --panel (#181F28) was LIGHTER than --bg (#0E1217),
+   so every card floated above a darker ground — and since nearly everything in this app is a card, the
+   page read as a field of floating boxes rather than a document. Surfaces now sit close together and
+   hairlines do the separating, which is how the data-heavy sites this is measured against are built.
+   --gold went from #E0A63C (a highlighter) to a deeper brass: it appears on borders, headings, icons,
+   chips and buttons all at once, and at full saturation that made everything shout at the same volume.
+   Same hue, same identity, lower voice. --gold-line exists for chrome that wants a HINT of the accent
+   without claiming to be the most important thing on screen. */
+.gs-root{--bg:#0B0F14;--panel:#111823;--panel2:#0E141B;--panel3:#1A2230;--line:#212B37;--line2:#2E3B4A;--ink:#E9EEF3;--mut:#8896A5;--gold:#E0A63C;--gold2:#F5C878;--gold-line:rgba(224,166,60,.32);--red:#E8635A;--green:#57C79E;--blue:#5F9EDA;--mono:'DM Mono','SF Mono',ui-monospace,monospace;
+  /* A flat ground. The old radial "glow" behind the header is the single most recognisable stock-landing-
+     page gesture there is, and it made the top of every screen slightly milky. */
+  background:var(--bg);color:var(--ink);font-family:'Barlow',system-ui,sans-serif;min-height:100vh;font-size:14px;
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;font-feature-settings:'kern' 1;}
 .gs-root *{box-sizing:border-box}
 .disp{font-family:'Barlow Condensed','Barlow',sans-serif;letter-spacing:.02em}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.25)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px}
+/* Numbers are the product. Tabular figures everywhere they stack, so columns line up instead of jittering
+   by a pixel per row — the difference between a table that looks built and one that looks generated. */
+.gs-root table,.gs-root .num,.gs-root .disp{font-variant-numeric:tabular-nums}
+/* Section labels: one voice. These were set individually all over the app, mostly gold + uppercase, so a
+   dozen panel headings competed with the recommendation the page exists to deliver. */
+.gs-root h1,.gs-root h2,.gs-root h3{margin:0}
 .hairline{border-bottom:1px solid var(--line)} .mut{color:var(--mut)} .gold{color:var(--gold)}
 .btn{background:var(--panel3);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer;font-family:'Barlow';font-size:13px}
 .btn:hover{transition:border-color .15s,background .15s,transform .1s,box-shadow .15s}
 .btn:hover,.btn-mini:hover{border-color:var(--gold);background:#2B3340}
 /* Toolbar toggle in its ON state — the board has several of these and none of them used to look pressed. */
-.btn.on,.btn-mini.on{border-color:var(--gold);color:var(--gold);background:rgba(242,182,60,.12)}
+.btn.on,.btn-mini.on{border-color:var(--gold);color:var(--gold);background:rgba(224,166,60,.12)}
 /* Compact board density: same information, ~a third more rows on screen. */
 .dense-board td{padding-top:2px!important;padding-bottom:2px!important;font-size:11.5px}
 .dense-board th{padding-top:2px!important;padding-bottom:2px!important}
@@ -5150,7 +5168,7 @@ select.gs:hover{border-color:var(--gold)}
 .btn:active{transform:translateY(0)}
 .btn:focus-visible{outline:2px solid var(--gold);outline-offset:1px}
 .btn-gold{background:var(--gold);color:#151002;border:none;font-weight:700}
-.btn-gold:hover{filter:brightness(1.08);border-color:transparent;background:var(--gold2);box-shadow:0 3px 16px rgba(242,182,60,.4)}
+.btn-gold:hover{filter:brightness(1.08);border-color:transparent;background:var(--gold2);box-shadow:0 3px 16px rgba(224,166,60,.4)}
 .btn-mini{padding:3px 10px;font-size:11px;border-radius:6px;background:var(--panel3)}
 .btn-gold,.btn-mini.btn-gold{background:var(--gold);color:#151002;border:none;font-weight:700}
 .btn-mini:hover{transform:none;box-shadow:none;background:#262017;border-color:var(--gold)}
@@ -5179,7 +5197,7 @@ select.gs:hover{border-color:var(--gold)}
 .chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;white-space:nowrap}
 .ticker{display:flex;gap:8px;overflow-x:auto;padding:10px 12px;scrollbar-width:thin;align-items:stretch}
 .tickcard{min-width:118px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-shrink:0}
-.tickcard.you{border-color:var(--gold);background:rgba(242,182,60,.10)}
+.tickcard.you{border-color:var(--gold);background:rgba(224,166,60,.10)}
 .tickcard.clock{border-color:var(--blue);background:#16243A}
 .meter{height:3px;background:var(--line);border-radius:2px;margin-top:6px;overflow:hidden}.meter>div{height:100%;background:var(--gold)}
 table.board{width:max-content;min-width:100%;border-collapse:separate;border-spacing:0;font-size:13px;table-layout:auto}
@@ -5200,10 +5218,10 @@ table.board th.frz,table.board td.frz{position:sticky;left:0;z-index:3;backgroun
 /* Recommended-pick row. The frozen Player column is sticky with its own opaque background, so a background set
    on the row gets painted over and the leftmost cell stays un-highlighted. We therefore tint every cell —
    including .frz — and hang the gold edge marker off the frozen cell so it rides along on horizontal scroll. */
-table.board tr.recrow>td{background:rgba(242,182,60,.14)!important}
-table.board tr.recrow>td.frz{background:linear-gradient(90deg,rgba(242,182,60,.24),rgba(242,182,60,.14)),var(--panel)!important;box-shadow:inset 3px 0 0 var(--gold)}
-table.board tr.recrow:hover>td{background:rgba(242,182,60,.20)!important}
-table.board tr.recrow:hover>td.frz{background:linear-gradient(90deg,rgba(242,182,60,.30),rgba(242,182,60,.20)),var(--panel)!important}
+table.board tr.recrow>td{background:rgba(224,166,60,.14)!important}
+table.board tr.recrow>td.frz{background:linear-gradient(90deg,rgba(224,166,60,.24),rgba(224,166,60,.14)),var(--panel)!important;box-shadow:inset 3px 0 0 var(--gold)}
+table.board tr.recrow:hover>td{background:rgba(224,166,60,.20)!important}
+table.board tr.recrow:hover>td.frz{background:linear-gradient(90deg,rgba(224,166,60,.30),rgba(224,166,60,.20)),var(--panel)!important}
 /* WHY !important: the zebra-striping rule below (tbody tr:nth-child(even) td, and its .frz twin) is MORE
    SPECIFIC than these recrow rules, so on every even row it silently painted over the gold — which is exactly
    why the highlight looked like it "only worked on hover" (the hover rules happened to out-rank the stripe).
@@ -5228,7 +5246,7 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .bgrid{display:grid;gap:4px;padding:8px}
 .bhead{position:sticky;top:0;z-index:5;display:grid;gap:4px;padding:8px 8px 6px;background:linear-gradient(180deg,var(--panel) 78%,transparent);backdrop-filter:blur(2px)}
 .bteam{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:7px 4px;border-radius:9px;background:var(--panel2);border:1px solid var(--line);min-height:42px;text-align:center}
-.bteam.you{background:linear-gradient(180deg,rgba(242,182,60,.18),rgba(242,182,60,.05));border-color:var(--gold)}
+.bteam.you{background:linear-gradient(180deg,rgba(224,166,60,.18),rgba(224,166,60,.05));border-color:var(--gold)}
 .bteam .nm{font-size:11px;font-weight:700;line-height:1.1;letter-spacing:.02em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .bteam .sub{font-size:8.5px;letter-spacing:.08em;text-transform:uppercase}
 /* PERF — the draft board is ROUNDS×TEAMS cells (260 in a 26-round, 10-team league) and their classes change
@@ -5241,9 +5259,9 @@ select.gs option{background:var(--panel2);color:var(--ink)}
    the grid instantly instead of animating hundreds of cells. */
 .bcell{position:relative;border-radius:9px;padding:7px 8px;background:var(--panel2);border:1px solid var(--line);min-height:62px;height:auto;display:flex;flex-direction:column;gap:2px;cursor:default}
 .bcell:hover{transform:translateY(-1px);border-color:#4a4a3c;transition:transform .1s,border-color .1s}
-.bcell.you{background:linear-gradient(180deg,rgba(242,182,60,.13),rgba(242,182,60,.03));border-color:rgba(242,182,60,.55)}
+.bcell.you{background:linear-gradient(180deg,rgba(224,166,60,.13),rgba(224,166,60,.03));border-color:rgba(224,166,60,.55)}
 .bcell.you.oncl{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold) inset}
-.bcell.upcoming{border-style:dashed;border-color:rgba(242,182,60,.6)}
+.bcell.upcoming{border-style:dashed;border-color:rgba(224,166,60,.6)}
 .bcell.empty{opacity:.4}
 .bcell .pl{font-size:11.5px;font-weight:700;line-height:1.15;word-break:break-word}
 .bcell .lbl{font-size:9px;display:flex;align-items:center;gap:3px;opacity:.85}
@@ -5268,8 +5286,8 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .feature{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;transition:border-color .18s, transform .18s, background .18s;cursor:default}
 .feature:hover{border-color:var(--gold);transform:translateY(-3px);background:#121210}
 .showcase{background:linear-gradient(165deg,#13130D,#0B0B08);border:1px solid #2A2A20;border-radius:14px;padding:18px;transition:border-color .2s,transform .2s,box-shadow .2s;cursor:default}
-.showcase:hover{border-color:var(--gold);transform:translateY(-4px);box-shadow:0 14px 40px rgba(242,182,60,.10)}
-.showcase-badge{display:inline-flex;align-items:center;gap:6px;font-family:'Barlow Condensed';text-transform:uppercase;letter-spacing:.1em;font-size:10.5px;font-weight:700;color:var(--gold);background:rgba(242,182,60,.10);border:1px solid #4A3A12;border-radius:99px;padding:4px 11px}
+.showcase:hover{border-color:var(--gold);transform:translateY(-4px);box-shadow:0 14px 40px rgba(224,166,60,.10)}
+.showcase-badge{display:inline-flex;align-items:center;gap:6px;font-family:'Barlow Condensed';text-transform:uppercase;letter-spacing:.1em;font-size:10.5px;font-weight:700;color:var(--gold);background:rgba(224,166,60,.10);border:1px solid #4A3A12;border-radius:99px;padding:4px 11px}
 .showcase-badge i{font-size:13px}
 .modalbg{position:fixed;inset:0;background:#000C;display:flex;align-items:center;justify-content:center;z-index:60;padding:16px}
 .statline{font-family:'Barlow Condensed';font-size:38px;font-weight:700;color:var(--gold)}
@@ -5444,7 +5462,7 @@ function Compass({ size = 40, heading = null, spin = false }) {
     const major = i % 3 === 0;
     ticks.push(
       <line key={i} x1="50" y1="4" x2="50" y2={cardinal ? 13 : major ? 10 : 8}
-        stroke={cardinal ? "var(--gold,#F2B63C)" : "var(--line2,#3A4757)"}
+        stroke={cardinal ? "var(--gold,#E0A63C)" : "var(--line2,#3A4757)"}
         strokeWidth={cardinal ? 2 : major ? 1 : 0.7} opacity={cardinal ? 1 : major ? 0.65 : 0.45}
         transform={`rotate(${a} 50 50)`} strokeLinecap="round" />
     );
@@ -5455,31 +5473,31 @@ function Compass({ size = 40, heading = null, spin = false }) {
           shape and laces; the compass is what the eye lands on. Does not rotate. */}
       <g transform="rotate(-38 50 50)" opacity="0.16">
         <path d="M50 33 C61 33 71 40 71 50 C71 60 61 67 50 67 C39 67 29 60 29 50 C29 40 39 33 50 33 Z"
-          fill="none" stroke="var(--gold,#F2B63C)" strokeWidth="1.6" strokeLinejoin="round" />
-        <line x1="42" y1="50" x2="58" y2="50" stroke="var(--gold,#F2B63C)" strokeWidth="1.2" />
+          fill="none" stroke="var(--gold,#E0A63C)" strokeWidth="1.6" strokeLinejoin="round" />
+        <line x1="42" y1="50" x2="58" y2="50" stroke="var(--gold,#E0A63C)" strokeWidth="1.2" />
         {[-4.5, -1.5, 1.5, 4.5].map((dx, i) => (
-          <line key={i} x1={50 + dx} y1="47.5" x2={50 + dx} y2="52.5" stroke="var(--gold,#F2B63C)" strokeWidth="1" strokeLinecap="round" />
+          <line key={i} x1={50 + dx} y1="47.5" x2={50 + dx} y2="52.5" stroke="var(--gold,#E0A63C)" strokeWidth="1" strokeLinecap="round" />
         ))}
       </g>
 
       {/* THE COMPASS — the star. Bold, prominent, spins in place. */}
       <g className={spin ? "spin-slow" : ""}>
-        <circle cx="50" cy="50" r="47" fill="none" stroke="var(--gold,#F2B63C)" strokeWidth="2.2" opacity="0.95" />
+        <circle cx="50" cy="50" r="47" fill="none" stroke="var(--gold,#E0A63C)" strokeWidth="2.2" opacity="0.95" />
         <circle cx="50" cy="50" r="42" fill="none" stroke="var(--line2,#3A4757)" strokeWidth="1" opacity="0.5" />
         {ticks}
         {/* four-point compass rose star — the dominant motif */}
         {[0, 90, 180, 270].map((a) => (
-          <polygon key={a} points="50,15 53,50 50,50" fill="var(--gold,#F2B63C)" transform={`rotate(${a} 50 50)`} />
+          <polygon key={a} points="50,15 53,50 50,50" fill="var(--gold,#E0A63C)" transform={`rotate(${a} 50 50)`} />
         ))}
         {[0, 90, 180, 270].map((a) => (
-          <polygon key={"b" + a} points="50,15 47,50 50,50" fill="var(--gold2,#FFD071)" opacity="0.8" transform={`rotate(${a} 50 50)`} />
+          <polygon key={"b" + a} points="50,15 47,50 50,50" fill="var(--gold2,#F5C878)" opacity="0.8" transform={`rotate(${a} 50 50)`} />
         ))}
         {[45, 135, 225, 315].map((a) => (
           <polygon key={"d" + a} points="50,32 51.4,50 48.6,50" fill="var(--line2,#3A4757)" opacity="0.7" transform={`rotate(${a} 50 50)`} />
         ))}
       </g>
       {/* center hub cap (still) */}
-      <circle cx="50" cy="50" r="3" fill="var(--gold,#F2B63C)" />
+      <circle cx="50" cy="50" r="3" fill="var(--gold,#E0A63C)" />
       <circle cx="50" cy="50" r="1.3" fill="var(--bg,#0E1217)" />
     </svg>
   );
@@ -6694,14 +6712,14 @@ function GuideGraphic({ kind }) {
   const box = { width: "100%", height: 96, display: "block" };
   if (kind === "rankings") return (
     <svg viewBox="0 0 240 96" style={box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-      {[0, 1, 2, 3].map((i) => (<g key={i}><rect x="20" y={12 + i * 19} width="16" height="14" rx="3" fill={g} opacity={1 - i * 0.18} /><text x="28" y={23 + i * 19} fontSize="9" fontWeight="700" fill="rgba(242,182,60,.10)" textAnchor="middle" fontFamily="var(--mono)">{i + 1}</text><rect x="44" y={12 + i * 19} width={150 - i * 26} height="14" rx="4" fill="var(--panel2)" /><i /><rect x={200} y={14 + i * 19} width="20" height="10" rx="3" fill="none" stroke={g} strokeWidth="1" opacity="0.55" /></g>))}
+      {[0, 1, 2, 3].map((i) => (<g key={i}><rect x="20" y={12 + i * 19} width="16" height="14" rx="3" fill={g} opacity={1 - i * 0.18} /><text x="28" y={23 + i * 19} fontSize="9" fontWeight="700" fill="rgba(224,166,60,.10)" textAnchor="middle" fontFamily="var(--mono)">{i + 1}</text><rect x="44" y={12 + i * 19} width={150 - i * 26} height="14" rx="4" fill="var(--panel2)" /><i /><rect x={200} y={14 + i * 19} width="20" height="10" rx="3" fill="none" stroke={g} strokeWidth="1" opacity="0.55" /></g>))}
     </svg>
   );
   if (kind === "create") return (
     <svg viewBox="0 0 240 96" style={box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
       {[["Sleeper", 1], ["Manual", 0], ["Any site", 0]].map(([t, hot], i) => (<g key={i}><rect x={18 + i * 52} y="20" width="46" height="24" rx="6" fill="var(--panel2)" stroke={hot ? g : "var(--line)"} strokeWidth={hot ? 1.5 : 1} /><text x={41 + i * 52} y="35" fontSize="8.5" fill={hot ? g : "var(--mut)"} textAnchor="middle" fontFamily="var(--mono)">{t}</text></g>))}
       <path d="M120 52 v10 M120 62 h-44 M120 62 h44 M76 62 v8 M164 62 v8 M120 62 v8" stroke={g} strokeWidth="1.5" fill="none" opacity="0.6" />
-      <rect x="86" y="70" width="68" height="20" rx="6" fill={g} /><text x="120" y="83" fontSize="9" fontWeight="700" fill="rgba(242,182,60,.10)" textAnchor="middle">Your league</text>
+      <rect x="86" y="70" width="68" height="20" rx="6" fill={g} /><text x="120" y="83" fontSize="9" fontWeight="700" fill="rgba(224,166,60,.10)" textAnchor="middle">Your league</text>
     </svg>
   );
   if (kind === "open") return (
@@ -6746,7 +6764,7 @@ function WhyGraphic({ kind }) {
   );
   if (kind === "decide") return ( // who now + wait cost
     <svg viewBox="0 0 220 84" style={box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-      <rect x="16" y="30" width="96" height="24" rx="6" fill={g} /><text x="64" y="46" fontSize="11" fontWeight="700" fill="rgba(242,182,60,.10)" textAnchor="middle">Take now</text>
+      <rect x="16" y="30" width="96" height="24" rx="6" fill={g} /><text x="64" y="46" fontSize="11" fontWeight="700" fill="rgba(224,166,60,.10)" textAnchor="middle">Take now</text>
       <rect x="124" y="30" width="80" height="24" rx="6" fill="var(--panel2)" stroke="var(--line)" strokeWidth="1" /><text x="164" y="42" fontSize="9" fill="var(--mut)" textAnchor="middle">wait costs</text><text x="164" y="51" fontSize="9" fontWeight="700" fill="var(--red)" textAnchor="middle">−12 pts</text>
       <polygon points="64,20 60,28 68,28" fill={g} />
     </svg>
@@ -6829,7 +6847,7 @@ function HelpPage({ user, biz, onBack, onHome, onSignOut, onSubmit, initialTab }
               <div key={i} className="panel" style={{ padding: 0, marginBottom: 12, overflow: "hidden" }}>
                 <div style={{ display: "flex", gap: 0, flexWrap: "wrap" }}>
                   <div style={{ flex: "1 1 320px", padding: 16, display: "flex", gap: 14, alignItems: "flex-start" }}>
-                    <div style={{ flexShrink: 0, width: 38, height: 38, borderRadius: 9, background: "rgba(242,182,60,.10)", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <div style={{ flexShrink: 0, width: 38, height: 38, borderRadius: 9, background: "rgba(224,166,60,.10)", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                       <span className="disp gold" style={{ fontSize: 18, fontWeight: 700 }}>{i + 1}</span>
                     </div>
                     <div>
@@ -7105,7 +7123,7 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
         {(() => {
           const cs = league.cfg.connect && league.cfg.connect.status;
           if (cs === "drafting") return (
-            <div className="panel" style={{ padding: "12px 14px", marginTop: 10, background: "rgba(242,182,60,.07)", borderColor: "var(--gold)", display: "flex", alignItems: "center", gap: 10 }}>
+            <div className="panel" style={{ padding: "12px 14px", marginTop: 10, background: "rgba(224,166,60,.07)", borderColor: "var(--gold)", display: "flex", alignItems: "center", gap: 10 }}>
               <span style={{ display: "inline-flex", width: 9, height: 9, borderRadius: "50%", background: "#4FD1A1", boxShadow: "0 0 0 3px rgba(79,209,161,.2)" }} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--gold)" }}>Your draft is LIVE right now on Sleeper</div>
@@ -7140,7 +7158,7 @@ function LeagueUmbrella({ user, league, onBack, onHome, onSignOut, onOfficial, o
               <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>{isDynastyish ? "Every team's current roster, the best free agents on the wire, this week's matchup, and standings — live from Sleeper. Your tool for keeping tabs on leaguemates and finding trades." : "Your in-season hub — this week's matchup, roster, and league standings, plus every team's roster and the top free agents."}</div>
             </button>
           )}
-          <button className="hubtile" onClick={() => onOfficial(league.id)} style={{ textAlign: "left", background: "rgba(242,182,60,.07)", border: "1px solid var(--gold)", borderRadius: 12, padding: 18, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)" }}>
+          <button className="hubtile" onClick={() => onOfficial(league.id)} style={{ textAlign: "left", background: "rgba(224,166,60,.07)", border: "1px solid var(--gold)", borderRadius: 12, padding: 18, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)" }}>
             <i className="ti ti-flag-3" style={{ fontSize: 24, color: "var(--gold)" }} aria-hidden="true" />
             <div className="disp" style={{ fontSize: 17, fontWeight: 700, margin: "9px 0 3px" }}>{st === "complete" ? "View the Draft" : st === "progress" ? "Resume Official Draft" : "Start Official Draft"}</div>
             <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>{st === "complete" ? "The full recap — board, teams, grades, steals & reaches, locked to draft-day values." : st === "progress" ? `${league.picks.length}/${total} picks made.` : "The real one. Live recommendations, projections, and grades."}</div>
@@ -7963,7 +7981,7 @@ function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, onOp
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
       <button onClick={toggle} className="team-row" style={{ width: "100%", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1px solid var(--line)", background: "var(--panel)", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", gap: 11, minHeight: 56 }}>
-        <div style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(242,182,60,.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <div style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(224,166,60,.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
           <i className="ti ti-users-group" style={{ fontSize: 17, color: "var(--gold)" }} aria-hidden="true" />
         </div>
         <div style={{ textAlign: "left", flex: 1, minWidth: 0 }}>
@@ -7991,7 +8009,7 @@ function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, onOp
                     : { label: "Ready to draft", color: "var(--mut)", dot: "var(--mut)" };
                 return (
                   <button key={l.id} onClick={() => onOpenLeague(l.id)} className="team-row" style={{ textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1px solid var(--line)", background: "var(--panel2)", borderRadius: 10, padding: "11px 13px", display: "flex", alignItems: "center", gap: 11 }}>
-                    <div style={{ width: 28, height: 28, borderRadius: 7, background: "rgba(242,182,60,.10)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <div style={{ width: 28, height: 28, borderRadius: 7, background: "rgba(224,166,60,.10)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                       <i className="ti ti-clipboard-list" style={{ fontSize: 15, color: "var(--gold)" }} aria-hidden="true" />
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -9131,7 +9149,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
              league (remembered on the user record), and it always says what's actually wrong, never just
              "week 10 is here". */}
         {weekIsNew && (
-          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", border: "1px solid var(--gold)", background: "linear-gradient(90deg, rgba(242,182,60,.14), rgba(242,182,60,.04))", borderRadius: 11, padding: "11px 14px", marginBottom: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", border: "1px solid var(--gold)", background: "linear-gradient(90deg, rgba(224,166,60,.14), rgba(224,166,60,.04))", borderRadius: 11, padding: "11px 14px", marginBottom: 12 }}>
             <i className="ti ti-calendar-event" style={{ fontSize: 17, color: "var(--gold)" }} aria-hidden="true" />
             <div style={{ flex: "1 1 240px", minWidth: 0 }}>
               <div className="disp" style={{ fontSize: 14.5, fontWeight: 800 }}>Week {data.week} is live</div>
@@ -9162,7 +9180,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
         {briefOpen && (
           <div onClick={() => setBriefOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 80, background: "#000b", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "5vh 16px", overflow: "auto" }}>
             <div className="panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560, width: "100%", padding: 0, overflow: "hidden" }}>
-              <div style={{ padding: "14px 16px", background: "linear-gradient(135deg, rgba(242,182,60,.15), rgba(242,182,60,.03))", borderBottom: "1px solid var(--line)" }}>
+              <div style={{ padding: "14px 16px", background: "linear-gradient(135deg, rgba(224,166,60,.15), rgba(224,166,60,.03))", borderBottom: "1px solid var(--line)" }}>
                 <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="disp" style={{ fontSize: 11, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--gold)" }}>{data.leagueName} · Week {data.week}</div>
@@ -9221,7 +9239,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                 actually asks on Sunday morning — "is this even a decision?" — because a 0.4-point edge is a
                 coin flip and saying "start him, he projects higher" pretends otherwise. */}
             {calls.length > 0 && (
-              <div style={{ border: "1px solid var(--gold)", background: "rgba(242,182,60,.06)", borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
+              <div style={{ border: "1px solid var(--gold)", background: "rgba(224,166,60,.06)", borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
                 <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
                   <div className="disp" style={{ fontSize: 14, fontWeight: 700, color: "var(--gold)" }}>
                     <i className="ti ti-scale" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
@@ -9437,7 +9455,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
               {faFiltered.map(({ p, upgrade, verdict, reason, worstOnRoster }) => {
-                const vc = verdict === "add" ? { c: "var(--green)", bg: "rgba(95,208,168,.10)", label: "Add" } : verdict === "stream" ? { c: "var(--gold)", bg: "rgba(242,182,60,.10)", label: "Stream" } : { c: "var(--mut)", bg: "transparent", label: "Hold" };
+                const vc = verdict === "add" ? { c: "var(--green)", bg: "rgba(95,208,168,.10)", label: "Add" } : verdict === "stream" ? { c: "var(--gold)", bg: "rgba(224,166,60,.10)", label: "Stream" } : { c: "var(--mut)", bg: "transparent", label: "Hold" };
                 return (
                   <div key={p.sid} onMouseEnter={(e) => showPlayerTip(e, p)} onMouseLeave={hideTip} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", cursor: "help", background: vc.bg !== "transparent" ? vc.bg : "var(--panel2)", border: `1px solid ${verdict === "add" ? "var(--green)" : "var(--line)"}`, borderRadius: 8 }}>
                     <Dot pos={p.pos} />
@@ -9499,7 +9517,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
             {tradeIdeas.length ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
                 {tradeIdeas.map((t, i) => (
-                  <div key={`${t.team.rosterId}-${t.get.sid}`} style={{ border: `1px solid ${t.likeliest ? "var(--gold)" : "var(--line)"}`, background: t.likeliest ? "rgba(242,182,60,.06)" : "var(--panel2)", borderRadius: 10, padding: "11px 13px" }}>
+                  <div key={`${t.team.rosterId}-${t.get.sid}`} style={{ border: `1px solid ${t.likeliest ? "var(--gold)" : "var(--line)"}`, background: t.likeliest ? "rgba(224,166,60,.06)" : "var(--panel2)", borderRadius: 10, padding: "11px 13px" }}>
                     <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
                       <div style={{ fontSize: 12, fontWeight: 700 }}>
                         {t.likeliest && <span className="disp" style={{ color: "var(--gold)", marginRight: 6, fontSize: 10.5, letterSpacing: ".06em" }}>MOST LIKELY YES</span>}
@@ -9579,7 +9597,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                         const isStarter = !!slot;
                         const isFlex = slot && (slot.startsWith("FLEX") || slot === "SFLX");
                         return (
-                          <div key={p.sid} onMouseEnter={(e) => showPlayerTip(e, p)} onMouseLeave={hideTip} style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 6px", borderRadius: 6, cursor: "help", background: isStarter ? (isFlex ? "rgba(107,168,229,.10)" : "rgba(242,182,60,.08)") : "transparent" }}>
+                          <div key={p.sid} onMouseEnter={(e) => showPlayerTip(e, p)} onMouseLeave={hideTip} style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 6px", borderRadius: 6, cursor: "help", background: isStarter ? (isFlex ? "rgba(107,168,229,.10)" : "rgba(224,166,60,.08)") : "transparent" }}>
                             <span style={{ width: 4, height: 4, borderRadius: "50%", background: isStarter ? (isFlex ? "var(--blue)" : "var(--gold)") : "var(--line2)", flexShrink: 0 }} />
                             <span style={{ fontSize: 12.5, fontWeight: isStarter ? 600 : 400, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isStarter ? "var(--ink)" : "var(--mut)" }}>
                               {p.name} <span style={{ fontSize: 10, opacity: 0.7 }}>{p.team}{p.age ? ` · ${p.age}y` : ""}</span>
@@ -9684,7 +9702,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                       })();
                       const nameTip = rosterTipContent ? (e) => showTip(e, rosterTipContent) : undefined;
                       return (
-                        <tr key={st.rosterId} style={{ borderTop: "1px solid var(--line)", background: st.isMe ? "rgba(242,182,60,.07)" : "transparent" }}>
+                        <tr key={st.rosterId} style={{ borderTop: "1px solid var(--line)", background: st.isMe ? "rgba(224,166,60,.07)" : "transparent" }}>
                           <td onMouseEnter={nameTip} onMouseLeave={nameTip ? hideTip : undefined} style={{ padding: "6px", fontWeight: st.isMe ? 700 : 500, color: st.isMe ? "var(--gold)" : "var(--ink)", cursor: nameTip ? "help" : "default" }}>
                             {st.rank}. {st.teamName}{st.isMe ? " ★" : ""}{st.ownerName ? <span className="mut" style={{ fontSize: 10, fontWeight: 400 }}> (@{st.ownerName})</span> : null}
                           </td>
@@ -9716,7 +9734,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                   rankByCol[col] = {}; sorted.forEach((t, i) => { rankByCol[col][t.rosterId] = i + 1; });
                 });
                 const cellColor = (rank) => rank <= Math.ceil(n / 3) ? "var(--green)" : rank <= Math.ceil((2 * n) / 3) ? "var(--gold)" : "var(--red)";
-                const cellBg = (rank) => rank <= Math.ceil(n / 3) ? "rgba(95,208,168,.14)" : rank <= Math.ceil((2 * n) / 3) ? "rgba(242,182,60,.12)" : "rgba(242,101,92,.14)";
+                const cellBg = (rank) => rank <= Math.ceil(n / 3) ? "rgba(95,208,168,.14)" : rank <= Math.ceil((2 * n) / 3) ? "rgba(224,166,60,.12)" : "rgba(242,101,92,.14)";
                 const overallVal = (t) => t.posQuality.QB + t.posQuality.RB + t.posQuality.WR + t.posQuality.TE;
                 const sortVal = (t) => posSortCol === "all" ? overallVal(t) : (t.posQuality[posSortCol] || 0);
                 const rowsSorted = leagueTeams.slice().sort((a, b) => sortVal(b) - sortVal(a));
@@ -9735,7 +9753,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                       </thead>
                       <tbody>
                         {rowsSorted.map((t) => (
-                          <tr key={t.rosterId} style={{ borderTop: "1px solid var(--line)", background: t.isMe ? "rgba(242,182,60,.07)" : "transparent" }}>
+                          <tr key={t.rosterId} style={{ borderTop: "1px solid var(--line)", background: t.isMe ? "rgba(224,166,60,.07)" : "transparent" }}>
                             <td style={{ padding: "5px 6px", fontWeight: t.isMe ? 700 : 500, color: t.isMe ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap" }} title={t.ownerName ? `@${t.ownerName}` : undefined}>{t.teamName}{t.isMe ? " ★" : ""}{t.ownerName ? <span className="mut" style={{ fontSize: 10, fontWeight: 400 }}> (@{t.ownerName})</span> : null}</td>
                             {POS.map((pos) => {
                               const rk = rankByCol[pos][t.rosterId];
@@ -9935,7 +9953,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                           { t: "Tip", x: "Click to jump the whole hub to that week and see the lineup you'd actually field." },
                         ])}
                         onMouseLeave={hideTip}
-                        style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left", minWidth: 74, border: `1px solid ${col}`, background: bad ? "rgba(242,101,92,.10)" : warn ? "rgba(242,182,60,.08)" : "var(--panel2)", borderRadius: 9, padding: "7px 10px" }}>
+                        style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left", minWidth: 74, border: `1px solid ${col}`, background: bad ? "rgba(242,101,92,.10)" : warn ? "rgba(224,166,60,.08)" : "var(--panel2)", borderRadius: 9, padding: "7px 10px" }}>
                         <div className="disp" style={{ fontSize: 10, letterSpacing: ".06em", color: "var(--mut)" }}>WK {b.week}</div>
                         <div className="num" style={{ fontSize: 17, fontWeight: 800, color: col === "var(--line2)" ? "var(--mut)" : col }}>{b.starters || "—"}</div>
                         <div className="mut" style={{ fontSize: 9.5 }}>{bad ? `${b.empty.length} slot${b.empty.length > 1 ? "s" : ""} empty` : b.starters ? `starter${b.starters > 1 ? "s" : ""} out` : "clear"}</div>
@@ -10223,7 +10241,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "16px 20px 0" }}>
         <div style={{ position: "relative", overflow: "hidden", borderRadius: 18, border: "1px solid rgba(214,170,75,0.35)", background: "linear-gradient(135deg, #14100a 0%, #1b1710 55%, #241d0f 100%)", padding: "26px 26px 22px", boxShadow: "0 10px 40px -12px rgba(0,0,0,.6)" }}>
           {/* layered depth: warm radial glow top-right + faint yard-line rhythm */}
-          <div aria-hidden="true" style={{ position: "absolute", top: -80, right: -60, width: 320, height: 320, background: "radial-gradient(circle, rgba(242,182,60,0.18) 0%, transparent 68%)", pointerEvents: "none" }} />
+          <div aria-hidden="true" style={{ position: "absolute", top: -80, right: -60, width: 320, height: 320, background: "radial-gradient(circle, rgba(224,166,60,0.18) 0%, transparent 68%)", pointerEvents: "none" }} />
           <div aria-hidden="true" style={{ position: "absolute", inset: 0, backgroundImage: "repeating-linear-gradient(90deg, transparent, transparent 58px, rgba(255,255,255,0.025) 58px, rgba(255,255,255,0.025) 59px)", pointerEvents: "none" }} />
           <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
             <div style={{ flexShrink: 0 }}><Compass size={54} spin /></div>
@@ -10481,9 +10499,9 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
               const mocks = (l.mocks || []).length;
               const draftLive = l.picks.length > 0 && st.pct < 100;
               return (
-                <div key={l.id} style={{ border: `1px solid ${draftLive ? "var(--gold)" : "var(--line)"}`, background: draftLive ? "linear-gradient(90deg,rgba(242,182,60,.06),transparent 60%)" : "var(--panel)", borderRadius: 12, padding: "11px 14px", display: "flex", alignItems: "center", gap: 13, flexWrap: "wrap" }}>
+                <div key={l.id} style={{ border: `1px solid ${draftLive ? "var(--gold)" : "var(--line)"}`, background: draftLive ? "linear-gradient(90deg,rgba(224,166,60,.06),transparent 60%)" : "var(--panel)", borderRadius: 12, padding: "11px 14px", display: "flex", alignItems: "center", gap: 13, flexWrap: "wrap" }}>
                   {/* status icon */}
-                  <div style={{ width: 38, height: 38, borderRadius: 10, background: draftLive ? "rgba(242,182,60,.14)" : "var(--panel3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className={`ti ${st.icon}`} style={{ fontSize: 18, color: st.color }} aria-hidden="true" /></div>
+                  <div style={{ width: 38, height: 38, borderRadius: 10, background: draftLive ? "rgba(224,166,60,.14)" : "var(--panel3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className={`ti ${st.icon}`} style={{ fontSize: 18, color: st.color }} aria-hidden="true" /></div>
                   {/* name + meta */}
                   <div style={{ flex: "1 1 220px", minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
@@ -10512,7 +10530,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                       <i className="ti ti-clipboard-text" style={{ fontSize: 14 }} aria-hidden="true" />{draftLive ? "Resume" : st.pct === 100 ? "League hub" : "Draft room"}
                     </button>
                     {st.pct === 100 && onOfficial && (
-                      <button onClick={() => onOfficial(l.id)} title="Reopen the completed draft — board, grades, and recap, locked to draft-day values" style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--gold)", background: "rgba(242,182,60,.10)", color: "var(--gold)", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>
+                      <button onClick={() => onOfficial(l.id)} title="Reopen the completed draft — board, grades, and recap, locked to draft-day values" style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--gold)", background: "rgba(224,166,60,.10)", color: "var(--gold)", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>
                         <i className="ti ti-flag-3" style={{ fontSize: 14 }} aria-hidden="true" />View draft
                       </button>
                     )}
@@ -10574,7 +10592,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                       <i className="ti ti-user-heart" style={{ fontSize: 14 }} aria-hidden="true" />View team
                     </button>
                   )}
-                  <button onClick={() => onNewLeague()} style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--gold)", background: "rgba(242,182,60,.10)", color: "var(--gold)", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>
+                  <button onClick={() => onNewLeague()} style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--gold)", background: "rgba(224,166,60,.10)", color: "var(--gold)", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>
                     <i className="ti ti-plus" style={{ fontSize: 14 }} aria-hidden="true" />Add to Compass
                   </button>
                 </div>
@@ -10684,7 +10702,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
               return true;
             });
             const chip = (val, cur, set, label) => (
-              <button onClick={() => set(val)} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: cur === val ? 700 : 500, padding: "4px 10px", borderRadius: 99, border: `1px solid ${cur === val ? "var(--gold)" : "var(--line)"}`, background: cur === val ? "rgba(242,182,60,.14)" : "transparent", color: cur === val ? "var(--gold)" : "var(--mut)" }}>{label}</button>
+              <button onClick={() => set(val)} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: cur === val ? 700 : 500, padding: "4px 10px", borderRadius: 99, border: `1px solid ${cur === val ? "var(--gold)" : "var(--line)"}`, background: cur === val ? "rgba(224,166,60,.14)" : "transparent", color: cur === val ? "var(--gold)" : "var(--mut)" }}>{label}</button>
             );
             return (
             <div style={{ marginTop: 8 }}>
@@ -10827,7 +10845,7 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
                 <div key={s.n} className="flipcard" role="button" tabIndex={0} onClick={s.action} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && s.action()} style={{ height: 124 }}>
                   <div className="flipinner">
                     {/* FRONT — number + icon + title */}
-                    <div className="flipface" style={{ background: isNext ? "rgba(242,182,60,.07)" : "var(--panel2)", border: `1px solid ${isNext ? "var(--gold)" : "var(--line)"}`, padding: 13, justifyContent: "space-between" }}>
+                    <div className="flipface" style={{ background: isNext ? "rgba(224,166,60,.07)" : "var(--panel2)", border: `1px solid ${isNext ? "var(--gold)" : "var(--line)"}`, padding: 13, justifyContent: "space-between" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                         <span className="disp" style={{ fontSize: 34, fontWeight: 700, lineHeight: 1, color: accent, opacity: s.done ? 0.5 : 1 }}>{s.n}</span>
                         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
@@ -11024,7 +11042,7 @@ function AvailDemo() {
   // survival probability decays as more picks happen before your turn. Demo of the real idea.
   const [picks, setPicks] = useState(6);
   // a player with demand d ~ chance any given pick takes him; survival ≈ (1-d)^picks
-  const players = [["Breakout RB", 0.16, "var(--rb,#7CD9B2)"], ["WR3 value", 0.07, "var(--wr,#F2B63C)"]];
+  const players = [["Breakout RB", 0.16, "var(--rb,#7CD9B2)"], ["WR3 value", 0.07, "var(--wr,#E0A63C)"]];
   const surv = (d) => Math.round(Math.pow(1 - d, picks) * 100);
   return (
     <div>
@@ -11134,7 +11152,7 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14 }}>
             <div style={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 12, padding: 18 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 8 }}>
-                <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(242,182,60,.12)", display: "flex", alignItems: "center", justifyContent: "center" }}><i className="ti ti-target-arrow" style={{ fontSize: 19, color: "var(--gold)" }} aria-hidden="true" /></div>
+                <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(224,166,60,.12)", display: "flex", alignItems: "center", justifyContent: "center" }}><i className="ti ti-target-arrow" style={{ fontSize: 19, color: "var(--gold)" }} aria-hidden="true" /></div>
                 <div className="disp" style={{ fontSize: 17, fontWeight: 700 }}>On draft day</div>
               </div>
               <div className="mut" style={{ fontSize: 13.5, lineHeight: 1.55 }}>Live pick recommendations, availability odds, take-now-vs-wait, run detection, and a shareable recap — recalculated after every selection. Syncs live to your Sleeper draft.</div>
@@ -11274,7 +11292,7 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
             <div key={i} className="panel" style={{ padding: 0, marginBottom: 12, overflow: "hidden" }}>
               <div style={{ display: "flex", gap: 0, flexWrap: "wrap" }}>
                 <div style={{ flex: "1 1 320px", padding: 18, display: "flex", gap: 14, alignItems: "flex-start" }}>
-                  <div style={{ flexShrink: 0, width: 38, height: 38, borderRadius: 9, background: "rgba(242,182,60,.10)", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <div style={{ flexShrink: 0, width: 38, height: 38, borderRadius: 9, background: "rgba(224,166,60,.10)", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                     <span className="disp gold" style={{ fontSize: 18, fontWeight: 700 }}>{i + 1}</span>
                   </div>
                   <div>
@@ -12058,7 +12076,7 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
   }, [trends, q]);
 
   const chip = (val, cur, set, label) => (
-    <button onClick={() => set(val)} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: cur === val ? 700 : 500, padding: "4px 10px", borderRadius: 99, border: `1px solid ${cur === val ? "var(--gold)" : "var(--line)"}`, background: cur === val ? "rgba(242,182,60,.14)" : "transparent", color: cur === val ? "var(--gold)" : "var(--mut)" }}>{label}</button>
+    <button onClick={() => set(val)} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: cur === val ? 700 : 500, padding: "4px 10px", borderRadius: 99, border: `1px solid ${cur === val ? "var(--gold)" : "var(--line)"}`, background: cur === val ? "rgba(224,166,60,.14)" : "transparent", color: cur === val ? "var(--gold)" : "var(--mut)" }}>{label}</button>
   );
 
   const teamOpts = useMemo(() => Array.from(new Set(allDrafts.map((d) => String(d.cfg.teams || 12)))).sort((a, b) => +a - +b), [allDrafts]);
@@ -12068,7 +12086,7 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
       <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="Draft Trends" />
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: "24px 20px 60px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6, flexWrap: "wrap" }}>
-          <div style={{ width: 40, height: 40, borderRadius: 11, background: "rgba(242,182,60,.14)", display: "flex", alignItems: "center", justifyContent: "center" }}><i className="ti ti-chart-histogram" style={{ fontSize: 22, color: "var(--gold)" }} aria-hidden="true" /></div>
+          <div style={{ width: 40, height: 40, borderRadius: 11, background: "rgba(224,166,60,.14)", display: "flex", alignItems: "center", justifyContent: "center" }}><i className="ti ti-chart-histogram" style={{ fontSize: 22, color: "var(--gold)" }} aria-hidden="true" /></div>
           <div>
             <div className="disp" style={{ fontSize: 24, fontWeight: 700, lineHeight: 1.05 }}>Draft Trends</div>
             <div className="mut" style={{ fontSize: 13 }}>How the board actually behaves across your drafts — filter to a format and see the patterns.</div>
@@ -12182,11 +12200,11 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
 
         {/* ===== How the field drafts — aggregated pool of harvested real Sleeper drafts. Renders ALWAYS,
              independent of whether the user has their own drafts (trends.n) — it's the league-wide view. ===== */}
-        <div className="panel" style={{ padding: 16, border: "1px solid rgba(242,182,60,.4)", marginBottom: 14 }}>
+        <div className="panel" style={{ padding: 16, border: "1px solid rgba(224,166,60,.4)", marginBottom: 14 }}>
           <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 6, marginBottom: 3 }}>
             <div className="disp" style={{ fontSize: 15, fontWeight: 700 }}>How the field drafts <span className="mut" style={{ fontSize: 11 }}>aggregated real drafts</span></div>
             {pool.state === "done" && pool.draftCount > 0 && (
-              <span className="chip" style={{ fontSize: 10, color: "var(--gold)", borderColor: "rgba(242,182,60,.4)" }}>{pool.draftCount.toLocaleString()} drafts{pool.fallback ? " · nearest format" : ""}</span>
+              <span className="chip" style={{ fontSize: 10, color: "var(--gold)", borderColor: "rgba(224,166,60,.4)" }}>{pool.draftCount.toLocaleString()} drafts{pool.fallback ? " · nearest format" : ""}</span>
             )}
           </div>
           <div className="mut" style={{ fontSize: 12, marginBottom: 10 }}>Draft position across thousands of harvested Sleeper drafts in this format — average pick, the typical range (middle 50%), and how often each player is drafted. This is the whole field, independent of your own drafts.</div>
@@ -12423,7 +12441,7 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
                       const hits = d.picks.map((pid, o) => ({ pid, o })).filter((x) => { const pl = x.pid != null ? players.find((y) => y.id === x.pid) : null; return pl && pl.name.toLowerCase().includes(q); });
                       if (hits.length === 0) return <div className="mut" style={{ fontSize: 12, textAlign: "center", padding: "8px 0", marginBottom: 6 }}>No player matching “{draftListQ.trim()}” in this draft.</div>;
                       return (
-                        <div style={{ marginBottom: 10, padding: "8px 10px", background: "rgba(242,182,60,.10)", border: "1px solid var(--gold)", borderRadius: 8 }}>
+                        <div style={{ marginBottom: 10, padding: "8px 10px", background: "rgba(224,166,60,.10)", border: "1px solid var(--gold)", borderRadius: 8 }}>
                           {hits.map(({ pid, o }) => { const pl = players.find((y) => y.id === pid); const rd = Math.floor(o / teams) + 1, inRd = (o % teams) + 1; return (
                             <div key={o} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5 }}><Dot pos={pl.pos} /><b>{pl.name}</b><span className="mut">went</span><b style={{ color: "var(--gold)" }}>{rd}.{String(inRd).padStart(2, "0")}</b><span className="mut">(pick #{o + 1})</span></div>
                           ); })}
@@ -12439,7 +12457,7 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
                       const q = draftListQ.trim().toLowerCase();
                       const isMatch = q && p && p.name.toLowerCase().includes(q);
                       return (
-                        <div key={o} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "3px 6px", borderRadius: 6, background: isMatch ? "rgba(242,182,60,.18)" : (o % (teams * 2) < teams ? "transparent" : "var(--panel2)"), outline: isMatch ? "1px solid var(--gold)" : "none", opacity: q && !isMatch ? 0.5 : 1 }}>
+                        <div key={o} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "3px 6px", borderRadius: 6, background: isMatch ? "rgba(224,166,60,.18)" : (o % (teams * 2) < teams ? "transparent" : "var(--panel2)"), outline: isMatch ? "1px solid var(--gold)" : "none", opacity: q && !isMatch ? 0.5 : 1 }}>
                           <span className="mut num" style={{ width: 42, flexShrink: 0, fontSize: 10.5 }}>{rd}.{String(inRd).padStart(2, "0")}</span>
                           <span className="mut num" style={{ width: 26, flexShrink: 0, fontSize: 10 }}>#{o + 1}</span>
                           {p ? <><Dot pos={p.pos} /><span style={{ fontWeight: 600 }}>{p.name}</span><span className="mut" style={{ fontSize: 10.5 }}>{p.pos}</span></> : <span className="mut" style={{ fontStyle: "italic" }}>— (unmapped)</span>}
@@ -12510,7 +12528,7 @@ function TrendsOverTimePage({ user, leagues, funMocks, onBack, onHome, onSignOut
       <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="My Mock Insights" />
       <div style={{ maxWidth: 820, margin: "0 auto", padding: "24px 20px 50px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14, flexWrap: "wrap" }}>
-          <div style={{ flexShrink: 0, width: 44, height: 44, borderRadius: 10, background: "rgba(242,182,60,.10)", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ flexShrink: 0, width: 44, height: 44, borderRadius: 10, background: "rgba(224,166,60,.10)", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
             <i className="ti ti-chart-line" style={{ fontSize: 22, color: "var(--gold)" }} aria-hidden="true" />
           </div>
           <div style={{ flex: 1 }}>
@@ -13825,7 +13843,7 @@ function DraftOrderTab({ f, upd, ensureNames }) {
             {ord.map((teamIdx, pos) => {
               const mine = yourPos === pos;
               return (
-              <div key={pos} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", borderRadius: 7, marginBottom: 5, border: `1px solid ${mine ? "var(--gold)" : "var(--line)"}`, background: mine ? "rgba(242,182,60,.07)" : "transparent" }}>
+              <div key={pos} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", borderRadius: 7, marginBottom: 5, border: `1px solid ${mine ? "var(--gold)" : "var(--line)"}`, background: mine ? "rgba(224,166,60,.07)" : "transparent" }}>
                 <span className="gold num disp" style={{ width: 28, fontSize: 15, fontWeight: 700 }}>{pos + 1}</span>
                 <button onClick={() => setMine(pos)} className="bigact" style={{ flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
                   <i className={`ti ${mine ? "ti-user-check" : "ti-user"}`} style={{ fontSize: 14, color: mine ? "var(--gold)" : "var(--mut)" }} aria-hidden="true" />
@@ -13960,7 +13978,7 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
         <div style={{ display: "flex", gap: 4 }}>
           {[["simple", "Simple"], ["complex", "Complex"]].map(([k, l]) => (
             <button key={k} onClick={() => { setMode(k); if (k === "simple") setSeg("basics"); }}
-              style={{ padding: "5px 12px", borderRadius: 7, border: `1px solid ${mode === k ? "var(--gold)" : "var(--line)"}`, background: mode === k ? "rgba(242,182,60,.10)" : "transparent", color: mode === k ? "var(--gold)" : "var(--mut)", fontWeight: 600, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+              style={{ padding: "5px 12px", borderRadius: 7, border: `1px solid ${mode === k ? "var(--gold)" : "var(--line)"}`, background: mode === k ? "rgba(224,166,60,.10)" : "transparent", color: mode === k ? "var(--gold)" : "var(--mut)", fontWeight: 600, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
               {l}
             </button>
           ))}
@@ -14096,7 +14114,7 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
               return theirs.map((k) => ({ playerId: byName[String(nameOf(k)).toLowerCase().replace(/[^a-z0-9]/g, "")] ?? null, team: (k.slot || 0) - 1, o: null })).filter((k) => k.playerId != null);
             };
             return (
-              <div style={{ margin: "0 0 16px", padding: "13px 15px", borderRadius: 10, border: "1px solid var(--gold)", background: "rgba(242,182,60,.09)" }}>
+              <div style={{ margin: "0 0 16px", padding: "13px 15px", borderRadius: 10, border: "1px solid var(--gold)", background: "rgba(224,166,60,.09)" }}>
                 <div style={{ fontSize: 13.5, fontWeight: 800, color: "var(--gold)", display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}><i className="ti ti-alert-triangle" style={{ fontSize: 16 }} aria-hidden="true" />Sleeper sent different keepers than the ones you entered</div>
                 <div className="mut" style={{ fontSize: 12, lineHeight: 1.5, marginBottom: 9 }}>You set keepers by hand, and your Sleeper league now reports its own. Here's exactly what would change if you switch to Sleeper's. Choose which to keep — nothing changes until you pick.</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 11 }}>
@@ -14660,7 +14678,7 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
         ))}
       </div>
 
-      {msg && <div style={{ maxWidth: 980, margin: "10px auto 0", padding: "0 18px" }}><div className="panel" style={{ padding: "8px 12px", fontSize: 12.5, borderColor: "var(--gold)", background: "rgba(242,182,60,.07)" }}>{msg}</div></div>}
+      {msg && <div style={{ maxWidth: 980, margin: "10px auto 0", padding: "0 18px" }}><div className="panel" style={{ padding: "8px 12px", fontSize: 12.5, borderColor: "var(--gold)", background: "rgba(224,166,60,.07)" }}>{msg}</div></div>}
 
       <div style={{ maxWidth: 980, margin: "0 auto", padding: 18 }}>
         {/* USERS */}
@@ -15163,7 +15181,7 @@ function TradePickModal({ teams, rounds, teamNames, userIdx, ownerOf, naturalOwn
   const nextA = nextPickOf(teamA), nextB = nextPickOf(teamB);
   const PickChip = ({ o, checked, onToggle, soon }) => (
     <button className="btn btn-mini" onClick={onToggle} title={soon ? "Closest upcoming pick for this team" : undefined}
-      style={{ position: "relative", borderColor: checked ? "var(--gold)" : soon ? "#5AA9E6" : "var(--line)", background: checked ? "rgba(242,182,60,.14)" : soon ? "rgba(90,169,230,.10)" : "transparent", color: checked ? "var(--gold)" : soon ? "#7Fc0F0" : "var(--ink)", fontWeight: checked || soon ? 700 : 400, padding: "3px 8px" }}>
+      style={{ position: "relative", borderColor: checked ? "var(--gold)" : soon ? "#5AA9E6" : "var(--line)", background: checked ? "rgba(224,166,60,.14)" : soon ? "rgba(90,169,230,.10)" : "transparent", color: checked ? "var(--gold)" : soon ? "#7Fc0F0" : "var(--ink)", fontWeight: checked || soon ? 700 : 400, padding: "3px 8px" }}>
       {checked ? "✓ " : ""}{pickLabelOf(o)}
       {soon && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 800, letterSpacing: ".03em", color: "#0b0f14", background: "#5AA9E6", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>NEXT</span>}
     </button>
@@ -15215,7 +15233,7 @@ function TradePickModal({ teams, rounds, teamNames, userIdx, ownerOf, naturalOwn
         </button>
 
         {movedCount > 0 && (
-          <div className="panel" style={{ padding: "8px 10px", marginBottom: 12, background: "rgba(242,182,60,.07)", borderColor: "var(--gold)" }}>
+          <div className="panel" style={{ padding: "8px 10px", marginBottom: 12, background: "rgba(224,166,60,.07)", borderColor: "var(--gold)" }}>
             <div className="gold" style={{ fontSize: 11.5, fontWeight: 600 }}>{movedCount} pick{movedCount === 1 ? "" : "s"} moved from their original owner.</div>
             <div className="mut" style={{ fontSize: 10.5, marginTop: 2 }}>Apply to save these into the draft. Anything you swap by mistake can be swapped back before applying.</div>
           </div>
@@ -15376,7 +15394,7 @@ function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
           const cur = ownerOf(o);
           const moved = cur !== natural;
           return (
-            <div key={o} style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 8px", borderRadius: 6, marginBottom: 3, background: moved ? "rgba(242,182,60,.07)" : "transparent", border: `1px solid ${moved ? "var(--gold)" : "transparent"}` }}>
+            <div key={o} style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 8px", borderRadius: 6, marginBottom: 3, background: moved ? "rgba(224,166,60,.07)" : "transparent", border: `1px solid ${moved ? "var(--gold)" : "transparent"}` }}>
               <span className="num disp" style={{ width: 42, fontSize: 13, fontWeight: 700 }}>{pickLabel(o)}</span>
               <span className="mut" style={{ width: 96, fontSize: 11.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{names[natural]}</span>
               <span className="mut" style={{ fontSize: 12 }}>→</span>
@@ -15543,7 +15561,7 @@ function EditPicksModal({ picks, players, sortedAdp, draftedSet, userIdx, cfg, o
         </div>
         <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--line2)", borderRadius: 8 }}>
           {results.length ? results.map((p) => (
-            <div key={p.id} onClick={() => setNewId(p.id)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", cursor: "pointer", fontSize: 12.5, background: newId === p.id ? "rgba(242,182,60,.16)" : "transparent", borderLeft: newId === p.id ? "3px solid var(--gold)" : "3px solid transparent" }}>
+            <div key={p.id} onClick={() => setNewId(p.id)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", cursor: "pointer", fontSize: 12.5, background: newId === p.id ? "rgba(224,166,60,.16)" : "transparent", borderLeft: newId === p.id ? "3px solid var(--gold)" : "3px solid transparent" }}>
               <Dot pos={p.pos} />
               <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name} <span className="mut" style={{ fontSize: 10.5 }}>{p.pos}{p.posRank} · {p.team}</span></span>
               <span className="num mut" style={{ fontSize: 10.5 }}>ADP {p.adp != null ? p.adp.toFixed(1) : "—"}</span>
@@ -18506,7 +18524,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       <div className="hairline" style={{ display: "flex", alignItems: "center", gap: 12, padding: "6px 16px", flexWrap: "wrap" }}>
         <button className="btn btn-mini" onClick={exit}>← {user ? (user.paid ? "Home" : "Library") : "Home"}</button>
         <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{league.name}</div>
-        {isMock && <div className="chip" style={{ borderColor: "var(--gold)", background: "rgba(242,182,60,.10)", color: "var(--gold)" }} title="This is a practice draft — it saves to this league's mock history and never changes your real draft."><i className="ti ti-dice" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />MOCK</div>}
+        {isMock && <div className="chip" style={{ borderColor: "var(--gold)", background: "rgba(224,166,60,.10)", color: "var(--gold)" }} title="This is a practice draft — it saves to this league's mock history and never changes your real draft."><i className="ti ti-dice" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />MOCK</div>}
         <div className="chip" style={{ borderColor: "var(--gold)" }}><b className="disp gold" style={{ fontSize: 15 }}>ROUND {Math.min(round, ROUNDS)} of {ROUNDS}</b></div>
         <div className="chip">{cfg.teams} teams · {cfg.sf ? "SF" : "1QB"}{cfg.tePremMult > 0 ? ` · TE+${cfg.tePremMult}` : ""} · {DRAFT_ORDERS.find((o) => o[0] === (cfg.order || "snake"))?.[1].split(" ")[0]}</div>
         {onToggleHoverAnim && <button className="btn btn-mini" onClick={onToggleHoverAnim} title={noHoverAnim ? "Hover popups are OFF — click to turn them back on" : "Turn OFF hover popups & effects (the info tooltips and hover animations across every tab)"} style={{ borderColor: noHoverAnim ? "var(--gold)" : "var(--line2)", color: noHoverAnim ? "var(--gold)" : "var(--mut)" }}><i className={`ti ${noHoverAnim ? "ti-hand-off" : "ti-hand-finger"}`} style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />{noHoverAnim ? "Hover off" : "Hover"}</button>}
@@ -18544,7 +18562,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               { t: "How to use it", x: "Click to start. Then draft players as if the next picks happened. The board, availability odds, and advice all update so you can test “what if I take X here?” scenarios." },
               { t: "Getting back", x: "Hit “Revert to live draft” to clear every what-if pick and snap back to the real draft. If real picks come in while you explore, you'll get a button to sync up to them." },
             ])} onMouseLeave={hideTip}
-            style={{ background: "var(--gold)", color: "#151002", border: "none", fontWeight: 700, fontSize: 12.5, padding: "6px 12px", borderRadius: 7, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5, boxShadow: "0 1px 6px rgba(242,182,60,.30)" }}>
+            style={{ background: "var(--gold)", color: "#151002", border: "none", fontWeight: 700, fontSize: 12.5, padding: "6px 12px", borderRadius: 7, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5, boxShadow: "0 1px 6px rgba(224,166,60,.30)" }}>
             <i className="ti ti-flask" style={{ fontSize: 13 }} aria-hidden="true" />Scenario mode
           </button>
         )}
@@ -18609,7 +18627,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         </div>
       )}
       {!done && !hypoMode && !liveConflict && sleeperLive && localAhead > 0 && (
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 16px", flexWrap: "wrap", background: "rgba(242,182,60,.08)", borderBottom: "1px solid var(--line)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 16px", flexWrap: "wrap", background: "rgba(224,166,60,.08)", borderBottom: "1px solid var(--line)" }}>
           <i className="ti ti-hand-finger" style={{ fontSize: 14, color: "var(--gold)" }} aria-hidden="true" />
           <span style={{ fontSize: 12, color: "var(--mut)" }}>
             You've entered <b style={{ color: "var(--gold)" }}>{localAhead}</b> pick{localAhead === 1 ? "" : "s"} manually (Sleeper hasn't reported {localAhead === 1 ? "it" : "them"} yet). They'll be confirmed automatically, or you can revert.
@@ -18620,7 +18638,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         </div>
       )}
       {!done && hypoMode && (
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 16px", flexWrap: "wrap", background: "rgba(242,182,60,.10)", borderBottom: "1px solid var(--gold)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 16px", flexWrap: "wrap", background: "rgba(224,166,60,.10)", borderBottom: "1px solid var(--gold)" }}>
           {(
             <>
               <i className="ti ti-flask" style={{ fontSize: 15, color: "var(--gold)" }} aria-hidden="true" />
@@ -18641,7 +18659,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         <div className="hairline" style={{ background: "var(--panel2)" }}>
           <div className="decision-grid" style={{ display: "flex", gap: 10, padding: "5px 12px", alignItems: "stretch" }}>
             {/* ---- GROUP A: decisions & outlook ---- */}
-            <div data-tour="howdoing" className="decision-group-a" style={{ display: "grid", gridTemplateColumns: "minmax(190px,0.9fr) minmax(210px,1.05fr)", gap: 8, flex: "1.05 1 0", minWidth: 0, padding: "4px 6px", borderRadius: 12, border: "1.5px solid rgba(255,255,255,.55)", boxShadow: "0 0 12px rgba(255,255,255,.08)" }}>
+            <div data-tour="howdoing" className="decision-group-a" style={{ display: "grid", gridTemplateColumns: "minmax(190px,0.9fr) minmax(210px,1.05fr)", gap: 8, flex: "1.05 1 0", minWidth: 0, padding: "5px 7px", borderRadius: 10, border: "1px solid var(--line)", background: "rgba(255,255,255,.014)" }}>
             {/* ===== ZONE 1: HOW YOU'RE DOING (table) ===== */}
             {(() => {
               const laneMap = { rebuild: { t: "Rebuild", c: "#5FD0A8", i: "ti-seedling" }, winnow: { t: "Win-now", c: "#F2655C", i: "ti-flame" }, balanced: { t: "Balanced", c: "var(--gold)", i: "ti-scale" }, undecided: { t: "Forming…", c: "var(--mut)", i: "ti-loader" } };
@@ -18711,9 +18729,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 ]);
               };
               return (
-                <div style={{ display: "flex", flexDirection: "column", gap: 4, padding: "6px 11px", borderRadius: 9, border: "1px solid rgba(242,182,60,.5)", background: "linear-gradient(160deg,rgba(46,40,22,1),rgba(24,31,40,1))", height: "100%", boxSizing: "border-box" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, padding: "6px 11px", borderRadius: 9, border: "1px solid var(--line)", background: "linear-gradient(160deg,rgba(46,40,22,1),rgba(24,31,40,1))", height: "100%", boxSizing: "border-box" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-gauge" style={{ fontSize: 11, color: "var(--gold)" }} aria-hidden="true" /><span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--gold)", fontWeight: 800 }}>How you're doing</span><i className="ti ti-info-circle" style={{ fontSize: 10, color: "var(--mut)", cursor: "help" }} aria-hidden="true" onMouseEnter={(e) => showTip(e, [{ kind: "take", tone: "neutral", x: "How you're doing" }, { t: "What this shows", x: "A per-position read on your roster: how many starters you have vs. need (red = unfilled), where you rank at that position in the league, a quick strength Read, and the best player still available there. Up top: your build lane (win-now vs. rebuild) and projected finish." }, { t: "Tip", x: "Hover any position row for its full breakdown and your players there." }])} onMouseLeave={hideTip} /></div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-gauge" style={{ fontSize: 11, color: "var(--mut)" }} aria-hidden="true" /><span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 800 }}>How you're doing</span><i className="ti ti-info-circle" style={{ fontSize: 10, color: "var(--mut)", cursor: "help" }} aria-hidden="true" onMouseEnter={(e) => showTip(e, [{ kind: "take", tone: "neutral", x: "How you're doing" }, { t: "What this shows", x: "A per-position read on your roster: how many starters you have vs. need (red = unfilled), where you rank at that position in the league, a quick strength Read, and the best player still available there. Up top: your build lane (win-now vs. rebuild) and projected finish." }, { t: "Tip", x: "Hover any position row for its full breakdown and your players there." }])} onMouseLeave={hideTip} /></div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <span onMouseEnter={(e) => showTip(e, [
                         { kind: "take", tone: "neutral", x: `Build mode — ${showBuild ? lane.t : "forming"}` },
@@ -18727,7 +18745,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     </div>
                   </div>
                   {/* position table */}
-                  <div style={{ borderTop: "1px solid rgba(242,182,60,.22)", paddingTop: 5 }}>
+                  <div style={{ borderTop: "1px solid rgba(224,166,60,.22)", paddingTop: 5 }}>
                     <div style={{ display: "grid", gridTemplateColumns: "26px 40px 38px 44px minmax(0,1fr)", gap: "0 6px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", fontWeight: 700, paddingBottom: 3 }}>
                       <span>Pos</span><span>Start</span><span style={{ textAlign: "center" }}>Rank</span><span style={{ textAlign: "center" }}>Read</span><span style={{ textAlign: "right" }}>Best avail</span>
                     </div>
@@ -18755,7 +18773,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     </div>
                   </div>
                   {(flexSlots > 0 || superSlots > 0 || kSlots > 0 || dstSlots > 0) && (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, borderTop: "1px solid rgba(242,182,60,.22)", paddingTop: 5, marginTop: "auto" }}>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, borderTop: "1px solid rgba(224,166,60,.22)", paddingTop: 5, marginTop: "auto" }}>
                       {[["FLX", flexFilled, flexSlots], ["SFL", superFilled, superSlots], ["K", kHave, kSlots], ["DST", dstHave, dstSlots]].map(([label, filled, total]) => total > 0 ? (
                         <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9.5, fontWeight: 700, padding: "1px 5px", borderRadius: 4, background: filled >= total ? "rgba(95,208,168,.12)" : "rgba(242,101,92,.10)", color: filled >= total ? "#5FD0A8" : "#F2655C", border: `1px solid ${filled >= total ? "rgba(95,208,168,.35)" : "rgba(242,101,92,.3)"}` }}>
                           {label} {filled}/{total}{filled >= total ? " ✓" : ""}
@@ -18886,10 +18904,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             </div>
 
             {/* ---- vertical divider between the two groups ---- */}
-            <div aria-hidden="true" className="decision-divider" style={{ flex: "0 0 auto", width: 2, alignSelf: "stretch", margin: "2px 5px", borderRadius: 2, background: "linear-gradient(180deg,transparent,var(--gold) 10%,var(--gold) 90%,transparent)" }} />
+            <div aria-hidden="true" className="decision-divider" style={{ flex: "0 0 auto", width: 2, alignSelf: "stretch", margin: "2px 5px", borderRadius: 2, background: "linear-gradient(180deg,transparent,var(--line2) 12%,var(--line2) 88%,transparent)" }} />
 
             {/* ---- GROUP B: the picks ---- */}
-            <div data-tour="picks" className="decision-group-b" style={{ display: "grid", gridTemplateColumns: "minmax(155px,0.8fr) minmax(170px,0.9fr) minmax(175px,0.92fr)", gap: 8, flex: "1.4 1 0", minWidth: 0, padding: "4px 6px", borderRadius: 12, border: "1.5px solid rgba(255,255,255,.55)", boxShadow: "0 0 12px rgba(255,255,255,.08)" }}>
+            <div data-tour="picks" className="decision-group-b" style={{ display: "grid", gridTemplateColumns: "minmax(155px,0.8fr) minmax(170px,0.9fr) minmax(175px,0.92fr)", gap: 8, flex: "1.4 1 0", minWidth: 0, padding: "5px 7px", borderRadius: 10, border: "1px solid var(--line)", background: "rgba(255,255,255,.014)" }}>
 
             {/* ===== ZONE 2: LAST PICKS ===== */}
             {(() => {
@@ -18978,7 +18996,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 ];
               })()) : undefined;
               return (
-                <div className={`tickcard clock${isYou && isTimedMock && started && !paused && clock <= 15 ? " clock-urgent" : ""}`} style={{ borderColor: isYou ? (isTimedMock && started && clock <= 0 ? "var(--red)" : "var(--gold)") : "#33476B", borderWidth: isYou ? 2 : 1, background: isYou ? "linear-gradient(165deg, rgba(242,182,60,.22), rgba(31,36,26,1) 62%)" : undefined, boxShadow: isYou ? "0 0 18px rgba(242,182,60,.34), inset 0 0 30px rgba(242,182,60,.07)" : undefined, padding: "5px 10px", cursor: curTip ? "help" : "default", height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }} onMouseEnter={curTip} onMouseLeave={curTip ? hideTip : undefined}>
+                <div className={`tickcard clock${isYou && isTimedMock && started && !paused && clock <= 15 ? " clock-urgent" : ""}`} style={{ borderColor: isYou ? (isTimedMock && started && clock <= 0 ? "var(--red)" : "var(--gold)") : "#33476B", borderWidth: isYou ? 2 : 1, background: isYou ? "linear-gradient(165deg, rgba(224,166,60,.22), rgba(31,36,26,1) 62%)" : undefined, boxShadow: isYou ? "0 0 18px rgba(224,166,60,.34), inset 0 0 30px rgba(224,166,60,.07)" : undefined, padding: "5px 10px", cursor: curTip ? "help" : "default", height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }} onMouseEnter={curTip} onMouseLeave={curTip ? hideTip : undefined}>
                   {/* ONE compact header row: pick + overall on the left, team name (and live timer) on the
                       right. The old second row (team / overall / "YOUR PICK" pill) is gone — when it's your
                       pick, the whole card goes loud gold instead, which reads faster than a pill. */}
@@ -19000,7 +19018,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       return (
                         <>
                           {/* projected pick header */}
-                          <div onMouseEnter={projTip} onMouseLeave={hideTip} style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 6px", borderRadius: 7, background: "rgba(242,182,60,.13)", border: "1px solid rgba(242,182,60,.35)", cursor: "help" }}>
+                          <div onMouseEnter={projTip} onMouseLeave={hideTip} style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 6px", borderRadius: 7, background: "rgba(224,166,60,.13)", border: "1px solid var(--line)", cursor: "help" }}>
                             <PlayerPhoto sid={pp.sid} pos={pp.pos} size={34} />
                             <div style={{ minWidth: 0, flex: 1 }}>
                               <div style={{ fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--gold)", fontWeight: 800 }}>{isYou ? "Top recommendation" : "Projected pick"}</div>
@@ -19094,9 +19112,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         ...(cands ? [{ kind: "playertable", probLabel: "Picked", cols: ["prob", "name", "rank", "adp", "pts", "vbd"], players: cands.map((c, ci) => ({ ...c.p, prob: c.prob, star: ci === 0, rec: ci === 0 })) }] : [{ kind: "playercard", p }]),
                       ]);
                       return (
-                        <div key={step.o} onMouseEnter={tip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "30px 1fr 30px 32px", gap: "0 6px", alignItems: "center", fontSize: 11, cursor: "help", padding: "1px 2px 1px 3px", background: mine ? "rgba(242,182,60,.14)" : "transparent", borderRadius: 4, borderLeft: mine ? "2px solid var(--gold)" : "2px solid transparent" }}>
+                        <div key={step.o} onMouseEnter={tip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "30px 1fr 30px 32px", gap: "0 6px", alignItems: "center", fontSize: 11, cursor: "help", padding: "1px 2px 1px 3px", background: mine ? "rgba(224,166,60,.14)" : "transparent", borderRadius: 4, borderLeft: mine ? "2px solid var(--gold)" : "2px solid transparent" }}>
                           <span className="num" style={{ fontSize: 8.5, color: mine ? "var(--gold)" : "var(--mut)", fontWeight: mine ? 800 : 400 }}>{pickLabel(step.o)}</span>
-                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={p.pos} /><span style={{ fontSize: 10.5, fontWeight: mine ? 700 : 400 }}>{p.name}</span> {mine ? <span style={{ fontSize: 7.5, fontWeight: 800, color: "var(--gold)", background: "rgba(242,182,60,.2)", borderRadius: 3, padding: "0 3px", marginLeft: 2, textTransform: "uppercase", letterSpacing: ".03em" }}>You</span> : <span className="mut" style={{ fontSize: 8.5 }}>{TEAM_NAMES[step.t].split(" ")[0]}</span>}</span>
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={p.pos} /><span style={{ fontSize: 10.5, fontWeight: mine ? 700 : 400 }}>{p.name}</span> {mine ? <span style={{ fontSize: 7.5, fontWeight: 800, color: "var(--gold)", background: "rgba(224,166,60,.2)", borderRadius: 3, padding: "0 3px", marginLeft: 2, textTransform: "uppercase", letterSpacing: ".03em" }}>You</span> : <span className="mut" style={{ fontSize: 8.5 }}>{TEAM_NAMES[step.t].split(" ")[0]}</span>}</span>
                           <span className="num" style={{ fontSize: 9, fontWeight: 700, textAlign: "right", color: vbdColor(vShow) }}>{(vShow > 0 ? "+" : "") + Math.round(vShow)}</span>
                           <span className="num" style={{ fontSize: 9, textAlign: "right", color: adpReadColor(step.o + 1, p.adp) }} title={p.adp != null ? `ADP ${p.adp.toFixed(1)} vs this pick ${step.o + 1}` : ""}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
                         </div>
@@ -19122,7 +19140,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           the roster the rest of the UI is rendering. Wrapped in a Boundary so it can only ever break itself. */}
       {isAdminUser && dbgOn() && advice && advice.dbgRows && (
         <Boundary label="diagnostic">
-          <div style={{ borderTop: "1px solid var(--line2)", borderBottom: "1px solid var(--gold)", background: "rgba(242,182,60,.06)", padding: "5px 10px", fontSize: 10.5, lineHeight: 1.5 }}>
+          <div style={{ borderTop: "1px solid var(--line2)", borderBottom: "1px solid var(--gold)", background: "rgba(224,166,60,.06)", padding: "5px 10px", fontSize: 10.5, lineHeight: 1.5 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: diagOpen ? 4 : 0 }}>
               <span style={{ fontWeight: 800, color: "var(--gold)", letterSpacing: ".04em", fontSize: 9.5, textTransform: "uppercase" }}>Reco diagnostic</span>
               <span className="mut" style={{ fontSize: 9 }}>admin only{diagOpen ? "" : " · hidden"}</span>
@@ -19159,7 +19177,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         <>
         {mockLike && !started && (
           <div style={{ padding: "12px 14px 0" }}>
-            <div className="panel" style={{ padding: 16, borderColor: "var(--gold)", background: "rgba(242,182,60,.07)", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+            <div className="panel" style={{ padding: 16, borderColor: "var(--gold)", background: "rgba(224,166,60,.07)", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
               <i className="ti ti-player-play" style={{ fontSize: 26, color: "var(--gold)" }} aria-hidden="true" />
               <div style={{ flex: "1 1 260px" }}>
                 <div className="disp" style={{ fontSize: 16, fontWeight: 700 }}>{isDemo ? "Ready to start the demo?" : "Ready to run this mock?"}</div>
@@ -19205,7 +19223,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         )}
         {askOfficialMode && picks.length === 0 && (
           <div style={{ padding: "12px 14px 0" }}>
-            <div className="panel" style={{ padding: 16, borderColor: "var(--gold)", background: "rgba(242,182,60,.07)" }}>
+            <div className="panel" style={{ padding: 16, borderColor: "var(--gold)", background: "rgba(224,166,60,.07)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
                 <i className="ti ti-broadcast" style={{ fontSize: 22, color: "var(--gold)" }} aria-hidden="true" />
                 <div>
@@ -19297,9 +19315,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               ))}
               <button className="btn btn-mini" style={{ borderColor: rookieOnly ? "var(--gold)" : "var(--line)", color: rookieOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => setRookieOnly((r) => !r)}>Rookies</button>
               <button className="btn btn-mini" style={{ borderColor: queueOnly ? "var(--gold)" : "var(--line)", color: queueOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => setQueueOnly((q) => !q)} title="Show only the players you've starred for this league. Star players with the star next to their name; your queue saves automatically."><i className="ti ti-star" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Priority{queue.size ? ` (${queue.size})` : ""}</button>
-              <div data-tour="strategy" style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--gold)", borderRadius: 8, padding: "3px 8px 3px 10px", background: "#1A150A" }} title="Strategy lens — reshapes the board AND your advice toward an approach. Balanced/ADP follow the market; the others tilt toward value, upside, youth, your build, or a position.">
+              <div data-tour="strategy" style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--line2)", borderRadius: 8, padding: "3px 8px 3px 10px", background: "var(--panel2)" }} title="Strategy lens — reshapes the board AND your advice toward an approach. Balanced/ADP follow the market; the others tilt toward value, upside, youth, your build, or a position.">
                 <i className="ti ti-adjustments" style={{ fontSize: 13, color: "var(--gold)" }} aria-hidden="true" />
-                <span className="gold" style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".03em" }}>STRATEGY</span>
+                <span className="mut" style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".03em" }}>STRATEGY</span>
                 <select className="gs" style={{ fontSize: 12.5, padding: "4px 6px", border: "none", background: "transparent", fontWeight: 600 }} value={strategy} onChange={(e) => { setStrategy(e.target.value); setManualSort(false); }}>
                   <option value="balanced">Smart (market + your build)</option>
                   <option value="value">Max VBD</option>
@@ -19785,7 +19803,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   const surv = survOf(p);
                   const openTip = (e) => showTip(e, makeOutlook(p, sims, false, { pickNow: pickNowN, dynasty, run, needShort: need.includes(p.pos) ? 1 : 0, scarcity: scarcityFor(p) }));
                   return (
-                    <div onMouseEnter={openTip} onMouseLeave={hideTip} style={{ flex: 1, minWidth: 0, display: "flex", gap: 8, alignItems: "center", padding: "7px 9px", borderRadius: 8, border: `1px solid ${accent}`, background: both ? "linear-gradient(90deg,rgba(242,182,60,.10),rgba(107,168,229,.10))" : "rgba(255,255,255,.03)", cursor: "help" }}>
+                    <div onMouseEnter={openTip} onMouseLeave={hideTip} style={{ flex: 1, minWidth: 0, display: "flex", gap: 8, alignItems: "center", padding: "7px 9px", borderRadius: 8, border: `1px solid ${accent}`, background: both ? "linear-gradient(90deg,rgba(224,166,60,.10),rgba(107,168,229,.10))" : "rgba(255,255,255,.03)", cursor: "help" }}>
                       <PlayerPhoto sid={p.sid} pos={p.pos} size={38} />
                       <div style={{ minWidth: 0, flex: 1 }}>
                         <div style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".04em", color: accent, fontWeight: 800, display: "flex", alignItems: "center", gap: 4 }}>{both && <i className="ti ti-check" style={{ fontSize: 10 }} aria-hidden="true" />}{label}</div>
@@ -19844,7 +19862,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           const openTip = (e) => showTip(e, makeOutlook(p, sims, false, { pickNow: pickNowN, dynasty, run, needShort: need.includes(p.pos) ? 1 : 0, scarcity: scarcityFor(p) }));
                           const vShow = dynasty ? (p.value ?? p.vbd) : p.vbd;
                           return (
-                            <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: cols, gap: 6, alignItems: "center", fontSize: 11, padding: "3px 4px", borderRadius: 5, background: i === 0 ? "rgba(242,182,60,.10)" : "transparent", borderBottom: i < list.length - 1 ? "1px solid var(--line2)" : "none", cursor: "help" }}>
+                            <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: cols, gap: 6, alignItems: "center", fontSize: 11, padding: "3px 4px", borderRadius: 5, background: i === 0 ? "rgba(224,166,60,.10)" : "transparent", borderBottom: i < list.length - 1 ? "1px solid var(--line2)" : "none", cursor: "help" }}>
                               <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
                               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}><Dot pos={p.pos} /><b style={{ color: i === 0 ? accent : "var(--ink)" }}>{i === 0 ? "★ " : ""}{p.name}</b></span>
                               <span className="num" style={{ fontWeight: 700, color: vbdColor(vShow), fontSize: 10.5, textAlign: "right" }}>{(vShow > 0 ? "+" : "") + Math.round(vShow)}</span>
@@ -19952,7 +19970,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       </select>
                     ) : null}
                     {/* summary */}
-                    <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 10, background: "rgba(242,182,60,.05)", borderLeft: "2px solid var(--gold)", padding: "7px 9px", borderRadius: "0 6px 6px 0" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 10, background: "rgba(224,166,60,.05)", borderLeft: "2px solid var(--gold)", padding: "7px 9px", borderRadius: "0 6px 6px 0" }}>
                       {summaryBitsCapped.map((b, i) => (
                         <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 11, lineHeight: 1.4 }}>
                           <i className={`ti ${b.i}`} style={{ fontSize: 12, color: b.c, marginTop: 1, flexShrink: 0 }} aria-hidden="true" />
@@ -20071,7 +20089,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     // scarcity, build fit), so the rail and the upcoming-pick hovers always match.
                     const why = whyPick(advice.verdict, advice.waitCost, onClock === userIdx, advice.myCounts);
                     return (
-                      <div style={{ fontSize: 12.5, lineHeight: 1.45, marginTop: 8, padding: "8px 10px", background: "rgba(242,182,60,.08)", borderLeft: "2px solid var(--gold)", borderRadius: "0 6px 6px 0" }}>
+                      <div style={{ fontSize: 12.5, lineHeight: 1.45, marginTop: 8, padding: "8px 10px", background: "rgba(224,166,60,.08)", borderLeft: "2px solid var(--gold)", borderRadius: "0 6px 6px 0" }}>
                         <span style={{ color: "var(--gold)", fontWeight: 700 }}>Why: </span><span style={{ color: "var(--ink)" }}>{why}</span>
                       </div>
                     );
@@ -20370,7 +20388,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             else { lvl = 2; tipTxt = `${short} short — running out of picks`; }
                             cellText = counts[pos];
                           }
-                          const bg = lvl === 0 ? "rgba(124,217,178,0.18)" : lvl === 1 ? "rgba(242,182,60,0.18)" : "rgba(242,101,92,0.22)";
+                          const bg = lvl === 0 ? "rgba(124,217,178,0.18)" : lvl === 1 ? "rgba(224,166,60,0.18)" : "rgba(242,101,92,0.22)";
                           const col = lvl === 0 ? "var(--green)" : lvl === 1 ? "var(--gold)" : "var(--red)";
                           const plist = posPlayersRow[pos] || [];
                           const cellTip = (e) => showTip(e, [
@@ -20384,7 +20402,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           if (rank != null) {
                             const frac = (rank - 1) / Math.max(1, TEAMS - 1);
                             if (frac <= 0.33) { tCol = "var(--green)"; tBg = "rgba(124,217,178,0.14)"; }
-                            else if (frac <= 0.66) { tCol = "var(--gold)"; tBg = "rgba(242,182,60,0.14)"; }
+                            else if (frac <= 0.66) { tCol = "var(--gold)"; tBg = "rgba(224,166,60,0.14)"; }
                             else { tCol = "var(--red)"; tBg = "rgba(242,101,92,0.16)"; }
                             tTitle = `Projected ${ordinal(rank)} of ${TEAMS} overall`;
                           } else {
@@ -20576,7 +20594,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 </div>
                 <div style={{ display: "flex", gap: 18, flexWrap: "wrap", alignItems: "center" }}>
                   {ta.overallRank && (
-                    <div style={{ textAlign: "center", padding: "4px 14px", borderRadius: 10, background: "rgba(242,182,60,.1)", border: "1px solid var(--gold)" }}>
+                    <div style={{ textAlign: "center", padding: "4px 14px", borderRadius: 10, background: "rgba(224,166,60,.1)", border: "1px solid var(--gold)" }}>
                       <div className="disp" style={{ fontSize: 24, fontWeight: 800, color: "var(--gold)" }}>{ordinalOf(ta.overallRank)}</div>
                       <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em" }}>proj. finish of {ta.leagueSize}</div>
                     </div>
@@ -20635,7 +20653,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           <tbody>
                             {lo.teams.map((t, ri) => {
                               const isYou = t.idx === userIdx;
-                              const rowBg = isYou ? "rgba(242,182,60,.10)" : ri % 2 ? "rgba(255,255,255,.022)" : "transparent";
+                              const rowBg = isYou ? "rgba(224,166,60,.10)" : ri % 2 ? "rgba(255,255,255,.022)" : "transparent";
                               return (
                                 <tr key={t.idx} style={{ background: rowBg, borderTop: "1px solid var(--line)" }}>
                                   <td style={{ padding: "5px 8px", fontWeight: isYou ? 700 : 500, color: isYou ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", position: "sticky", left: 0, background: isYou ? "#231f10" : (ri % 2 ? "#141a22" : "var(--panel)"), cursor: TEAM_OWNERS[t.idx] ? "help" : "default" }} title={TEAM_OWNERS[t.idx] ? `@${TEAM_OWNERS[t.idx]}` : undefined}>{isYou ? "★ " : ""}{(TEAM_NAMES[t.idx] || `Team ${t.idx + 1}`).split(" ").slice(0, 2).join(" ")}{TEAM_OWNERS[t.idx] ? <span className="mut" style={{ fontSize: 9.5, fontWeight: 400 }}> (@{TEAM_OWNERS[t.idx]})</span> : null}</td>
@@ -20669,7 +20687,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           const teamRoster = lo.teams[p.idx];
                           const lineupTip = (e) => showTip(e, [{ kind: "take", tone: isYou ? "good" : "neutral", x: `${TEAM_NAMES[p.idx] || `Team ${p.idx + 1}`} — projected lineup (${Math.round(p.pts)} pts)` }, ...lineupSlots(teamRoster.roster || [], cfg.sf).slots.map((s) => ({ t: s.slot, tc: s.p ? rankTierColor(s.p.pos, s.p.posRank) : "var(--mut)", x: s.p ? `${s.p.name} — ${s.p.pos}${s.p.posRank} · ${Math.round(s.p.pts)} pts` : "—" }))]);
                           return (
-                            <div key={p.idx} style={{ display: "flex", alignItems: "center", gap: 9, padding: "3px 8px", borderRadius: 6, background: isYou ? "rgba(242,182,60,.10)" : "transparent", cursor: "help" }}
+                            <div key={p.idx} style={{ display: "flex", alignItems: "center", gap: 9, padding: "3px 8px", borderRadius: 6, background: isYou ? "rgba(224,166,60,.10)" : "transparent", cursor: "help" }}
                               onMouseEnter={lineupTip} onMouseLeave={hideTip}>
                               <span className="num" style={{ width: 22, color: "var(--mut)", fontSize: 11 }}>{p.rank}.</span>
                               <span style={{ width: 120, fontWeight: isYou ? 700 : 500, color: isYou ? "var(--gold)" : "var(--ink)", fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{isYou ? "★ " : ""}{TEAM_NAMES[p.idx] || `Team ${p.idx + 1}`}</span>
@@ -20802,7 +20820,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 );
                 const row = (p, slotLabel, isProj, isBench, key, lastRow) => (
                   <div key={key} onClick={p ? (e) => showTip(e, makeOutlook(p, sims, true)) : undefined} onMouseEnter={p ? (e) => showTip(e, makeOutlook(p, sims, true)) : undefined} onMouseLeave={hideTip}
-                    style={{ display: "grid", gridTemplateColumns: LCOLS, gap: "0 6px", alignItems: "center", fontSize: 11, padding: "4px 4px", borderRadius: 5, cursor: p ? "help" : "default", opacity: isBench ? 0.92 : 1, background: p ? (isProj ? "rgba(242,182,60,.08)" : "transparent") : "rgba(242,101,92,.08)", borderBottom: !lastRow ? "1px solid var(--line2)" : "none" }}>
+                    style={{ display: "grid", gridTemplateColumns: LCOLS, gap: "0 6px", alignItems: "center", fontSize: 11, padding: "4px 4px", borderRadius: 5, cursor: p ? "help" : "default", opacity: isBench ? 0.92 : 1, background: p ? (isProj ? "rgba(224,166,60,.08)" : "transparent") : "rgba(242,101,92,.08)", borderBottom: !lastRow ? "1px solid var(--line2)" : "none" }}>
                     <span style={{ fontSize: 8.5, fontWeight: 700, color: "var(--mut)" }}>{slotLabel}</span>
                     {p ? <PlayerPhoto sid={p.sid} pos={p.pos} size={22} /> : <span />}
                     {p ? (
@@ -20924,7 +20942,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           const powerRk = powerOrder.indexOf(row.i) + 1;
                           const activeRk = rankView === "power" ? powerRk : row.finish;
                           return (
-                            <div key={row.i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 6px", borderRadius: 6, background: isSel ? "rgba(242,182,60,.12)" : "transparent", border: isSel ? "1px solid var(--gold)" : "1px solid transparent" }}>
+                            <div key={row.i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 6px", borderRadius: 6, background: isSel ? "rgba(224,166,60,.12)" : "transparent", border: isSel ? "1px solid var(--gold)" : "1px solid transparent" }}>
                               <span className="num" style={{ width: 22, textAlign: "right", fontWeight: 800, color: activeRk === 1 ? "var(--green)" : activeRk === TEAMS ? "var(--red)" : "var(--mut)" }}>{activeRk}</span>
                               <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontWeight: isYou ? 800 : 500, color: isYou ? "var(--gold)" : "var(--ink)" }}>{isYou ? "Your team" : (TEAM_NAMES[row.i] || `Team ${row.i + 1}`)}</span>
                               <div style={{ width: 40, height: 5, background: "var(--panel2)", borderRadius: 3, overflow: "hidden" }}>
@@ -21040,7 +21058,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                   const prob = survOf(p); const vShow = dyn ? (p.value ?? p.vbd) : p.vbd;
                                   return (
                                     <div key={p.id} onMouseEnter={openTip(p)} onMouseLeave={hideTip} onClick={openTip(p)}
-                                      style={{ display: "grid", gridTemplateColumns: TCOLS, gap: "0 6px", alignItems: "center", cursor: "help", fontSize: 11, padding: "3.5px 4px", borderRadius: 4, background: i === 0 ? "rgba(242,182,60,.10)" : "transparent", borderBottom: i < list.length - 1 ? "1px solid var(--line2)" : "none" }}>
+                                      style={{ display: "grid", gridTemplateColumns: TCOLS, gap: "0 6px", alignItems: "center", cursor: "help", fontSize: 11, padding: "3.5px 4px", borderRadius: 4, background: i === 0 ? "rgba(224,166,60,.10)" : "transparent", borderBottom: i < list.length - 1 ? "1px solid var(--line2)" : "none" }}>
                                       <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank), fontSize: 9.5 }}>{p.pos}{p.posRank}</span>
                                       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}><Dot pos={p.pos} /><b style={{ color: i === 0 ? "var(--gold)" : "var(--ink)", fontSize: 11.5 }}>{i === 0 ? "★ " : ""}{p.name}</b>{p.rookie ? <span style={{ fontSize: 7.5, fontWeight: 700, color: "#5FD0A8", marginLeft: 3 }}>R</span> : null}</span>
                                       <span className="num mut" style={{ textAlign: "right", fontSize: 9.5 }}>{p.team || "FA"}</span>
@@ -21089,7 +21107,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   );
                 })()}
                 {ta.topPlayer && (
-                  <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 8, background: "rgba(242,182,60,.08)", border: "1px solid var(--gold)" }}>
+                  <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 8, background: "rgba(224,166,60,.08)", border: "1px solid var(--gold)" }}>
                     <span className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Cornerstone</span>
                     <PlayerPhoto sid={ta.topPlayer.sid} pos={ta.topPlayer.pos} size={20} />
                     <span style={{ fontWeight: 700, fontSize: 12.5 }}>{ta.topPlayer.name}</span>
@@ -21175,7 +21193,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const playerRow = (label, p, isBench) => {
                   const projOnly = useProj && p && !realIds.has(p.id); // filled by the projection, not really on the team yet
                   return (
-                  <div key={label + (p ? p.id : "empty")} style={{ display: "grid", gridTemplateColumns: "38px 1fr auto", gap: 6, alignItems: "center", padding: "2px 4px", borderRadius: 4, opacity: isBench ? 0.72 : 1, background: projOnly ? "rgba(242,182,60,.10)" : undefined }}>
+                  <div key={label + (p ? p.id : "empty")} style={{ display: "grid", gridTemplateColumns: "38px 1fr auto", gap: 6, alignItems: "center", padding: "2px 4px", borderRadius: 4, opacity: isBench ? 0.72 : 1, background: projOnly ? "rgba(224,166,60,.10)" : undefined }}>
                     <span className="mut" style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".03em" }}>{label}</span>
                     {p ? (
                       <>
@@ -21195,7 +21213,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   );
                 };
                 return (
-                  <div key={i} style={{ border: `1px solid ${mine ? "var(--gold)" : "var(--line)"}`, borderRadius: 10, background: mine ? "rgba(242,182,60,.05)" : "var(--panel2)", padding: 12, display: "flex", flexDirection: "column", minWidth: 0 }}>
+                  <div key={i} style={{ border: `1px solid ${mine ? "var(--gold)" : "var(--line)"}`, borderRadius: 10, background: mine ? "rgba(224,166,60,.05)" : "var(--panel2)", padding: 12, display: "flex", flexDirection: "column", minWidth: 0 }}>
                     {/* header: rank + name + points */}
                     <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8 }}>
                       <span style={{ fontSize: 15, fontWeight: 800, color: rank <= 3 ? "var(--gold)" : "var(--mut)", fontVariantNumeric: "tabular-nums" }}>{ordinal(rank)}</span>
@@ -21241,8 +21259,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         <div style={{ padding: 14 }}>
           <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
             <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 9, overflow: "hidden" }}>
-              <button className="btn" style={{ border: "none", borderRadius: 0, background: !boardProj ? "rgba(242,182,60,.14)" : "transparent", color: !boardProj ? "var(--gold)" : "var(--mut)" }} onClick={() => setBoardProj(false)}>Current</button>
-              <button className="btn" title={`Fill the next ${BOARD_PROJ_ROUNDS} rounds with the engine's projected picks. Beyond that the projection compounds too much uncertainty to be useful, so it stops there.`} style={{ border: "none", borderRadius: 0, background: boardProj ? "rgba(242,182,60,.14)" : "transparent", color: boardProj ? "var(--gold)" : "var(--mut)" }} onClick={() => setBoardProj(true)}>Projected · next {BOARD_PROJ_ROUNDS} rds</button>
+              <button className="btn" style={{ border: "none", borderRadius: 0, background: !boardProj ? "rgba(224,166,60,.14)" : "transparent", color: !boardProj ? "var(--gold)" : "var(--mut)" }} onClick={() => setBoardProj(false)}>Current</button>
+              <button className="btn" title={`Fill the next ${BOARD_PROJ_ROUNDS} rounds with the engine's projected picks. Beyond that the projection compounds too much uncertainty to be useful, so it stops there.`} style={{ border: "none", borderRadius: 0, background: boardProj ? "rgba(224,166,60,.14)" : "transparent", color: boardProj ? "var(--gold)" : "var(--mut)" }} onClick={() => setBoardProj(true)}>Projected · next {BOARD_PROJ_ROUNDS} rds</button>
             </div>
             <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, cursor: "pointer", color: showBoardVal ? "var(--ink)" : "var(--mut)" }}>
               <input type="checkbox" checked={showBoardVal} onChange={(e) => setShowBoardVal(e.target.checked)} style={{ accentColor: "var(--gold)", cursor: "pointer" }} />
@@ -21337,13 +21355,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       // inset shadow, which the 3px left position-color border can hide) so the border is fully
                       // visible on all four sides. Others get the value-tier ring in the steal/reach color.
                       hiStyle = ownedByYou
-                        ? { background: bg, backgroundColor: bg, outline: "2px solid #F2B63C", outlineOffset: "-2px", boxShadow: "inset 0 0 0 2px #F2B63C" }
+                        ? { background: bg, backgroundColor: bg, outline: "2px solid #E0A63C", outlineOffset: "-2px", boxShadow: "inset 0 0 0 2px #E0A63C" }
                         : { background: bg, boxShadow: `inset 0 0 0 ${tier + 1}px ${ring}` };
                     } else if (shadeMode && ownedByYou && isRealPick) {
                       // YOUR neutral pick while steal/reach mode is on: no green/red fill, but still give it the
                       // bright gold border so it's easy to find among the tinted cells. (Previously these had no
                       // marker and were nearly invisible.)
-                      hiStyle = { background: "transparent", outline: "2px solid #F2B63C", outlineOffset: "-2px", boxShadow: "inset 0 0 0 2px #F2B63C" };
+                      hiStyle = { background: "transparent", outline: "2px solid #E0A63C", outlineOffset: "-2px", boxShadow: "inset 0 0 0 2px #E0A63C" };
                     }
                     // Suppress the CSS `.you` gold background shade whenever steal/reach mode is active, so the
                     // border-based marking above reads cleanly (the class shade only applies when mode is off).
@@ -21440,7 +21458,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       const lvl = posRel[i] ? posRel[i][pos] : 1; // league-relative tercile
                       const col = lvl === 0 ? "var(--green)" : lvl === 1 ? "var(--gold)" : "var(--red)";
                       const bdr = lvl === 0 ? "#2E5C49" : lvl === 1 ? "#5C4A1E" : "#5C2624";
-                      const bg = lvl === 0 ? "rgba(124,217,178,0.12)" : lvl === 1 ? "rgba(242,182,60,0.12)" : "rgba(242,101,92,0.14)";
+                      const bg = lvl === 0 ? "rgba(124,217,178,0.12)" : lvl === 1 ? "rgba(224,166,60,0.12)" : "rgba(242,101,92,0.14)";
                       const tip = lvl === 0 ? `${pos}: top third of the league here` : lvl === 1 ? `${pos}: middle of the league here` : `${pos}: bottom third of the league here`;
                       return <span key={pos} className="chip" title={tip} style={{ borderColor: bdr, color: col, background: bg, fontWeight: 600 }}>{pos} {counts[pos]}</span>;
                     })}
@@ -21575,7 +21593,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <span title={league.snap.retro
                 ? `This draft ran before value-locking existed, so its values were frozen when it was first reopened (${new Date(league.snap.at).toLocaleDateString()}) — close to, but not exactly, draft-day numbers.`
                 : `All ADPs, values, and projections were frozen when this draft started (${new Date(league.snap.at).toLocaleDateString()}). Nothing here drifts as live ADP changes — refreshes included.`}
-                style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700, color: "var(--gold)", border: "1px solid rgba(242,182,60,.45)", background: "rgba(242,182,60,.08)", borderRadius: 20, padding: "2px 9px", cursor: "help" }}>
+                style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700, color: "var(--gold)", border: "1px solid var(--line)", background: "rgba(224,166,60,.08)", borderRadius: 20, padding: "2px 9px", cursor: "help" }}>
                 <i className="ti ti-lock" style={{ fontSize: 11 }} aria-hidden="true" />{league.snap.retro ? "Values locked (late)" : "Draft-day values locked"}
               </span>
             )}
@@ -21612,7 +21630,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   if (tot >= 4) { const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]; const share = top[1] / tot; if (!zealot || share > zealot.share) zealot = { i, pos: top[0], share, n: top[1] }; }
                 }
                 const award = (icon, label, who, detail, color, mine, tipContent) => (
-                  <div style={{ flex: "1 1 200px", minWidth: 190, display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", borderRadius: 9, background: mine ? "rgba(242,182,60,.12)" : "var(--panel2)", border: `1px solid ${mine ? "var(--gold)" : "var(--line)"}`, boxShadow: mine ? "0 0 0 1px rgba(242,182,60,.3)" : "none", position: "relative", cursor: tipContent ? "help" : "default" }}
+                  <div style={{ flex: "1 1 200px", minWidth: 190, display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", borderRadius: 9, background: mine ? "rgba(224,166,60,.12)" : "var(--panel2)", border: `1px solid ${mine ? "var(--gold)" : "var(--line)"}`, boxShadow: mine ? "0 0 0 1px rgba(224,166,60,.3)" : "none", position: "relative", cursor: tipContent ? "help" : "default" }}
                     onMouseEnter={tipContent ? (e) => showTip(e, tipContent) : undefined} onMouseLeave={tipContent ? hideTip : undefined}>
                     {mine && <span style={{ position: "absolute", top: 6, right: 8, fontSize: 8.5, fontWeight: 800, color: "#151002", background: "var(--gold)", borderRadius: 4, padding: "1px 5px", letterSpacing: ".04em" }}>YOU</span>}
                     <i className={`ti ${icon}`} style={{ fontSize: 20, color, marginTop: 1 }} aria-hidden="true" />
@@ -21742,7 +21760,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 return (
                   <>
                     {/* HERO */}
-                    <div style={{ padding: "16px 16px 14px", background: "linear-gradient(135deg, rgba(242,182,60,.14), rgba(242,182,60,.03))", borderBottom: "1px solid var(--line)" }}>
+                    <div style={{ padding: "16px 16px 14px", background: "linear-gradient(135deg, rgba(224,166,60,.14), rgba(224,166,60,.03))", borderBottom: "1px solid var(--line)" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
                         <div style={{ minWidth: 0 }}>
                           <div className="disp" style={{ fontSize: 11.5, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--gold)", display: "flex", alignItems: "center", gap: 7 }}>
@@ -21767,7 +21785,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               const drafted = (rostersByTeam[ti] || []);
                               const mixOrder = ["QB", "RB", "WR", "TE", "K", "DST"];
                               const posMix = mixOrder.map((pos) => ({ pos, n: drafted.filter((p) => p && p.pos === pos).length })).filter((m) => m.n > 0);
-                              const gradeCol = (z) => (z >= 0.7 ? "#5FD0A8" : z >= 0.12 ? "#9BD17E" : z >= -0.45 ? "#F2B63C" : "#F2655C");
+                              const gradeCol = (z) => (z >= 0.7 ? "#5FD0A8" : z >= 0.12 ? "#9BD17E" : z >= -0.45 ? "#E0A63C" : "#F2655C");
                               const leagueRows = gradeOrder.map((i) => ({
                                 grade: grades[i].g, color: gradeCol(grades[i].z),
                                 name: i === userIdx ? (TEAM_NAMES[i] || "Your team") : (TEAM_NAMES[i] || `Team ${i + 1}`),
@@ -21780,7 +21798,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               const cards = [
                                 pickCard("Your best value", myBest, "#5FD0A8"),
                                 pickCard("Your biggest reach", myWorst, "#F2655C"),
-                                pickCard("League's top steal", topSteal, "#F2B63C"),
+                                pickCard("League's top steal", topSteal, "#E0A63C"),
                               ].filter(Boolean);
                               const scoring = (cfg.scoring && cfg.scoring.rec >= 1) ? "PPR" : (cfg.scoring && cfg.scoring.rec > 0) ? "Half-PPR" : "Standard";
                               const cv = drawRecapCard({
@@ -21789,7 +21807,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                 subline: `${TEAMS}-team ${scoring}${cfg.sf ? " superflex" : ""} · ${cfg.rounds} rounds · ${new Date().toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`,
                                 grade: myGrade,
                                 stats: [
-                                  { k: "Projected finish", v: `${myRank ? ordinal(myRank) : "—"} of ${TEAMS}`, c: myRank && myRank <= Math.ceil(TEAMS / 3) ? "#5FD0A8" : myRank && myRank <= Math.ceil((2 * TEAMS) / 3) ? "#F2B63C" : "#F2655C" },
+                                  { k: "Projected finish", v: `${myRank ? ordinal(myRank) : "—"} of ${TEAMS}`, c: myRank && myRank <= Math.ceil(TEAMS / 3) ? "#5FD0A8" : myRank && myRank <= Math.ceil((2 * TEAMS) / 3) ? "#E0A63C" : "#F2655C" },
                                   { k: "Projected points", v: myPts ? Number(myPts).toLocaleString() : "—" },
                                   { k: "Draft value", v: `${myVal > 0 ? "+" : ""}${myVal} · ${ordinal(valRank)}`, c: myVal > 0 ? "#5FD0A8" : myVal < 0 ? "#F2655C" : "#EEF2F6" },
                                 ],
@@ -22076,9 +22094,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       // IMPORTANT: posQualityTiers assigns level 0 = TOP third (strongest), 1 = middle,
                       // 2 = BOTTOM third (weakest). This matches the Teams tab exactly — do not invert.
                       const lvlColor = (lvl) => lvl === 0 ? "#5FD0A8" : lvl === 1 ? "var(--gold)" : "#F2655C";
-                      const lvlBg = (lvl) => lvl === 0 ? "rgba(95,208,168,.14)" : lvl === 1 ? "rgba(242,182,60,.12)" : "rgba(242,101,92,.14)";
+                      const lvlBg = (lvl) => lvl === 0 ? "rgba(95,208,168,.14)" : lvl === 1 ? "rgba(224,166,60,.12)" : "rgba(242,101,92,.14)";
                       return (
-                        <tr key={i} style={{ background: mine ? "rgba(242,182,60,.08)" : "transparent", outline: mine ? "1px solid rgba(242,182,60,.4)" : "none" }}>
+                        <tr key={i} style={{ background: mine ? "rgba(224,166,60,.08)" : "transparent", outline: mine ? "1px solid rgba(224,166,60,.4)" : "none" }}>
                           <td style={{ padding: "4px 0", color: mine ? "var(--gold)" : "var(--ink)", fontWeight: mine ? 700 : 400, whiteSpace: "nowrap" }}>{isYou ? (TEAM_NAMES[i] || "Your team") : TEAM_NAMES[i]}{isYou && <span className="mut" style={{ fontSize: 9, marginLeft: 4 }}>YOU</span>}</td>
                           {POS.map((pos) => {
                             const lvl = posRel[i] ? posRel[i][pos] : 1;
@@ -22254,7 +22272,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           </div>
           {!hasSlot && <div style={{ fontSize: 12, marginBottom: 12, color: "var(--gold)", display: "flex", alignItems: "center", gap: 6 }}><i className="ti ti-alert-triangle" style={{ fontSize: 14 }} aria-hidden="true" />Set your draft slot on the “Teams & order” section so recommendations know when you pick.</div>}
           {(typeFamily(cfg.type) === "dynasty" || cfg.keeper) && (
-            <div style={{ marginBottom: 12, padding: "11px 13px", borderRadius: 10, border: "1px solid var(--gold)", background: "rgba(242,182,60,.08)", display: "flex", gap: 9, alignItems: "flex-start" }}>
+            <div style={{ marginBottom: 12, padding: "11px 13px", borderRadius: 10, border: "1px solid var(--gold)", background: "rgba(224,166,60,.08)", display: "flex", gap: 9, alignItems: "flex-start" }}>
               <i className="ti ti-lock" style={{ fontSize: 15, color: "var(--gold)", marginTop: 1, flexShrink: 0 }} aria-hidden="true" />
               <div style={{ fontSize: 12, lineHeight: 1.5 }}>
                 {typeFamily(cfg.type) === "dynasty"
@@ -22291,7 +22309,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   const isActive = active && active.id === set.id;
                   return (
                     <div key={set.id} title={`Format: ${rankSetLabel(setSettingsKey(set))}${set.leagueId != null ? " · attached to a league" : ""}`}
-                      style={{ border: `1px solid ${isActive ? "var(--gold)" : "var(--line)"}`, borderRadius: 9, padding: "10px 12px", marginBottom: 8, background: isActive ? "rgba(242,182,60,.07)" : "transparent" }}>
+                      style={{ border: `1px solid ${isActive ? "var(--gold)" : "var(--line)"}`, borderRadius: 9, padding: "10px 12px", marginBottom: 8, background: isActive ? "rgba(224,166,60,.07)" : "transparent" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontWeight: 700, fontSize: 13.5 }}>{set.name} {rel.exact ? <span className="chip" style={{ marginLeft: 4, borderColor: "var(--green)", color: "var(--green)", fontSize: 9 }}>EXACT MATCH</span> : null}{isActive ? <span className="chip" style={{ marginLeft: 4, borderColor: "var(--gold)", color: "var(--gold)", fontSize: 9 }}>IN USE</span> : null}</div>
@@ -22577,7 +22595,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       {turnRecap && (() => { const recap = turnRecap; return (
         <div onClick={closeRecap} style={{ position: "fixed", inset: 0, zIndex: 78, background: "#000b", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "36px 16px", overflowY: "auto" }}>
           <div className="panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 640, width: "100%", padding: 0, borderColor: "var(--gold)", boxShadow: "0 20px 70px #000d", overflow: "hidden" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 16px", borderBottom: "1px solid var(--line)", background: "linear-gradient(180deg, rgba(242,182,60,.10), transparent)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 16px", borderBottom: "1px solid var(--line)", background: "linear-gradient(180deg, rgba(224,166,60,.10), transparent)" }}>
               <i className="ti ti-alarm" style={{ fontSize: 20, color: "var(--gold)" }} aria-hidden="true" />
               <div style={{ flex: 1 }}>
                 <div className="disp" style={{ fontSize: 17, fontWeight: 700 }}>You're on the clock — pick {pickLabel(recap.pickNum - 1)} <span className="mut" style={{ fontWeight: 600 }}>(overall {recap.pickNum})</span></div>
@@ -22619,7 +22637,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const td = { padding: "5px 8px", fontSize: 12.5, borderBottom: "1px solid rgba(255,255,255,.04)", whiteSpace: "nowrap" };
                 const tdR = { ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" };
                 return (
-                  <div style={{ border: "1px solid rgba(242,182,60,.4)", background: "rgba(242,182,60,.05)", borderRadius: 10, overflow: "hidden" }}>
+                  <div style={{ border: "1px solid rgba(224,166,60,.4)", background: "rgba(224,166,60,.05)", borderRadius: 10, overflow: "hidden" }}>
                     <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700, padding: "8px 12px 2px" }}>Your decision</div>
                     <table style={{ width: "100%", borderCollapse: "collapse" }}>
                       <thead><tr><th style={th}>Player</th><th style={th}>Pos</th><th style={thR}>Pos rk</th><th style={thR}>ADP</th><th style={thR}>VBD</th><th style={thR}>Value</th><th style={thR}>Proj</th><th style={thR}></th></tr></thead>
@@ -22627,7 +22645,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         {rows.map((p, i) => {
                           const top = i === 0;
                           return (
-                            <tr key={p.id} style={top ? { background: "rgba(242,182,60,.16)" } : undefined}>
+                            <tr key={p.id} style={top ? { background: "rgba(224,166,60,.16)" } : undefined}>
                               <td style={{ ...td, boxShadow: `inset 3px 0 0 ${top ? "var(--gold)" : (POS_COLOR[p.pos] || "var(--line2)")}` }}>{top && <i className="ti ti-star-filled" style={{ fontSize: 10, marginRight: 5, color: "var(--gold)" }} aria-hidden="true" />}<PosName p={p} /> <span className="mut" style={{ fontWeight: 400 }}>{p.team}</span></td>
                               <td style={{ ...td, color: POS_COLOR[p.pos] || "var(--ink)", fontWeight: 700 }}>{p.pos}</td>
                               <td style={tdR}>{p.posRank != null ? `${p.pos}${p.posRank}` : "—"}</td>
@@ -22703,7 +22721,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           const lvl = myRel[pos]; // 0 top, 1 mid, 2 bottom
           let tag, color, bg;
           if (short > 0) { tag = short >= 1 ? `Need ${short} starter${short >= 2 ? "s" : ""}` : "Thin"; color = "#F2655C"; bg = "rgba(242,101,92,.14)"; }
-          else if (lvl === 2) { tag = "Weak — upgrade"; color = "var(--gold)"; bg = "rgba(242,182,60,.14)"; }
+          else if (lvl === 2) { tag = "Weak — upgrade"; color = "var(--gold)"; bg = "rgba(224,166,60,.14)"; }
           else if (lvl === 0) { tag = "Strength"; color = "#5FD0A8"; bg = "rgba(95,208,168,.14)"; }
           else { tag = "Solid"; color = "var(--ink)"; bg = "var(--panel2)"; }
           return { pos, tag, color, bg, have };
@@ -22872,7 +22890,7 @@ function PosRankGrid({ grid, userIdx, teamNames, posColor, showTip, hideTip, ran
           {rows.map((row) => {
             const mine = row.team === userIdx;
             return (
-              <tr key={row.team} style={{ background: mine ? "rgba(242,182,60,.08)" : "transparent", borderBottom: "1px solid var(--line2)" }}>
+              <tr key={row.team} style={{ background: mine ? "rgba(224,166,60,.08)" : "transparent", borderBottom: "1px solid var(--line2)" }}>
                 <td style={{ padding: "3px 4px", color: mine ? "var(--gold)" : "var(--ink)", fontWeight: mine ? 700 : 400, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 110 }}>
                   {mine ? (teamNames[row.team] || "Your team") : teamNames[row.team]}
                 </td>
@@ -23286,7 +23304,7 @@ function AdpIntelPage({ user, onBack, onHome, onSignOut }) {
       <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="ADP Intelligence" />
       <div style={{ maxWidth: 940, margin: "0 auto", padding: "24px 20px 50px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14, flexWrap: "wrap" }}>
-          <div style={{ flexShrink: 0, width: 44, height: 44, borderRadius: 10, background: "rgba(242,182,60,.10)", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ flexShrink: 0, width: 44, height: 44, borderRadius: 10, background: "rgba(224,166,60,.10)", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
             <i className="ti ti-chart-dots" style={{ fontSize: 22, color: "var(--gold)" }} aria-hidden="true" />
           </div>
           <div style={{ flex: 1 }}>
@@ -23352,7 +23370,7 @@ function TradeToolsPage({ user, onBack, onHome, onSignOut }) {
       <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="Trade Tools" />
       <div style={{ maxWidth: 900, margin: "0 auto", padding: "24px 20px 50px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14, flexWrap: "wrap" }}>
-          <div style={{ flexShrink: 0, width: 44, height: 44, borderRadius: 10, background: "rgba(242,182,60,.10)", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ flexShrink: 0, width: 44, height: 44, borderRadius: 10, background: "rgba(224,166,60,.10)", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
             <i className="ti ti-arrows-exchange" style={{ fontSize: 22, color: "var(--gold)" }} aria-hidden="true" />
           </div>
           <div style={{ flex: 1 }}>
