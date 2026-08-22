@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.20ar";
+const BUILD_TAG = "2026.07.20as";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2699,6 +2699,59 @@ function legalCands(cands, counts, cfg) {
   if (ok.length) return ok;
   if (underCap.length) return underCap;
   return cands;
+}
+// ===== BOARD TIERS ==========================================================================
+// A "tier" is a run of players who are effectively interchangeable, and the break is where the drop
+// gets real. The per-player tier fields (vbdTier / adpTier) are computed WITHIN a position, so on a
+// mixed board sorted by ADP they interleave — WR tier 6, TE tier 7, QB tier 8, WR tier 6 again — and
+// treating each change as a break draws a divider on nearly every row. Useless.
+//
+// So tiers are computed on the board you're actually looking at: walk the list in display order and
+// break where the gap to the next player is an OUTLIER against the gaps around it. Threshold is the
+// 85th percentile of all gaps, floored at twice the median, which bounds breaks at roughly one row in
+// seven however the metric is distributed — no magic constants tuned to one scoring format.
+// Returns { tierOf: number[] aligned to the list, leftIn: Map<tier, undrafted count> }.
+function computeBoardTiers(list, metric, isDrafted) {
+  const n = list.length;
+  const out = { tierOf: new Array(n).fill(1), leftIn: new Map() };
+  if (n < 3) { if (n) out.leftIn.set(1, list.filter((p) => !isDrafted(p)).length); return out; }
+  const vals = list.map(metric);
+  if (vals.some((v) => v == null || !isFinite(v))) return null;   // metric doesn't apply to this sort
+  const gaps = [];
+  for (let i = 1; i < n; i++) gaps.push(Math.abs(vals[i] - vals[i - 1]));
+  const sorted = gaps.slice().sort((a, b) => a - b);
+  let med = sorted[Math.floor(sorted.length / 2)] || 0;
+  if (!(med > 0)) {                                    // mostly-identical values: fall back to the mean gap
+    const nz = gaps.filter((g) => g > 0);
+    if (!nz.length) return null;                       // every player identical — nothing to tier
+    med = nz.reduce((x, y) => x + y, 0) / nz.length;
+  }
+  // A cliff is a gap several times the typical one. Scale-free, so it works on ADP picks and on VBD
+  // points without tuning. Then widen the multiple until the break count is bounded — otherwise a board
+  // whose gaps grow steadily (every gap bigger than the last) would break on almost every row.
+  const maxBreaks = Math.max(2, Math.floor(n / 5));
+  let mult = 3, tierOf = null;
+  for (let guard = 0; guard < 12; guard++) {
+    const thresh = med * mult;
+    const t = [1];
+    let tier = 1;
+    for (let i = 1; i < n; i++) { if (gaps[i - 1] > thresh) tier++; t.push(tier); }
+    if (tier - 1 <= maxBreaks || mult > 40) { tierOf = t; break; }
+    mult *= 1.5;
+  }
+  if (!tierOf) return null;
+  for (let i = 0; i < n; i++) out.tierOf[i] = tierOf[i];
+  list.forEach((p, i) => { if (!isDrafted(p)) out.leftIn.set(out.tierOf[i], (out.leftIn.get(out.tierOf[i]) || 0) + 1); });
+  return out;
+}
+// The value a given board sort is actually ordering by — tiers must cluster on the same axis you're
+// looking down, or the breaks won't line up with what you see.
+function boardTierMetric(sortKey, dynasty) {
+  if (sortKey === "adp" || sortKey === "consensus" || sortKey === "blendAdp") return (p) => p.adp;
+  if (sortKey === "proj") return (p) => p.pts;
+  if (sortKey === "value") return (p) => (p.value != null ? p.value : p.vbd);
+  if (sortKey === "vbd" || sortKey === "rank") return (p) => (dynasty ? (p.value != null ? p.value : p.vbd) : p.vbd);
+  return null;   // any other sort isn't a board order — no tiers
 }
 function marginalVbd(c, counts, sf) {
   const req = REQ_EFF(sf); // SF-aware: counts the superflex slot as a 2nd required QB starter
@@ -17830,10 +17883,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   the CURRENT board — your filters, your sort, your ranks — and makes it portable, grouped by
                   tier so it reads the way you draft. */}
               {sheetOpen && (() => {
-                const marketSort = sortState.key === "adp" || sortState.key === "consensus" || sortState.key === "blendAdp";
-                const tKey = marketSort ? "adpTier" : "vbdTier";
                 const dyn = isDynastyCfg(cfg);
                 const sheetRows = rows.filter((p) => !draftedSet.has(p.id));
+                // Same board-order clustering the list uses, so the printed sheet groups exactly the way
+                // the screen does. Falls back to no grouping if the current sort isn't a board order.
+                const sheetTiers = computeBoardTiers(sheetRows, boardTierMetric(sortState.key, dyn) || ((p) => p.adp), () => false);
                 const cols = [
                   ["#", (p, i) => i + 1],
                   ["Player", (p) => p.name],
@@ -17844,7 +17898,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   ["My rank", (p) => { const r = myRanks && myRanks.map && myRanks.map[p.id]; return r ? r.rank : ""; }],
                   ["Proj", (p) => (p.pts != null ? Math.round(p.pts) : "")],
                   [dyn ? "Value" : "VBD", (p) => { const v = dyn ? (p.value ?? p.vbd) : p.vbd; return v != null ? Math.round(v) : ""; }],
-                  ["Tier", (p) => p[tKey] ?? ""],
+                  ["Tier", (p, i) => (sheetTiers ? sheetTiers.tierOf[i] : "")],
                 ];
                 const downloadCsv = () => {
                   const esc = (v) => { const t = String(v ?? ""); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
@@ -17886,7 +17940,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           <thead><tr>{cols.map((c) => <th key={c[0]} style={{ textAlign: c[0] === "Player" ? "left" : "right", padding: "3px 5px", borderBottom: "1px solid var(--line)", fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)" }}>{c[0]}</th>)}</tr></thead>
                           <tbody>
                             {sheetRows.map((p, i) => {
-                              const t = p[tKey];
+                              const t = sheetTiers ? sheetTiers.tierOf[i] : null;
                               const head = t != null && t !== lastT ? (lastT = t) : null;
                               return (
                                 <React.Fragment key={p.id}>
@@ -17997,27 +18051,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     const nCols = 1 + activeCols.length;
                     const outRows = [];
                     // ===== TIER BREAKS =========================================================
-                    // Experienced drafters don't think "who's best", they think "how many acceptable players
-                    // are left before the drop". The engine has computed tiers all along (vbdTier / adpTier)
-                    // and then buried them in a sortable column. Draw the break instead, and say how many
-                    // UNDRAFTED players remain inside each one — that count is the actual decision input.
-                    // Only meaningful while the list is in a board order (value or market), so tiers are
-                    // suppressed under any other sort, where a divider would be noise.
-                    // Market sorts read the ADP tier; value sorts read the VBD tier — the divider should always
-                    // describe the axis you're actually looking down.
-                    const marketSort = sortState.key === "adp" || sortState.key === "consensus" || sortState.key === "blendAdp";
-                    const tierKey = marketSort ? "adpTier" : "vbdTier";
-                    const BOARD_SORTS = ["adp", "consensus", "blendAdp", "vbd", "value", "rank", "proj"];
-                    // `manualSort` means the list is in a plain column order. When it's off, the board is
-                    // strategy-scored and tiers would interleave, so we hide them rather than mislead.
-                    const tiersOn = showTiers && manualSort && BOARD_SORTS.includes(sortState.key) && !queueOnly;
-                    const tierLeft = new Map();   // tier -> how many undrafted players it still holds
-                    if (tiersOn) players.forEach((p) => {
-                      const t = p[tierKey];
-                      if (t == null || draftedSet.has(p.id)) return;
-                      if (posFilter !== "ALL" && !(posFilter === "DST" ? (p.pos === "DST" || p.pos === "DEF") : p.pos === posFilter)) return;
-                      tierLeft.set(t, (tierLeft.get(t) || 0) + 1);
-                    });
+                    // Computed on THIS board, in display order — see computeBoardTiers. The per-player
+                    // vbdTier/adpTier fields are per-position, so on a mixed board they interleave and a
+                    // "tier changed" test fires on nearly every row.
+                    const tierMetric = boardTierMetric(sortState.key, isDynastyCfg(cfg));
+                    const tiersOn = showTiers && manualSort && !queueOnly && !!tierMetric;
+                    const tierInfo = tiersOn ? computeBoardTiers(rows, tierMetric, (p) => draftedSet.has(p.id)) : null;
                     let lastTier = null;
                     // The player the engine is recommending right now — highlight his row so it's easy to spot in
                     // the full list. Prefer YOUR next-pick recommendation; fall back to the on-clock verdict.
@@ -18033,9 +18072,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       const isRec = !gone && p.id === recId;
                       const isKb = rowIdx === kbSel;
                       const injInfo = injuryView(p);
-                      if (tiersOn && p[tierKey] != null && p[tierKey] !== lastTier) {
-                        lastTier = p[tierKey];
-                        const left = tierLeft.get(lastTier) || 0;
+                      if (tierInfo && tierInfo.tierOf[rowIdx] !== lastTier) {
+                        lastTier = tierInfo.tierOf[rowIdx];
+                        const left = tierInfo.leftIn.get(lastTier) || 0;
                         // Thin at ≤3 is the moment a tier stops being a queue and becomes a decision.
                         const thin = left > 0 && left <= 3;
                         outRows.push(
@@ -18230,19 +18269,21 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           <span style={{ fontWeight: 700, color: rankTierColor(p.pos, p.posRank) }}>{p.pos}{p.posRank}</span>
                           <span className="num" style={{ color: vbdColor(dynasty ? (p.value ?? p.vbd) : p.vbd) }}>{fmtVal(dynasty ? (p.value ?? p.vbd) : p.vbd)}</span>
                           {surv != null && !isBoardPick && <span className="mut">{surv}% avail</span>}
-                          {/* TIER SCARCITY — the number that actually decides "now or later". Counts undrafted
-                              players sharing this player's tier AT HIS POSITION: three left is a queue, one
-                              left is a cliff. Uses the same tiers the board draws breaks on. */}
+                          {/* POSITIONAL TIER SCARCITY — the number that decides "now or later": how many
+                              undrafted players AT HIS POSITION are still interchangeable with him. Deliberately
+                              shows no tier NUMBER: these are per-position tiers, while the board draws tiers
+                              across the whole list, and two different numberings side by side just confuse. */}
                           {(() => {
-                            const t = dynasty ? p.vbdTier : (p.vbdTier != null ? p.vbdTier : p.adpTier);
+                            const tf = (x) => (dynasty ? x.vbdTier : (x.vbdTier != null ? x.vbdTier : x.adpTier));
+                            const t = tf(p);
                             if (t == null) return null;
-                            const left = (availByPos[p.pos] || []).filter((x) => (dynasty ? x.vbdTier : (x.vbdTier != null ? x.vbdTier : x.adpTier)) === t).length;
+                            const left = (availByPos[p.pos] || []).filter((x) => tf(x) === t).length;
                             if (!left) return null;
                             const thin = left <= 3;
                             return (
-                              <span title={`${left} undrafted ${p.pos}${left === 1 ? "" : "s"} share this tier. When a tier empties the drop to the next one is the real cost of waiting.`}
+                              <span title={`${left} undrafted ${p.pos}${left === 1 ? "" : "s"} are still in his tier — players the board treats as interchangeable with him. Once a tier empties, the drop to the next one is the real cost of waiting.`}
                                 style={{ fontSize: 8.5, fontWeight: 800, letterSpacing: ".02em", padding: "0 4px", borderRadius: 3, cursor: "help", color: thin ? "#F2655C" : "var(--mut)", background: thin ? "rgba(242,101,92,.15)" : "rgba(255,255,255,.06)" }}>
-                                T{t} · {left} left
+                                {left} {p.pos} left in tier
                               </span>
                             );
                           })()}
