@@ -121,8 +121,12 @@ export const api = {
 
   // ---- payments ----
   async startCheckout() {
+    // retries:1 — the default 2 retries with backoff makes a buyer stare at "Taking you to checkout…" for
+    // ~5 seconds before being told it failed, and the most common 5xx here ("Payments not configured") is
+    // never going to succeed on a retry. One retry covers a genuinely cold dyno; after that, tell them.
     const r = await call('/api/payments/checkout', {
       method: 'POST',
+      retries: 1,
       body: { successUrl: `${location.origin}/?paid=1`, cancelUrl: `${location.origin}/?canceled=1` },
     });
     return r.url; // caller redirects to Stripe
