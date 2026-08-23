@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.25a";
+const BUILD_TAG = "2026.07.26a";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5198,6 +5198,14 @@ const css = `
 .qstar:hover,.qban:hover{opacity:1!important;transform:scale(1.15);transition:opacity .12s,transform .12s}
 /* Both are pinned bottom-left, so the bug button rides above the sticky buy bar while it is showing. */
 body.buybar-open .bugbtn{bottom:76px!important}
+/* On a phone the bug button is a fixed element parked on top of the bottom board row — exactly where the
+   Pick buttons are. Shrink it to a circular icon: same 44px tap target, a fraction of the footprint, and
+   no longer sitting between a finger and a pick. */
+@media(max-width:760px){
+  .bugbtn{width:44px;height:44px;padding:0!important;justify-content:center;border-radius:50%!important;left:10px!important;bottom:10px!important;opacity:.9}
+  .bugbtn .bugbtn-label{display:none}
+  .bugbtn i{margin:0!important;font-size:17px!important}
+}
 .hairline{border-bottom:1px solid var(--line)} .mut{color:var(--mut)} .gold{color:var(--gold)}
 .btn{background:var(--panel3);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer;font-family:'Barlow';font-size:13px}
 .btn:hover{transition:border-color .15s,background .15s,transform .1s,box-shadow .15s}
@@ -5254,6 +5262,7 @@ select.gs:hover{border-color:var(--gold)}
 .hubsection{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px 20px 22px}
 .menuitem:hover{background:rgba(214,170,75,0.14)!important;color:var(--gold)!important}
 .menuitem:hover .disp{color:var(--gold)}
+@media(max-width:900px){.secmove{display:none!important}}
 .posdot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;vertical-align:1px;flex-shrink:0}
 .chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;white-space:nowrap}
 .ticker{display:flex;gap:8px;overflow-x:auto;padding:10px 12px;scrollbar-width:thin;align-items:stretch}
@@ -5746,7 +5755,7 @@ function GlobalBugReport({ user, onSubmit }) {
     <>
       <button onClick={() => setOpen(true)} title="Report a bug or send feedback" className="bugbtn"
         style={{ position: "fixed", left: 14, bottom: 14, zIndex: 90, transition: "bottom .28s cubic-bezier(.2,.7,.3,1)", display: "inline-flex", alignItems: "center", gap: 6, background: "var(--panel)", color: "var(--ink)", border: "1px solid var(--gold)", borderRadius: 20, padding: "7px 13px", fontSize: 12, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", boxShadow: "0 4px 14px #0007" }}>
-        <i className="ti ti-bug" style={{ fontSize: 14, color: "var(--gold)" }} aria-hidden="true" />Report a bug
+        <i className="ti ti-bug" style={{ fontSize: 14, color: "var(--gold)" }} aria-hidden="true" /><span className="bugbtn-label">Report a bug</span>
       </button>
       {open && (
         <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 91, background: "#000b", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
@@ -6744,6 +6753,7 @@ export default function App() {
         allLeagues={leagues}
         onSaveAvoid={(id, arr, allowArr) => { const next = leagues.map((l) => (l.id === id ? { ...l, avoidList: arr, ...(allowArr ? { avoidAllow: allowArr } : {}) } : l)); setLeagues(next); persist({ leagues: next }); }}
         onSaveMasterAvoid={(arr) => updateUser({ avoidMaster: arr })}
+        onFixSlot={(id, slot) => { const next = leagues.map((l) => (l.id === id ? { ...l, cfg: { ...l.cfg, slot } } : l)); setLeagues(next); persist({ leagues: next }); }}
         onOpenTeamHub={lg.cfg.connect && lg.cfg.connect.leagueId ? () => { setHubLeagueId(lg.cfg.connect.leagueId); setRoute("teamHub"); } : null} /> : null; })()}
       {route === "teamHub" && user && hubLeagueId && <Boundary label="in-season hub" fallback={(msg) => (
         <div style={{ maxWidth: 620, margin: "60px auto", padding: "0 20px", textAlign: "center" }}>
@@ -7422,7 +7432,11 @@ function AvoidListModal({ league, allLeagues, user, onSave, onSaveMaster, onClos
   );
 }
 
-function LeagueUmbrella({ user, league, allLeagues, onBack, onHome, onSignOut, onOfficial, onMock, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings, onSaveAvoid, onSaveMasterAvoid }) {
+function LeagueUmbrella({ user, league, allLeagues, onBack, onHome, onSignOut, onOfficial, onMock, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings, onSaveAvoid, onSaveMasterAvoid, onFixSlot }) {
+  // The checklist used to print league.cfg.slot with a tick beside it, and that number could be months old
+  // and simply wrong. Ask the platform instead — and write the answer back, so the room, the mocks and this
+  // page stop each holding a different opinion about where the user is sitting.
+  const liveSeat = useConnectedSeat(league, (s) => { if (typeof onFixSlot === "function") onFixSlot(league.id, s); });
   const total = (league.cfg.teams || 12) * league.cfg.rounds;
   // A league is "complete" if the LOCAL pick log is full OR the connected platform says the draft is
   // done — the local log only fills when the draft room is opened, so a Sleeper league that finished
@@ -7465,7 +7479,9 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, onHome, onSignOut, o
     const stt = league.cfg.start || {};
     const slotLine = ["QB", "RB", "WR", "TE", "FLEX", "SUPER", "K", "DST"].filter((k) => (stt[k] || 0) > 0).map((k) => `${stt[k]}${k === "SUPER" ? "SF" : k}`).join("/");
     const scoreLine = (() => { const r = (league.cfg.scoring && league.cfg.scoring.rec) || 0; return r >= 1 ? "PPR" : r > 0 ? "Half-PPR" : "Standard"; })();
-    const hasSlot = league.cfg.slot != null && +league.cfg.slot >= 1;
+    // Sleeper's answer wins over anything we stored at import time.
+    const seat = (liveSeat != null && liveSeat >= 1) ? liveSeat : league.cfg.slot;
+    const hasSlot = seat != null && +seat >= 1;
     const keeperLeague = isDynastyish || !!league.cfg.keeper;
     const myRanks = ((user && user.rankSets) || []).filter((rs) => rs && (!rs.leagueId || rs.leagueId === league.id));
     const hasLeagueAdp = !!(user && user.platformRanks && user.platformRanks[league.id]);
@@ -7481,9 +7497,9 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, onHome, onSignOut, o
     });
     rows.push({
       key: "slot", title: "Draft slot & order",
-      status: hasSlot ? `Slot ${league.cfg.slot} · ${league.cfg.order === "linear" ? "linear" : "snake"}` : "Not set",
+      status: hasSlot ? `Slot ${seat} · ${league.cfg.order === "linear" ? "linear" : "snake"}` : "Not set",
       done: hasSlot,
-      hint: "Without your slot the engine can't tell you when you're on the clock, who picks in between, or what survives to your next turn.",
+      hint: `Without your slot the engine can't tell you when you're on the clock, who picks in between, or what survives to your next turn.${connected && liveSeat != null ? `\n\nConfirmed against ${(league.cfg.connect || league.connect || {}).platform === "espn" ? "ESPN" : "Sleeper"} just now.` : connected ? "\n\nSaved when you imported the league — open the draft room to re-check it against your platform." : ""}`,
       go: () => onSettings(league.id),
     });
     if (keeperLeague) rows.push({
@@ -8309,6 +8325,45 @@ function QuickMockSetup({ onStart, onCancel }) {
       </div>
     </div>
   );
+}
+
+// WHICH SEAT AM I IN? — resolved from the platform, not from what we happened to store at import.
+//
+// A connected league's draft slot was captured once, when the league was imported, and then trusted
+// forever. Sleeper's live answer only replaced it if the user found and pressed "Pull latest from Sleeper".
+// Almost nobody does — so a league imported BEFORE the commissioner set the draft order kept whatever seat
+// Sleeper reported at the time (pre-draft, that comes from the roster mapping, which is not the draft
+// order at all). The consequences are not cosmetic: userIdx = slot − 1, so the entire board — who's on the
+// clock, what survives to your next pick, every recommendation — was computed for the wrong seat, silently,
+// with the league page cheerfully displaying the wrong number next to a tick.
+//
+// This asks the platform on mount and reports the answer. Failures are silent by design: the seat we have
+// is still usable, and a draft room must never depend on the network.
+function useConnectedSeat(league, onFix) {
+  const [seat, setSeat] = useState(null);
+  const conn = (league && ((league.cfg && league.cfg.connect) || league.connect)) || null;
+  const leagueId = conn && conn.leagueId;
+  const askedRef = useRef(null);
+  const fixRef = useRef(onFix);
+  fixRef.current = onFix;
+  useEffect(() => {
+    if (!hasBackend || !leagueId) return;
+    if (askedRef.current === leagueId) return;            // once per league, not once per render
+    askedRef.current = leagueId;
+    let alive = true;
+    api.sleeperDraft(leagueId, conn.username || null, conn.userId || conn.sleeperUserId || null)
+      .then((d) => {
+        if (!alive || !d) return;
+        const s = d.yourSlot;
+        if (s == null || !(s >= 1)) return;               // Sleeper doesn't know either — leave what we have
+        setSeat(s);
+        const stored = league && league.cfg ? league.cfg.slot : null;
+        if (s !== stored && typeof fixRef.current === "function") fixRef.current(s, stored);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [leagueId]);
+  return seat;
 }
 
 // Shared Sleeper-link state hook: reads the current link, links a new username, and unlinks. Used by both
@@ -16341,6 +16396,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const ROUNDS = cfg.rounds;
   const TOTAL = totalOf(cfg);
   const [syncedSlot, setSyncedSlot] = useState(null); // user's real slot pulled from Sleeper (yourSlot) when cfg.slot is missing
+  // ⭐ Ask the platform which seat this is, on entry, every time. This USED to happen only when the user
+  // pressed "Pull latest from Sleeper" — so a stale imported slot quietly became userIdx and every
+  // recommendation on the board was computed for somebody else's seat. It is one cheap request against the
+  // single number the whole engine pivots on; it is not worth saving.
+  const [seatCorrected, setSeatCorrected] = useState(null); // {from, to} — shown once, so the change isn't silent
+  // NOT for mocks or the demo. A mock started from a connected league inherits cfg.connect wholesale, and
+  // "what would I do from the 3 spot?" is one of the main reasons to run one — dragging the user back to
+  // their real seat mid-practice would be a worse bug than the one this fixes.
+  useConnectedSeat((isMock || isDemo) ? null : league, (s, stored) => {
+    setSyncedSlot(s);
+    if (stored != null && stored !== s) setSeatCorrected({ from: stored, to: s });
+    // Persist it so the league page, mocks and the checklist all agree rather than each guessing separately.
+    if (onSettings) onSettings({ ...cfg, slot: s });
+  });
   const [sleeperPulling, setSleeperPulling] = useState(false);
   const [sleeperPullMsg, setSleeperPullMsg] = useState(null);
   // Explicit "pull from Sleeper" for a connected league: fetch the live draft and apply order / your seat /
@@ -19227,6 +19296,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         {isMock && <div className="chip" style={{ borderColor: "var(--gold)", background: "rgba(224,166,60,.10)", color: "var(--gold)" }} title="This is a practice draft — it saves to this league's mock history and never changes your real draft."><i className="ti ti-dice" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />MOCK</div>}
         <div className="chip" style={{ borderColor: "var(--gold)" }}><b className="disp gold" style={{ fontSize: 15 }}>ROUND {Math.min(round, ROUNDS)} of {ROUNDS}</b></div>
         <div className="chip">{cfg.teams} teams · {cfg.sf ? "SF" : "1QB"}{cfg.tePremMult > 0 ? ` · TE+${cfg.tePremMult}` : ""} · {DRAFT_ORDERS.find((o) => o[0] === (cfg.order || "snake"))?.[1].split(" ")[0]}</div>
+        {/* Say it out loud when we move somebody's seat. The board is entirely computed from this number, so
+            a silent correction would look like the recommendations changed for no reason — and if the new
+            seat is somehow the wrong one, the user is the only person who can tell us. */}
+        {seatCorrected && (
+          <div className="chip" style={{ borderColor: "var(--blue)", color: "var(--blue)" }}
+            title={`Your league page had you in slot ${seatCorrected.from}, but Sleeper says you're in slot ${seatCorrected.to}. Every recommendation is computed for your seat, so we've corrected it. If Sleeper is wrong, set it by hand in Settings.`}>
+            <i className="ti ti-arrows-exchange" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />
+            Seat {seatCorrected.from} → {seatCorrected.to} from Sleeper
+          </div>
+        )}
         {onToggleHoverAnim && <button className="btn btn-mini" onClick={onToggleHoverAnim} title={noHoverAnim ? "Hover popups are OFF — click to turn them back on" : "Turn OFF hover popups & effects (the info tooltips and hover animations across every tab)"} style={{ borderColor: noHoverAnim ? "var(--gold)" : "var(--line2)", color: noHoverAnim ? "var(--gold)" : "var(--mut)" }}><i className={`ti ${noHoverAnim ? "ti-hand-off" : "ti-hand-finger"}`} style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />{noHoverAnim ? "Hover off" : "Hover"}</button>}
         <div style={{ flex: 1 }} />
         {/* For a CONNECTED live draft, Sleeper drives the picks — pausing, sim speed, manual end, undo, and
@@ -20218,9 +20297,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         <th key={g.sec + gi} colSpan={g.count} style={{ textAlign: "center", borderLeft: "2px solid var(--line)", borderBottom: "1px solid var(--line)", padding: "3px 4px", background: "var(--panel2)" }}
                           title={movable ? "Use the ◂ ▸ buttons to move this whole section of columns left or right." : "ADP & market is pinned to the left."}>
                           <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 9.5, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--gold)", fontWeight: 700 }}>
-                            {movable && <button onClick={() => moveSection(g.sec, -1)} disabled={pos <= 0} style={{ background: pos <= 0 ? "transparent" : "var(--panel)", border: `1px solid ${pos <= 0 ? "var(--line)" : "var(--gold)"}`, borderRadius: 4, color: pos <= 0 ? "var(--line)" : "var(--gold)", cursor: pos <= 0 ? "default" : "pointer", padding: "0 4px", fontSize: 11, lineHeight: 1.4 }} title="Move section left">◂</button>}
+                            {movable && <button className="secmove" onClick={() => moveSection(g.sec, -1)} disabled={pos <= 0} style={{ background: pos <= 0 ? "transparent" : "var(--panel)", border: `1px solid ${pos <= 0 ? "var(--line)" : "var(--gold)"}`, borderRadius: 4, color: pos <= 0 ? "var(--line)" : "var(--gold)", cursor: pos <= 0 ? "default" : "pointer", padding: "0 4px", fontSize: 11, lineHeight: 1.4 }} title="Move section left">◂</button>}
                             {SECTION_LABELS[g.sec] || g.sec}
-                            {movable && <button onClick={() => moveSection(g.sec, 1)} disabled={pos >= reSecs.length - 1} style={{ background: pos >= reSecs.length - 1 ? "transparent" : "var(--panel)", border: `1px solid ${pos >= reSecs.length - 1 ? "var(--line)" : "var(--gold)"}`, borderRadius: 4, color: pos >= reSecs.length - 1 ? "var(--line)" : "var(--gold)", cursor: pos >= reSecs.length - 1 ? "default" : "pointer", padding: "0 4px", fontSize: 11, lineHeight: 1.4 }} title="Move section right">▸</button>}
+                            {movable && <button className="secmove" onClick={() => moveSection(g.sec, 1)} disabled={pos >= reSecs.length - 1} style={{ background: pos >= reSecs.length - 1 ? "transparent" : "var(--panel)", border: `1px solid ${pos >= reSecs.length - 1 ? "var(--line)" : "var(--gold)"}`, borderRadius: 4, color: pos >= reSecs.length - 1 ? "var(--line)" : "var(--gold)", cursor: pos >= reSecs.length - 1 ? "default" : "pointer", padding: "0 4px", fontSize: 11, lineHeight: 1.4 }} title="Move section right">▸</button>}
                           </span>
                         </th>
                       );
