@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.26b";
+const BUILD_TAG = "2026.07.27a";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1493,6 +1493,11 @@ export function applyLivePack(pack, isReapply) {
       inj: p.inj || null,
       // The live injury detail the platform already knows. Static curated notes go stale within days —
       // this is the part that stays true, and it is why a user shouldn't have to open another site.
+      // Market movement, straight from the ADP pipeline: avg pick over the last three weeks minus the three
+      // before it. NEGATIVE means he's coming off the board EARLIER than he was — rising. This has been in
+      // the pack all along and nothing on the client ever read it.
+      trend: (p.trend != null && Number.isFinite(Number(p.trend))) ? Number(p.trend) : null,
+      sampleN: p.sampleN || 0,
       injPart: p.injPart || null,
       injNote: p.injNote || null,
       injSince: p.injSince || null,
@@ -2244,6 +2249,7 @@ function buildPlayers(cfg) {
       id: i, name: r[0], pos: r[1], team: r[2], age: r[3], bye: r[4], adp0: r[5], stats, pts,
       floor: Math.round(pts * floorR), ceil: Math.round(pts * ceilR),
       consensus0: meta.consensus != null ? meta.consensus : r[5], rookie: !!meta.rookie, inj: meta.inj || null,
+      trend: meta.trend != null ? meta.trend : null, sampleN: meta.sampleN || 0,
       injPart: meta.injPart || null, injNote: meta.injNote || null, injSince: meta.injSince || null, injAt: meta.injAt || null,
       sid: meta.sid || null,
     };
@@ -5778,6 +5784,112 @@ function SyncStatus({ user }) {
         style={{ flexShrink: 0, padding: "2px 6px", fontSize: 11 }}>
         <i className="ti ti-x" style={{ fontSize: 12 }} aria-hidden="true" />
       </button>
+    </div>
+  );
+}
+
+// THE INJURY REPORT — every flagged player still on the board, in one place, newest news first.
+//
+// The complaint this answers: "I have never seen a good tool that shows all injury updates — you have to
+// dig for that info." The filter on the board handles "who's hurt" while you're scanning. This handles the
+// other question, the one people leave the app for: WHAT CHANGED, and how recently.
+//
+// So it sorts by how fresh the news is, not by ADP — a note from this morning about a WR3 matters more
+// right now than a fortnight-old note about a WR1, because the stale one you have already priced in.
+function InjuryReport({ players, draftedSet, onClose, onAvoid, avoid }) {
+  const [showGone, setShowGone] = useState(false);
+  const rows = useMemo(() => {
+    const out = [];
+    (players || []).forEach((p) => {
+      if (!p.inj) return;
+      const gone = draftedSet.has(p.id);
+      if (gone && !showGone) return;
+      const iv = injuryView(p);
+      if (!iv) return;
+      out.push({ p, iv, gone, at: p.injAt ? (Number(p.injAt) < 1e12 ? Number(p.injAt) * 1000 : Number(p.injAt)) : 0 });
+    });
+    // Freshest first; anything with no timestamp sinks below everything that has one, ordered by ADP so
+    // the list stays sensible rather than arbitrary.
+    out.sort((a, b) => (b.at - a.at) || ((a.p.adp0 ?? 999) - (b.p.adp0 ?? 999)));
+    return out;
+  }, [players, draftedSet, showGone]);
+
+  const withNews = rows.filter((r) => r.at > 0).length;
+  const groupOf = (at) => {
+    if (!at) return "No date from your platform";
+    const d = Date.now() - at;
+    if (d < 36 * 3600e3) return "Last 24 hours";
+    if (d < 4 * 86400e3) return "This week";
+    if (d < 15 * 86400e3) return "Last two weeks";
+    return "Older";
+  };
+  let lastGroup = null;
+
+  return (
+    <div className="modalbg" onClick={onClose}>
+      <div className="panel" style={{ maxWidth: 720, width: "100%", padding: 0, overflow: "hidden", maxHeight: "86vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "13px 16px", borderBottom: "1px solid var(--line)" }}>
+          <i className="ti ti-ambulance" style={{ fontSize: 18, color: "var(--red)" }} aria-hidden="true" />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="disp" style={{ fontSize: 17, fontWeight: 700 }}>Injury report</div>
+            <div className="mut" style={{ fontSize: 11.5 }}>
+              {rows.length} flagged {showGone ? "player" : "still on the board"}{rows.length === 1 ? "" : "s"}
+              {withNews > 0 ? ` · ${withNews} with a dated note` : " · no dated notes yet"}
+            </div>
+          </div>
+          <button className="btn btn-mini" onClick={() => setShowGone((v) => !v)} title="Include players who have already been drafted">
+            {showGone ? "Available only" : "Include drafted"}
+          </button>
+          <button className="btn btn-mini" onClick={onClose}><i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true" /></button>
+        </div>
+
+        <div style={{ overflowY: "auto", padding: "4px 0 10px" }}>
+          {rows.length === 0 && (
+            <div className="mut" style={{ padding: "28px 20px", textAlign: "center", fontSize: 13, lineHeight: 1.6 }}>
+              Nobody on your board is carrying an injury designation right now.<br />
+              <span style={{ fontSize: 11.5 }}>Designations arrive with your platform's player data — if this looks empty and you expect it not to be, the nightly sync may not have run yet.</span>
+            </div>
+          )}
+          {rows.map(({ p, iv, gone, at }) => {
+            const g = groupOf(at);
+            const head = g !== lastGroup ? (lastGroup = g) : null;
+            return (
+              <div key={p.id}>
+                {head && (
+                  <div className="disp" style={{ fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--gold)", padding: "12px 16px 4px" }}>{head}</div>
+                )}
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 16px", borderBottom: "1px solid var(--line)", opacity: gone ? 0.45 : 1 }}>
+                  <span style={{ flexShrink: 0, marginTop: 1, fontSize: 9.5, fontWeight: 800, letterSpacing: ".03em", color: iv.color, border: `1px solid ${iv.color}`, borderRadius: 4, padding: "1px 5px", minWidth: 34, textAlign: "center" }}>{iv.abbr}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 700 }}>
+                      {p.name}
+                      <span className="mut" style={{ fontSize: 11, fontWeight: 500, marginLeft: 6 }}>{p.pos}{p.team ? ` · ${p.team}` : ""}{p.adp0 != null ? ` · ADP ${Math.round(p.adp0)}` : ""}</span>
+                      {gone && <span className="mut" style={{ fontSize: 10, marginLeft: 6 }}>· drafted</span>}
+                    </div>
+                    <div className="mut" style={{ fontSize: 12, lineHeight: 1.45, marginTop: 2 }}>
+                      {iv.note || iv.label}
+                      {iv.ago && <span style={{ opacity: .8 }}> · updated {iv.ago}</span>}
+                      {!iv.live && <span style={{ opacity: .65 }}> · no live note from your platform</span>}
+                    </div>
+                  </div>
+                  {!gone && onAvoid && (
+                    <button className="btn btn-mini" style={{ flexShrink: 0, borderColor: avoid && avoid.has(p.name) ? "var(--red)" : "var(--line)", color: avoid && avoid.has(p.name) ? "var(--red)" : "var(--mut)" }}
+                      onClick={() => onAvoid(p.name)}
+                      title={avoid && avoid.has(p.name) ? "On your do-not-draft list — click to take him off" : "Add to your do-not-draft list"}>
+                      <i className="ti ti-ban" style={{ fontSize: 12 }} aria-hidden="true" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="mut" style={{ padding: "9px 16px", borderTop: "1px solid var(--line)", fontSize: 11, lineHeight: 1.45 }}>
+          Designations and notes come straight from your platform's player feed. We don't editorialise them — if it says
+          questionable, that's what your league is seeing too.
+        </div>
+      </div>
     </div>
   );
 }
@@ -16339,11 +16451,70 @@ function InDraftTrends({ cfg, players, draftedSet, allLeagues, allFunMocks, onCl
         </div>
         <div className="mut" style={{ fontSize: 12, marginBottom: 14 }}>How the board moves across your other <b style={{ color: "var(--ink)" }}>{cfg.sf ? "Superflex" : "1QB"}{cfg.tePremMult > 0 ? " TE-premium" : ""} {cfg.type === "dynasty" ? "dynasty" : cfg.type === "bestball" ? "best-ball" : cfg.type === "rookie" ? "rookie" : "redraft"}</b> drafts — recent ones weighted more.</div>
 
+        {/* ⭐ MARKET MOVERS — the real answer to "what's trending", and the reason this panel used to be
+            empty for almost everybody. The section below it analyses YOUR OWN drafts, which most people
+            haven't run enough of, so the panel opened on "Not enough drafts yet" and looked broken. This
+            part comes from the ADP pipeline: thousands of real drafts, no prerequisite. */}
+        {(() => {
+          const movers = (players || [])
+            .filter((p) => p.trend != null && Math.abs(p.trend) >= 2 && !draftedSet.has(p.id) && (p.sampleN || 0) >= 8)
+            .sort((a, b) => Math.abs(b.trend) - Math.abs(a.trend));
+          const risers = movers.filter((p) => p.trend < 0).slice(0, 5);   // earlier pick = rising
+          const fallers = movers.filter((p) => p.trend > 0).slice(0, 5);
+          if (!risers.length && !fallers.length) {
+            return (
+              <div className="panel" style={{ padding: 13, marginBottom: 12, background: "var(--panel2)" }}>
+                <div className="disp" style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 4 }}>Market movement</div>
+                <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>
+                  Nobody on your board has moved more than a couple of picks in the last three weeks. That's normal
+                  in a quiet stretch — it starts moving once preseason news lands.
+                </div>
+              </div>
+            );
+          }
+          const Row = ({ p }) => {
+            const up = p.trend < 0;
+            const amt = Math.abs(Math.round(p.trend));
+            return (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 12 }}>
+                <i className={`ti ti-${up ? "trending-up" : "trending-down"}`} style={{ fontSize: 14, color: up ? "var(--green)" : "var(--red)", flexShrink: 0 }} aria-hidden="true" />
+                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {p.name} <span className="mut" style={{ fontSize: 10.5 }}>{p.pos}{p.team ? ` · ${p.team}` : ""}</span>
+                </span>
+                <span className="num" style={{ fontSize: 11.5, fontWeight: 700, color: up ? "var(--green)" : "var(--red)", flexShrink: 0 }}>
+                  {up ? "−" : "+"}{amt} {amt === 1 ? "pick" : "picks"}
+                </span>
+              </div>
+            );
+          };
+          return (
+            <div className="panel" style={{ padding: 13, marginBottom: 12, background: "var(--panel2)" }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 7, marginBottom: 2 }}>
+                <div className="disp" style={{ fontSize: 12.5, fontWeight: 700 }}>Market movement</div>
+                <span className="mut" style={{ fontSize: 10 }}>last 3 weeks vs the 3 before</span>
+              </div>
+              <div className="mut" style={{ fontSize: 10.5, marginBottom: 8, lineHeight: 1.4 }}>
+                Across every draft we read, not just yours. Still on your board.
+              </div>
+              {risers.length > 0 && <>
+                <div className="disp" style={{ fontSize: 9.5, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--green)", margin: "6px 0 2px" }}>Going earlier</div>
+                {risers.map((p) => <Row key={p.id} p={p} />)}
+              </>}
+              {fallers.length > 0 && <>
+                <div className="disp" style={{ fontSize: 9.5, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--red)", margin: "9px 0 2px" }}>Sliding</div>
+                {fallers.map((p) => <Row key={p.id} p={p} />)}
+              </>}
+            </div>
+          );
+        })()}
+
         {trends.n === 0 ? (
           <div className="panel" style={{ padding: 16, textAlign: "center", background: "var(--panel2)" }}>
             <i className="ti ti-chart-dots" style={{ fontSize: 28, color: "var(--mut)", marginBottom: 8 }} aria-hidden="true" />
-            <div className="disp" style={{ fontSize: 14, fontWeight: 700, marginBottom: 3 }}>Not enough drafts yet</div>
-            <div className="mut" style={{ fontSize: 12 }}>Run or complete a few more drafts in this exact format and their patterns will show up here — recent ones counting most.</div>
+            {/* Retitled: this is about YOUR drafts specifically. It used to be the whole panel, so an empty
+                one read as "trends are broken" rather than "you haven't run any mocks". */}
+            <div className="disp" style={{ fontSize: 14, fontWeight: 700, marginBottom: 3 }}>Your own drafts: not enough yet</div>
+            <div className="mut" style={{ fontSize: 12 }}>The market movement above covers every draft we read. This section compares it against <b style={{ color: "var(--ink)" }}>your</b> drafts in this exact format — run a few mocks and your own patterns show up here too.</div>
           </div>
         ) : (
           <>
@@ -16619,7 +16790,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [tradeModalOpen, setTradeModalOpen] = useState(false); // quick pick-trade popover over the hub
   const [strategy, setStrategy] = useState("balanced");
   const [search, setSearch] = useState("");
-  const [posFilter, setPosFilter] = useState("ALL");
+  // Positions are now a multi-select: an EMPTY set means every position. Storing the selection rather than
+  // a single "ALL" sentinel is what lets "QB + RB" exist at all, and it keeps the empty case free.
+  const [posSel, setPosSel] = useState(() => new Set());
+  const [posMenu, setPosMenu] = useState(false);
   const [sortState, setSortState] = useState({ key: "adp", dir: 1 });
   // Start the board in an explicit ADP sort. Previously the board opened in a STRATEGY-driven order (a blend of
   // market and build score) until you clicked a column header, which meant the default view wasn't actually
@@ -16697,7 +16871,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [kbSel, setKbSel] = useState(-1);           // keyboard-highlighted row index (-1 = none)
   const [sheetOpen, setSheetOpen] = useState(false); // printable / exportable cheat sheet
   const [showTiers, setShowTiers] = useState(true);  // tier dividers in the player list
-  const [dense, setDense] = useState(false);        // compact row height for the board
+  // Row density is no longer a toggle. It was a real setting — tighter padding, a slightly smaller face,
+  // about a third more of the board on screen — but the difference is too small to notice when you flip it,
+  // so it read as a button that did nothing. On the clock, seeing more of the board wins, so that is simply
+  // what the board does now.
+  const dense = true;
+  const [toolsMenu, setToolsMenu] = useState(false);
+  const [injReportOpen, setInjReportOpen] = useState(false);   // the injury summary panel
+  const [avoidModalOpen, setAvoidModalOpen] = useState(false); // the do-not-draft editor, reachable mid-draft
   const [rowLimit, setRowLimit] = useState(40);
   // PRIORITY QUEUE: players you've starred for this league. Persisted to localStorage keyed by league id
   // so it survives refreshes and is separate per league. `queueOnly` filters the board to just these.
@@ -18830,7 +19011,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       const rec = arr.find((p) => p.id === recIdForRows);
       return rec ? [...cut, rec] : cut;
     };
-    if (posFilter !== "ALL") list = list.filter((p) => posFilter === "DST" ? (p.pos === "DST" || p.pos === "DEF") : p.pos === posFilter);
+    if (posSel.size) list = list.filter((p) => posSel.has(p.pos) || (posSel.has("DST") && (p.pos === "DST" || p.pos === "DEF")));
     if (rookieOnly) list = list.filter((p) => p.rookie);
     if (injOnly) list = list.filter((p) => p.inj);
     if (queueOnly) list = list.filter((p) => queue.has(p.name));
@@ -18901,7 +19082,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     };
     list.sort((a, b) => scoreFor(b) - scoreFor(a));
     return capToLimit(list);
-  }, [players, posFilter, search, showDrafted, sortState, manualSort, strategy, draftedSet, sims, rookieOnly, injOnly, myWindow, rowLimit, targetSurv, queue, queueOnly, avoid, avoidOnly, mySelAdvice]);
+  }, [players, posSel, search, showDrafted, sortState, manualSort, strategy, draftedSet, sims, rookieOnly, injOnly, myWindow, rowLimit, targetSurv, queue, queueOnly, avoid, avoidOnly, mySelAdvice]);
   // Mirror the rendered board into refs so the window-level key handler always reads the CURRENT list
   // without re-binding the listener on every keystroke.
   useEffect(() => { rowsRef.current = rows; if (kbSel >= rows.length) setKbSel(rows.length ? rows.length - 1 : -1); }, [rows]);
@@ -20148,14 +20329,53 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <button className="btn btn-mini" style={{ borderColor: "var(--gold)", color: "var(--gold)" }}
                 onClick={() => openGuide("how")} title="How to use the draft room, power-user tips, and the guided tour">
                 <i className="ti ti-book" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Tips &amp; tour</button>
-              {["ALL", ...POS, ...((cfg.start && cfg.start.DST) > 0 ? ["DST"] : []), ...((cfg.start && cfg.start.K) > 0 ? ["K"] : [])].map((p) => (
-                <button key={p} className="btn btn-mini" style={{ borderColor: posFilter === p ? "var(--gold)" : "var(--line)" }} onClick={() => setPosFilter(p)}>{p}</button>
-              ))}
-              <button className="btn btn-mini" style={{ borderColor: rookieOnly ? "var(--gold)" : "var(--line)", color: rookieOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => setRookieOnly((r) => !r)}>Rookies</button>
+              {/* POSITIONS — one dropdown, tick as many as you like. Seven chips permanently spending a
+                  whole row to answer a question most people ask twice a draft was the wrong trade. */}
+              {(() => {
+                const all = [...POS, ...((cfg.start && cfg.start.DST) > 0 ? ["DST"] : []), ...((cfg.start && cfg.start.K) > 0 ? ["K"] : [])];
+                const label = posSel.size === 0 ? "All positions"
+                  : posSel.size <= 2 ? all.filter((p) => posSel.has(p)).join(" · ")
+                  : `${posSel.size} positions`;
+                const toggle = (p) => setPosSel((cur) => { const n = new Set(cur); n.has(p) ? n.delete(p) : n.add(p); return n; });
+                return (
+                  <div style={{ position: "relative" }}>
+                    <button className="btn btn-mini" onClick={() => setPosMenu((m) => !m)}
+                      style={{ borderColor: posSel.size ? "var(--gold)" : "var(--line)", color: posSel.size ? "var(--gold)" : "var(--ink)" }}
+                      title="Filter the board by position — tick as many as you want.">
+                      <i className="ti ti-filter" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />{label}
+                      <i className="ti ti-chevron-down" style={{ fontSize: 11, marginLeft: 4 }} aria-hidden="true" />
+                    </button>
+                    {posMenu && <div onClick={() => setPosMenu(false)} style={{ position: "fixed", inset: 0, zIndex: 29 }} />}
+                    {posMenu && (
+                      <div className="panel" style={{ position: "absolute", left: 0, top: 30, zIndex: 30, padding: 8, width: 190, boxShadow: "0 10px 30px #000C" }}>
+                        <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 4px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid var(--line)", marginBottom: 3 }}>
+                          <input type="checkbox" checked={posSel.size === 0} onChange={() => setPosSel(new Set())} />
+                          <span style={{ fontWeight: 700 }}>All positions</span>
+                        </label>
+                        {all.map((p) => (
+                          <label key={p} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px", fontSize: 12.5, cursor: "pointer" }}>
+                            <input type="checkbox" checked={posSel.has(p)} onChange={() => toggle(p)} />
+                            <span>{p}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+              {/* LISTS — the four "show me only these" lenses, grouped so they read as alternatives to each
+                  other rather than as more position chips. */}
+              <span className="mut" style={{ fontSize: 9.5, letterSpacing: ".06em", textTransform: "uppercase", alignSelf: "center", marginLeft: 4 }}>Lists</span>
               <button className="btn btn-mini" style={{ borderColor: queueOnly ? "var(--gold)" : "var(--line)", color: queueOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => { setQueueOnly((q) => !q); setAvoidOnly(false); setInjOnly(false); }} title="Show only the players you've starred for this league. Star players with the star next to their name; your queue saves automatically."><i className="ti ti-star" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Priority{queue.size ? ` (${queue.size})` : ""}</button>
-              {avoid.size > 0 && (
-                <button className="btn btn-mini" style={{ borderColor: avoidOnly ? "var(--red)" : "var(--line)", color: avoidOnly ? "var(--red)" : "var(--ink)" }} onClick={() => { setAvoidOnly((a) => !a); setQueueOnly(false); setInjOnly(false); }} title="Show only the players on your do-not-draft list. They are never hidden from the board — this is just a way to review the list."><i className="ti ti-ban" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Do not draft ({avoid.size})</button>
-              )}
+              {/* Always present so the group's shape doesn't shift under you, but inert with nobody on the
+                  list — and it says where to go and put somebody on it rather than just sitting there dead. */}
+              <button className="btn btn-mini" disabled={avoid.size === 0}
+                style={{ borderColor: avoidOnly ? "var(--red)" : "var(--line)", color: avoidOnly ? "var(--red)" : (avoid.size ? "var(--ink)" : "var(--mut)"), opacity: avoid.size ? 1 : 0.55 }}
+                onClick={() => { if (!avoid.size) return; setAvoidOnly((a) => !a); setQueueOnly(false); setInjOnly(false); }}
+                title={avoid.size ? "Show only the players on your do-not-draft list. They are never hidden from the board — this is just a way to review the list." : "Nobody on your do-not-draft list yet — add players from Tools \u2192 Do-not-draft list, or the \u2298 beside any player."}>
+                <i className="ti ti-ban" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Do not draft{avoid.size ? ` (${avoid.size})` : ""}
+              </button>
+              <button className="btn btn-mini" style={{ borderColor: rookieOnly ? "var(--gold)" : "var(--line)", color: rookieOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => { setRookieOnly((r) => !r); }} title="Show only this year's rookies.">Rookies</button>
               {/* WHO'S HURT. One chip, in the row that already holds the other two list filters — no new
                   section, no new tab. Turning it on shows every flagged player with the platform's own
                   note underneath, which is the thing people otherwise leave the app to go and look up. */}
@@ -20190,19 +20410,43 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 <i className={`ti ${showDrafted ? "ti-eye" : "ti-eye-off"}`} style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />{showDrafted ? "All players" : "Available only"}
               </button>
               <button className="btn btn-mini" onClick={() => setMyTeamOpen(true)} title="See your current roster, projected points, and lineup — without leaving the board"><i className="ti ti-users" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Show my team</button>
-              <button className="btn btn-mini" onClick={() => setTrendsOpen(true)} title="See how the board is moving across your other drafts in this format — who's going early, who's sliding, and positional runs by round"><i className="ti ti-chart-histogram" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trends</button>
-              <button className="btn btn-mini" data-tour="myranks" onClick={() => setRanksWarn(true)} title="My Ranks (your personal board → My ADP & Blend) and Platform Ranks (your platform's ADP → the Edge column)"><i className="ti ti-list-numbers" style={{ fontSize: 13 }} aria-hidden="true" /> My ranks</button>
-              <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — who traded which pick to whom. The board updates instantly."><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks</button>
-              <button className="btn btn-mini" onClick={() => setSheetOpen(true)} title="Take this board with you — print it, or download it as a CSV. Uses your current filters, sort and columns, grouped by tier.">
-                <i className="ti ti-file-download" style={{ fontSize: 13 }} aria-hidden="true" /> Cheat sheet
-              </button>
               <button className={`btn btn-mini${showTiers ? " on" : ""}`} onClick={() => setShowTiers((v) => !v)} title="Group the board into value tiers and show how many undrafted players are left in each. The number that matters on the clock isn't who's best — it's how many acceptable players remain before the drop.">
                 <i className="ti ti-layers-intersect" style={{ fontSize: 13 }} aria-hidden="true" /> Tiers
               </button>
-              <button className={`btn btn-mini${dense ? " on" : ""}`} onClick={() => setDense((v) => !v)} title="Compact rows — fits roughly a third more of the board on screen.">
-                <i className="ti ti-baseline-density-medium" style={{ fontSize: 13 }} aria-hidden="true" /> Compact
-              </button>
               <button className="btn btn-mini" data-tour="columns" onClick={() => setColMenu((m) => !m)}><i className="ti ti-columns" style={{ fontSize: 13 }} aria-hidden="true" /> Columns</button>
+              {/* TOOLS — the things that OPEN something, gathered behind one control. They were six loose
+                  buttons sitting beside the view toggles, which made a row of eleven where nothing signalled
+                  that half of them switch a view and half of them open a panel. */}
+              <div style={{ position: "relative", marginLeft: "auto" }}>
+                <button className="btn btn-mini" data-tour="tools" onClick={() => setToolsMenu((m) => !m)}
+                  style={{ borderColor: "var(--gold)", color: "var(--gold)" }}
+                  title="Injury report, ADP trends, your rankings, your do-not-draft list, pick trades and the printable cheat sheet.">
+                  <i className="ti ti-tools" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Tools
+                  <i className="ti ti-chevron-down" style={{ fontSize: 11, marginLeft: 4 }} aria-hidden="true" />
+                </button>
+                {toolsMenu && <div onClick={() => setToolsMenu(false)} style={{ position: "fixed", inset: 0, zIndex: 29 }} />}
+                {toolsMenu && (
+                  <div className="panel" style={{ position: "absolute", right: 0, top: 30, zIndex: 30, padding: 6, width: 262, boxShadow: "0 10px 30px #000C" }}>
+                    {[
+                      ["ti-ambulance", "Injury report", `Every flagged player still on the board, with the latest note${injCount ? ` · ${injCount}` : ""}`, () => setInjReportOpen(true)],
+                      ["ti-chart-histogram", "ADP trends", "Who's climbing, who's sliding, and where the runs are", () => setTrendsOpen(true)],
+                      ["ti-list-numbers", "My ranks", "Your own board, and your platform's ADP", () => setRanksWarn(true)],
+                      ["ti-ban", "Do-not-draft list", `Players you won't take at any price${avoid.size ? ` · ${avoid.size}` : ""}`, () => setAvoidModalOpen(true)],
+                      ["ti-arrows-exchange", "Trade picks", "Record a pick swap — the board updates instantly", () => setTradeModalOpen(true)],
+                      ["ti-file-download", "Cheat sheet", "Print it, or download a CSV of this board", () => setSheetOpen(true)],
+                    ].map(([icon, label, hint, act]) => (
+                      <button key={label} className="btn btn-mini" onClick={() => { setToolsMenu(false); act(); }}
+                        style={{ display: "flex", alignItems: "flex-start", gap: 9, width: "100%", textAlign: "left", border: "none", background: "transparent", padding: "7px 8px", borderRadius: 6 }}>
+                        <i className={`ti ${icon}`} style={{ fontSize: 15, color: "var(--gold)", marginTop: 1, flexShrink: 0 }} aria-hidden="true" />
+                        <span style={{ minWidth: 0 }}>
+                          <span style={{ display: "block", fontSize: 12.5, fontWeight: 700, color: "var(--ink)" }}>{label}</span>
+                          <span className="mut" style={{ display: "block", fontSize: 10.5, lineHeight: 1.35, whiteSpace: "normal" }}>{hint}</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               </div>
               {colMenu && (
                 <div onClick={() => setColMenu(false)} style={{ position: "fixed", inset: 0, zIndex: 29 }} />
@@ -23676,6 +23920,30 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           onApply={(newTrades) => { onSettings({ ...cfg, pickTrading: true, pickTrades: newTrades }); setTradeModalOpen(false); }}
         />;
       })()}
+
+      {/* THE DO-NOT-DRAFT EDITOR, now reachable mid-draft. It only ever lived on the league page, which is
+          the one place you are NOT when somebody's news breaks thirty seconds before your pick. */}
+      {avoidModalOpen && (
+        <AvoidListModal
+          league={league} allLeagues={allLeagues} user={user}
+          onSave={(arr, allowArr) => {
+            setAvoid(() => {
+              const allow = new Set(allowArr || []);
+              const out = new Set();
+              readMasterAvoid(user).forEach((n) => { if (!allow.has(n)) out.add(n); });
+              (arr || []).forEach((n) => out.add(n));
+              return out;
+            });
+            try { localStorage.setItem(avoidKey, JSON.stringify(arr || [])); } catch {}
+            try { if (typeof onSaveAvoid === "function") onSaveAvoid(arr || [], allowArr || []); } catch {}
+          }}
+          onSaveMaster={(arr) => { try { if (typeof onUpdate === "function") onUpdate({ avoidMaster: arr }); } catch {} }}
+          onClose={() => setAvoidModalOpen(false)}
+        />
+      )}
+
+      {injReportOpen && <InjuryReport players={players} draftedSet={draftedSet} onClose={() => setInjReportOpen(false)}
+        onAvoid={(name) => toggleAvoid(name)} avoid={avoid} />}
 
       {briefOpen && briefing && (
         <div className="modalbg" onClick={() => setBriefOpen(false)}>
