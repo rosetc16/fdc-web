@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.27a";
+const BUILD_TAG = "2026.07.27b";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -669,7 +669,7 @@ const OUTLOOKS = {
   "Malik Nabers":{p:"Sensational young WR1 with true alpha volume; the QB situation caps the ceiling until the offense stabilizes. Trending up."},
   "Ashton Jeanty":{p:"Rookie phenom handed an immediate workhorse role. Team invested in the line \u2014 high-volume rookie RB with breakout written all over it."},
   "Brian Thomas Jr.":{p:"Ascending year-two breakout candidate with a commanding target share."},
-  "Christian McCaffrey":{p:"Highest-ceiling back when healthy; coming off an injury-marred season, so the profile carries more risk than the name."},
+  "Christian McCaffrey":{p:"Highest-ceiling back in the game when he is on the field; the career workload and age are what carry the risk, not the name."},
   "Drake London":{p:"Ascending WR1 with a young QB growing around him; target and red-zone share trending up."},
   "Brock Bowers":{p:"Generational TE coming off a record rookie year. Target share rivals a WR1 \u2014 a true difference-maker, especially in TE-premium."},
   "Derrick Henry":{p:"Defied age again behind a strong line. Volume and TDs remain; the age cliff is the looming question being priced in."},
@@ -1338,9 +1338,19 @@ export function poolHasPos(pos) {
 
 // Build engine structures from the backend player-pack response. Keyed by player name (the engine's
 // key). We keep only players with a usable position and (ADP or projection), already filtered server-side.
+// WHERE THE ADP NUMBERS ACTUALLY CAME FROM. The backend scans a chain of nearby formats and uses whichever
+// has the most real drafts behind it, then reports which one it settled on — and the client has always
+// thrown that away. So the Trends panel could show "your format's movement" when the movement was measured
+// in a DIFFERENT format, with nothing to say so. Kept module-level beside RAW because it describes the pool.
+export let ADP_META = { requested: null, used: null, chain: [] };
 export function applyLivePack(pack, isReapply) {
   if (!pack || !Array.isArray(pack.players) || pack.players.length === 0) return false;
   LAST_PACK = pack; // remember it so a later trust-flag change can re-derive the board
+  ADP_META = {
+    requested: pack.requestedFormat || pack.format || null,
+    used: pack.harvestFormatUsed || null,
+    chain: Array.isArray(pack.harvestChainTried) ? pack.harvestChainTried : [],
+  };
   const raw = [], stats = {}, meta = {};
   const seen = new Set();
   // Map Sleeper's granular positions into the engine's known buckets. Anything we can't place
@@ -1744,25 +1754,22 @@ const INJURY_STATUS = {
 };
 // Per-player injury detail. status -> tier above; note -> 1-3 sentence description; back -> optional return-by string.
 // In production these stream from the injury wire (status, designation, est. return) and refresh daily.
-const INJURY_DETAIL = {
-  "Justin Jefferson": { status: "questionable", note: "Tweaked a hamstring in camp and was limited late in the preseason. Expected to play Week 1 but worth monitoring the practice reports.", back: "Week 1" },
-  "Puka Nacua": { status: "dtd", note: "Minor knee soreness managed through camp. No structural concern — treated as routine maintenance.", back: "Week 1" },
-  "Christian McCaffrey": { status: "questionable", note: "Coming off the Achilles/calf issues that wrecked last season. Looks healthy now, but the workload and age make it a lingering risk.", back: "Week 1" },
-  "Kenneth Walker III": { status: "dtd", note: "Recurring ankle that flares up; played through it before. Hasn't missed significant time but limits some practices.", back: "Week 1" },
-  "George Kittle": { status: "questionable", note: "Chronic hamstring/core maintenance — the kind that costs a game or two most seasons. Elite when on the field.", back: "Week 1" },
-  "Rashee Rice": { status: "suspended", note: "Facing a multi-game suspension tied to an offseason legal matter, on top of returning from a knee injury. Treat early-season availability as a real question.", back: "Suspended — est. Week 7" },
-  "Jonathon Brooks": { status: "pup", note: "Recovering from a torn ACL; opened camp on the PUP list. A redshirt-style timeline is realistic before he's a usable contributor.", back: "PUP — est. Week 5" },
-  "Aaron Jones": { status: "dtd", note: "Hamstring and quad issues that pop up periodically. Effective when healthy, but the injury history is extensive for his age.", back: "Week 1" },
-  "Chris Olave": { status: "questionable", note: "Multiple concussions over the past two seasons. No current absence, but the history adds risk to the projection.", back: "Week 1" },
-  "Dak Prescott": { status: "dtd", note: "Returning from a season-ending hamstring avulsion. Reportedly full-go, but it's a notable soft-tissue injury to track early.", back: "Week 1" },
-  "Stefon Diggs": { status: "doubtful", note: "Working back from a torn ACL suffered midseason. Likely eased in slowly; early-season role and explosiveness are uncertain.", back: "est. Week 3" },
-  "Jayden Reed": { status: "questionable", note: "Foot/ankle soreness limited him late in camp. Trending toward playing but not a lock for a full snap share Week 1.", back: "Week 1" },
-  "Cooper Kupp": { status: "questionable", note: "Perennial soft-tissue risk (ankle, hamstring) that has cost games each of the last few seasons. Productive when available.", back: "Week 1" },
-  "Michael Penix Jr.": { status: "dtd", note: "Minor shoulder/throwing-arm maintenance from camp. No expected missed time.", back: "Week 1" },
-  "Mike Gesicki": { status: "dtd", note: "Minor knee tendinitis being managed. Not expected to affect availability.", back: "Week 1" },
-  "Zamir White": { status: "questionable", note: "Quad/groin issues that lingered through camp and into the opener window. Backfield role is contingent on health.", back: "Week 1" },
-  "Ty Chandler": { status: "dtd", note: "Minor ankle tweak. Depth back whose value hinges on others' health more than his own.", back: "Week 1" },
-};
+// ⚠ THE CURATED INJURY TABLE IS GONE, DELIBERATELY.
+//
+// It used to hold hand-written prose for ~17 players — "Coming off the Achilles/calf issues that wrecked
+// last season", return-date estimates, severity judgements. Every line was written by a person on one day
+// and then asserted forever. Trey caught it: McCaffrey was carrying a note about an injury-marred season
+// he did not have, next to a real current injury the note knew nothing about.
+//
+// That is the worst failure mode available to us. A missing note costs a user thirty seconds on another
+// site. A confidently WRONG note about a real player, printed next to accurate numbers, gets believed —
+// and it quietly poisons trust in the numbers beside it. There is no version of this table that stays
+// true without somebody editing it every morning, so it does not get to exist.
+//
+// Everything shown now is SOURCED: the designation, body part, note and date come from the platform's own
+// player feed. When we have nothing, we say we have nothing.
+const INJURY_DETAIL = {};
+
 // Generic fallback when a flagged player has no specific detail.
 const INJURY_INFO = {
   major: { color: "#b71c1c", label: "Concerning", text: "A serious or lingering injury that could cost significant time or limit the role — discount the projection and treat availability as a real risk." },
@@ -1791,41 +1798,30 @@ function injAgo(ms) {
 // platform already sends us the body part, a note and a date on every sync; when we have that, it wins.
 function injuryView(p) {
   if (!p || !p.inj) return null;
-  const live = (p.injPart || p.injNote) ? {
-    part: p.injPart || null,
-    note: [p.injPart, p.injNote].filter(Boolean).join(" — ") || null,
-    ago: injAgo(p.injAt),
-  } : null;
-  const d = INJURY_DETAIL[p.name];
-  if (live) {
-    // Keep the curated colour/abbreviation where we have one — that judgement (how bad is this really)
-    // is the part a feed can't supply — but the WORDS come from the live feed.
-    const st = (d && INJURY_STATUS[d.status]) ? INJURY_STATUS[d.status] : null;
-    const tier = st || (() => {
-      const map = { questionable: "minor", probable: "minor", doubtful: "major", out: "major", ir: "major", pup: "major", sus: "major", suspended: "major", cov: "minor", dnr: "major", na: "major" };
-      const key = INJURY_INFO[p.inj] ? p.inj : (map[String(p.inj).toLowerCase()] || "minor");
-      const g = INJURY_INFO[key] || INJURY_INFO.minor;
-      return { color: g.color, abbr: key === "major" ? "INJ" : (String(p.inj).slice(0, 1).toUpperCase() || "Q"), label: g.label };
-    })();
-    return {
-      color: tier.color, abbr: tier.abbr, label: tier.label,
-      note: live.note, ago: live.ago, part: live.part, live: true,
-      back: d ? d.back : null,
-    };
-  }
-  if (d && INJURY_STATUS[d.status]) { const st = INJURY_STATUS[d.status]; return { color: st.color, abbr: st.abbr, label: st.label, note: d.note, back: d.back }; }
-  // Map live Sleeper injury statuses (e.g. "Questionable","Doubtful","Out","IR","PUP","Sus") to our tiers.
-  const sleeperToTier = {
-    questionable: "minor", probable: "minor", doubtful: "major", out: "major",
-    ir: "major", pup: "major", sus: "major", suspended: "major", cov: "minor", dnr: "major", na: "major",
+  const tierOf = () => {
+    const map = { questionable: "minor", probable: "minor", doubtful: "major", out: "major", ir: "major",
+      pup: "major", sus: "major", suspended: "major", susp: "major", cov: "minor", dnr: "major", na: "major", dtd: "minor" };
+    const key = INJURY_INFO[p.inj] ? p.inj : (map[String(p.inj).toLowerCase()] || "minor");
+    const g = INJURY_INFO[key] || INJURY_INFO.minor;
+    // The badge shows the platform's OWN designation where it is short enough to read (Q, OUT, IR, PUP),
+    // rather than a word we invented for it.
+    const raw = String(p.inj).toUpperCase();
+    const abbr = raw.length <= 4 ? raw : (key === "major" ? "INJ" : raw.slice(0, 1));
+    return { color: g.color, abbr, label: g.label, generic: g.text };
   };
-  let key = p.inj;
-  if (!INJURY_INFO[key]) key = sleeperToTier[String(p.inj).toLowerCase()] || "minor";
-  const g = INJURY_INFO[key] || INJURY_INFO.minor;
-  if (!g) return null; // ultimate safety: no badge rather than a crash
-  const major = key === "major";
-  const abbr = major ? "INJ" : (String(p.inj).slice(0, 1).toUpperCase() || "Q");
-  return { color: g.color, abbr, label: g.label, note: g.text, back: null };
+  const t = tierOf();
+  const live = (p.injPart || p.injNote) ? [p.injPart, p.injNote].filter(Boolean).join(" — ") : null;
+  return {
+    color: t.color,
+    abbr: t.abbr,
+    label: t.label,
+    // A sourced note, or nothing. `live` false is what every surface keys on to say so out loud.
+    note: live,
+    ago: injAgo(p.injAt),
+    part: p.injPart || null,
+    live: !!live,
+    back: null,                 // return-date estimates were invented; we don't have a source for them
+  };
 }
 
 /* ---------------- engine (cfg-threaded) ---------------- */
@@ -16493,9 +16489,34 @@ function InDraftTrends({ cfg, players, draftedSet, allLeagues, allFunMocks, onCl
                 <div className="disp" style={{ fontSize: 12.5, fontWeight: 700 }}>Market movement</div>
                 <span className="mut" style={{ fontSize: 10 }}>last 3 weeks vs the 3 before</span>
               </div>
-              <div className="mut" style={{ fontSize: 10.5, marginBottom: 8, lineHeight: 1.4 }}>
-                Across every draft we read, not just yours. Still on your board.
-              </div>
+              {/* SAY WHERE THE NUMBERS CAME FROM. The backend falls back to whichever nearby format has the
+                  most real drafts behind it, so "trending in your format" can quietly be trending in a
+                  neighbouring one. If we're not measuring YOUR format, that is the first thing to say. */}
+              {(() => {
+                const exact = ADP_META.used && ADP_META.requested && ADP_META.used === ADP_META.requested;
+                const n = (ADP_META.chain || []).find((c) => c.format === ADP_META.used);
+                const drafts = n && n.rows ? n.rows : null;
+                if (!ADP_META.used) {
+                  return (
+                    <div className="mut" style={{ fontSize: 10.5, marginBottom: 8, lineHeight: 1.4 }}>
+                      Measured across real drafts we read. Still on your board.
+                    </div>
+                  );
+                }
+                return (
+                  <div style={{ fontSize: 10.5, marginBottom: 8, lineHeight: 1.45 }}>
+                    <span className="mut">
+                      From real Sleeper drafts{drafts ? ` · ${drafts} players priced` : ""}. Still on your board.
+                    </span>
+                    {!exact && (
+                      <div style={{ color: "var(--gold)", marginTop: 3 }}>
+                        <i className="ti ti-alert-triangle" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />
+                        Measured in <b>{ADP_META.used}</b>, not your exact format ({ADP_META.requested}) — not enough drafts there yet, so treat the sizes as directional.
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
               {risers.length > 0 && <>
                 <div className="disp" style={{ fontSize: 9.5, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--green)", margin: "6px 0 2px" }}>Going earlier</div>
                 {risers.map((p) => <Row key={p.id} p={p} />)}
@@ -20764,7 +20785,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             <span onClick={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: isDynastyCfg(cfg), run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: isDynastyCfg(cfg), run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseLeave={hideTip} className="pnamewrap" style={{ cursor: "help", whiteSpace: "nowrap" }}>
                               <PosName p={p} /> <span className="mut pteam">{p.team}</span>
                             </span>
-                            {injInfo && <span onClick={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note }])} onMouseEnter={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note }])} onMouseLeave={hideTip}
+                            {injInfo && <span onClick={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note || `${injInfo.generic || "Flagged by your platform."} No detail has come through from your platform yet — check its injury report before you rely on this.` }])} onMouseEnter={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note || `${injInfo.generic || "Flagged by your platform."} No detail has come through from your platform yet — check its injury report before you rely on this.` }])} onMouseLeave={hideTip}
                               style={{ flexShrink: 0, height: 14, borderRadius: 3, background: injInfo.color, color: "#fff", fontSize: 8.5, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "help", padding: "0 4px", letterSpacing: ".02em" }} title="">{injInfo.abbr}</span>}
                             {avoided && !gone && <span className="itag" style={{ flexShrink: 0, fontSize: 8.5, fontWeight: 800, letterSpacing: ".03em", color: "var(--red)", border: "1px solid var(--red)", borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>DO NOT DRAFT</span>}
                             {p.rookie && <span style={{ flexShrink: 0, fontSize: 9, color: "var(--gold)", border: "1px solid var(--gold)", borderRadius: 3, padding: "0 3px" }}>R</span>}
@@ -23827,8 +23848,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         </div>
       ); })()}
       {myTeamOpen && (() => {
-        const currentRoster = picks.map((pk, o) => (teamAt(o) === userIdx ? players[pk] : null)).filter(Boolean);
-        (noCostByTeam[userIdx] || []).forEach((id) => { const p = players[id]; if (p && !currentRoster.includes(p)) currentRoster.push(p); });
+        // ⭐ USE rostersByTeam, don't re-derive. A roster lives in more channels than `picks`: no-cost
+        // keepers, PICK-COST keepers held against a future round (forcedAhead), and existing platform
+        // holdings. This panel was assembling its own from picks + no-cost keepers only, so anyone whose
+        // keeper costs a later-round pick simply wasn't on his own team — the players you are most certain
+        // about were the ones missing. rostersByTeam is the single place all four channels come together.
+        const currentRoster = (rostersByTeam[userIdx] || []).slice();
         const projectedRoster = (proj && proj.rosters && proj.rosters[userIdx]) ? proj.rosters[userIdx] : currentRoster;
         const usingProjected = myTeamView === "projected";
         const roster = usingProjected ? projectedRoster : currentRoster;
