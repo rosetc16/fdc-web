@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.27b";
+const BUILD_TAG = "2026.07.27c";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -15812,7 +15812,7 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
             <div className="panel" style={{ padding: 16, gridColumn: "1 / -1" }}>
               <div className="disp" style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Data jobs — ADP & projections</div>
               <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 10 }}>Pull the latest Sleeper ADP and projections into the board. <b style={{ color: "var(--ink)" }}>Update Sleeper ADP</b> is the fast one — it fetches Sleeper's published ADP for every player and recomputes the board in seconds (run this if ADP looks wrong). <b style={{ color: "var(--ink)" }}>Full refresh</b> also re-crawls real drafts and can take a minute.</div>
-              <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 10 }}><b style={{ color: "var(--green)" }}>These run automatically</b> — a full refresh at 4 AM, a lighter ADP refresh midday, and a harvest pass every few hours. You normally never need to touch them. The buttons below are just a manual override if you want to force an update right now.</div>
+              <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 10 }}><b style={{ color: "var(--green)" }}>These run automatically</b> — a full refresh at 4 AM (which now includes injury detail), a lighter ADP refresh midday, and a harvest pass every few hours. You normally never need to touch them. The buttons below are just a manual override if you want to force an update right now — injuries being the one worth pressing when news breaks during the day.</div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                 <button className="btn btn-gold" disabled={busy} onClick={() => runJob("adp")}>
                   <i className={`ti ti-${runningJob === "adp" ? "loader-2 spin" : "refresh"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
@@ -15826,9 +15826,13 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
                   <i className={`ti ti-${runningJob === "byes" ? "loader-2 spin" : "calendar-event"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
                   {runningJob === "byes" ? "Working…" : "Sync bye weeks"}
                 </button>
-                <button className="btn" disabled={busy} onClick={() => runJob("news")} title="Pull player news and injury blurbs from ESPN into the board. This job has never run in production — watch the result before putting it on the nightly schedule.">
-                  <i className={`ti ti-${runningJob === "news" ? "loader-2 spin" : "ambulance"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
-                  {runningJob === "news" ? "Working…" : "Pull injury news"}
+                {/* Runs the INJURIES job — the one that merges ESPN's team injury reports over Sleeper's
+                    designations and fills the detail the board shows. It is already in the nightly refresh;
+                    this is the manual override for when news breaks during the day. (It used to point at
+                    the older ESPN-headlines job, which is why clicking it did nothing useful.) */}
+                <button className="btn" disabled={busy} onClick={() => runJob("injuries")} title="Pull the latest injury designations and detail (ESPN team reports merged over your platform's status). This also runs automatically in the nightly refresh — use this when something breaks mid-day.">
+                  <i className={`ti ti-${runningJob === "injuries" ? "loader-2 spin" : "ambulance"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
+                  {runningJob === "injuries" ? "Working…" : "Pull injury detail"}
                 </button>
                 {jobProgress && <span style={{ fontSize: 12, color: jobProgress.startsWith("Done") ? "var(--green)" : "var(--gold)", fontWeight: 600 }}>{jobProgress}</span>}
               </div>
