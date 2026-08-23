@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.26a";
+const BUILD_TAG = "2026.07.26b";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1491,6 +1491,12 @@ export function applyLivePack(pack, isReapply) {
       consensus: useRealAdp ? p.adp : null,   // only show a "consensus" number when it's real, trusted ADP
       rookie: !!p.rookie,
       inj: p.inj || null,
+      // The live injury detail the platform already knows. Static curated notes go stale within days —
+      // this is the part that stays true, and it is why a user shouldn't have to open another site.
+      injPart: p.injPart || null,
+      injNote: p.injNote || null,
+      injSince: p.injSince || null,
+      injAt: p.injAt || null,
       floor: p.floor != null ? p.floor : null,
       ceil: p.ceil != null ? p.ceil : null,
       sid: p.id != null ? String(p.id) : null, // Sleeper player_id → used to fetch the player's photo
@@ -1757,10 +1763,51 @@ const INJURY_INFO = {
   major: { color: "#b71c1c", label: "Concerning", text: "A serious or lingering injury that could cost significant time or limit the role — discount the projection and treat availability as a real risk." },
   minor: { color: "#e57373", label: "Minor", text: "A minor or short-term issue (tweak, maintenance, or coming off a small injury). Worth noting but unlikely to derail the season." },
 };
-// Resolve the full badge view for a player: prefers specific detail, falls back to the generic tier.
+// How long ago the platform last touched this player's news, in words. "3 days ago" is the difference
+// between a note you can act on and a note you have to go and verify somewhere else.
+function injAgo(ms) {
+  if (!ms) return null;
+  const t = Number(ms) < 1e12 ? Number(ms) * 1000 : Number(ms);   // Sleeper's news_updated is sometimes seconds
+  const d = Date.now() - t;
+  if (!(d >= 0) || !Number.isFinite(d)) return null;
+  const mins = Math.floor(d / 60000);
+  if (mins < 60) return mins <= 1 ? "just now" : `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
+  return null;                                     // older than a month isn't "news" any more
+}
+
+// Resolve the full badge view for a player: LIVE detail first, then the curated table, then the tier.
+//
+// The curated INJURY_DETAIL table below is hand-written and frozen at build time — accurate the day it
+// ships and wrong a fortnight later, which is exactly the "you have to go and dig for it" problem. The
+// platform already sends us the body part, a note and a date on every sync; when we have that, it wins.
 function injuryView(p) {
   if (!p || !p.inj) return null;
+  const live = (p.injPart || p.injNote) ? {
+    part: p.injPart || null,
+    note: [p.injPart, p.injNote].filter(Boolean).join(" — ") || null,
+    ago: injAgo(p.injAt),
+  } : null;
   const d = INJURY_DETAIL[p.name];
+  if (live) {
+    // Keep the curated colour/abbreviation where we have one — that judgement (how bad is this really)
+    // is the part a feed can't supply — but the WORDS come from the live feed.
+    const st = (d && INJURY_STATUS[d.status]) ? INJURY_STATUS[d.status] : null;
+    const tier = st || (() => {
+      const map = { questionable: "minor", probable: "minor", doubtful: "major", out: "major", ir: "major", pup: "major", sus: "major", suspended: "major", cov: "minor", dnr: "major", na: "major" };
+      const key = INJURY_INFO[p.inj] ? p.inj : (map[String(p.inj).toLowerCase()] || "minor");
+      const g = INJURY_INFO[key] || INJURY_INFO.minor;
+      return { color: g.color, abbr: key === "major" ? "INJ" : (String(p.inj).slice(0, 1).toUpperCase() || "Q"), label: g.label };
+    })();
+    return {
+      color: tier.color, abbr: tier.abbr, label: tier.label,
+      note: live.note, ago: live.ago, part: live.part, live: true,
+      back: d ? d.back : null,
+    };
+  }
   if (d && INJURY_STATUS[d.status]) { const st = INJURY_STATUS[d.status]; return { color: st.color, abbr: st.abbr, label: st.label, note: d.note, back: d.back }; }
   // Map live Sleeper injury statuses (e.g. "Questionable","Doubtful","Out","IR","PUP","Sus") to our tiers.
   const sleeperToTier = {
@@ -2197,6 +2244,7 @@ function buildPlayers(cfg) {
       id: i, name: r[0], pos: r[1], team: r[2], age: r[3], bye: r[4], adp0: r[5], stats, pts,
       floor: Math.round(pts * floorR), ceil: Math.round(pts * ceilR),
       consensus0: meta.consensus != null ? meta.consensus : r[5], rookie: !!meta.rookie, inj: meta.inj || null,
+      injPart: meta.injPart || null, injNote: meta.injNote || null, injSince: meta.injSince || null, injAt: meta.injAt || null,
       sid: meta.sid || null,
     };
   });
@@ -15670,6 +15718,10 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
                   <i className={`ti ti-${runningJob === "byes" ? "loader-2 spin" : "calendar-event"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
                   {runningJob === "byes" ? "Working…" : "Sync bye weeks"}
                 </button>
+                <button className="btn" disabled={busy} onClick={() => runJob("news")} title="Pull player news and injury blurbs from ESPN into the board. This job has never run in production — watch the result before putting it on the nightly schedule.">
+                  <i className={`ti ti-${runningJob === "news" ? "loader-2 spin" : "ambulance"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
+                  {runningJob === "news" ? "Working…" : "Pull injury news"}
+                </button>
                 {jobProgress && <span style={{ fontSize: 12, color: jobProgress.startsWith("Done") ? "var(--green)" : "var(--gold)", fontWeight: 600 }}>{jobProgress}</span>}
               </div>
               {jobResult && (
@@ -16691,6 +16743,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const avoidKey = useMemo(() => queueKey.replace("fdc-queue-", "fdc-avoid-"), [queueKey]);
   const [avoid, setAvoid] = useState(() => new Set());
   const [avoidOnly, setAvoidOnly] = useState(false);
+  // "Who's hurt?" as a FILTER, not a destination. Deliberately not a new hub section: this is a question
+  // you ask a handful of times during a draft, on the board you are already looking at.
+  const [injOnly, setInjOnly] = useState(false);
   // One reader shared with the standalone editor on the league page, so a list built there is the same
   // list the board honours. `league.avoidList` is the dep that matters: edit the list, come back into the
   // draft room, and the board must already reflect it.
@@ -16993,6 +17048,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     (forcedAhead || []).forEach((f) => s.add(f.id));
     return s;
   }, [picks, cfg, forcedAhead]);
+  // Count only players still ON the board. "Injured (34)" is a reason to look; counting men who were
+  // drafted two rounds ago is just a number that never goes down.
+  const injCount = useMemo(() => (players || []).reduce((n, p) => n + ((p.inj && !draftedSet.has(p.id)) ? 1 : 0), 0), [players, draftedSet]);
   // ADP CALIBRATION SNAPSHOT (diagnostic only): each render, record the current pick number and the ADPs
   // of the nearest available players, so the debug badge can show whether a real board is systematically
   // off (the "pick 77, nearest ADP 94" report). If the nearest-available ADPs sit far above the pick
@@ -18774,6 +18832,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     };
     if (posFilter !== "ALL") list = list.filter((p) => posFilter === "DST" ? (p.pos === "DST" || p.pos === "DEF") : p.pos === posFilter);
     if (rookieOnly) list = list.filter((p) => p.rookie);
+    if (injOnly) list = list.filter((p) => p.inj);
     if (queueOnly) list = list.filter((p) => queue.has(p.name));
     // A REVIEW filter, not a hide. Nothing anywhere else removes an avoided player from the board.
     if (avoidOnly) list = list.filter((p) => avoid.has(p.name));
@@ -18842,7 +18901,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     };
     list.sort((a, b) => scoreFor(b) - scoreFor(a));
     return capToLimit(list);
-  }, [players, posFilter, search, showDrafted, sortState, manualSort, strategy, draftedSet, sims, rookieOnly, myWindow, rowLimit, targetSurv, queue, queueOnly, avoid, avoidOnly, mySelAdvice]);
+  }, [players, posFilter, search, showDrafted, sortState, manualSort, strategy, draftedSet, sims, rookieOnly, injOnly, myWindow, rowLimit, targetSurv, queue, queueOnly, avoid, avoidOnly, mySelAdvice]);
   // Mirror the rendered board into refs so the window-level key handler always reads the CURRENT list
   // without re-binding the listener on every keystroke.
   useEffect(() => { rowsRef.current = rows; if (kbSel >= rows.length) setKbSel(rows.length ? rows.length - 1 : -1); }, [rows]);
@@ -20093,10 +20152,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 <button key={p} className="btn btn-mini" style={{ borderColor: posFilter === p ? "var(--gold)" : "var(--line)" }} onClick={() => setPosFilter(p)}>{p}</button>
               ))}
               <button className="btn btn-mini" style={{ borderColor: rookieOnly ? "var(--gold)" : "var(--line)", color: rookieOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => setRookieOnly((r) => !r)}>Rookies</button>
-              <button className="btn btn-mini" style={{ borderColor: queueOnly ? "var(--gold)" : "var(--line)", color: queueOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => { setQueueOnly((q) => !q); setAvoidOnly(false); }} title="Show only the players you've starred for this league. Star players with the star next to their name; your queue saves automatically."><i className="ti ti-star" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Priority{queue.size ? ` (${queue.size})` : ""}</button>
+              <button className="btn btn-mini" style={{ borderColor: queueOnly ? "var(--gold)" : "var(--line)", color: queueOnly ? "var(--gold)" : "var(--ink)" }} onClick={() => { setQueueOnly((q) => !q); setAvoidOnly(false); setInjOnly(false); }} title="Show only the players you've starred for this league. Star players with the star next to their name; your queue saves automatically."><i className="ti ti-star" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Priority{queue.size ? ` (${queue.size})` : ""}</button>
               {avoid.size > 0 && (
-                <button className="btn btn-mini" style={{ borderColor: avoidOnly ? "var(--red)" : "var(--line)", color: avoidOnly ? "var(--red)" : "var(--ink)" }} onClick={() => { setAvoidOnly((a) => !a); setQueueOnly(false); }} title="Show only the players on your do-not-draft list. They are never hidden from the board — this is just a way to review the list."><i className="ti ti-ban" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Do not draft ({avoid.size})</button>
+                <button className="btn btn-mini" style={{ borderColor: avoidOnly ? "var(--red)" : "var(--line)", color: avoidOnly ? "var(--red)" : "var(--ink)" }} onClick={() => { setAvoidOnly((a) => !a); setQueueOnly(false); setInjOnly(false); }} title="Show only the players on your do-not-draft list. They are never hidden from the board — this is just a way to review the list."><i className="ti ti-ban" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Do not draft ({avoid.size})</button>
               )}
+              {/* WHO'S HURT. One chip, in the row that already holds the other two list filters — no new
+                  section, no new tab. Turning it on shows every flagged player with the platform's own
+                  note underneath, which is the thing people otherwise leave the app to go and look up. */}
+              <button className="btn btn-mini" style={{ borderColor: injOnly ? "var(--red)" : "var(--line)", color: injOnly ? "var(--red)" : "var(--ink)" }} onClick={() => { setInjOnly((v) => !v); setQueueOnly(false); setAvoidOnly(false); }} title="Show only players carrying an injury designation, each with the latest note from your platform and when it was last updated."><i className="ti ti-ambulance" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Injured{injCount ? ` (${injCount})` : ""}</button>
               <div data-tour="strategy" style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--line2)", borderRadius: 8, padding: "3px 8px 3px 10px", background: "var(--panel2)" }} title="Strategy lens — reshapes the board AND your advice toward an approach. Balanced/ADP follow the market; the others tilt toward value, upside, youth, your build, or a position.">
                 <i className="ti ti-adjustments" style={{ fontSize: 13, color: "var(--gold)" }} aria-hidden="true" />
                 <span className="mut" style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".03em" }}>STRATEGY</span>
@@ -20418,6 +20481,22 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           </tr>
                         );
                       }
+                      // THE INJURY LINE. Only when the Injured filter is on — the rest of the time this is
+                      // noise on a board that is already dense. With the filter on, the board IS the injury
+                      // report: designation, body part, the platform's own words, and when it last changed.
+                      // That last part matters most; a note with no date is a note you have to go and verify.
+                      const injLine = injOnly && injInfo && (injInfo.note || injInfo.ago) ? (
+                        <tr key={`inj-${p.id}`} className="injline">
+                          <td colSpan={nCols} style={{ padding: 0 }}>
+                            <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "3px 10px 6px 34px", flexWrap: "wrap", borderBottom: "1px solid var(--line)" }}>
+                              <b style={{ fontSize: 10, letterSpacing: ".05em", color: injInfo.color, flexShrink: 0 }}>{String(p.inj).toUpperCase()}</b>
+                              {injInfo.note && <span style={{ fontSize: 11.5, color: "var(--ink)", opacity: .9 }}>{injInfo.note}</span>}
+                              {injInfo.ago && <span className="mut" style={{ fontSize: 10.5 }}>· updated {injInfo.ago}</span>}
+                              {!injInfo.live && <span className="mut" style={{ fontSize: 10, opacity: .7 }}>· no live note from your platform</span>}
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null;
                       outRows.push(
                       <tr key={p.id} ref={isKb ? kbRowRef : undefined} className={`${gone ? "struck" : ""}${isRec ? " recrow" : ""}${isKb ? " kbrow" : ""}`.trim()}>
                         <td className="frz" style={{ borderLeft: `3px solid ${gone ? "transparent" : (avoided ? "var(--red)" : (POS_COLOR[p.pos] || "transparent"))}` }}>
@@ -20475,6 +20554,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           );
                         }
                       }
+                      if (injLine) outRows.push(injLine);
                     });
                     return outRows;
                   })()}
