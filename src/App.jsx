@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from "react";
-import { api, hasBackend, setToken } from "./api.js";
+import { api, hasBackend, setToken, syncHealth } from "./api.js";
 
 // Lightweight SECTION-level error boundary. The app has a full-page boundary at the root, but a render error
 // in one panel (e.g. a rare data edge case in the draft recap/superlatives) shouldn't take down the entire
@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.24a";
+const BUILD_TAG = "2026.07.25a";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5679,6 +5679,52 @@ function FreeAccessNotice({ user, biz, onGetPass, onDemo, onReport, onClose }) {
   );
 }
 
+// NOT SYNCING — the one thing a user has to be told.
+//
+// Every pick is written to this device before anything touches the network, so a dead backend costs a
+// drafter nothing on the night. What it does cost is the backup: while the server is unreachable, the
+// browser holds the ONLY copy of the draft. Clear the site data, switch laptops, or drop the tab, and it's
+// gone. That is a fact the user can act on — finish on this device, don't clear anything — but only if
+// someone tells them, so this says it plainly and then gets out of the way.
+//
+// Deliberately quiet: it appears only after a state mirror actually fails, only for signed-in accounts
+// that HAVE a backend to sync to, and it clears itself the moment a write succeeds. No spinner, no retry
+// button — the app is already retrying on every change, and a button that says "try again" when something
+// is already trying again is just an invitation to press it repeatedly.
+function SyncStatus({ user }) {
+  const [ok, setOk] = useState(true);
+  const [dismissed, setDismissed] = useState(false);
+  useEffect(() => syncHealth.subscribe((v) => { setOk(v); if (v) setDismissed(false); }), []);
+  if (!hasBackend || !user || !user.email || ok) return null;
+  if (dismissed) {
+    // Collapsed to a dot once acknowledged: still visibly not-synced, no longer in the way.
+    return (
+      <button onClick={() => setDismissed(false)} title="Not syncing — your draft is saved on this device only"
+        style={{ position: "fixed", right: 14, bottom: 14, zIndex: 92, width: 30, height: 30, borderRadius: 99, cursor: "pointer",
+          background: "var(--panel)", border: "1px solid var(--blue)", color: "var(--blue)", fontFamily: "inherit", boxShadow: "0 4px 14px #0007" }}>
+        <i className="ti ti-cloud-off" style={{ fontSize: 15 }} aria-hidden="true" />
+      </button>
+    );
+  }
+  return (
+    <div role="status" style={{ position: "fixed", right: 14, bottom: 14, zIndex: 92, maxWidth: 330,
+      display: "flex", alignItems: "flex-start", gap: 9, background: "var(--panel)", border: "1px solid var(--blue)",
+      borderRadius: 12, padding: "11px 13px", boxShadow: "0 6px 20px #0008" }}>
+      <i className="ti ti-cloud-off" style={{ fontSize: 16, color: "var(--blue)", marginTop: 1 }} aria-hidden="true" />
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink)" }}>Not syncing right now</div>
+        <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.45, marginTop: 2 }}>
+          Keep drafting — every pick is saved on this device. It'll back up on its own when the connection returns.
+        </div>
+      </div>
+      <button onClick={() => setDismissed(true)} title="Hide" className="btn btn-mini"
+        style={{ flexShrink: 0, padding: "2px 6px", fontSize: 11 }}>
+        <i className="ti ti-x" style={{ fontSize: 12 }} aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
 // Floating "Report a bug" button shown on every page, plus its modal. Reuses the app's submitFeedback
 // pipeline (backend inbox → Admin window). Beta users need an obvious, always-present way to flag issues;
 // burying it in a Help page loses reports. Bottom-left so it never collides with the top-right build badge.
@@ -6821,6 +6867,8 @@ export default function App() {
           top-right version badge). Opens a lightweight modal that reuses the existing submitFeedback
           pipeline (→ backend inbox → Admin window). Captures the submitter's email so you can reply. */}
       <div data-chrome="1"><GlobalBugReport user={user} onSubmit={submitFeedback} /></div>
+      {/* Tells you when the browser is the only copy of your draft. Nothing else does. */}
+      <div data-chrome="1"><SyncStatus user={user} /></div>
       {/* Last line of defence against a blank page (see the watchdog above). Never navigates on its own. */}
       {blank && (
         <div data-chrome="1" style={{ position: "fixed", inset: 0, zIndex: 95, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "var(--bg, #0E1217)" }}>
@@ -8738,14 +8786,32 @@ function simSeason(o) {
 // Anchored on Week 1's Tuesday (weeks roll at Tuesday ~4am ET, which is how every platform counts them).
 const NFL_WEEK1_TUESDAY = { 2025: "2025-09-02T08:00:00Z", 2026: "2026-09-08T08:00:00Z" };
 const REG_SEASON_WEEKS = 18;
+// Week 1 opens on the Thursday after Labor Day, so the week itself starts on the Tuesday after the first
+// Monday in September. That has held for every season of the modern schedule, so DERIVE it. The table
+// above stays as an explicit override for the years we've checked by hand.
+//
+// This is not pedantry: the table used to be the only source, and CURRENT_SEASON was hard-coded beside it.
+// Come September 2027 that combination would have left the app quietly stuck as an off-season tool for a
+// whole year, with nothing failing loudly enough for anyone to notice until a user asked why their teams
+// had vanished from the home page.
+function week1TuesdayUTC(year) {
+  const dow = new Date(Date.UTC(year, 8, 1)).getUTCDay();   // weekday of Sept 1 (0 Sun … 6 Sat)
+  const laborDay = 1 + ((8 - dow) % 7);                      // first Monday in September
+  return Date.UTC(year, 8, laborDay + 1, 8, 0, 0);          // the Tuesday after, 08:00Z = 4am ET
+}
+// Which season a moment belongs to. August onward is that year's season; January still belongs to the
+// season that started the previous September, which is how week 18 lands in the right place.
+function seasonOfDate(t) {
+  const d = new Date(t);
+  return d.getUTCMonth() >= 7 ? d.getUTCFullYear() : d.getUTCFullYear() - 1;
+}
 function nflWeekNow(now, season) {
   try {
-    const yr = season || CURRENT_SEASON;
-    const anchor = NFL_WEEK1_TUESDAY[yr];
-    if (!anchor) return null;
     const t = (now != null ? now : Date.now());
-    const start = Date.parse(anchor);
-    if (!(t >= start)) return null;                       // pre-season: still a draft tool
+    const yr = season || seasonOfDate(t);
+    const anchor = NFL_WEEK1_TUESDAY[yr];
+    const start = anchor ? Date.parse(anchor) : week1TuesdayUTC(yr);
+    if (!Number.isFinite(start) || !(t >= start)) return null; // pre-season: still a draft tool
     const wk = Math.floor((t - start) / (7 * 24 * 3600 * 1000)) + 1;
     return wk >= 1 && wk <= REG_SEASON_WEEKS ? wk : null; // after week 18 it's the off-season again
   } catch (e) { return null; }
@@ -11714,60 +11780,51 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
           </div>
         </div>
 
-        {/* SHOWCASE */}
+        {/* SHOWCASE + THE INSTRUMENTS.
+            These used to be TWO sections saying the same thing: a live tour of the features, then a grid of
+            six cards naming the same features with their descriptions hidden behind a hover. On a phone that
+            grid was six labels and no information at all. One section now — the tour proves it, the list
+            names it, and every description is visible without hovering anything. */}
         <div className="hubsection">
           <div style={{ textAlign: "center", marginBottom: 14 }}>
             <div className="disp" style={{ fontSize: 27, fontWeight: 700, lineHeight: 1.1 }}>This isn't a cheat sheet. <span className="gold">It's a draft brain.</span></div>
             <div className="mut" style={{ fontSize: 14, maxWidth: 600, margin: "6px auto 0", lineHeight: 1.5 }}>Pick a topic and actually use it — these are live, working samples of the real tool.</div>
           </div>
           <HeroShowcase />
-        </div>
-
-        {/* FORMATS SUPPORTED — quick convincer strip (IDP intentionally excluded; not supported) */}
-        <div className="hubsection">
-          <div className="disp" style={{ fontSize: 17, fontWeight: 700, textAlign: "center", marginBottom: 3 }}>Built for your league — whatever it is</div>
-          <div className="mut" style={{ fontSize: 12.5, textAlign: "center", marginBottom: 14 }}>Every format reprices the board. If you play it, the compass speaks it.</div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
-            {["Redraft", "Dynasty", "Keeper", "Best ball", "Rookie-only", "1QB", "SuperFlex / 2QB", "PPR / Half / Standard", "TE premium", "IDP"].map((t) => (
-              <span key={t} className="chip" style={{ fontSize: 12 }}>{t}</span>
-            ))}
-          </div>
-        </div>
-
-        {/* STATS STRIP — slim banded separator beat */}
-        <div style={{ display: "flex", gap: 26, justifyContent: "center", flexWrap: "wrap", textAlign: "center", padding: "18px 20px", borderRadius: 14, border: "1px solid var(--line)", background: "linear-gradient(180deg, rgba(214,170,75,0.05), transparent)" }}>
-          <div><div className="statline">1,000s</div><div className="mut" style={{ fontSize: 12.5 }}>of real drafts read<br />for board behavior</div></div>
-          <div><div className="statline">1,000</div><div className="mut" style={{ fontSize: 12.5 }}>simulations behind every<br />availability percentage</div></div>
-          <div><div className="statline">~50%</div><div className="mut" style={{ fontSize: 12.5 }}>of pick positions called<br />(prior-tool track record)</div></div>
-          <div><div className="statline">Live</div><div className="mut" style={{ fontSize: 12.5 }}>engine accuracy shown in-app,<br />measured on real drafts</div></div>
-        </div>
-
-        {/* FEATURE GRID */}
-        <div className="hubsection">
-          <div className="disp" style={{ fontSize: 24, fontWeight: 700, textAlign: "center", marginBottom: 4 }}>Everything pointing one way: <span className="gold">your best pick.</span></div>
-          <div className="mut" style={{ textAlign: "center", fontSize: 13.5, marginBottom: 20 }}>Six instruments, one readout. <span style={{ opacity: 0.7 }}>Hover any card for the detail.</span></div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 14 }}>
+          <div className="disp" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--mut)", fontWeight: 800, margin: "22px 0 10px" }}>Six instruments, one readout</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: "14px 26px" }}>
             {feats.map((f, i) => (
-              <div key={i} className="flipcard" role="button" tabIndex={0} style={{ height: 132 }}>
-                <div className="flipinner">
-                  {/* FRONT — icon + title */}
-                  <div className="flipface" style={{ background: "var(--panel2)", padding: 16, justifyContent: "center", alignItems: "flex-start" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
-                      <div style={{ width: 42, height: 42, borderRadius: 11, background: "rgba(214,170,75,0.14)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                        <i className={`ti ${f[0]}`} style={{ fontSize: 22, color: "var(--gold)" }} aria-hidden="true" />
-                      </div>
-                      <div className="disp" style={{ fontSize: 18, fontWeight: 700, lineHeight: 1.1 }}>{f[1]}</div>
-                    </div>
-                  </div>
-                  {/* BACK — description */}
-                  <div className="flipface flipback" style={{ background: "var(--panel2)" }}>
-                    <div className="disp gold" style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 5 }}>{f[1]}</div>
-                    <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.5 }}>{f[2]}</div>
-                  </div>
+              <div key={i} style={{ display: "flex", gap: 11, alignItems: "flex-start" }}>
+                <i className={`ti ${f[0]}`} style={{ fontSize: 17, color: "var(--gold)", marginTop: 2, flexShrink: 0 }} aria-hidden="true" />
+                <div style={{ minWidth: 0 }}>
+                  <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 2 }}>{f[1]}</div>
+                  <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.5 }}>{f[2]}</div>
                 </div>
               </div>
             ))}
           </div>
+        </div>
+
+        {/* PROOF BAND. The formats and the numbers were two separate bordered panels doing one job —
+            "yes, it handles your league, and yes, the numbers behind it are real". One quiet band now,
+            no border, so it reads as a breath between sections rather than another card.
+            ⚠ "Live" used to sit here as a fourth statistic. It isn't one — it's a sentence, and putting it
+            in a row of figures made the real numbers look like marketing too. It moved to the caption. */}
+        <div style={{ padding: "26px 20px", borderTop: "1px solid var(--line)", borderBottom: "1px solid var(--line)" }}>
+          <div style={{ display: "flex", gap: 34, justifyContent: "center", flexWrap: "wrap", textAlign: "center" }}>
+            <div><div className="statline">1,000s</div><div className="mut" style={{ fontSize: 12.5 }}>of real drafts read<br />for board behavior</div></div>
+            <div><div className="statline">1,000</div><div className="mut" style={{ fontSize: 12.5 }}>simulations behind every<br />availability percentage</div></div>
+            <div><div className="statline">~50%</div><div className="mut" style={{ fontSize: 12.5 }}>of pick positions called<br />(prior-tool track record)</div></div>
+          </div>
+          <div className="mut" style={{ fontSize: 12, textAlign: "center", margin: "14px auto 20px", maxWidth: 520, lineHeight: 1.5 }}>
+            Accuracy is measured on real drafts and shown inside the app — you can check it yourself rather than take our word for it.
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 7, justifyContent: "center" }}>
+            {["Redraft", "Dynasty", "Keeper", "Best ball", "Rookie-only", "1QB", "SuperFlex / 2QB", "PPR / Half / Standard", "TE premium", "IDP"].map((t) => (
+              <span key={t} className="chip" style={{ fontSize: 11.5 }}>{t}</span>
+            ))}
+          </div>
+          <div className="mut" style={{ fontSize: 12, textAlign: "center", marginTop: 9 }}>Every format reprices the board. If you play it, the compass speaks it.</div>
         </div>
 
         {/* REAL-DRAFT EDGE */}
@@ -17166,7 +17223,21 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   }, [keeperSig, picks.length, isConnectedLive]);
 
   /* autosave every 5 picks and on completion */
-  useEffect(() => { if (picks.length && (picks.length % 5 === 0 || done)) onSave(picks, preds, pickNamesOf(picks), pickNamesOf(preds)); }, [picks.length, done]);
+  // AUTOSAVE. A REAL draft saves on EVERY pick; a mock still saves every fifth.
+  //
+  // This used to be every fifth pick for everything, which meant refreshing the page mid-draft — or a
+  // laptop going to sleep, or a browser crash — silently discarded up to four picks. In a mock that costs
+  // nothing. In a live draft, in a league with no platform behind it to re-sync from, it means re-entering
+  // picks by hand while you're on the clock. That is not a trade worth making to save a few writes.
+  //
+  // The write itself is cheap and debounced (persist collapses a burst into one blob write ~600ms later),
+  // so the only real cost is the extra app-level re-render per pick — which is why a fast mock, where
+  // picks arrive several per second and nothing is at stake, keeps the old throttle.
+  const saveEveryPick = !isMock && !isDemo;
+  useEffect(() => {
+    if (!picks.length) return;
+    if (saveEveryPick || picks.length % 5 === 0 || done) onSave(picks, preds, pickNamesOf(picks), pickNamesOf(preds));
+  }, [picks.length, done]);
 
   // Sim count scales with how close YOUR pick is. During a fast mock, when your pick is many slots away,
   // running the full 300-path Monte Carlo on every CPU pick is what makes the cursor stutter — the main

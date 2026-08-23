@@ -57,6 +57,30 @@ async function call(path, { method = 'GET', body, auth = true, retries = 2, time
   throw lastErr || new Error('BACKEND_WAKING');
 }
 
+// ---- SYNC HEALTH -------------------------------------------------------------------------------------
+// Working without the backend is fine and by design: the engine is entirely client-side and every pick is
+// saved on the device first. Working without it while APPEARING to be backed up is not fine — if the
+// browser holds the only copy of a live draft, the user is entitled to know before they close the tab.
+//
+// So this tracks one specific thing: whether the last attempt to mirror state to the server succeeded.
+// Not "is there internet", not "did some request 404" — did YOUR DATA reach the server. It flips on the
+// first failed mirror and back on the first successful one, and only the state write moves it, so a
+// failing side-feature can never raise a false alarm about a draft.
+let _syncOk = true;
+let _syncSince = 0;
+const _syncSubs = new Set();
+function markSync(ok) {
+  if (ok === _syncOk) return;
+  _syncOk = ok;
+  _syncSince = Date.now();
+  for (const cb of _syncSubs) { try { cb(ok); } catch {} }
+}
+export const syncHealth = {
+  get ok() { return _syncOk; },
+  get since() { return _syncSince; },
+  subscribe(cb) { _syncSubs.add(cb); return () => _syncSubs.delete(cb); },
+};
+
 export const api = {
   hasBackend,
 
@@ -188,14 +212,17 @@ export const api = {
     try {
       const r = await call('/api/state', { method: 'PUT', body: { state, baseUpdatedAt: _lastStateUpdatedAt } });
       if (r && r.updatedAt) _lastStateUpdatedAt = r.updatedAt;
+      markSync(true);
       return r;
     } catch (e) {
       // 409 = the server has newer data (another device saved). Return the server's state + updatedAt so the
       // caller can merge and re-save, rather than losing the newer copy.
       if (e && e.status === 409 && e.data) {
         if (e.data.serverUpdatedAt) _lastStateUpdatedAt = e.data.serverUpdatedAt;
+        markSync(true);   // the server answered — a conflict is a healthy connection, not a broken one
         return { ok: false, conflict: true, state: e.data.state || {}, updatedAt: e.data.serverUpdatedAt || null };
       }
+      markSync(false);
       throw e;
     }
   },
