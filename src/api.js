@@ -190,6 +190,9 @@ export const api = {
     if (opts.k) extra.push("k=1");
     if (opts.dst) extra.push("dst=1");
     if (opts.idp) extra.push("idp=1");
+    // The league's OWN playoff weeks. This changes the playoff-SOS numbers, so it is part of the pack's
+    // identity on the server too — a week-14 league must not be served a week-15 league's read.
+    if (opts.playoffStart) extra.push(`pw=${Number(opts.playoffStart)}`);
     return call(`/api/player-pack?format=${encodeURIComponent(format)}${extra.length ? "&" + extra.join("&") : ""}`, { auth: false });
   },
 

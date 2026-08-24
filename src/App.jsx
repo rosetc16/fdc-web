@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.28a";
+const BUILD_TAG = "2026.07.28b";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1343,6 +1343,11 @@ export function poolHasPos(pos) {
 // thrown that away. So the Trends panel could show "your format's movement" when the movement was measured
 // in a DIFFERENT format, with nothing to say so. Kept module-level beside RAW because it describes the pool.
 export let ADP_META = { requested: null, used: null, chain: [] };
+// WHICH WEEKS THE PLAYOFF SOS MEASURED, AND WHOSE DEFENCES. At draft time the current season has no games
+// played, so the ranks are LAST season's — and a number like "8.4" with no label implies a currency it does
+// not have. Captured here for the same reason ADP_META is: the backend has always sent provenance and the
+// client has three times thrown it away.
+export let SOS_META = null;
 export function applyLivePack(pack, isReapply) {
   if (!pack || !Array.isArray(pack.players) || pack.players.length === 0) return false;
   LAST_PACK = pack; // remember it so a later trust-flag change can re-derive the board
@@ -1351,6 +1356,7 @@ export function applyLivePack(pack, isReapply) {
     used: pack.harvestFormatUsed || null,
     chain: Array.isArray(pack.harvestChainTried) ? pack.harvestChainTried : [],
   };
+  SOS_META = pack.sosMeta || null;
   const raw = [], stats = {}, meta = {};
   const seen = new Set();
   // Map Sleeper's granular positions into the engine's known buckets. Anything we can't place
@@ -1515,6 +1521,9 @@ export function applyLivePack(pack, isReapply) {
       // backend already served never reached the screen. Carry everything the pack sends.
       injReturn: p.injReturn || null,
       injSrc: p.injSrc || null,
+      // PLAYOFF STRENGTH OF SCHEDULE for this player's team and position. Absent when the backend has no
+      // schedule or no defensive ranks — the column then hides itself rather than showing a placeholder.
+      sos: p.sos || null,
       injAt: p.injAt || null,
       floor: p.floor != null ? p.floor : null,
       ceil: p.ceil != null ? p.ceil : null,
@@ -2366,6 +2375,7 @@ function buildPlayers(cfg) {
       trend: meta.trend != null ? meta.trend : null, sampleN: meta.sampleN || 0,
       injPart: meta.injPart || null, injNote: meta.injNote || null, injSince: meta.injSince || null,
       injReturn: meta.injReturn || null, injSrc: meta.injSrc || null, injAt: meta.injAt || null,
+      sos: meta.sos || null,
       sid: meta.sid || null,
     };
   });
@@ -5020,6 +5030,23 @@ function makeOutlook(p, sims, drafted, ctx) {
     out.push({ t: "Will he last?", x: `Roughly a coin flip (${surv}%) he makes it back to your next pick.` });
   }
 
+  // 5b) THE FANTASY PLAYOFFS. Deliberately its own row rather than a chip: a title is decided in these three
+  // weeks, and a slate this good or this bad is worth a sentence, not a number in a column the eye skips.
+  // Stated, never folded into the value numbers above — schedule is the weakest input we carry.
+  if (p.sos) {
+    const wks = (p.sos.o || []).map((o) => (o.y ? `wk ${o.w} BYE` : `wk ${o.w} ${o.t}${o.r != null ? ` (${o.r})` : ""}`)).join(" · ");
+    const read = p.sos.b > 0 ? "bad" : p.sos.t === "easy" ? "good" : p.sos.t === "hard" ? "bad" : "neutral";
+    const verdict = p.sos.b > 0
+      ? `On BYE during the fantasy playoffs — that is a week he scores nothing when it counts.`
+      : p.sos.t === "easy" ? `One of the softest playoff slates for a ${p.pos} (${p.sos.r} of ${p.sos.of} easiest).`
+      : p.sos.t === "hard" ? `One of the toughest playoff slates for a ${p.pos} (${p.sos.r} of ${p.sos.of} easiest).`
+      : `A middling playoff slate (${p.sos.r} of ${p.sos.of} easiest).`;
+    out.push({ t: "Playoffs", x: `${verdict} ${wks}`, tc: read === "good" ? "var(--green)" : read === "bad" ? "var(--red)" : undefined });
+    // The rank in brackets is the opponent's defence-vs-position rank, and it is LAST season's. Say so once,
+    // quietly, rather than letting an unlabelled number imply it is current form.
+    if (SOS_META && SOS_META.basis) out.push({ t: "Note", x: `Playoff matchups use ${SOS_META.basis} defence-vs-${p.pos} ranks (higher = weaker defence). Schedule is a tiebreaker, not a reason to move a player far.` });
+  }
+
   // 6) SUPPORTING
   if (p.outlook) out.push({ t: "Note", x: p.outlook });
   if (p.adpOriginal != null && Math.abs(p.adpOriginal - p.adp) > 0.6) out.push({ t: "Keeper-adjusted", x: `Effective ADP ${p.adp.toFixed(1)} (raw market ${p.adpOriginal.toFixed(1)}) — keepers ahead of him are off the board.` });
@@ -6953,7 +6980,17 @@ export default function App() {
   // roster flags too, or a league that starts a K/DST gets served a previously-cached kicker-less pack for the
   // same format (the exact "K and DST don't show up" bug). packKey = format + which extra positions we asked for.
   const packFlags = (() => { const st = (active && active.cfg && active.cfg.start) || {}; return `${st.K > 0 ? "k" : ""}${st.DST > 0 ? "d" : ""}${((st.DL || 0) + (st.LB || 0) + (st.DB || 0) + (st.IDPFLEX || 0)) > 0 ? "i" : ""}`; })();
-  const packKey = activeFmt ? `${activeFmt}#${packFlags}` : null;
+  // ⭐ THE LEAGUE'S OWN PLAYOFF WEEKS. This is the part a generic ranking site cannot do: most leagues start
+  // their playoffs in week 15, plenty start in 14 or 16, and the answer to "is his playoff schedule good?"
+  // changes completely with the window. Imported from the connected league's settings; 15 otherwise.
+  // ⚠ It MUST be in packKey — two leagues on the same format but different playoff weeks get different
+  // numbers, and sharing a cache entry is exactly the K/DST collision that shipped an empty board.
+  const playoffStart = (() => {
+    const c = (active && active.cfg) || {};
+    const n = Number(c.playoffStartWeek || (c.connect && c.connect.playoffStartWeek));
+    return Number.isFinite(n) && n >= 12 && n <= 18 ? n : 15;
+  })();
+  const packKey = activeFmt ? `${activeFmt}#${packFlags}#p${playoffStart}` : null;
   useEffect(() => {
     if (!hasBackend || !activeFmt) return;
     LIVE_OVERLAY_TARGET = activeFmt; // the format this draft SHOULD be showing (for the badge diagnostic)
@@ -6992,7 +7029,7 @@ export default function App() {
     if (cache[packKey] === "miss") { LIVE_OVERLAY_STATE = "miss"; return; }
     cache[packKey] = "pending";
     const st = (active.cfg && active.cfg.start) || {};
-    const opts = { k: !!(st.K > 0), dst: !!(st.DST > 0), idp: !!(((st.DL || 0) + (st.LB || 0) + (st.DB || 0) + (st.IDPFLEX || 0)) > 0) };
+    const opts = { k: !!(st.K > 0), dst: !!(st.DST > 0), idp: !!(((st.DL || 0) + (st.LB || 0) + (st.DB || 0) + (st.IDPFLEX || 0)) > 0), playoffStart };
     let alive = true;
     api.playerPack(activeFmt, undefined, opts)
       .then((pack) => { if (!alive) return; if (pack && Array.isArray(pack.players) && pack.players.length) { cache[packKey] = pack; applyPack(pack); } else { cache[packKey] = "miss"; LIVE_OVERLAY_STATE = "miss"; LIVE_OVERLAY_REASON = "backend returned no players for " + activeFmt; } })
@@ -16958,7 +16995,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [manualSort, setManualSort] = useState(true); // board opens in true ADP order
   const [showDrafted, setShowDrafted] = useState(false); // default: show best AVAILABLE; toggle to include drafted
   const [rookieOnly, setRookieOnly] = useState(false);
-  const DEFAULT_COLS = { adp: true, consensus: false, edge: true, proj: true, floor: false, ceil: false, vbd: true, value: true, rank: true, vbdTier: true, adpTier: false, mockAdp: false, myRank: false, blendAdp: false, role: true, roleDesc: true, age: true, bye: true, avail: true, passYd: true, passTD: true, rushYd: true, rushTD: true, rec: true, recYd: true, recTD: true, tgt: false };
+  const DEFAULT_COLS = { adp: true, consensus: false, edge: true, proj: true, floor: false, ceil: false, vbd: true, value: true, rank: true, vbdTier: true, adpTier: false, mockAdp: false, myRank: false, blendAdp: false, role: true, roleDesc: true, age: true, bye: true, psos: true, avail: true, passYd: true, passTD: true, rushYd: true, rushTD: true, rec: true, recYd: true, recTD: true, tgt: false };
   const DEFAULT_SECTION_ORDER = ["market", "mine", "value", "demo", "avail", "stat"];
   const savedPrefs = user?.colPrefs || null;
   const [cols, setCols] = useState({ ...DEFAULT_COLS, ...(savedPrefs?.cols || {}) });
@@ -19058,6 +19095,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       case "role": return p.posDepth != null ? p.posDepth : 99; // sort by team depth (RB1 before RB2)
       case "roleDesc": return p.role || "zzz";
       case "bye": return p.bye || 99;
+      case "psos": return p.sos ? p.sos.s : -1;
       case "avail": return targetSurv ? (targetSurv[p.id] ?? -1) : -1;
       case "nextpick": return sims && sims.pct[1] ? (sims.pct[1][p.id] ?? 100) : -1; // not simulated ⇒ not at risk
       case "passYd": case "passTD": case "rushYd": case "rushTD": case "rec": case "recYd": case "recTD": case "tgt":
@@ -19270,6 +19308,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     { key: "roleDesc", label: "Usage", group: "draft", section: "demo", num: false, sortable: true, tip: "Projected usage role — bellcow vs committee back, alpha vs depth receiver, every-down vs blocking TE." },
     { key: "age", label: "Age", group: "draft", section: "demo", num: true, sortable: true },
     { key: "bye", label: "Bye", group: "draft", section: "demo", num: true, sortable: true },
+    { key: "psos", label: "Playoff SOS", group: "draft", section: "demo", num: true, sortable: true, tip: "How hard this player's matchups are in YOUR league's fantasy playoff weeks, against his position specifically. 10 = the softest slate in the league, 1 = the toughest. A bye inside the playoff weeks drags it down. Hover a row for the opponents. This is shown, never baked into the value numbers \u2014 schedule is a weak signal next to talent." },
     // — Availability —
     { key: "avail", label: "Avail @", group: "draft", section: "avail", num: true, sortable: true, tip: "Chance this player survives to the selected pick. Use the dropdown in this column's header to choose any pick — picks your team owns are marked ★." },
     // — Projected stats —
@@ -19395,6 +19434,18 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         </span>
       ) : <span className="mut">—</span>;
       case "bye": return p.bye || "—";
+      case "psos": {
+        // No number when the backend could not source one. A dash is honest; a neutral 5 would be a
+        // fabricated ranking wearing the same clothes as a real one.
+        if (!p.sos) return <span className="mut">—</span>;
+        const c = p.sos.t === "easy" ? "var(--green)" : p.sos.t === "hard" ? "var(--red)" : "var(--mut)";
+        return (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+            <b className="num" style={{ color: c, fontWeight: 800 }}>{p.sos.s}</b>
+            {p.sos.b > 0 && <span style={{ fontSize: 8.5, fontWeight: 800, color: "var(--red)", border: "1px solid var(--red)", borderRadius: 3, padding: "0 3px" }}>BYE</span>}
+          </span>
+        );
+      }
       case "avail": { const av = targetSurv ? targetSurv[p.id] : null; return gone ? "—" : av != null ? <span style={{ color: av < 35 ? "var(--red)" : av > 75 ? "var(--green)" : "var(--ink)" }}>{av}%</span> : "…"; }
       case "nextpick": return gone ? "—" : av2 != null ? <span className="mut">{av2}%</span> : "—";
       default: return <span className="mut">{p.stats?.[key] || "—"}</span>;
