@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.28e";
+const BUILD_TAG = "2026.07.28f";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -5353,7 +5353,17 @@ function OutlookCard({ content }) {
 // Build a scannable, color-coded outlook for a completed pick on the draft board grid.
 // `roster` = the players the drafting team already had BEFORE this pick (for need context).
 // `req` = that team's starting requirement by position (from REQ_F / cfg.start).
-function boardPickOutlook(p, o, cfg, ownerLabel, roster, req, rookieAdpMap) {
+//
+// ⭐ KEEPERS GET THE SAME CARD. Trey: "if a player is kept, I do want the hover to show that, but I also want
+// it to show details of the value of the pick, their adp, etc.... just like a typical player." The keeper
+// hover used to be two hand-written lines — the fact that he was kept, and nothing else — while every other
+// occupied cell on the same board produced a full outlook. That asymmetry was never a decision; a keeper is
+// the one pick on the board whose PRICE the manager actually chose, so his surplus over ADP is the most
+// interesting number in the cell, not the least. Same card, keeper vocabulary: `opts.keeper` swaps the
+// value verdict from drafted-language ("Steal — fell 12 picks past ADP") to kept-language ("Keeper bargain —
+// 12 picks of surplus over his ADP") and adds his cost, without forking the card itself.
+function boardPickOutlook(p, o, cfg, ownerLabel, roster, req, rookieAdpMap, opts) {
+  const keeper = !!(opts && opts.keeper);
   const out = [];
   out.push({ kind: "photo", sid: p.sid || null, name: p.name, team: p.team, pos: p.pos, posRank: p.posRank });
   // On a rookie draft, grade + display against rookie-relative ADP (his expected slot among rookies), not his
@@ -5363,9 +5373,14 @@ function boardPickOutlook(p, o, cfg, ownerLabel, roster, req, rookieAdpMap) {
   const v = pickValue(p, o, cfg, rookieAdpMap ? { rookieAdp: rookieAdpMap } : undefined); // + = steal, - = reach
   const slip = effAdp != null ? Math.round((o + 1) - effAdp) : 0; // picks past (rookie) ADP
 
-  // 1) TAKE — color-coded value verdict.
+  // 1) TAKE — color-coded value verdict. A keeper wasn't "reached for", he was PRICED, so the same number
+  // gets the vocabulary of a price rather than of a draft-day decision.
   let take, tone;
-  if (v > 3) { take = `Steal — fell ${Math.abs(slip)} picks past ADP.`; tone = "good"; }
+  if (keeper) {
+    if (v > 3) { take = `Keeper bargain — ${Math.abs(slip)} picks of surplus over his ADP.`; tone = "good"; }
+    else if (v < -3) { take = `Costly keep — held ${Math.abs(slip)} picks ahead of his ADP.`; tone = "bad"; }
+    else { take = `Fair keeper price (ADP ${effAdp != null ? effAdp.toFixed(1) : "—"}).`; tone = "neutral"; }
+  } else if (v > 3) { take = `Steal — fell ${Math.abs(slip)} picks past ADP.`; tone = "good"; }
   else if (v < -3) { take = `Reach — taken ${Math.abs(slip)} picks early.`; tone = "bad"; }
   else { take = `Fair value at market (ADP ${effAdp != null ? effAdp.toFixed(1) : "—"}).`; tone = "neutral"; }
   out.push({ kind: "take", tone, x: take });
@@ -5381,16 +5396,23 @@ function boardPickOutlook(p, o, cfg, ownerLabel, roster, req, rookieAdpMap) {
   ];
   if (p.age) kv.push({ k: "Age", v: `${p.age}` });
   if (p.bye) kv.push({ k: "Bye", v: `${p.bye}` });
+  if (keeper) kv.push({ k: "Keeper cost", v: pickLabel(o), c: "var(--green)" });
   out.push({ kind: "kvtable", items: kv });
   if (p.role) out.push({ t: "NFL role", x: `${p.role}${p.fantasyTier ? ` — ${lowerKeepPos(p.fantasyTier)} ${p.pos} in fantasy` : ""}` });
 
-  // 3) PICK
-  out.push({ t: "Pick", x: `${pickLabel(o)} — ${ownerLabel}` });
+  // 3) PICK — for a keeper, say plainly that he is off the board, because the cell looks like every other
+  // filled cell and the one thing you cannot do with him is draft him.
+  out.push({ t: keeper ? "Kept" : "Pick", x: keeper
+    ? `${pickLabel(o)} — ${ownerLabel}. Locked to this slot; he is not draftable.`
+    : `${pickLabel(o)} — ${ownerLabel}` });
 
   // 5) NEED — only when it's NOT obvious. Early-round picks are always "needs", so skip the fit note
   // there; only flag genuinely informative cases (a clear luxury/redundant pick, or a real hole filled
   // outside the early rounds).
-  if (roster && req) {
+  // ⚠ NOT FOR KEEPERS. These notes read the pick as a draft-day DECISION ("Late fill at a still-open starting
+  // WR slot") — but a keeper's round is his price, not a choice made at that moment, and the roster "before"
+  // him is just whoever else that team happens to keep. The sentence was confidently wrong on a keeper card.
+  if (roster && req && !keeper) {
     const have = roster.filter((x) => x.pos === p.pos).length;
     const need = req[p.pos] || 0;
     const round = Math.floor(o / TEAMS) + 1;
@@ -5403,7 +5425,11 @@ function boardPickOutlook(p, o, cfg, ownerLabel, roster, req, rookieAdpMap) {
 
   // 6) VALUE TAKEAWAY — focused on the pick's value, not obvious need statements.
   let overall;
-  if (v > 3) overall = `Good process — a falling player grabbed below market value.`;
+  if (keeper) {
+    if (v > 3) overall = `Worth keeping — his cost is below what the market would charge.`;
+    else if (v < -3) overall = `Expensive keep — the board says he'd likely be there later.`;
+    else overall = `Priced about where the market has him — a neutral keep.`;
+  } else if (v > 3) overall = `Good process — a falling player grabbed below market value.`;
   else if (v < -3) overall = `Paid up — taken earlier than the board suggested.`;
   else overall = `Solid, on-market selection.`;
   out.push({ t: "Verdict", x: overall });
@@ -6340,6 +6366,95 @@ export default function App() {
     } catch { /* sessionStorage unavailable — refresh just falls back to home */ }
   }, [route, activeId, hubLeagueId]);
 
+  /* ============================================================================================
+     BACK GOES BACK.
+     ------------------------------------------------------------------------------------------
+     Trey: "at the draft prep screen, if I click your rankings, then click back… it doesn't take
+     me back to my prep screen, it takes me to the home screen. I want the back button to take
+     you back to the most recent screen basically."
+     He is describing a whole family of the same defect, not one button. Every secondary screen
+     hard-coded its own destination — `onBack={() => setRoute(user.paid ? "home" : "library")}` —
+     which is correct ONLY if you arrived from home. Arrive from anywhere else and "back" is a
+     lie: it doesn't undo your last move, it teleports you. One screen (rankings) had a bespoke
+     patch for exactly one origin (`rankEditFromDraft`), which is the tell — the moment a second
+     origin showed up, the patch had nothing to say.
+     So: record where we've been, and let back POP it. Three rules keep this honest:
+       • never push a no-op (same view re-rendered) — otherwise back appears to do nothing;
+       • never push the pop itself, or back and forward fight each other forever;
+       • never pop to a view that no longer exists (a deleted league, a signed-out route) —
+         validate on the way out and keep popping, falling back to home only when the stack is
+         genuinely empty. A back button that lands on a blank screen is worse than one that
+         over-navigates.
+     ============================================================================================ */
+  const navHist = useRef([]);      // views we came FROM, oldest first. Never includes the current one.
+  const navPrevRef = useRef(null); // the view rendered on the previous pass
+  const navPopping = useRef(false); // true for exactly one transition: the one goBack() just caused
+  // ⚠ THE STACK IS A REF, SO IT CANNOT LABEL A BUTTON BY ITSELF. The push happens in an effect, i.e. AFTER
+  // the render that needs the label — and mutating a ref schedules no re-render, so the back button on a
+  // freshly-opened screen rendered with the PREVIOUS screen's answer and never corrected itself. It read
+  // "← Home" while behaving correctly and returning to the league, which is the worst possible pairing: the
+  // feature works and the label calls it a liar. Mirror the top of the stack into state so the label
+  // re-renders with it.
+  const [navTop, setNavTop] = useState(null);
+  useEffect(() => {
+    const cur = { route, activeId, hubLeagueId };
+    const prev = navPrevRef.current;
+    navPrevRef.current = cur;
+    const settle = () => setNavTop(navHist.current.length ? navHist.current[navHist.current.length - 1] : null);
+    if (!prev) { settle(); return; }                       // first paint: there is no "before"
+    if (navPopping.current) { navPopping.current = false; settle(); return; } // this move WAS the back
+    if (prev.route === cur.route && prev.activeId === cur.activeId && prev.hubLeagueId === cur.hubLeagueId) return;
+    navHist.current.push(prev);
+    if (navHist.current.length > 40) navHist.current.shift(); // a session-length cap, not a feature
+    settle();
+  }, [route, activeId, hubLeagueId]);
+
+  // Is a recorded view still somewhere we can legally land? Leagues get deleted, users sign out, and a
+  // mock's id stops resolving the moment its transient league is dropped.
+  const navEntryOk = (e) => {
+    if (!e || !e.route) return false;
+    if (["checkout", "setup"].includes(e.route)) return false; // transient flows: never a back target
+    if (e.route === "teamHub") return !!e.hubLeagueId;
+    if (e.route === "leagueHub") return !!e.activeId && leagues.some((l) => l.id === e.activeId);
+    if (e.route === "draft") return false; // exiting a draft and being thrown back INTO it is not "back"
+    if (!user && ["leagueHub", "rankings", "account", "admin", "library", "trends", "draftTrends", "database", "trendsTime", "tradeTools", "adpIntel"].includes(e.route)) return false;
+    return true;
+  };
+  const navHome = () => (user && user.paid ? "home" : user ? "library" : "home");
+  // What back would land on, in words — so a button can say where it goes instead of guessing.
+  const backLabelOf = (fallbackLabel) => {
+    // `navTop` is read here purely so this label re-computes when the stack moves — the stack itself is a
+    // ref (see above) and would otherwise leave a stale destination printed on the button.
+    void navTop;
+    for (let i = navHist.current.length - 1; i >= 0; i--) {
+      const e = navHist.current[i];
+      if (!navEntryOk(e)) continue;
+      if (e.route === "leagueHub") {
+        const lg = leagues.find((l) => l.id === e.activeId);
+        return lg ? lg.name : "League";
+      }
+      const NAMES = { home: "Home", library: "Library", rankings: "Rankings", account: "Account", admin: "Admin",
+        trends: "Trends", draftTrends: "Draft trends", database: "Drafts", trendsTime: "Trends", tradeTools: "Trade tools",
+        adpIntel: "ADP intel", teamHub: "Team hub", help: "Help" };
+      return NAMES[e.route] || "Back";
+    }
+    return fallbackLabel || (user && user.paid ? "Home" : user ? "Library" : "Home");
+  };
+  const goBack = (fallbackRoute) => {
+    const stack = navHist.current;
+    while (stack.length) {
+      const e = stack.pop();
+      if (!navEntryOk(e)) continue;
+      if (e.route === route && e.activeId === activeId && e.hubLeagueId === hubLeagueId) continue;
+      navPopping.current = true;
+      setActiveId(e.activeId != null ? e.activeId : null);
+      setHubLeagueId(e.hubLeagueId != null ? e.hubLeagueId : null);
+      setRoute(e.route);
+      return;
+    }
+    setRoute(fallbackRoute || navHome());
+  };
+
   // Safety net for restored routes: once boot completes, if we're on a route that needs a signed-in user
   // but there isn't one (e.g. a stale restore after sign-out), return home instead of a blank screen.
   useEffect(() => {
@@ -7148,7 +7263,7 @@ export default function App() {
         onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }}
         onDraftTrends={() => setRoute("draftTrends")} onAutoImportSleeper={autoImportSleeper}
         onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onDeleteFun={deleteFunMock} onDeleteMock={deleteMock} />}
-      {route === "leagueHub" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? <LeagueUmbrella user={user} league={lg} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")}
+      {route === "leagueHub" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? <LeagueUmbrella user={user} league={lg} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} backLabel={backLabelOf()}
         onOfficial={(id) => { setDraftTab(null); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
         onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }}
         onDeleteMock={deleteMock} onRankings={() => setRoute("rankings")} onDelete={(id) => { deleteLeague(id); setRoute(user.paid ? "home" : "library"); }}
@@ -7178,20 +7293,20 @@ export default function App() {
       )}
       {route === "home" && !user?.paid && <HomePage biz={biz} user={user} onSignIn={() => setAuthOpen(true)} onDemo={startDemo} onBuy={() => (user ? setRoute("checkout") : setAuthOpen(true))} onApp={() => setRoute("library")} onHelp={(t) => { setHelpTab(t || null); setRoute("help"); }} />}
       {route === "learn" && <HomePage biz={biz} user={user} onSignIn={() => setAuthOpen(true)} onDemo={startDemo} onBuy={() => (user ? setRoute("checkout") : setAuthOpen(true))} onApp={() => setRoute(user?.paid ? "home" : "home")} onHelp={(t) => { setHelpTab(t || null); setRoute("help"); }} initialTab="how" />}
-      {route === "trends" && user && <TrendsPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user?.paid ? "home" : "library")} />}
-      {route === "draftTrends" && user && <DraftTrendsPage user={user} leagues={leagues} funMocks={funMocks} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user?.paid ? "home" : "library")} onOpenLeague={(id) => { setActiveId(id); setRoute("leagueHub"); }} />}
-      {route === "help" && <HelpPage user={user} biz={biz} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user ? (user.paid ? "home" : "library") : "home")} onSubmit={submitFeedback} initialTab={helpTab} />}
+      {route === "trends" && user && <TrendsPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} />}
+      {route === "draftTrends" && user && <DraftTrendsPage user={user} leagues={leagues} funMocks={funMocks} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} onOpenLeague={(id) => { setActiveId(id); setRoute("leagueHub"); }} />}
+      {route === "help" && <HelpPage user={user} biz={biz} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} onSubmit={submitFeedback} initialTab={helpTab} />}
       {route === "checkout" && user && <Checkout biz={biz} user={user} canceled={checkoutCanceled} onDone={completePurchase} onBack={() => { setCheckoutCanceled(false); setRoute("home"); }} />}
       {route === "library" && user && <Library user={user} leagues={leagues} onSyncCloud={syncFromCloud} onNew={() => setRoute("setup")} onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onDelete={deleteLeague} onAdmin={() => setRoute("admin")} onSignOut={signOut} onHome={() => setRoute("home")} onAccount={() => setRoute("account")} onDeleteMock={deleteMock} onOpenMockView={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onDatabase={() => setRoute("database")} onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} funMockCount={funMocks.length} />}
-      {route === "database" && user && <DraftsDatabase leagues={leagues} funMocks={funMocks} user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")}
+      {route === "database" && user && <DraftsDatabase leagues={leagues} funMocks={funMocks} user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()}
         onOpenLeague={(id) => { setActiveId(id); setRoute("draft"); }}
         onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }}
         onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onTrendsTime={() => setRoute("trendsTime")} onDelete={deleteLeague} />}
-      {route === "trendsTime" && user && <TrendsOverTimePage user={user} leagues={leagues} funMocks={funMocks} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} onOpenLeague={(id) => { setActiveId(id); setRoute("leagueHub"); }} />}
-      {route === "tradeTools" && user && <TradeToolsPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} />}
-      {route === "adpIntel" && user && <AdpIntelPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => setRoute(user.paid ? "home" : "library")} />}
-      {route === "account" && user && <Account user={user} onUpdate={updateUser} onBack={() => setRoute(user.paid ? "home" : "library")} onHome={() => setRoute("home")} onSignOut={signOut} onRankings={() => setRoute("rankings")} onAdmin={() => setRoute("admin")} />}
-      {route === "rankings" && user && <RankingsHub user={user} leagues={leagues} openSetId={pendingRankEdit} onConsumeOpen={() => setPendingRankEdit(null)} returnToDraft={rankEditFromDraft ? () => { const rid = rankEditFromDraft; setRankEditFromDraft(null); setActiveId(rid); setRoute("draft"); } : null} onUpdate={updateUser} onSignOut={signOut} onHome={() => { setRankEditFromDraft(null); setRoute("home"); }} onBack={() => { setRankEditFromDraft(null); setRoute(user.paid ? "home" : "library"); }} onNewLeague={() => { setSetupReturn("rankings"); setRoute("setup"); }} />}
+      {route === "trendsTime" && user && <TrendsOverTimePage user={user} leagues={leagues} funMocks={funMocks} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} onOpenLeague={(id) => { setActiveId(id); setRoute("leagueHub"); }} />}
+      {route === "tradeTools" && user && <TradeToolsPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} />}
+      {route === "adpIntel" && user && <AdpIntelPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} />}
+      {route === "account" && user && <Account user={user} onUpdate={updateUser} onBack={() => goBack()} onHome={() => setRoute("home")} onSignOut={signOut} onRankings={() => setRoute("rankings")} onAdmin={() => setRoute("admin")} />}
+      {route === "rankings" && user && <RankingsHub user={user} leagues={leagues} openSetId={pendingRankEdit} onConsumeOpen={() => setPendingRankEdit(null)} returnToDraft={rankEditFromDraft ? () => { const rid = rankEditFromDraft; setRankEditFromDraft(null); setActiveId(rid); setRoute("draft"); } : null} onUpdate={updateUser} onSignOut={signOut} onHome={() => { setRankEditFromDraft(null); setRoute("home"); }} onBack={() => { setRankEditFromDraft(null); goBack(); }} backLabel={backLabelOf()} onNewLeague={() => { setSetupReturn("rankings"); setRoute("setup"); }} />}
       {route === "setup" && <Setup onCreate={createLeague} onBack={() => { const r = setupReturn || (user?.paid ? "home" : "library"); setSetupReturn(null); setRoute(r); }} backLabel={setupReturn === "rankings" ? "Rankings" : user?.paid ? "Home" : "Library"} />}
       {route === "draft" && active && (
         <DraftRoom key={active.id} league={active} user={user} isMock={!!(mockLeague && active.id === mockLeague.id)} isDemo={!!active.demo} initialTab={draftTab} dataVersion={dataVersion} allLeagues={leagues} allFunMocks={funMocks} noHoverAnim={noHoverAnim} onToggleHoverAnim={() => setNoHoverAnim((v) => !v)}
@@ -7237,7 +7352,12 @@ export default function App() {
               setLeagues(next); persist({ leagues: next });
             }
           }}
-          onExit={() => { if (mockLeague && active.id === mockLeague.id) setMockLeague(null); setDraftTab(null); setRoute(user ? (user.paid ? "home" : "library") : "home"); }}
+          // ⭐ EXIT RETURNS YOU WHERE YOU CAME FROM. Entering a draft from a league's prep page and being
+          // dropped on the home screen is the same teleport Trey reported on the rankings back button —
+          // and this one is worse, because it is the button people press dozens of times a draft. The
+          // label follows the destination, so it never promises "Home" and deliver something else.
+          onExit={() => { if (mockLeague && active.id === mockLeague.id) setMockLeague(null); setDraftTab(null); goBack(user ? (user.paid ? "home" : "library") : "home"); }}
+          exitLabel={backLabelOf(user ? (user.paid ? "Home" : "Library") : "Home")}
           onSettings={(cfg) => { if (active.id === "demo") setDemoLeague((d) => ({ ...d, cfg })); else if (mockLeague && active.id === mockLeague.id) setMockLeague((m) => ({ ...m, cfg })); else updateLeagueCfg(active.id, cfg); }}
           onEditRanks={() => { if (mockLeague && active.id === mockLeague.id) setMockLeague(null); setDraftTab(null); setRoute("rankings"); }}
           onEditRankSet={(setId) => { const rid = active.id; setDraftTab(null); setPendingRankEdit(setId); setRankEditFromDraft(rid); setRoute("rankings"); }}
@@ -7275,7 +7395,7 @@ export default function App() {
           onUpdate={(patch) => { if (user) updateUser(patch); }}
           onBuy={() => { if (!user) setAuthOpen(true); else setRoute("checkout"); }} />
       )}
-      {route === "admin" && user && (isAdminEmail(user.email) || user.admin) && <Admin biz={biz} setBiz={(b) => { setBiz(b); persist({ biz: b }); }} user={user} leagues={leagues} feedback={feedback} onRespond={respondFeedback} onDeleteFeedback={deleteFeedback} onGrantComp={grantComp} onRevokeComp={revokeComp} onBack={() => setRoute(user.paid ? "home" : "library")} />}
+      {route === "admin" && user && (isAdminEmail(user.email) || user.admin) && <Admin biz={biz} setBiz={(b) => { setBiz(b); persist({ biz: b }); }} user={user} leagues={leagues} feedback={feedback} onRespond={respondFeedback} onDeleteFeedback={deleteFeedback} onGrantComp={grantComp} onRevokeComp={revokeComp} onBack={() => goBack()} />}
       {quickMockOpen && <QuickMockSetup onCancel={() => setQuickMockOpen(false)} onStart={(cfg) => { setQuickMockOpen(false); startQuickMock(cfg); }} />}
       {/* GLOBAL "Report a bug" — a small fixed button on every page (bottom-left, out of the way of the
           top-right version badge). Opens a lightweight modal that reuses the existing submitFeedback
@@ -8030,7 +8150,7 @@ function AvoidListModal({ league, allLeagues, user, onSave, onSaveMaster, onClos
   );
 }
 
-function LeagueUmbrella({ user, league, allLeagues, onBack, onHome, onSignOut, onOfficial, onMock, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings, onSaveAvoid, onSaveMasterAvoid, onFixSlot, onUpdateUser, onSaveCfg }) {
+function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, onSignOut, onOfficial, onMock, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings, onSaveAvoid, onSaveMasterAvoid, onFixSlot, onUpdateUser, onSaveCfg }) {
   // The checklist used to print league.cfg.slot with a tick beside it, and that number could be months old
   // and simply wrong. Ask the platform instead — and write the answer back, so the room, the mocks and this
   // page stop each holding a different opinion about where the user is sitting.
@@ -8173,7 +8293,7 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, onHome, onSignOut, o
   };
   return (
     <div>
-      <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="League" />
+      <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} backLabel={backLabel} title="League" />
       {setupSeg && (
         <LeagueSettingsModal
           league={league}
@@ -14305,7 +14425,7 @@ function Account({ user, onUpdate, onBack, onHome, onSignOut, onRankings, onAdmi
   );
 }
 
-function RankingsHub({ user, leagues, onUpdate, onBack, onHome, onSignOut, onNewLeague, openSetId, onConsumeOpen, returnToDraft }) {
+function RankingsHub({ user, leagues, onUpdate, onBack, onHome, onSignOut, onNewLeague, openSetId, onConsumeOpen, returnToDraft, backLabel }) {
   const allSets = (user.rankSets) || [];
   const season = user.season || CURRENT_SEASON;
   const [view, setView] = useState("home"); // home | editor
@@ -14363,7 +14483,7 @@ function RankingsHub({ user, leagues, onUpdate, onBack, onHome, onSignOut, onNew
   const editing = allSets.find((s) => s.id === editId);
   if (view === "editor" && editing) {
     return <RankSetEditor user={user} set={editing} leagues={leagues} allSets={allSets} returnToDraft={returnToDraft}
-      onBackToList={() => setView("home")} onBack={onBack} onHome={onHome} onSignOut={onSignOut}
+      onBackToList={() => setView("home")} onBack={onBack} backLabel={backLabel} onHome={onHome} onSignOut={onSignOut}
       onSaveList={(list) => updateSet(editing.id, { list })}
       onRename={(name) => updateSet(editing.id, { name })}
       onAttach={(leagueId) => updateSet(editing.id, { leagueId })}
@@ -14374,7 +14494,7 @@ function RankingsHub({ user, leagues, onUpdate, onBack, onHome, onSignOut, onNew
   // ---------- LANDING ----------
   return (
     <div>
-      <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="Rankings" />
+      <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} backLabel={backLabel} title="Rankings" />
       <div style={{ maxWidth: 860, margin: "0 auto", padding: "24px 20px 50px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginBottom: 14 }}>
           <Compass size={40} />
@@ -14504,7 +14624,7 @@ function RankingsHub({ user, leagues, onUpdate, onBack, onHome, onSignOut, onNew
   );
 }
 
-function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHome, onSignOut, onSaveList, onRename, onAttach, onAdj, onImportList, returnToDraft }) {
+function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHome, onSignOut, onSaveList, onRename, onAttach, onAdj, onImportList, returnToDraft, backLabel }) {
   const [mode, setMode] = useState("list"); // list | board | adjust
   const [flash, setFlash] = useState("");
   const flashMsg = (m) => { setFlash(m); setTimeout(() => setFlash(""), 1600); };
@@ -14652,7 +14772,7 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
 
   return (
     <div>
-      <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="Rankings" />
+      <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} backLabel={backLabel} title="Rankings" />
       <div style={{ maxWidth: 820, margin: "0 auto", padding: "20px 20px 50px" }}>
         <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
           <button className="btn btn-mini" onClick={() => { onSaveList(rankIdsToNames(list, players)); onBackToList(); }}>← All ranking sets</button>
@@ -17088,7 +17208,7 @@ function InDraftTrends({ cfg, players, draftedSet, allLeagues, allFunMocks, onCl
 
 
 
-function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQueue, onSaveAvoid, onSaveSnap, onExit, onBuy, onSettings, onEditRanks, onEditRankSet, onDeleteRankSet, onRanksOff, onUseRankSet, onColPrefs, onSaveInRoomRanks, onUpdate, dataVersion = 0, allLeagues, allFunMocks, noHoverAnim, onToggleHoverAnim }) {
+function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQueue, onSaveAvoid, onSaveSnap, onExit, exitLabel, onBuy, onSettings, onEditRanks, onEditRankSet, onDeleteRankSet, onRanksOff, onUseRankSet, onColPrefs, onSaveInRoomRanks, onUpdate, dataVersion = 0, allLeagues, allFunMocks, noHoverAnim, onToggleHoverAnim }) {
   const cfg = league.cfg;
   // Live per-pick ownership from a connected platform (Sleeper draft_slot). Declared here so it can
   // be applied to the engine's team-assignment BEFORE any roster/sim computation in this render.
@@ -20073,7 +20193,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     <div>
       {tourOn && <CoachTour steps={TOUR_STEPS} onExit={() => { setTourOn(false); setTab("hub"); }} onStepTab={(t) => setTab(t)} optOut={tourOptOut} onOptOut={setTourNeverShow} />}
       <div className="hairline" style={{ display: "flex", alignItems: "center", gap: 12, padding: "6px 16px", flexWrap: "wrap" }}>
-        <button className="btn btn-mini" onClick={exit}>← {user ? (user.paid ? "Home" : "Library") : "Home"}</button>
+        <button className="btn btn-mini" onClick={exit} title="Back to where you came from">← {exitLabel || (user ? (user.paid ? "Home" : "Library") : "Home")}</button>
         <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{league.name}</div>
         {isMock && <div className="chip" style={{ borderColor: "var(--gold)", background: "rgba(224,166,60,.10)", color: "var(--gold)" }} title="This is a practice draft — it saves to this league's mock history and never changes your real draft."><i className="ti ti-dice" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />MOCK</div>}
         <div className="chip" style={{ borderColor: "var(--gold)" }}><b className="disp gold" style={{ fontSize: 15 }}>ROUND {Math.min(round, ROUNDS)} of {ROUNDS}</b></div>
@@ -22864,7 +22984,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const playerRow = (label, p, isBench) => {
                   const projOnly = useProj && p && !realIds.has(p.id); // filled by the projection, not really on the team yet
                   return (
-                  <div key={label + (p ? p.id : "empty")} style={{ display: "grid", gridTemplateColumns: "38px 1fr auto", gap: 6, alignItems: "center", padding: "2px 4px", borderRadius: 4, opacity: isBench ? 0.72 : 1, background: projOnly ? "rgba(224,166,60,.10)" : undefined }}>
+                  // ⭐ FOUR COLUMNS: slot, name (with its position dot), positional rank, projected points.
+                  // Trey: "I basically want it to show position, name, positional rank, projected points."
+                  // The points column is what turns this from a roster listing into a comparison — the card
+                  // header already totals the team, so per-player points are what explain the total. Fixed
+                  // width + tabular figures so the numbers stack into a readable column instead of ragging
+                  // against the rank beside them.
+                  <div key={label + (p ? p.id : "empty")} style={{ display: "grid", gridTemplateColumns: "34px 1fr 34px 34px", gap: 5, alignItems: "center", padding: "2px 4px", borderRadius: 4, opacity: isBench ? 0.72 : 1, background: projOnly ? "rgba(224,166,60,.10)" : undefined }}>
                     <span className="mut" style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".03em" }}>{label}</span>
                     {p ? (
                       <>
@@ -22873,10 +22999,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           <span style={{ fontWeight: projOnly ? 600 : (mine ? 600 : 500), color: projOnly ? "var(--gold)" : undefined }}>{p.name}</span>
                         </span>
                         <span style={{ fontSize: 10.5, fontWeight: 700, color: rankTierColor(p.pos, p.posRank), fontVariantNumeric: "tabular-nums", textAlign: "right" }}>{p.pos}{p.posRank || "—"}</span>
+                        {/* ⚠ A missing projection prints a DASH, never a 0 — a zero here reads as "we project
+                            him for nothing", which is a claim, where a dash is the truth ("we don't have it"). */}
+                        <span className="num" title={p.pts != null ? `${Math.round(p.pts)} projected points` : "No projection available"}
+                          style={{ fontSize: 11, fontWeight: 700, color: "var(--ink)", fontVariantNumeric: "tabular-nums", textAlign: "right" }}>
+                          {Number.isFinite(+p.pts) ? Math.round(p.pts) : "—"}
+                        </span>
                       </>
                     ) : (
                       <>
                         <span className="mut" style={{ fontSize: 11, fontStyle: "italic" }}>empty</span>
+                        <span />
                         <span />
                       </>
                     )}
@@ -22902,6 +23035,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     </div>
                     {/* starters */}
                     <div>
+                      {/* A one-line key over the two right-hand number columns. Without it the second column of
+                          digits is ambiguous — rank and points are both small right-aligned numbers. */}
+                      <div style={{ display: "grid", gridTemplateColumns: "34px 1fr 34px 34px", gap: 5, padding: "0 4px 2px", borderBottom: "1px solid var(--line)", marginBottom: 3 }}>
+                        <span /><span />
+                        <span className="mut" style={{ fontSize: 8, fontWeight: 700, letterSpacing: ".05em", textAlign: "right" }}>RK</span>
+                        <span className="mut" style={{ fontSize: 8, fontWeight: 700, letterSpacing: ".05em", textAlign: "right" }}>{useProj ? "PROJ" : "PTS"}</span>
+                      </div>
                       {slots.map((s) => playerRow(s.slot, s.p, false))}
                       {showDST && playerRow("DST", roster.filter((p) => p.pos === "DST").sort((a, b) => (b.pts || 0) - (a.pts || 0))[0] || null, false)}
                       {showK && playerRow("K", roster.filter((p) => p.pos === "K").sort((a, b) => (b.pts || 0) - (a.pts || 0))[0] || null, false)}
@@ -23041,8 +23181,19 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       <div key={`${r}-${col}`} className={cls2}
                         style={{ borderLeft: p ? `3px solid ${POS_COLOR[p.pos]}` : undefined, opacity: p ? (isProjected ? 0.9 : 1) : undefined, ...hiStyle }}
                         onMouseEnter={p ? (e) => showTip(e, isKeeper ? [
-                          { t: "Keeper", x: `${pickLabel(o)} — ${teamAt(o) === userIdx ? "You" : TEAM_NAMES[teamAt(o)]}` },
-                          { t: "Kept", x: `${p.name} (${p.pos}${p.posRank}) — kept at this pick, locked to this slot.` },
+                          // ⭐ A KEEPER IS STILL A PICK. This used to be two lines — his name and the fact he
+                          // was kept — while the identical-looking cell beside it produced photo, ADP, VBD,
+                          // projected points and a value verdict. Trey asked for the full card here, and he is
+                          // right that it belongs here MOST: a keeper's cost is the only price in the draft
+                          // his manager actually chose, so the surplus is the whole story of the cell.
+                          ...boardPickOutlook(
+                            p, o, cfg,
+                            teamAt(o) === userIdx ? "You" : TEAM_NAMES[teamAt(o)],
+                            picks.slice(0, o).map((pk2, o2) => (pk2 != null && teamAt(o2) === teamAt(o)) ? players[pk2] : null).filter(Boolean),
+                            REQ_F(isSuperflex(cfg)),
+                            rookieAdpById || undefined,
+                            { keeper: true }
+                          ),
                         ] : isProjected ? [
                           { t: "Projected pick", x: `${pickLabel(o)} — ${teamAt(o) === userIdx ? "You" : TEAM_NAMES[teamAt(o)]}` },
                           ...(traded ? [{ t: "Traded pick", x: `Originally ${TEAM_NAMES[naturalOwner(o)]}'s pick, now owned by ${teamAt(o) === userIdx ? "you" : TEAM_NAMES[teamAt(o)]}.` }] : []),
