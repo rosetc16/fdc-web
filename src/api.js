@@ -137,8 +137,12 @@ export const api = {
     if (!r || !r.token || !r.user) throw new Error('The server did not complete the reset. Request a new link.');
     setToken(r.token); return r.user;
   },
-  async saveRankSets(rankSets) {
-    const r = await call('/api/auth/rank-sets', { method: 'POST', body: { rankSets } });
+  async saveRankSets(rankSets, platformRanks) {
+    // platformRanks rides along on the same endpoint: it is the other thing the user hand-builds, and it had
+    // no server home at all until now.
+    const body = { rankSets };
+    if (platformRanks && typeof platformRanks === 'object') body.platformRanks = platformRanks;
+    const r = await call('/api/auth/rank-sets', { method: 'POST', body });
     return r.user;
   },
   signout() { setToken(null); },

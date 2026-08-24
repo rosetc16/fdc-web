@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.28c";
+const BUILD_TAG = "2026.07.28d";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -349,6 +349,57 @@ function migrateRankSets(user) {
   }
   return { ...user, rankSets: sets, season: user.season || CURRENT_SEASON };
 }
+// ⭐⭐ MERGE THE SERVER'S USER ONTO THE LOCAL ONE — NEVER REPLACE IT.
+//
+// THE BUG THIS EXISTS TO KILL. Boot did `setUser({ ...serverUser })`, and the server's user record only ever
+// carried email / paid / rankSets. Every other field lives ONLY on the local object: platformRanks, rankAdj,
+// colPrefs, avoidMaster, homeView, hubSeen, fav, season. So EVERY PAGE LOAD silently deleted all of them.
+// Trey reported it as "my ranks that I save are still not saving… I feel like this has happened multiple
+// times" — and he was right every time; the app was throwing his work away on reload, not failing to save it.
+//
+// This is the same lesson mergeLeaguesById already learned for leagues, which got a careful merge while the
+// USER record next to it got a blind overwrite. A server copy is authoritative for what the server OWNS
+// (identity, payment) and for nothing else.
+//
+// Rank sets merge BY ID, newest edit winning, so a set edited on another device and a set edited here both
+// survive — the union, not the intersection.
+// Whether the last attempt to save rankings to the account actually landed. Module-level beside the other
+// engine globals; read by the draft room and the rankings hub so a failure is visible where the work happens.
+export let RANKS_SYNC = { ok: true, at: 0, error: null };
+
+function mergeUser(local, server) {
+  if (!server) return local;
+  if (!local) return server;
+  const byId = new Map();
+  const put = (rs) => {
+    if (!rs || rs.id == null) return;
+    const prev = byId.get(rs.id);
+    if (!prev) { byId.set(rs.id, rs); return; }
+    // Newest EDIT wins. Where neither side is dated, keep whichever actually has players in it — an empty
+    // set overwriting a full one is the loss this whole function exists to prevent.
+    const a = Number(prev.editedTs || 0), b = Number(rs.editedTs || 0);
+    if (b > a) byId.set(rs.id, rs);
+    else if (b === a && (rs.list || []).length > (prev.list || []).length) byId.set(rs.id, rs);
+  };
+  (Array.isArray(local.rankSets) ? local.rankSets : []).forEach(put);
+  (Array.isArray(server.rankSets) ? server.rankSets : []).forEach(put);
+  return {
+    ...local,                 // every local-only preference survives
+    ...server,                // identity + entitlement come from the server
+    // …but anything the server does not own is taken back from local when the server has nothing to say.
+    rankSets: [...byId.values()],
+    platformRanks: server.platformRanks && Object.keys(server.platformRanks).length
+      ? { ...(local.platformRanks || {}), ...server.platformRanks }
+      : (local.platformRanks || server.platformRanks || {}),
+    rankAdj: local.rankAdj || server.rankAdj,
+    colPrefs: local.colPrefs || server.colPrefs,
+    avoidMaster: local.avoidMaster || server.avoidMaster,
+    homeView: local.homeView || server.homeView,
+    hubSeen: local.hubSeen || server.hubSeen,
+    fav: local.fav || server.fav,
+  };
+}
+
 // ---- RANK LIST PERSISTENCE (names, not ids) -----------------------------------------------------
 // A rank set's stored `list` persists NORMALIZED PLAYER NAMES. It used to persist raw player ids —
 // but ids are just the player's index in the data array at build time, so every data refresh could
@@ -6427,7 +6478,13 @@ export default function App() {
         packP.then((pack) => { try { if (pack && applyLivePack(pack)) setDataVersion((v) => v + 1); } catch (e) {} finally { packDoneRef.current = true; } });
         meP.then(async (me) => {
           if (!me) return;
-          try { const admin = isAdminEmail(me.email); setUser(migrateRankSets({ ...me, rankSets: me.rankSets || [], admin, paid: me.paid || admin })); } catch (e) {}
+          try {
+            const admin = isAdminEmail(me.email);
+            // ⭐ MERGE, don't replace — see mergeUser. `localBlob.user` is what this device already had.
+            const localUser = (localBlob && localBlob.user) || null;
+            const srv = migrateRankSets({ ...me, rankSets: me.rankSets || [], admin, paid: me.paid || admin });
+            setUser(mergeUser(migrateRankSets(localUser), srv));
+          } catch (e) {}
           // restore the server-saved blob (cross-device) once we know who we are
           try {
             const sr = await api.getState();
@@ -6463,7 +6520,11 @@ export default function App() {
           }
           if (params.get("paid") === "1") {
             const me2 = await meP;
-            if (me2) { const admin = isAdminEmail(me2.email); setUser(migrateRankSets({ ...me2, rankSets: me2.rankSets || [], admin, paid: me2.paid || admin })); }
+            if (me2) {
+              const admin = isAdminEmail(me2.email);
+              const srv2 = migrateRankSets({ ...me2, rankSets: me2.rankSets || [], admin, paid: me2.paid || admin });
+              setUser((u) => mergeUser(u, srv2));
+            }
             window.history.replaceState({}, "", window.location.pathname);
             setRoute("home");
           }
@@ -6541,9 +6602,16 @@ export default function App() {
     // refresh (the local storage copy would otherwise be overwritten by api.me() on reload).
     try {
       if (hasBackend && next.user && Array.isArray(next.user.rankSets)) {
-        await api.saveRankSets(next.user.rankSets);
+        await api.saveRankSets(next.user.rankSets, next.user.platformRanks || {});
+        RANKS_SYNC = { ok: true, at: Date.now(), error: null };
       }
-    } catch (e) { /* keep local copy; will retry on next change */ }
+    } catch (e) {
+      // ⚠ THIS USED TO BE A SILENT SWALLOW, with a comment claiming it would "retry on next change". Nothing
+      // retried. A failed save meant the next reload pulled the older server copy over the top and the work
+      // was gone with no message — which is how "my rankings keep disappearing" happens without a single
+      // error anywhere. The local copy still stands; the failure is now recorded so the UI can say so.
+      RANKS_SYNC = { ok: false, at: Date.now(), error: (e && e.message) || String(e) };
+    }
     // CROSS-DEVICE: when signed in to a backend account, mirror the whole local blob to the server so
     // leagues, picks/preds, priority queues, and mocks follow the user to any device and survive a
     // sign-out. We store the user's leagues/mocks/feedback (not the auth/user record, which the server
@@ -6641,7 +6709,17 @@ export default function App() {
         const u = mode === "signup" ? await api.signup(email, password) : await api.signin(email, password);
         setAuthError(null);
         const admin = isAdminEmail(u.email || email);
-        const merged = migrateRankSets({ ...u, rankSets: u.rankSets || [], admin, paid: u.paid || admin });
+        const srvUser = migrateRankSets({ ...u, rankSets: u.rankSets || [], admin, paid: u.paid || admin });
+        // Signing in REPLACES by default — a different account must not inherit the last user's boards. But
+        // signing back into the SAME account (the common case after a sign-out) should keep the local-only
+        // preferences this device holds, so that path merges.
+        // ⚠ `localBlob` is declared inside the BOOT effect, not here — referencing it threw a ReferenceError
+        // that the surrounding try/catch swallowed, so signup silently failed and the modal just sat there.
+        // The live `user` state is this device's local record and is genuinely in scope.
+        const prevLocal = user || null;
+        const sameAccount = prevLocal && prevLocal.email
+          && String(prevLocal.email).toLowerCase() === String(srvUser.email || "").toLowerCase();
+        const merged = sameAccount ? mergeUser(migrateRankSets(prevLocal), srvUser) : srvUser;
         setUser(merged);
         // Restore this account's server-saved blob (leagues, picks/preds, queues, mocks) so signing in
         // on any device brings the user's drafts with them. Falls back silently to whatever's local.
@@ -7574,153 +7652,118 @@ function PlatformRanksModal({ league, user, onSave, onClose }) {
   }, [league.cfg]);
   const byId = useMemo(() => { const m = {}; players.forEach((p) => { m[p.id] = p; }); return m; }, [players]);
 
-  // SEED. An existing list is re-resolved BY NAME, never by the stored id: the pool is rebuilt from live data
-  // every session and re-filtered per league, so a saved positional id points at a different player later.
-  // That exact bug ate a set of keepers once and the rule earned its place.
-  const seed = () => {
-    const existing = user && user.platformRanks && user.platformRanks[lgId] && user.platformRanks[lgId].list;
-    if (existing && existing.length) {
-      const byN = {};
-      players.forEach((p) => { byN[normName(p.name)] = p.id; });
-      const out = existing
-        .map((e) => ({ id: e.n != null && byN[e.n] != null ? byN[e.n] : e.id, adp: e.adp != null ? String(e.adp) : "" }))
-        .filter((e) => e.id != null && byId[e.id]);
-      if (out.length) return out;
-    }
-    return players.filter((p) => POS.includes(p.pos) && p.adp != null)
-      .slice().sort((a, b) => a.adp - b.adp).slice(0, 200)
-      .map((p) => ({ id: p.id, adp: "" }));
+  // ⭐ KEEPERS ARE NOT DRAFTABLE, so asking for their ADP is asking a meaningless question. In a keeper
+  // league they stay VISIBLE (you want to see who is gone) but their input is disabled and labelled, rather
+  // than silently accepting a number that can never be used.
+  const keptNames = useMemo(() => {
+    const set = new Set();
+    try {
+      const ks = resolveKeepers((league.cfg && league.cfg.keepers) || [], players);
+      ks.forEach((k) => { if (k && k.name) set.add(normName(k.name)); });
+    } catch { /* a league with no keepers is the normal case */ }
+    return set;
+  }, [league.cfg, players]);
+  const isKeeper = (p) => keptNames.has(normName(p.name));
+
+  // THE LIST IS FIXED AND MARKET-ORDERED. An earlier version let you drag players into your own order and
+  // treated that order as the answer when you left the number blank. Trey killed that deliberately — "I don't
+  // want to give the option to rank, but rather you have to type in an ADP since this probably complicates
+  // it" — and he was right for a second reason: a position-derived ADP is a fabricated number that looks
+  // exactly like a real one on the board.
+  const seedAdp = () => {
+    const rec = user && user.platformRanks && user.platformRanks[lgId];
+    const list = rec && Array.isArray(rec.list) ? rec.list : [];
+    const out = {};
+    const byN = {};
+    players.forEach((p) => { byN[normName(p.name)] = p.id; });
+    list.forEach((e) => {
+      if (!e || e.adp == null) return;                    // only typed values were ever real
+      const id = e.n != null && byN[e.n] != null ? byN[e.n] : e.id;
+      if (id != null) out[id] = String(e.adp);
+    });
+    return out;
   };
-  const [list, setList] = useState(seed);
+  const [vals, setVals] = useState(seedAdp);
   const [q, setQ] = useState("");
   const [pos, setPos] = useState("");
-  const [dragOver, setDragOver] = useState(null);
-  const dragFrom = useRef(null);
+  const [onlyFilled, setOnlyFilled] = useState(false);
 
-  const move = (i, dir) => setList((l) => {
-    const j = i + dir; if (j < 0 || j >= l.length) return l;
-    const c = l.slice(); [c[i], c[j]] = [c[j], c[i]]; return c;
-  });
-  const drop = (from, to) => setList((l) => {
-    if (from == null || to == null || from === to) return l;
-    const c = l.slice(); const [m] = c.splice(from, 1); c.splice(to, 0, m); return c;
-  });
-  const setAdp = (i, v) => setList((l) => { const c = l.slice(); c[i] = { ...c[i], adp: v.replace(/[^0-9.]/g, "") }; return c; });
-  const remove = (i) => setList((l) => l.filter((_, k) => k !== i));
-  const add = (id) => setList((l) => (l.some((e) => e.id === id) ? l : l.concat([{ id, adp: "" }])));
-  // Reorder BY the numbers typed. Anyone left blank keeps his current place rather than being flung to the
-  // bottom — a sort that punishes the rows you haven't filled in yet makes the feature hostile to use.
-  const sortByTyped = () => setList((l) => {
-    const withPos = l.map((e, i) => ({ e, i, v: e.adp === "" || e.adp == null ? null : +e.adp }));
-    const typed = withPos.filter((x) => x.v != null).sort((a, b) => a.v - b.v);
-    const blanks = withPos.filter((x) => x.v == null);
-    return typed.concat(blanks).map((x) => x.e);
-  });
-  const resetToMarket = () => setList(players.filter((p) => POS.includes(p.pos) && p.adp != null)
-    .slice().sort((a, b) => a.adp - b.adp).slice(0, 200).map((p) => ({ id: p.id, adp: "" })));
-
-  const inList = useMemo(() => new Set(list.map((e) => e.id)), [list]);
-  const search = useMemo(() => {
+  const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    if (!needle) return [];
-    return players.filter((p) => !inList.has(p.id) && p.name.toLowerCase().includes(needle)).slice(0, 6);
-  }, [q, players, inList]);
+    return players
+      .filter((p) => POS.includes(p.pos) && p.adp != null)
+      .filter((p) => (!pos || p.pos === pos) && (!needle || p.name.toLowerCase().includes(needle)))
+      .filter((p) => (!onlyFilled || (vals[p.id] != null && vals[p.id] !== "")))
+      .sort((a, b) => a.adp - b.adp)
+      .slice(0, 400);
+  }, [players, q, pos, onlyFilled, vals]);
 
-  // The filter NARROWS what is displayed; it never reorders or drops anything from the saved list. Filtering
-  // a drag-and-drop list is a real trap — indexes shown must map back to real positions, so each visible row
-  // carries its true index and every action uses that.
-  const view = useMemo(() => list.map((e, i) => ({ e, i, p: byId[e.id] }))
-    .filter((r) => r.p && (!pos || r.p.pos === pos)
-      && (!q.trim() || r.p.name.toLowerCase().includes(q.trim().toLowerCase()))), [list, byId, pos, q]);
-
-  const typedCount = list.filter((e) => e.adp !== "" && e.adp != null).length;
+  const filled = useMemo(() => Object.values(vals).filter((v) => v !== "" && v != null).length, [vals]);
+  const setVal = (id, v) => setVals((m) => ({ ...m, [id]: v.replace(/[^0-9.]/g, "") }));
 
   const save = () => {
-    const out = list.filter((e) => e && byId[e.id])
-      .map((e) => ({ id: e.id, n: normName(byId[e.id].name), adp: e.adp === "" || e.adp == null ? null : +e.adp }));
-    onSave(out, lgId);
+    // Only typed values are stored. Nothing is inferred from order, so a half-finished sheet stays honest:
+    // the players you filled in get an Edge, everyone else shows a dash.
+    const out = players
+      .filter((p) => vals[p.id] != null && vals[p.id] !== "" && Number.isFinite(+vals[p.id]) && !isKeeper(p))
+      .map((p) => ({ id: p.id, n: normName(p.name), adp: +vals[p.id] }));
+    onSave(out.length ? out : null, lgId);
     onClose();
   };
 
   return (
     <div className="modalbg" onClick={onClose}>
-      <div className="panel" style={{ maxWidth: 640, width: "100%", padding: 20, maxHeight: "88vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+      <div className="panel" style={{ maxWidth: 620, width: "100%", padding: 20, maxHeight: "88vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
           <div style={{ flex: 1 }}>
             <div className="disp" style={{ fontSize: 19, fontWeight: 700 }}>Your league's ADP</div>
             <div className="mut" style={{ fontSize: 12.5, marginTop: 3, lineHeight: 1.5 }}>
-              Started from market ADP for your format. <b style={{ color: "var(--ink)" }}>The order is the ranking</b> — drag the handle or use ▲▼. Typing a number is optional: leave it blank and we use where you put him. Powers the <b style={{ color: "var(--gold)" }}>Edge</b> and <b style={{ color: "var(--gold)" }}>Platform ADP</b> columns.
+              Type the ADP your platform shows next to any player you care about. <b style={{ color: "var(--ink)" }}>You only need the ones you want to compare</b> — anyone you leave blank simply shows a dash, and nothing here changes the market ADP on the board. Powers the <b style={{ color: "var(--gold)" }}>Edge</b> and <b style={{ color: "var(--gold)" }}>Platform ADP</b> columns.
             </div>
           </div>
           <button className="btn btn-mini" onClick={onClose} title="Close"><i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true" /></button>
         </div>
 
         <div style={{ display: "flex", gap: 6, margin: "12px 0 8px", flexWrap: "wrap", alignItems: "center" }}>
-          <input className="gs" style={{ flex: "1 1 170px", minWidth: 140, padding: "5px 9px", fontSize: 12.5 }} placeholder="Find or add a player…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input className="gs" style={{ flex: "1 1 170px", minWidth: 140, padding: "5px 9px", fontSize: 12.5 }} placeholder="Find a player…" value={q} onChange={(e) => setQ(e.target.value)} />
           {["", "QB", "RB", "WR", "TE"].map((x) => (
             <button key={x || "all"} className={`btn btn-mini${pos === x ? " btn-gold" : ""}`} onClick={() => setPos(x)}>{x || "All"}</button>
           ))}
-        </div>
-        {search.length > 0 && (
-          <div style={{ border: "1px solid var(--gold)", borderRadius: 8, marginBottom: 8, overflow: "hidden" }}>
-            {search.map((p) => (
-              <button key={p.id} className="btn" style={{ display: "flex", width: "100%", alignItems: "center", gap: 8, border: "none", borderRadius: 0, justifyContent: "flex-start", fontSize: 12.5 }}
-                onClick={() => { add(p.id); setQ(""); }}>
-                <i className="ti ti-plus" style={{ fontSize: 12, color: "var(--gold)" }} aria-hidden="true" />
-                <Dot pos={p.pos} /><span style={{ flex: 1, textAlign: "left" }}>{p.name}</span>
-                <span className="mut num" style={{ fontSize: 10.5 }}>mkt {p.adp != null ? p.adp.toFixed(1) : "—"}</span>
-              </button>
-            ))}
-          </div>
-        )}
-
-        <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <button className="btn btn-mini" onClick={sortByTyped} title="Reorder by the numbers you typed. Players you haven't given a number keep their place.">Sort by typed ADP</button>
-          <button className="btn btn-mini" onClick={resetToMarket} title="Throw away this list and start again from market ADP">Reset to market</button>
-          <div style={{ flex: 1 }} />
-          <span className="mut" style={{ fontSize: 11 }}>{list.length} ranked{typedCount ? ` · ${typedCount} with a typed ADP` : ""}{view.length !== list.length ? ` · showing ${view.length}` : ""}</span>
+          <button className={`btn btn-mini${onlyFilled ? " btn-gold" : ""}`} onClick={() => setOnlyFilled((v) => !v)} title="Show only the players you have given a number">Filled ({filled})</button>
         </div>
 
-        <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8, minHeight: 120 }}>
-          {view.length === 0 && <div className="mut" style={{ padding: 16, fontSize: 12.5, textAlign: "center" }}>Nothing matches that filter.</div>}
-          {view.map(({ e, i, p }) => (
-            <div key={e.id} draggable
-              onDragStart={(ev) => { dragFrom.current = i; ev.dataTransfer.effectAllowed = "move"; ev.dataTransfer.setData("text/plain", String(i)); }}
-              onDragOver={(ev) => { ev.preventDefault(); ev.dataTransfer.dropEffect = "move"; if (dragOver !== i) setDragOver(i); }}
-              onDragLeave={() => setDragOver((d) => (d === i ? null : d))}
-              onDragEnd={() => { dragFrom.current = null; setDragOver(null); }}
-              onDrop={(ev) => {
-                ev.preventDefault();
-                const from = dragFrom.current != null ? dragFrom.current : Number(ev.dataTransfer.getData("text/plain"));
-                drop(from, i); dragFrom.current = null; setDragOver(null);
-              }}
-              style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", fontSize: 13,
-                borderBottom: "1px solid var(--line)",
-                // A drop target with no visible line is a guess. This is the whole difference between
-                // drag-and-drop that feels responsive and drag-and-drop that feels broken.
-                borderTop: dragOver === i ? "2px solid var(--gold)" : "2px solid transparent",
-                background: dragOver === i ? "rgba(224,166,60,.10)" : (i % 2 ? "transparent" : "var(--panel2)") }}>
-              <i className="ti ti-grip-vertical" style={{ fontSize: 12, color: "var(--mut)", cursor: "grab", flexShrink: 0 }} aria-hidden="true" />
-              <span className="num mut" style={{ width: 24, textAlign: "right", fontSize: 11, flexShrink: 0 }}>{i + 1}</span>
-              <Dot pos={p.pos} />
-              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
-              <span className="mut num" style={{ fontSize: 10.5, flexShrink: 0 }} title="This board's market ADP, for comparison">mkt {p.adp != null ? p.adp.toFixed(1) : "—"}</span>
-              <input className="gs num" style={{ width: 56, padding: "3px 6px", fontSize: 12, textAlign: "center", flexShrink: 0 }}
-                placeholder="ADP" value={e.adp} onChange={(ev) => setAdp(i, ev.target.value)}
-                title="Your league's actual ADP for this player. Leave blank to just use his position in this list." />
-              <button className="btn btn-mini" style={{ padding: "0 5px" }} disabled={i === 0} onClick={() => move(i, -1)} title="Move up">▲</button>
-              <button className="btn btn-mini" style={{ padding: "0 5px" }} disabled={i === list.length - 1} onClick={() => move(i, 1)} title="Move down">▼</button>
-              <button className="btn btn-mini" style={{ padding: "0 5px", color: "var(--red)" }} onClick={() => remove(i)} title="Remove from this list">✕</button>
-            </div>
-          ))}
+        <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8, minHeight: 140 }}>
+          {rows.length === 0 && <div className="mut" style={{ padding: 16, fontSize: 12.5, textAlign: "center" }}>{onlyFilled && !filled ? "You haven't entered any ADPs yet." : "Nothing matches that filter."}</div>}
+          {rows.map((p, i) => {
+            const kept = isKeeper(p);
+            return (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", fontSize: 13,
+                borderBottom: "1px solid var(--line)", background: i % 2 ? "transparent" : "var(--panel2)", opacity: kept ? 0.55 : 1 }}>
+                <span className="mut num" style={{ width: 34, textAlign: "right", fontSize: 10.5 }} title="This board's market ADP">{p.adp.toFixed(1)}</span>
+                <Dot pos={p.pos} />
+                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+                <span className="mut" style={{ fontSize: 10.5 }}>{p.team || ""}</span>
+                {kept ? (
+                  <span className="itag" style={{ fontSize: 8.5, fontWeight: 800, letterSpacing: ".03em", color: "var(--gold)", border: "1px solid var(--gold)", borderRadius: 4, padding: "1px 5px", whiteSpace: "nowrap" }}
+                    title="Already kept in this league — he can't be drafted, so a platform ADP wouldn't mean anything.">KEEPER</span>
+                ) : null}
+                <input className="gs num" style={{ width: 62, padding: "3px 6px", fontSize: 12, textAlign: "center", opacity: kept ? 0.4 : 1 }}
+                  disabled={kept} placeholder={kept ? "—" : "ADP"}
+                  value={kept ? "" : (vals[p.id] || "")}
+                  onChange={(e) => setVal(p.id, e.target.value)}
+                  title={kept ? "Kept players can't be drafted, so there's no ADP to enter." : "Your league's ADP for this player"} />
+              </div>
+            );
+          })}
         </div>
 
-        <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center", flexWrap: "wrap" }}>
           <button className="btn" onClick={onClose}>Cancel</button>
-          {user && user.platformRanks && user.platformRanks[lgId] && (
-            <button className="btn btn-mini" style={{ color: "var(--red)" }} title="Delete this league's ADP list entirely"
-              onClick={() => { onSave(null, lgId); onClose(); }}>Clear all</button>
+          {filled > 0 && (
+            <button className="btn btn-mini" style={{ color: "var(--red)" }} title="Clear every ADP you have entered for this league"
+              onClick={() => { if (window.confirm("Clear every ADP you've entered for this league?")) setVals({}); }}>Clear all</button>
           )}
+          <span className="mut" style={{ fontSize: 11 }}>{filled} entered{rows.length >= 400 ? " · showing the top 400 by market ADP — search for anyone else" : ""}</span>
           <div style={{ flex: 1 }} />
           <button className="btn btn-gold" onClick={save}><i className="ti ti-device-floppy" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Save &amp; use</button>
         </div>
@@ -17619,10 +17662,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       // Resolve by NAME first (stable across data refreshes); fall back to the legacy raw id.
       const id = entry.n != null ? byN[entry.n] : entry.id;
       if (id == null) return;
-      // ADP: use the typed number if present, else the player's position in the platform list (1-based).
-      map[id] = entry.adp != null && entry.adp !== "" ? +entry.adp : (i + 1);
+      // ⭐⭐ A BLANK MEANS WE DO NOT KNOW — it does NOT mean "his position in this list".
+      //
+      // That fallback is why Trey saw a platform ADP for players he never filled in, and an Edge of ~0 for
+      // dozens of names: the list is seeded in market-ADP order, so position ≈ market rank, so
+      // `edge = marketADP − position` collapsed to nothing. The number looked plausible, was entirely
+      // fabricated, and was indistinguishable by eye from a real one. Same family as printing "Undisclosed"
+      // as a body part: a placeholder wearing an answer's clothes.
+      const typed = entry.adp != null && entry.adp !== "" ? +entry.adp : null;
+      if (typed == null || !Number.isFinite(typed)) return;
+      map[id] = typed;
     });
-    return { has: true, map };
+    // `has` gates the Edge / Platform ADP columns. A saved list where nothing has been typed yet has nothing
+    // to show, so the columns stay off rather than appearing full of dashes.
+    return { has: Object.keys(map).length > 0, map };
   }, [user, league, players]);
   useEffect(() => { if (platRanks.has) setCols((c) => (c.edge && c.platAdp ? c : { ...c, edge: true, platAdp: true })); }, [platRanks.has]);
   // Everyone who is off the board: picks made, no-cost keepers, and any forced picks that live ahead of the
@@ -23942,7 +23995,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         <div className="modalbg" onClick={() => setInRoomRanks(null)}>
           <div className="panel" style={{ maxWidth: 460, width: "100%", padding: 18, borderColor: "var(--gold)", maxHeight: "88vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
             <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 3 }}>{inRoomRanksSet ? `Editing: ${inRoomRanksSet.name}` : "Build your rankings"}</div>
-            <div className="mut" style={{ fontSize: 11.5, marginBottom: 10, lineHeight: 1.45 }}>Starting from Sleeper consensus for this format. Drag the <i className="ti ti-grip-vertical" style={{ fontSize: 11 }} aria-hidden="true" /> handle or use arrows to move players. Save attaches it to this league &amp; format and powers your Edge / My ADP / Blend columns.</div>
+            <div className="mut" style={{ fontSize: 11.5, marginBottom: 8, lineHeight: 1.45 }}>Starting from Sleeper consensus for this format. Drag the <i className="ti ti-grip-vertical" style={{ fontSize: 11 }} aria-hidden="true" /> handle or use arrows to move players. Save attaches it to this league &amp; format and powers your Edge / My ADP / Blend columns.</div>
+            {/* ⭐ THE WAY BACK. Trey asked for this after a board came back in an order he didn't recognise:
+                "I want to have the ability to reset rankings… at least I can go back to the default for this
+                exact league settings". The default is not a stored copy — it is the CURRENT market order for
+                THIS league's own format, rebuilt from the pool the board is using, so it always matches
+                redraft/dynasty, 1QB/superflex, TE premium and scoring without anyone having to keep a
+                per-format snapshot in sync. */}
+            <div style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <button className="btn btn-mini" title="Throw this list away and start again from the market order for this league's exact format"
+                onClick={() => {
+                  if (!window.confirm("Reset to the default order for this league's format? Your current order in this editor will be lost.")) return;
+                  setInRoomRanks(players.slice().sort((a2, b2) => a2.adp - b2.adp).map((p) => p.id));
+                }}>
+                <i className="ti ti-refresh" style={{ fontSize: 11, marginRight: 4 }} aria-hidden="true" />Reset to default order
+              </button>
+              <span className="mut" style={{ fontSize: 10.5 }}>{`${cfg.teams}-team · ${cfg.sf ? "superflex" : "1QB"} · ${typeFamily(cfg.type) === "dynasty" ? "dynasty" : typeFamily(cfg.type) === "bestball" ? "best ball" : "redraft"}`}</span>
+            </div>
             <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8 }}>
               {inRoomRanks.slice(0, 120).map((id, i) => { const p = byId[id]; if (!p) return null; return (
                 <div key={id} draggable
@@ -23959,6 +24028,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 </div>
               ); })}
             </div>
+            {/* ⭐ A FAILED SAVE MUST BE VISIBLE. It used to be swallowed with a comment claiming it would retry;
+                nothing retried, and the next reload pulled the older server copy over the top. That is how a
+                ranking disappears without a single error anywhere. */}
+            {!RANKS_SYNC.ok && (
+              <div style={{ marginTop: 10, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--red)", background: "rgba(242,101,92,.10)", fontSize: 11.5, lineHeight: 1.45 }}>
+                <b style={{ color: "var(--red)" }}>Last save didn't reach your account.</b> It's still on this device, but it may not survive a reload or follow you to another one. Check your connection and save again.
+              </div>
+            )}
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
               <button className="btn" onClick={() => { setInRoomRanks(null); setInRoomRanksSet(null); }}>Cancel</button>
               <div style={{ flex: 1 }} />
