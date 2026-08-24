@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.28b";
+const BUILD_TAG = "2026.07.28c";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -7077,6 +7077,7 @@ export default function App() {
         allLeagues={leagues}
         onSaveAvoid={(id, arr, allowArr) => { const next = leagues.map((l) => (l.id === id ? { ...l, avoidList: arr, ...(allowArr ? { avoidAllow: allowArr } : {}) } : l)); setLeagues(next); persist({ leagues: next }); }}
         onSaveMasterAvoid={(arr) => updateUser({ avoidMaster: arr })}
+        onUpdateUser={updateUser}
         onFixSlot={(id, slot) => { const next = leagues.map((l) => (l.id === id ? { ...l, cfg: { ...l.cfg, slot } } : l)); setLeagues(next); persist({ leagues: next }); }}
         onOpenTeamHub={lg.cfg.connect && lg.cfg.connect.leagueId ? () => { setHubLeagueId(lg.cfg.connect.leagueId); setRoute("teamHub"); } : null} /> : null; })()}
       {route === "teamHub" && user && hubLeagueId && <Boundary label="in-season hub" fallback={(msg) => (
@@ -7548,6 +7549,186 @@ function TrendsPage({ user, onBack, onHome, onSignOut }) {
 //
 // Deliberately a modal over the league page rather than a route: it's a small editing task you come back
 // from, and the app never changes its URL, so a route here would be a dead end on refresh.
+// YOUR LEAGUE'S ADP — a ranking you build by hand, seeded from the market.
+//
+// Trey: "if I click on 'your league's ADP' it just brings me to the hub. Can you make this do the same thing
+// for the 'Do not draft list' where it just pops open a screen. I want to be able to drag and drop along with
+// clicking to move people up and down… you can fill with the adp from the system first… I want you to
+// basically do a ranking, but you can also type in the actual adp as well."
+//
+// ⚠ THE EDITOR ALREADY EXISTED — drag, arrows, a typed ADP box, seeded from market ADP — buried inside the
+// draft room behind Tools → My ranks. The prep checklist row that advertises it called onOfficial(), which
+// just enters the draft room and drops you on the hub with no hint where to go. So this build is not really
+// "build an editor": it is LIFT THE EXISTING ONE OUT so both surfaces open the same thing, the way the
+// do-not-draft list already works. One component, two entry points — the alternative is two editors that
+// drift, which is the trap the trends panel fell into.
+//
+// TWO ORDERINGS LIVE HERE AT ONCE and the distinction matters:
+//   • THE LIST ORDER is the ranking. Position 1 is your number one, whatever the numbers say.
+//   • THE TYPED ADP is an optional exact value per player, for when you know your room's real number.
+// Blank means "just use where I put him". Saving keeps both, so a half-finished list is still useful.
+function PlatformRanksModal({ league, user, onSave, onClose }) {
+  const lgId = league.mockOf != null ? league.mockOf : league.id;
+  const players = useMemo(() => {
+    try { return buildPlayers(league.cfg || {}) || []; } catch { return []; }
+  }, [league.cfg]);
+  const byId = useMemo(() => { const m = {}; players.forEach((p) => { m[p.id] = p; }); return m; }, [players]);
+
+  // SEED. An existing list is re-resolved BY NAME, never by the stored id: the pool is rebuilt from live data
+  // every session and re-filtered per league, so a saved positional id points at a different player later.
+  // That exact bug ate a set of keepers once and the rule earned its place.
+  const seed = () => {
+    const existing = user && user.platformRanks && user.platformRanks[lgId] && user.platformRanks[lgId].list;
+    if (existing && existing.length) {
+      const byN = {};
+      players.forEach((p) => { byN[normName(p.name)] = p.id; });
+      const out = existing
+        .map((e) => ({ id: e.n != null && byN[e.n] != null ? byN[e.n] : e.id, adp: e.adp != null ? String(e.adp) : "" }))
+        .filter((e) => e.id != null && byId[e.id]);
+      if (out.length) return out;
+    }
+    return players.filter((p) => POS.includes(p.pos) && p.adp != null)
+      .slice().sort((a, b) => a.adp - b.adp).slice(0, 200)
+      .map((p) => ({ id: p.id, adp: "" }));
+  };
+  const [list, setList] = useState(seed);
+  const [q, setQ] = useState("");
+  const [pos, setPos] = useState("");
+  const [dragOver, setDragOver] = useState(null);
+  const dragFrom = useRef(null);
+
+  const move = (i, dir) => setList((l) => {
+    const j = i + dir; if (j < 0 || j >= l.length) return l;
+    const c = l.slice(); [c[i], c[j]] = [c[j], c[i]]; return c;
+  });
+  const drop = (from, to) => setList((l) => {
+    if (from == null || to == null || from === to) return l;
+    const c = l.slice(); const [m] = c.splice(from, 1); c.splice(to, 0, m); return c;
+  });
+  const setAdp = (i, v) => setList((l) => { const c = l.slice(); c[i] = { ...c[i], adp: v.replace(/[^0-9.]/g, "") }; return c; });
+  const remove = (i) => setList((l) => l.filter((_, k) => k !== i));
+  const add = (id) => setList((l) => (l.some((e) => e.id === id) ? l : l.concat([{ id, adp: "" }])));
+  // Reorder BY the numbers typed. Anyone left blank keeps his current place rather than being flung to the
+  // bottom — a sort that punishes the rows you haven't filled in yet makes the feature hostile to use.
+  const sortByTyped = () => setList((l) => {
+    const withPos = l.map((e, i) => ({ e, i, v: e.adp === "" || e.adp == null ? null : +e.adp }));
+    const typed = withPos.filter((x) => x.v != null).sort((a, b) => a.v - b.v);
+    const blanks = withPos.filter((x) => x.v == null);
+    return typed.concat(blanks).map((x) => x.e);
+  });
+  const resetToMarket = () => setList(players.filter((p) => POS.includes(p.pos) && p.adp != null)
+    .slice().sort((a, b) => a.adp - b.adp).slice(0, 200).map((p) => ({ id: p.id, adp: "" })));
+
+  const inList = useMemo(() => new Set(list.map((e) => e.id)), [list]);
+  const search = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return [];
+    return players.filter((p) => !inList.has(p.id) && p.name.toLowerCase().includes(needle)).slice(0, 6);
+  }, [q, players, inList]);
+
+  // The filter NARROWS what is displayed; it never reorders or drops anything from the saved list. Filtering
+  // a drag-and-drop list is a real trap — indexes shown must map back to real positions, so each visible row
+  // carries its true index and every action uses that.
+  const view = useMemo(() => list.map((e, i) => ({ e, i, p: byId[e.id] }))
+    .filter((r) => r.p && (!pos || r.p.pos === pos)
+      && (!q.trim() || r.p.name.toLowerCase().includes(q.trim().toLowerCase()))), [list, byId, pos, q]);
+
+  const typedCount = list.filter((e) => e.adp !== "" && e.adp != null).length;
+
+  const save = () => {
+    const out = list.filter((e) => e && byId[e.id])
+      .map((e) => ({ id: e.id, n: normName(byId[e.id].name), adp: e.adp === "" || e.adp == null ? null : +e.adp }));
+    onSave(out, lgId);
+    onClose();
+  };
+
+  return (
+    <div className="modalbg" onClick={onClose}>
+      <div className="panel" style={{ maxWidth: 640, width: "100%", padding: 20, maxHeight: "88vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <div className="disp" style={{ fontSize: 19, fontWeight: 700 }}>Your league's ADP</div>
+            <div className="mut" style={{ fontSize: 12.5, marginTop: 3, lineHeight: 1.5 }}>
+              Started from market ADP for your format. <b style={{ color: "var(--ink)" }}>The order is the ranking</b> — drag the handle or use ▲▼. Typing a number is optional: leave it blank and we use where you put him. Powers the <b style={{ color: "var(--gold)" }}>Edge</b> and <b style={{ color: "var(--gold)" }}>Platform ADP</b> columns.
+            </div>
+          </div>
+          <button className="btn btn-mini" onClick={onClose} title="Close"><i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true" /></button>
+        </div>
+
+        <div style={{ display: "flex", gap: 6, margin: "12px 0 8px", flexWrap: "wrap", alignItems: "center" }}>
+          <input className="gs" style={{ flex: "1 1 170px", minWidth: 140, padding: "5px 9px", fontSize: 12.5 }} placeholder="Find or add a player…" value={q} onChange={(e) => setQ(e.target.value)} />
+          {["", "QB", "RB", "WR", "TE"].map((x) => (
+            <button key={x || "all"} className={`btn btn-mini${pos === x ? " btn-gold" : ""}`} onClick={() => setPos(x)}>{x || "All"}</button>
+          ))}
+        </div>
+        {search.length > 0 && (
+          <div style={{ border: "1px solid var(--gold)", borderRadius: 8, marginBottom: 8, overflow: "hidden" }}>
+            {search.map((p) => (
+              <button key={p.id} className="btn" style={{ display: "flex", width: "100%", alignItems: "center", gap: 8, border: "none", borderRadius: 0, justifyContent: "flex-start", fontSize: 12.5 }}
+                onClick={() => { add(p.id); setQ(""); }}>
+                <i className="ti ti-plus" style={{ fontSize: 12, color: "var(--gold)" }} aria-hidden="true" />
+                <Dot pos={p.pos} /><span style={{ flex: 1, textAlign: "left" }}>{p.name}</span>
+                <span className="mut num" style={{ fontSize: 10.5 }}>mkt {p.adp != null ? p.adp.toFixed(1) : "—"}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <button className="btn btn-mini" onClick={sortByTyped} title="Reorder by the numbers you typed. Players you haven't given a number keep their place.">Sort by typed ADP</button>
+          <button className="btn btn-mini" onClick={resetToMarket} title="Throw away this list and start again from market ADP">Reset to market</button>
+          <div style={{ flex: 1 }} />
+          <span className="mut" style={{ fontSize: 11 }}>{list.length} ranked{typedCount ? ` · ${typedCount} with a typed ADP` : ""}{view.length !== list.length ? ` · showing ${view.length}` : ""}</span>
+        </div>
+
+        <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8, minHeight: 120 }}>
+          {view.length === 0 && <div className="mut" style={{ padding: 16, fontSize: 12.5, textAlign: "center" }}>Nothing matches that filter.</div>}
+          {view.map(({ e, i, p }) => (
+            <div key={e.id} draggable
+              onDragStart={(ev) => { dragFrom.current = i; ev.dataTransfer.effectAllowed = "move"; ev.dataTransfer.setData("text/plain", String(i)); }}
+              onDragOver={(ev) => { ev.preventDefault(); ev.dataTransfer.dropEffect = "move"; if (dragOver !== i) setDragOver(i); }}
+              onDragLeave={() => setDragOver((d) => (d === i ? null : d))}
+              onDragEnd={() => { dragFrom.current = null; setDragOver(null); }}
+              onDrop={(ev) => {
+                ev.preventDefault();
+                const from = dragFrom.current != null ? dragFrom.current : Number(ev.dataTransfer.getData("text/plain"));
+                drop(from, i); dragFrom.current = null; setDragOver(null);
+              }}
+              style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", fontSize: 13,
+                borderBottom: "1px solid var(--line)",
+                // A drop target with no visible line is a guess. This is the whole difference between
+                // drag-and-drop that feels responsive and drag-and-drop that feels broken.
+                borderTop: dragOver === i ? "2px solid var(--gold)" : "2px solid transparent",
+                background: dragOver === i ? "rgba(224,166,60,.10)" : (i % 2 ? "transparent" : "var(--panel2)") }}>
+              <i className="ti ti-grip-vertical" style={{ fontSize: 12, color: "var(--mut)", cursor: "grab", flexShrink: 0 }} aria-hidden="true" />
+              <span className="num mut" style={{ width: 24, textAlign: "right", fontSize: 11, flexShrink: 0 }}>{i + 1}</span>
+              <Dot pos={p.pos} />
+              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+              <span className="mut num" style={{ fontSize: 10.5, flexShrink: 0 }} title="This board's market ADP, for comparison">mkt {p.adp != null ? p.adp.toFixed(1) : "—"}</span>
+              <input className="gs num" style={{ width: 56, padding: "3px 6px", fontSize: 12, textAlign: "center", flexShrink: 0 }}
+                placeholder="ADP" value={e.adp} onChange={(ev) => setAdp(i, ev.target.value)}
+                title="Your league's actual ADP for this player. Leave blank to just use his position in this list." />
+              <button className="btn btn-mini" style={{ padding: "0 5px" }} disabled={i === 0} onClick={() => move(i, -1)} title="Move up">▲</button>
+              <button className="btn btn-mini" style={{ padding: "0 5px" }} disabled={i === list.length - 1} onClick={() => move(i, 1)} title="Move down">▼</button>
+              <button className="btn btn-mini" style={{ padding: "0 5px", color: "var(--red)" }} onClick={() => remove(i)} title="Remove from this list">✕</button>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center" }}>
+          <button className="btn" onClick={onClose}>Cancel</button>
+          {user && user.platformRanks && user.platformRanks[lgId] && (
+            <button className="btn btn-mini" style={{ color: "var(--red)" }} title="Delete this league's ADP list entirely"
+              onClick={() => { onSave(null, lgId); onClose(); }}>Clear all</button>
+          )}
+          <div style={{ flex: 1 }} />
+          <button className="btn btn-gold" onClick={save}><i className="ti ti-device-floppy" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Save &amp; use</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AvoidListModal({ league, allLeagues, user, onSave, onSaveMaster, onClose }) {
   const [leagueList, setLeagueList] = useState(() => readLeagueAvoid(league).slice());
   const [master, setMaster] = useState(() => readMasterAvoid(user).slice());
@@ -7756,7 +7937,7 @@ function AvoidListModal({ league, allLeagues, user, onSave, onSaveMaster, onClos
   );
 }
 
-function LeagueUmbrella({ user, league, allLeagues, onBack, onHome, onSignOut, onOfficial, onMock, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings, onSaveAvoid, onSaveMasterAvoid, onFixSlot }) {
+function LeagueUmbrella({ user, league, allLeagues, onBack, onHome, onSignOut, onOfficial, onMock, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings, onSaveAvoid, onSaveMasterAvoid, onFixSlot, onUpdateUser }) {
   // The checklist used to print league.cfg.slot with a tick beside it, and that number could be months old
   // and simply wrong. Ask the platform instead — and write the answer back, so the room, the mocks and this
   // page stop each holding a different opinion about where the user is sitting.
@@ -7798,6 +7979,7 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, onHome, onSignOut, o
   const avoidSaved = effectiveAvoid(league, user);
   const avoidCount = avoidSaved.length;
   const [avoidOpen, setAvoidOpen] = useState(false);
+  const [adpOpen, setAdpOpen] = useState(false);   // your-league's-ADP editor, opened from the checklist row
   const prepRows = (() => {
     const connected = !!connectedId;
     const stt = league.cfg.start || {};
@@ -7837,8 +8019,11 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, onHome, onSignOut, o
       key: "adp", title: "Your league's ADP",
       status: hasLeagueAdp ? "Added" : "Not added",
       done: hasLeagueAdp,
-      hint: "Site ADP is national consensus; your room doesn't draft like that. Paste your platform's ADP and every steal, reach and will-he-last read is measured against the people you're actually drafting with.\n\nDraft room → My ranks → platform ADP.",
-      go: () => onOfficial(league.id),
+      hint: "Site ADP is national consensus; your room doesn't draft like that. Build your own order — drag players around, or type the ADP your platform shows — and every steal, reach and will-he-last read is measured against the people you're actually drafting with.",
+      // ⚠ THIS USED TO CALL onOfficial(), which just enters the draft room and lands on the hub. The row
+      // advertised a thing and then delivered you somewhere else with no route to it. It opens the editor
+      // now, exactly like the do-not-draft row beneath it.
+      go: () => setAdpOpen(true),
     });
     rows.push({
       key: "ranks", title: "Your rankings",
@@ -7891,6 +8076,19 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, onHome, onSignOut, o
   return (
     <div>
       <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="League" />
+      {adpOpen && (
+        <PlatformRanksModal
+          league={league}
+          user={user}
+          onClose={() => setAdpOpen(false)}
+          onSave={(listOrNull, lgId) => {
+            const pr = { ...((user && user.platformRanks) || {}) };
+            if (listOrNull == null) delete pr[lgId];
+            else pr[lgId] = { list: listOrNull, updated: Date.now() };
+            onUpdateUser && onUpdateUser({ platformRanks: pr });
+          }}
+        />
+      )}
       {avoidOpen && (
         <AvoidListModal
           league={league}
@@ -15981,6 +16179,7 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
               <div className="disp" style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Data jobs — ADP & projections</div>
               <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 10 }}>Pull the latest Sleeper ADP and projections into the board. <b style={{ color: "var(--ink)" }}>Update Sleeper ADP</b> is the fast one — it fetches Sleeper's published ADP for every player and recomputes the board in seconds (run this if ADP looks wrong). <b style={{ color: "var(--ink)" }}>Full refresh</b> also re-crawls real drafts and can take a minute.</div>
               <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 10 }}><b style={{ color: "var(--green)" }}>These run automatically</b> — a full refresh at 4 AM (which now includes injury detail), a lighter ADP refresh midday, and a harvest pass every few hours. You normally never need to touch them. The buttons below are just a manual override if you want to force an update right now — injuries being the one worth pressing when news breaks during the day.</div>
+              <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 10 }}><b style={{ color: "var(--gold)" }}>Playoff SOS needs two one-time pulls</b> — <b style={{ color: "var(--ink)" }}>Pull schedule</b> then <b style={{ color: "var(--ink)" }}>Build defense ranks</b>. Until both have run, the Playoff SOS column shows a dash for every player rather than a guess. After that the nightly refresh keeps them current.</div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                 <button className="btn btn-gold" disabled={busy} onClick={() => runJob("adp")}>
                   <i className={`ti ti-${runningJob === "adp" ? "loader-2 spin" : "refresh"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
@@ -16001,6 +16200,19 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
                 <button className="btn" disabled={busy} onClick={() => runJob("injuries")} title="Pull the latest injury designations and detail (ESPN team reports merged over your platform's status). This also runs automatically in the nightly refresh — use this when something breaks mid-day.">
                   <i className={`ti ti-${runningJob === "injuries" ? "loader-2 spin" : "ambulance"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
                   {runningJob === "injuries" ? "Working…" : "Pull injury detail"}
+                </button>
+                {/* ⚠ THESE TWO EXIST BECAUSE I SHIPPED THE BACKEND JOBS WITHOUT THEM. Backend 116 added the
+                    `schedule` and `defvspos` cases and the admin console never got the buttons, so playoff
+                    SOS had no data and every row read "—". Exactly the 112 failure repeated: the job I built
+                    and the button he could press were not the same thing. When a job needs a manual trigger,
+                    the button ships in the SAME build. */}
+                <button className="btn" disabled={busy} onClick={() => runJob("schedule")} title="Fetch the NFL regular-season schedule. Playoff SOS cannot be computed without it. Also runs in the nightly refresh; a schedule is fixed once released, so you only need this once.">
+                  <i className={`ti ti-${runningJob === "schedule" ? "loader-2 spin" : "calendar-event"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
+                  {runningJob === "schedule" ? "Working…" : "Pull schedule"}
+                </button>
+                <button className="btn" disabled={busy} onClick={() => runJob("defvspos")} title="Build last season's defense-vs-position table (~18 calls to your platform, then cached). This is the other half of Playoff SOS — it is what makes an opponent 'soft' or 'tough' for a given position.">
+                  <i className={`ti ti-${runningJob === "defvspos" ? "loader-2 spin" : "shield-half"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
+                  {runningJob === "defvspos" ? "Working…" : "Build defense ranks"}
                 </button>
                 {jobProgress && <span style={{ fontSize: 12, color: jobProgress.startsWith("Done") ? "var(--green)" : "var(--gold)", fontWeight: 600 }}>{jobProgress}</span>}
               </div>
@@ -17049,7 +17261,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [ranksWarn, setRanksWarn] = useState(false);
   const [inRoomRanks, setInRoomRanks] = useState(null); // when set, an in-draft PERSONAL ranking editor (array of ids)
   const [inRoomRanksSet, setInRoomRanksSet] = useState(null); // the SAVED set being edited in-draft (null = fresh in-room board)
-  const [platEditor, setPlatEditor] = useState(null); // when set, the Platform Ranks editor: array of {id, adp}
+  const [platEditor, setPlatEditor] = useState(false); // open flag for the league-ADP editor (it seeds itself)
   const [needMode, setNeedMode] = useState("strength"); // strength | filled
   const [needSort, setNeedSort] = useState({ key: "order", dir: 1 }); // league-needs table sort: key + direction (1 asc / -1 desc)
   const [customPick, setCustomPick] = useState("");
@@ -23703,14 +23915,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 <button className="btn btn-gold" onClick={() => { const board = players.filter((p) => POS.includes(p.pos)).slice().sort((a, b) => a.adp - b.adp).map((p) => p.id); setInRoomRanks(board.slice(0, 200)); setRanksWarn(false); }} title="My Ranks: your personal player board. Drives the My ADP and Blend columns.">
                   <i className="ti ti-list-numbers" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />Build My Ranks here
                 </button>
-                <button className="btn" onClick={() => {
-                  setRanksWarn(false);
-                  // seed the platform editor from an existing saved platform list, else from the board ADP order
-                  const existing = user && user.platformRanks && user.platformRanks[lgId] && Array.isArray(user.platformRanks[lgId].list) ? user.platformRanks[lgId].list : null;
-                  if (existing && existing.length) { const byN = {}; players.forEach((p) => { byN[normName(p.name)] = p.id; }); setPlatEditor(existing.map((e) => ({ id: e.n != null && byN[e.n] != null ? byN[e.n] : e.id, adp: e.adp != null ? e.adp : "" })).filter((e) => e.id != null)); }
-                  else setPlatEditor(players.filter((p) => POS.includes(p.pos)).slice().sort((a, b) => a.adp - b.adp).slice(0, 200).map((p) => ({ id: p.id, adp: "" })));
-                }} title="Platform Ranks: enter the ADP your league platform (Sleeper etc.) shows. Drives the Edge column — market ADP vs your platform's ADP.">
-                  <i className="ti ti-clipboard-list" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Platform Ranks
+                {/* The modal seeds itself now, so this is just a door. It used to duplicate the seeding logic
+                    (and used a slightly different one — no adp!=null guard), which is how two paths to the
+                    same editor start disagreeing. */}
+                <button className="btn" onClick={() => { setRanksWarn(false); setPlatEditor(true); }}
+                  title="Your league's ADP: drag players into your own order and optionally type the ADP your platform shows. Drives the Edge column.">
+                  <i className="ti ti-clipboard-list" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Your league's ADP
                 </button>
                 <button className="btn" onClick={() => { setRanksWarn(false); onSave(picks, preds, pickNamesOf(picks), pickNamesOf(preds)); onEditRanks && onEditRanks(); }}>Open full Rankings hub →</button>
                 <div style={{ flex: 1 }} />
@@ -23769,56 +23979,22 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         );
       })()}
 
-      {platEditor && (() => {
-        const lgId = league.mockOf != null ? league.mockOf : league.id;
-        const byId = {}; players.forEach((p) => (byId[p.id] = p));
-        const move = (i, dir) => { const j = i + dir; if (j < 0 || j >= platEditor.length) return; setPlatEditor((l) => { const c = l.slice(); [c[i], c[j]] = [c[j], c[i]]; return c; }); };
-        const onDrop = (from, to) => setPlatEditor((l) => { if (from == null || to == null || from === to) return l; const c = l.slice(); const [m] = c.splice(from, 1); c.splice(to, 0, m); return c; });
-        const setAdp = (i, v) => setPlatEditor((l) => { const c = l.slice(); c[i] = { ...c[i], adp: v.replace(/[^0-9.]/g, "") }; return c; });
-        const removeRow = (i) => setPlatEditor((l) => l.filter((_, k) => k !== i));
-        const sortByAdp = () => setPlatEditor((l) => l.slice().sort((a, b) => (a.adp !== "" && a.adp != null ? +a.adp : 9999) - (b.adp !== "" && b.adp != null ? +b.adp : 9999)));
-        const save = () => {
-          // keep only rows that map to a real player; store id + adp (blank adp → use list position at read time)
-          const list = platEditor.filter((e) => e && byId[e.id]).map((e) => ({ id: e.id, n: normName(byId[e.id].name), adp: e.adp === "" || e.adp == null ? null : +e.adp }));
-          const pr = { ...(user.platformRanks || {}), [lgId]: { list, updated: Date.now() } };
-          onUpdate && onUpdate({ platformRanks: pr });
-          setPlatEditor(null);
-        };
-        return (
-        <div className="modalbg" onClick={() => setPlatEditor(null)}>
-          <div className="panel" style={{ maxWidth: 560, width: "100%", padding: 20, maxHeight: "88vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
-            <div className="disp" style={{ fontSize: 19, fontWeight: 700, marginBottom: 4 }}>Platform Ranks</div>
-            <div className="mut" style={{ fontSize: 12.5, marginBottom: 6, lineHeight: 1.5 }}>Enter the ADP your league platform (Sleeper, etc.) shows for each player — drag to reorder, use the arrows, or type an ADP number in the box. This is <b style={{ color: "var(--ink)" }}>separate from My Ranks</b>: it powers the <b style={{ color: "var(--gold)" }}>Edge</b> column, which compares this board's market ADP to your platform's ADP so you can see where you're getting value.</div>
-            <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-              <button className="btn btn-mini" onClick={sortByAdp} title="Reorder the list by the ADP numbers you've typed">Sort by ADP typed</button>
-              <div style={{ flex: 1 }} />
-              <span className="mut" style={{ fontSize: 11 }}>{platEditor.length} players</span>
-            </div>
-            <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8 }}>
-              {platEditor.map((e, i) => { const p = byId[e.id]; if (!p) return null; return (
-                <div key={e.id} draggable onDragStart={(ev) => { ev.dataTransfer.setData("text/plain", String(i)); }} onDragOver={(ev) => ev.preventDefault()} onDrop={(ev) => { ev.preventDefault(); onDrop(+ev.dataTransfer.getData("text/plain"), i); }}
-                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderBottom: "1px solid var(--line)", fontSize: 13 }}>
-                  <i className="ti ti-grip-vertical" style={{ fontSize: 12, color: "var(--mut)", cursor: "grab" }} aria-hidden="true" />
-                  <span className="mut num" style={{ width: 22, textAlign: "right", fontSize: 11 }}>{i + 1}</span>
-                  <Dot pos={p.pos} /><span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
-                  <span className="mut num" style={{ fontSize: 10.5 }}>mkt {p.adp.toFixed(1)}</span>
-                  <input className="gs num" style={{ width: 58, padding: "3px 6px", fontSize: 12, textAlign: "center" }} placeholder="ADP" value={e.adp} onChange={(ev) => setAdp(i, ev.target.value)} title="Type the platform's ADP for this player" />
-                  <button className="btn btn-mini" style={{ padding: "0 5px" }} disabled={i === 0} onClick={() => move(i, -1)}>▲</button>
-                  <button className="btn btn-mini" style={{ padding: "0 5px" }} disabled={i === platEditor.length - 1} onClick={() => move(i, 1)}>▼</button>
-                  <button className="btn btn-mini" style={{ padding: "0 5px", color: "var(--red)" }} onClick={() => removeRow(i)} title="Remove from platform ranks">✕</button>
-                </div>
-              ); })}
-            </div>
-            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-              <button className="btn" onClick={() => setPlatEditor(null)}>Cancel</button>
-              {user && user.platformRanks && user.platformRanks[lgId] && <button className="btn btn-mini" style={{ color: "var(--red)" }} onClick={() => { const pr = { ...(user.platformRanks || {}) }; delete pr[lgId]; onUpdate && onUpdate({ platformRanks: pr }); setPlatEditor(null); }} title="Clear platform ranks for this league">Clear all</button>}
-              <div style={{ flex: 1 }} />
-              <button className="btn btn-gold" onClick={save}><i className="ti ti-device-floppy" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Save &amp; use</button>
-            </div>
-          </div>
-        </div>
-        );
-      })()}
+      {/* ONE editor, two doors. This used to be ~55 lines of inline JSX here and nothing at all on the
+          league page, so the prep-checklist row that advertises it could only dump you in the draft room.
+          Both now open PlatformRanksModal — two copies of a drag-and-drop list would drift within a build. */}
+      {platEditor && (
+        <PlatformRanksModal
+          league={league}
+          user={user}
+          onClose={() => setPlatEditor(null)}
+          onSave={(listOrNull, lgId) => {
+            const pr = { ...(user.platformRanks || {}) };
+            if (listOrNull == null) delete pr[lgId];
+            else pr[lgId] = { list: listOrNull, updated: Date.now() };
+            onUpdate && onUpdate({ platformRanks: pr });
+          }}
+        />
+      )}
 
       {showIntro && (
         <div className="modalbg" onClick={closeIntro}>
