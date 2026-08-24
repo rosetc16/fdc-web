@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.27c";
+const BUILD_TAG = "2026.07.28a";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -1511,6 +1511,10 @@ export function applyLivePack(pack, isReapply) {
       injPart: p.injPart || null,
       injNote: p.injNote || null,
       injSince: p.injSince || null,
+      // ⭐ injReturn / injSrc were arriving in the pack and being dropped here — the FOURTH time a field the
+      // backend already served never reached the screen. Carry everything the pack sends.
+      injReturn: p.injReturn || null,
+      injSrc: p.injSrc || null,
       injAt: p.injAt || null,
       floor: p.floor != null ? p.floor : null,
       ceil: p.ceil != null ? p.ceil : null,
@@ -1772,9 +1776,55 @@ const INJURY_DETAIL = {};
 
 // Generic fallback when a flagged player has no specific detail.
 const INJURY_INFO = {
-  major: { color: "#b71c1c", label: "Concerning", text: "A serious or lingering injury that could cost significant time or limit the role — discount the projection and treat availability as a real risk." },
+  major: { color: "#b71c1c", label: "Concerning", text: "A serious or lingering injury that could cost significant time or limit the role \u2014 discount the projection and treat availability as a real risk." },
   minor: { color: "#e57373", label: "Minor", text: "A minor or short-term issue (tweak, maintenance, or coming off a small injury). Worth noting but unlikely to derail the season." },
 };
+
+// WHAT THE DESIGNATION ITSELF MEANS.
+//
+// This is the one piece of injury writing that is safe to hard-code, because it describes the TAG, not the
+// player. "Doubtful means unlikely to play" is true of every doubtful player forever; "McCaffrey is coming
+// off an Achilles" was true of nobody. That distinction is the whole reason the old prose table had to go.
+// Deliberately no game counts \u2014 roster rules change between seasons and a stale number here would be the
+// same failure in a new costume.
+const DESIGNATION = {
+  Q:    { word: "Questionable", tier: "minor", mean: "Listed as uncertain for the next game \u2014 effectively a game-time decision." },
+  DTD:  { word: "Day to day",   tier: "minor", mean: "Being monitored day to day. Usually a short-term issue rather than missed time." },
+  P:    { word: "Probable",     tier: "minor", mean: "Expected to play." },
+  D:    { word: "Doubtful",     tier: "major", mean: "Listed as unlikely to play in the next game." },
+  OUT:  { word: "Out",          tier: "major", mean: "Ruled out of the next game." },
+  IR:   { word: "Injured reserve", tier: "major", mean: "On injured reserve \u2014 off the active roster, and cannot play until the team activates him." },
+  PUP:  { word: "Physically unable to perform", tier: "major", mean: "Off the active roster and unable to practise \u2014 he cannot play until he is activated." },
+  NFI:  { word: "Non-football injury", tier: "major", mean: "Off the active roster for an injury sustained away from football." },
+  SUSP: { word: "Suspended",    tier: "major", mean: "Unavailable by suspension \u2014 nothing to do with health, and the games are already lost." },
+  COV:  { word: "Reserve list", tier: "minor", mean: "On a reserve list. Availability is unclear until he is activated." },
+  NA:   { word: "Not active",   tier: "major", mean: "Off the active roster." },
+};
+// Sleeper and ESPN spell these several ways; normalise to one key.
+function designationKey(raw) {
+  const k = String(raw || "").trim().toLowerCase().replace(/[\s_]+/g, "-");
+  const map = {
+    questionable: "Q", q: "Q", probable: "P", p: "P", "day-to-day": "DTD", dtd: "DTD",
+    doubtful: "D", d: "D", out: "OUT", o: "OUT",
+    ir: "IR", "injured-reserve": "IR", "injury-reserve": "IR",
+    pup: "PUP", "physically-unable-to-perform": "PUP",
+    nfi: "NFI", "non-football-injury": "NFI",
+    sus: "SUSP", susp: "SUSP", suspended: "SUSP", suspension: "SUSP",
+    cov: "COV", covid: "COV", na: "NA", dnr: "NA",
+  };
+  return map[k] || String(raw || "").toUpperCase().slice(0, 4);
+}
+
+// \u26a0 A BODY PART THAT ISN'T ONE. Sleeper sends the literal string "Undisclosed" (and a few cousins) when
+// the team hasn't said. Printed straight into the UI it looks like we know something \u2014 Trey's hover read
+// "INJURY \u2014 MINOR / Undisclosed", which tells a drafter precisely nothing while looking like an answer.
+// Treat these as ABSENT so the card can say what is actually missing and where to look instead.
+const NOT_A_BODY_PART = /^(undisclosed|not injury related|not-injury-related|n\/?a|none|unknown|other|illness\??)$/i;
+const realPart = (t) => {
+  const s = (t == null ? "" : String(t)).trim();
+  return !s || NOT_A_BODY_PART.test(s) ? null : s;
+};
+
 // How long ago the platform last touched this player's news, in words. "3 days ago" is the difference
 // between a note you can act on and a note you have to go and verify somewhere else.
 function injAgo(ms) {
@@ -1791,37 +1841,105 @@ function injAgo(ms) {
   return null;                                     // older than a month isn't "news" any more
 }
 
-// Resolve the full badge view for a player: LIVE detail first, then the curated table, then the tier.
-//
-// The curated INJURY_DETAIL table below is hand-written and frozen at build time — accurate the day it
-// ships and wrong a fortnight later, which is exactly the "you have to go and dig for it" problem. The
-// platform already sends us the body part, a note and a date on every sync; when we have that, it wins.
+// A date the source supplied, in words the drafter can use. Never a date we computed.
+function injDate(v) {
+  if (!v) return null;
+  const t = Date.parse(String(v).length <= 10 ? `${v}T12:00:00Z` : v);
+  if (!Number.isFinite(t)) return null;
+  return { t, label: new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" }) };
+}
+
+// Resolve the full injury view for a player. EVERYTHING here is sourced or arithmetic on sourced values:
+// the designation and body part come from the platform, the note and return date from the injury feed, and
+// "N days" is subtraction on a date somebody else published. Nothing is estimated, and a field we do not
+// have comes back null so every surface can say so out loud rather than printing a confident blank.
 function injuryView(p) {
   if (!p || !p.inj) return null;
-  const tierOf = () => {
-    const map = { questionable: "minor", probable: "minor", doubtful: "major", out: "major", ir: "major",
-      pup: "major", sus: "major", suspended: "major", susp: "major", cov: "minor", dnr: "major", na: "major", dtd: "minor" };
-    const key = INJURY_INFO[p.inj] ? p.inj : (map[String(p.inj).toLowerCase()] || "minor");
-    const g = INJURY_INFO[key] || INJURY_INFO.minor;
-    // The badge shows the platform's OWN designation where it is short enough to read (Q, OUT, IR, PUP),
-    // rather than a word we invented for it.
-    const raw = String(p.inj).toUpperCase();
-    const abbr = raw.length <= 4 ? raw : (key === "major" ? "INJ" : raw.slice(0, 1));
-    return { color: g.color, abbr, label: g.label, generic: g.text };
-  };
-  const t = tierOf();
-  const live = (p.injPart || p.injNote) ? [p.injPart, p.injNote].filter(Boolean).join(" — ") : null;
+  const key = designationKey(p.inj);
+  const dz = DESIGNATION[key] || null;
+  const tier = dz ? dz.tier : "minor";
+  const g = INJURY_INFO[tier] || INJURY_INFO.minor;
+  const raw = String(p.inj).toUpperCase();
+
+  const part = realPart(p.injPart);
+  const note = p.injNote ? String(p.injNote).trim() : null;
+  const back = injDate(p.injReturn);
+  const since = injDate(p.injSince);
+  const daysSince = since ? Math.floor((Date.now() - since.t) / 86400000) : null;
+  // Sources, spelled for a human. injSrc is a comma list written by the backend merge.
+  const srcs = (p.injSrc || "").split(",").map((x) => x.trim()).filter(Boolean)
+    .map((x) => (x === "sleeper" ? "your platform" : x === "espn" ? "ESPN" : x));
+
   return {
-    color: t.color,
-    abbr: t.abbr,
-    label: t.label,
-    // A sourced note, or nothing. `live` false is what every surface keys on to say so out loud.
-    note: live,
+    color: g.color,
+    abbr: key.length <= 4 ? key : raw.slice(0, 3),
+    label: g.label,
+    word: dz ? dz.word : raw,          // the full designation, spelled out
+    mean: dz ? dz.mean : null,         // what that designation means \u2014 about the TAG, never the player
+    tier,
+    generic: g.text,
+    part,
+    note,
+    back,
+    since,
+    daysSince: daysSince != null && daysSince >= 0 && daysSince < 400 ? daysSince : null,
+    srcs,
     ago: injAgo(p.injAt),
-    part: p.injPart || null,
-    live: !!live,
-    back: null,                 // return-date estimates were invented; we don't have a source for them
+    // What every surface keys on to decide between showing detail and admitting it has none.
+    live: !!(part || note),
+    detailed: !!(part && (note || back)),
   };
+}
+
+// THE INJURY CARD \u2014 what the badge opens.
+//
+// Trey's ask, on seeing a hover that said only "INJURY \u2014 MINOR / Undisclosed": "Is there a way to say what
+// body part is impacted, the severity (time out), and recent update on it?" Those are the three questions a
+// drafter has, and the honest answer to each is either a sourced fact or an explicit blank. So the card
+// answers all three, ALWAYS \u2014 a row that reads "not published" is worth more than a row that isn't there,
+// because it tells him the gap is in the feed rather than in the app.
+function makeInjuryCard(p, iv) {
+  const out = [];
+  out.push({ kind: "photo", sid: p.sid || null, name: p.name, team: p.team, pos: p.pos, posRank: p.posRank });
+
+  // 1) THE HEADLINE \u2014 the designation spelled out, and what that designation means.
+  out.push({ kind: "take", tone: iv.tier === "major" ? "bad" : "warn",
+    x: iv.mean ? `${iv.word} \u2014 ${iv.mean}` : `${iv.word} \u2014 flagged by your platform.` });
+
+  // 2) THE THREE ANSWERS, side by side. Every row is present whether or not we have it.
+  const kv = [
+    { k: "Body part", v: iv.part || "Not disclosed", c: iv.part ? undefined : "var(--mut)" },
+    { k: "Status", v: iv.word },
+  ];
+  // TIME OUT. A return date is shown ONLY when a source published one \u2014 we have never estimated one and
+  // are not about to start; an invented return date is how the old table lied about McCaffrey.
+  if (iv.back) kv.push({ k: "Expected back", v: iv.back.label, c: "var(--gold)" });
+  else kv.push({ k: "Expected back", v: "Not published", c: "var(--mut)" });
+  if (iv.since) {
+    kv.push({ k: "Since", v: iv.since.label });
+    if (iv.daysSince != null) kv.push({ k: "Days out", v: `${iv.daysSince}`, c: iv.daysSince >= 14 ? "var(--red)" : undefined });
+  }
+  out.push({ kind: "kvtable", items: kv });
+
+  // 3) THE LATEST WORD.
+  if (iv.note) out.push({ t: "Latest", x: iv.note });
+  else out.push({ t: "Latest", x: "No write-up has come through on this one yet \u2014 only the designation above.", tc: "var(--mut)" });
+
+  // 4) WHAT IT MEANS FOR THE PICK. The generic read by severity, which is about the TIER, not the player.
+  out.push({ t: "Draft read", x: iv.generic });
+
+  // 5) PROVENANCE + FRESHNESS. A note with no date is a note you have to go and verify anyway, and knowing
+  // WHICH feed said it is what lets him judge it.
+  const prov = [];
+  if (iv.srcs.length) prov.push(`From ${iv.srcs.join(" + ")}`);
+  if (iv.ago) prov.push(`updated ${iv.ago}`);
+  if (!iv.ago && !iv.srcs.length) prov.push("Source and date unknown \u2014 treat as unverified");
+  else if (!iv.ago) prov.push("no date attached \u2014 worth confirming");
+  out.push({ t: "Note", x: prov.join(" \u00b7 ") });
+  if (!iv.detailed) {
+    out.push({ t: "Note", x: "Detail is only as good as the feed. When a body part or timeline is missing here, it has not been published \u2014 your platform's own injury page is the place to check before the pick." });
+  }
+  return out;
 }
 
 /* ---------------- engine (cfg-threaded) ---------------- */
@@ -2246,7 +2364,8 @@ function buildPlayers(cfg) {
       floor: Math.round(pts * floorR), ceil: Math.round(pts * ceilR),
       consensus0: meta.consensus != null ? meta.consensus : r[5], rookie: !!meta.rookie, inj: meta.inj || null,
       trend: meta.trend != null ? meta.trend : null, sampleN: meta.sampleN || 0,
-      injPart: meta.injPart || null, injNote: meta.injNote || null, injSince: meta.injSince || null, injAt: meta.injAt || null,
+      injPart: meta.injPart || null, injNote: meta.injNote || null, injSince: meta.injSince || null,
+      injReturn: meta.injReturn || null, injSrc: meta.injSrc || null, injAt: meta.injAt || null,
       sid: meta.sid || null,
     };
   });
@@ -4891,7 +5010,9 @@ function makeOutlook(p, sims, drafted, ctx) {
   // Opportunity flags that aren't already covered — kept short.
   const opp = [];
   if (p.ceil != null && p.pts && p.ceil - p.pts > p.pts * 0.30) opp.push("high weekly ceiling if his situation breaks right");
-  if (iv) opp.push(`working back from ${iv.label.toLowerCase()}`);
+  // Name the designation and the body part where we have them — "working back from minor" told the reader
+  // nothing they could act on.
+  if (iv) opp.push(iv.part ? `${iv.word.toLowerCase()} \u2014 ${iv.part.toLowerCase()}` : `${iv.word.toLowerCase()} on the injury report`);
   if (opp.length) out.push({ t: "Also", x: opp.join("; ") + "." });
 
   // 5) AVAILABILITY — only when meaningful, in one concise line.
@@ -5862,10 +5983,20 @@ function InjuryReport({ players, draftedSet, onClose, onAvoid, avoid }) {
                       <span className="mut" style={{ fontSize: 11, fontWeight: 500, marginLeft: 6 }}>{p.pos}{p.team ? ` · ${p.team}` : ""}{p.adp0 != null ? ` · ADP ${Math.round(p.adp0)}` : ""}</span>
                       {gone && <span className="mut" style={{ fontSize: 10, marginLeft: 6 }}>· drafted</span>}
                     </div>
+                    {/* The three things a drafter actually wants: what is hurt, how long, and the latest
+                        word — each stated, or explicitly marked as not published by the feed. */}
+                    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 6, fontSize: 11.5, marginTop: 3 }}>
+                      <b style={{ color: iv.part ? "var(--ink)" : "var(--mut)", fontWeight: 700 }}>{iv.part || "Body part not disclosed"}</b>
+                      <span className="mut">·</span>
+                      <span style={{ color: iv.back ? "var(--gold)" : "var(--mut)", fontWeight: iv.back ? 700 : 500 }}>
+                        {iv.back ? `back ${iv.back.label}` : "no return date published"}
+                      </span>
+                      {iv.daysSince != null && <><span className="mut">·</span><span className="mut">{iv.daysSince}d out</span></>}
+                    </div>
                     <div className="mut" style={{ fontSize: 12, lineHeight: 1.45, marginTop: 2 }}>
-                      {iv.note || iv.label}
+                      {iv.note || iv.mean || iv.label}
                       {iv.ago && <span style={{ opacity: .8 }}> · updated {iv.ago}</span>}
-                      {!iv.live && <span style={{ opacity: .65 }}> · no live note from your platform</span>}
+                      {!iv.note && <span style={{ opacity: .65 }}> · no write-up published</span>}
                     </div>
                   </div>
                   {!gone && onAvoid && (
@@ -20754,14 +20885,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       // noise on a board that is already dense. With the filter on, the board IS the injury
                       // report: designation, body part, the platform's own words, and when it last changed.
                       // That last part matters most; a note with no date is a note you have to go and verify.
-                      const injLine = injOnly && injInfo && (injInfo.note || injInfo.ago) ? (
+                      // Always render the line under the Injured filter, even when the feed is thin: an
+                      // explicit "body part not disclosed" tells him the gap is in the source, whereas a
+                      // missing row reads as an app that forgot to say anything.
+                      const injLine = injOnly && injInfo ? (
                         <tr key={`inj-${p.id}`} className="injline">
                           <td colSpan={nCols} style={{ padding: 0 }}>
                             <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "3px 10px 6px 34px", flexWrap: "wrap", borderBottom: "1px solid var(--line)" }}>
-                              <b style={{ fontSize: 10, letterSpacing: ".05em", color: injInfo.color, flexShrink: 0 }}>{String(p.inj).toUpperCase()}</b>
+                              <b style={{ fontSize: 10, letterSpacing: ".05em", color: injInfo.color, flexShrink: 0 }}>{injInfo.word.toUpperCase()}</b>
+                              <span style={{ fontSize: 11.5, fontWeight: 700, color: injInfo.part ? "var(--ink)" : "var(--mut)" }}>{injInfo.part || "body part not disclosed"}</span>
+                              {injInfo.back && <span style={{ fontSize: 11, color: "var(--gold)", fontWeight: 700 }}>· back {injInfo.back.label}</span>}
+                              {injInfo.daysSince != null && <span className="mut" style={{ fontSize: 10.5 }}>· {injInfo.daysSince}d out</span>}
                               {injInfo.note && <span style={{ fontSize: 11.5, color: "var(--ink)", opacity: .9 }}>{injInfo.note}</span>}
                               {injInfo.ago && <span className="mut" style={{ fontSize: 10.5 }}>· updated {injInfo.ago}</span>}
-                              {!injInfo.live && <span className="mut" style={{ fontSize: 10, opacity: .7 }}>· no live note from your platform</span>}
+                              {!injInfo.note && <span className="mut" style={{ fontSize: 10, opacity: .7 }}>· no write-up published</span>}
                             </div>
                           </td>
                         </tr>
@@ -20789,7 +20926,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             <span onClick={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: isDynastyCfg(cfg), run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: isDynastyCfg(cfg), run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseLeave={hideTip} className="pnamewrap" style={{ cursor: "help", whiteSpace: "nowrap" }}>
                               <PosName p={p} /> <span className="mut pteam">{p.team}</span>
                             </span>
-                            {injInfo && <span onClick={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note || `${injInfo.generic || "Flagged by your platform."} No detail has come through from your platform yet — check its injury report before you rely on this.` }])} onMouseEnter={(e) => showTip(e, [{ t: `Injury — ${injInfo.label}${injInfo.back ? ` · ${injInfo.back}` : ""}`, x: injInfo.note || `${injInfo.generic || "Flagged by your platform."} No detail has come through from your platform yet — check its injury report before you rely on this.` }])} onMouseLeave={hideTip}
+                            {injInfo && <span data-inj="1" onClick={(e) => showTip(e, makeInjuryCard(p, injInfo))} onMouseEnter={(e) => showTip(e, makeInjuryCard(p, injInfo))} onMouseLeave={hideTip}
                               style={{ flexShrink: 0, height: 14, borderRadius: 3, background: injInfo.color, color: "#fff", fontSize: 8.5, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "help", padding: "0 4px", letterSpacing: ".02em" }} title="">{injInfo.abbr}</span>}
                             {avoided && !gone && <span className="itag" style={{ flexShrink: 0, fontSize: 8.5, fontWeight: 800, letterSpacing: ".03em", color: "var(--red)", border: "1px solid var(--red)", borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>DO NOT DRAFT</span>}
                             {p.rookie && <span style={{ flexShrink: 0, fontSize: 9, color: "var(--gold)", border: "1px solid var(--gold)", borderRadius: 3, padding: "0 3px" }}>R</span>}
