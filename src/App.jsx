@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.28d";
+const BUILD_TAG = "2026.07.28e";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -7156,6 +7156,7 @@ export default function App() {
         onSaveAvoid={(id, arr, allowArr) => { const next = leagues.map((l) => (l.id === id ? { ...l, avoidList: arr, ...(allowArr ? { avoidAllow: allowArr } : {}) } : l)); setLeagues(next); persist({ leagues: next }); }}
         onSaveMasterAvoid={(arr) => updateUser({ avoidMaster: arr })}
         onUpdateUser={updateUser}
+        onSaveCfg={(id, cfg) => updateLeagueCfg(id, cfg)}
         onFixSlot={(id, slot) => { const next = leagues.map((l) => (l.id === id ? { ...l, cfg: { ...l.cfg, slot } } : l)); setLeagues(next); persist({ leagues: next }); }}
         onOpenTeamHub={lg.cfg.connect && lg.cfg.connect.leagueId ? () => { setHubLeagueId(lg.cfg.connect.leagueId); setRoute("teamHub"); } : null} /> : null; })()}
       {route === "teamHub" && user && hubLeagueId && <Boundary label="in-season hub" fallback={(msg) => (
@@ -7645,6 +7646,55 @@ function TrendsPage({ user, onBack, onHome, onSignOut }) {
 //   • THE LIST ORDER is the ranking. Position 1 is your number one, whatever the numbers say.
 //   • THE TYPED ADP is an optional exact value per player, for when you know your room's real number.
 // Blank means "just use where I put him". Saving keeps both, so a half-finished list is still useful.
+// LEAGUE SETTINGS, OVER THE LEAGUE PAGE.
+//
+// Trey: "can you make sure Scoring and roster, draft slot and order, keepers and pick trades all do the same
+// pop up window thing instead of going into the draft room yet."
+//
+// ⭐ THE PATTERN HE IS ASKING FOR, and it is the right one: the draft-prep checklist is a PREP surface. Every
+// row on it should be finishable where you are standing. Three of them called `onSettings(id)`, which routed
+// into the DRAFT ROOM's settings tab — so the checklist bounced you into the room you were preparing to
+// enter, and coming back meant navigating out again. Same defect the "Your league's ADP" row had.
+//
+// The form itself is unchanged: this hosts the SAME `ConfigForm` the draft room uses, opened on the section
+// the row is about. One form, two doors — the alternative is a second settings editor that drifts from the
+// first, which is exactly how the two Trends panels ended up disagreeing.
+function LeagueSettingsModal({ league, seg, keeperOpen, onSave, onClose }) {
+  const cfg = league.cfg || {};
+  const TITLES = {
+    basics: "League settings",
+    scoring: "Scoring & roster",
+    order: "Draft slot & order",
+    trades: "Keepers & pick trades",
+  };
+  return (
+    <div className="modalbg" onClick={onClose}>
+      <div className="panel" style={{ maxWidth: 780, width: "100%", padding: 0, maxHeight: "90vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "18px 20px 0" }}>
+          <div style={{ flex: 1 }}>
+            <div className="disp" style={{ fontSize: 19, fontWeight: 700 }}>{TITLES[seg] || "League settings"}</div>
+            <div className="mut" style={{ fontSize: 12.5, marginTop: 3, lineHeight: 1.5 }}>
+              Saving re-grades your board. {cfg.connect ? "These came from your platform — you only need to change something if it's wrong." : "Every number on the board is computed from these."}
+            </div>
+          </div>
+          <button className="btn btn-mini" onClick={onClose} title="Close"><i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true" /></button>
+        </div>
+        {/* COMPLEX mode on purpose: these three rows are the ones that need the full tabbed form, and the tab
+            strip also lets him move between them without closing and reopening. */}
+        <ConfigForm
+          initial={{ ...cfg, slot: cfg.slot == null ? "" : cfg.slot, scoring: { ...DEFAULT_SCORING, ...(cfg.scoring || {}) } }}
+          initialSeg={seg}
+          initialMode="complex"
+          initialKeeperOpen={!!keeperOpen}
+          submitLabel="Save settings"
+          onSubmit={(newCfg) => { onSave(newCfg); onClose(); }}
+          onCancel={onClose}
+        />
+      </div>
+    </div>
+  );
+}
+
 function PlatformRanksModal({ league, user, onSave, onClose }) {
   const lgId = league.mockOf != null ? league.mockOf : league.id;
   const players = useMemo(() => {
@@ -7980,7 +8030,7 @@ function AvoidListModal({ league, allLeagues, user, onSave, onSaveMaster, onClos
   );
 }
 
-function LeagueUmbrella({ user, league, allLeagues, onBack, onHome, onSignOut, onOfficial, onMock, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings, onSaveAvoid, onSaveMasterAvoid, onFixSlot, onUpdateUser }) {
+function LeagueUmbrella({ user, league, allLeagues, onBack, onHome, onSignOut, onOfficial, onMock, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings, onSaveAvoid, onSaveMasterAvoid, onFixSlot, onUpdateUser, onSaveCfg }) {
   // The checklist used to print league.cfg.slot with a tick beside it, and that number could be months old
   // and simply wrong. Ask the platform instead — and write the answer back, so the room, the mocks and this
   // page stop each holding a different opinion about where the user is sitting.
@@ -8023,6 +8073,8 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, onHome, onSignOut, o
   const avoidCount = avoidSaved.length;
   const [avoidOpen, setAvoidOpen] = useState(false);
   const [adpOpen, setAdpOpen] = useState(false);   // your-league's-ADP editor, opened from the checklist row
+  // Which settings section the checklist opened, if any: 'scoring' | 'order' | 'trades'. Null = closed.
+  const [setupSeg, setSetupSeg] = useState(null);
   const prepRows = (() => {
     const connected = !!connectedId;
     const stt = league.cfg.start || {};
@@ -8042,21 +8094,24 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, onHome, onSignOut, o
       status: connected ? "Synced" : `${scoreLine} · ${league.cfg.teams || 12} teams`,
       done: connected,
       hint: `Every value on the board is computed from these — replacement level, VBD, every recommendation. One wrong starting slot skews the whole board.\n\nNow: ${scoreLine}, ${slotLine}, ${league.cfg.teams || 12} teams, ${league.cfg.rounds} rounds.${connected ? " Synced from your platform." : ""}`,
-      go: () => onSettings(league.id),
+      // Opens over the league page. It used to route into the DRAFT ROOM's settings tab, which is the room
+      // you are still preparing to enter.
+      go: () => setSetupSeg("scoring"),
     });
     rows.push({
       key: "slot", title: "Draft slot & order",
       status: hasSlot ? `Slot ${seat} · ${league.cfg.order === "linear" ? "linear" : "snake"}` : "Not set",
       done: hasSlot,
       hint: `Without your slot the engine can't tell you when you're on the clock, who picks in between, or what survives to your next turn.${connected && liveSeat != null ? `\n\nConfirmed against ${(league.cfg.connect || league.connect || {}).platform === "espn" ? "ESPN" : "Sleeper"} just now.` : connected ? "\n\nSaved when you imported the league — open the draft room to re-check it against your platform." : ""}`,
-      go: () => onSettings(league.id),
+      go: () => setSetupSeg("order"),
     });
     if (keeperLeague) rows.push({
       key: "keepers", title: "Keepers & pick trades",
       status: keepers.length ? `${keepers.length} set` : "None",
       done: keepers.length > 0,
       hint: "Kept players are off the board and their pick costs shift the order. Until they're in, your board and every mock include players who aren't actually available.",
-      go: () => onSettings(league.id),
+      // Straight into the keeper editor — the row is named after it.
+      go: () => setSetupSeg("keepers"),
     });
     rows.push({
       key: "adp", title: "Your league's ADP",
@@ -8119,6 +8174,15 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, onHome, onSignOut, o
   return (
     <div>
       <AppHeader user={user} onSignOut={onSignOut} onHome={onHome} onApp={onBack} title="League" />
+      {setupSeg && (
+        <LeagueSettingsModal
+          league={league}
+          seg={setupSeg === "keepers" ? "order" : setupSeg}
+          keeperOpen={setupSeg === "keepers"}
+          onClose={() => setSetupSeg(null)}
+          onSave={(newCfg) => { onSaveCfg && onSaveCfg(league.id, newCfg); }}
+        />
+      )}
       {adpOpen && (
         <PlatformRanksModal
           league={league}
@@ -8209,7 +8273,10 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, onHome, onSignOut, o
             <div className="disp" style={{ fontSize: 17, fontWeight: 700, margin: "9px 0 3px" }}>Run a Mock Draft</div>
             <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>Practice on this league's exact settings & keepers. {mocks.length ? `${mocks.length} saved.` : "Builds your prep trends."}</div>
           </button>
-          <button className="hubtile" onClick={() => onSettings(league.id)} style={{ textAlign: "left", background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 12, padding: 18, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)" }}>
+          {/* The tile has the same job as the three checklist rows below it, so it opens the same pop-up
+              rather than routing into the draft room. Leaving it as the one thing on this page that still
+              navigates would just make the behaviour look arbitrary. */}
+          <button className="hubtile" onClick={() => setSetupSeg("basics")} style={{ textAlign: "left", background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 12, padding: 18, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)" }}>
             <i className="ti ti-settings" style={{ fontSize: 24, color: "var(--gold)" }} aria-hidden="true" />
             <div className="disp" style={{ fontSize: 17, fontWeight: 700, margin: "9px 0 3px" }}>League Settings</div>
             <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>Scoring, roster, draft order, keepers & pick trades — edit anytime.</div>
@@ -15105,13 +15172,16 @@ function DraftOrderTab({ f, upd, ensureNames }) {
   );
 }
 
-function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, initialMode }) {
+function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, initialMode, initialKeeperOpen }) {
   const [seg, setSeg] = useState(initialSeg || "basics");
   // Simple vs complex view. Simple shows only the essentials (Basics tab); complex reveals the full tabbed
   // form (roster, scoring, teams & order, pick trades). Mirrors the mock-setup simple/complex choice so
   // opening settings mid-draft isn't jarring after starting from a simple mock.
   const [mode, setMode] = useState(initialMode === "simple" ? "simple" : "complex");
-  const [keeperModal, setKeeperModal] = useState(false);
+  // Opening straight into the keeper editor. The prep-checklist row is called "Keepers & pick trades", so
+  // landing the user on the Teams & order tab and making him hunt for a button would repeat the mistake the
+  // ADP row just had fixed: a row that names a thing and then delivers you near it.
+  const [keeperModal, setKeeperModal] = useState(!!initialKeeperOpen);
   const [rosterModal, setRosterModal] = useState(false); // manual existing-dynasty-roster entry (rookie/dynasty drafts)
   const [f, setF] = useState(() => {
     const base = {
