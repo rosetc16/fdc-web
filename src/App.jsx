@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.28f";
+const BUILD_TAG = "2026.07.28h";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -424,6 +424,25 @@ function rankIdsToNames(ids, players) {
 
 const setTeams = (n) => { TEAMS = Math.max(2, Math.min(20, n || 12)); };
 const POS = ["QB", "RB", "WR", "TE"];
+// The replacement indices the last buildPlayers used, for the admin diagnostic strip (see buildPlayers).
+let LAST_REPL_COUNTS = null;
+/* ==============================================================================================
+   KICKERS AND DEFENSES ARE ROSTER SLOTS, NOT BOARD VALUE.
+   ----------------------------------------------------------------------------------------------
+   `POS` is the VALUE board — the four positions the whole engine reasons about (replacement level,
+   VBD, scarcity, need tilt). K and DST are deliberately outside it: nobody's draft is won by taking
+   a defense in round 5, and the sims would be slower and worse for including them.
+   But they ARE mandatory slots, and leaving them out of the roster COUNTS entirely is what produced
+   a beta user's report: "at the end of my mocks it would suggest I take 2 defenses." A counts object
+   of {QB,RB,WR,TE} literally cannot represent "I already have a defense", so at his last pick the
+   engine offered him another one — and, because `capsOf` had no K/DST entry either, nothing capped
+   it. ALL_POS is the ROSTER census (what occupies a spot); POS stays the value board.
+   `cpos` folds the pack's alternative spelling for a defense (some feeds send DEF, some DST) onto one
+   key, so a defense can never be counted under a name the caps don't know about.
+   ============================================================================================== */
+const ALL_POS = ["QB", "RB", "WR", "TE", "K", "DST"];
+const cpos = (p) => (p === "DEF" ? "DST" : p);
+const newCounts = () => ({ QB: 0, RB: 0, WR: 0, TE: 0, K: 0, DST: 0 });
 
 let RAW = [
   ["Ja'Marr Chase","WR","CIN",26,6,1.5,330],
@@ -2055,7 +2074,7 @@ let KEEPER_ADDS = {}; // { teamIdx: [playerId, ...] }
 const setKeeperAdds = (map) => { KEEPER_ADDS = map || {}; };
 const keeperAddIds = (teamIdx) => KEEPER_ADDS[teamIdx] || [];
 // add no-cost keeper positions into a per-team counts object (the {QB,RB,WR,TE} shape)
-const seedKeeperCounts = (players, teamIdx, counts) => { keeperAddIds(teamIdx).forEach((id) => { const p = players[id]; if (p && counts[p.pos] != null) counts[p.pos]++; }); };
+const seedKeeperCounts = (players, teamIdx, counts) => { keeperAddIds(teamIdx).forEach((id) => { const p = players[id]; if (p && counts[cpos(p.pos)] != null) counts[cpos(p.pos)]++; }); };
 // add no-cost keeper players into a per-team roster array
 const seedKeeperRoster = (players, teamIdx, arr) => { keeperAddIds(teamIdx).forEach((id) => { if (players[id]) arr.push(players[id]); }); };
 // every no-cost keeper id (all teams) — these are unavailable to draft
@@ -2082,7 +2101,7 @@ let ROSTER_ADDS = {};
 const setRosterAdds = (map) => { ROSTER_ADDS = map || {}; };
 // how many existing players a team has at a position (used to damp prediction demand at filled spots)
 const rosterCountAt = (teamIdx, pos) => (ROSTER_ADDS[teamIdx] || []).reduce((n, r) => n + (r.pos === pos ? 1 : 0), 0);
-const seedRosterCounts = (teamIdx, counts) => { (ROSTER_ADDS[teamIdx] || []).forEach((r) => { if (counts[r.pos] != null) counts[r.pos]++; }); };
+const seedRosterCounts = (teamIdx, counts) => { (ROSTER_ADDS[teamIdx] || []).forEach((r) => { if (counts[cpos(r.pos)] != null) counts[cpos(r.pos)]++; }); };
 const hasRosterAdds = () => Object.keys(ROSTER_ADDS).length > 0;
 const pickLabel = (o) => `${Math.floor(o / TEAMS) + 1}.${String((o % TEAMS) + 1).padStart(2, "0")}`;
 // Format a countdown in seconds. Shows H:MM:SS for long (slow-draft) timers, M:SS otherwise — so a
@@ -2534,7 +2553,48 @@ function buildPlayers(cfg) {
       });
     }
   }
-  const counts = sf ? { QB: 24, RB: 30, WR: 36, TE: 14 } : { QB: 14, RB: 30, WR: 36, TE: 14 };
+  /* ============================================================================================
+     REPLACEMENT LEVEL — the last player at a position who is realistically a STARTER SOMEWHERE in
+     THIS league. Everything the board sells is measured against it: VBD, value, steal/reach, the
+     recommendation.
+     It used to be two hard-coded tables switched on one flag:
+         sf ? {QB:24, RB:30, WR:36, TE:14} : {QB:14, RB:30, WR:36, TE:14}
+     which bakes in TWO assumptions that are wrong for a lot of real leagues:
+       • a 12-TEAM league. A 10-team league starts ten quarterbacks, not twelve, so QB14 is two
+         spots too deep and every QB was valued against a worse baseline than his room actually
+         has. Trey's own league is 10-team.
+       • that 2QB IS SUPERFLEX. It isn't, and the difference runs the way he said: a superflex slot
+         can be filled with a RB or WR when the QBs dry up, so not every team starts two. A 2QB slot
+         cannot. Twelve teams × two dedicated QB slots is twenty-four STARTING quarterbacks, so
+         replacement sits deeper and every QB is worth more — "basically the same as superflex, but
+         slightly more value placed on QBs", which is exactly the shape of it.
+     The rates below are derived from the league's own starting lineup and are tuned so a 12-team
+     standard league reproduces the old numbers EXACTLY (14/30/36/14, and 24 at superflex) — this
+     generalises the table, it does not re-tune anybody's existing board.
+     ⚠ Read off cfg.start, NOT the SPEC global: buildPlayers is called from screens that set SPEC
+     immediately before, and one that doesn't would silently rate every player against another
+     league's lineup.
+     ============================================================================================ */
+  const counts = (() => {
+    const st = (cfg && cfg.start) || {};
+    const teams = Math.max(2, Math.min(20, +((cfg && cfg.teams) || 12)));
+    const flex = +(st.FLEX || 0), superN = +(st.SUPER || 0);
+    // Per-team starters at each position. The +constants are the bench/streamer tail — the players
+    // beyond the last starter who are still rostered somewhere, which is what makes replacement the
+    // last USEFUL body rather than the last starting one.
+    const rate = {
+      QB: (+st.QB || 1) + superN * 0.82 + 0.17,  // a SUPER/OP slot holds a QB about four times in five
+      RB: (+st.RB || 0) + flex * 0.30 + 0.20,
+      WR: (+st.WR || 0) + flex * 0.55 + 0.45,
+      TE: (+st.TE || 0) + flex * 0.15 + 0.02,
+    };
+    const out = {};
+    POS.forEach((pos) => { out[pos] = Math.max(1, Math.round(teams * rate[pos])); });
+    // Expose it for the admin diagnostic — replacement level is the most consequential number on the board
+    // and the only one with no column of its own, so when a format looks mis-valued this is what to read.
+    LAST_REPL_COUNTS = out;
+    return out;
+  })();
   const repl = {};
   POS.forEach((pos) => { const s = ps.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts); repl[pos] = s.length ? s[Math.min(counts[pos] - 1, s.length - 1)].pts : 0; });
   // IDP replacement levels (only relevant when IDP players are in the pool). Indices approximate
@@ -2936,6 +2996,27 @@ function buildPlayers(cfg) {
     const avail = ps.filter((p) => !keptIds.has(p.id) && POS.includes(p.pos)).sort((a, b) => a.adpOriginal - b.adpOriginal);
     avail.forEach((p, i) => { p.adp = allAdpSlots[i] != null ? allAdpSlots[i] : p.adpOriginal; });
   }
+  /* ============================================================================================
+     ADP RANK — the number a steal or a reach is actually measured against.
+     --------------------------------------------------------------------------------------------
+     Grading a pick as "N picks past his ADP" compares two things that are NOT on the same scale.
+     A pick number is a rank: pick 180 is the 180th player taken. An ADP is a MEAN, and the mean of
+     a tail is compressed toward the middle — so the 180th-best player by consensus does not carry
+     an ADP of 180. In the pack this board is built from he carries about 136.
+     The consequence is not subtle. Measured across three full simulated drafts, 163 of 180 picks
+     scored POSITIVE, every "steal" the board highlighted fell in rounds 9-15, and rounds 1-8
+     produced none at all — in a room where the bots draft to ADP and nothing unusual happened. The
+     highlight was not finding steals; it was rediscovering that ADP is compressed at the tail.
+     Ranking fixes it by construction: if a draft takes exactly the top N by consensus, every pick
+     scores zero, and a gap means somebody genuinely went past players the board ranked above him.
+     ⚠ p.adp keeps the MARKET number — that is what the ADP column shows and what people compare
+     against elsewhere. This is a second field, used only for grading.
+     ============================================================================================ */
+  {
+    const ranked = ps.filter((p) => p.adp != null && Number.isFinite(p.adp)).sort((a2, b2) => a2.adp - b2.adp);
+    ranked.forEach((p, i) => { p.adpRank = i + 1; });
+    ps.forEach((p) => { if (p.adpRank == null) p.adpRank = ranked.length + 1; });
+  }
   // ---- TEAM DEPTH RANK + USAGE ROLE ----------------------------------------------------------
   // For each NFL team, rank skill players within their position by projected points (RB1/RB2, WR1/WR2/WR3,
   // etc.) — this is the "starter" signal: who's actually the team's top option at the spot. We also infer
@@ -3154,7 +3235,14 @@ const REQ_F = (sf) => ({ QB: SPEC.QB, RB: SPEC.RB, WR: SPEC.WR, TE: SPEC.TE });
 // never applies QB scarcity pressure in a superflex room (the "passed a 2-3x-VBD QB for a WR at pick 58" bug).
 const REQ_EFF = (sf) => {
   const base = { QB: SPEC.QB, RB: SPEC.RB, WR: SPEC.WR, TE: SPEC.TE };
-  if (sf || (SPEC.SUPER || 0) > 0) base.QB += Math.max(1, SPEC.SUPER || 1);
+  // ⚠ A 2QB LEAGUE STARTS TWO QUARTERBACKS, NOT THREE. The old line added a slot unconditionally whenever
+  // the league was superflex-ish, so a true 2QB lineup (QB: 2, SUPER: 0) came out as THREE owed QB starters —
+  // the engine thought you needed a third quarterback before you were done. Count the actual slots: a
+  // SUPER/OP slot is realistically a second QB, and a league merely FLAGGED superflex without an explicit
+  // slot still owes two.
+  const superN = SPEC.SUPER || 0;
+  if (superN > 0) base.QB += superN;
+  else if (sf && base.QB < 2) base.QB = 2;
   return base;
 };
 // Effective starter requirement for POSITION-STRENGTH scoring. The dedicated REQ_F counts only fixed slots,
@@ -3202,7 +3290,7 @@ function capsOf(cfg) {
       TE: (cfg.tePremMult > 0 ? 4 : 3) + Math.floor(d / 8),
     };
     POS.forEach((p) => { const x = cfg.caps && cfg.caps[p]; if (x != null && x !== "" && +x > 0) base[p] = +x; });
-    return base;
+    return withKdCaps(base, cfg);
   }
   // Default per-position maximums when the league doesn't specify them. QB/TE caps are deliberately conservative
   // — even in a deep superflex league you rarely roster more than ~4 QB, and stacking a 5th/6th is dead weight —
@@ -3212,23 +3300,68 @@ function capsOf(cfg) {
     ? { QB: Math.min(4, 3 + Math.floor(d / 12)), RB: 4 + Math.ceil(d / 2), WR: 4 + Math.ceil(d / 2), TE: Math.min(3, 2 + Math.floor(d / 12)) }
     : { QB: Math.min(3, 2 + Math.floor(d / 10)), RB: 4 + Math.ceil(d / 2), WR: 4 + Math.ceil(d / 2), TE: Math.min(3, 2 + Math.floor(d / 10)) };
   POS.forEach((p) => { const x = cfg.caps && cfg.caps[p]; if (x != null && x !== "" && +x > 0) base[p] = +x; });
+  return withKdCaps(base, cfg);
+}
+// K and DST caps: exactly the slots the league starts, unless the league says otherwise. There is no such
+// thing as a useful second kicker on draft day, and a second defense is the specific thing a beta user
+// watched the engine recommend him. A league that genuinely wants two can set a cap in Settings.
+function withKdCaps(base, cfg) {
+  const st = (cfg && cfg.start) || {};
+  // ⚠ THE LEAGUE'S STARTING SLOTS ARE THE ONLY AUTHORITY HERE — a `caps` entry does NOT override them.
+  // Trey: "We should make sure the recommendation engine only ever recommends 1 K and 1 DST. Doesn't mean
+  // teams won't take more, but that's just not good practice." He is right, and the earlier version left a
+  // door open: a synced or hand-set cap of 2 would have had the engine actively suggesting a second defense,
+  // which is advice nobody should be given. Every other position takes its cap from `caps` because roster
+  // construction there is a genuine choice; a second kicker is not.
+  // This constrains what the engine RECOMMENDS. The board itself is unfiltered — you can still draft a
+  // second defense by hand, and other teams doing it is recorded normally.
+  ["K", "DST"].forEach((p) => { base[p] = Math.max(0, +(st[p] || 0)); });
   return base;
 }
-function flexOpen(counts, req) { let s = 0; ["RB","WR","TE"].forEach((p) => (s += Math.max(0, counts[p] - req[p]))); return s < genericSlots(); }
+function flexOpen(counts, req){ let s = 0; ["RB","WR","TE"].forEach((p) => (s += Math.max(0, counts[p] - req[p]))); return s < genericSlots(); }
 function unfilledStarters(counts, sf) { const req = REQ_F(sf); let u = 0; POS.forEach((p) => (u += Math.max(0, req[p] - counts[p]))); if (flexOpen(counts, req)) u += genericSlots() - (["RB","WR","TE"].reduce((a,p)=>a+Math.max(0,counts[p]-req[p]),0)); return Math.max(0, u); }
 function legalCands(cands, counts, cfg) {
   const caps = capsOf(cfg), req = REQ_F(cfg.sf);
-  const remaining = cfg.rounds - POS.reduce((s, p) => s + counts[p], 0);
+  // The roster census counts EVERY body, K and DST included — otherwise "how many picks do I have left"
+  // is overstated by exactly the number of kickers and defenses already taken.
+  const remaining = cfg.rounds - ALL_POS.reduce((s, p) => s + (counts[p] || 0), 0);
   const mustFill = unfilledStarters(counts, cfg.sf) >= remaining;
-  const underCap = cands.filter((c) => counts[c.pos] < caps[c.pos]);
-  const ok = !mustFill ? underCap : underCap.filter((c) => counts[c.pos] < req[c.pos] || (["RB","WR","TE"].includes(c.pos) && flexOpen(counts, req)));
+  // ---- K / DST -------------------------------------------------------------------------------------
+  // They were previously excluded from the candidate pool by accident rather than by rule: `caps` had no
+  // entry for them, so `counts[pos] < caps[pos]` was `n < undefined` → false. That reads as "never legal",
+  // and it held right up to the moment every real position hit its cap — at which point the staged
+  // fallback below returned EVERY candidate and the exclusion evaporated, with no counts to stop a SECOND
+  // defense. Now it's a rule you can read: a K/DST is a candidate only while the league still owes you one
+  // AND you are close enough to the end that taking one is the actual right move.
+  const stillOwed = (p) => Math.max(0, (caps[p] || 0) - (counts[p] || 0));
+  const kdLeft = stillOwed("K") + stillOwed("DST");
+  // Two picks of runway, so the recommendation can warn you before the last pick forces it.
+  const kdWindow = kdLeft > 0 && remaining <= kdLeft + 2;
+  const isKD = (p) => p === "K" || p === "DST";
+  const legalKD = (p) => stillOwed(p) > 0 && kdWindow;
+  const underCap = cands.filter((c) => {
+    const p = cpos(c.pos);
+    if (isKD(p)) return legalKD(p);
+    const cap = caps[p];
+    return cap == null ? true : (counts[p] || 0) < cap;
+  });
+  const ok = !mustFill ? underCap : underCap.filter((c) => {
+    const p = cpos(c.pos);
+    // In must-fill mode a still-owed K/DST IS a starter you must fill — that's the whole point of the slot.
+    if (isKD(p)) return true;
+    return (counts[p] || 0) < (req[p] || 0) || (["RB","WR","TE"].includes(p) && flexOpen(counts, req));
+  });
   // Relax in STAGES rather than all at once. The old single fallback ("if nothing qualifies, return every
   // candidate") meant that the moment counts were wrong enough to put EVERY position over its cap, the entire
   // filter switched itself off silently — the failure mode looked like a scoring bug rather than a count bug.
   // Now we drop the must-fill-your-starters constraint first, and only then the caps.
   if (ok.length) return ok;
   if (underCap.length) return underCap;
-  return cands;
+  // ⚠ EVEN THE LAST RESORT KEEPS ONE RULE. Handing back "everything" is how a second kicker and a second
+  // defense reached the recommendation in the first place; whatever else has gone wrong with the counts,
+  // a position you have already filled to its cap is never the answer.
+  const noSpare = cands.filter((c) => !isKD(cpos(c.pos)) || stillOwed(cpos(c.pos)) > 0);
+  return noSpare.length ? noSpare : cands;
 }
 // ===== BOARD TIERS ==========================================================================
 // A "tier" is a run of players who are effectively interchangeable, and the break is where the drop
@@ -3753,8 +3886,8 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
   if (!nexts.length) return null;
   const dem = demand(sf);
   const baseDrafted = new Uint8Array(players.length);
-  const baseCounts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
-  picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; baseDrafted[pk] = 1; const c = baseCounts[teamAt(o)]; if (c[pl.pos] != null) c[pl.pos]++; });
+  const baseCounts = Array.from({ length: TEAMS }, newCounts);
+  picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; baseDrafted[pk] = 1; const c = baseCounts[teamAt(o)]; if (c[cpos(pl.pos)] != null) c[cpos(pl.pos)]++; });
   for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, baseCounts[t]); seedRosterCounts(t, baseCounts[t]); }
   allUnavailableKeeperIds().forEach((id) => { baseDrafted[id] = 1; });
   const baseRecent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
@@ -3814,13 +3947,13 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
         const cands = legalCands(candidatesOf(sortedAdp, drafted, 30), counts[t], cfg);
         let bc = cands[0], bs = -1e9;
         for (const c of cands) { const sc = userScore(c, counts[t], dem, strategy, sf, pickNum); if (sc > bs) { bs = sc; bc = c; } }
-        drafted[bc.id] = 1; counts[t][bc.pos]++; recent = [...recent.slice(-7), bc.pos];
+        drafted[bc.id] = 1; counts[t][cpos(bc.pos)] = (counts[t][cpos(bc.pos)] || 0) + 1; recent = [...recent.slice(-7), bc.pos];
         continue;
       }
       const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts[t], cfg);
       const ws = cands.map((c, ri) => weightFor(c, pickNum, counts[t], round, recent, dem, R, ri));
       const i = sample(cands, ws);
-      drafted[cands[i].id] = 1; counts[t][cands[i].pos]++; recent = [...recent.slice(-7), cands[i].pos];
+      drafted[cands[i].id] = 1; counts[t][cpos(cands[i].pos)] = (counts[t][cpos(cands[i].pos)] || 0) + 1; recent = [...recent.slice(-7), cands[i].pos];
     }
   }
   const relevantSet = new Set(relevant.map((p) => p.id));
@@ -3858,8 +3991,8 @@ function survivalAtPick(players, sortedAdp, picks, targetOverall, cfg, nSims) {
   const TOTAL = totalOf(cfg), R = cfg.rounds, sf = cfg.sf, dem = demand(sf);
   const target = Math.max(picks.length, Math.min(TOTAL, targetOverall - 1)); // 0-indexed exclusive boundary
   const baseDrafted = new Uint8Array(players.length);
-  const baseCounts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
-  picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; baseDrafted[pk] = 1; const c = baseCounts[teamAt(o)]; if (c[pl.pos] != null) c[pl.pos]++; });
+  const baseCounts = Array.from({ length: TEAMS }, newCounts);
+  picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; baseDrafted[pk] = 1; const c = baseCounts[teamAt(o)]; if (c[cpos(pl.pos)] != null) c[cpos(pl.pos)]++; });
   for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, baseCounts[t]); seedRosterCounts(t, baseCounts[t]); }
   allUnavailableKeeperIds().forEach((id) => { baseDrafted[id] = 1; });
   const baseRecent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
@@ -3877,7 +4010,7 @@ function survivalAtPick(players, sortedAdp, picks, targetOverall, cfg, nSims) {
       const ws = cands.map((c, ri) => weightFor(c, pickNum, counts[t], round, recent, dem, R, ri));
       const c = cands[sample(cands, ws)];
       if (!c) break;
-      drafted[c.id] = 1; counts[t][c.pos]++; recent = [...recent.slice(-7), c.pos];
+      drafted[c.id] = 1; counts[t][cpos(c.pos)] = (counts[t][cpos(c.pos)] || 0) + 1; recent = [...recent.slice(-7), c.pos];
     }
     for (const p of players) if (!drafted[p.id]) surv[p.id]++;
   }
@@ -3905,7 +4038,7 @@ function projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId)
   const scoreUntil = picks.length + SCORE_AHEAD;
   // Maintain roster counts incrementally instead of recounting every team's whole roster on every one of the
   // remaining picks (that was O(picks × roster size) of pure waste).
-  const liveCounts = rosters.map((r) => { const c = { QB: 0, RB: 0, WR: 0, TE: 0 }; r.forEach((p) => { if (c[p.pos] != null) c[p.pos]++; }); return c; });
+  const liveCounts = rosters.map((r) => { const c = newCounts(); r.forEach((p) => { if (c[cpos(p.pos)] != null) c[cpos(p.pos)]++; }); return c; });
   for (let o = picks.length; o < TOTAL; o++) {
     const t = teamAt(o), round = Math.floor(o / TEAMS) + 1, pickNum = o + 1;
     // Pick-cost keeper occupying this slot: place the kept player here (it consumes this pick) rather than
@@ -3915,7 +4048,7 @@ function projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId)
       const kp = players[kAt];
       // kp was pre-marked drafted (so no other team grabbed it before its slot); at ITS slot we still place it
       // on the owner's roster. Guard only against double-placing if it's somehow already on this roster.
-      if (kp && !rosters[t].some((x) => x.id === kp.id)) { drafted[kAt] = 1; rosters[t].push(kp); if (liveCounts[t][kp.pos] != null) liveCounts[t][kp.pos]++; recent = [...recent.slice(-7), kp.pos]; }
+      if (kp && !rosters[t].some((x) => x.id === kp.id)) { drafted[kAt] = 1; rosters[t].push(kp); if (liveCounts[t][cpos(kp.pos)] != null) liveCounts[t][cpos(kp.pos)]++; recent = [...recent.slice(-7), kp.pos]; }
       continue;
     }
     const counts = liveCounts[t];
@@ -3934,7 +4067,7 @@ function projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId)
         let bestDK = null; for (const p of sortedAdp) { if (!drafted[p.id] && p.pos === wantPos) { bestDK = p; break; } }
         if (bestDK) {
           drafted[bestDK.id] = 1; rosters[t].push(bestDK);
-          if (liveCounts[t][bestDK.pos] != null) liveCounts[t][bestDK.pos]++;
+          if (liveCounts[t][cpos(bestDK.pos)] != null) liveCounts[t][cpos(bestDK.pos)]++;
           recent = [...recent.slice(-7), bestDK.pos];
           continue;
         }
@@ -3957,7 +4090,7 @@ function projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId)
     }
     if (!choice) continue; // no legal body for this one pick — skip it, don't abandon the whole projection
     drafted[choice.id] = 1; rosters[t].push(choice);
-    if (liveCounts[t][choice.pos] != null) liveCounts[t][choice.pos]++;
+    if (liveCounts[t][cpos(choice.pos)] != null) liveCounts[t][cpos(choice.pos)]++;
     recent = [...recent.slice(-7), choice.pos];
   }
   const pts = rosters.map((r) => lineupPts(r, sf));
@@ -3982,8 +4115,8 @@ function projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, forcedI
   const PROJ_LIMIT = Math.min(TOTAL, picks.length + BOARD_PROJ_ROUNDS * TEAMS);
   const dem = demand(sf);
   const drafted = new Uint8Array(players.length);
-  const counts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
-  picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; drafted[pk] = 1; const c = counts[teamAt(o)]; if (c[pl.pos] != null) c[pl.pos]++; });
+  const counts = Array.from({ length: TEAMS }, newCounts);
+  picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; drafted[pk] = 1; const c = counts[teamAt(o)]; if (c[cpos(pl.pos)] != null) c[cpos(pl.pos)]++; });
   for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, counts[t]); seedRosterCounts(t, counts[t]); }
   allUnavailableKeeperIds().forEach((id) => { drafted[id] = 1; });
   let recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
@@ -4007,7 +4140,7 @@ function projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, forcedI
     // remaining undrafted player by ADP so the projected board still completes all rounds.
     if (!choice) { for (const c of deepPool) { if (!drafted[c.id]) { choice = c; break; } } }
     if (!choice) break; // truly no players left at all
-    board[o] = choice.id; drafted[choice.id] = 1; if (counts[t][choice.pos] != null) counts[t][choice.pos]++; recent = [...recent.slice(-7), choice.pos];
+    board[o] = choice.id; drafted[choice.id] = 1; if (counts[t][cpos(choice.pos)] != null) counts[t][cpos(choice.pos)]++; recent = [...recent.slice(-7), choice.pos];
   }
   return board;
 }
@@ -4031,8 +4164,8 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
   const TOTAL = totalOf(cfg), R = cfg.rounds, sf = cfg.sf;
   const dem = demand(sf);
   const drafted = new Uint8Array(players.length);
-  const counts = Array.from({ length: TEAMS }, () => ({ QB: 0, RB: 0, WR: 0, TE: 0 }));
-  picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; drafted[pk] = 1; const c = counts[teamAt(o)]; if (c[pl.pos] != null) c[pl.pos]++; });
+  const counts = Array.from({ length: TEAMS }, newCounts);
+  picks.forEach((pk, o) => { const pl = players[pk]; if (!pl) return; drafted[pk] = 1; const c = counts[teamAt(o)]; if (c[cpos(pl.pos)] != null) c[cpos(pl.pos)]++; });
   for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, counts[t]); seedRosterCounts(t, counts[t]); }
   allUnavailableKeeperIds().forEach((id) => { drafted[id] = 1; });
   let recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
@@ -4074,7 +4207,7 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
       entry = { o, t, user: true, p: choice, cands5, cands5Build, buildPick };
       passedUser = true;
       if (!choice) break;
-      drafted[choice.id] = 1; counts[t][choice.pos]++; recent = [...recent.slice(-7), choice.pos];
+      drafted[choice.id] = 1; counts[t][cpos(choice.pos)] = (counts[t][cpos(choice.pos)] || 0) + 1; recent = [...recent.slice(-7), choice.pos];
     } else {
       const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts[t], cfg);
       if (!cands.length) { continue; } // nothing legal/left to project at this slot — skip it
@@ -4090,7 +4223,7 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
       const cands5 = cands.map((cc, i) => ({ p: cc, prob: sum > 0 ? Math.round((ws[i] / sum) * 100) : Math.round(100 / cands.length) }))
         .sort((a, b) => b.prob - a.prob).slice(0, 5);
       entry = { o, t, p: c, prob: Number.isFinite(prob) ? prob : 0, cands5 };
-      drafted[c.id] = 1; if (counts[t][c.pos] != null) counts[t][c.pos]++; recent = [...recent.slice(-7), c.pos];
+      drafted[c.id] = 1; if (counts[t][cpos(c.pos)] != null) counts[t][cpos(c.pos)]++; recent = [...recent.slice(-7), c.pos];
     }
     path.push(entry);
     if (passedUser) { if (afterUser >= aheadCap) break; if (!entry.user) afterUser++; }
@@ -4821,25 +4954,73 @@ function CoachTour({ steps, onExit, onStepTab, optOut, onOptOut }) {
 // weeks you're most exposed) and per position (do all your RBs share a bye?), so you can weigh a complementary
 // pick that avoids stacking a bye. Byes come from p.bye; before the NFL announces the schedule every bye is 0,
 // so we detect that and show a friendly "not announced yet" state instead of a misleading empty chart.
+/* ==================================================================================================
+   BYE WEEKS — WHICH WEEKS DOES YOUR STARTING LINEUP ACTUALLY LOSE PEOPLE?
+   --------------------------------------------------------------------------------------------------
+   Beta user: "Bye week graph at the bottom doesn't scale and covers text." Trey: "make sure the bye week
+   graph is both accurate AND looks better (has enough space)."
+   The layout fault was arithmetic — a 56px flex row held a bar of up to 56px PLUS two lines of label
+   underneath it, so a full-height column was ~80px of content in a 56px box and the overflow painted over
+   whatever came next.
+   ⚠ THE ACCURACY FAULT WAS WORSE, because it read as a fact. The variable was called `starters` and was
+   the WHOLE ROSTER filtered to QB/RB/WR/TE, so a bench body counted exactly like a starter — and then the
+   position row said "3 starters share Week 7 bye — thin that week" about a team whose actual WR1 and WR2
+   were both playing. A warning that is wrong in the reassuring direction is bad; one wrong in the alarming
+   direction sends you to fix a problem you do not have. Exposure is now computed from the REAL starting
+   lineup (lineupSlots — the same function the roster views draw), and the chart says plainly which bars are
+   starters and which are bench.
+   ================================================================================================== */
 function ByeWeekWidget({ roster, req, isDynasty }) {
-  const starters = (roster || []).filter((p) => p && ["QB", "RB", "WR", "TE"].includes(p.pos));
-  const withBye = starters.filter((p) => p.bye && p.bye > 0);
+  const all = (roster || []).filter((p) => p && ["QB", "RB", "WR", "TE"].includes(p.pos));
+  // The lineup this roster would actually field — flex and superflex slots resolved the same way the
+  // My Team and League tabs resolve them, so this widget can never disagree with the roster beside it.
+  const lineup = (() => { try { return lineupSlots(roster || [], false); } catch (e) { return { slots: [], bench: [] }; } })();
+  const starterIds = new Set(lineup.slots.map((s) => s.p && s.p.id).filter((x) => x != null));
+  const starters = all.filter((p) => starterIds.has(p.id));
+  const withBye = all.filter((p) => p.bye && p.bye > 0);
   const byesKnown = withBye.length > 0;
-  const weekCount = {}; withBye.forEach((p) => { weekCount[p.bye] = (weekCount[p.bye] || 0) + 1; });
-  const weeks = Object.keys(weekCount).map(Number).sort((a, b) => a - b);
-  const maxWeek = weeks.length ? Math.max(...weeks.map((w) => weekCount[w])) : 0;
-  const posRows = ["QB", "RB", "WR", "TE"].map((pos) => {
-    const at = withBye.filter((p) => p.pos === pos);
-    const byWeek = {}; at.forEach((p) => { byWeek[p.bye] = (byWeek[p.bye] || 0) + 1; });
-    const need = req && req[pos] ? req[pos] : (pos === "QB" || pos === "TE" ? 1 : 2);
-    let worstWeek = null, worstN = 0;
-    Object.entries(byWeek).forEach(([w, n]) => { if (n > worstN) { worstN = n; worstWeek = +w; } });
-    const exposed = worstN >= need;
-    return { pos, count: at.length, worstWeek, worstN, need, exposed };
+
+  // Per week: how many of your STARTERS are out, and how many bench bodies alongside them.
+  const weekStart = {}, weekBench = {};
+  withBye.forEach((p) => {
+    const m = starterIds.has(p.id) ? weekStart : weekBench;
+    m[p.bye] = (m[p.bye] || 0) + 1;
   });
+  const weeks = [...new Set([...Object.keys(weekStart), ...Object.keys(weekBench)])].map(Number).sort((a, b) => a - b);
+  const totalIn = (w) => (weekStart[w] || 0) + (weekBench[w] || 0);
+  const maxTotal = weeks.reduce((m, w) => Math.max(m, totalIn(w)), 0);
+  const worstWeek = weeks.reduce((best, w) => ((weekStart[w] || 0) > (weekStart[best] || 0) ? w : best), weeks[0]);
+  const worstN = worstWeek != null ? (weekStart[worstWeek] || 0) : 0;
+
+  const posRows = ["QB", "RB", "WR", "TE"].map((pos) => {
+    // ⚠ THE DENOMINATOR IS HOW MANY YOU START, NOT HOW MANY HAVE A KNOWN BYE. Counting only the players with
+    // bye data meant a team starting two receivers, one of whom had no bye published yet, was told "all your
+    // starting WRs are out" on the strength of a single one — an alarm raised by MISSING data.
+    const fielded = starters.filter((p) => p.pos === pos);
+    const startAt = fielded.filter((p) => p.bye > 0);
+    const byWeek = {}; startAt.forEach((p) => { byWeek[p.bye] = (byWeek[p.bye] || 0) + 1; });
+    const need = fielded.length || (req && req[pos]) || 0;
+    let wWeek = null, wN = 0;
+    Object.entries(byWeek).forEach(([w, n]) => { if (n > wN) { wN = n; wWeek = +w; } });
+    // "Exposed" now means what it says: that week you lose EVERY starter you field at this position.
+    return { pos, count: fielded.length, known: startAt.length, worstWeek: wWeek, worstN: wN, need, exposed: need > 0 && wN >= need };
+  }).filter((r) => r.known > 0);
+
+  const CH = 74;                                    // the bar area, and nothing else, lives in this box
+  const barColor = (n) => (n >= 3 ? "var(--red)" : n === 2 ? "var(--gold)" : "var(--green)");
   return (
     <div className="panel" style={{ padding: 16 }}>
-      <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)", marginBottom: 4 }}>Bye-week outlook</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
+        <div className="disp" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--gold)" }}>Bye-week outlook</div>
+        {byesKnown && worstN > 0 && (
+          <div style={{ fontSize: 12 }}>
+            <span className="mut">Worst week: </span>
+            <b style={{ color: worstN >= 3 ? "var(--red)" : worstN === 2 ? "var(--gold)" : "var(--ink)" }}>
+              Week {worstWeek} — {worstN} starter{worstN === 1 ? "" : "s"} out
+            </b>
+          </div>
+        )}
+      </div>
       {isDynasty && <div className="mut" style={{ fontSize: 10.5, marginBottom: 10 }}>Most relevant in redraft — byes matter less in dynasty, but still worth a glance.</div>}
       {!byesKnown ? (
         <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.5, padding: "8px 0" }}>
@@ -4848,31 +5029,51 @@ function ByeWeekWidget({ roster, req, isDynasty }) {
         </div>
       ) : (
         <>
-          <div style={{ marginBottom: 12 }}>
-            <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 6 }}>Players out by week</div>
-            <div style={{ display: "flex", alignItems: "flex-end", gap: 5, height: 56 }}>
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 7, flexWrap: "wrap" }}>
+              <span className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Players out by week</span>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10 }}>
+                <span style={{ width: 9, height: 9, borderRadius: 2, background: "var(--green)", display: "inline-block" }} /><span className="mut">starters</span>
+              </span>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10 }}>
+                <span style={{ width: 9, height: 9, borderRadius: 2, background: "var(--line2)", display: "inline-block" }} /><span className="mut">bench</span>
+              </span>
+            </div>
+            {/* The bar area is its own fixed-height box; the two labels live OUTSIDE it, so a column's height
+                is the sum of its parts instead of a guess that a full-height bar breaks. Columns share the
+                width available and the row scrolls rather than pushing the page sideways. */}
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 6, overflowX: "auto", paddingBottom: 2 }}>
               {weeks.map((w) => {
-                const n = weekCount[w];
-                const h = maxWeek ? Math.round((n / maxWeek) * 48) + 8 : 8;
-                const heavy = n >= 3;
+                const st = weekStart[w] || 0, bn = weekBench[w] || 0, n = st + bn;
+                const h = maxTotal ? Math.max(6, Math.round((n / maxTotal) * (CH - 10))) : 6;
+                const stH = n ? Math.round(h * (st / n)) : 0;
                 return (
-                  <div key={w} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }} title={`Week ${w}: ${n} player${n > 1 ? "s" : ""} on bye`}>
-                    <div style={{ width: 22, height: h, borderRadius: 4, background: heavy ? "var(--red)" : n === 2 ? "var(--gold)" : "var(--green)" }} />
-                    <span className="mut" style={{ fontSize: 9 }}>W{w}</span>
-                    <span style={{ fontSize: 9, fontWeight: 700, color: heavy ? "var(--red)" : "var(--ink)" }}>{n}</span>
+                  <div key={w} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, flex: "1 1 0", minWidth: 26, maxWidth: 52 }}
+                    title={`Week ${w}: ${st} starter${st === 1 ? "" : "s"}${bn ? ` and ${bn} bench player${bn === 1 ? "" : "s"}` : ""} on bye`}>
+                    <div style={{ height: CH, width: "100%", display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+                      <div style={{ width: "100%", maxWidth: 26, height: h, borderRadius: 4, overflow: "hidden", display: "flex", flexDirection: "column", justifyContent: "flex-end", background: "var(--line2)" }}>
+                        <div style={{ height: stH, background: barColor(st) }} />
+                      </div>
+                    </div>
+                    <span className="mut" style={{ fontSize: 9.5, lineHeight: 1 }}>W{w}</span>
+                    <span className="num" style={{ fontSize: 10, fontWeight: 700, lineHeight: 1, color: st >= 3 ? "var(--red)" : st === 2 ? "var(--gold)" : "var(--ink)" }}>
+                      {st}{bn ? <span className="mut" style={{ fontWeight: 400 }}>+{bn}</span> : null}
+                    </span>
                   </div>
                 );
               })}
             </div>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {posRows.filter((r) => r.count > 0).map((r) => (
-              <div key={r.pos} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
-                <span style={{ width: 30, fontWeight: 700, color: POS_COLOR[r.pos] }}>{r.pos}</span>
+          <div style={{ display: "flex", flexDirection: "column", gap: 7, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+            {posRows.map((r) => (
+              <div key={r.pos} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, lineHeight: 1.35 }}>
+                <span style={{ width: 30, flexShrink: 0, fontWeight: 700, color: POS_COLOR[r.pos] }}>{r.pos}</span>
                 {r.exposed ? (
-                  <span style={{ color: "var(--red)" }}><i className="ti ti-alert-triangle" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />{r.worstN} starter{r.worstN > 1 ? "s" : ""} share Week {r.worstWeek} bye — thin that week</span>
+                  <span style={{ color: "var(--red)" }}><i className="ti ti-alert-triangle" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />{r.count === 1 ? `Your only starting ${r.pos} is out in Week ${r.worstWeek}` : `All ${r.count} of your starting ${r.pos}s are out in Week ${r.worstWeek}`} — you'll be starting a replacement</span>
+                ) : r.worstN > 1 ? (
+                  <span className="mut">{r.worstN} of your {r.count} starting {r.pos}s share the Week {r.worstWeek} bye</span>
                 ) : (
-                  <span className="mut">byes spread out{r.worstWeek ? ` (worst: ${r.worstN} in W${r.worstWeek})` : ""}</span>
+                  <span className="mut">byes spread out{r.worstWeek ? ` — worst is one starter in W${r.worstWeek}` : ""}</span>
                 )}
               </div>
             ))}
@@ -4912,7 +5113,10 @@ function pickValue(p, overall, cfg, ctx) {
   // veterans there), so every pick reads as a huge reach. When the caller supplies a rookie-relative ADP for
   // this player (his expected slot AMONG rookies), use that instead so steals/reaches reflect the rookie board.
   const rookieAdp = ctx && ctx.rookieAdp && p.id != null ? ctx.rookieAdp[p.id] : null;
-  const adp = Math.max(1, rookieAdp != null ? rookieAdp : (p.adp || actual)); // where he "should" have gone
+  // ⚠ GRADE AGAINST THE RANK, NOT THE RAW ADP. A pick number is a rank and an ADP is a mean, and the two are
+  // not on the same scale — see the ADP RANK note in buildPlayers. A rookie-relative ADP supplied by the
+  // caller is already a rank among rookies, so it passes straight through.
+  const adp = Math.max(1, rookieAdp != null ? rookieAdp : (p.adpRank || p.adp || actual)); // where he "should" have gone
   const w = roundWeight(actual);
   // MARKET: how far off ADP, measured relative to WHERE WE ARE in the draft.
   //
@@ -6947,8 +7151,11 @@ export default function App() {
       if (built.length) { const next = [...leagues, ...built]; setLeagues(next); persist({ leagues: next }); }
     } finally { autoImportInFlight.current = false; }
   };
-  const saveLeague = (id, picks, preds, pickNames, predNames) => {
-    const next = leagues.map((l) => (l.id === id ? { ...l, picks, preds, ...(pickNames ? { pickNames, predNames } : {}), lastPickAt: Date.now() } : l));
+  // `opts.ended` is the persistent "I stopped this draft early" flag. It is deliberately three-valued:
+  // undefined leaves whatever the record already says alone (every ordinary autosave), true/false set it.
+  const saveLeague = (id, picks, preds, pickNames, predNames, opts) => {
+    const endedPatch = opts && opts.ended !== undefined ? { ended: !!opts.ended } : {};
+    const next = leagues.map((l) => (l.id === id ? { ...l, picks, preds, ...(pickNames ? { pickNames, predNames } : {}), ...endedPatch, lastPickAt: Date.now() } : l));
     setLeagues(next); persist({ leagues: next });
   };
   const updateLeagueCfg = (id, cfg) => {
@@ -7036,7 +7243,7 @@ export default function App() {
   // nothing about the market, and letting it feed trends/history would skew everything downstream. We record
   // the flag at save time so every consumer can filter consistently.
   const MOCK_MIN_PICKS_FOR_TRENDS = 24; // ~2 full rounds — enough for the board to mean something
-  const saveMock = (picks, preds, pickNames, predNames) => {
+  const saveMock = (picks, preds, pickNames, predNames, opts) => {
     if (!mockLeague) return;
     const rounds = (mockLeague.cfg && mockLeague.cfg.rounds) || 15;
     const teams = (mockLeague.cfg && mockLeague.cfg.teams) || 12;
@@ -7044,7 +7251,11 @@ export default function App() {
     const pctDone = total > 0 ? picks.length / total : 0;
     // Substantial = a real chunk of the board: at least ~2 rounds AND at least a quarter of the draft.
     const substantial = picks.length >= MOCK_MIN_PICKS_FOR_TRENDS && pctDone >= 0.25;
-    const entry = { id: mockLeague.id, picks, preds, ...(pickNames ? { pickNames, predNames } : {}), ran: new Date().toLocaleString(), at: Date.now(), n: picks.length, total, substantial, complete: picks.length >= total };
+    // A mock ENDED EARLY is complete for every purpose that matters: it never gets another pick, it belongs
+    // in the "complete" filter, and reopening it must not restart the bots. `ended` is the durable fact;
+    // `complete` is the derived one every existing consumer already reads.
+    const ended = opts && opts.ended !== undefined ? !!opts.ended : !!mockLeague.ended;
+    const entry = { id: mockLeague.id, picks, preds, ...(pickNames ? { pickNames, predNames } : {}), ran: new Date().toLocaleString(), at: Date.now(), n: picks.length, total, substantial, ended, complete: picks.length >= total || ended };
     if (mockLeague.mockOf == null) {
       // standalone "fun" mock — store in the global funMocks list, not under a league
       const e2 = { ...entry, name: mockLeague.name, cfg: mockLeague.cfg };
@@ -7114,7 +7325,7 @@ export default function App() {
       for (const lg of leagues || []) {
         const m = ((lg && lg.mocks) || []).find((x) => x && x.id === activeId);
         if (m) {
-          setMockLeague({ id: m.id, mockOf: lg.id, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null });
+          setMockLeague({ id: m.id, mockOf: lg.id, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended });
           return;
         }
       }
@@ -7262,10 +7473,10 @@ export default function App() {
         onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} onGuide={() => { setHelpTab("guide"); setRoute("help"); }} onAccount={() => setRoute("account")} onAdmin={() => setRoute("admin")} onSignOut={signOut}
         onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }}
         onDraftTrends={() => setRoute("draftTrends")} onAutoImportSleeper={autoImportSleeper}
-        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onDeleteFun={deleteFunMock} onDeleteMock={deleteMock} />}
+        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }} onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }} onDeleteFun={deleteFunMock} onDeleteMock={deleteMock} />}
       {route === "leagueHub" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? <LeagueUmbrella user={user} league={lg} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} backLabel={backLabelOf()}
         onOfficial={(id) => { setDraftTab(null); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
-        onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }}
+        onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }}
         onDeleteMock={deleteMock} onRankings={() => setRoute("rankings")} onDelete={(id) => { deleteLeague(id); setRoute(user.paid ? "home" : "library"); }}
         allLeagues={leagues}
         onSaveAvoid={(id, arr, allowArr) => { const next = leagues.map((l) => (l.id === id ? { ...l, avoidList: arr, ...(allowArr ? { avoidAllow: allowArr } : {}) } : l)); setLeagues(next); persist({ leagues: next }); }}
@@ -7297,11 +7508,11 @@ export default function App() {
       {route === "draftTrends" && user && <DraftTrendsPage user={user} leagues={leagues} funMocks={funMocks} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} onOpenLeague={(id) => { setActiveId(id); setRoute("leagueHub"); }} />}
       {route === "help" && <HelpPage user={user} biz={biz} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} onSubmit={submitFeedback} initialTab={helpTab} />}
       {route === "checkout" && user && <Checkout biz={biz} user={user} canceled={checkoutCanceled} onDone={completePurchase} onBack={() => { setCheckoutCanceled(false); setRoute("home"); }} />}
-      {route === "library" && user && <Library user={user} leagues={leagues} onSyncCloud={syncFromCloud} onNew={() => setRoute("setup")} onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onDelete={deleteLeague} onAdmin={() => setRoute("admin")} onSignOut={signOut} onHome={() => setRoute("home")} onAccount={() => setRoute("account")} onDeleteMock={deleteMock} onOpenMockView={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onDatabase={() => setRoute("database")} onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} funMockCount={funMocks.length} />}
+      {route === "library" && user && <Library user={user} leagues={leagues} onSyncCloud={syncFromCloud} onNew={() => setRoute("setup")} onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onDelete={deleteLeague} onAdmin={() => setRoute("admin")} onSignOut={signOut} onHome={() => setRoute("home")} onAccount={() => setRoute("account")} onDeleteMock={deleteMock} onOpenMockView={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onDatabase={() => setRoute("database")} onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} funMockCount={funMocks.length} />}
       {route === "database" && user && <DraftsDatabase leagues={leagues} funMocks={funMocks} user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()}
         onOpenLeague={(id) => { setActiveId(id); setRoute("draft"); }}
-        onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }}
-        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onTrendsTime={() => setRoute("trendsTime")} onDelete={deleteLeague} />}
+        onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }}
+        onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }} onQuickMock={() => setQuickMockOpen(true)} onTrendsTime={() => setRoute("trendsTime")} onDelete={deleteLeague} />}
       {route === "trendsTime" && user && <TrendsOverTimePage user={user} leagues={leagues} funMocks={funMocks} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} onOpenLeague={(id) => { setActiveId(id); setRoute("leagueHub"); }} />}
       {route === "tradeTools" && user && <TradeToolsPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} />}
       {route === "adpIntel" && user && <AdpIntelPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} />}
@@ -7310,10 +7521,10 @@ export default function App() {
       {route === "setup" && <Setup onCreate={createLeague} onBack={() => { const r = setupReturn || (user?.paid ? "home" : "library"); setSetupReturn(null); setRoute(r); }} backLabel={setupReturn === "rankings" ? "Rankings" : user?.paid ? "Home" : "Library"} />}
       {route === "draft" && active && (
         <DraftRoom key={active.id} league={active} user={user} isMock={!!(mockLeague && active.id === mockLeague.id)} isDemo={!!active.demo} initialTab={draftTab} dataVersion={dataVersion} allLeagues={leagues} allFunMocks={funMocks} noHoverAnim={noHoverAnim} onToggleHoverAnim={() => setNoHoverAnim((v) => !v)}
-          onSave={(picks, preds, pickNames, predNames) => {
-            if (active.id === "demo") setDemoLeague((d) => ({ ...d, picks, preds }));
-            else if (mockLeague && active.id === mockLeague.id) { setMockLeague((m) => ({ ...m, picks, preds, pickNames, predNames })); saveMock(picks, preds, pickNames, predNames); }
-            else saveLeague(active.id, picks, preds, pickNames, predNames);
+          onSave={(picks, preds, pickNames, predNames, opts) => {
+            if (active.id === "demo") setDemoLeague((d) => ({ ...d, picks, preds, ...(opts && opts.ended !== undefined ? { ended: !!opts.ended } : {}) }));
+            else if (mockLeague && active.id === mockLeague.id) { setMockLeague((m) => ({ ...m, picks, preds, pickNames, predNames, ...(opts && opts.ended !== undefined ? { ended: !!opts.ended } : {}) })); saveMock(picks, preds, pickNames, predNames, opts); }
+            else saveLeague(active.id, picks, preds, pickNames, predNames, opts);
           }}
           onSaveSnap={(snap) => {
             // Persist a completion snapshot on whichever record owns this draft (see the writer in DraftRoom).
@@ -11476,6 +11687,9 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
   const leagueStatus = (l) => {
     const total = (l.cfg.teams || 12) * l.cfg.rounds;
     const connStatus = (l.connect && l.connect.status) || (l.cfg.connect && l.cfg.connect.status) || null;
+    // A draft the user ended early IS over. Reading it as "still drafting" was half the reason ending a
+    // mock early felt like it hadn't taken: the card he came back to still said it was live.
+    if (l.ended && l.picks.length < total) return { label: `Ended early · ${l.picks.length}/${total}`, color: "var(--green)", pct: 100, icon: "ti-circle-check" };
     if (l.picks.length >= total || connStatus === "complete") return { label: "Draft complete", color: "var(--green)", pct: 100, icon: "ti-circle-check" };
     if (l.picks.length > 0) return { label: `Drafting · ${l.picks.length}/${total}`, color: "var(--gold)", pct: Math.round((l.picks.length / total) * 100), icon: "ti-player-play" };
     return { label: "Ready to draft", color: "var(--mut)", pct: 0, icon: "ti-flag-3" };
@@ -14453,7 +14667,9 @@ function RankingsHub({ user, leagues, onUpdate, onBack, onHome, onSignOut, onNew
   const [cQb, setCQb] = useState("1QB");
   const [cTe, setCTe] = useState("std");
   const [cLeague, setCLeague] = useState("");
-  const matchLeague = (id) => { const l = leagues.find((x) => x.id === id); if (!l) return; setCType(l.cfg.type === "dynasty" ? "dynasty" : l.cfg.type === "bestball" ? "bestball" : "redraft"); setCQb(((l.cfg.start && l.cfg.start.SUPER > 0) || l.cfg.sf) ? "SF" : "1QB"); setCTe(l.cfg.tePremMult > 0 ? "tep" : "std"); };
+  const matchLeague = (id) => { const l = leagues.find((x) => x.id === id); if (!l) return; setCType(l.cfg.type === "dynasty" ? "dynasty" : l.cfg.type === "bestball" ? "bestball" : "redraft"); // ⚠ THERE WAS NO 2QB BRANCH HERE. A league that starts two quarterbacks (QB: 2, no SUPER slot) fell
+    // through to "1QB", so "attach to a league" quietly gave a 2QB manager a one-quarterback board.
+    setCQb((l.cfg.start && l.cfg.start.SUPER > 0) ? "SF" : (l.cfg.start && l.cfg.start.QB >= 2) ? "2QB" : l.cfg.sf ? "SF" : "1QB"); setCTe(l.cfg.tePremMult > 0 ? "tep" : "std"); };
   const createSet = (seed) => {
     const id = `rs-${Date.now()}`;
     const set = { id, name: cName.trim() || "Untitled ranks", season, type: cType, qbType: cQb, teType: cTe, leagueId: cLeague || null, list: seed || [], created: new Date().toLocaleDateString() };
@@ -14628,13 +14844,72 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
   const [mode, setMode] = useState("list"); // list | board | adjust
   const [flash, setFlash] = useState("");
   const flashMsg = (m) => { setFlash(m); setTimeout(() => setFlash(""), 1600); };
+  /* ================================================================================================
+     "IT DOESN'T USE THE BOARD THAT'S IN THE DRAFT ROOM."
+     ------------------------------------------------------------------------------------------------
+     Beta user, on a 2QB league: "when I go to create my own rankings and use my league settings it
+     doesn't seem to use the board that's in the draft room… in the my rankings page it's showing typical
+     1 QB rankings as a starting point even though I chose my league and also 2 QB in the rankings
+     settings." He found two separate faults stacked on each other:
+       1. ATTACHING A LEAGUE only ever produced "1QB" or "SF" (see matchLeague) — there was no branch that
+          could return "2QB", so a 2QB league silently attached as a 1QB ranking set.
+       2. Even with the format set correctly, the STARTING ORDER came from `p.adp`, and ADP is a property
+          of whichever pack the app happened to boot with — the user's dominant league format. The draft
+          room doesn't have this problem because it fetches the format-matched pack and overlays its ADP
+          onto the board. This editor never did, so a superflex or 2QB set opened in 1QB consensus order
+          and every QB sat forty picks too low.
+     Fixed below: the set's own settings still win for the things the UI exposes (QB type, TE premium,
+     pool), and an ATTACHED league fills in what the UI does NOT expose — its scoring and team count —
+     so "attach to a league" finally means what it says. Then the seed order comes from the pack for THAT
+     format, fetched the same way the draft room fetches it.
+     ================================================================================================ */
+  const attached = useMemo(() => (leagues || []).find((l) => l.id === set.leagueId) || null, [leagues, set.leagueId]);
   const cfg = useMemo(() => {
     const qb = set.qbType || "1QB"; const te = set.teType || "std";
-    return { rounds: 15, teams: 12, caps: {}, start: { QB: qb === "2QB" ? 2 : 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: qb === "SF" ? 1 : 0, DST: 0, K: 0 }, sf: qb === "SF" || qb === "2QB", tePremMult: te === "tep" ? 1 : 0, type: set.type };
-  }, [set]);
-  const players = useMemo(() => { setTeams(12); setSpec(cfg.start); setOrder("snake"); setPickTrades(null); setKeeperAdds({}); return buildPlayers(cfg); }, [cfg]);
+    const ac = (attached && attached.cfg) || null;
+    return {
+      rounds: (ac && ac.rounds) || 15,
+      teams: (ac && ac.teams) || 12,
+      caps: {},
+      // K/DST are deliberately zeroed: a personal ranking board is about skill players, and including
+      // them would put kickers in the middle of the list you are trying to reorder.
+      start: { QB: qb === "2QB" ? 2 : 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: qb === "SF" ? 1 : 0, DST: 0, K: 0 },
+      sf: qb === "SF" || qb === "2QB",
+      tePremMult: te === "tep" ? 1 : 0,
+      type: set.type,
+      // Scoring has no control in this editor, so an attached league is the only place it can come from —
+      // and a standard-scoring league ranked on PPR projections is wrong in exactly the way he described.
+      ...(ac && ac.scoring ? { scoring: ac.scoring } : {}),
+    };
+  }, [set, attached]);
+  const players = useMemo(() => { setTeams(cfg.teams || 12); setSpec(cfg.start); setOrder("snake"); setPickTrades(null); setKeeperAdds({}); return buildPlayers(cfg); }, [cfg]);
   const byId = useMemo(() => { const m = {}; players.forEach((p) => (m[p.id] = p)); return m; }, [players]);
-  const byAdp = useMemo(() => players.slice().sort((a, b) => a.adp - b.adp), [players]);
+  // ---- FORMAT-MATCHED ADP (the draft room's board, not the boot pack's) --------------------------------
+  // Held LOCALLY, keyed by normalized name: overwriting the shared pool's ADP here would silently re-order
+  // every other screen in the app for whichever format the last ranking set happened to use.
+  const fmtKey = useMemo(() => backendFormatKey(cfg), [cfg]);
+  const [fmtAdp, setFmtAdp] = useState(null);
+  const [fmtState, setFmtState] = useState("idle"); // idle | loading | ok | miss
+  useEffect(() => {
+    if (!hasBackend) { setFmtAdp(null); setFmtState("miss"); return; }
+    let alive = true;
+    setFmtState("loading");
+    api.playerPack(fmtKey)
+      .then((pack) => {
+        if (!alive) return;
+        const rows = pack && Array.isArray(pack.players) ? pack.players : null;
+        if (!rows || !rows.length) { setFmtAdp(null); setFmtState("miss"); return; }
+        const m = {};
+        rows.forEach((r) => { const a = Number(r && r.adp); if (r && r.name && Number.isFinite(a)) m[normName(r.name)] = a; });
+        setFmtAdp(Object.keys(m).length ? m : null);
+        setFmtState(Object.keys(m).length ? "ok" : "miss");
+      })
+      .catch(() => { if (alive) { setFmtAdp(null); setFmtState("miss"); } });
+    return () => { alive = false; };
+  }, [fmtKey]);
+  // ⚠ FALL BACK TO THE POOL'S OWN ADP, never to zero — a missing entry must not teleport a player to #1.
+  const adpOf = (p) => { const a = fmtAdp ? fmtAdp[normName(p.name)] : undefined; return Number.isFinite(a) ? a : p.adp; };
+  const byAdp = useMemo(() => players.slice().sort((a, b) => adpOf(a) - adpOf(b)), [players, fmtAdp]);
 
   const [list, setList] = useState(rankNamesToIds(set.list || [], players));
   const [name, setName] = useState(set.name);
@@ -14696,13 +14971,39 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
   const listIndex = useMemo(() => { const m = {}; list.forEach((id, i) => (m[id] = i)); return m; }, [list]);
   // Virtualized scrolling: only render the rows visible in the scroll viewport (+ a buffer). This is
   // what keeps a 200+ player list fast — without it the browser chokes rendering every row at once.
+  /* ---- SORT BY POSITION -------------------------------------------------------------------------
+     Beta user: "I also suggest for the my rankings page to have a option to sort by position, makes
+     adjustments and direct comparisons easier." He is right about why: ranking is a comparison exercise,
+     and comparing your WR7 against your WR8 means scrolling past thirty running backs.
+     The filter narrows what you SEE without changing what you have — every row keeps its true overall
+     rank, and while a position is selected the arrows swap a player with the next player OF THAT
+     POSITION rather than with whoever happens to sit beside him. That is the "direct comparison" move.
+     Dragging is disabled while filtered, because a drop between two visible rows has no unambiguous
+     meaning in the full list — and a reorder that guesses is worse than one you cannot make. */
+  const [posFilter, setPosFilter] = useState(null);
   const ROW_H = 38;          // fixed row height (px)
   const VIEW_H = 380;        // scroll viewport height (px)
   const BUFFER = 6;          // extra rows above/below for smooth scroll
   const [scrollTop, setScrollTop] = useState(0);
+  // `view` is what's on screen: {id, i} where `i` is the position in the FULL list, so a filtered row can
+  // still print its real overall rank and still edit the real list.
+  const view = useMemo(() => {
+    const rows = list.map((id, i) => ({ id, i }));
+    if (!posFilter) return rows;
+    return rows.filter((r) => { const p = byId[r.id]; return p && cpos(p.pos) === posFilter; });
+  }, [list, posFilter, byId]);
   const firstVisible = Math.max(0, Math.floor(scrollTop / ROW_H) - BUFFER);
   const visibleCount = Math.ceil(VIEW_H / ROW_H) + BUFFER * 2;
-  const lastVisible = Math.min(list.length, firstVisible + visibleCount);
+  const lastVisible = Math.min(view.length, firstVisible + visibleCount);
+  // Swap a player with his neighbour AT THE SAME POSITION (what the arrows do while filtered).
+  const moveWithinView = (vi, dir) => {
+    const from = view[vi], to = view[vi + dir];
+    if (!from || !to) return;
+    setList((l) => { const c = l.slice(); [c[from.i], c[to.i]] = [c[to.i], c[from.i]]; return c; });
+  };
+  // ⚠ A FILTERED VIEW IS SHORTER THAN THE ONE YOU WERE SCROLLED THROUGH. Without this, filtering to TE
+  // while scrolled to row 180 leaves you staring at empty space below the last row.
+  useEffect(() => { setScrollTop(0); if (scrollBoxRef.current) scrollBoxRef.current.scrollTop = 0; }, [posFilter]);
   // Auto-scroll the list while dragging near its top/bottom edge, so you can drag a player far up or
   // down in one motion instead of dropping, scrolling, and re-grabbing.
   const scrollBoxRef = useRef(null);
@@ -14737,6 +15038,16 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
   // there), and "Clear all" empties it (unranked players fall to their consensus spot, so the board runs on
   // pure ADP with no personal overrides).
   const resetToAdp = () => { setList(byAdp.filter((p) => POS.includes(p.pos)).map((p) => p.id)); flashMsg("Reset to ADP order — tweak from here"); };
+  /* ⭐ A SECOND STARTING POINT, FOR THE FORMATS THE MARKET HAS NO BOARD FOR.
+     The consensus seed is ADP, and ADP is a real measured thing — which is exactly why it can't be bent. But
+     the market publishes no 2QB ADP: the backend serves the SUPERFLEX pool for both, and a 2QB room drafts
+     quarterbacks earlier than a superflex room does, because a superflex slot can take a running back and a
+     2QB slot cannot. So for a 2QB set the consensus board is honest but slightly wrong for the room.
+     This seeds from OUR OWN valuation for this exact lineup instead — clearly labelled as ours, not the
+     market's. It is the one place where making up a number would have been tempting and is not allowed. */
+  const byValue = useMemo(() => players.filter((p) => POS.includes(p.pos)).slice()
+    .sort((a2, b2) => ((b2.value != null ? b2.value : (b2.vbd || 0)) - (a2.value != null ? a2.value : (a2.vbd || 0)))), [players]);
+  const seedFromValue = () => { setList(byValue.map((p) => p.id)); flashMsg("Seeded from this format's value board"); };
   const saveList = () => { onSaveList(rankIdsToNames(list, players)); flashMsg("Rankings saved"); };
   const placedSet = new Set(list);
 
@@ -14790,6 +15101,18 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
           </select>
           {allSets.length > 1 && <button className="btn btn-mini" onClick={() => setShowImport(true)}>Import from another set</button>}
         </div>
+        {/* ⭐ SAY WHICH BOARD THIS IS. The whole complaint was a silent mismatch — a 2QB set opened in 1QB
+            order and nothing on the page said so. Now the page names the board it seeded from, and admits
+            it when the format-matched one couldn't be reached instead of quietly using the wrong one. */}
+        <div className="mut" style={{ fontSize: 11.5, marginBottom: 14, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <i className="ti ti-layout-list" style={{ fontSize: 13 }} aria-hidden="true" />
+          {fmtState === "ok"
+            ? <>Starting order is the <b style={{ color: "var(--ink)" }}>{fmtKey.replace(/\|/g, " · ")}</b> consensus board — the same one a draft room in this format opens on.{attached ? ` Scoring and team count come from ${attached.name}.` : ""}
+                {set.qbType === "2QB" && <> <b style={{ color: "var(--gold)" }}>There is no separate 2QB consensus</b> — the market publishes superflex, and a 2QB room takes quarterbacks earlier than a superflex room does, so expect to move yours up. “Use our value order” below seeds from our own 2QB valuation instead.</>}</>
+            : fmtState === "loading"
+              ? <>Loading the consensus board for <b style={{ color: "var(--ink)" }}>{fmtKey.replace(/\|/g, " · ")}</b>…</>
+              : <span style={{ color: "var(--gold)" }}>Couldn't reach the {fmtKey.replace(/\|/g, " · ")} board, so the starting order is the general consensus one. Your own ordering is unaffected — only the suggested starting point is.</span>}
+        </div>
 
         {showImport && (
           <div className="modalbg" onClick={() => setShowImport(false)}>
@@ -14824,7 +15147,8 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
               <div className="panel" style={{ padding: 12, marginBottom: 12, background: "var(--panel2)" }}>
                 <div className="mut" style={{ fontSize: 12.5, marginBottom: 8 }}>Start from the full consensus board and reorder to taste, or build it up yourself.</div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  <button className="btn btn-mini btn-gold" onClick={() => prefillTop(byAdp.length)}>Start from consensus board</button>
+                  <button className="btn btn-mini btn-gold" onClick={() => prefillTop(byAdp.length)} title="The market's order — real measured ADP for this format">Start from consensus board</button>
+                  <button className="btn btn-mini" onClick={seedFromValue} title="Our own valuation for this exact lineup — projected points above the last startable player at each position. Useful where the market publishes no board for your format.">Start from our value board</button>
                   {allSets && allSets.filter((s) => s.id !== set.id && (s.list || []).length).length > 0 && <button className="btn btn-mini" onClick={() => setShowImport(true)}>Start from a saved set</button>}
                 </div>
               </div>
@@ -14836,55 +15160,83 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
                 <div className="panel" style={{ position: "absolute", top: 38, left: 0, right: 0, zIndex: 10, padding: 6, maxHeight: 230, overflowY: "auto" }}>
                   {results.map((p) => (
                     <button key={p.id} className="btn" style={{ width: "100%", textAlign: "left", marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }} onClick={() => add(p.id)}>
-                      <Dot pos={p.pos} /><span style={{ flex: 1 }}>{p.name}</span><span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · ADP {p.adp.toFixed(1)}</span>
+                      <Dot pos={p.pos} /><span style={{ flex: 1 }}>{p.name}</span><span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · ADP {adpOf(p).toFixed(1)}</span>
                     </button>
                   ))}
                 </div>
               )}
             </div>
             {list.length > 0 && (
+              <div style={{ display: "flex", gap: 5, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+                <span className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em", marginRight: 2 }}>Show</span>
+                <button className="btn btn-mini" onClick={() => setPosFilter(null)}
+                  style={{ padding: "2px 9px", fontSize: 11.5, borderColor: posFilter ? "var(--line)" : "var(--gold)", color: posFilter ? "var(--ink)" : "var(--gold)", fontWeight: posFilter ? 400 : 700 }}>All</button>
+                {POS.map((pp) => {
+                  const n = list.filter((id) => byId[id] && cpos(byId[id].pos) === pp).length;
+                  const on = posFilter === pp;
+                  return (
+                    <button key={pp} className="btn btn-mini" disabled={n === 0} onClick={() => setPosFilter(on ? null : pp)}
+                      title={n ? `Compare your ${n} ranked ${pp}s side by side` : `No ${pp}s in this set yet`}
+                      style={{ padding: "2px 9px", fontSize: 11.5, borderColor: on ? POS_COLOR[pp] : "var(--line)", color: on ? POS_COLOR[pp] : (n ? "var(--ink)" : "var(--mut)"), fontWeight: on ? 700 : 400, opacity: n ? 1 : 0.5 }}>
+                      {pp}{n ? ` ${n}` : ""}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {list.length > 0 && (
               <div ref={scrollBoxRef} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
                 onDragOver={(e) => { e.preventDefault(); handleDragAutoScroll(e); }}
                 onDrop={stopAutoScroll}
                 style={{ height: VIEW_H, overflowY: "auto", marginBottom: 12 }}>
                 {/* total-height spacer keeps the scrollbar correct; we only render the visible window */}
-                <div style={{ height: list.length * ROW_H, position: "relative" }}>
-                  {list.slice(firstVisible, lastVisible).map((id, idx) => { const i = firstVisible + idx; const p = byId[id]; if (!p) return null; const a = adj[p.name];
+                <div style={{ height: view.length * ROW_H, position: "relative" }}>
+                  {view.slice(firstVisible, lastVisible).map((row, idx) => { const vi = firstVisible + idx; const id = row.id, i = row.i; const p = byId[id]; if (!p) return null; const a = adj[p.name];
                     const isDragging = dragFrom === i;
                     const isOver = dragOver === i && dragFrom !== i;
+                    const canDrag = !posFilter;
                     return (
                     <div key={id}
-                      draggable
-                      onDragStart={(e) => { setDragFrom(i); e.dataTransfer.effectAllowed = "move"; }}
-                      onDragEnter={(e) => { e.preventDefault(); setDragOver(i); }}
-                      onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
-                      onDrop={(e) => { e.preventDefault(); reorder(dragFrom, i); setDragFrom(null); setDragOver(null); stopAutoScroll(); }}
-                      onDragEnd={() => { setDragFrom(null); setDragOver(null); stopAutoScroll(); }}
+                      draggable={canDrag}
+                      onDragStart={canDrag ? (e) => { setDragFrom(i); e.dataTransfer.effectAllowed = "move"; } : undefined}
+                      onDragEnter={canDrag ? (e) => { e.preventDefault(); setDragOver(i); } : undefined}
+                      onDragOver={canDrag ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } : undefined}
+                      onDrop={canDrag ? (e) => { e.preventDefault(); reorder(dragFrom, i); setDragFrom(null); setDragOver(null); stopAutoScroll(); } : undefined}
+                      onDragEnd={canDrag ? () => { setDragFrom(null); setDragOver(null); stopAutoScroll(); } : undefined}
                       style={{
-                        position: "absolute", top: i * ROW_H, left: 0, right: 0, height: ROW_H,
+                        position: "absolute", top: vi * ROW_H, left: 0, right: 0, height: ROW_H,
                         display: "flex", alignItems: "center", gap: 8, padding: "0 6px", fontSize: 13,
                         borderRadius: 7, userSelect: "none", boxSizing: "border-box",
                         background: isDragging ? "rgba(214,170,75,0.18)" : isOver ? "rgba(214,170,75,0.08)" : "transparent",
                         borderTop: isOver ? "2px solid var(--gold)" : "2px solid transparent",
-                        opacity: isDragging ? 0.5 : 1, cursor: "grab",
+                        opacity: isDragging ? 0.5 : 1, cursor: canDrag ? "grab" : "default",
                       }}>
-                      <i className="ti ti-grip-vertical" style={{ fontSize: 15, color: "var(--mut)", cursor: "grab" }} aria-hidden="true" title="Drag to reorder" />
+                      <i className="ti ti-grip-vertical" style={{ fontSize: 15, color: "var(--mut)", cursor: canDrag ? "grab" : "not-allowed", opacity: canDrag ? 1 : 0.3 }} aria-hidden="true" title={canDrag ? "Drag to reorder" : "Dragging is off while a position filter is on — use the arrows"} />
+                      {/* The OVERALL rank is always the number shown, filtered or not — it is the thing this
+                          set actually stores, and a per-position number in its place would be a different
+                          ranking wearing the same digits. Your rank AT the position rides alongside it. */}
                       <span className="num mut" style={{ width: 24 }}>{i + 1}</span>
+                      {posFilter && <span className="num" style={{ width: 30, fontSize: 10.5, fontWeight: 700, color: POS_COLOR[p.pos] }}>{p.pos}{vi + 1}</span>}
                       <Dot pos={p.pos} /><span style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank}</span>{a && <span className="chip" style={{ marginLeft: 6, fontSize: 9, borderColor: "var(--red)", color: "var(--red)" }}>adjusted</span>}</span>
-                      <button className="btn btn-mini" onClick={() => move(i, -1)} disabled={i === 0} title="Move up" style={{ padding: "2px 6px" }}><i className="ti ti-chevron-up" style={{ fontSize: 12 }} aria-hidden="true" /></button>
-                      <button className="btn btn-mini" onClick={() => move(i, 1)} disabled={i === list.length - 1} title="Move down" style={{ padding: "2px 6px" }}><i className="ti ti-chevron-down" style={{ fontSize: 12 }} aria-hidden="true" /></button>
+                      <button className="btn btn-mini" onClick={() => (posFilter ? moveWithinView(vi, -1) : move(i, -1))} disabled={vi === 0} title={posFilter ? `Move above your next-best ${p.pos}` : "Move up"} style={{ padding: "2px 6px" }}><i className="ti ti-chevron-up" style={{ fontSize: 12 }} aria-hidden="true" /></button>
+                      <button className="btn btn-mini" onClick={() => (posFilter ? moveWithinView(vi, 1) : move(i, 1))} disabled={vi === view.length - 1} title={posFilter ? `Move below your next ${p.pos}` : "Move down"} style={{ padding: "2px 6px" }}><i className="ti ti-chevron-down" style={{ fontSize: 12 }} aria-hidden="true" /></button>
                       <button className="btn btn-mini" onClick={() => remove(id)} title="Remove" style={{ padding: "2px 6px" }}><i className="ti ti-x" style={{ fontSize: 12 }} aria-hidden="true" /></button>
                     </div>
                   ); })}
                 </div>
               </div>
             )}
-            <div className="mut" style={{ fontSize: 11, marginBottom: 10, marginTop: -4 }}><i className="ti ti-info-circle" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Drag the <i className="ti ti-grip-vertical" style={{ fontSize: 11 }} aria-hidden="true" /> handle to reorder, or use the arrows. {list.length > 0 && <b style={{ color: "var(--ink)" }}>{list.length} ranked.</b>}</div>
+            <div className="mut" style={{ fontSize: 11, marginBottom: 10, marginTop: -4 }}><i className="ti ti-info-circle" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />
+              {posFilter
+                ? <>Showing your <b style={{ color: "var(--ink)" }}>{posFilter}s</b> only — the arrows swap a player with your next-best {posFilter}, and the number on the left stays his overall rank. Dragging is off while filtered.</>
+                : <>Drag the <i className="ti ti-grip-vertical" style={{ fontSize: 11 }} aria-hidden="true" /> handle to reorder, or use the arrows.</>}
+              {list.length > 0 && <b style={{ color: "var(--ink)" }}> {posFilter ? `${view.length} ${posFilter}s of ${list.length} ranked.` : `${list.length} ranked.`}</b>}</div>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <button className="btn btn-gold" onClick={saveList}>Save ranks</button>
               <button className="btn btn-mini" onClick={() => setShowPaste(true)} title="Paste a ranking or ADP list (e.g. from your league platform) to fill your ranks fast"><i className="ti ti-clipboard-text" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Paste a list</button>
               {list.length > 0 && <button className="btn btn-mini" onClick={fillRest} title="Append the rest of the board (by consensus) below what you've already ranked">Fill rest of board</button>}
-              <button className="btn btn-mini" onClick={resetToAdp} title="Reset this set to the organic ADP/consensus order, so you can tweak from the default board"><i className="ti ti-refresh" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Reset to ADP order</button>
+              <button className="btn btn-mini" onClick={resetToAdp} title={`Reset this set to the consensus order for ${rankSetLabel(setSettingsKey(set))} — the same board a draft room in this format opens on`}><i className="ti ti-refresh" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Reset to ADP order</button>
+              <button className="btn btn-mini" onClick={seedFromValue} title="Re-seed from our own valuation for this exact lineup, rather than from market ADP"><i className="ti ti-scale" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Use our value order</button>
               {list.length > 0 && <button className="btn btn-mini" onClick={() => setList([])} title="Empty this set — the board reverts to pure ADP with no personal overrides">Clear all</button>}
             </div>
           </div>
@@ -17431,7 +17783,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // Positions are now a multi-select: an EMPTY set means every position. Storing the selection rather than
   // a single "ALL" sentinel is what lets "QB + RB" exist at all, and it keeps the empty case free.
   const [posSel, setPosSel] = useState(() => new Set());
-  const [posMenu, setPosMenu] = useState(false);
   const [sortState, setSortState] = useState({ key: "adp", dir: 1 });
   // Start the board in an explicit ADP sort. Previously the board opened in a STRATEGY-driven order (a blend of
   // market and build score) until you clicked a column header, which meant the default view wasn't actually
@@ -17996,7 +18347,21 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const startersLeft = pool.filter((x) => (x.posRank || 99) <= starterLine).length;
     return { availRank: idx + 1, next, drop, startersLeft, starterLine, isLastStarter: (p.posRank || 99) <= starterLine && startersLeft <= 1 };
   };
-  const done = picks.length >= TOTAL;
+  /* ============================================================================================
+     "END DRAFT" HAS TO ACTUALLY END IT.
+     --------------------------------------------------------------------------------------------
+     Beta user: "when I end a mock early it does take me to the summary page but doesn't actually
+     end the mock and it stays active even if I leave the page."
+     He is right, and the reason is that "ended" was never a thing the app could store. `done` was
+     purely `picks.length >= TOTAL`, so ending early only paused autodraft in this component's
+     state — and `paused` deliberately initialises to FALSE on mount so reopening a real draft
+     doesn't sit frozen. Leave the page, come back, and the bots pick up where they left off on a
+     draft you told it to stop. The flag now lives on the saved record, so it survives the trip.
+     ============================================================================================ */
+  const [endedEarly, setEndedEarly] = useState(!!league.ended);
+  // A record loaded fresh (reopening a mock from the list) brings its own answer with it.
+  useEffect(() => { setEndedEarly(!!league.ended); }, [league.id, league.ended]);
+  const done = picks.length >= TOTAL || endedEarly;
   // ROOKIE-DRAFT DETECTION. In a dynasty rookie draft, players are graded against their STARTUP ADP (where
   // they'd go in a full startup among veterans) — but a rookie taken 1.01 in a rookie draft has a startup ADP
   // deep in the pool, so EVERY pick reads as a massive "reach" and the whole board turns red. That grading is
@@ -18421,8 +18786,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     (keeperAddIds(forTeam) || []).forEach((id) => addRosterPl(players[id]));                      // no-cost keepers (engine global)
     Object.entries(keeperByPick).forEach(([o, id]) => { if (teamAt(+o) === forTeam) addRosterPl(players[id]); }); // pick-cost keepers at their slot
     (forcedAhead || []).forEach((f) => { if (f && f.team === forTeam) addRosterPl(players[f.id]); });             // pick-cost keepers previewed ahead
-    const myCounts = { QB: 0, RB: 0, WR: 0, TE: 0 };
-    myRoster.forEach((pl) => { if (myCounts[pl.pos] != null) myCounts[pl.pos]++; });
+    // ⭐ K AND DST ARE IN THIS CENSUS ON PURPOSE. Without them the recommendation cannot tell that you
+    // already have a defense, which is exactly how a beta user was offered a second one at his last pick.
+    const myCounts = newCounts();
+    myRoster.forEach((pl) => { if (myCounts[cpos(pl.pos)] != null) myCounts[cpos(pl.pos)]++; });
     // Existing platform holdings (ROSTER_ADDS) carry no player id, so they can't be deduped against myRoster.
     // That makes them safe to add ONLY when they're genuinely off-board holdings — a rookie/dynasty draft.
     // Second, independent guard on top of the one where ROSTER_ADDS is built: these engine globals persist
@@ -18673,7 +19040,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         const four = (o, f) => ["QB", "RB", "WR", "TE"].map((k) => f(k, o ? o[k] : undefined)).join(" · ");
         const lines = [
           `counts: ${four(myCounts, (k, v) => `${k} ${v == null ? "?" : v}`)}　|　demand: ${four(dem, (k, v) => `${k} ${v == null ? "?" : (+v).toFixed(2)}`)}`,
-          `scoring for team ${forTeam}${forTeam === userIdx ? " (YOU)" : ` — but YOU are team ${userIdx}  ⚠ MISMATCH`} · pick ${pickNum} · sf ${String(!!cfg.sf)} · super ${SPEC.SUPER || 0} · qb slots ${REQ_EFF(cfg.sf).QB} · te slots ${REQ_EFF(cfg.sf).TE} · te cap ${capsOf(cfg).TE}`,
+          `scoring for team ${forTeam}${forTeam === userIdx ? " (YOU)" : ` — but YOU are team ${userIdx}  ⚠ MISMATCH`} · pick ${pickNum} · sf ${String(!!cfg.sf)} · 2qb ${String(is2QB(cfg))} · super ${SPEC.SUPER || 0} · qb slots ${REQ_EFF(cfg.sf).QB} · te slots ${REQ_EFF(cfg.sf).TE} · te cap ${capsOf(cfg).TE} · k/dst cap ${capsOf(cfg).K}/${capsOf(cfg).DST}`,
+          // ⭐ REPLACEMENT LEVEL has no column of its own and every value on the board is measured against it,
+          // so when a format looks mis-valued (the 2QB report) this is the first number to read.
+          `replacement level: ${LAST_REPL_COUNTS ? POS.map((p2) => `${p2}${LAST_REPL_COUNTS[p2]}`).join(" · ") : "n/a"}  (the last startable body at each position in a ${cfg.teams || 12}-team ${is2QB(cfg) ? "2QB" : cfg.sf ? "superflex" : "1QB"} league)`,
           pr ? `league rank: ${four(pr, (k, v) => `${k} ${v == null ? "?" : v}/${TEAMS}`)}　|　quality tilt: ${four(posTilt, (k, v) => `${k} ${v > 0 ? "+" : ""}${Math.round(v || 0)}`)}` : "league rank: (unavailable)",
           `held vbd: ${four(myPosVbds, (k, v) => `${k}[${(v || []).join(",")}]`)}`,
           `soft starter slots (filled by a replacement-level body): ${four(softSlots, (k, v) => `${k} ${v || 0}`)}`,
@@ -19041,8 +19411,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       // Compute the engine's most-likely pick for EVERY slot — including your own picks. For your slots
       // this reads as "who the engine would have taken here", which is useful to compare against what you
       // actually did. We use the market predictor (same weighting the live board uses).
-      const counts = { QB: 0, RB: 0, WR: 0, TE: 0 };
-      for (let j = 0; j < o; j++) { const pl = players[picks[j]]; if (pl && teamAt(j) === team && counts[pl.pos] != null) counts[pl.pos]++; }
+      const counts = newCounts();
+      for (let j = 0; j < o; j++) { const pl = players[picks[j]]; if (pl && teamAt(j) === team && counts[cpos(pl.pos)] != null) counts[cpos(pl.pos)]++; }
       const recent = picks.slice(Math.max(0, o - 8), o).map((id) => players[id] && players[id].pos).filter(Boolean);
       const pickNum = o + 1, rd = Math.floor(o / TEAMS) + 1;
       const cands0 = []; for (const p of sortedAdp) { if (!drafted.has(p.id)) { cands0.push(p); if (cands0.length >= 34) break; } }
@@ -19097,9 +19467,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         let guard = 0;
         while (next.length < TOTAL && teamAt(next.length) !== userIdx && guard++ < TEAMS * 2) {
           if (keeperByPick[next.length] != null) break; // the keeper effect owns this slot
-          const counts = { QB: 0, RB: 0, WR: 0, TE: 0 };
+          const counts = newCounts();
           const forTeam = teamAt(next.length);
-          next.forEach((pk, o) => { const pl = players[pk]; if (pl && teamAt(o) === forTeam && counts[pl.pos] != null) counts[pl.pos]++; });
+          next.forEach((pk, o) => { const pl = players[pk]; if (pl && teamAt(o) === forTeam && counts[cpos(pl.pos)] != null) counts[cpos(pl.pos)]++; });
           const recent = next.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
           const pickNum = next.length + 1, rd = Math.floor(next.length / TEAMS) + 1;
           const cands0 = []; for (const p of sortedAdp) { if (!drafted.has(p.id)) { cands0.push(p); if (cands0.length >= 34) break; } }
@@ -20000,6 +20370,36 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     });
     return out;
   }, [picks, players, cfg, rookieAdpById, forcedAhead, noCostByTeam]);
+  /* ==============================================================================================
+     WHAT COUNTS AS A STEAL ON *THIS* BOARD.
+     ----------------------------------------------------------------------------------------------
+     Trey: "let's just make sure this is calibrated appropriately." A fixed cutoff cannot be, because
+     the thing it is applied to varies enormously by room. Measured across three full drafts:
+       • a disciplined room (everyone near the board) produced a value spread of −2 to +1. A fixed
+         cutoff finds nothing, which is right — nothing unusual happened.
+       • a room with one manager reaching hard produced −93 to +35, and a fixed ±8 flagged HALF the
+         board. A highlight on half the cells is not a highlight.
+     So the cutoff is the same idea the tier code already uses: an outlier against the spread of the
+     board it is on, floored so a quiet board stays quiet rather than manufacturing drama out of
+     noise. Roughly the top tenth of each side, and never below the fixed floor.
+     ⚠ ASYMMETRY IS EXPECTED AND IS NOT A BUG. A reach is concentrated in ONE pick; the steal it
+     creates is spread across everyone who slid a spot or two. So a mildly-off draft shows several
+     reaches and few steals, and the honest answer to "why no steals?" is the count on the toggle,
+     not a lower bar for one side.
+     ============================================================================================== */
+  // The floor, in the same units as the value column. Measured: a well-behaved room's whole spread is −7..+4,
+  // so a floor of 8 made the feature inert in exactly the drafts most people run. 5 ≈ a 7-spot miss early or
+  // a 10-spot miss mid-draft, which is the smallest gap worth a manager's attention.
+  const MIN_MARK = 5;
+  const { stealCut, reachCut } = useMemo(() => {
+    const vals = (graded || []).filter((g) => g && g.p && !g.keeper && g.o != null).map((g) => g.mval);
+    const cut = (arr) => {
+      if (arr.length < 8) return MIN_MARK;                 // too few picks to have a "spread" yet
+      const s = arr.slice().sort((a2, b2) => a2 - b2);
+      return Math.max(MIN_MARK, Math.round(s[Math.min(s.length - 1, Math.floor(s.length * 0.9))]));
+    };
+    return { stealCut: cut(vals.filter((v) => v > 0)), reachCut: cut(vals.filter((v) => v < 0).map((v) => -v)) };
+  }, [graded]);
   const valByTeamRaw = useMemo(() => Array.from({ length: TEAMS }, (_, i) => graded.filter((g) => g.t === i).reduce((s, g) => s + g.val, 0)), [graded]);
   // The raw per-pick value model is intentionally asymmetric (reaches sting more) and early-weighted, so
   // its LEAGUE SUM skews negative — most teams would show a negative total even in a normal draft. For the
@@ -20216,7 +20616,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           <button className={`btn${paused ? " btn-gold" : ""}`} onClick={() => setPaused((p) => !p)} title={paused ? "Autodraft is PAUSED — CPU picks are stopped until you resume" : "Pause autodraft (CPU picks stop until you resume)"}>{paused ? "▶ Resume — PAUSED" : "❚❚ Pause"}</button>
           <button className="btn" onClick={() => setFast((f) => !f)}>{fast ? "Fast" : "Normal"}</button>
           {isMock && <button className="btn" style={{ borderColor: mockTradingOn ? "var(--gold)" : "var(--line)", color: mockTradingOn ? "var(--gold)" : "var(--ink)" }} onClick={() => setMockTradingOn((t) => !t)} title="Propose trades to CPU teams mid-mock — they only accept fair, format-aware deals">{mockTradingOn ? "Trading on" : "Trading off"}</button>}
-          <button className="btn" onClick={() => setEndConfirm(true)} title="Stop here and jump to the summary & grades for the picks so far" disabled={picks.length < 6}>End draft</button>
+          {/* ⭐ ENDED IS A STATE YOU CAN LEAVE. Ending early is now persistent (see `endedEarly`), which
+              makes an accidental click destructive unless there is a way back — so the same button becomes
+              the way back, and says so. */}
+          {endedEarly && picks.length < TOTAL
+            ? <button className="btn btn-gold" onClick={() => { setEndedEarly(false); setPaused(false); onSave(picks, preds, pickNamesOf(picks), pickNamesOf(preds), { ended: false }); setTab("hub"); }} title="This draft was ended early. Reopen it and carry on from where you stopped.">Reopen draft</button>
+            : <button className="btn" onClick={() => setEndConfirm(true)} title="Stop here and jump to the summary & grades for the picks so far" disabled={picks.length < 6 || done}>End draft</button>}
         </>}
         {/* (single Undo lives below — an older non-connected Undo used to render here too, doubling up) */}
         {!isConnectedLive && user && <button className="btn" onClick={() => { onSave(picks, preds, pickNamesOf(picks), pickNamesOf(preds)); setCopied(true); setTimeout(() => setCopied(false), 1200); }}>{copied ? "Saved ✓" : "Save"}</button>}
@@ -20991,38 +21396,39 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <button className="btn btn-mini" style={{ borderColor: "var(--gold)", color: "var(--gold)" }}
                 onClick={() => openGuide("how")} title="How to use the draft room, power-user tips, and the guided tour">
                 <i className="ti ti-book" style={{ fontSize: 12, marginRight: 3 }} aria-hidden="true" />Tips &amp; tour</button>
-              {/* POSITIONS — one dropdown, tick as many as you like. Seven chips permanently spending a
-                  whole row to answer a question most people ask twice a draft was the wrong trade. */}
+              {/* ⭐⭐ POSITIONS ARE ONE CLICK AGAIN.
+                  Build 27a replaced seven position chips with a dropdown, on the reasoning that "seven chips
+                  permanently spending a whole row [answer] a question most people ask twice a draft was the
+                  wrong trade". A beta user disagreed, twice, in the same message: "Sorting by position during
+                  the draft is important in a weird format especially. Would be nice if instead of the drop
+                  down for positions you could just click a standalone button to sort by wr or something" —
+                  and, separately, that the late board was unusable because kickers and defenses filled it
+                  when he wanted late RB/WR fliers. Both are the same need: get to one position NOW.
+                  He is right and 27a was wrong about the frequency. The compromise that costs nothing: keep
+                  them as CHIPS, but make them small enough to sit on the existing row beside the search box
+                  rather than claiming a row of their own. Multi-select survives — a chip toggles, so QB+TE is
+                  two clicks — which is everything the dropdown could do, minus the dropdown. */}
               {(() => {
                 const all = [...POS, ...((cfg.start && cfg.start.DST) > 0 ? ["DST"] : []), ...((cfg.start && cfg.start.K) > 0 ? ["K"] : [])];
-                const label = posSel.size === 0 ? "All positions"
-                  : posSel.size <= 2 ? all.filter((p) => posSel.has(p)).join(" · ")
-                  : `${posSel.size} positions`;
                 const toggle = (p) => setPosSel((cur) => { const n = new Set(cur); n.has(p) ? n.delete(p) : n.add(p); return n; });
+                // ⚠ CLICKING A CHIP THAT IS ALREADY THE ONLY ONE ON CLEARS THE FILTER. Otherwise "WR" is a
+                // one-way door and getting back to the whole board means hunting for the All chip.
+                const only = (p) => setPosSel((cur) => (cur.size === 1 && cur.has(p) ? new Set() : new Set([p])));
+                // ⚠ NOT DOUBLE-CLICK FOR "ADD". A double click fires two plain clicks first, and with
+                // single-click meaning "only this", those two cancel each other out — the position ends up
+                // exactly where it started and the modifier appears to do nothing. Shift/ctrl-click is both
+                // the convention for extending a selection and the one that doesn't fight the primary action.
+                const chip = (label, on, onClick, title, color) => (
+                  <button key={label} className="btn btn-mini" onClick={onClick} title={title}
+                    style={{ padding: "3px 8px", fontSize: 11.5, minWidth: 0, borderColor: on ? (color || "var(--gold)") : "var(--line)", color: on ? (color || "var(--gold)") : "var(--ink)", fontWeight: on ? 700 : 400, background: on ? "rgba(224,166,60,.10)" : undefined }}>{label}</button>
+                );
                 return (
-                  <div style={{ position: "relative" }}>
-                    <button className="btn btn-mini" onClick={() => setPosMenu((m) => !m)}
-                      style={{ borderColor: posSel.size ? "var(--gold)" : "var(--line)", color: posSel.size ? "var(--gold)" : "var(--ink)" }}
-                      title="Filter the board by position — tick as many as you want.">
-                      <i className="ti ti-filter" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />{label}
-                      <i className="ti ti-chevron-down" style={{ fontSize: 11, marginLeft: 4 }} aria-hidden="true" />
-                    </button>
-                    {posMenu && <div onClick={() => setPosMenu(false)} style={{ position: "fixed", inset: 0, zIndex: 29 }} />}
-                    {posMenu && (
-                      <div className="panel" style={{ position: "absolute", left: 0, top: 30, zIndex: 30, padding: 8, width: 190, boxShadow: "0 10px 30px #000C" }}>
-                        <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 4px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid var(--line)", marginBottom: 3 }}>
-                          <input type="checkbox" checked={posSel.size === 0} onChange={() => setPosSel(new Set())} />
-                          <span style={{ fontWeight: 700 }}>All positions</span>
-                        </label>
-                        {all.map((p) => (
-                          <label key={p} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px", fontSize: 12.5, cursor: "pointer" }}>
-                            <input type="checkbox" checked={posSel.has(p)} onChange={() => toggle(p)} />
-                            <span>{p}</span>
-                          </label>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, border: "1px solid var(--line)", borderRadius: 9, padding: "3px 5px" }}>
+                    {chip("All", posSel.size === 0, () => setPosSel(new Set()), "Show every position")}
+                    {all.map((p) => chip(p, posSel.has(p),
+                      (e) => ((e && (e.shiftKey || e.metaKey || e.ctrlKey)) ? toggle(p) : only(p)),
+                      `Show only ${p} — click again for the whole board. Shift-click to show ${p} alongside what's already there.`, POS_COLOR[p]))}
+                  </span>
                 );
               })()}
               {/* LISTS — the four "show me only these" lenses, grouped so they read as alternatives to each
@@ -23077,11 +23483,22 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <input type="checkbox" checked={showBoardVal} onChange={(e) => setShowBoardVal(e.target.checked)} style={{ accentColor: "var(--gold)", cursor: "pointer" }} />
               Show pick value
             </label>
+            {/* ⭐ THE TOGGLES COUNT WHAT THEY WILL SHOW. The same user could not tell whether "Steals" was
+                broken or whether his room simply hadn't produced any: "not sure if no one else in the mock got
+                steals or it was a bug." A toggle that names its own population answers that without him having
+                to guess — and an honest 0 is a real answer, not a silence. */}
+            {(() => {
+              const marked = (graded || []).filter((g) => g && g.p && !g.keeper && g.o != null);
+              const nSteal = marked.filter((g) => g.mval >= stealCut).length;
+              const nReach = marked.filter((g) => g.mval <= -reachCut).length;
+              return (
             <div style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--line)", borderRadius: 9, padding: "3px 5px" }}>
               <span className="mut" style={{ fontSize: 11, paddingLeft: 3 }}>Highlight</span>
-              <button className="btn btn-mini" style={{ fontSize: 11, padding: "3px 9px", borderColor: boardHi.steals ? "#5FD0A8" : "var(--line2)", background: boardHi.steals ? "rgba(95,208,168,.16)" : "transparent", color: boardHi.steals ? "#5FD0A8" : "var(--mut)", fontWeight: boardHi.steals ? 700 : 400 }} onClick={() => setBoardHi((h) => ({ ...h, steals: !h.steals }))}><i className="ti ti-diamond" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Steals</button>
-              <button className="btn btn-mini" style={{ fontSize: 11, padding: "3px 9px", borderColor: boardHi.reaches ? "#F2655C" : "var(--line2)", background: boardHi.reaches ? "rgba(242,101,92,.16)" : "transparent", color: boardHi.reaches ? "#F2655C" : "var(--mut)", fontWeight: boardHi.reaches ? 700 : 400 }} onClick={() => setBoardHi((h) => ({ ...h, reaches: !h.reaches }))}><i className="ti ti-flame" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Reaches</button>
+              <button className="btn btn-mini" style={{ fontSize: 11, padding: "3px 9px", borderColor: boardHi.steals ? "#5FD0A8" : "var(--line2)", background: boardHi.steals ? "rgba(95,208,168,.16)" : "transparent", color: boardHi.steals ? "#5FD0A8" : "var(--mut)", fontWeight: boardHi.steals ? 700 : 400 }} onClick={() => setBoardHi((h) => ({ ...h, steals: !h.steals }))} title={nSteal ? `${nSteal} pick${nSteal === 1 ? "" : "s"} on this board fell far enough past ADP to count as a steal.` : "Nobody has fallen far enough past ADP to count as a steal yet."}><i className="ti ti-diamond" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Steals ({nSteal})</button>
+              <button className="btn btn-mini" style={{ fontSize: 11, padding: "3px 9px", borderColor: boardHi.reaches ? "#F2655C" : "var(--line2)", background: boardHi.reaches ? "rgba(242,101,92,.16)" : "transparent", color: boardHi.reaches ? "#F2655C" : "var(--mut)", fontWeight: boardHi.reaches ? 700 : 400 }} onClick={() => setBoardHi((h) => ({ ...h, reaches: !h.reaches }))} title={nReach ? `${nReach} pick${nReach === 1 ? "" : "s"} on this board went far enough ahead of ADP to count as a reach.` : "Nothing has gone far enough ahead of ADP to count as a reach yet."}><i className="ti ti-flame" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Reaches ({nReach})</button>
             </div>
+              );
+            })()}
             <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — the board updates instantly to show picks in their new owners' columns."><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks</button>
             <span className="mut" style={{ fontSize: 11.5, marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: "var(--gold)", marginRight: 4, verticalAlign: "middle" }} />Your picks</span>
@@ -23144,14 +23561,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     // Steal/reach highlight: tint the cell green (steal) or red (reach) when its toggle is on,
                     // in THREE shades by magnitude — deeper = a bigger steal/reach, lighter = minimal but real.
                     const isRealPick = p && !isProjected && !isKeeper;
-                    const showSteal = isRealPick && boardHi.steals && v >= 8;
-                    const showReach = isRealPick && boardHi.reaches && v <= -8;
-                    // Is steal/reach highlighting active at all right now? When it is, we change how YOUR picks are
-                    // marked: instead of the gold background shade (which would fight the green/red tint), every
-                    // one of your picks gets a BRIGHT gold BORDER so it's always easy to spot — and the inside is
-                    // filled green/red if it's a steal/reach, or left plain if it's neutral. When steal/reach mode
-                    // is OFF, your picks keep the normal gold background shade (via the `.you` class).
-                    const shadeMode = boardHi.steals || boardHi.reaches;
+                    const showSteal = isRealPick && boardHi.steals && v >= stealCut;
+                    const showReach = isRealPick && boardHi.reaches && v <= -reachCut;
+                    /* ⭐⭐ THE HIGHLIGHT MARKS STEALS, NOT YOU.
+                       Beta user: "When I did a mock and tried to highlight steals on the draft board it just
+                       highlighted my roster. Reaches seems to work but not sure if no one else in the mock got
+                       steals or it was a bug." He was reading the board correctly. Turning EITHER toggle on used
+                       to give every one of your own picks a bright gold 2px outline whether or not it was a steal
+                       — the loudest mark on the grid — so "Steals" lit up your roster and the handful of genuine
+                       steals elsewhere were quieter than the noise. Your picks keep the subtle `.you` gold wash
+                       they always had (an inline tint overrides it on the cells that ARE steals or reaches), and
+                       the bright border is now reserved for what the toggle actually claims to show. */
                     let hiStyle = {};
                     if (showSteal || showReach) {
                       const mag = Math.abs(v);
@@ -23168,15 +23588,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       hiStyle = ownedByYou
                         ? { background: bg, backgroundColor: bg, outline: "2px solid #E0A63C", outlineOffset: "-2px", boxShadow: "inset 0 0 0 2px #E0A63C" }
                         : { background: bg, boxShadow: `inset 0 0 0 ${tier + 1}px ${ring}` };
-                    } else if (shadeMode && ownedByYou && isRealPick) {
-                      // YOUR neutral pick while steal/reach mode is on: no green/red fill, but still give it the
-                      // bright gold border so it's easy to find among the tinted cells. (Previously these had no
-                      // marker and were nearly invisible.)
-                      hiStyle = { background: "transparent", outline: "2px solid #E0A63C", outlineOffset: "-2px", boxShadow: "inset 0 0 0 2px #E0A63C" };
                     }
-                    // Suppress the CSS `.you` gold background shade whenever steal/reach mode is active, so the
-                    // border-based marking above reads cleanly (the class shade only applies when mode is off).
-                    const cls2 = shadeMode && ownedByYou ? cls.replace(" you", "") : cls;
+                    const cls2 = cls;
                     return (
                       <div key={`${r}-${col}`} className={cls2}
                         style={{ borderLeft: p ? `3px solid ${POS_COLOR[p.pos]}` : undefined, opacity: p ? (isProjected ? 0.9 : 1) : undefined, ...hiStyle }}
@@ -23544,8 +23957,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 // League-wide top-5 steals & reaches (this is a full draft recap, not just your team).
                 // Same metric as the "Biggest steals / reaches" panel (curve-weighted mval) so the two
                 // lists always agree — they used to sort by raw `val` and could disagree with the panel.
-                const best5 = graded.slice().sort((a, b) => b.mval - a.mval).filter((g) => g.mval > 0).slice(0, 5).map((g) => ({ ...g, val: g.mval }));
-                const worst5 = graded.slice().sort((a, b) => a.mval - b.mval).filter((g) => g.mval < 0).slice(0, 5).map((g) => ({ ...g, val: g.mval }));
+                // ⚠ SAME BAR AS THE BOARD HIGHLIGHT. These used to list anything above zero, so a draft where the
+                // board correctly showed no steals still printed a "Top 5 steals" table — of picks that beat their
+                // rank by one spot. Two surfaces disagreeing about what a steal is teaches the user that neither
+                // means anything. An empty list here is a real answer and the panel says so below.
+                const best5 = graded.slice().sort((a, b) => b.mval - a.mval).filter((g) => g.mval >= stealCut).slice(0, 5).map((g) => ({ ...g, val: g.mval }));
+                const worst5 = graded.slice().sort((a, b) => a.mval - b.mval).filter((g) => g.mval <= -reachCut).slice(0, 5).map((g) => ({ ...g, val: g.mval }));
                 const gradeOrder = Array.from({ length: TEAMS }, (_, i) => i).sort((a, b) => grades[b].z - grades[a].z);
                 const nm = (i) => (i === userIdx ? (TEAM_NAMES[i] || "You") : TEAM_NAMES[i]);
                 // Bottom summary line — one plain sentence of what happened.
@@ -23654,11 +24071,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12 }}>
                         <div>
                           <div className="disp" style={{ fontSize: 11, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--green)", marginBottom: 3 }}>Top 5 steals</div>
-                          {best5.length ? best5.map((g, i) => pickLine(g, i, "var(--green)")) : <div className="mut" style={{ fontSize: 12.5 }}>—</div>}
+                          {best5.length ? best5.map((g, i) => pickLine(g, i, "var(--green)")) : <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>Nobody fell far enough past where the board ranked him to count as a steal — this room drafted close to the board.</div>}
                         </div>
                         <div>
                           <div className="disp" style={{ fontSize: 11, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--red)", margin: "4px 0 3px" }}>Top 5 reaches</div>
-                          {worst5.length ? worst5.map((g, i) => pickLine(g, i, "var(--red)")) : <div className="mut" style={{ fontSize: 12.5 }}>—</div>}
+                          {worst5.length ? worst5.map((g, i) => pickLine(g, i, "var(--red)")) : <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>Nothing went far enough ahead of where the board ranked him to count as a reach.</div>}
                         </div>
                       </div>
 
@@ -23691,9 +24108,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
           <div className="panel" style={{ padding: 14 }}>
             <div className="disp" style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Biggest steals <span className="mut" style={{ fontSize: 12 }}>{summaryTeam == null ? "(league-wide, curve-weighted)" : `(${summaryTeam === userIdx ? "your team" : TEAM_NAMES[summaryTeam]})`}</span></div>
-            <SummaryTable rows={graded.filter((g) => summaryTeam == null || g.t === summaryTeam).slice().sort((a, b) => b.mval - a.mval).filter((g) => g.mval > 0).slice(0, summaryExpand ? 40 : 8).map((g) => ({ ...g, val: g.mval }))} userIdx={userIdx} focusIdx={focusIdx} rookieAdp={rookieAdpById || undefined} />
+            <SummaryTable rows={graded.filter((g) => summaryTeam == null || g.t === summaryTeam).slice().sort((a, b) => b.mval - a.mval).filter((g) => g.mval >= stealCut).slice(0, summaryExpand ? 40 : 8).map((g) => ({ ...g, val: g.mval }))} userIdx={userIdx} focusIdx={focusIdx} rookieAdp={rookieAdpById || undefined} />
             <div className="disp" style={{ fontSize: 18, fontWeight: 700, margin: "14px 0 8px" }}>Biggest reaches</div>
-            <SummaryTable rows={graded.filter((g) => summaryTeam == null || g.t === summaryTeam).slice().sort((a, b) => a.mval - b.mval).filter((g) => g.mval < 0).slice(0, summaryExpand ? 40 : 8).map((g) => ({ ...g, val: g.mval }))} userIdx={userIdx} focusIdx={focusIdx} rookieAdp={rookieAdpById || undefined} />
+            <SummaryTable rows={graded.filter((g) => summaryTeam == null || g.t === summaryTeam).slice().sort((a, b) => a.mval - b.mval).filter((g) => g.mval <= -reachCut).slice(0, summaryExpand ? 40 : 8).map((g) => ({ ...g, val: g.mval }))} userIdx={userIdx} focusIdx={focusIdx} rookieAdp={rookieAdpById || undefined} />
             <button className="btn btn-mini" style={{ marginTop: 10, width: "100%" }} onClick={() => setSummaryExpand((s) => !s)}>{summaryExpand ? "Show less" : "Show more"}</button>
           </div>
 
@@ -24384,9 +24801,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         <div className="modalbg" onClick={() => setEndConfirm(false)}>
           <div className="panel" style={{ maxWidth: 440, width: "100%", padding: 22, borderColor: "var(--gold)" }} onClick={(e) => e.stopPropagation()}>
             <div className="disp" style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>End the draft here?</div>
-            <div className="mut" style={{ fontSize: 13, lineHeight: 1.55, marginBottom: 16 }}>You've made {picks.length} of {TOTAL} picks. We'll stop the draft and take you to the summary — grades, steals, reaches, and projected standings for everything drafted so far. {isMock ? "This mock stays saved in the league's history." : "You can keep reviewing the board afterward."}</div>
+            <div className="mut" style={{ fontSize: 13, lineHeight: 1.55, marginBottom: 16 }}>You've made {picks.length} of {TOTAL} picks. We'll stop the draft here and take you to the summary — grades, steals, reaches, and projected standings for everything drafted so far. It stays stopped: no more picks are made, and it's still ended when you come back later. {isMock ? "The mock stays saved in the league's history, and " : ""}you can reopen it from the top bar if you want to keep going.</div>
             <div style={{ display: "flex", gap: 8 }}>
-              <button className="btn btn-gold" onClick={() => { setEndConfirm(false); setPaused(true); onSave(picks, preds, pickNamesOf(picks), pickNamesOf(preds)); setTab("summary"); }}>End & view summary</button>
+              <button className="btn btn-gold" onClick={() => { setEndConfirm(false); setPaused(true); setEndedEarly(true); onSave(picks, preds, pickNamesOf(picks), pickNamesOf(preds), { ended: true }); setTab("summary"); }}>End &amp; view summary</button>
               <div style={{ flex: 1 }} />
               <button className="btn" onClick={() => setEndConfirm(false)}>Keep drafting</button>
             </div>
