@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.28i";
+const BUILD_TAG = "2026.07.28j";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3362,7 +3362,7 @@ function picksLeftTable(cfg) {
   return tab;
 }
 const plAt = (tab, t, o) => (tab && tab[t] ? tab[t][Math.max(0, Math.min(tab[t].length - 1, o))] : undefined);
-function legalCands(cands, counts, cfg, picksLeft) {
+function legalCands(cands, counts, cfg, picksLeft, kdEarlyOk) {
   const caps = capsOf(cfg), req = REQ_F(cfg.sf);
   // Picks this team has left, INCLUDING the one being made. Every caller that knows where it is in the draft
   // passes it; the roster census is only a fallback for the few that don't, and it is the estimate that was
@@ -3387,7 +3387,13 @@ function legalCands(cands, counts, cfg, picksLeft) {
   // `round >= kdOpenRound`, and the two must stay the same statement or a kicker can be a legal candidate
   // the score refuses to rank, or the reverse.
   const kdSlots = (caps.K || 0) + (caps.DST || 0);
-  const kdWindow = kdLeft > 0 && remaining <= (cfg.rounds - kdOpenRound(cfg.rounds, cfg.teams, kdSlots) + 1);
+  // Two rounds, not one. The NORMAL window is where a K/DST belongs for everybody. The EARLY window is the
+  // bounded version of Trey's "unless the ADP and VBD just stand out" — a caller that has actually measured
+  // the standout (only adviceFor does; bots emulate the room, and the room does not reach for kickers) may
+  // pass kdEarlyOk to use it. Nothing opens below the early round in any league.
+  const openAt = cfg.rounds - kdOpenRound(cfg.rounds, cfg.teams, kdSlots) + 1;         // in picks-left form
+  const earlyAt = cfg.rounds - kdEarlyRound(cfg.rounds, cfg.teams, kdSlots) + 1;
+  const kdWindow = kdLeft > 0 && remaining <= (kdEarlyOk ? earlyAt : openAt);
   // LAST CALL. When your remaining picks exactly cover the K/DST you still owe, they are the ONLY legal
   // picks — anything else leaves you starting an empty slot in week 1. This is the one place the position
   // gets to outrank the board, and it is unambiguous rather than a matter of score.
@@ -3414,11 +3420,17 @@ function legalCands(cands, counts, cfg, picksLeft) {
   // Now we drop the must-fill-your-starters constraint first, and only then the caps.
   if (ok.length) return ok;
   if (underCap.length) return underCap;
-  // ⚠ EVEN THE LAST RESORT KEEPS ONE RULE. Handing back "everything" is how a second kicker and a second
-  // defense reached the recommendation in the first place; whatever else has gone wrong with the counts,
-  // a position you have already filled to its cap is never the answer.
-  const noSpare = cands.filter((c) => !isKD(cpos(c.pos)) || stillOwed(cpos(c.pos)) > 0);
-  return noSpare.length ? noSpare : cands;
+  // ⚠ THE LAST RESORT IS A DOOR, SO IT GETS A RULE TOO. This branch is reached when the counts have gone
+  // wrong enough to put every position over its cap — the worst possible moment to stop enforcing the thing
+  // we are most sure of. Trey: "K and DST are more a last minute fill for most teams." So a real player
+  // ALWAYS wins here, at any round; a K/DST is returned only when there is literally nothing else on the
+  // board, and even then only one you still owe. Previously this branch kept still-owed K/DST alongside the
+  // real players, which meant a bad count could put a kicker back in the pool in round 8 whatever the window
+  // said — the exact shape of the report, arriving through the back door.
+  const nonKD = cands.filter((c) => !isKD(cpos(c.pos)));
+  if (nonKD.length) return nonKD;
+  const owedKD = cands.filter((c) => isKD(cpos(c.pos)) && stillOwed(cpos(c.pos)) > 0);
+  return owedKD.length ? owedKD : cands;
 }
 // ===== BOARD TIERS ==========================================================================
 // A "tier" is a run of players who are effectively interchangeable, and the break is where the drop
@@ -3504,13 +3516,45 @@ const KD_TRUST = { K: 0.20, DST: 0.28 };   // share of a K/DST points edge that 
 // decided when a K/DST could be a candidate, and nothing in the score agreed with it — so the moment a
 // kicker reached the pool by any other door (a NaN score, a bad picks-left estimate, a fallback branch) there
 // was nothing left to stop him topping the list.
+// ⭐ ROUND 10 IS A FLOOR, NOT A SUGGESTION. Trey: "they should be going in rounds 10-12 and not in the 8th."
+// It sits above every other adjustment below, because a rule derived from league shape has no business
+// producing the exact number he complained about — and the sweep in sim/kdround.js found that it did: a
+// 20-team/12-round league opened the window in ROUND 7, and 16- and 18-team leagues in round 8. Not a keeper
+// in sight. Those shapes are real, so the floor outranks the heuristic rather than the other way round.
+const KD_FLOOR_ROUND = 10;
 function kdOpenRound(rounds, teams, kdSlots) {
   const R = Math.max(1, +rounds || 15);
   const slots = Math.max(0, +kdSlots || 0);
   if (slots <= 0) return R + 2;                     // a league that starts neither: never
   const teamAdj = Math.max(0, Math.floor(((+teams || TEAMS || 12) - 12) / 4));
-  return Math.max(2, R - slots - 1 - teamAdj);
+  // The round the last-call rule starts forcing them anyway (picks left = slots owed). The window must never
+  // open LATER than that, or there would be a stretch where a K/DST is blocked and then compulsory.
+  const lastCall = Math.max(2, R - slots + 1);
+  return Math.min(lastCall, Math.max(KD_FLOOR_ROUND, R - slots - 1 - teamAdj));
 }
+// THE ABSOLUTE FLOOR, AND THE ONLY DOOR BELOW THE NORMAL WINDOW.
+//
+// Trey, on the fix above: "K and DSTs just should not be recommended until much later in drafts (again,
+// unless the ADP and VBD just stand out as a top 2-3 option, even so, they should be going in rounds 10-12
+// and not in the 8th). Ultimately, those positions aren't just about drafting for a need like QB, RB, WR, TE
+// … K and DST are more a last minute fill for most teams."
+//
+// Two things in that sentence, and they are different. The "unless" is a real exception and it deserves to
+// exist — a defense that genuinely towers over the rest of the shelf is worth taking before the shelf is
+// picked over. But "even so … rounds 10-12" BOUNDS the exception: it is not a licence to surface a kicker
+// whenever his VBD looks big, which is exactly the arithmetic that produced the round-8 report. So the
+// exception gets its own round, never earlier than round 10 in any league (KD_FLOOR_ROUND, above), and never
+// more than two rounds ahead of the normal window. Below that line there is no door at all — not a discount,
+// not a tiebreak.
+function kdEarlyRound(rounds, teams, kdSlots) {
+  const open = kdOpenRound(rounds, teams, kdSlots);
+  // Never earlier than round 10, never later than the normal window (a short draft simply has no early door).
+  return Math.min(open, Math.max(KD_FLOOR_ROUND, open - 2));
+}
+// How far clear of his OWN shelf a kicker or defense has to be to use that early door, in projected points.
+// Deliberately a full tier: the top kicker is typically 5-8 points clear of the third-best one still
+// available, which is noise, and a gap this size is the "just stands out" case and nothing less.
+const KD_STANDOUT_GAP = 25;
 function kdValue(c, counts) {
   const p = cpos(c.pos);
   // A second kicker or defense is worth nothing on draft day, whatever his projection says.
@@ -3896,8 +3940,13 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build, posVbds, dbg, p
   // kicker or a defense is held below every real body on the board however flattering his raw VBD is; the
   // relative order among them is preserved so that when the window does open, the best one still leads.
   if (c.pos === "K" || c.pos === "DST") {
-    const openR = kdOpenRound(ROSTER_ROUNDS, TEAMS, (SPEC.K || 0) + (SPEC.DST || 0));
-    if (round < openR) finalScore = -1e6 + Math.min(9e5, Math.max(0, finalScore));
+    // The FLOOR, not the normal window. Which of the two windows a K/DST is allowed into is the candidate
+    // filter's decision (it is the layer that knows whether this one stands out); the score's job is the
+    // absolute bound underneath both — below the early round there is no arithmetic that can produce a
+    // kicker, however his VBD reads. Order among them is preserved so the best one still leads when the
+    // door does open.
+    const floorR = kdEarlyRound(ROSTER_ROUNDS, TEAMS, (SPEC.K || 0) + (SPEC.DST || 0));
+    if (round < floorR) finalScore = -1e6 + Math.min(9e5, Math.max(0, finalScore));
   }
   // ⚠ A SCORE MUST BE A NUMBER. Not because anything here is expected to produce NaN any more, but because
   // of what NaN did the last time one escaped: the callers rank candidates with `(a, b) => b.s - a.s`, and a
@@ -19051,24 +19100,66 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // the pool deliberately. One of each, never more — Trey: "the recommendation engine only ever recommends
     // 1 K and 1 DST". legalCands still decides whether they are legal and the score still decides whether
     // they win; this only makes them visible enough to be judged.
+    let kdEarlyOk = false;
     {
       const capsNow = capsOf(cfg);
       const owedKD = ["K", "DST"].filter((p) => Math.max(0, (capsNow[p] || 0) - (myCounts[p] || 0)) > 0);
       const kdSlots = (capsNow.K || 0) + (capsNow.DST || 0);
-      const openAt = cfg.rounds - kdOpenRound(cfg.rounds, cfg.teams, kdSlots) + 1;   // picks-left form of the round rule
-      if (owedKD.length && myPicksLeft <= openAt) {
+      const openAt = cfg.rounds - kdOpenRound(cfg.rounds, cfg.teams, kdSlots) + 1;    // picks-left form
+      const earlyAt = cfg.rounds - kdEarlyRound(cfg.rounds, cfg.teams, kdSlots) + 1;
+      // ⭐⭐ EVERY K AND DST LEAVES THE POOL FIRST, and at most one of each comes back below. Two things
+      // this fixes, both of which a probe caught rather than reasoning:
+      //   • Late in a DEEP draft the forty lowest-ADP players still on the board can be ENTIRELY kickers and
+      //     defenses — everything else is gone. That pool left the staged fallback with nothing real to hand
+      //     back, so the engine recommended a SECOND kicker and a SECOND defense in rounds 17-18. Trey:
+      //     "only ever recommends 1 K and 1 DST."
+      //   • Even inside the window, a pool that happens to carry eleven defenses puts several of them in the
+      //     alternatives and back on the board as tags — the "board flooded with kicker and defense
+      //     suggestions" the beta tester reported, arriving by a different route.
+      // Removing them wholesale and re-adding exactly the best one of each still-owed slot makes "one of
+      // each, never more" a property of the pool rather than something the score has to keep winning.
+      const isKDp = (p) => { const k = cpos(p.pos); return k === "K" || k === "DST"; };
+      pool0 = pool0.filter((p) => !isKDp(p));
+      if (pool0.length < 10) {
+        // …and if that emptied it, refill from the whole board by value. A deep flier nobody has heard of is
+        // a better last pick than a spare kicker, and it is the honest answer to "who is even left".
+        const have = new Set(pool0.map((p) => p.id));
+        pool0 = pool0.concat(sortedAdp.filter((p) => avail(p) && !have.has(p.id) && !isKDp(p))
+          .sort((a, b) => (b.vbd ?? -99) - (a.vbd ?? -99)).slice(0, 24));
+      }
+      // ⚠ AND IF THE BOARD REALLY HAS NOTHING ELSE ON IT, hand back the spares rather than nothing. A roster
+      // spot has to be filled by somebody, and an empty recommendation panel on the clock is the one outcome
+      // worse than a second kicker. This is a genuinely degenerate board — every skill player gone — so it
+      // should be rare to the point of never in a real draft; the local fixture reaches it only because it
+      // carries 277 players and a 14-team/18-round draft makes 252 picks.
+      if (!pool0.length) pool0 = sortedAdp.filter((p) => avail(p)).slice(0, 24);
+      if (owedKD.length && myPicksLeft <= earlyAt) {
         const already = new Set(pool0.map((p) => p.id));
         owedKD.forEach((pos) => {
-          let best = null;
+          // Best available at the position, and the SHELF behind him — the bodies you could still get instead.
+          let best = null; const shelf = [];
           for (const p of sortedAdp) {
-            if (cpos(p.pos) !== pos || already.has(p.id) || !avail(p)) continue;
+            if (cpos(p.pos) !== pos || !avail(p)) continue;
+            shelf.push(p.vbd ?? 0);
             if (!best || (p.vbd ?? -99) > (best.vbd ?? -99)) best = p;
           }
-          if (best) pool0 = pool0.concat(best);
+          if (!best) return;
+          // ⭐ TREY'S "UNLESS", MEASURED AGAINST HIS OWN COHORT rather than against the skill board. "Unless
+          // the ADP and VBD just stand out as a top 2-3 option" — so BOTH have to say so: a full tier clear
+          // of the third-best defense you could still get instead, AND a market that is about to take him.
+          // Measured on a real board this almost never fires for a kicker, which is correct: kickers are
+          // interchangeable, and an engine that thinks otherwise is reading noise as signal.
+          shelf.sort((a, b) => b - a);
+          const thirdBest = shelf.length >= 3 ? shelf[2] : (shelf[shelf.length - 1] ?? 0);
+          const standout = ((best.vbd ?? 0) - thirdBest) >= KD_STANDOUT_GAP
+            && best.adp != null && best.adp <= pickNum + 10;
+          if (myPicksLeft > openAt && !standout) return;   // inside the early window, only a standout gets in
+          if (myPicksLeft > openAt) kdEarlyOk = true;
+          if (!already.has(best.id)) pool0 = pool0.concat(best);
         });
       }
     }
-    const pool = legalCands(pool0, myCounts, cfg, myPicksLeft);
+    const pool = legalCands(pool0, myCounts, cfg, myPicksLeft, kdEarlyOk);
     // K/DST DIAGNOSTIC, off unless someone turns it on (`window.fdcKdDebug = 1` in the console). Inert in
     // normal use — no allocation, no cost. It exists because the report that produced all of the above was
     // "it started to heavily suggest a kicker" from someone mid-draft, and answering it meant guessing at
