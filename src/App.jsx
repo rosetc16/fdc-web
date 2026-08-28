@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.28h";
+const BUILD_TAG = "2026.07.28i";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -3219,6 +3219,8 @@ const demand = (sf) => {
       RB: SPEC.RB + g * 0.42 + 3.2,
       WR: SPEC.WR + g * 0.46 + 3.6,
       TE: SPEC.TE + (SPEC.tePrem ? 1.6 : 1.1),
+      K: SPEC.K || 0,
+      DST: SPEC.DST || 0,
     };
   }
   return {
@@ -3226,6 +3228,18 @@ const demand = (sf) => {
     RB: SPEC.RB + g * 0.42,
     WR: SPEC.WR + g * 0.46,
     TE: SPEC.TE + g * 0.12,
+    // ⚠ K AND DST MUST HAVE AN ENTRY HERE, ALWAYS. They aren't scored on this board, and for a long time they
+    // simply had no key — so `dem[pos]` was undefined and every arithmetic that touched it produced NaN.
+    // needMult already carries a fix for its half of that (see the comment there: "a NaN weight could win the
+    // sample and draft a kicker in round 5"). The USER-facing half was never fixed: in userScore,
+    // `needBonus = 8 * Math.max(0, dem[c.pos] - counts[c.pos])` came out NaN, so EVERY kicker and defense
+    // scored NaN — and a NaN score doesn't sort low, it sorts ARBITRARILY, because `(a, b) => b.s - a.s`
+    // returns NaN for it and the sort reads that as "equal". A defense could and did land at index 0 of the
+    // recommendation list at any point in any draft. That is what Trey hit: "it started to heavily suggest a
+    // kicker in the 8th or 9th of a 15 round draft. When I disabled kickers then is started doing DST."
+    // Both positions were NaN, so knocking one out just promoted the other.
+    K: SPEC.K || 0,
+    DST: SPEC.DST || 0,
   };
 };
 const REQ_F = (sf) => ({ QB: SPEC.QB, RB: SPEC.RB, WR: SPEC.WR, TE: SPEC.TE });
@@ -3320,11 +3334,43 @@ function withKdCaps(base, cfg) {
 }
 function flexOpen(counts, req){ let s = 0; ["RB","WR","TE"].forEach((p) => (s += Math.max(0, counts[p] - req[p]))); return s < genericSlots(); }
 function unfilledStarters(counts, sf) { const req = REQ_F(sf); let u = 0; POS.forEach((p) => (u += Math.max(0, req[p] - counts[p]))); if (flexOpen(counts, req)) u += genericSlots() - (["RB","WR","TE"].reduce((a,p)=>a+Math.max(0,counts[p]-req[p]),0)); return Math.max(0, u); }
-function legalCands(cands, counts, cfg) {
+// How many selections this team still has, counting the one at `fromOverall`.
+//
+// ⚠ THIS IS NOT THE SAME QUANTITY AS "ROSTER SLOTS LEFT", and the difference is a bug with a name. The K/DST
+// window used to be derived from `cfg.rounds − (bodies on the roster)`, which is only the same number in a
+// league with no keepers and no platform holdings. A no-cost keeper adds a BODY without consuming a PICK, so
+// three keepers make a 15-round draft believe it is in its final rounds by round 8 — precisely where Trey
+// watched a kicker take over the recommendation. Pick-cost keepers occupy a slot without being a selection,
+// so they don't count as a pick you still get to make.
+function picksLeftFor(team, fromOverall, cfg) {
+  const TOTAL = totalOf(cfg);
+  let n = 0;
+  for (let o = Math.max(0, fromOverall | 0); o < TOTAL; o++) if (teamAt(o) === team && PICK_KEEPER_AT[o] == null) n++;
+  return n;
+}
+// The same answer as a lookup, for the simulation loops. `tab[t][o]` = selections team t still has from
+// overall `o` onward. Built once per projection/sim run (TEAMS × TOTAL, ~2k writes) instead of walking the
+// remaining board inside a loop that runs a thousand times.
+function picksLeftTable(cfg) {
+  const TOTAL = totalOf(cfg);
+  const tab = Array.from({ length: TEAMS }, () => new Int16Array(TOTAL + 2));
+  for (let o = TOTAL - 1; o >= 0; o--) {
+    for (let t = 0; t < TEAMS; t++) tab[t][o] = tab[t][o + 1];
+    const t = teamAt(o);
+    if (t != null && t >= 0 && t < TEAMS && PICK_KEEPER_AT[o] == null) tab[t][o] += 1;
+  }
+  return tab;
+}
+const plAt = (tab, t, o) => (tab && tab[t] ? tab[t][Math.max(0, Math.min(tab[t].length - 1, o))] : undefined);
+function legalCands(cands, counts, cfg, picksLeft) {
   const caps = capsOf(cfg), req = REQ_F(cfg.sf);
-  // The roster census counts EVERY body, K and DST included — otherwise "how many picks do I have left"
-  // is overstated by exactly the number of kickers and defenses already taken.
-  const remaining = cfg.rounds - ALL_POS.reduce((s, p) => s + (counts[p] || 0), 0);
+  // Picks this team has left, INCLUDING the one being made. Every caller that knows where it is in the draft
+  // passes it; the roster census is only a fallback for the few that don't, and it is the estimate that was
+  // wrong, so it is clamped to the draft length rather than trusted.
+  const bodies = ALL_POS.reduce((s, p) => s + (counts[p] || 0), 0);
+  const remaining = Number.isFinite(picksLeft)
+    ? Math.max(0, picksLeft)
+    : Math.max(0, Math.min(cfg.rounds, cfg.rounds - bodies));
   const mustFill = unfilledStarters(counts, cfg.sf) >= remaining;
   // ---- K / DST -------------------------------------------------------------------------------------
   // They were previously excluded from the candidate pool by accident rather than by rule: `caps` had no
@@ -3335,9 +3381,20 @@ function legalCands(cands, counts, cfg) {
   // AND you are close enough to the end that taking one is the actual right move.
   const stillOwed = (p) => Math.max(0, (caps[p] || 0) - (counts[p] || 0));
   const kdLeft = stillOwed("K") + stillOwed("DST");
-  // Two picks of runway, so the recommendation can warn you before the last pick forces it.
-  const kdWindow = kdLeft > 0 && remaining <= kdLeft + 2;
   const isKD = (p) => p === "K" || p === "DST";
+  // WHERE THEY BELONG — one rule, shared with the score (see kdOpenRound). Expressed here in picks-left
+  // because that is what this filter has; `remaining <= slots + runway` is the same statement as
+  // `round >= kdOpenRound`, and the two must stay the same statement or a kicker can be a legal candidate
+  // the score refuses to rank, or the reverse.
+  const kdSlots = (caps.K || 0) + (caps.DST || 0);
+  const kdWindow = kdLeft > 0 && remaining <= (cfg.rounds - kdOpenRound(cfg.rounds, cfg.teams, kdSlots) + 1);
+  // LAST CALL. When your remaining picks exactly cover the K/DST you still owe, they are the ONLY legal
+  // picks — anything else leaves you starting an empty slot in week 1. This is the one place the position
+  // gets to outrank the board, and it is unambiguous rather than a matter of score.
+  if (kdLeft > 0 && remaining <= kdLeft) {
+    const forced = cands.filter((c) => { const p = cpos(c.pos); return isKD(p) && stillOwed(p) > 0; });
+    if (forced.length) return forced;
+  }
   const legalKD = (p) => stillOwed(p) > 0 && kdWindow;
   const underCap = cands.filter((c) => {
     const p = cpos(c.pos);
@@ -3416,7 +3473,56 @@ function boardTierMetric(sortKey, dynasty) {
   if (sortKey === "vbd" || sortKey === "rank") return (p) => (dynasty ? (p.value != null ? p.value : p.vbd) : p.vbd);
   return null;   // any other sort isn't a board order — no tiers
 }
+// ===== WHAT A KICKER OR A DEFENSE IS ACTUALLY WORTH TO YOU ===================================
+// Their positional VBD is honest arithmetic and still badly misleading. Replacement level for these two is
+// the ~14th at the position, and the best kicker projects roughly FIFTY points clear of him — which, in the
+// same VBD currency the rest of the board is priced in, makes him read like a mid-round wide receiver. The
+// engine, quite reasonably, offered him as one.
+//
+// Those points don't carry, for a reason the projection can't see: preseason kicker and defense order barely
+// predicts in-season order, and the tail of that shelf is free off waivers all year. The gap you'd be buying
+// is mostly noise. So keep the SHAPE of the position's value — a genuinely separated defense still outranks a
+// replaceable one — and scale the whole thing down to what a last-round flier is really worth.
+//
+// Trey, from a live slow draft: "we should just be pushing down ADP of DST and K unless their VBD is so much
+// higher than the rest of the cohort." That "unless" is exactly why this is a MULTIPLIER and not a constant
+// or a hard exclusion: an ordinary K1 lands among the late-round bodies and stays there, while one who
+// genuinely towers over his own shelf keeps enough of that edge to surface a round or two early — which is
+// the behaviour Trey described as correct.
+const KD_TRUST = { K: 0.20, DST: 0.28 };   // share of a K/DST points edge that survives its own unpredictability
+// The earliest round in which a kicker or a defense belongs, read off the league's own shape.
+//
+// Trey: "In a 15 round draft, I'd expect most people to take a K or DST in the 12-15th round. Obviously this
+// could change in a draft with more rounds or more teams." Reserve the last `slots` rounds for the slots
+// themselves and open a round ahead of that so the recommendation can warn you before the final pick forces
+// it: a 15-round league owing a K and a DST opens in round 12, which is exactly what he described, and a
+// 20-round league moves the same window to 17-20 without a second constant. Teams are the other axis he
+// named — a deeper room drains the startable end of that shelf sooner, so the window opens a touch earlier
+// as the field grows (12 teams is the reference).
+//
+// BOTH the candidate filter and userScore read this. They used to be one rule and no rule: the filter
+// decided when a K/DST could be a candidate, and nothing in the score agreed with it — so the moment a
+// kicker reached the pool by any other door (a NaN score, a bad picks-left estimate, a fallback branch) there
+// was nothing left to stop him topping the list.
+function kdOpenRound(rounds, teams, kdSlots) {
+  const R = Math.max(1, +rounds || 15);
+  const slots = Math.max(0, +kdSlots || 0);
+  if (slots <= 0) return R + 2;                     // a league that starts neither: never
+  const teamAdj = Math.max(0, Math.floor(((+teams || TEAMS || 12) - 12) / 4));
+  return Math.max(2, R - slots - 1 - teamAdj);
+}
+function kdValue(c, counts) {
+  const p = cpos(c.pos);
+  // A second kicker or defense is worth nothing on draft day, whatever his projection says.
+  if ((counts[p] || 0) >= Math.max(1, SPEC[p] || 0)) return 0;
+  const vbd = Number.isFinite(c.vbd) ? c.vbd : 0;
+  return Math.max(0, vbd) * (KD_TRUST[p] || 0.25);
+}
 function marginalVbd(c, counts, sf) {
+  // K/DST leave here first. Everything below is written against REQ_EFF, which has no K or DST key, so a
+  // kicker that fell through picked up `req[c.pos] || 0` fallbacks and full positional VBD while his flex
+  // was open — the flattering number this position must never be priced at.
+  { const kp = cpos(c.pos); if (kp === "K" || kp === "DST") return kdValue(c, counts); }
   const req = REQ_EFF(sf); // SF-aware: counts the superflex slot as a 2nd required QB starter
   if (counts[c.pos] < req[c.pos]) return c.vbd;
   const G = genericSlots();
@@ -3784,6 +3890,25 @@ function userScore(c, counts, dem, strategy, sf, pickNum, build, posVbds, dbg, p
   if (c.pos === "QB" && (counts.QB || 0) >= qbSlots && round <= 11) {
     finalScore = Math.min(finalScore, 12 - Math.max(0, (counts.QB || 0) - qbSlots) * 8); // ≤12 for the first surplus QB, lower beyond
   }
+  // K / DST — the candidate filter's "where they belong" rule, restated as a score. The filter is the primary
+  // gate and this is the backstop, and after one missing object key put a kicker at the top of the
+  // recommendation in round 8 of a 15-round draft, this position gets a backstop. Before the window opens, a
+  // kicker or a defense is held below every real body on the board however flattering his raw VBD is; the
+  // relative order among them is preserved so that when the window does open, the best one still leads.
+  if (c.pos === "K" || c.pos === "DST") {
+    const openR = kdOpenRound(ROSTER_ROUNDS, TEAMS, (SPEC.K || 0) + (SPEC.DST || 0));
+    if (round < openR) finalScore = -1e6 + Math.min(9e5, Math.max(0, finalScore));
+  }
+  // ⚠ A SCORE MUST BE A NUMBER. Not because anything here is expected to produce NaN any more, but because
+  // of what NaN did the last time one escaped: the callers rank candidates with `(a, b) => b.s - a.s`, and a
+  // NaN difference is read as "these two are equal", so a NaN-scored player doesn't sink to the bottom — he
+  // keeps whatever position the input order gave him, which can be FIRST. One missing key in `demand()` was
+  // therefore enough to put a kicker at the top of the recommendation in round 8 of a 15-round draft. A
+  // non-finite score is a bug, and the safe reading of a bug is "not the pick".
+  if (!Number.isFinite(finalScore)) {
+    if (dbg && typeof dbg === "object") { dbg.total = -1e9; dbg.nonFinite = true; }
+    return -1e9;
+  }
   if (dbg && typeof dbg === "object") dbg.total = Math.round(finalScore);
   return finalScore;
 }
@@ -3891,6 +4016,7 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
   for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, baseCounts[t]); seedRosterCounts(t, baseCounts[t]); }
   allUnavailableKeeperIds().forEach((id) => { baseDrafted[id] = 1; });
   const baseRecent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
+  const PL = picksLeftTable(cfg);   // picks each team still has, by overall — drives the K/DST window
   // PERF: survival and best-available only matter for players who could plausibly be drafted before your last
   // simulated pick. Everyone below that has ~100% survival and never wins "best available", so touching them
   // inside the sim loop is pure waste — and it's the main cost of registering a pick.
@@ -3944,13 +4070,13 @@ function runSims(players, sortedAdp, picks, userIdx, cfg, strategy, nSims) {
           });
         }
         if (o === end) break;
-        const cands = legalCands(candidatesOf(sortedAdp, drafted, 30), counts[t], cfg);
+        const cands = legalCands(candidatesOf(sortedAdp, drafted, 30), counts[t], cfg, plAt(PL, t, o));
         let bc = cands[0], bs = -1e9;
         for (const c of cands) { const sc = userScore(c, counts[t], dem, strategy, sf, pickNum); if (sc > bs) { bs = sc; bc = c; } }
         drafted[bc.id] = 1; counts[t][cpos(bc.pos)] = (counts[t][cpos(bc.pos)] || 0) + 1; recent = [...recent.slice(-7), bc.pos];
         continue;
       }
-      const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts[t], cfg);
+      const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts[t], cfg, plAt(PL, t, o));
       const ws = cands.map((c, ri) => weightFor(c, pickNum, counts[t], round, recent, dem, R, ri));
       const i = sample(cands, ws);
       drafted[cands[i].id] = 1; counts[t][cpos(cands[i].pos)] = (counts[t][cpos(cands[i].pos)] || 0) + 1; recent = [...recent.slice(-7), cands[i].pos];
@@ -3996,6 +4122,7 @@ function survivalAtPick(players, sortedAdp, picks, targetOverall, cfg, nSims) {
   for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, baseCounts[t]); seedRosterCounts(t, baseCounts[t]); }
   allUnavailableKeeperIds().forEach((id) => { baseDrafted[id] = 1; });
   const baseRecent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
+  const PL = picksLeftTable(cfg);   // picks each team still has, by overall — drives the K/DST window
   // Count, per player, how many sims they SURVIVE past `target`. One simulation per sim run,
   // stopping at the target boundary — anyone still undrafted survived. Single shared random
   // process guarantees the result is monotonic in target (later target ⇒ ≤ survival).
@@ -4006,7 +4133,7 @@ function survivalAtPick(players, sortedAdp, picks, targetOverall, cfg, nSims) {
     let recent = baseRecent.slice();
     for (let o = picks.length; o < target; o++) {
       const t = teamAt(o), round = Math.floor(o / TEAMS) + 1, pickNum = o + 1;
-      const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts[t], cfg);
+      const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts[t], cfg, plAt(PL, t, o));
       const ws = cands.map((c, ri) => weightFor(c, pickNum, counts[t], round, recent, dem, R, ri));
       const c = cands[sample(cands, ws)];
       if (!c) break;
@@ -4027,6 +4154,7 @@ function projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId)
   for (let t = 0; t < TEAMS; t++) { seedKeeperRoster(players, t, rosters[t]); }
   allUnavailableKeeperIds().forEach((id) => { drafted[id] = 1; });
   let recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
+  const PL = picksLeftTable(cfg);   // picks each team still has, by overall — drives the K/DST window
   let userFirstDone = false;
   // How many picks ahead get FULL candidate scoring. Beyond this, rosters still fill (the projected lineup and
   // finish need complete teams), but we just take the best legal body by ADP instead of scoring a candidate pool
@@ -4061,7 +4189,7 @@ function projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId)
     const needK = Math.max(0, (cfg.start && cfg.start.K || 0) - rosters[t].filter((p) => p.pos === "K").length);
     if (needDST + needK > 0) {
       // How many more picks does THIS team have after this one, to the end of the draft?
-      let picksLeft = 0; for (let oo = o; oo < TOTAL; oo++) if (teamAt(oo) === t && PICK_KEEPER_AT[oo] == null) picksLeft++;
+      const picksLeft = plAt(PL, t, o);
       if (picksLeft <= needDST + needK) {
         const wantPos = needDST > 0 ? "DST" : "K";
         let bestDK = null; for (const p of sortedAdp) { if (!drafted[p.id] && p.pos === wantPos) { bestDK = p; break; } }
@@ -4077,15 +4205,15 @@ function projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId)
     const cheap = o >= scoreUntil;
     if (t === userIdx) {
       if (!userFirstDone && forcedId != null && !drafted[forcedId]) { choice = players[forcedId]; }
-      else if (cheap) { const cands = legalCands(candidatesOf(sortedAdp, drafted, 8), counts, cfg); choice = cands[0] || null; }
-      else { const cands = legalCands(candidatesOf(sortedAdp, drafted, 30), counts, cfg); let bs = -1e9; for (const c of cands) { const sc = userScore(c, counts, dem, strategy, sf, pickNum); if (sc > bs) { bs = sc; choice = c; } } }
+      else if (cheap) { const cands = legalCands(candidatesOf(sortedAdp, drafted, 8), counts, cfg, plAt(PL, t, o)); choice = cands[0] || null; }
+      else { const cands = legalCands(candidatesOf(sortedAdp, drafted, 30), counts, cfg, plAt(PL, t, o)); let bs = -1e9; for (const c of cands) { const sc = userScore(c, counts, dem, strategy, sf, pickNum); if (sc > bs) { bs = sc; choice = c; } } }
       userFirstDone = true;
     } else if (cheap) {
       // Deep pick: best legal player by ADP. Fills the roster realistically at a fraction of the cost.
-      const cands = legalCands(candidatesOf(sortedAdp, drafted, 8), counts, cfg);
+      const cands = legalCands(candidatesOf(sortedAdp, drafted, 8), counts, cfg, plAt(PL, t, o));
       choice = cands[0] || null;
     } else {
-      const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts, cfg);
+      const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts, cfg, plAt(PL, t, o));
       let bs = -1e9; for (let ri = 0; ri < cands.length; ri++) { const c = cands[ri]; const w = weightFor(c, pickNum, counts, round, recent, dem, R, ri); if (w > bs) { bs = w; choice = c; } }
     }
     if (!choice) continue; // no legal body for this one pick — skip it, don't abandon the whole projection
@@ -4120,6 +4248,7 @@ function projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, forcedI
   for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, counts[t]); seedRosterCounts(t, counts[t]); }
   allUnavailableKeeperIds().forEach((id) => { drafted[id] = 1; });
   let recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
+  const PL = picksLeftTable(cfg);   // picks each team still has, by overall — drives the K/DST window
   let userFirstDone = false;
   const board = new Array(TOTAL).fill(undefined);
   // Pre-rank a deep fallback list (by ADP, then projection value) so we can always fill late slots
@@ -4130,10 +4259,10 @@ function projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, forcedI
     let choice = null;
     if (t === userIdx) {
       if (!userFirstDone && forcedId != null && !drafted[forcedId]) choice = players[forcedId];
-      else { const cands = legalCands(candidatesOf(sortedAdp, drafted, 30), counts[t], cfg); let bs = -1e9; for (const c of cands) { const sc = userScore(c, counts[t], dem, strategy, sf, pickNum); if (sc > bs) { bs = sc; choice = c; } } }
+      else { const cands = legalCands(candidatesOf(sortedAdp, drafted, 30), counts[t], cfg, plAt(PL, t, o)); let bs = -1e9; for (const c of cands) { const sc = userScore(c, counts[t], dem, strategy, sf, pickNum); if (sc > bs) { bs = sc; choice = c; } } }
       userFirstDone = true;
     } else {
-      const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts[t], cfg);
+      const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts[t], cfg, plAt(PL, t, o));
       let bs = -1e9; for (let ri = 0; ri < cands.length; ri++) { const c = cands[ri]; const w = weightFor(c, pickNum, counts[t], round, recent, dem, R, ri); if (w > bs) { bs = w; choice = c; } }
     }
     // Fallback: if the ranked window produced nothing (deep draft, thin pool), take the best
@@ -4169,6 +4298,7 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
   for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, counts[t]); seedRosterCounts(t, counts[t]); }
   allUnavailableKeeperIds().forEach((id) => { drafted[id] = 1; });
   let recent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
+  const PL = picksLeftTable(cfg);   // picks each team still has, by overall — drives the K/DST window
   const path = []; let passedUser = false, afterUser = 0;
   // How far past YOUR next pick to keep projecting. We show a healthy look-ahead by default (the board
   // scrolls horizontally), and `extend` widens it further for the "show more" action.
@@ -4183,7 +4313,7 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
     let entry;
     if (t === userIdx) {
       let choice = null;
-      const legal = legalCands(candidatesOf(sortedAdp, drafted, 30), counts[t], cfg);
+      const legal = legalCands(candidatesOf(sortedAdp, drafted, 30), counts[t], cfg, plAt(PL, t, o));
       const scored = legal
         .map((c) => ({ p: c, s: userScore(c, counts[t], dem, strategy, sf, pickNum) }))
         .sort((a, b) => b.s - a.s);
@@ -4209,7 +4339,7 @@ function projectPath(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId
       if (!choice) break;
       drafted[choice.id] = 1; counts[t][cpos(choice.pos)] = (counts[t][cpos(choice.pos)] || 0) + 1; recent = [...recent.slice(-7), choice.pos];
     } else {
-      const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts[t], cfg);
+      const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts[t], cfg, plAt(PL, t, o));
       if (!cands.length) { continue; } // nothing legal/left to project at this slot — skip it
       const ws = cands.map((c, ri) => weightFor(c, pickNum, counts[t], round, recent, dem, R, ri));
       const sum = ws.reduce((a, b) => a + b, 0);
@@ -18908,7 +19038,53 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       const bare = (p) => !draftedSet.has(p.id) && survivesToPick(p.id);
       pool0 = sortedAdp.filter(bare).slice().sort((a, b) => (b.vbd ?? -99) - (a.vbd ?? -99)).slice(0, 44);
     }
-    const pool = legalCands(pool0, myCounts, cfg);
+    // Picks left for THIS team from the pick being analyzed — not roster slots left. See picksLeftFor.
+    const myPicksLeft = picksLeftFor(forTeam, atOverall, cfg);
+    // ⭐ A KICKER CANNOT REACH THIS POOL ON HIS OWN. `pool0` is the forty lowest-ADP players still on the
+    // board, and by the late rounds there are a hundred-odd undrafted deep skill players sitting between the
+    // current pick and the first kicker's ADP — so a K or DST is never in the first forty, at any point in any
+    // draft. That is worth stating plainly, because it means the position could only ever reach the
+    // recommendation through something going WRONG (the NaN score below, or a fallback branch), which is
+    // exactly the shape of the bug Trey hit. Fixing only the NaN produced the opposite failure: a full
+    // 15-round draft that ended with no kicker on the roster at all.
+    // So once the draft-position window is open, put the best available one of each slot you still owe into
+    // the pool deliberately. One of each, never more — Trey: "the recommendation engine only ever recommends
+    // 1 K and 1 DST". legalCands still decides whether they are legal and the score still decides whether
+    // they win; this only makes them visible enough to be judged.
+    {
+      const capsNow = capsOf(cfg);
+      const owedKD = ["K", "DST"].filter((p) => Math.max(0, (capsNow[p] || 0) - (myCounts[p] || 0)) > 0);
+      const kdSlots = (capsNow.K || 0) + (capsNow.DST || 0);
+      const openAt = cfg.rounds - kdOpenRound(cfg.rounds, cfg.teams, kdSlots) + 1;   // picks-left form of the round rule
+      if (owedKD.length && myPicksLeft <= openAt) {
+        const already = new Set(pool0.map((p) => p.id));
+        owedKD.forEach((pos) => {
+          let best = null;
+          for (const p of sortedAdp) {
+            if (cpos(p.pos) !== pos || already.has(p.id) || !avail(p)) continue;
+            if (!best || (p.vbd ?? -99) > (best.vbd ?? -99)) best = p;
+          }
+          if (best) pool0 = pool0.concat(best);
+        });
+      }
+    }
+    const pool = legalCands(pool0, myCounts, cfg, myPicksLeft);
+    // K/DST DIAGNOSTIC, off unless someone turns it on (`window.fdcKdDebug = 1` in the console). Inert in
+    // normal use — no allocation, no cost. It exists because the report that produced all of the above was
+    // "it started to heavily suggest a kicker" from someone mid-draft, and answering it meant guessing at
+    // four separate mechanisms in turn: is the K in the pool at all, is he legal, how many picks does the
+    // engine think you have left, and what does it believe your roster is. Those four answers, in one object,
+    // turn the next such report into a one-message diagnosis.
+    if (typeof window !== "undefined" && window.fdcKdDebug) {
+      const kdIn = (l) => l.filter((x) => ["K", "DST", "DEF"].includes(x.pos)).map((x) => `${x.pos}:${x.name}@${x.adp}`);
+      window.fdcKdLog = {
+        atOverall, forTeam, picksLeft: myPicksLeft, rounds: cfg.rounds,
+        opensInRound: kdOpenRound(cfg.rounds, cfg.teams, (capsOf(cfg).K || 0) + (capsOf(cfg).DST || 0)),
+        myCounts: { ...myCounts }, poolSize: pool0.length,
+        kdInPool: kdIn(pool0), kdLegal: kdIn(pool),
+        kdOnBoard: sortedAdp.filter((x) => ["K", "DST", "DEF"].includes(x.pos) && !draftedSet.has(x.id)).slice(0, 4).map((x) => `${x.pos}:${x.name}@${x.adp}`),
+      };
+    }
     // The recommendation follows the given strategy (defaults to the selected one). We compute one for the
     // selected strategy AND a second for "My build", shown side by side in the tracker.
     // ===== POSITIONAL NEED BY QUALITY, NOT JUST QUANTITY =====
@@ -18970,8 +19146,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // premium (20p) and the empty-slot premium, applied to the last place it hadn't been.
     const sfQBFmt = !!cfg.sf || (SPEC.SUPER || 0) > 0;
     const waitW = { QB: sfQBFmt ? 1 : 0.45, RB: 1, WR: 1, TE: 1 };
+    // ⚠ `|| 0` ON waitCost IS LOad-BEARING. waitCost is built with POS.forEach — QB/RB/WR/TE — so for a
+    // kicker or a defense the lookup is undefined, `Math.max(0, undefined)` is NaN, and the whole score is
+    // NaN. That is the SECOND copy of the bug Trey hit (the first was the missing K/DST keys in demand()),
+    // sitting in the recommendation's own wrapper, and it fails the same way: `ranked.sort((a, b) =>
+    // scoreOf(b) - scoreOf(a))` reads a NaN difference as "equal", so a NaN-scored player keeps whatever
+    // slot the pool handed him — which can be the top, and, once the fix above stopped the other copy, was
+    // also how a legitimately-forced kicker could sort BELOW the field at the last pick of the draft. Any
+    // lookup keyed by position that a K or DST can reach needs a defined fallback, every time.
     const scoreOf = (p) => userScore(p, myCounts, dem, strat, cfg.sf, pickNum, null, myPosVbds, null, posTilt, softSlots)
-      + 0.6 * (waitW[p.pos] != null ? waitW[p.pos] : 1) * Math.max(0, waitCost[p.pos]);
+      + 0.6 * (waitW[p.pos] != null ? waitW[p.pos] : 1) * Math.max(0, waitCost[p.pos] || 0);
     let ranked = pool.slice().sort((a, b) => scoreOf(b) - scoreOf(a));
     // HEADLINE guard (future picks only): the #1 recommendation shouldn't be a player who's very unlikely to
     // still be on the board at this pick. If the top-scored guy has low survival AND a near-equal-scored
@@ -19416,7 +19600,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       const recent = picks.slice(Math.max(0, o - 8), o).map((id) => players[id] && players[id].pos).filter(Boolean);
       const pickNum = o + 1, rd = Math.floor(o / TEAMS) + 1;
       const cands0 = []; for (const p of sortedAdp) { if (!drafted.has(p.id)) { cands0.push(p); if (cands0.length >= 34) break; } }
-      const cands = legalCands(cands0, counts, cfg);
+      const cands = legalCands(cands0, counts, cfg, picksLeftFor(team, o, cfg));
       if (cands.length) {
         const ws = cands.map((c, ri) => weightFor(c, pickNum, counts, rd, recent, dem, ROUNDS, ri));
         let bi = 0; for (let i = 1; i < ws.length; i++) if (ws[i] > ws[bi]) bi = i;
@@ -19473,7 +19657,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           const recent = next.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
           const pickNum = next.length + 1, rd = Math.floor(next.length / TEAMS) + 1;
           const cands0 = []; for (const p of sortedAdp) { if (!drafted.has(p.id)) { cands0.push(p); if (cands0.length >= 34) break; } }
-          let cands = legalCands(cands0, counts, cfg);
+          let cands = legalCands(cands0, counts, cfg, picksLeftFor(forTeam, next.length, cfg));
           // MOCK-ONLY REACH CLAMP: the temperature flattening below fattens the weight tails, so without a cap a
           // bot can take someone far ahead of ADP. Cap how many spots ahead of ADP a bot will reach, scaled by
           // round: tight early (a big early reach is very unrealistic), looser but still bounded late (some
@@ -20304,7 +20488,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         : `Your platform tends to draft him about ${Math.abs(edge)} picks earlier than the wider field — others in your league may reach, so don't assume he'll fall.`;
       sec.push({ h: "Market & ADP", body: `${hereTxt} ${edgeTxt}` });
       // 6. Value of waiting
-      const wc = Math.max(0, advice.waitCost[v.pos]);
+      // `|| 0` — the verdict CAN be a K or DST at the end of a draft, and waitCost is keyed by POS only.
+      const wc = Math.max(0, advice.waitCost[v.pos] || 0);
       sec.push({ h: "Cost of waiting", body: wc >= 4 ? `If you pass, the best ${v.pos} expected at your next pick is worth about ${wc.toFixed(0)} fewer points — a real cost to waiting here.` : `The ${v.pos} pool holds up well to your next pick, so waiting is relatively cheap if you'd rather address another spot.` });
     }
     // 7. Run watch
@@ -22278,7 +22463,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     <div className="mut"><Dot pos={advice.verdict.pos} />{advice.verdict.pos}{advice.verdict.posRank}</div>
                   </div>
                   <div className="mut" style={{ fontSize: 12.5 }}>
-                    +{advice.verdict.vbd.toFixed(0)} VBD • waiting costs {Math.max(0, advice.waitCost[advice.verdict.pos]).toFixed(0)} pts
+                    +{advice.verdict.vbd.toFixed(0)} VBD • waiting costs {Math.max(0, advice.waitCost[advice.verdict.pos] || 0).toFixed(0)} pts
                     {advice.impacts[advice.verdict.id] && <> • projects you <b style={{ color: "var(--ink)" }}>{ordinal(advice.impacts[advice.verdict.id].rank)}</b> ({advice.impacts[advice.verdict.id].pts} pts)</>}
                   </div>
                   {(() => {
