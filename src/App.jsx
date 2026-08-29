@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.28j";
+const BUILD_TAG = "2026.07.29b";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2104,6 +2104,18 @@ const rosterCountAt = (teamIdx, pos) => (ROSTER_ADDS[teamIdx] || []).reduce((n, 
 const seedRosterCounts = (teamIdx, counts) => { (ROSTER_ADDS[teamIdx] || []).forEach((r) => { if (counts[cpos(r.pos)] != null) counts[cpos(r.pos)]++; }); };
 const hasRosterAdds = () => Object.keys(ROSTER_ADDS).length > 0;
 const pickLabel = (o) => `${Math.floor(o / TEAMS) + 1}.${String((o % TEAMS) + 1).padStart(2, "0")}`;
+// Column template for the "How you're doing" table, shared by its header and its rows so the two can never
+// drift out of alignment (they did, once, and a one-pixel offset in a 26px column is invisible until you
+// notice the numbers are under the wrong heading).
+const HYD_COLS = "24px 38px 32px 30px 30px minmax(0,1fr)";
+// Explainer for the "Between you and your next pick" panel. Module-level so the two hover handlers can't
+// drift apart — the same tip object is passed to click and mouseenter.
+const BETWEEN_TIP = [
+  { t: "Between you and your next pick", x: "Every team that picks before you're back on the clock, what starting slots they still have to fill, and what the engine expects each of them to take." },
+  { t: "How to read it", x: "“QB — 0 of 4 needs one · Safe to wait” means nobody between you and your next pick is short a quarterback, so the position can wait. “3 of 4 · 2 projected gone” means take it now." },
+  { t: "Need vs. expected", x: "They answer different questions. A team can still owe a starter at a position and take something else anyway — need is what they're short, projected is what the simulations think they'll actually do." },
+  { t: "Where the rosters come from", x: "The same rosters the League tab renders — drafted picks, no-cost keepers, and keepers held at a future slot — so this can never disagree with what you see there." },
+];
 // Format a countdown in seconds. Shows H:MM:SS for long (slow-draft) timers, M:SS otherwise — so a
 // Sleeper draft with hours per pick reads "4:12:30" instead of a giant minute count like "252:30".
 const fmtClock = (secs) => {
@@ -6680,7 +6692,7 @@ export default function App() {
       const SAFE = ["home", "library", "teamHub", "leagueHub", "draft", "rankings", "trendsTime", "tradeTools", "adpIntel", "database", "trends", "draftTrends", "help", "guide", "account", "admin"];
       if (!SAFE.includes(n.route)) return {};
       if (n.route === "teamHub" && !n.hubLeagueId) return {};
-      if ((n.route === "draft" || n.route === "leagueHub") && !n.activeId) return {};
+      if ((n.route === "draft" || n.route === "leagueHub" || n.route === "mockPlan") && !n.activeId) return {};
       return n;
     } catch { return {}; }
   };
@@ -6799,8 +6811,9 @@ export default function App() {
     if (["checkout", "setup"].includes(e.route)) return false; // transient flows: never a back target
     if (e.route === "teamHub") return !!e.hubLeagueId;
     if (e.route === "leagueHub") return !!e.activeId && leagues.some((l) => l.id === e.activeId);
+    if (e.route === "mockPlan") return !!e.activeId && leagues.some((l) => l.id === e.activeId);
     if (e.route === "draft") return false; // exiting a draft and being thrown back INTO it is not "back"
-    if (!user && ["leagueHub", "rankings", "account", "admin", "library", "trends", "draftTrends", "database", "trendsTime", "tradeTools", "adpIntel"].includes(e.route)) return false;
+    if (!user && ["leagueHub", "mockPlan", "rankings", "account", "admin", "library", "trends", "draftTrends", "database", "trendsTime", "tradeTools", "adpIntel"].includes(e.route)) return false;
     return true;
   };
   const navHome = () => (user && user.paid ? "home" : user ? "library" : "home");
@@ -6816,6 +6829,7 @@ export default function App() {
         const lg = leagues.find((l) => l.id === e.activeId);
         return lg ? lg.name : "League";
       }
+      if (e.route === "mockPlan") return "Draft plan";
       const NAMES = { home: "Home", library: "Library", rankings: "Rankings", account: "Account", admin: "Admin",
         trends: "Trends", draftTrends: "Draft trends", database: "Drafts", trendsTime: "Trends", tradeTools: "Trade tools",
         adpIntel: "ADP intel", teamHub: "Team hub", help: "Help" };
@@ -7656,6 +7670,7 @@ export default function App() {
       {route === "leagueHub" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? <LeagueUmbrella user={user} league={lg} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} backLabel={backLabelOf()}
         onOfficial={(id) => { setDraftTab(null); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
         onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }}
+        onMockPlan={(id) => { setActiveId(id); setRoute("mockPlan"); }}
         onDeleteMock={deleteMock} onRankings={() => setRoute("rankings")} onDelete={(id) => { deleteLeague(id); setRoute(user.paid ? "home" : "library"); }}
         allLeagues={leagues}
         onSaveAvoid={(id, arr, allowArr) => { const next = leagues.map((l) => (l.id === id ? { ...l, avoidList: arr, ...(allowArr ? { avoidAllow: allowArr } : {}) } : l)); setLeagues(next); persist({ leagues: next }); }}
@@ -7664,6 +7679,12 @@ export default function App() {
         onSaveCfg={(id, cfg) => updateLeagueCfg(id, cfg)}
         onFixSlot={(id, slot) => { const next = leagues.map((l) => (l.id === id ? { ...l, cfg: { ...l.cfg, slot } } : l)); setLeagues(next); persist({ leagues: next }); }}
         onOpenTeamHub={lg.cfg.connect && lg.cfg.connect.leagueId ? () => { setHubLeagueId(lg.cfg.connect.leagueId); setRoute("teamHub"); } : null} /> : null; })()}
+      {route === "mockPlan" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? (
+        <Boundary label="mock trends">
+          <MockTrendsPageLazy league={lg} user={user} onBack={() => goBack()} backLabel={backLabelOf(lg.name)} onHome={() => setRoute("home")} onSignOut={signOut}
+            onRunMock={() => startMock(lg.id)} />
+        </Boundary>
+      ) : null; })()}
       {route === "teamHub" && user && hubLeagueId && <Boundary label="in-season hub" fallback={(msg) => (
         <div style={{ maxWidth: 620, margin: "60px auto", padding: "0 20px", textAlign: "center" }}>
           <div className="disp" style={{ fontSize: 22, fontWeight: 700, marginBottom: 10 }}>The in-season hub hit a snag</div>
@@ -8540,7 +8561,7 @@ function AvoidListModal({ league, allLeagues, user, onSave, onSaveMaster, onClos
   );
 }
 
-function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, onSignOut, onOfficial, onMock, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings, onSaveAvoid, onSaveMasterAvoid, onFixSlot, onUpdateUser, onSaveCfg }) {
+function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, onSignOut, onOfficial, onMock, onMockPlan, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings, onSaveAvoid, onSaveMasterAvoid, onFixSlot, onUpdateUser, onSaveCfg }) {
   // The checklist used to print league.cfg.slot with a tick beside it, and that number could be months old
   // and simply wrong. Ask the platform instead — and write the answer back, so the room, the mocks and this
   // page stop each holding a different opinion about where the user is sitting.
@@ -8558,6 +8579,29 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
   const keepers = league.cfg.keepers || [];
   const [showMocks, setShowMocks] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
+  // The Mock Draft Trends tile is a disclosure, not a destination — the full read expands in place below the
+  // tiles rather than routing you off the page you were preparing on.
+  const [trendsOpen, setTrendsOpen] = useState(false);
+  // ONE analysis for the whole page. The tile summary, the checklist line and the expanded panel all read it,
+  // and building a ~600-player pool three times to say the same thing three ways would be a real cost on a
+  // page that is otherwise instant. Skipped entirely when there are no mocks to read.
+  const trendPlayers = useMemo(() => {
+    if (!league.mocks || !league.mocks.length) return null;
+    try {
+      setTeams(league.cfg.teams || 12); setSpec(league.cfg.start); setOrder(league.cfg.order || "snake");
+      setPickTrades(league.cfg.pickTrades); setKeeperAdds({});
+      return buildPlayers(league.cfg);
+    } catch (e) { return null; }
+  }, [league]);
+  const trends = useMemo(
+    () => (trendPlayers ? analyzeLeagueMockTrends(league.mocks || [], trendPlayers, league.cfg) : null),
+    [trendPlayers, league]
+  );
+  // The one-liner that rides on the checklist row: the strongest finding, or the sample-size nudge when
+  // there isn't one yet. Saying "3 run" and nothing else is what made the row feel like a chore.
+  const trendHint = !trends ? null
+    : trends.n === 0 ? (trends.started ? "none complete enough to read" : null)
+    : (trends.findings[0] && trends.findings[0].head) || null;
   // Same styled tooltip the draft room uses, rather than the browser's — the native one is slow to appear,
   // can't be styled, and looked out of place next to everything else in the app.
   const [tip, setTip] = useState(null);
@@ -8642,9 +8686,14 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
     });
     rows.push({
       key: "mock", title: "Mock drafts",
-      status: mocks.length ? `${mocks.length} run` : "None",
+      // ⭐ THE ROW CARRIES THE TREND, not just the count. Trey: "This can live in the check list next to mock
+      // drafts to show trends." A row that says "3 run" tells you a chore is done; the point of running them
+      // is what they revealed, and that is what belongs on the line you actually look at.
+      status: mocks.length ? `${mocks.length} run${trendHint ? ` · ${trendHint}` : ""}` : "None",
       done: mocks.length > 0,
-      hint: "The highest-leverage habit there is. Each mock is scored and saved, feeds the ADP-mock column, and builds a read on your own tendencies.",
+      hint: mocks.length
+        ? `Each mock is scored and saved, feeds the ADP-mock column, and — read across every team in the room, not just yours — shows what the best rosters did differently. ${trendHint ? `So far: ${trendHint}. ` : ""}Open Mock Draft Trends above for the full read.`
+        : "The highest-leverage habit there is. Each mock is scored and saved, feeds the ADP-mock column, and builds a read on your own tendencies.",
       go: () => onMock(league.id),
     });
     // DO-NOT-DRAFT is an OPTIONAL row — it never gates readiness, because plenty of people genuinely have
@@ -8778,11 +8827,34 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
             <div className="disp" style={{ fontSize: 17, fontWeight: 700, margin: "9px 0 3px" }}>{st === "complete" ? "View the Draft" : st === "progress" ? "Resume Official Draft" : "Start Official Draft"}</div>
             <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>{st === "complete" ? "The full recap — board, teams, grades, steals & reaches, locked to draft-day values." : st === "progress" ? `${league.picks.length}/${total} picks made.` : "The real one. Live recommendations, projections, and grades."}</div>
           </button>
-          <button className="hubtile" onClick={() => onMock(league.id)} style={{ textAlign: "left", background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 12, padding: 18, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)" }}>
-            <i className="ti ti-dice-5" style={{ fontSize: 24, color: "var(--gold)" }} aria-hidden="true" />
-            <div className="disp" style={{ fontSize: 17, fontWeight: 700, margin: "9px 0 3px" }}>Run a Mock Draft</div>
-            <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>Practice on this league's exact settings & keepers. {mocks.length ? `${mocks.length} saved.` : "Builds your prep trends."}</div>
-          </button>
+          {/* ⭐ TWO HALF-HEIGHT TILES IN ONE CELL. Trey: "I think you should make the 'run a mock draft' half
+              the size vertically and put 'mock draft trends' under that. The height of those two should match
+              the height of 'Start Official Draft' — aka I don't want all of these on different rows."
+              A column with `flex: 1` on each child does that WITHOUT a hardcoded height: the grid stretches
+              every cell to the tallest one (align-items defaults to stretch), so the pair tracks the official
+              tile automatically however its copy reflows at a given width. */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
+            <button className="hubtile" onClick={() => onMock(league.id)} style={{ flex: 1, textAlign: "left", background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 12, padding: "12px 14px", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", display: "flex", flexDirection: "column", justifyContent: "center", minHeight: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <i className="ti ti-dice-5" style={{ fontSize: 19, color: "var(--gold)" }} aria-hidden="true" />
+                <div className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Run a Mock Draft</div>
+              </div>
+              <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.4, marginTop: 4 }}>This league's exact settings & keepers. {mocks.length ? `${mocks.length} saved.` : "Builds your trends."}</div>
+            </button>
+            <button className="hubtile" onClick={() => (onMockPlan ? onMockPlan(league.id) : setTrendsOpen((v) => !v))} style={{ flex: 1, textAlign: "left", background: trendsOpen ? "rgba(126,214,165,.09)" : "var(--panel)", border: `1px solid ${trendsOpen ? "var(--green)" : "var(--line)"}`, borderRadius: 12, padding: "12px 14px", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", display: "flex", flexDirection: "column", justifyContent: "center", minHeight: 0, overflow: "hidden" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <i className="ti ti-chart-histogram" style={{ fontSize: 19, color: "#7ed6a5" }} aria-hidden="true" />
+                <div className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Mock Draft Trends</div>
+                <div style={{ flex: 1 }} />
+                <i className={`ti ti-${onMockPlan ? "arrow-right" : `chevron-${trendsOpen ? "up" : "down"}`}`} style={{ fontSize: 14, color: "var(--mut)" }} aria-hidden="true" />
+              </div>
+              <div style={{ marginTop: 4, minWidth: 0 }}>
+                {mocks.length
+                  ? <LeagueMockTrends league={league} players={trendPlayers} compact onRunMock={() => onMock(league.id)} />
+                  : <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.4 }}>What the best rosters in your mocks did differently — and what that means for your keepers.</div>}
+              </div>
+            </button>
+          </div>
           {/* The tile has the same job as the three checklist rows below it, so it opens the same pop-up
               rather than routing into the draft room. Leaving it as the one thing on this page that still
               navigates would just make the behaviour look arbitrary. */}
@@ -8792,6 +8864,10 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
             <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>Scoring, roster, draft order, keepers & pick trades — edit anytime.</div>
           </button>
         </div>
+        {/* The full trends read, expanded in place under the tiles. */}
+        {trendsOpen && (trendPlayers
+          ? <LeagueMockTrends league={league} players={trendPlayers} onRunMock={() => onMock(league.id)} />
+          : <div className="panel" style={{ padding: 16, marginTop: 10, background: "var(--panel2)" }}><div style={{ fontSize: 12.5, marginBottom: 8 }}>No mock drafts yet for this league.</div><div className="mut" style={{ fontSize: 12, lineHeight: 1.5 }}>Run a few and this reads every team in the room, not just yours — what the best rosters did differently, and what that means for your keepers.</div><button className="btn btn-mini btn-gold" style={{ marginTop: 10 }} onClick={() => onMock(league.id)}>Run a mock draft</button></div>)}
 
         {/* ===== DRAFT PREP — status board ==========================================================
             Sits BELOW the three actions: those are what you came to do, this is the state of your setup.
@@ -13599,6 +13675,730 @@ function MockTrendsLazy({ league }) {
   return <MockTrendsPanel league={league} players={players} />;
 }
 
+// ===== WHAT MAKES THE BEST TEAMS IN *THIS* LEAGUE THE BEST ===================================
+//
+// Trey: "can you find a way to highlight the mock drafts that have happened and what trends you have
+// determined. For example, did we finish with a higher projection by going RB or WR early? Should we wait to
+// get a QB late? I don't want this to just look at my trends, but basically look at the trends of the other
+// teams in my league to see what is making the best teams the best. Keep in mind that if it's a keeper
+// league, you shouldn't just assume the 1st place team is there because they drafted well, but maybe because
+// they had keepers. Basically, I want you to take my current team complexion (keepers or no keepers) and
+// determine my best pathway."
+//
+// Three things separate this from the existing `analyzeMockTrends`, which only ever looked at the user's own
+// picks:
+//
+//   1. ⭐ EVERY TEAM IS A SAMPLE. One 12-team mock is twelve drafts, not one. That is what makes an answer
+//      possible at all from the two or three mocks somebody actually runs — and it is the only way to ask
+//      "what are the BEST teams doing", since the user is one team and usually not the best one.
+//
+//   2. ⭐⭐ KEEPERS ARE SUBTRACTED FROM THE VERDICT, NOT FROM THE DATA. This is the trap Trey named. In a
+//      keeper league the top team is frequently top because it kept Ja'Marr Chase, and reading its draft as
+//      the winning strategy teaches exactly the wrong lesson. But you cannot simply drop kept players and
+//      score what's left either — a team with three keepers drafts three fewer players, so its "drafted
+//      lineup" is thin by construction and would look like bad drafting. So each team is scored on its REAL
+//      finish and then compared only against teams carrying the SAME NUMBER OF KEEPERS: the residual against
+//      that cohort's mean is what the strategy is credited with. In a league with no keepers every team sits
+//      in one cohort and the residual is simply "above or below average", which is the right answer there.
+//
+//   3. The output is a PATHWAY for the user's own complexion, not a league-average truism. If he already
+//      keeps a quarterback, the entire early-vs-late-QB finding is noise to him and the card says so instead
+//      of repeating it.
+//
+// Returns null-ish shapes rather than throwing: this runs on whatever mocks happen to exist.
+function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
+  const teams = Math.max(2, +(cfg && cfg.teams) || 12);
+  const rounds = Math.max(1, +(cfg && cfg.rounds) || 15);
+  const TOTAL = teams * rounds;
+  const mySlot = cfg && cfg.slot ? cfg.slot - 1 : 0;
+  const sf = !!(cfg && cfg.sf);
+  const started = (mocks || []).filter((m) => m && Array.isArray(m.picks) && m.picks.some((x) => x != null));
+  // A team's STARTING LINEUP is the unit of measure here, so a half-finished mock is not a small sample —
+  // it is a wrong one. Every roster in it is missing bodies, and they all score badly regardless of strategy.
+  const MIN_FRAC = 0.75;
+  const usable = started.filter((m) => m.picks.filter((x) => x != null).length >= Math.round(TOTAL * MIN_FRAC));
+  const byId = {}; (players || []).forEach((p) => { if (p) byId[p.id] = p; });
+  const keepersResolved = resolveKeepers((cfg && cfg.keepers) || [], players || []);
+  // Keepers by team. A pick-cost keeper is identified by the SLOT he occupies, so his owner is whoever owns
+  // that slot — which is not the same as the team field once picks have been traded.
+  const keeperByTeam = {}; const keeperIds = new Set();
+  keepersResolved.forEach((k) => {
+    if (!k || k.playerId == null) return;
+    const t = k.o != null ? teamAt(k.o) : k.team;
+    if (t == null || t < 0 || t >= teams) return;
+    (keeperByTeam[t] = keeperByTeam[t] || []).push(byId[k.playerId] || null);
+    keeperIds.add(k.playerId);
+  });
+  const myKeepers = (keeperByTeam[mySlot] || []).filter(Boolean);
+  const base = {
+    n: usable.length, started: started.length, teamDrafts: 0, teams, rounds,
+    myKeepers, keeperLeague: keeperIds.size > 0, enough: false, rows: [], findings: [], pathway: [],
+  };
+  if (!usable.length || !(players || []).length) return base;
+
+  // ---- one row per (mock × team) --------------------------------------------------------------
+  const rows = [];
+  usable.forEach((m) => {
+    const roster = Array.from({ length: teams }, () => []);
+    const madeBy = Array.from({ length: teams }, () => []);   // only the picks that team actually MADE
+    m.picks.forEach((pid, o) => {
+      if (pid == null || o >= TOTAL) return;
+      const p = byId[pid]; if (!p) return;
+      const t = teamAt(o); if (t == null || t < 0 || t >= teams) return;
+      roster[t].push(p);
+      // A pick-cost keeper occupies a slot but was never a decision, so it is not part of "what they drafted".
+      if (!keeperIds.has(pid)) madeBy[t].push({ p, o, round: Math.floor(o / teams) + 1 });
+    });
+    for (let t = 0; t < teams; t++) {
+      // No-cost keepers never appear in `picks`; add any keeper the roster doesn't already carry.
+      (keeperByTeam[t] || []).forEach((kp) => { if (kp && !roster[t].some((x) => x.id === kp.id)) roster[t].push(kp); });
+      const made = madeBy[t];
+      if (!made.length) continue;
+      const firstAt = (pos) => { const f = made.find((x) => x.p.pos === pos); return f ? f.round : 99; };
+      const firstN = made.slice(0, 4).map((x) => x.p.pos);
+      const rbEarly = firstN.filter((x) => x === "RB").length;
+      const wrEarly = firstN.filter((x) => x === "WR").length;
+      rows.push({
+        mock: m.id, team: t, mine: t === mySlot,
+        pts: Math.round(lineupPts(roster[t], sf)),
+        nKeep: (keeperByTeam[t] || []).length,
+        qbRound: firstAt("QB"), teRound: firstAt("TE"), rbRound: firstAt("RB"), wrRound: firstAt("WR"),
+        rbEarly, wrEarly,
+        shape: rbEarly > wrEarly ? "RB-early" : wrEarly > rbEarly ? "WR-early" : "Balanced",
+        open3: firstN.slice(0, 3).join("-"),
+      });
+    }
+  });
+  if (!rows.length) return base;
+  base.teamDrafts = rows.length;
+
+  // ---- ⭐⭐⭐ THE KEEPER ADJUSTMENT: CONTROL FOR WHAT THE KEEPERS ARE WORTH, NOT HOW MANY THERE ARE ----
+  //
+  // Trey, on the first version of this: "it's not necessarily just about the number of keepers you have…
+  // because for example, if you have a keeper that's really good in round 13 and someone has a keeper in
+  // round 4 that is basically ADP, then that's going to create different outcomes."
+  //
+  // He is right and the first version was too blunt. Counting keepers puts those two managers in the same
+  // cohort when they are in completely different situations: the round-13 stud is free points that the draft
+  // had nothing to do with, while the round-4 keeper at his own ADP is worth roughly what that pick would
+  // have returned anyway — that manager is, for our purposes, drafting from scratch.
+  //
+  // So the control is SURPLUS: what each keeper is worth ABOVE what his slot would ordinarily return.
+  // `vbdAtSlot` is the value curve of the board itself — the VBD of the Nth player by ADP — so a keeper held
+  // at pick 150 is measured against what pick 150 normally buys, and a no-cost keeper is measured against
+  // the very end of the draft, because that is what he cost. Then a least-squares line through
+  // (surplus → points) says how many points a point of surplus is worth in this league, and each team's
+  // residual against that line is what its DRAFT did. A manager keeping Chase for nothing and a manager
+  // keeping a mid-round back at his ADP are now on the same axis, which is the whole point.
+  const vbdAtSlot = (() => {
+    const byAdp = (players || []).filter((p) => p && p.adp != null && Number.isFinite(p.adp)).sort((a, b) => a.adp - b.adp);
+    return byAdp.map((p) => (Number.isFinite(p.vbd) ? p.vbd : 0));
+  })();
+  const slotValue = (i) => (vbdAtSlot.length ? vbdAtSlot[Math.max(0, Math.min(vbdAtSlot.length - 1, i))] : 0);
+  const endOfDraftValue = slotValue(TOTAL - 1);
+  const keeperSurplusOf = (t) => {
+    let sum = 0;
+    keepersResolved.forEach((k) => {
+      if (!k || k.playerId == null) return;
+      const owner = k.o != null ? teamAt(k.o) : k.team;
+      if (owner !== t) return;
+      const p = byId[k.playerId]; if (!p) return;
+      const v = Number.isFinite(p.vbd) ? p.vbd : 0;
+      // A pick-cost keeper competes with what that pick would have bought; a no-cost one cost a last-rounder.
+      const baseline = k.o != null ? slotValue(k.o) : endOfDraftValue;
+      sum += v - baseline;
+    });
+    return Math.round(sum);
+  };
+  const surplusByTeam = {};
+  for (let t = 0; t < teams; t++) surplusByTeam[t] = keeperSurplusOf(t);
+  rows.forEach((r) => { r.keepSurplus = surplusByTeam[r.team] || 0; });
+  // Least squares on (surplus, pts). With no keepers every surplus is 0, the slope is 0, and the residual is
+  // simply "above or below the field" — which is the right answer for a redraft league.
+  const fit = (() => {
+    const n = rows.length;
+    const mx = rows.reduce((s2, r) => s2 + r.keepSurplus, 0) / n;
+    const my = rows.reduce((s2, r) => s2 + r.pts, 0) / n;
+    let num = 0, den = 0;
+    rows.forEach((r) => { const dx = r.keepSurplus - mx; num += dx * (r.pts - my); den += dx * dx; });
+    const slope = den > 1e-6 ? num / den : 0;
+    const intercept = my - slope * mx;
+    // How much of the spread in finishes the keepers explain — worth showing, because in a league where it
+    // is high the honest headline is "your keepers are doing the work", not a drafting lesson.
+    let ssTot = 0, ssRes = 0;
+    rows.forEach((r) => { ssTot += (r.pts - my) ** 2; ssRes += (r.pts - (intercept + slope * r.keepSurplus)) ** 2; });
+    return { slope, intercept, r2: ssTot > 1e-6 ? Math.max(0, 1 - ssRes / ssTot) : 0, meanPts: my };
+  })();
+  rows.forEach((r) => { r.edge = Math.round(r.pts - (fit.intercept + fit.slope * r.keepSurplus)); });
+  base.keeperModel = { slope: Math.round(fit.slope * 100) / 100, r2: Math.round(fit.r2 * 100) / 100, meanPts: Math.round(fit.meanPts) };
+
+  // ---- ⭐ AND THE COMPARISON HE ASKED FOR AT THE CRUX: YOU vs THE ROOM, IN EACH MOCK ----------------
+  // "at the crux you should be comparing the users results to all user results in each mock draft". A rank
+  // inside one room is the measure a manager actually feels, and it is immune to the scale problems above:
+  // everyone in that mock drafted the same board.
+  const myRuns = [];
+  usable.forEach((m) => {
+    const inMock = rows.filter((r) => r.mock === m.id);
+    if (!inMock.length) return;
+    const ranked = inMock.slice().sort((a, b) => b.pts - a.pts);
+    const mine = inMock.find((r) => r.mine);
+    if (!mine) return;
+    myRuns.push({
+      mock: m.id, ran: m.ran || null,
+      rank: ranked.findIndex((r) => r.mine) + 1, of: ranked.length,
+      pts: mine.pts, edge: mine.edge, shape: mine.shape, qbRound: mine.qbRound, open3: mine.open3,
+    });
+  });
+  base.myRuns = myRuns;
+  base.myAvgRank = myRuns.length ? Math.round((myRuns.reduce((s2, r) => s2 + r.rank, 0) / myRuns.length) * 10) / 10 : null;
+  base.myBest = myRuns.length ? myRuns.slice().sort((a, b) => a.rank - b.rank || b.pts - a.pts)[0] : null;
+  base.myWorst = myRuns.length ? myRuns.slice().sort((a, b) => b.rank - a.rank || a.pts - b.pts)[0] : null;
+
+  // ---- group the rows by a strategy feature and score each bucket ------------------------------
+  const bucketBy = (label, fn, order) => {
+    const g2 = {};
+    rows.forEach((r) => { const k = fn(r); if (k == null) return; (g2[k] = g2[k] || []).push(r); });
+    const out = Object.entries(g2).map(([k, arr]) => ({
+      key: k, n: arr.length,
+      edge: Math.round(arr.reduce((s2, x) => s2 + x.edge, 0) / arr.length),
+      pts: Math.round(arr.reduce((s2, x) => s2 + x.pts, 0) / arr.length),
+    // A bucket of one or two team-drafts is a coincidence, not a trend.
+    })).filter((b) => b.n >= Math.max(3, Math.round(rows.length * 0.08)));
+    out.sort((a, b) => (order ? order(a, b) : b.edge - a.edge));
+    return { label, buckets: out };
+  };
+  const qbBand = (r) => (r.qbRound >= 99 ? null : r.qbRound <= 4 ? "QB in rounds 1-4" : r.qbRound <= 8 ? "QB in rounds 5-8" : "QB in round 9+");
+  const teBand = (r) => (r.teRound >= 99 ? null : r.teRound <= 5 ? "TE in rounds 1-5" : "TE later");
+  const groups = [bucketBy("qb", qbBand), bucketBy("shape", (r) => r.shape), bucketBy("te", teBand)];
+
+  // ---- what the BEST teams actually did (his words), keeper-adjusted ---------------------------
+  const ranked = rows.slice().sort((a, b) => b.edge - a.edge);
+  const topN = Math.max(1, Math.round(ranked.length / 4));
+  const top = ranked.slice(0, topN), bottom = ranked.slice(-topN);
+  const share = (arr, fn) => (arr.length ? Math.round((arr.filter(fn).length / arr.length) * 100) : 0);
+  const findings = [];
+  const g = (name) => groups.find((x) => x.label === name);
+  const qbG = g("qb"), shapeG = g("shape"), teG = g("te");
+  if (qbG.buckets.length >= 2) {
+    const b = qbG.buckets[0], w = qbG.buckets[qbG.buckets.length - 1];
+    findings.push({
+      k: "qb", head: b.key, gap: b.edge - w.edge, n: b.n,
+      body: `${b.key} finished ${b.edge - w.edge} projected points ahead of ${w.key.replace(/^QB /, "taking one ")}, once keepers are held equal.`,
+    });
+  }
+  if (shapeG.buckets.length >= 2) {
+    const b = shapeG.buckets[0], w = shapeG.buckets[shapeG.buckets.length - 1];
+    findings.push({
+      k: "shape", head: b.key, gap: b.edge - w.edge, n: b.n,
+      body: `Opening ${b.key.replace("-early", "-heavy")} beat ${w.key.replace("-early", "-heavy")} by ${b.edge - w.edge} points across ${b.n + w.n} team-drafts.`,
+    });
+  }
+  if (teG.buckets.length >= 2) {
+    const b = teG.buckets[0], w = teG.buckets[teG.buckets.length - 1];
+    if (Math.abs(b.edge - w.edge) >= 4) findings.push({ k: "te", head: b.key, gap: b.edge - w.edge, n: b.n, body: `${b.key} came out ${b.edge - w.edge} points ahead of taking one ${w.key === "TE later" ? "later" : "early"}.` });
+  }
+  findings.push({
+    k: "top", head: "What the best rosters had in common",
+    body: `${share(top, (r) => r.shape === "RB-early")}% of the top quarter opened RB-heavy (bottom quarter: ${share(bottom, (r) => r.shape === "RB-early")}%), and ${share(top, (r) => r.qbRound >= 9)}% waited until round 9+ for a quarterback (bottom quarter: ${share(bottom, (r) => r.qbRound >= 9)}%).`,
+  });
+
+  // ---- ⭐ AND WHAT THAT MEANS FOR *HIS* ROSTER --------------------------------------------------
+  const keptPos = new Set(myKeepers.map((p) => p.pos));
+  const pathway = [];
+  if (myKeepers.length) {
+    pathway.push(`You're carrying ${myKeepers.length} keeper${myKeepers.length === 1 ? "" : "s"} (${myKeepers.map((p) => `${p.name} ${p.pos}`).join(", ")}), so you're compared against the other ${rows.filter((r) => r.nKeep === myKeepers.length && !r.mine).length} team-drafts holding the same number — not against the league as a whole.`);
+  }
+  if (keptPos.has("QB")) {
+    pathway.push(`Your quarterback is already kept, so the early-vs-late QB question doesn't apply to you — spend those picks on the positions below.`);
+  } else if (qbG.buckets.length >= 2) {
+    const b = qbG.buckets[0];
+    pathway.push(b.key === "QB in rounds 1-4"
+      ? `Take a quarterback early. In this league's mocks the rosters that spent a top-4-round pick there finished ahead — the elite-QB path is paying off here.`
+      : `Wait on the quarterback (${b.key.replace("QB in ", "")}). The rosters that did finished ahead of the ones that spent an early pick there, so build the rest first and take the value that falls.`);
+  }
+  if (shapeG.buckets.length >= 2) {
+    const b = shapeG.buckets[0];
+    pathway.push(b.key === "Balanced"
+      ? `Open balanced — neither an RB-heavy nor a WR-heavy start separated itself, so take the board rather than a plan.`
+      : `Open ${b.key.replace("-early", "")}-heavy. Teams that took more ${b.key.replace("-early", "")}s than the other in their first four picks finished ${b.edge >= 0 ? "above" : "below"} their keeper cohort by ${Math.abs(b.edge)} points.`);
+  }
+  ["RB", "WR", "TE"].forEach((pos) => {
+    if (keptPos.has(pos) && myKeepers.filter((p) => p.pos === pos).length >= 2) {
+      pathway.push(`Two of your keepers are ${pos}s — the ${pos}-heavy opening above is already half-done for you, so weight the other side of the board early.`);
+    }
+  });
+
+  // ---- ⭐⭐ LEAGUE TRENDS: the board's own behaviour in THIS league, across every team ---------------
+  // Trey: "you should also be able to compare against some league trends. Like maybe some player is seen as
+  // really good value in a certain round (aka league winners)… maybe certain positions should be waited on…
+  // maybe some players you should reach on."
+  // These are three genuinely different questions and each needs its own measure, so they get three.
+  const winners = new Set(top.map((r) => `${r.mock}:${r.team}`));
+  const losers = new Set(bottom.map((r) => `${r.mock}:${r.team}`));
+  const playerAgg = new Map();   // id -> { p, n, sumO, onWin, onLose }
+  usable.forEach((m) => {
+    m.picks.forEach((pid, o) => {
+      if (pid == null || o >= TOTAL) return;
+      const p = byId[pid]; if (!p || keeperIds.has(pid)) return;
+      const t = teamAt(o); if (t == null || t < 0 || t >= teams) return;
+      const key = `${m.id}:${t}`;
+      let a = playerAgg.get(pid);
+      if (!a) { a = { p, n: 0, sumO: 0, onWin: 0, onLose: 0 }; playerAgg.set(pid, a); }
+      a.n++; a.sumO += o + 1;
+      if (winners.has(key)) a.onWin++;
+      if (losers.has(key)) a.onLose++;
+    });
+  });
+  const seenEnough = Math.max(2, Math.round(usable.length * 0.5));
+  // (a) LEAGUE WINNERS — players who keep turning up on the best rosters AND go later than they're worth.
+  //     Both halves matter: "appears on good teams" alone just finds the first-round picks.
+  base.valuePlayers = [...playerAgg.values()]
+    .filter((a) => a.n >= seenEnough && a.p.vbd != null)
+    .map((a) => {
+      const avgO = a.sumO / a.n;
+      const round = Math.max(1, Math.round(avgO / teams));
+      // Value = how far his own VBD sits above what that slot ordinarily buys.
+      const over = Math.round(a.p.vbd - slotValue(Math.round(avgO) - 1));
+      const lift = Math.round(((a.onWin - a.onLose) / Math.max(1, a.n)) * 100);
+      return { name: a.p.name, pos: a.p.pos, id: a.p.id, avgO: Math.round(avgO), round, over, lift, n: a.n, p: a.p };
+    })
+    .filter((x) => x.over > 0)
+    .sort((a, b) => (b.over + b.lift * 0.6) - (a.over + a.lift * 0.6))
+    .slice(0, 8);
+  // (b) REACH LIST — players who never last to the pick you'd want them at. Measured against YOUR OWN board:
+  //     if his average draft slot lands in the gap before one of your picks, waiting means losing him.
+  const mySlots = [];
+  for (let o = 0; o < TOTAL; o++) if (teamAt(o) === mySlot) mySlots.push(o + 1);
+  base.reachPlayers = [...playerAgg.values()]
+    .filter((a) => a.n >= seenEnough && a.p.vbd != null && a.p.vbd > 0)
+    .map((a) => {
+      const avgO = a.sumO / a.n;
+      const nextMine = mySlots.find((x) => x >= avgO);
+      const prevMine = [...mySlots].reverse().find((x) => x < avgO);
+      // How far ahead of your next natural shot at him he goes.
+      const missBy = nextMine != null ? Math.round(nextMine - avgO) : null;
+      return { name: a.p.name, pos: a.p.pos, id: a.p.id, avgO: Math.round(avgO), missBy, prevMine, nextMine, n: a.n, vbd: Math.round(a.p.vbd), p: a.p };
+    })
+    // He's a reach candidate when he goes in the window BEFORE one of your picks — close enough that you'd
+    // want him, gone before you're up. A gap of 1-2 picks is noise; more than a round is not a reach, it's
+    // just someone else's player.
+    .filter((x) => x.missBy != null && x.missBy >= 2 && x.missBy <= teams)
+    .sort((a, b) => b.vbd - a.vbd)
+    .slice(0, 6);
+  // (c) WAIT OR DON'T — the shape of each position's value curve across the rounds the mocks actually
+  //     covered. A position whose value barely drops from round 3 to round 6 is one to wait on; one that
+  //     falls off a cliff is not. This is the same question as "should I wait on a QB", asked of every spot.
+  const bandOf = (round) => (round <= 3 ? 0 : round <= 6 ? 1 : round <= 10 ? 2 : 3);
+  const BANDS = ["Rounds 1-3", "Rounds 4-6", "Rounds 7-10", "Rounds 11+"];
+  base.posCurves = POS.map((pos) => {
+    const bands = [[], [], [], []];
+    usable.forEach((m) => m.picks.forEach((pid, o) => {
+      const p = byId[pid];
+      if (!p || p.pos !== pos || keeperIds.has(pid) || o >= TOTAL) return;
+      bands[bandOf(Math.floor(o / teams) + 1)].push(p.vbd || 0);
+    }));
+    const avg = bands.map((b) => (b.length ? Math.round(b.reduce((s2, x) => s2 + x, 0) / b.length) : null));
+    // The drop from the first band with data to the next one with data — how much waiting one phase costs.
+    const withData = avg.map((v, i) => ({ v, i })).filter((x) => x.v != null);
+    const drop = withData.length >= 2 ? withData[0].v - withData[1].v : null;
+    return { pos, avg, bands: BANDS, drop, verdict: drop == null ? null : drop <= 12 ? "Safe to wait" : drop <= 28 ? "Costs a little" : "Take early" };
+  });
+
+  base.rows = rows; base.groups = groups; base.findings = findings; base.pathway = pathway;
+  base.top = top; base.bottom = bottom;
+  // ⭐ SAMPLE SIZE, SAID OUT LOUD. Trey: "you need to show how many mock drafts this is based on. For example,
+  // if this is based on only 2 mock drafts I've done, then encourage the user to submit more to get more
+  // data." Six is where a single unusual room stops being able to swing a finding on its own.
+  base.enough = usable.length >= 6;
+  return base;
+}
+
+// The card. `compact` is the hub tile version — a headline and the sample size; the full version carries the
+// findings, the pathway and the buckets they came from.
+function LeagueMockTrends({ league, players, compact, onRunMock }) {
+  const t = useMemo(() => analyzeLeagueMockTrends(league.mocks || [], players, league.cfg), [league, players]);
+  const need = (
+    <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+      <div style={{ color: "var(--ink)", marginBottom: 6 }}>
+        {t.started === 0
+          ? "No mock drafts yet for this league."
+          : `${t.started} mock${t.started === 1 ? "" : "s"} started, none far enough along to read — a team's lineup has to be mostly drafted before its finish means anything.`}
+      </div>
+      <div className="mut">Run a few and this reads every team in the room, not just yours: what the best rosters did differently, and what that means for your keepers.</div>
+      {onRunMock && <button className="btn btn-mini btn-gold" style={{ marginTop: 9 }} onClick={onRunMock}><i className="ti ti-dice-5" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Run a mock draft</button>}
+    </div>
+  );
+  if (!t.n) return compact ? need : <div className="panel" style={{ padding: 16, marginTop: 10, background: "var(--panel2)" }}>{need}</div>;
+
+  const sampleLine = `${t.n} mock${t.n === 1 ? "" : "s"} · ${t.teamDrafts} team-drafts`;
+  const nudge = t.enough
+    ? null
+    : `Based on ${t.n} mock${t.n === 1 ? "" : "s"}. Run ${Math.max(1, 6 - t.n)} more and these stop being able to swing on one unusual room.`;
+
+  if (compact) {
+    const lead = t.pathway[t.pathway.length - 1] || (t.findings[0] && t.findings[0].body) || "";
+    return (
+      <div style={{ fontSize: 12, lineHeight: 1.45 }}>
+        <div className="mut" style={{ fontSize: 10.5, marginBottom: 4 }}>{sampleLine}{t.keeperLeague ? " · keeper-adjusted" : ""}</div>
+        <div style={{ color: "var(--ink)", display: "-webkit-box", WebkitLineClamp: nudge ? 1 : 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{lead}</div>
+        {/* The nudge is the more useful of the two when the sample is thin, so it gets the line and the
+            headline gets clamped — a card that cuts off mid-sentence reads as broken rather than truncated. */}
+        {nudge && <div style={{ color: "var(--gold)", fontSize: 10.5, marginTop: 3, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{nudge}</div>}
+      </div>
+    );
+  }
+
+  const Bucket = ({ label, group }) => group && group.buckets.length >= 2 ? (
+    <div style={{ marginTop: 10 }}>
+      <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>{label}</div>
+      {group.buckets.map((b, i) => (
+        <div key={b.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "2px 0" }}>
+          <span style={{ width: 132, flexShrink: 0, color: i === 0 ? "var(--gold)" : "var(--ink)", fontWeight: i === 0 ? 700 : 400 }}>{b.key}</span>
+          <span style={{ flex: 1, height: 7, background: "var(--panel2)", borderRadius: 4, overflow: "hidden", display: "flex", justifyContent: b.edge >= 0 ? "flex-start" : "flex-end" }}>
+            <span style={{ width: `${Math.min(100, Math.abs(b.edge) * 2)}%`, background: b.edge >= 0 ? "var(--green)" : "var(--red)", opacity: i === 0 ? 1 : 0.5 }} />
+          </span>
+          <span className="num mut" style={{ width: 74, textAlign: "right", flexShrink: 0, fontSize: 11 }}>{b.edge >= 0 ? "+" : ""}{b.edge} · n={b.n}</span>
+        </div>
+      ))}
+    </div>
+  ) : null;
+
+  return (
+    <div className="panel" style={{ padding: 16, marginTop: 10, background: "var(--panel2)" }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+        <div className="disp" style={{ fontSize: 15, fontWeight: 700 }}>What's winning these mocks</div>
+        <div className="mut" style={{ fontSize: 11 }}>{sampleLine}{t.keeperLeague ? " · keeper-adjusted" : ""}</div>
+      </div>
+      {t.pathway.length > 0 && (
+        <div style={{ padding: "10px 12px", background: "rgba(224,166,60,.08)", borderLeft: "2px solid var(--gold)", borderRadius: "0 6px 6px 0", marginBottom: 10 }}>
+          <div style={{ color: "var(--gold)", fontWeight: 700, fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>Your pathway</div>
+          {t.pathway.map((p, i) => <div key={i} style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: i === t.pathway.length - 1 ? 0 : 5 }}>{p}</div>)}
+        </div>
+      )}
+      {t.findings.map((f) => (
+        <div key={f.k} style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 6 }}>
+          <b style={{ color: "var(--ink)" }}>{f.head}. </b><span className="mut">{f.body}</span>
+        </div>
+      ))}
+      <Bucket label="Quarterback timing" group={t.groups.find((x) => x.label === "qb")} />
+      <Bucket label="How they opened" group={t.groups.find((x) => x.label === "shape")} />
+      <Bucket label="Tight end timing" group={t.groups.find((x) => x.label === "te")} />
+      <div className="mut" style={{ fontSize: 10.5, marginTop: 10, lineHeight: 1.45 }}>
+        The bar is projected points above or below the average team <b>carrying the same number of keepers</b>
+        {t.keeperLeague ? " — so a roster that finished first on the strength of its keepers doesn't get credited for it" : ""}. n = team-drafts in that bucket.
+      </div>
+      {nudge && <div style={{ marginTop: 8 }}><span className="chip" style={{ borderColor: "var(--gold)", color: "var(--gold)", fontSize: 11 }}>{nudge}</span></div>}
+    </div>
+  );
+}
+
+// ===== THE MOCK-TRENDS PAGE — "a guide on how to think about your upcoming draft" ==================
+//
+// Trey: "When you click the mock draft trends, it can take you to a whole new hub page. I want this to be
+// freaking cool, easy to follow, and basically a guide on how to think about your upcoming draft. This
+// should be dynamic with each mock draft you fill out that is specific to that league."
+//
+// So it is written as a BRIEFING, not a dashboard: numbered sections that read top to bottom in the order
+// you'd actually think about a draft — how you've been doing, what to do about it, then the board detail
+// that backs each claim up. Every number on it comes from this league's own mocks; nothing here is generic
+// advice, and where the sample is too thin to support a claim the page says so instead of making one.
+function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut, user, onRunMock }) {
+  const t = useMemo(() => analyzeLeagueMockTrends(league.mocks || [], players, league.cfg), [league, players]);
+  const [tip, setTip] = useState(null);
+  const showTip = (e, content) => { try { setTip(positionTip(e.clientX, e.clientY, content)); } catch (_) {} };
+  const hideTip = () => setTip(null);
+  const teams = league.cfg.teams || 12;
+
+  const Shell = ({ children }) => (
+    <div>
+      <div className="hairline hubbar" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 20px", flexWrap: "wrap" }}>
+        <button className="btn btn-mini" onClick={onBack}>← {backLabel || "Back"}</button>
+        <Wordmark size={18} />
+        <div style={{ flex: 1 }} />
+        {onHome && <button className="btn btn-mini" onClick={onHome}>Home</button>}
+        <VersionBadge />
+        {onSignOut && <button className="btn btn-mini" onClick={onSignOut}>Sign out</button>}
+      </div>
+      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "22px 20px 70px" }}>{children}</div>
+      {tip && <Tooltip tip={tip}><OutlookCard content={tip.content} /></Tooltip>}
+    </div>
+  );
+
+  if (!t.n) {
+    return (
+      <Shell>
+        <div className="disp" style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-.01em" }}>Your draft plan</div>
+        <div className="mut" style={{ fontSize: 14, marginTop: 6, marginBottom: 20 }}>{league.name}</div>
+        <div className="panel" style={{ padding: 26, textAlign: "center", background: "var(--panel2)" }}>
+          <i className="ti ti-chart-histogram" style={{ fontSize: 38, color: "#7ed6a5" }} aria-hidden="true" />
+          <div className="disp" style={{ fontSize: 19, fontWeight: 700, margin: "12px 0 8px" }}>
+            {t.started ? "Nothing finished enough to read yet" : "Run a mock and this page writes itself"}
+          </div>
+          <div className="mut" style={{ fontSize: 13.5, lineHeight: 1.6, maxWidth: 620, margin: "0 auto 18px" }}>
+            {t.started
+              ? `${t.started} mock${t.started === 1 ? " has" : "s have"} been started but none is far enough along to read. A team's finish only means something once its starting lineup is mostly drafted.`
+              : `Every mock you run is ${teams} drafts, not one — this page reads all of them: what the best rosters in your room did differently, which players keep turning up as bargains, and which positions you can afford to wait on. All of it specific to ${league.name}.`}
+          </div>
+          {onRunMock && <button className="btn btn-gold" onClick={onRunMock}><i className="ti ti-dice-5" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Run a mock draft</button>}
+        </div>
+      </Shell>
+    );
+  }
+
+  const conf = t.enough ? { t: "Solid sample", c: "#5FD0A8" } : t.n >= 3 ? { t: "Early read", c: "var(--gold)" } : { t: "Thin — treat as a hint", c: "#F2655C" };
+  const Section = ({ n, title, sub, children, accent }) => (
+    <div style={{ marginTop: 26 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 3 }}>
+        <span className="disp" style={{ fontSize: 13, fontWeight: 800, color: accent || "var(--gold)", letterSpacing: ".1em" }}>{String(n).padStart(2, "0")}</span>
+        <span className="disp" style={{ fontSize: 20, fontWeight: 700 }}>{title}</span>
+      </div>
+      {sub && <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 10, maxWidth: 780 }}>{sub}</div>}
+      {children}
+    </div>
+  );
+
+  const rankColor = (r, of) => (r <= Math.max(1, Math.round(of * 0.25)) ? "#5FD0A8" : r <= Math.round(of * 0.6) ? "var(--gold)" : "#F2655C");
+
+  return (
+    <Shell>
+      {/* ---- headline ---- */}
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <div className="disp" style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-.01em" }}>Your draft plan</div>
+          <div className="mut" style={{ fontSize: 13.5, marginTop: 4 }}>
+            {league.name} · read from <b style={{ color: "var(--ink)" }}>{t.n} mock{t.n === 1 ? "" : "s"}</b> = <b style={{ color: "var(--ink)" }}>{t.teamDrafts} team-drafts</b>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span className="chip" style={{ borderColor: conf.c, color: conf.c }}>{conf.t}</span>
+          {onRunMock && <button className="btn btn-mini btn-gold" onClick={onRunMock}><i className="ti ti-dice-5" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Run another</button>}
+        </div>
+      </div>
+
+      {/* ---- 01 · THE PLAN. The whole point of the page, at the top, before any evidence. ---- */}
+      {t.pathway.length > 0 && (
+        <Section n={1} title="Your plan" sub={`Written for the roster you actually have${t.myKeepers.length ? ` — ${t.myKeepers.length} keeper${t.myKeepers.length === 1 ? "" : "s"} included` : ""}, not for the league average.`}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {t.pathway.map((p, i) => (
+              <div key={i} style={{ display: "flex", gap: 12, padding: "13px 15px", borderRadius: 11, background: "linear-gradient(100deg,rgba(224,166,60,.10),rgba(224,166,60,.03))", border: "1px solid rgba(224,166,60,.35)" }}>
+                <span className="disp" style={{ fontSize: 17, fontWeight: 800, color: "var(--gold)", lineHeight: 1.3, flexShrink: 0 }}>{i + 1}</span>
+                <span style={{ fontSize: 14, lineHeight: 1.55 }}>{p}</span>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* ---- 02 · YOU vs THE ROOM ---- */}
+      {t.myRuns.length > 0 && (
+        <Section n={2} title="How you've been finishing" accent="#7ed6a5"
+          sub={`Where your team landed in each mock, out of ${teams}. This is the comparison that matters most — everyone in that room drafted the same board as you.`}>
+          <div className="panel" style={{ padding: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginBottom: 12 }}>
+              <div>
+                <div className="disp" style={{ fontSize: 30, fontWeight: 800, color: rankColor(t.myAvgRank, teams), lineHeight: 1 }}>{ordinal(Math.round(t.myAvgRank))}</div>
+                <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginTop: 3 }}>average finish</div>
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", flex: 1, minWidth: 0 }}>
+                {t.myRuns.map((r, i) => (
+                  <span key={r.mock} onMouseEnter={(e) => showTip(e, [
+                    { kind: "take", tone: r.rank <= 3 ? "good" : r.rank <= teams / 2 ? "neutral" : "bad", x: `Mock ${i + 1} — finished ${ordinal(r.rank)} of ${r.of}` },
+                    { t: "Projected points", x: `${r.pts}` },
+                    { t: "How you opened", x: r.open3 ? r.open3.replace(/-/g, " → ") : "—" },
+                    { t: "Quarterback", x: r.qbRound >= 99 ? "never drafted one" : `round ${r.qbRound}` },
+                  ])} onMouseLeave={hideTip}
+                    style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 1, padding: "5px 9px", borderRadius: 8, border: `1px solid ${rankColor(r.rank, r.of)}`, background: "var(--panel2)", cursor: "help", minWidth: 44 }}>
+                    <span className="disp" style={{ fontSize: 15, fontWeight: 800, color: rankColor(r.rank, r.of) }}>{r.rank}</span>
+                    <span className="mut" style={{ fontSize: 8.5 }}>of {r.of}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+            {t.myBest && t.myWorst && t.myBest.mock !== t.myWorst.mock && (
+              <div style={{ fontSize: 12.5, lineHeight: 1.55, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+                <b style={{ color: "#5FD0A8" }}>Your best run</b> finished {ordinal(t.myBest.rank)} opening {t.myBest.open3 ? t.myBest.open3.replace(/-/g, " → ") : "—"}
+                {t.myBest.qbRound < 99 ? ` and taking a quarterback in round ${t.myBest.qbRound}` : " without drafting a quarterback"}.{" "}
+                <b style={{ color: "#F2655C" }}>Your worst</b> finished {ordinal(t.myWorst.rank)} opening {t.myWorst.open3 ? t.myWorst.open3.replace(/-/g, " → ") : "—"}
+                {t.myWorst.qbRound < 99 ? ` with a round-${t.myWorst.qbRound} quarterback` : ""}.
+              </div>
+            )}
+          </div>
+        </Section>
+      )}
+
+      {/* ---- 03 · WAIT OR DON'T ---- */}
+      {t.posCurves && t.posCurves.some((c) => c.drop != null) && (
+        <Section n={3} title="What you can afford to wait on" accent="#6fa8dc"
+          sub="The value actually available at each position as your league's mocks moved through the rounds. A position that holds its value is one you can leave until later; one that falls off a cliff is one you take early or not at all.">
+          <div className="panel" style={{ padding: 14 }}>
+            {t.posCurves.filter((c) => c.drop != null).map((c) => {
+              const max = Math.max(1, ...c.avg.filter((v) => v != null).map((v) => Math.abs(v)));
+              const vc = c.verdict === "Safe to wait" ? "#5FD0A8" : c.verdict === "Costs a little" ? "var(--gold)" : "#F2655C";
+              return (
+                <div key={c.pos} style={{ display: "flex", alignItems: "center", gap: 12, padding: "7px 0", borderTop: "1px solid var(--line)" }}>
+                  <span style={{ width: 30, fontWeight: 800, color: POS_COLOR[c.pos], fontSize: 14, flexShrink: 0 }}>{c.pos}</span>
+                  <div style={{ flex: 1, display: "flex", gap: 5, alignItems: "flex-end", height: 42 }}>
+                    {c.avg.map((v, i) => (
+                      <div key={i} onMouseEnter={(e) => showTip(e, [
+                        { kind: "take", tone: "neutral", x: `${c.pos} · ${c.bands[i]}` },
+                        { t: v == null ? "No data" : "Average value of the players taken there", x: v == null ? "Your mocks haven't reached this phase." : `${v} VBD` },
+                      ])} onMouseLeave={hideTip}
+                        style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%", cursor: "help" }}>
+                        <div style={{ height: `${v == null ? 3 : Math.max(4, (Math.max(0, v) / max) * 100)}%`, background: v == null ? "var(--line)" : POS_COLOR[c.pos], opacity: v == null ? 0.5 : 0.85 - i * 0.14, borderRadius: "3px 3px 0 0" }} />
+                        <div className="mut" style={{ fontSize: 8, textAlign: "center", marginTop: 2 }}>{c.bands[i].replace("Rounds ", "R")}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <span style={{ width: 108, textAlign: "right", flexShrink: 0 }}>
+                    <span style={{ fontSize: 12, fontWeight: 800, color: vc }}>{c.verdict}</span>
+                    {/* A NEGATIVE drop means the later phase was WORTH MORE, which "−42 waiting a phase"
+                        states as a double negative and reads as the opposite of the truth. Say it plainly. */}
+                    <div className="mut num" style={{ fontSize: 10 }}>{c.drop > 0 ? `−${c.drop} waiting a phase` : "value holds up"}</div>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </Section>
+      )}
+
+      {/* ---- 04 · LEAGUE WINNERS ---- */}
+      {t.valuePlayers && t.valuePlayers.length > 0 && (
+        <Section n={4} title="Your league's bargains" accent="#5FD0A8"
+          sub="Players who keep going later than they're worth in your room, and who turn up on the best rosters more than the worst. These are the picks that decide the draft without feeling like it at the time.">
+          <div className="panel" style={{ padding: 4 }}>
+            {t.valuePlayers.map((v, i) => (
+              <div key={v.id} onMouseEnter={(e) => showTip(e, [
+                { kind: "take", tone: "good", x: `${v.name} — typically round ${v.round} (pick ${v.avgO})` },
+                { t: "Why he's a bargain", x: `His own value is ${v.over} points above what pick ${v.avgO} ordinarily returns in this league.` },
+                { t: "On the best rosters", x: v.lift > 0 ? `He shows up ${v.lift}% more often on the top quarter of finishers than on the bottom quarter.` : "He appears about equally on strong and weak rosters — the value here is the price, not the company he keeps." },
+                { t: "Seen in", x: `${v.n} of your ${t.n} mock${t.n === 1 ? "" : "s"}` },
+                { kind: "playercard", p: v.p },
+              ])} onMouseLeave={hideTip}
+                style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 11px", borderTop: i ? "1px solid var(--line)" : "none", cursor: "help" }}>
+                <span style={{ width: 26, fontWeight: 800, color: POS_COLOR[v.pos], fontSize: 11.5, flexShrink: 0 }}>{v.pos}</span>
+                <span style={{ flex: 1, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v.name}</span>
+                <span className="mut num" style={{ fontSize: 11, width: 92, textAlign: "right", flexShrink: 0 }}>usually R{v.round}</span>
+                <span className="num" style={{ fontSize: 12.5, fontWeight: 800, color: "#5FD0A8", width: 62, textAlign: "right", flexShrink: 0 }}>+{v.over}</span>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* ---- 05 · THE REACH LIST ---- */}
+      {t.reachPlayers && t.reachPlayers.length > 0 && (
+        <Section n={5} title="Players you'll have to reach for" accent="#F2655C"
+          sub="These go in the window just before one of your picks. Waiting for them at their market price means watching someone else take them — if you want one, you take him a round early or not at all.">
+          <div className="panel" style={{ padding: 4 }}>
+            {t.reachPlayers.map((r, i) => (
+              <div key={r.id} onMouseEnter={(e) => showTip(e, [
+                { kind: "take", tone: "bad", x: `${r.name} — typically gone by pick ${r.avgO}` },
+                { t: "Your problem", x: `Your next pick after that is #${r.nextMine}, ${r.missBy} pick${r.missBy === 1 ? "" : "s"} too late. He has been off the board before your turn in ${r.n} of your ${t.n} mock${t.n === 1 ? "" : "s"}.` },
+                { t: "What to do", x: `If you want him, he has to come at your pick #${r.prevMine != null ? r.prevMine : "before"} — a round earlier than his price.` },
+                { kind: "playercard", p: r.p },
+              ])} onMouseLeave={hideTip}
+                style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 11px", borderTop: i ? "1px solid var(--line)" : "none", cursor: "help" }}>
+                <span style={{ width: 26, fontWeight: 800, color: POS_COLOR[r.pos], fontSize: 11.5, flexShrink: 0 }}>{r.pos}</span>
+                <span style={{ flex: 1, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</span>
+                <span className="mut num" style={{ fontSize: 11, width: 100, textAlign: "right", flexShrink: 0 }}>gone by #{r.avgO}</span>
+                <span className="num" style={{ fontSize: 12, fontWeight: 800, color: "#F2655C", width: 78, textAlign: "right", flexShrink: 0 }}>{r.missBy} too late</span>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* ---- 06 · THE EVIDENCE ---- */}
+      <Section n={6} title="What separated the best rosters" accent="var(--mut)"
+        sub={`Every team in every mock, scored on its projected starting lineup${t.keeperLeague ? " and then adjusted for what its keepers were worth" : ""}. The bar is points above or below what a roster with that keeper endowment averaged.`}>
+        <div className="panel" style={{ padding: 14 }}>
+          {[["Quarterback timing", "qb"], ["How they opened", "shape"], ["Tight end timing", "te"]].map(([label, key]) => {
+            const g = (t.groups || []).find((x) => x.label === key);
+            if (!g || g.buckets.length < 2) return null;
+            return (
+              <div key={key} style={{ marginBottom: 12 }}>
+                <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 5 }}>{label}</div>
+                {g.buckets.map((b, i) => (
+                  <div key={b.key} style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 12.5, padding: "3px 0" }}>
+                    <span style={{ width: 138, flexShrink: 0, color: i === 0 ? "var(--gold)" : "var(--ink)", fontWeight: i === 0 ? 700 : 400 }}>{b.key}</span>
+                    <span style={{ flex: 1, height: 8, background: "var(--panel2)", borderRadius: 4, overflow: "hidden", display: "flex", justifyContent: b.edge >= 0 ? "flex-start" : "flex-end" }}>
+                      <span style={{ width: `${Math.min(100, Math.abs(b.edge) * 1.6)}%`, background: b.edge >= 0 ? "#5FD0A8" : "#F2655C", opacity: i === 0 ? 1 : 0.5 }} />
+                    </span>
+                    <span className="num mut" style={{ width: 84, textAlign: "right", flexShrink: 0, fontSize: 11 }}>{b.edge >= 0 ? "+" : ""}{b.edge} · n={b.n}</span>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+          {t.findings.filter((f) => f.k === "top").map((f) => (
+            <div key={f.k} style={{ fontSize: 12.5, lineHeight: 1.55, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+              <b>{f.head}. </b><span className="mut">{f.body}</span>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      {/* ---- 07 · HOW MUCH OF THIS IS THE KEEPERS ---- */}
+      {t.keeperLeague && t.keeperModel && (
+        <Section n={7} title="How much of this is just keepers" accent="var(--mut)"
+          sub="Worth saying out loud in a keeper league, because the honest answer changes what you should take from the rest of the page.">
+          <div className="panel" style={{ padding: 14, fontSize: 12.5, lineHeight: 1.6 }}>
+            {(() => {
+              const pct = Math.round((t.keeperModel.r2 || 0) * 100);
+              return (
+                <>
+                  <div>
+                    Keeper value explains about <b style={{ color: pct >= 55 ? "#F2655C" : pct >= 25 ? "var(--gold)" : "#5FD0A8" }}>{pct}%</b> of the spread between finishes in your mocks.
+                    {pct >= 55
+                      ? " That is a lot — in this league the keepers are doing most of the work, so treat the drafting findings above as tie-breakers rather than the main event."
+                      : pct >= 25
+                        ? " Meaningful, but the draft is still deciding most of it."
+                        : " Very little — the drafting findings above are carrying almost all of the difference."}
+                  </div>
+                  <div className="mut" style={{ marginTop: 8 }}>
+                    Every team above is measured against what a roster with ITS keeper endowment averaged — not against the league as a whole, and not against a bucket of teams that merely hold the same NUMBER of keepers. A stud kept in the 13th round and a keeper held at his own ADP are worth very different amounts, and are priced differently here.
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        </Section>
+      )}
+
+      {/* ---- footer ---- */}
+      <div style={{ marginTop: 28, padding: "14px 16px", borderRadius: 11, border: `1px solid ${t.enough ? "var(--line)" : "var(--gold)"}`, background: "var(--panel2)", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+        <i className={`ti ${t.enough ? "ti-circle-check" : "ti-alert-circle"}`} style={{ fontSize: 20, color: t.enough ? "#5FD0A8" : "var(--gold)" }} aria-hidden="true" />
+        <div style={{ flex: 1, minWidth: 220, fontSize: 12.5, lineHeight: 1.55 }}>
+          {t.enough
+            ? `Read from ${t.n} mocks — enough that one unusual room can't swing a finding on its own. Every mock you add keeps it current as ADP moves.`
+            : `Read from ${t.n} mock${t.n === 1 ? "" : "s"}. Run ${Math.max(1, 6 - t.n)} more and these stop being able to swing on one unusual room — the plan above will sharpen with each one.`}
+        </div>
+        {onRunMock && <button className={`btn btn-mini${t.enough ? "" : " btn-gold"}`} onClick={onRunMock}><i className="ti ti-dice-5" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Run a mock draft</button>}
+      </div>
+    </Shell>
+  );
+}
+
+function MockTrendsPageLazy(props) {
+  const players = useMemo(() => {
+    const cfg = props.league.cfg;
+    setTeams(cfg.teams || 12); setSpec(cfg.start); setOrder(cfg.order || "snake");
+    setPickTrades(cfg.pickTrades); setKeeperAdds({});
+    return buildPlayers(cfg);
+  }, [props.league]);
+  return <MockTrendsPage {...props} players={players} />;
+}
+
+function LeagueMockTrendsLazy({ league, compact, onRunMock }) {
+  const players = useMemo(() => {
+    setTeams(league.cfg.teams || 12); setSpec(league.cfg.start); setOrder(league.cfg.order || "snake");
+    setPickTrades(league.cfg.pickTrades); setKeeperAdds({});
+    return buildPlayers(league.cfg);
+  }, [league]);
+  return <LeagueMockTrends league={league} players={players} compact={compact} onRunMock={onRunMock} />;
+}
+
 // ===== DRAFT TRENDS =========================================================================
 // Aggregate a SET of drafts (official league drafts + mocks, already filtered to one comparable
 // format) into cross-draft trends: realized ADP per player, positional flow by round, consistent
@@ -17896,7 +18696,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [livePending, setLivePending] = useState(null); // {picks} captured from a real update while in hypo mode
   const [localAhead, setLocalAhead] = useState(0);      // # of manual picks made locally BEYOND Sleeper's live count (connected fail-safe)
   const [liveConflict, setLiveConflict] = useState(null); // {slot, localName, liveName} when Sleeper overrides a locally-made pick
-  const [fast, setFast] = useState(false);
+  // ⭐ A MOCK DEFAULTS TO FAST. Trey: "On Mock drafts, I just want to default to fast mode so that it goes
+  // from your pick to your next pick. Right now, it's a bit confusing when you can click pick or not since it
+  // might not be your pick." Both speeds already batch every CPU pick between your turns into one update, so
+  // the only difference is the pause before that batch runs — and a 950ms pause is long enough to look like a
+  // board waiting for YOU. An official draft keeps the slower default: there the picks come from the room or
+  // from your own typing, and speed is not the engine's to choose.
+  const [fast, setFast] = useState(!!isMock);
   // Mocks wait for an explicit Start so you can watch them unfold. Official drafts run immediately.
   // Resuming an in-progress mock (picks already made) counts as already started.
   // A REAL (non-mock) draft resumes live — its picks come from the feed or from you, so there's no engine to
@@ -20873,6 +21679,34 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{league.name}</div>
         {isMock && <div className="chip" style={{ borderColor: "var(--gold)", background: "rgba(224,166,60,.10)", color: "var(--gold)" }} title="This is a practice draft — it saves to this league's mock history and never changes your real draft."><i className="ti ti-dice" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />MOCK</div>}
         <div className="chip" style={{ borderColor: "var(--gold)" }}><b className="disp gold" style={{ fontSize: 15 }}>ROUND {Math.min(round, ROUNDS)} of {ROUNDS}</b></div>
+        {/* ⭐ HOW MANY PICKS YOU ACTUALLY HAVE LEFT — not how many rounds are left.
+            Trey: "I traded my 16th round pick, so I didn't know that while I was in round 15 of 16... it was
+            technically my last pick." The round counter describes the ROOM; this describes YOUR board. They
+            come apart the moment a pick is traded or a keeper is held at a slot, and those are exactly the
+            situations where knowing costs you a player. Counted the same way the engine counts it
+            (`teamAt` honours traded picks; a pick-cost keeper occupies a slot without being a selection),
+            so the number here and the number the recommendation reasons about can never disagree. */}
+        {!done && (() => {
+          let left = 0, nextMine = null;
+          for (let o = picks.length; o < TOTAL; o++) {
+            if (teamAt(o) !== userIdx || keeperByPick[o] != null) continue;
+            if (nextMine == null) nextMine = o;
+            left++;
+          }
+          if (!left) return null;
+          const last = left === 1;
+          const onNow = nextMine === picks.length && onClock === userIdx;
+          return (
+            <div className="chip" style={{ borderColor: last ? "var(--red)" : "var(--line2)", color: last ? "var(--red)" : "var(--ink)", cursor: "help" }}
+              onMouseEnter={(e) => showTip(e, [
+                { kind: "take", tone: last ? "bad" : "neutral", x: last ? "This is your last pick of the draft" : `${left} picks left on your board` },
+                { t: "Why it isn't just rounds left", x: "This counts the picks YOU own — traded picks are gone from it and a keeper held at one of your slots doesn't count as a selection. In a league where you've traded a late pick, the round counter keeps going after your board is empty." },
+                ...(nextMine != null && !onNow ? [{ t: "Your next", x: `${pickLabel(nextMine)} (#${nextMine + 1} overall)` }] : []),
+              ])} onMouseLeave={hideTip}>
+              <b className="disp" style={{ fontSize: 15 }}>{last ? "YOUR LAST PICK" : `${left} PICKS LEFT`}</b>
+            </div>
+          );
+        })()}
         <div className="chip">{cfg.teams} teams · {cfg.sf ? "SF" : "1QB"}{cfg.tePremMult > 0 ? ` · TE+${cfg.tePremMult}` : ""} · {DRAFT_ORDERS.find((o) => o[0] === (cfg.order || "snake"))?.[1].split(" ")[0]}</div>
         {/* Say it out loud when we move somebody's seat. The board is entirely computed from this number, so
             a silent correction would look like the recommendations changed for no reason — and if the new
@@ -21021,7 +21855,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         <div className="hairline" style={{ background: "var(--panel2)" }}>
           <div className="decision-grid" style={{ display: "flex", gap: 10, padding: "5px 12px", alignItems: "stretch" }}>
             {/* ---- GROUP A: decisions & outlook ---- */}
-            <div data-tour="howdoing" className="decision-group-a" style={{ display: "grid", gridTemplateColumns: "minmax(190px,0.9fr) minmax(210px,1.05fr)", gap: 8, flex: "1.05 1 0", minWidth: 0, padding: "5px 7px", borderRadius: 10, border: "1px solid var(--line)", background: "rgba(255,255,255,.014)" }}>
+            <div data-tour="howdoing" className="decision-group-a" style={{ display: "grid", gridTemplateColumns: "minmax(240px,1.25fr) minmax(168px,0.8fr)", gap: 8, flex: "1.05 1 0", minWidth: 0, padding: "5px 7px", borderRadius: 10, border: "1px solid var(--line)", background: "rgba(255,255,255,.014)" }}>
             {/* ===== ZONE 1: HOW YOU'RE DOING (table) ===== */}
             {(() => {
               const laneMap = { rebuild: { t: "Rebuild", c: "#5FD0A8", i: "ti-seedling" }, winnow: { t: "Win-now", c: "#F2655C", i: "ti-flame" }, balanced: { t: "Balanced", c: "var(--gold)", i: "ti-scale" }, undecided: { t: "Forming…", c: "var(--mut)", i: "ti-loader" } };
@@ -21045,7 +21879,52 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 { kind: "take", tone: finish <= 3 ? "good" : finish <= Math.ceil(TEAMS / 2) ? "neutral" : "bad", x: `Projected finish — ${finish != null ? ordinal(finish) : "—"} of ${TEAMS}` },
                 { kind: "playertable", cols: ["rank", "name", "pts"], players: standings.map((s) => ({ posRank: s.rank, pos: "", name: s.i === userIdx ? "YOUR TEAM" : TEAM_NAMES[s.i], pts: Math.round(s.pts), rec: s.i === userIdx, star: s.i === userIdx })) },
               ]) : undefined;
-              // one row per position: quantity vs required, league rank, and a strength/weakness read BY RANK
+              // ===== THE TWO LOOKAHEAD GAPS ==============================================================
+              // Both measured from the pick on the board. When you are on the clock the pick you are making
+              // is yours, so it is excluded from what "the room takes" — otherwise the first column would
+              // count your own selection against you.
+              const startO = onClock === userIdx ? picks.length + 1 : picks.length;
+              const mineAhead = remainingPicks.filter((p) => p.mine && p.o > picks.length).map((p) => p.o);
+              const projByO = new Map();
+              (path || []).forEach((s) => { if (s && s.p) projByO.set(s.o, s); });
+              const mkGap = (targetO) => {
+                if (targetO == null) return null;
+                const picksIn = [];
+                for (let o = startO; o < targetO; o++) { if (teamAt(o) !== userIdx) picksIn.push(o); }
+                const byPos = { QB: [], RB: [], WR: [], TE: [] };
+                picksIn.forEach((o) => { const s = projByO.get(o); if (s && s.p && byPos[s.p.pos]) byPos[s.p.pos].push({ o, p: s.p, prob: s.prob }); });
+                return { targetO, label: pickLabel(targetO), picks: picksIn, byPos };
+              };
+              const gapA = mkGap(mineAhead[0]), gapB = mkGap(mineAhead[1]);
+              // The player the sims expect to be the BEST of that position still on the board when you get
+              // there — the other half of Trey's ask, and the number that makes a count actionable ("four RBs
+              // go, and the best one left is still someone I'd start").
+              const survivorAt = (pos, which) => {
+                const wd = advice && advice.waitDetail ? advice.waitDetail[pos] : null;
+                const fromSims = which === 2
+                  ? (sims && sims.expBestPlayer2 ? sims.expBestPlayer2[pos] : null)
+                  : (sims && sims.expBestPlayer ? sims.expBestPlayer[pos] : null);
+                if (fromSims) return fromSims;
+                return wd ? (which === 2 ? wd.fallback2 || wd.fallback : wd.fallback) : null;
+              };
+              const gapCell = (gap, pos, which) => {
+                if (!gap) return <span className="mut" style={{ textAlign: "center", fontSize: 10 }}>—</span>;
+                const list = gap.byPos[pos] || [];
+                const n = list.length;
+                const surv = survivorAt(pos, which);
+                const tone = n === 0 ? "var(--mut)" : n >= 3 ? "#F2655C" : n >= 2 ? "var(--gold)" : "var(--ink)";
+                return (
+                  <span style={{ textAlign: "center", fontSize: 10.5, fontWeight: n ? 800 : 400, color: tone, cursor: "help" }}
+                    onMouseEnter={(e) => showTip(e, [
+                      { kind: "take", tone: n >= 3 ? "bad" : n >= 2 ? "neutral" : "good", x: `${n} ${pos}${n === 1 ? "" : "s"} expected gone before ${gap.label}` },
+                      ...(list.length
+                        ? [{ kind: "altheader", x: "Expected to go" }, { kind: "playertable", cols: ["rank", "name", "team", "adp", "pts"], players: list.slice(0, 8).map((x) => x.p) }]
+                        : [{ t: "Expected to go", x: `No ${pos} is projected to go in those ${gap.picks.length} pick${gap.picks.length === 1 ? "" : "s"} — the position should survive to you intact.` }]),
+                      ...(surv ? [{ kind: "altheader", x: `Best ${pos} expected to still be there at ${gap.label}` }, { kind: "playercard", p: surv }] : []),
+                    ])} onMouseLeave={hideTip}>{n}</span>
+                );
+              };
+              // one row per position: quantity vs required, league rank, what disappears before you're back up
               const dynastyH = isDynastyCfg(cfg);
               const rows = ["QB", "RB", "WR", "TE"].map((pos) => {
                 const rk = posRankByPos && posRankByPos[pos] ? posRankByPos[pos] : null;
@@ -21106,27 +21985,52 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       <span onMouseEnter={finishTip} onMouseLeave={finishTip ? hideTip : undefined} style={{ display: "inline-flex", alignItems: "baseline", gap: 2, cursor: finishTip ? "help" : "default" }}><span style={{ fontSize: 14, fontWeight: 800, color: finishColor, lineHeight: 1 }}>{finish != null ? ordinal(finish) : "—"}</span><span className="mut" style={{ fontSize: 8.5 }}>/{TEAMS}</span></span>
                     </div>
                   </div>
-                  {/* position table */}
+                  {/* ===== HOW MUCH OF EACH POSITION GOES BEFORE YOU'RE BACK UP =====================
+                      Trey: "we need to show both… then on the hover it would show the exact players that are
+                      expected to go (and the one that is supposed to be best available at your next pick or
+                      the pick after that)."
+                      Two columns, both counted FROM NOW: how many of each position the room is expected to
+                      take before your next pick, and before the one after it. Two, not one, because with
+                      back-to-back picks the first column is empty and tells you nothing — the decision you
+                      are actually making is about the gap after that.
+                      ⭐ THIS IS WHAT REPLACED THE "READ" COLUMN. Read printed a one-word verdict derived from
+                      the same league rank the Rank column already shows, in the same colour — two cells
+                      saying one thing, and the thing they said ("Thin") was not the question you were asking
+                      on the clock. */}
+                  {(() => { return null; })()}
                   <div style={{ borderTop: "1px solid rgba(224,166,60,.22)", paddingTop: 5 }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "26px 40px 38px 44px minmax(0,1fr)", gap: "0 6px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", fontWeight: 700, paddingBottom: 3 }}>
-                      <span>Pos</span><span>Start</span><span style={{ textAlign: "center" }}>Rank</span><span style={{ textAlign: "center" }}>Read</span><span style={{ textAlign: "right" }}>Best avail</span>
+                    <div style={{ display: "grid", gridTemplateColumns: HYD_COLS, gap: "0 5px", alignItems: "center", fontSize: 8, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", fontWeight: 700, paddingBottom: 3 }}>
+                      <span>Pos</span><span>Start</span><span style={{ textAlign: "center" }}>Rank</span>
+                      <span style={{ textAlign: "center", cursor: gapA ? "help" : "default", color: gapA ? "var(--gold)" : "var(--mut)" }}
+                        onMouseEnter={gapA ? (e) => showTip(e, [
+                          { kind: "take", tone: "neutral", x: `Gone before your next pick (${gapA.label})` },
+                          { t: "What the number is", x: `How many players at that position the simulations expect the room to take across the ${gapA.picks.length} pick${gapA.picks.length === 1 ? "" : "s"} between now and ${gapA.label}.` },
+                          { t: "Hover a number", x: "…for the exact players expected to go, and the best one expected to still be there when you're up." },
+                        ]) : undefined} onMouseLeave={gapA ? hideTip : undefined}>{gapA ? gapA.label : "—"}</span>
+                      <span style={{ textAlign: "center", cursor: gapB ? "help" : "default", color: gapB ? "var(--blue)" : "var(--mut)" }}
+                        onMouseEnter={gapB ? (e) => showTip(e, [
+                          { kind: "take", tone: "neutral", x: `Gone before your pick after that (${gapB.label})` },
+                          { t: "Why both", x: "Counted from NOW, not from your next pick — so this is everything that disappears if you wait two turns instead of one. With back-to-back picks the first column is empty and this is the column that matters." },
+                        ]) : undefined} onMouseLeave={gapB ? hideTip : undefined}>{gapB ? gapB.label : "—"}</span>
+                      <span style={{ textAlign: "right" }}>Best avail</span>
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
                       {rows.map((d) => {
                         const ba = d.bestAvail;
                         const baV = ba ? (dynastyH ? (ba.value ?? ba.vbd) : ba.vbd) : null;
                         return (
-                          <div key={d.pos} onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "26px 40px 38px 44px minmax(0,1fr)", gap: "0 6px", alignItems: "center", cursor: "help", padding: "1.5px 4px", margin: "0 -4px", borderRadius: 5 }}>
-                            <span style={{ fontSize: 11, fontWeight: 800, color: POS_COLOR[d.pos] }}>{d.pos}</span>
-                            <span style={{ fontSize: 10.5, display: "inline-flex", alignItems: "baseline", gap: 1, whiteSpace: "nowrap" }} title={myCapped[d.pos] != null ? `${d.pos} is FULL — league maximum of ${myCapped[d.pos]} reached. You can't draft another ${d.pos}.` : d.deficit > 0 ? `Need ${Math.round(d.deficit)} more starter${Math.round(d.deficit) === 1 ? "" : "s"} at ${d.pos}` : d.filled ? `${d.pos} starters filled` : ""}>
+                          <div key={d.pos} style={{ display: "grid", gridTemplateColumns: HYD_COLS, gap: "0 5px", alignItems: "center", padding: "1.5px 4px", margin: "0 -4px", borderRadius: 5 }}>
+                            <span onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ fontSize: 11, fontWeight: 800, color: POS_COLOR[d.pos], cursor: "help" }}>{d.pos}</span>
+                            <span onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ fontSize: 10.5, display: "inline-flex", alignItems: "baseline", gap: 1, whiteSpace: "nowrap", cursor: "help" }} title={myCapped[d.pos] != null ? `${d.pos} is FULL — league maximum of ${myCapped[d.pos]} reached. You can't draft another ${d.pos}.` : d.deficit > 0 ? `Need ${Math.round(d.deficit)} more starter${Math.round(d.deficit) === 1 ? "" : "s"} at ${d.pos}` : d.filled ? `${d.pos} starters filled` : ""}>
                               <span style={{ fontWeight: 800, color: myCapped[d.pos] != null ? "#F2655C" : d.deficit > 0 ? "#F2655C" : "var(--ink)" }}>{d.has}</span>
                               <span className="mut" style={{ fontSize: 9 }}>/{d.need || 0}</span>
                               {myCapped[d.pos] != null ? <span style={{ fontSize: 7.5, fontWeight: 800, color: "#F2655C", background: "rgba(242,101,92,.16)", borderRadius: 3, padding: "0 3px", marginLeft: 3, letterSpacing: ".03em" }}>MAX</span>
                                 : d.filled ? <i className="ti ti-circle-check-filled" style={{ fontSize: 9.5, color: "#5FD0A8", marginLeft: 2 }} aria-hidden="true" /> : d.deficit > 0 ? <i className="ti ti-alert-circle-filled" style={{ fontSize: 9.5, color: "#F2655C", marginLeft: 2 }} aria-hidden="true" /> : null}
                             </span>
-                            <span style={{ textAlign: "center", fontSize: 10.5, fontWeight: 700, color: d.rk ? d.read.c : "var(--mut)" }}>{d.rk ? `${d.rk.rank}/${d.rk.of}` : "—"}</span>
-                            <span style={{ textAlign: "center", fontSize: 10, fontWeight: 800, color: d.read.c }}>{d.read.t}</span>
-                            <span style={{ textAlign: "right", fontSize: 9.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                            <span onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ textAlign: "center", fontSize: 10.5, fontWeight: 700, color: d.rk ? d.read.c : "var(--mut)", cursor: "help" }}>{d.rk ? `${d.rk.rank}/${d.rk.of}` : "—"}</span>
+                            {gapCell(gapA, d.pos, 1)}
+                            {gapCell(gapB, d.pos, 2)}
+                            <span onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ textAlign: "right", fontSize: 9.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, cursor: "help" }}>
                               {ba ? <>{surname(ba.name)} <span className="num" style={{ fontWeight: 700, color: vbdColor(baV) }}>{fmtVal(baV)}</span></> : <span className="mut">—</span>}
                             </span>
                           </div>
@@ -22992,6 +23896,154 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 );
               })()}
             </div>
+
+            {/* ===== BETWEEN YOU AND YOUR NEXT PICK ==================================================
+                Trey, on the clock: "I know I need a quarterback. I am the eighth pick… I know there are two
+                teams in front of me… what's not easy to find is whether or not those two teams have
+                quarterbacks. AKA, do I need to take a quarterback right now, or can I wait until my next
+                pick?"
+                Everything needed to answer that was already on this screen and none of it was in one place:
+                the wait-cost math is a POINTS answer, position scarcity is a BOARD answer, and the League tab
+                has the rosters but you have to read twelve of them. This is the ROOM answer — who actually
+                picks before you come back around, what each of them still has to fill, and what the engine
+                expects them to take. The headline is per position and phrased as the decision itself, because
+                "0 of 4 teams still need a QB" is the whole thing he was trying to work out by hand.
+                Deliberately placed last in the rail: it is the check you run AFTER the recommendation, not a
+                competitor to it. */}
+            {!done && (() => {
+              // The gap: every pick between now and when you are next up. If you are on the clock the gap
+              // starts at the NEXT pick and runs to your second upcoming one — otherwise it starts here.
+              const startO = onClock === userIdx ? picks.length + 1 : picks.length;
+              const endO = onClock === userIdx ? myNext2Overall : myNextOverall;
+              if (endO == null || endO <= startO) {
+                return (
+                  <div className="panel" style={{ padding: 12 }}>
+                    <div className="disp" style={{ fontSize: 14, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--mut)", marginBottom: 6 }}>Between you and your next pick</div>
+                    <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>
+                      {endO == null ? "No more picks after this one — nothing left to wait for." : "You pick again immediately. Nobody is between you, so nothing can be taken in between."}
+                    </div>
+                  </div>
+                );
+              }
+              const reqE = REQ_EFF(cfg.sf);
+              const gap = [];                    // one entry per PICK in the gap
+              for (let o = startO; o < endO; o++) {
+                const t = teamAt(o);
+                if (t === userIdx) continue;     // a pick of yours inside the gap (traded in) isn't a threat
+                gap.push({ o, t });
+              }
+              if (!gap.length) return null;
+              // What each team in the gap still owes at each position, from the SAME roster the League tab
+              // renders (picks + no-cost keepers + pick-cost keepers held ahead) — so this can never disagree
+              // with the roster three inches away.
+              const teamInfo = new Map();
+              gap.forEach(({ t }) => {
+                if (teamInfo.has(t)) return;
+                const roster = (rostersByTeam && rostersByTeam[t]) || [];
+                const counts = newCounts();
+                roster.forEach((p) => { if (counts[cpos(p.pos)] != null) counts[cpos(p.pos)]++; });
+                const owed = {}; POS.forEach((pos) => { owed[pos] = Math.max(0, (reqE[pos] || 0) - (counts[pos] || 0)); });
+                // The flex is a shared slot, so a team with its RB/WR/TE starters filled but a flex still open
+                // is genuinely still shopping at all three — that is why "needs" is not just the starter grid.
+                const flexUsed = ["RB", "WR", "TE"].reduce((s, p) => s + Math.max(0, (counts[p] || 0) - (reqE[p] || 0)), 0);
+                const flexOpenN = Math.max(0, genericSlots() - flexUsed);
+                teamInfo.set(t, { roster, counts, owed, flexOpenN });
+              });
+              // What the engine expects each gap pick to be. `path` is the same projection the Next Picks
+              // ticker and the board's future columns render, so the two always agree.
+              const projAt = new Map();
+              (path || []).forEach((step) => { if (step && step.p) projAt.set(step.o, step); });
+              // Per position: how many teams in the gap still need one, and how many of the gap's picks the
+              // engine expects to be spent there. Those are two different questions and both matter — a team
+              // can need a QB and still not take one yet.
+              const summary = POS.map((pos) => {
+                const teamsNeeding = [...teamInfo.entries()].filter(([, v]) => v.owed[pos] > 0 || (v.flexOpenN > 0 && ["RB", "WR", "TE"].includes(pos))).map(([t]) => t);
+                const projected = gap.filter(({ o }) => { const s = projAt.get(o); return s && s.p && s.p.pos === pos; });
+                return { pos, need: teamsNeeding.length, projected: projected.length, who: projected.map((g) => g.o) };
+              });
+              const nTeams = teamInfo.size;
+              // ⚠ "EVERYONE NEEDS ONE" IS NOT A WARNING. In round 1 every team is short at every position, so a
+              // verdict keyed on raw need marks the whole board red and says nothing — which is exactly what
+              // the first build did. Need only escalates when THIS position is a needier spot than the others
+              // in the gap; otherwise the projections carry the verdict on their own, which is the right
+              // behaviour early (nothing is urgent yet) and late (need is what's left).
+              const avgShare = summary.reduce((s2, r) => s2 + r.need, 0) / Math.max(1, POS.length * nTeams);
+              const verdictOf = (r) => {
+                const share = nTeams ? r.need / nTeams : 0;
+                const distinctive = share > avgShare + 0.15;
+                if (r.projected >= 2 || (r.projected >= 1 && distinctive)) return { t: "Take now", c: "var(--red)" };
+                if (r.projected >= 1 || (distinctive && share >= 0.6)) return { t: "At risk", c: "var(--gold)" };
+                return { t: "Safe to wait", c: "var(--green)" };
+              };
+              const shortName = (t) => (TEAM_NAMES[t] || `Team ${t + 1}`).split(" ").slice(0, 2).join(" ");
+              return (
+                <div className="panel" style={{ padding: 12 }} data-tour="between">
+                  <div className="disp" style={{ fontSize: 14, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--mut)", marginBottom: 2 }}>
+                    <span className="info" onClick={(e) => showTip(e, BETWEEN_TIP)} onMouseEnter={(e) => showTip(e, BETWEEN_TIP)} onMouseLeave={hideTip}>Between you and your next pick ⓘ</span>
+                  </div>
+                  <div className="mut" style={{ fontSize: 10.5, marginBottom: 8 }}>
+                    {gap.length} pick{gap.length === 1 ? "" : "s"} · {nTeams} team{nTeams === 1 ? "" : "s"} · you're back at <b style={{ color: "var(--gold)" }}>{pickLabel(endO)}</b>
+                  </div>
+                  {/* THE ANSWER, one line per position. */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 9 }}>
+                    {summary.map((r) => {
+                      const v = verdictOf(r);
+                      return (
+                        <div key={r.pos} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, fontSize: 11.5, padding: "2px 0", cursor: "help" }}
+                          onMouseEnter={(e) => showTip(e, [
+                            { kind: "take", tone: v.t === "Safe to wait" ? "good" : v.t === "At risk" ? "neutral" : "bad", x: `${r.pos} — ${v.t.toLowerCase()}` },
+                            { t: "Who still needs one", x: r.need ? [...teamInfo.entries()].filter(([, x]) => x.owed[r.pos] > 0 || (x.flexOpenN > 0 && ["RB", "WR", "TE"].includes(r.pos))).map(([t]) => shortName(t)).join(", ") : `None of the ${nTeams} teams before you` },
+                            { t: "Expected to go", x: r.projected ? r.who.map((o) => `${pickLabel(o)} — ${(projAt.get(o).p || {}).name}`).join(" · ") : "No pick in the gap is projected here" },
+                          ])} onMouseLeave={hideTip}>
+                          <span style={{ fontWeight: 800, color: POS_COLOR[r.pos], width: 26, flexShrink: 0 }}>{r.pos}</span>
+                          <span className="mut num" style={{ flex: 1, fontSize: 10.5 }}>
+                            {/* "0 of 4 need one · Take now" reads like a contradiction, and it isn't one — a
+                                team with its starters filled still spends picks on depth there. Say which it is. */}
+                            {r.need === 0 ? "starters filled" : `${r.need} of ${nTeams} need${r.need === 1 ? "s" : ""} one`}{r.projected > 0 ? ` · ${r.projected} projected gone` : ""}
+                          </span>
+                          <span style={{ color: v.c, fontWeight: 700, flexShrink: 0, fontSize: 10.5 }}>{v.t}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {/* AND THE ROOM ITSELF — who they are, what they still have to fill, what we expect them
+                      to take. Capped so a long gap in a 14-team league stays a glance, not a wall. */}
+                  <div style={{ borderTop: "1px solid var(--line)", paddingTop: 7, display: "flex", flexDirection: "column", gap: 5 }}>
+                    {gap.slice(0, 8).map(({ o, t }) => {
+                      const info = teamInfo.get(t);
+                      const step = projAt.get(o);
+                      const needs = POS.filter((pos) => info.owed[pos] > 0);
+                      return (
+                        <div key={o} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, cursor: "help" }}
+                          onMouseEnter={(e) => showTip(e, [
+                            { kind: "take", tone: "neutral", x: `${pickLabel(o)} — ${TEAM_NAMES[t] || `Team ${t + 1}`}` },
+                            { t: "Roster", x: ALL_POS.map((pos) => `${pos} ${info.counts[pos] || 0}`).join(" · ") },
+                            { t: "Still owes", x: needs.length ? needs.map((pos) => `${info.owed[pos]}× ${pos}`).join(", ") + (info.flexOpenN ? ` + ${info.flexOpenN} flex` : "") : (info.flexOpenN ? `${info.flexOpenN} flex only` : "Starters all filled — drafting depth") },
+                            ...(step && step.p ? [{ t: "Engine expects", x: `${step.p.name} (${step.p.pos})${step.prob ? ` — ${step.prob}% likely` : ""}` }] : []),
+                          ])} onMouseLeave={hideTip}>
+                          <span className="mut num" style={{ width: 34, flexShrink: 0, fontSize: 10 }}>{pickLabel(o)}</span>
+                          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{shortName(t)}</span>
+                          <span style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+                            {needs.length
+                              ? needs.map((pos) => <span key={pos} style={{ color: POS_COLOR[pos], fontWeight: 800, fontSize: 10 }}>{pos}</span>)
+                              : <span className="mut" style={{ fontSize: 9.5, fontStyle: "italic" }}>{info.flexOpenN ? "flex" : "depth"}</span>}
+                          </span>
+                          {step && step.p && (
+                            <span className="mut" style={{ flexShrink: 0, fontSize: 10, width: 74, textAlign: "right", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              → <span style={{ color: POS_COLOR[step.p.pos] }}>{step.p.pos}</span> {surname(step.p.name)}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {gap.length > 8 && <div className="mut" style={{ fontSize: 10 }}>+{gap.length - 8} more picks before you're up</div>}
+                  </div>
+                  <div className="mut" style={{ fontSize: 9.5, marginTop: 7, lineHeight: 1.45 }}>
+                    Bold letters are the starting slots that team still has to fill. The arrow is the engine's expected pick — hover any row for the full read.
+                  </div>
+                </div>
+              );
+            })()}
         </div>
         </>
       )}
