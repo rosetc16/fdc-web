@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29d";
+const BUILD_TAG = "2026.07.29e";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13404,16 +13404,36 @@ function AuthModal({ onClose, onSignUp, hasBackend, authError }) {
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [resetErr, setResetErr] = useState(null);
+  const [noAcct, setNoAcct] = useState(false);      // the address they typed has no account
+  const [userFound, setUserFound] = useState(null); // "Forgot username" result: true / false / null (declined)
   // Ask the server for a real reset email. This button used to just flip `sent` and tell the user a link
   // was on its way — no request was ever made, so anyone who forgot their password was locked out for good.
   const sendReset = async () => {
-    setResetErr(null); setBusy(true);
+    setResetErr(null); setNoAcct(false); setBusy(true);
     try {
       if (!hasBackend) { setResetErr("Password reset needs the live site — you're on a local demo build."); return; }
       await api.forgotPassword(email.trim().toLowerCase());
       setSent(true);
     } catch (e) {
+      // ⭐ AN ADDRESS WITH NO ACCOUNT NOW SAYS SO. Trey: "If they put in an email that doesn't have an
+      //   account, can you share an error that says that email doesn't exist with an account." It gets its
+      //   own state rather than the red error line, because the useful next step is "create one", not
+      //   "try again".
+      if (e && e.data && e.data.code === "NO_ACCOUNT") { setNoAcct(true); return; }
       setResetErr((e && e.data && e.data.error) || (e && e.message) || "Couldn't start a reset. Try again in a moment.");
+    } finally { setBusy(false); }
+  };
+  // ⭐ "FORGOT USERNAME" WAS A DEAD BUTTON — the same bug the reset flow had before 22a: it flipped a local
+  // flag and claimed "we've sent its sign-in details there" without ever making a request. The username on
+  // this site IS the email, so there is nothing to mail; the honest version says whether that address has
+  // an account and sends you to the right door.
+  const lookupUser = async () => {
+    setResetErr(null); setUserFound(null); setBusy(true);
+    try {
+      if (!hasBackend) { setResetErr("Looking up an account needs the live site — you're on a local demo build."); return; }
+      setUserFound(await api.accountExists(email.trim().toLowerCase()));
+    } catch (e) {
+      setResetErr((e && e.data && e.data.error) || (e && e.message) || "Couldn't look that up. Try again in a moment.");
     } finally { setBusy(false); }
   };
   const title = mode === "signup" ? "Create your account" : mode === "forgotpw" ? "Reset your password" : mode === "forgotuser" ? "Find your username" : "Sign in";
@@ -13454,8 +13474,8 @@ function AuthModal({ onClose, onSignUp, hasBackend, authError }) {
               ? <button className="btn-link" style={{ background: "none", border: "none", color: "var(--gold)", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", padding: 0 }} onClick={() => { setMode("signup"); setPw(""); setPw2(""); }}>Need an account? Sign up</button>
               : <button className="btn-link" style={{ background: "none", border: "none", color: "var(--gold)", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", padding: 0 }} onClick={() => { setMode("signin"); setPw2(""); }}>Have an account? Sign in</button>}
             {mode === "signin" && <span style={{ display: "flex", gap: 8 }}>
-              <button className="btn-link" style={{ background: "none", border: "none", color: "var(--mut)", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", padding: 0 }} onClick={() => { setSent(false); setMode("forgotpw"); }}>Forgot password?</button>
-              <button className="btn-link" style={{ background: "none", border: "none", color: "var(--mut)", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", padding: 0 }} onClick={() => { setSent(false); setMode("forgotuser"); }}>Forgot username?</button>
+              <button className="btn-link" style={{ background: "none", border: "none", color: "var(--mut)", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", padding: 0 }} onClick={() => { setSent(false); setNoAcct(false); setResetErr(null); setMode("forgotpw"); }}>Forgot password?</button>
+              <button className="btn-link" style={{ background: "none", border: "none", color: "var(--mut)", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", padding: 0 }} onClick={() => { setSent(false); setUserFound(null); setResetErr(null); setMode("forgotuser"); }}>Forgot username?</button>
             </span>}
           </div>
         </>}
@@ -13463,29 +13483,58 @@ function AuthModal({ onClose, onSignUp, hasBackend, authError }) {
         {mode === "forgotpw" && <>
           <div className="mut" style={{ fontSize: 12.5, marginBottom: 14, lineHeight: 1.5 }}>Enter your account email and we'll send a secure password-reset link. The link expires in 30 minutes.</div>
           {sent ? (
-            <div className="panel" style={{ padding: 14, background: "var(--panel2)", textAlign: "center" }}>
+            <div className="panel" data-resetsent="1" style={{ padding: 14, background: "var(--panel2)", textAlign: "center" }}>
               <i className="ti ti-mail-check" style={{ fontSize: 22, color: "var(--green)" }} aria-hidden="true" />
-              <div style={{ fontSize: 13, marginTop: 6 }}>If an account exists for <b>{email || "that email"}</b>, a reset link is on its way. Check your inbox and spam.</div>
+              <div style={{ fontSize: 13, marginTop: 6 }}>A reset link is on its way to <b>{email || "that email"}</b>. Check your inbox and spam — it expires in 30 minutes.</div>
+            </div>
+          ) : noAcct ? (
+            <div className="panel" data-noaccount="1" style={{ padding: 14, background: "var(--panel2)", border: "1px solid var(--gold)" }}>
+              <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+                <b style={{ color: "var(--gold)" }}>No account for {email}. </b>
+                There's no Fantasy Draft Compass account with that address, so there's nothing to reset. Check the spelling — or create an account with it.
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 11, flexWrap: "wrap" }}>
+                <button className="btn btn-mini" onClick={() => { setNoAcct(false); }}>Try another email</button>
+                <button className="btn btn-mini btn-gold" onClick={() => { setNoAcct(false); setSent(false); setMode("signup"); setPw(""); setPw2(""); }}>Create an account</button>
+              </div>
             </div>
           ) : <>
             <input className="gs" style={{ width: "100%", marginBottom: 12 }} placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && email.includes("@") && !busy) sendReset(); }} />
             <button className="btn btn-gold" style={{ width: "100%", padding: 10 }} disabled={busy || !email.includes("@")} onClick={sendReset}>{busy ? "Sending…" : "Send reset link"}</button>
-            {resetErr && <div style={{ color: "var(--red)", fontSize: 12, marginTop: 10, lineHeight: 1.45 }}>{resetErr}</div>}
+            {resetErr && <div data-reseterr="1" style={{ color: "var(--red)", fontSize: 12, marginTop: 10, lineHeight: 1.45 }}>{resetErr}</div>}
           </>}
           <button className="btn-link" style={{ background: "none", border: "none", color: "var(--gold)", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", padding: 0, marginTop: 10, display: "block", margin: "10px auto 0" }} onClick={() => setMode("signin")}>← Back to sign in</button>
         </>}
 
         {mode === "forgotuser" && <>
-          <div className="mut" style={{ fontSize: 12.5, marginBottom: 14, lineHeight: 1.5 }}>Your username is the email you signed up with. Enter an email to confirm whether an account exists for it — we'll email you the details so you don't have to reach out to support.</div>
-          {sent ? (
-            <div className="panel" style={{ padding: 14, background: "var(--panel2)", textAlign: "center" }}>
-              <i className="ti ti-mail-check" style={{ fontSize: 22, color: "var(--green)" }} aria-hidden="true" />
-              <div style={{ fontSize: 13, marginTop: 6 }}>If an account matches <b>{email || "that email"}</b>, we've sent its sign-in details there.</div>
+          <div className="mut" style={{ fontSize: 12.5, marginBottom: 14, lineHeight: 1.5 }}>Your username <b>is</b> the email you signed up with — there's nothing separate to look up. Enter an address and we'll tell you whether an account exists for it.</div>
+          {userFound === true ? (
+            <div className="panel" data-userfound="1" style={{ padding: 14, background: "var(--panel2)" }}>
+              <div style={{ fontSize: 13, lineHeight: 1.5 }}><b style={{ color: "var(--green)" }}>That's an account. </b>Sign in with <b>{email}</b> as your username. If you don't remember the password, reset it.</div>
+              <div style={{ display: "flex", gap: 8, marginTop: 11, flexWrap: "wrap" }}>
+                <button className="btn btn-mini btn-gold" onClick={() => { setUserFound(null); setMode("signin"); }}>Back to sign in</button>
+                <button className="btn btn-mini" onClick={() => { setUserFound(null); setSent(false); setNoAcct(false); setMode("forgotpw"); }}>Reset the password</button>
+              </div>
             </div>
+          ) : userFound === false ? (
+            <div className="panel" data-usermissing="1" style={{ padding: 14, background: "var(--panel2)", border: "1px solid var(--gold)" }}>
+              <div style={{ fontSize: 13, lineHeight: 1.5 }}><b style={{ color: "var(--gold)" }}>No account for {email}. </b>Nothing is registered to that address — check the spelling, or create an account with it.</div>
+              <div style={{ display: "flex", gap: 8, marginTop: 11, flexWrap: "wrap" }}>
+                <button className="btn btn-mini" onClick={() => setUserFound(null)}>Try another email</button>
+                <button className="btn btn-mini btn-gold" onClick={() => { setUserFound(null); setMode("signup"); setPw(""); setPw2(""); }}>Create an account</button>
+              </div>
+            </div>
+          ) : userFound === null && resetErr ? (
+            <>
+              <input className="gs" style={{ width: "100%", marginBottom: 12 }} placeholder="Email to look up" value={email} onChange={(e) => setEmail(e.target.value)} />
+              <button className="btn btn-gold" style={{ width: "100%", padding: 10 }} disabled={busy || !email.includes("@")} onClick={lookupUser}>{busy ? "Checking…" : "Check this email"}</button>
+              <div data-reseterr="1" style={{ color: "var(--red)", fontSize: 12, marginTop: 10, lineHeight: 1.45 }}>{resetErr}</div>
+            </>
           ) : <>
-            <input className="gs" style={{ width: "100%", marginBottom: 12 }} placeholder="Email to look up" value={email} onChange={(e) => setEmail(e.target.value)} />
-            <button className="btn btn-gold" style={{ width: "100%", padding: 10 }} disabled={!email.includes("@")} onClick={() => setSent(true)}>Email me my details</button>
+            <input className="gs" style={{ width: "100%", marginBottom: 12 }} placeholder="Email to look up" value={email} onChange={(e) => setEmail(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && email.includes("@") && !busy) lookupUser(); }} />
+            <button className="btn btn-gold" style={{ width: "100%", padding: 10 }} disabled={busy || !email.includes("@")} onClick={lookupUser}>{busy ? "Checking…" : "Check this email"}</button>
           </>}
           <button className="btn-link" style={{ background: "none", border: "none", color: "var(--gold)", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", padding: 0, marginTop: 10, display: "block", margin: "10px auto 0" }} onClick={() => setMode("signin")}>← Back to sign in</button>
         </>}
@@ -13876,18 +13925,46 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
   const dyn = isDynastyCfg(cfg);
   const valOf = (p) => (p ? (dyn && p.value != null ? p.value : (p.vbd || 0)) : 0);
   base.valueMetric = dyn ? "value" : "vbd";
-  // The board's own price curve: the value of the i-th player by ADP. Used to answer "what does a pick in
-  // this range ordinarily buy?" — which is what makes "he goes in round 6 but plays like a round 3 pick"
-  // a statement about the market rather than about one player's rating.
-  const curve = (players || []).filter((p) => p && p.adp != null && Number.isFinite(p.adp))
+  // ⭐⭐⭐ THE BOARD'S PRICE CURVE — "what does a pick in this range ordinarily buy?" — and getting this
+  // wrong is what produced "RJ Harvey goes round 7, plays like a round 20 pick" in a FIFTEEN-round draft.
+  // Trey: "there is just no way that these guys play like a 20+ rounder… (I fear that you may be looking at
+  // the total points of QBs and pushing guys down?)". He was right that the number was wrong; the cause was
+  // not the one he guessed and it was worse. Three separate defects:
+  //
+  //  (1) ⭐⭐ THE CURVE WAS NOT A CURVE. It was the value of each player IN ADP ORDER — measured on a real
+  //      board, it rises again at 94 of its 207 steps. `findIndex(x => x <= v)` on that returns the first
+  //      LOCAL dip below v, so the same player resolves to round 5 or round 20 depending on which bust
+  //      happens to sit early in the order. A price curve must be monotone or an inverse lookup is noise.
+  //  (2) ⭐ NOTHING KNEW HOW LONG THE DRAFT WAS. The pool runs several hundred deep, so indices past the
+  //      last pick were reachable answers — hence a round-20 verdict in a 180-pick draft.
+  //  (3) K AND DST WERE IN THE CURVE. They are priced against their own replacement level, so a defense
+  //      with +26 sitting at ADP 183 dragged the late price UP and made every late skill player look worse.
+  //
+  // NOT the cause, and worth saying plainly: `p.vbd` is points above the REPLACEMENT LEVEL AT THAT POSITION
+  // (see buildPlayers), not total points — quarterbacks are not being compared to receivers on volume.
+  const rawCurve = (players || [])
+    .filter((p) => p && p.adp != null && Number.isFinite(p.adp) && p.pos !== "K" && p.pos !== "DST" && cpos(p.pos) !== "DST")
     .sort((a, b) => a.adp - b.adp).map(valOf);
+  const curve = (() => {
+    if (!rawCurve.length) return [];
+    const W = 4;                                    // rolling median ±4: one outlier can't set a slot's price
+    const smoothed = rawCurve.map((_, i) => {
+      const w = rawCurve.slice(Math.max(0, i - W), i + W + 1).slice().sort((a, b) => a - b);
+      return w[Math.floor(w.length / 2)];
+    });
+    let run = Infinity;
+    const mono = smoothed.map((v) => { run = Math.min(run, v); return run; });   // price never rises later
+    return mono.slice(0, Math.max(teams, teams * (rounds || 15)));               // and stops at the last pick
+  })();
   const priceAt = (i) => (curve.length ? curve[Math.max(0, Math.min(curve.length - 1, i))] : 0);
-  // The round a player's VALUE is worth, by walking the price curve until it drops to him.
+  // The round a player's VALUE is ordinarily bought in. Anything below the last pick's price is BEYOND the
+  // draft — reported as rounds+1 so the UI can say "past round 15" instead of inventing a round 20.
+  const LAST_ROUND = Math.max(1, rounds || 15);
   const roundWorth = (v) => {
     if (!curve.length) return null;
-    let i = curve.findIndex((x) => x <= v);
-    if (i < 0) i = curve.length - 1;
-    return Math.max(1, Math.ceil((i + 1) / teams));
+    const i = curve.findIndex((x) => x <= v);
+    if (i < 0) return LAST_ROUND + 1;
+    return Math.min(LAST_ROUND, Math.max(1, Math.ceil((i + 1) / teams)));
   };
   const roundOfPick = (o) => Math.max(1, Math.ceil(o / teams));
 
@@ -14043,9 +14120,9 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
   const EARLY_CUT = 5;
   const rankBargain = (a, b) => (b.goesRound - b.worthRound) * 12 + b.lift * 0.5 - ((a.goesRound - a.worthRound) * 12 + a.lift * 0.5);
   const bargains = priced.filter((x) => x.worthRound <= x.goesRound - 1 || (x.lift >= 25 && x.edge > 0)).sort(rankBargain);
-  base.valuePlayers = bargains.slice(0, 8);
-  base.valueEarly = bargains.filter((x) => x.goesRound <= EARLY_CUT).slice(0, 6);
-  base.valueLate = bargains.filter((x) => x.goesRound > EARLY_CUT).slice(0, 6);
+  base.valuePlayers = bargains.slice(0, 12);
+  base.valueEarly = bargains.filter((x) => x.goesRound <= EARLY_CUT).slice(0, 18);
+  base.valueLate = bargains.filter((x) => x.goesRound > EARLY_CUT).slice(0, 18);
   base.earlyCut = EARLY_CUT;
   // (b) ⭐ AND THE OPPOSITE, which is the section he asked me to replace the reach list with: "players who
   //     have lower VBD who are going too high." The old reach list just found first-rounders, because
@@ -14053,9 +14130,9 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
   //     the draft order, not a mistake.
   const avoids = priced.filter((x) => x.worthRound >= x.goesRound + 2)
     .sort((a, b) => (b.worthRound - b.goesRound) - (a.worthRound - a.goesRound));
-  base.avoidPlayers = avoids.slice(0, 8);
-  base.avoidEarly = avoids.filter((x) => x.goesRound <= EARLY_CUT).slice(0, 6);
-  base.avoidLate = avoids.filter((x) => x.goesRound > EARLY_CUT).slice(0, 6);
+  base.avoidPlayers = avoids.slice(0, 12);
+  base.avoidEarly = avoids.filter((x) => x.goesRound <= EARLY_CUT).slice(0, 18);
+  base.avoidLate = avoids.filter((x) => x.goesRound > EARLY_CUT).slice(0, 18);
 
   // (c) ⭐⭐ WAIT OR DON'T, MEASURED THE ONLY WAY THAT WORKS: RELATIVE.
   //     The first version compared each position's drop to an absolute point threshold and told Trey to
@@ -14066,13 +14143,33 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
   //     against each other instead of against a constant I made up.
   const bandOf = (round) => (round <= 3 ? 0 : round <= 6 ? 1 : round <= 10 ? 2 : 3);
   const BANDS = ["Rounds 1-3", "Rounds 4-6", "Rounds 7-10", "Rounds 11+"];
+  // ⭐⭐ AND EVERY BAND CARRIES THE PLAYERS IN IT. Trey: "can you show on the hover for each round and
+  //   position what players fit in that section (and highlight the ones you think are great value / then
+  //   show in red the ones that are worse value)." A bar that says "231" without naming anybody is a claim
+  //   you have to take on trust; the names are the part you can act on. Good/bad is decided against the
+  //   PRICE OF THAT BAND — a player is green when his value beats what a pick in those rounds ordinarily
+  //   buys and red when it doesn't, which is the same standard sections 04 and 05 use.
+  const BAND_MID = [2, 5, 8.5, 12.5];   // representative round inside each band, for pricing it
   const curves = POS.map((pos) => {
     const bands = [[], [], [], []];
+    const bandMen = [new Map(), new Map(), new Map(), new Map()];
     usable.forEach((m) => m.picks.forEach((pid, o) => {
       const p = byId[pid];
       if (!p || p.pos !== pos || keeperIds.has(pid) || o >= TOTAL) return;
-      bands[bandOf(Math.floor(o / teams) + 1)].push(Math.max(0, p.pts || 0));
+      const bi = bandOf(Math.floor(o / teams) + 1);
+      bands[bi].push(Math.max(0, p.pts || 0));
+      const m2 = bandMen[bi];
+      const a = m2.get(pid) || { p, n: 0, sumO: 0 };
+      a.n++; a.sumO += o + 1; m2.set(pid, a);
     }));
+    const men = bandMen.map((m2, bi) => {
+      const bandPrice = priceAt(Math.round(BAND_MID[bi] * teams) - 1);
+      return [...m2.values()].sort((a, b) => b.n - a.n || valOf(b.p) - valOf(a.p)).slice(0, 7).map((a) => ({
+        id: a.p.id, name: a.p.name, pos: a.p.pos, pts: Math.round(a.p.pts || 0),
+        val: Math.round(valOf(a.p)), n: a.n, avgO: Math.round(a.sumO / a.n),
+        good: valOf(a.p) >= bandPrice,          // beats what those rounds ordinarily buy
+      }));
+    });
     const avg = bands.map((b) => (b.length ? Math.round(b.reduce((s2, x) => s2 + x, 0) / b.length) : null));
     const withData = avg.map((v, i) => ({ v, i })).filter((x) => x.v != null && x.v > 0);
     // Retention: what a later-phase player at this position still gives you, as a share of an early one.
@@ -14084,7 +14181,7 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
     //   wants is the price of waiting, in the currency of the thing being drafted — how many projected
     //   points the player you'd get in rounds 4-6 gives up against the one you'd have got in rounds 1-3.
     const costOfWaiting = withData.length >= 2 ? Math.round(withData[0].v - withData[1].v) : null;
-    return { pos, avg, bands: BANDS, retention, costOfWaiting,
+    return { pos, avg, bands: BANDS, men, retention, costOfWaiting,
       earlyBand: withData[0] ? BANDS[withData[0].i] : null,
       laterBand: withData[1] ? BANDS[withData[1].i] : null,
       early: withData[0] ? withData[0].v : null, later: withData[1] ? withData[1].v : null, late };
@@ -14112,8 +14209,31 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
       : cw <= 0
         ? `${c.pos}s taken in ${lo(c.laterBand)} actually averaged ${Math.abs(cw)} points MORE than ones taken in ${lo(c.earlyBand)}. Your room reaches here — an early pick isn't buying you a better player.`
         : `A ${c.pos} taken in ${lo(c.laterBand)} gives up about ${cw} projected points against one taken in ${lo(c.earlyBand)}${tail}`;
+
+    // ⭐⭐⭐ AND IT MUST NOT CONTRADICT SECTION 01. Trey: "On 'what you can afford to wait on' it says
+    //   'Safest to wait' for QB… yet at the top of the page it says 'Take a quarterback early.'" Both
+    //   numbers were real and they were answering DIFFERENT questions — this section prices the DROP-OFF,
+    //   the top of the page reports which timing actually FINISHED better. When they disagree the page has
+    //   to pick one and say why, and the outcome evidence wins: how teams finished is the thing being
+    //   predicted, and the drop-off is only a proxy for it.
+    const tg = groups.find((g) => g.label === c.pos);
+    if (tg && tg.buckets.length >= 2) {
+      const bestB = tg.buckets[0], worstB = tg.buckets[tg.buckets.length - 1];
+      const lead = bestB.pts - worstB.pts;
+      const early = /rounds 1-/.test(bestB.key);
+      c.timing = { key: bestB.key.replace(/^First \w+ in /, ""), lead, early };
+      const waitVerdict = c.verdict === "Safest to wait" || c.verdict === "No penalty for waiting";
+      if (lead >= 25 && early && waitVerdict) {
+        c.verdict = "Take early anyway";
+        c.conflict = `${c.pos} value barely falls off here, so on price alone you could wait — but the teams that took their first ${c.pos} in ${c.timing.key} still finished ${lead} projected points ahead of the ones that waited. Outcome beats the price curve: take one early.`;
+      } else if (lead >= 25 && !early && c.verdict === "Take early") {
+        c.verdict = "Take early — but late worked";
+        c.conflict = `${c.pos} drops off fastest here, which argues for taking one early — but the teams that waited until ${c.timing.key} finished ${lead} points ahead. Treat the drop-off as the reason not to be LAST to the position, not a reason to spend a premium pick.`;
+      }
+    }
   });
   base.posCurves = curves;
+  base.lastRound = LAST_ROUND;   // so the UI can say "past round 15" instead of inventing a round 20
 
   base.rows = rows; base.groups = groups; base.findings = findings; base.pathway = pathway;
   base.top = top; base.bottom = bottom;
@@ -14248,6 +14368,7 @@ function TrendsShell({ onBack, backLabel, onHome, onSignOut, tip, children }) {
 function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut, user, onRunMock }) {
   const t = useMemo(() => analyzeLeagueMockTrends(league.mocks || [], players, league.cfg), [league, players]);
   const [tip, setTip] = useState(null);
+  const [expanded, setExpanded] = useState({});   // which price columns are showing their full list
   const showTip = (e, content) => { try { setTip(positionTip(e.clientX, e.clientY, content)); } catch (_) {} };
   const hideTip = () => setTip(null);
   const teams = league.cfg.teams || 12;
@@ -14276,50 +14397,85 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
   // starter; a round-11 one costs a bench flier. Mixing them buries the first under a pile of the second.
   // ⚠ THESE ARE FUNCTIONS THAT RETURN JSX, NOT COMPONENTS. A `const Row = () => …` used as <Row/> would be
   // a brand-new component type on every render and would bring back the hover-remount bug documented above.
-  const PRICE_COLS = "28px minmax(0,1fr) 78px 88px 74px";
+  // ⭐⭐ AND THEY SIT SIDE BY SIDE. Trey: "you can just put rounds 1-5 on the left side and rounds 8+ on
+  // the right. There is a lot of blank space in this widget, so you can split it side by side and fit more
+  // names (make it so you can expand to see more names). I want them to be a part of the same widget (not
+  // two different ones)." So: ONE panel, two columns, each with its own show-more.
+  const PRICE_COLS = "24px minmax(0,1fr) 62px 84px 58px";
+  const SHOW_FIRST = 6;
   const priceHead = (last) => (
-    <div style={{ display: "grid", gridTemplateColumns: PRICE_COLS, gap: 8, padding: "6px 11px 5px", fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700 }}>
+    <div style={{ display: "grid", gridTemplateColumns: PRICE_COLS, gap: 7, padding: "5px 10px 4px", fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, borderBottom: "1px solid var(--line)" }}>
       <span /><span>Player</span><span style={{ textAlign: "right" }}>Goes</span><span style={{ textAlign: "right" }}>Plays like</span><span style={{ textAlign: "right" }}>{last}</span>
     </div>
   );
-  const subHead = (label, note) => (
-    <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "9px 11px 3px", flexWrap: "wrap" }}>
-      <span style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".06em" }}>{label}</span>
-      <span className="mut" style={{ fontSize: 11 }}>{note}</span>
+  // "Plays like round 20" in a fifteen-round draft is not a claim, it is a bug telling on itself. Anything
+  // the price curve puts past the last pick now says so in words.
+  const worthLabel = (v) => (t.lastRound && v.worthRound > t.lastRound ? `past round ${t.lastRound}` : `round ${v.worthRound}`);
+  const priceRow = (v, i, kind) => {
+    const good = kind === "value";
+    const surplus = Math.max(0, v.goesRound - v.worthRound);
+    return (
+      <div key={v.id} data-bargain={good ? v.id : undefined} data-avoid={good ? undefined : v.id}
+        onMouseEnter={(e) => showTip(e, good ? [
+          { kind: "take", tone: "good", x: `${v.name} — goes around pick ${v.avgO} (round ${v.goesRound})` },
+          { t: "Why he's a bargain", x: `On this board his ${t.valueMetric === "value" ? "long-term value" : "value over replacement"} is what a ${worthLabel(v)} pick ordinarily returns — ${surplus} round${surplus === 1 ? "" : "s"} of surplus.` },
+          { t: "On the best rosters", x: v.lift > 0 ? `He appears ${v.lift}% more often on the top quarter of finishers than the bottom quarter.` : "He shows up about equally on strong and weak rosters — the value here is the price, not the company he keeps." },
+          { t: "Seen in", x: `${v.n} of your ${t.n} mock${t.n === 1 ? "" : "s"}` },
+          { kind: "playercard", p: v.p },
+        ] : [
+          { kind: "take", tone: "bad", x: `${v.name} — goes around pick ${v.avgO} (round ${v.goesRound})` },
+          { t: "Why to let him go", x: `His ${t.valueMetric === "value" ? "long-term value" : "value over replacement"} is what a ${worthLabel(v)} pick ordinarily returns, so taking him where your room does spends ${v.worthRound - v.goesRound} rounds of draft capital you don't get back.` },
+          ...(v.lift < 0 ? [{ t: "And it shows", x: `He appears ${Math.abs(v.lift)}% more often on the BOTTOM quarter of finishers than the top.` }] : []),
+          { t: "Seen in", x: `${v.n} of your ${t.n} mock${t.n === 1 ? "" : "s"}` },
+          { kind: "playercard", p: v.p },
+        ])} onMouseLeave={hideTip}
+        style={{ display: "grid", gridTemplateColumns: PRICE_COLS, gap: 7, alignItems: "center", padding: "7px 10px", borderTop: i ? "1px solid var(--line)" : "none", cursor: "help" }}>
+        <span style={{ fontWeight: 800, color: POS_COLOR[v.pos], fontSize: 11 }}>{v.pos}</span>
+        <span style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v.name}</span>
+        <span className="mut num" style={{ fontSize: 11, textAlign: "right" }}>R{v.goesRound}</span>
+        <span className="num" style={{ fontSize: 12, fontWeight: 800, color: good ? "#5FD0A8" : "#F2655C", textAlign: "right" }}>{worthLabel(v)}</span>
+        <span className="num" style={{ fontSize: 11, textAlign: "right", color: good ? (v.lift > 0 ? "#5FD0A8" : "var(--mut)") : "#F2655C" }}>
+          {good ? (v.lift > 0 ? `+${v.lift}%` : "—") : `${Math.max(0, v.worthRound - v.goesRound)} rds`}
+        </span>
+      </div>
+    );
+  };
+  // One column of the pair: heading, note, rows, and its own expander.
+  const priceCol = (key, label, note, list, lastCol, kind) => {
+    const open = !!expanded[key];
+    const shown = open ? list : list.slice(0, SHOW_FIRST);
+    return (
+      <div data-pricecol={key} style={{ minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "0 10px 4px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".06em" }}>{label}</span>
+          <span className="mut" style={{ fontSize: 11 }}>{note}</span>
+        </div>
+        {list.length === 0
+          ? <div className="mut" style={{ fontSize: 12, padding: "10px" }}>Nothing here in your mocks yet.</div>
+          : <>
+              {priceHead(lastCol)}
+              {shown.map((v, i) => priceRow(v, i, kind))}
+              {list.length > SHOW_FIRST && (
+                <div style={{ padding: "7px 10px 0" }}>
+                  <button className="btn btn-mini" data-expander={key}
+                    onClick={() => setExpanded((e) => ({ ...e, [key]: !e[key] }))}>
+                    {open ? "Show fewer ▴" : `Show ${list.length - SHOW_FIRST} more ▾`}
+                  </button>
+                </div>
+              )}
+            </>}
+      </div>
+    );
+  };
+  // The pair, in one panel with a divider down the middle.
+  const pricePair = (a, b) => (
+    <div className="panel" style={{ padding: "12px 4px" }}>
+      <div className="trendpair" style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 0 }}>
+        <div style={{ minWidth: 0, paddingRight: 10 }}>{a}</div>
+        <div style={{ minWidth: 0, paddingLeft: 10, borderLeft: "1px solid var(--line)" }}>{b}</div>
+      </div>
     </div>
   );
-  const bargainRows = (list) => list.map((v, i) => (
-    <div key={v.id} data-bargain={v.id} onMouseEnter={(e) => showTip(e, [
-      { kind: "take", tone: "good", x: `${v.name} — goes around pick ${v.avgO} (round ${v.goesRound})` },
-      { t: "Why he's a bargain", x: `On this board his ${t.valueMetric === "value" ? "long-term value" : "value over replacement"} is what a round-${v.worthRound} pick ordinarily returns — ${Math.max(0, v.goesRound - v.worthRound)} round${Math.max(0, v.goesRound - v.worthRound) === 1 ? "" : "s"} of surplus.` },
-      { t: "On the best rosters", x: v.lift > 0 ? `He appears ${v.lift}% more often on the top quarter of finishers than the bottom quarter.` : "He shows up about equally on strong and weak rosters — the value here is the price, not the company he keeps." },
-      { t: "Seen in", x: `${v.n} of your ${t.n} mock${t.n === 1 ? "" : "s"}` },
-      { kind: "playercard", p: v.p },
-    ])} onMouseLeave={hideTip}
-      style={{ display: "grid", gridTemplateColumns: PRICE_COLS, gap: 8, alignItems: "center", padding: "8px 11px", borderTop: i ? "1px solid var(--line)" : "none", cursor: "help" }}>
-      <span style={{ fontWeight: 800, color: POS_COLOR[v.pos], fontSize: 11.5 }}>{v.pos}</span>
-      <span style={{ fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v.name}</span>
-      <span className="mut num" style={{ fontSize: 11.5, textAlign: "right" }}>round {v.goesRound}</span>
-      <span className="num" style={{ fontSize: 12.5, fontWeight: 800, color: "#5FD0A8", textAlign: "right" }}>round {v.worthRound}</span>
-      <span className="num" style={{ fontSize: 11.5, textAlign: "right", color: v.lift > 0 ? "#5FD0A8" : "var(--mut)" }}>{v.lift > 0 ? `+${v.lift}%` : "—"}</span>
-    </div>
-  ));
-  const avoidRows = (list) => list.map((v, i) => (
-    <div key={v.id} data-avoid={v.id} onMouseEnter={(e) => showTip(e, [
-      { kind: "take", tone: "bad", x: `${v.name} — goes around pick ${v.avgO} (round ${v.goesRound})` },
-      { t: "Why to let him go", x: `His ${t.valueMetric === "value" ? "long-term value" : "value over replacement"} is what a round-${v.worthRound} pick ordinarily returns, so taking him where your room does spends ${v.worthRound - v.goesRound} rounds of draft capital you don't get back.` },
-      ...(v.lift < 0 ? [{ t: "And it shows", x: `He appears ${Math.abs(v.lift)}% more often on the BOTTOM quarter of finishers than the top.` }] : []),
-      { t: "Seen in", x: `${v.n} of your ${t.n} mock${t.n === 1 ? "" : "s"}` },
-      { kind: "playercard", p: v.p },
-    ])} onMouseLeave={hideTip}
-      style={{ display: "grid", gridTemplateColumns: PRICE_COLS, gap: 8, alignItems: "center", padding: "8px 11px", borderTop: i ? "1px solid var(--line)" : "none", cursor: "help" }}>
-      <span style={{ fontWeight: 800, color: POS_COLOR[v.pos], fontSize: 11.5 }}>{v.pos}</span>
-      <span style={{ fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v.name}</span>
-      <span className="mut num" style={{ fontSize: 11.5, textAlign: "right" }}>round {v.goesRound}</span>
-      <span className="num" style={{ fontSize: 12.5, fontWeight: 800, color: "#F2655C", textAlign: "right" }}>round {v.worthRound}</span>
-      <span className="num" style={{ fontSize: 11.5, textAlign: "right", color: "#F2655C" }}>{v.worthRound - v.goesRound} rds</span>
-    </div>
-  ));
   const cut = t.earlyCut || 5;
 
   if (!t.n) {
@@ -14427,8 +14583,12 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
         <Section n={3} title="What you can afford to wait on" accent="#6fa8dc"
           sub="Average projected points of the players your room actually took at each position, by phase of the draft. Every position falls off as a draft goes on — what matters is which ones fall off FASTEST, so the verdicts rank the four against each other rather than against a bar I made up.">
           <div className="panel" style={{ padding: 14 }}>
-            {t.posCurves.slice().sort((a, b) => (a.rank || 9) - (b.rank || 9)).map((c) => {
-              const vc = c.verdict === "Safest to wait" || c.verdict === "No penalty for waiting" ? "#5FD0A8" : c.verdict === "Take early" ? "#F2655C" : "var(--gold)";
+            {/* ⭐ HIS ORDER, NOT THE RANKING'S. Trey: "Can you then put it in this order: QB, RB, WR, TE."
+                A list that re-orders itself every time the data moves is one you have to re-read from the
+                top; a fixed order lets you go straight to the position you're deciding about. The verdict
+                is on every row anyway, so nothing is lost by not sorting by it. */}
+            {t.posCurves.slice().sort((a, b) => POS.indexOf(a.pos) - POS.indexOf(b.pos)).map((c) => {
+              const vc = /wait/i.test(c.verdict || "") && !/anyway/i.test(c.verdict || "") ? "#5FD0A8" : /early/i.test(c.verdict || "") ? "#F2655C" : "var(--gold)";
               const mx = Math.max(1, ...c.avg.filter((x) => x != null));
               return (
                 <div key={c.pos} data-poscurve={c.pos} style={{ padding: "11px 0", borderTop: "1px solid var(--line)" }}>
@@ -14443,8 +14603,19 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                     {c.avg.map((v, i) => {
                       const prev = i > 0 ? c.avg[i - 1] : null;
                       const drop = v != null && prev != null ? prev - v : null;
+                      const men = (c.men && c.men[i]) || [];
                       return (
-                        <div key={i} data-band={`${c.pos}:${i}`} style={{ border: "1px solid var(--line)", borderRadius: 8, background: "var(--panel2)", padding: "6px 8px 7px", opacity: v == null ? 0.5 : 1 }}>
+                        <div key={i} data-band={`${c.pos}:${i}`}
+                          onMouseEnter={(e) => showTip(e, [
+                            { kind: "take", tone: v == null ? "neutral" : "neutral", x: `${c.pos} taken in ${c.bands[i].toLowerCase()}` },
+                            { t: v == null ? "No data" : "Average projected points of the players taken there", x: v == null ? "Your mocks haven't reached this phase." : `${v} pts across ${men.length ? "the players below" : "this phase"}` },
+                            ...(men.length ? [{ kind: "altheader", x: "Who actually went here — green beats what these rounds ordinarily buy, red doesn't" }] : []),
+                            ...men.map((mn) => ({
+                              kind: "take", tone: mn.good ? "good" : "bad",
+                              x: `${mn.name} — ${mn.pts} pts, went around pick ${mn.avgO}${mn.n > 1 ? ` in ${mn.n} mocks` : ""}`,
+                            })),
+                          ])} onMouseLeave={hideTip}
+                          style={{ border: "1px solid var(--line)", borderRadius: 8, background: "var(--panel2)", padding: "6px 8px 7px", opacity: v == null ? 0.5 : 1, cursor: men.length ? "help" : "default" }}>
                           <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700 }}>{c.bands[i].replace("Rounds ", "R")}</div>
                           <div className="num" style={{ fontSize: 17, fontWeight: 800, lineHeight: 1.25, color: v == null ? "var(--mut)" : POS_COLOR[c.pos] }}>{v == null ? "—" : v}</div>
                           <div style={{ height: 5, background: "var(--panel)", borderRadius: 3, overflow: "hidden", margin: "3px 0 4px" }}>
@@ -14460,6 +14631,13 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                   {/* ⭐ AND THE PLAIN-LANGUAGE WHY, in points rather than a percentage of something invisible. */}
                   {c.why && (
                     <div data-why={c.pos} style={{ fontSize: 12.5, lineHeight: 1.5, marginTop: 7, paddingLeft: 9, borderLeft: `2px solid ${vc}` }}>{c.why}</div>
+                  )}
+                  {/* ⭐⭐ WHERE THE TWO READS DISAGREE, SAY SO HERE rather than letting section 01 and this
+                      one contradict each other on opposite ends of the page. */}
+                  {c.conflict && (
+                    <div data-conflict={c.pos} style={{ fontSize: 12, lineHeight: 1.5, marginTop: 6, padding: "6px 9px", borderRadius: 7, background: "rgba(212,175,55,.09)", border: "1px solid rgba(212,175,55,.28)" }}>
+                      <b style={{ color: "var(--gold)" }}>But how they finished says otherwise. </b>{c.conflict}
+                    </div>
                   )}
                   {/* ⭐ AND WHO TO TAKE THERE. "It's also not really showing what players you should target
                       late within each round (basically who are the league winners)." A verdict of "safe to
@@ -14490,25 +14668,10 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
       {t.valuePlayers && t.valuePlayers.length > 0 && (
         <Section n={4} title="Going later than they're worth" accent="#5FD0A8"
           sub={`Where a player's ${t.valueMetric === "value" ? "long-term value" : "value over replacement"} is higher than the pick he actually goes at in your room would ordinarily buy. Read it as "goes in round 6, plays like a round 3 pick". Kickers and defenses are left out — they're priced on a different basis entirely.`}>
-          <div className="panel" style={{ padding: 4 }}>
-            {(t.valueEarly || []).length > 0 && (
-              <>
-                {subHead(`Rounds 1-${cut}`, "starters — a round of surplus here is the whole draft")}
-                {priceHead("On winners")}
-                {bargainRows(t.valueEarly)}
-              </>
-            )}
-            {(t.valueLate || []).length > 0 && (
-              <>
-                {subHead(`Rounds ${cut + 1}+`, "depth and fliers — cheap, and where a room gives away real points")}
-                {priceHead("On winners")}
-                {bargainRows(t.valueLate)}
-              </>
-            )}
-            {!(t.valueEarly || []).length && !(t.valueLate || []).length && (
-              <>{priceHead("On winners")}{bargainRows(t.valuePlayers)}</>
-            )}
-          </div>
+          {pricePair(
+            priceCol("vE", `Rounds 1-${cut}`, "starters — a round of surplus here is the whole draft", t.valueEarly || [], "On winners", "value"),
+            priceCol("vL", `Rounds ${cut + 1}+`, "depth and fliers — cheap, and where a room gives away points", t.valueLate || [], "On winners", "value"),
+          )}
         </Section>
       )}
 
@@ -14516,25 +14679,10 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
       {t.avoidPlayers && t.avoidPlayers.length > 0 && (
         <Section n={5} title="Going earlier than they're worth" accent="#F2655C"
           sub="The mirror image: your room reaches for these. Letting one come to you two rounds later costs nothing, and taking him at his going rate costs you the pick. Kickers and defenses are excluded here too.">
-          <div className="panel" style={{ padding: 4 }}>
-            {(t.avoidEarly || []).length > 0 && (
-              <>
-                {subHead(`Rounds 1-${cut}`, "the expensive mistakes — one of these costs you a starter")}
-                {priceHead("Overpay")}
-                {avoidRows(t.avoidEarly)}
-              </>
-            )}
-            {(t.avoidLate || []).length > 0 && (
-              <>
-                {subHead(`Rounds ${cut + 1}+`, "cheap reaches — worth knowing, but nobody loses a season here")}
-                {priceHead("Overpay")}
-                {avoidRows(t.avoidLate)}
-              </>
-            )}
-            {!(t.avoidEarly || []).length && !(t.avoidLate || []).length && (
-              <>{priceHead("Overpay")}{avoidRows(t.avoidPlayers)}</>
-            )}
-          </div>
+          {pricePair(
+            priceCol("aE", `Rounds 1-${cut}`, "the expensive mistakes — one of these costs you a starter", t.avoidEarly || [], "Overpay", "avoid"),
+            priceCol("aL", `Rounds ${cut + 1}+`, "cheap reaches — worth knowing, but nobody loses a season here", t.avoidLate || [], "Overpay", "avoid"),
+          )}
         </Section>
       )}
 
@@ -14546,7 +14694,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
           table with the answer written above it in a sentence: when did the teams that finished well take
           their first one. The hover that names the players stays, because that is the part you can act on. */}
       <Section n={6} title="When the best teams took each position" accent="var(--mut)"
-        sub="Every team in every mock, sorted into groups by the round it took its first player at each position — then those groups ranked by how they actually finished. The top row of each table is the timing that worked; hover any row to see who those teams took, round by round.">
+        sub={`Every team in every mock, sorted into groups by the round it took its FIRST player at each position, then ranked by how those teams actually finished. Avg points is that group's average projected starting-lineup total. Vs field is the same number as a difference from the average team across all ${t.n} mock${t.n === 1 ? "" : "s"}, holding keeper value equal — so +40 means the group finished 40 points ahead of the room. Teams is how many team-drafts are in the group; anything under ${Math.max(3, Math.round((t.rows || []).length * 0.08))} is dropped as too thin to read.`}>
         <div className="panel" style={{ padding: 14 }}>
           {(t.groups || []).map((g) => {
             if (!g || g.buckets.length < 2) return null;
@@ -14562,22 +14710,22 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
               <div key={g.label} style={{ marginBottom: 16 }}>
                 <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 3, color: isShape ? "var(--mut)" : POS_COLOR[g.label] || "var(--mut)", fontWeight: 800 }}>{label}</div>
                 <div data-takeaway={g.label} style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 7 }}>{spread > 0 ? takeaway : `No timing separated itself at ${isShape ? "the open" : g.label} — every group finished within ${Math.abs(spread)} points of the others, so take the board.`}</div>
-                <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 92px 72px 56px", gap: 9, fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, padding: "0 8px 4px", maxWidth: 560 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 100px 72px 84px", gap: 9, fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, padding: "0 8px 4px", maxWidth: 600 }}>
                   <span>{isShape ? "Opening shape" : "When they took one"}</span>
-                  <span style={{ textAlign: "right" }}>Avg points</span>
-                  <span style={{ textAlign: "right" }}>vs field</span>
-                  <span style={{ textAlign: "right" }}>Teams</span>
+                  <span style={{ textAlign: "right" }}>Avg lineup pts</span>
+                  <span style={{ textAlign: "right" }}>vs room</span>
+                  <span style={{ textAlign: "right" }}>Team-drafts</span>
                 </div>
                 {g.buckets.map((b, i) => (
                   <div key={b.key} data-bucket={`${g.label}:${i}`} onMouseEnter={(e) => showTip(e, [
                     { kind: "take", tone: b.edge >= 0 ? "good" : "bad", x: `${b.key} — averaged ${b.pts} projected points` },
-                    { t: "vs the rest of the room", x: `${b.edge >= 0 ? "+" : ""}${b.edge} points against the average team across all of your mocks, over ${b.n} team-drafts.` },
-                    { kind: "altheader", x: "What those teams typically took" },
+                    { t: "vs the room", x: `${b.edge >= 0 ? "+" : ""}${b.edge} projected points against the average team across all of your mocks (keeper value held equal), measured over ${b.n} team-drafts.` },
+                    { kind: "altheader", x: `What those teams typically took, round by round — every position, not just ${isShape ? "the opening" : g.label}` },
                     ...(b.typical && b.typical.some((x) => x.p)
                       ? [{ kind: "playertable", cols: ["rank", "name", "pts"], players: b.typical.filter((x) => x.p).map((x) => ({ posRank: `R${x.round}`, pos: x.p.pos, name: x.p.name, pts: Math.round(x.p.pts || 0) })) }]
                       : [{ t: "—", x: "No single player recurred often enough to name" }]),
                   ])} onMouseLeave={hideTip}
-                    style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 92px 72px 56px", gap: 9, alignItems: "center", fontSize: 12.5, padding: "6px 8px", cursor: "help", maxWidth: 560,
+                    style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 100px 72px 84px", gap: 9, alignItems: "center", fontSize: 12.5, padding: "6px 8px", cursor: "help", maxWidth: 600,
                       borderTop: "1px solid var(--line)", borderRadius: i === 0 ? 7 : 0,
                       background: i === 0 && spread > 0 ? "rgba(212,175,55,.09)" : "transparent" }}>
                     <span style={{ color: i === 0 && spread > 0 ? "var(--gold)" : "var(--ink)", fontWeight: i === 0 && spread > 0 ? 700 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>

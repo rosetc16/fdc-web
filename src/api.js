@@ -124,11 +124,18 @@ export const api = {
     if (!getToken()) return null;
     const r = await call('/api/auth/me'); return r.user;
   },
-  // Password reset. `forgot` answers the same way whether or not the address has an account, so never
-  // report back anything that would confirm one exists. `reset` signs the user straight in on success.
+  // Password reset. `forgot` now answers 404 with code NO_ACCOUNT when the address has no account (see the
+  // note in the backend's auth route — a deliberate, rate-limited trade), so the modal can say which of the
+  // two things went wrong instead of leaving someone waiting for an email that was never sent to anybody.
   // retries:0 — a resend would issue a SECOND token and silently invalidate the link already in flight.
   async forgotPassword(email) {
     return call('/api/auth/forgot', { method: 'POST', auth: false, retries: 0, body: { email } });
+  },
+  // Does this address have an account? Backs "Forgot username" — the username here IS the email, so there
+  // is nothing to send and the only useful answer is yes/no. `null` means the server declined to say.
+  async accountExists(email) {
+    const r = await call('/api/auth/account-exists', { method: 'POST', auth: false, retries: 0, body: { email } });
+    return r && typeof r.exists !== 'undefined' ? r.exists : null;
   },
   async resetPassword(token, password) {
     const r = await call('/api/auth/reset', { method: 'POST', auth: false, retries: 0, body: { token, password } });
