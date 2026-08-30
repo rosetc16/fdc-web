@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29e";
+const BUILD_TAG = "2026.07.29f";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -13808,6 +13808,13 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
       const made = madeBy[t];
       if (!made.length) continue;
       const firstAt = (pos) => { const f = made.find((x) => x.p.pos === pos); return f ? f.round : 99; };
+      // ⭐⭐ AND THE SECOND ONE. Trey: "I do think it's not just about when you took the first one (like we
+      //   mentioned earlier), but perhaps it's about taking the first one AND when you go and get someone
+      //   later." A team that took its first WR in round 6 and its second in round 7 built a completely
+      //   different roster from one that took its first in round 6 and never came back — and until now
+      //   they were the same row.
+      const nthAt = (pos, n) => { const f = made.filter((x) => x.p.pos === pos); return f[n - 1] ? f[n - 1].round : 99; };
+      const countAt = (pos) => made.filter((x) => x.p.pos === pos).length + ((keeperByTeam[t] || []).filter((kp) => kp && cpos(kp.pos) === pos).length);
       const firstN = made.slice(0, 4).map((x) => x.p.pos);
       const rbEarly = firstN.filter((x) => x === "RB").length;
       const wrEarly = firstN.filter((x) => x === "WR").length;
@@ -13819,6 +13826,8 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
         pts: Math.round(lineupPts(roster[t], sf)),
         nKeep: (keeperByTeam[t] || []).length,
         qbRound: firstAt("QB"), teRound: firstAt("TE"), rbRound: firstAt("RB"), wrRound: firstAt("WR"),
+        second: { QB: nthAt("QB", 2), RB: nthAt("RB", 2), WR: nthAt("WR", 2), TE: nthAt("TE", 2) },
+        held: { QB: countAt("QB"), RB: countAt("RB"), WR: countAt("WR"), TE: countAt("TE") },
         rbEarly, wrEarly,
         shape: rbEarly > wrEarly ? "RB-early" : wrEarly > rbEarly ? "WR-early" : "Balanced",
         open3: firstN.slice(0, 3).join("-"),
@@ -13910,6 +13919,13 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
       bench: lu ? lu.bench.slice(0, 8).map((x) => ({ name: x.name, pos: x.pos, pts: Math.round(x.pts || 0) })) : [],
       bestPts: ranked[0] ? ranked[0].pts : null,
       gapToFirst: ranked[0] ? ranked[0].pts - mine.pts : null,
+      // ⭐ AND WHAT THE TEAM THAT BEAT YOU DID. A rank on its own tells you that you lost; the winner's
+      //   opening tells you what you lost to, which is the only actionable half.
+      winOpen3: ranked[0] ? ranked[0].open3 : null,
+      winShape: ranked[0] ? ranked[0].shape : null,
+      winQbRound: ranked[0] ? ranked[0].qbRound : null,
+      held: mine.held || null,
+      second: mine.second || null,
     });
   });
   base.myRuns = myRuns;
@@ -13981,12 +13997,22 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
     const g2 = {};
     rows.forEach((r) => { const k = fn(r); if (k == null) return; (g2[k] = g2[k] || []).push(r); });
     const minN = Math.max(3, Math.round(rows.length * 0.08));
-    const out = Object.entries(g2).map(([k, arr]) => ({
-      key: k, n: arr.length,
-      edge: Math.round(arr.reduce((s2, x) => s2 + x.edge, 0) / arr.length),
-      pts: Math.round(arr.reduce((s2, x) => s2 + x.pts, 0) / arr.length),
-      teamKeys: arr.map((x) => `${x.mock}:${x.team}`),
-    })).filter((b) => b.n >= minN);
+    const out = Object.entries(g2).map(([k, arr]) => {
+      // ⭐ WHAT THESE TEAMS DID NEXT AT THE SAME POSITION. A mean over 99s (never took one) would be
+      //   nonsense, so the 99s are counted separately and reported as a share.
+      const pos = POS.includes(label) ? label : null;
+      const secs = pos ? arr.map((x) => (x.second ? x.second[pos] : 99)) : [];
+      const gotTwo = secs.filter((r) => r < 99);
+      return {
+        key: k, n: arr.length,
+        edge: Math.round(arr.reduce((s2, x) => s2 + x.edge, 0) / arr.length),
+        pts: Math.round(arr.reduce((s2, x) => s2 + x.pts, 0) / arr.length),
+        secondRound: gotTwo.length ? Math.round((gotTwo.reduce((s2, r) => s2 + r, 0) / gotTwo.length) * 10) / 10 : null,
+        secondShare: secs.length ? Math.round((gotTwo.length / secs.length) * 100) : null,
+        held: pos ? Math.round((arr.reduce((s2, x) => s2 + ((x.held && x.held[pos]) || 0), 0) / arr.length) * 10) / 10 : null,
+        teamKeys: arr.map((x) => `${x.mock}:${x.team}`),
+      };
+    }).filter((b) => b.n >= minN);
     out.sort((a, b) => b.edge - a.edge);
     return { label, buckets: out };
   };
@@ -14108,6 +14134,48 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
       };
     })
     .filter((x) => x.worthRound != null);
+  // ⭐⭐⭐ WHICH PLAYERS MADE THESE TEAMS GOOD. Trey, on section 06: "can you find a way to highlight which
+  //   players were 'league winners' in each of these sections. For example, the first WR taken shows that
+  //   round 6+ was the 'best,' but this surprises me unless there is just a ton of strong WR post 6+ that
+  //   are league winners."
+  //   That is the right suspicion to have, and the honest answer is usually neither: a bucket wins because
+  //   of who those teams ended up with, which may have nothing to do with the position the row is about.
+  //   So each bucket now carries (a) what share of its teams actually finished in the top quarter — the
+  //   sanity check on whether "best" means anything — and (b) the players most responsible, ranked by how
+  //   much more often they show up on winners than losers, with the ones AT THE ROW'S POSITION marked so
+  //   you can see at a glance whether the finding is really about that position at all.
+  const liftById = new Map();
+  playerAgg.forEach((a, pid) => {
+    if (a.n < 2) return;
+    liftById.set(pid, { p: a.p, lift: Math.round(((a.onWin - a.onLose) / Math.max(1, a.n)) * 100), n: a.n });
+  });
+  const winnerKeys = new Set(top.map((r) => `${r.mock}:${r.team}`));
+  const bucketWinners = (teamKeys, pos) => {
+    const tally = new Map();
+    teamKeys.forEach((k) => (picksByTeamKey.get(k) || []).forEach((x) => {
+      if (x.kept) return;
+      tally.set(x.p.id, (tally.get(x.p.id) || 0) + 1);
+    }));
+    // ⚠ A PLAYER CAN ONLY BE DRAFTED ONCE PER MOCK, so a threshold scaled off the number of TEAM-DRAFTS in
+    //   the bucket (teams x mocks) is unreachable — a 30-team bucket demanded 9 appearances from a player
+    //   who can appear at most 6 times. The ceiling is the mock count, not the team count.
+    const min = Math.max(2, Math.round(Math.min(teamKeys.length, usable.length) * 0.34));
+    return [...tally.entries()]
+      .filter(([pid, n]) => n >= min && liftById.has(pid) && liftById.get(pid).lift > 0)
+      .map(([pid, n]) => {
+        const L = liftById.get(pid);
+        return { id: pid, name: L.p.name, pos: L.p.pos, pts: Math.round(L.p.pts || 0), lift: L.lift, onN: n, of: teamKeys.length, atPos: cpos(L.p.pos) === pos };
+      })
+      .sort((a, b) => b.lift - a.lift || b.onN - a.onN)
+      .slice(0, 5);
+  };
+  groups.forEach((g) => g.buckets.forEach((b) => {
+    const pos = POS.includes(g.label) ? g.label : null;
+    b.winners = bucketWinners(b.teamKeys, pos);
+    b.topShare = b.teamKeys.length ? Math.round((b.teamKeys.filter((k) => winnerKeys.has(k)).length / b.teamKeys.length) * 100) : null;
+    b.atPosShare = b.winners.length ? Math.round((b.winners.filter((w) => w.atPos).length / b.winners.length) * 100) : null;
+  }));
+
   // (a) ⭐ BARGAINS — "players who have higher VBD than what their ADP would suggest, or players that
   //     consistently show up on teams that are benefitting by drafting them." Both, and both stated in
   //     ROUNDS, because "+34" is a number you have to be told how to read and "goes in round 6, plays like
@@ -14118,21 +14186,31 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
   //     are different decisions: a round-2 mistake costs a starter, a round-11 one costs a bench flier, and
   //     mixing them buries the first under a pile of the second.
   const EARLY_CUT = 5;
+  // ⭐ SORTED BY THE ROUND THEY'RE WORTH. Trey: "can you make sure to sort each one based on the round they
+  //   are worth." The "Plays like" column is the point of both tables, so it should read straight down.
+  // ⚠ BUT SELECTION AND DISPLAY ORDER ARE DIFFERENT JOBS, and conflating them silently broke the dynasty
+  //   check: with the list SORTED by worthRound and then capped, the worst offenders (worth past the last
+  //   pick) sort to the bottom and fall off the end — the avoid list quietly stopped containing the players
+  //   it exists to warn about. So: rank by SEVERITY, cut to the ones worth showing, then sort THOSE by the
+  //   round they're worth.
+  const byWorth = (a, b) => (a.worthRound - b.worthRound) || (b.val - a.val);
   const rankBargain = (a, b) => (b.goesRound - b.worthRound) * 12 + b.lift * 0.5 - ((a.goesRound - a.worthRound) * 12 + a.lift * 0.5);
   const bargains = priced.filter((x) => x.worthRound <= x.goesRound - 1 || (x.lift >= 25 && x.edge > 0)).sort(rankBargain);
-  base.valuePlayers = bargains.slice(0, 12);
-  base.valueEarly = bargains.filter((x) => x.goesRound <= EARLY_CUT).slice(0, 18);
-  base.valueLate = bargains.filter((x) => x.goesRound > EARLY_CUT).slice(0, 18);
+  base.valuePlayers = bargains.slice(0, 12).sort(byWorth);
+  base.valueEarly = bargains.filter((x) => x.goesRound <= EARLY_CUT).slice(0, 18).sort(byWorth);
+  base.valueLate = bargains.filter((x) => x.goesRound > EARLY_CUT).slice(0, 18).sort(byWorth);
   base.earlyCut = EARLY_CUT;
   // (b) ⭐ AND THE OPPOSITE, which is the section he asked me to replace the reach list with: "players who
   //     have lower VBD who are going too high." The old reach list just found first-rounders, because
   //     everyone taken before your slot in round 1 is trivially "gone before your pick" — it was measuring
   //     the draft order, not a mistake.
+  // Selection by severity here too — the biggest reaches are the ones worth naming — then displayed in
+  // worth order like the bargains.
   const avoids = priced.filter((x) => x.worthRound >= x.goesRound + 2)
     .sort((a, b) => (b.worthRound - b.goesRound) - (a.worthRound - a.goesRound));
-  base.avoidPlayers = avoids.slice(0, 12);
-  base.avoidEarly = avoids.filter((x) => x.goesRound <= EARLY_CUT).slice(0, 18);
-  base.avoidLate = avoids.filter((x) => x.goesRound > EARLY_CUT).slice(0, 18);
+  base.avoidPlayers = avoids.slice(0, 12).sort(byWorth);
+  base.avoidEarly = avoids.filter((x) => x.goesRound <= EARLY_CUT).slice(0, 18).sort(byWorth);
+  base.avoidLate = avoids.filter((x) => x.goesRound > EARLY_CUT).slice(0, 18).sort(byWorth);
 
   // (c) ⭐⭐ WAIT OR DON'T, MEASURED THE ONLY WAY THAT WORKS: RELATIVE.
   //     The first version compared each position's drop to an absolute point threshold and told Trey to
@@ -14141,18 +14219,62 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
   //     "does it decay faster than the alternatives". So: what share of its early-round value does each
   //     position still return later? That is scale-free, comparable across positions, and it ranks them
   //     against each other instead of against a constant I made up.
-  const bandOf = (round) => (round <= 3 ? 0 : round <= 6 ? 1 : round <= 10 ? 2 : 3);
-  const BANDS = ["Rounds 1-3", "Rounds 4-6", "Rounds 7-10", "Rounds 11+"];
+  // ⭐ HIS BANDS. Trey: "can you make it rounds 1-2, 3-4, 5-7, 8-10, 10+" — finer at the top, where the
+  //   decisions are, and coarser in the back half where they aren't. (The last one reads 11+ so it doesn't
+  //   overlap the band before it.)
+  const bandOf = (round) => (round <= 2 ? 0 : round <= 4 ? 1 : round <= 7 ? 2 : round <= 10 ? 3 : 4);
+  const BANDS = ["Rounds 1-2", "Rounds 3-4", "Rounds 5-7", "Rounds 8-10", "Rounds 11+"];
+  const BAND_END = [2, 4, 7, 10, rounds];   // last round inside each band — the pace model counts to these
   // ⭐⭐ AND EVERY BAND CARRIES THE PLAYERS IN IT. Trey: "can you show on the hover for each round and
   //   position what players fit in that section (and highlight the ones you think are great value / then
   //   show in red the ones that are worse value)." A bar that says "231" without naming anybody is a claim
   //   you have to take on trust; the names are the part you can act on. Good/bad is decided against the
   //   PRICE OF THAT BAND — a player is green when his value beats what a pick in those rounds ordinarily
   //   buys and red when it doesn't, which is the same standard sections 04 and 05 use.
-  const BAND_MID = [2, 5, 8.5, 12.5];   // representative round inside each band, for pricing it
+  const BAND_MID = [1.5, 3.5, 6, 9, Math.max(11, (10 + rounds) / 2)];   // representative round in each band, for pricing it
+  // ⭐⭐⭐ PACE — HOW MANY YOU HAVE BY WHEN, NOT JUST WHEN YOU STARTED.
+  //   Trey: "I think we also need to show something about how many you are taking before a certain round…
+  //   for example, you could take a RB in round 1, but if you wait until round 9 to take your second,
+  //   you're probably in a bad spot."
+  //   That is a different question from everything else on this page and it is the one a drafter actually
+  //   gets wrong. "First RB in round 1" and "first RB in round 1, second in round 9" are the same row in
+  //   section 06 and completely different rosters. So: for every team-draft, count how many of each
+  //   position it held at the end of each band, then compare the TOP QUARTER of finishers against the
+  //   BOTTOM QUARTER at each of those checkpoints. Where the two pull apart is the round the gap opens.
+  const teamPosByRound = new Map();   // "mock:team" -> { pos -> [rounds taken] }
+  usable.forEach((m) => m.picks.forEach((pid, o) => {
+    if (pid == null || o >= TOTAL) return;
+    const p = byId[pid]; if (!p || keeperIds.has(pid)) return;
+    const tm = teamAt(o); if (tm == null || tm < 0 || tm >= teams) return;
+    const key = `${m.id}:${tm}`;
+    let e = teamPosByRound.get(key);
+    if (!e) { e = {}; teamPosByRound.set(key, e); }
+    (e[cpos(p.pos)] = e[cpos(p.pos)] || []).push(Math.floor(o / teams) + 1);
+  }));
+  // Keepers count toward a team's pace — a manager holding an RB is not "behind" on backs.
+  keepersResolved.forEach((k) => {
+    if (!k || k.playerId == null) return;
+    const p = byId[k.playerId]; if (!p) return;
+    const owner = k.o != null ? teamAt(k.o) : k.team;
+    if (owner == null) return;
+    usable.forEach((m) => {
+      const e = teamPosByRound.get(`${m.id}:${owner}`); if (!e) return;
+      (e[cpos(p.pos)] = e[cpos(p.pos)] || []).push(k.o != null ? Math.floor(k.o / teams) + 1 : 1);
+    });
+  });
+  const heldBy = (key, pos, byRound) => {
+    const e = teamPosByRound.get(key); if (!e || !e[pos]) return 0;
+    return e[pos].filter((r) => r <= byRound).length;
+  };
+  const paceFor = (pos) => BAND_END.map((endR) => {
+    const avg = (arr) => (arr.length ? arr.reduce((s2, r) => s2 + heldBy(`${r.mock}:${r.team}`, pos, endR), 0) / arr.length : null);
+    const t2 = avg(top), b2 = avg(bottom);
+    return { byRound: endR, top: t2 == null ? null : Math.round(t2 * 10) / 10, bottom: b2 == null ? null : Math.round(b2 * 10) / 10 };
+  });
+
   const curves = POS.map((pos) => {
-    const bands = [[], [], [], []];
-    const bandMen = [new Map(), new Map(), new Map(), new Map()];
+    const bands = BANDS.map(() => []);
+    const bandMen = BANDS.map(() => new Map());
     usable.forEach((m) => m.picks.forEach((pid, o) => {
       const p = byId[pid];
       if (!p || p.pos !== pos || keeperIds.has(pid) || o >= TOTAL) return;
@@ -14181,7 +14303,30 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
     //   wants is the price of waiting, in the currency of the thing being drafted — how many projected
     //   points the player you'd get in rounds 4-6 gives up against the one you'd have got in rounds 1-3.
     const costOfWaiting = withData.length >= 2 ? Math.round(withData[0].v - withData[1].v) : null;
-    return { pos, avg, bands: BANDS, men, retention, costOfWaiting,
+    // ⭐ THE PACE READ, and the checkpoint where it matters most.
+    const pace = paceFor(pos);
+    const spread = pace.map((x) => (x.top != null && x.bottom != null ? x.top - x.bottom : null));
+    // ⚠ WHERE THE GAP OPENS, NOT WHERE IT IS BIGGEST. These counts only ever accumulate, so the largest
+    //   absolute gap is almost always at the LAST checkpoint — which is a fact about the finished roster,
+    //   not a decision you can act on mid-draft. The useful checkpoint is the EARLIEST one where the gap is
+    //   already most of what it is going to be.
+    const PACE_MIN = 0.35;
+    const maxGap = spread.reduce((m, g) => (g != null && Math.abs(g) > Math.abs(m) ? g : m), 0);
+    let worstI = -1;
+    if (Math.abs(maxGap) >= PACE_MIN) {
+      worstI = spread.findIndex((g) => g != null && Math.sign(g) === Math.sign(maxGap) && Math.abs(g) >= Math.max(PACE_MIN, Math.abs(maxGap) * 0.6));
+    }
+    const worstGap = worstI < 0 ? 0 : spread[worstI];
+    const at = worstI < 0 ? null : pace[worstI];
+    const isEnd = at && at.byRound >= (rounds || 15);
+    const when = at ? (isEnd ? "by the end of the draft" : `by the end of round ${at.byRound}`) : "";
+    const paceLine = worstI < 0
+      ? null
+      : worstGap > 0
+        ? `Pace: ${when} the best rosters already held ${at.top} ${pos}${at.top === 1 ? "" : "s"} against ${at.bottom} on the worst${isEnd ? "" : ` — and the gap is already open there, well before the last ${pos} comes off the board`}. Taking one early and then leaving the position alone is the trap this measures.`
+        : `Pace: the best rosters held FEWER ${pos}s (${at.top}) than the worst (${at.bottom}) ${when} — spending extra picks here is costing those teams somewhere else.`;
+
+    return { pos, avg, bands: BANDS, men, retention, costOfWaiting, pace, paceLine, paceGap: worstGap, paceAt: worstI < 0 ? null : pace[worstI].byRound,
       earlyBand: withData[0] ? BANDS[withData[0].i] : null,
       laterBand: withData[1] ? BANDS[withData[1].i] : null,
       early: withData[0] ? withData[0].v : null, later: withData[1] ? withData[1].v : null, late };
@@ -14441,11 +14586,14 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
     );
   };
   // One column of the pair: heading, note, rows, and its own expander.
+  // ⭐ ONE BUTTON PER SECTION. Trey: "can you just do one button for each one of 'going later' and 'going
+  //   earlier'. I don't want to have to click twice." The expander now keys on the SECTION, so both columns
+  //   open together and it sits under the pair rather than inside a column.
   const priceCol = (key, label, note, list, lastCol, kind) => {
     const open = !!expanded[key];
     const shown = open ? list : list.slice(0, SHOW_FIRST);
     return (
-      <div data-pricecol={key} style={{ minWidth: 0 }}>
+      <div data-pricecol={`${key}:${label}`} style={{ minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "0 10px 4px", flexWrap: "wrap" }}>
           <span style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".06em" }}>{label}</span>
           <span className="mut" style={{ fontSize: 11 }}>{note}</span>
@@ -14455,27 +14603,28 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
           : <>
               {priceHead(lastCol)}
               {shown.map((v, i) => priceRow(v, i, kind))}
-              {list.length > SHOW_FIRST && (
-                <div style={{ padding: "7px 10px 0" }}>
-                  <button className="btn btn-mini" data-expander={key}
-                    onClick={() => setExpanded((e) => ({ ...e, [key]: !e[key] }))}>
-                    {open ? "Show fewer ▴" : `Show ${list.length - SHOW_FIRST} more ▾`}
-                  </button>
-                </div>
-              )}
             </>}
       </div>
     );
   };
-  // The pair, in one panel with a divider down the middle.
-  const pricePair = (a, b) => (
+  // The pair, in one panel with a divider down the middle and ONE expander underneath for both columns.
+  const pricePair = (key, a, b, hidden) => (
     <div className="panel" style={{ padding: "12px 4px" }}>
       <div className="trendpair" style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 0 }}>
         <div style={{ minWidth: 0, paddingRight: 10 }}>{a}</div>
         <div style={{ minWidth: 0, paddingLeft: 10, borderLeft: "1px solid var(--line)" }}>{b}</div>
       </div>
+      {hidden > 0 && (
+        <div style={{ padding: "10px 10px 2px", textAlign: "center" }}>
+          <button className="btn btn-mini" data-expander={key}
+            onClick={() => setExpanded((e) => ({ ...e, [key]: !e[key] }))}>
+            {expanded[key] ? "Show fewer ▴" : `Show ${hidden} more ▾`}
+          </button>
+        </div>
+      )}
     </div>
   );
+  const hiddenIn = (...lists) => lists.reduce((n, l) => n + Math.max(0, (l || []).length - SHOW_FIRST), 0);
   const cut = t.earlyCut || 5;
 
   if (!t.n) {
@@ -14534,40 +14683,89 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
       )}
 
       {/* ---- 02 · YOU vs THE ROOM ---- */}
+      {/* ⭐⭐ A TABLE, NOT A ROW OF CHIPS. Trey: "You have a ton of room to work with here. Instead of the
+          side by side 5 of 10, 6 of 10, 5 of 10… can you make this in table form, show more details of each
+          draft (aka how you started), projected points of those teams, and such." A chip carried one number
+          and hid the other six behind a hover; the space was there the whole time. */}
       {t.myRuns.length > 0 && (
         <Section n={2} title="How you've been finishing" accent="#7ed6a5"
-          sub={`Where your team landed in each mock, out of ${teams}. Hover any finish for the starting lineup you ended up with.`}>
+          sub={`One row per mock, out of ${teams}. Behind is how far off the winning team you finished; Room winner is what the team that beat you opened with. Hover any row for the full starting lineup you ended up with.`}>
           <div className="panel" style={{ padding: 14 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap", marginBottom: 12 }}>
               <div>
                 <div className="disp" style={{ fontSize: 30, fontWeight: 800, color: rankColor(t.myAvgRank, teams), lineHeight: 1 }}>{ordinal(Math.round(t.myAvgRank))}</div>
                 <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginTop: 3 }}>average finish</div>
               </div>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", flex: 1, minWidth: 0 }}>
-                {t.myRuns.map((r, i) => (
-                  <span key={r.mock} onMouseEnter={(e) => showTip(e, [
-                    { kind: "take", tone: r.rank <= 3 ? "good" : r.rank <= teams / 2 ? "neutral" : "bad",
-                      x: `Mock ${i + 1} — ${ordinal(r.rank)} of ${r.of} · ${r.pts} projected points${r.gapToFirst ? ` · ${r.gapToFirst} behind first` : " · won the room"}` },
-                    { t: "How you opened", x: `${r.open3 ? r.open3.replace(/-/g, " → ") : "—"}${r.qbRound < 99 ? ` · quarterback in round ${r.qbRound}` : " · no quarterback drafted"}` },
-                    // ⭐ THE ROSTER HE FINISHED WITH. Trey: "yes, show where I finished, show projected
-                    // points, but also show the team (starting roster) that I finished with." A rank with no
-                    // team attached is a score with no game behind it.
-                    { kind: "altheader", x: "The lineup you finished with" },
-                    ...(r.starters.length
-                      ? [{ kind: "playertable", cols: ["rank", "name", "pts"], players: r.starters.map((x) => ({ posRank: x.slot, pos: x.pos, name: x.name, pts: x.pts })) }]
-                      : [{ t: "—", x: "No lineup recorded" }]),
-                    ...(r.bench.length ? [{ kind: "altheader", x: "Bench" }, { kind: "playertable", cols: ["rank", "name", "pts"], players: r.bench.map((x) => ({ posRank: x.pos, pos: x.pos, name: x.name, pts: x.pts })) }] : []),
-                  ])} onMouseLeave={hideTip}
-                    data-runchip={i}
-                    style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 1, padding: "5px 9px", borderRadius: 8, border: `1px solid ${rankColor(r.rank, r.of)}`, background: "var(--panel2)", cursor: "help", minWidth: 44 }}>
-                    <span className="disp" style={{ fontSize: 15, fontWeight: 800, color: rankColor(r.rank, r.of) }}>{r.rank}</span>
-                    <span className="mut" style={{ fontSize: 8.5 }}>of {r.of}</span>
-                  </span>
-                ))}
+              <div>
+                <div className="disp num" style={{ fontSize: 30, fontWeight: 800, lineHeight: 1 }}>{Math.round(t.myRuns.reduce((s2, r) => s2 + r.pts, 0) / t.myRuns.length)}</div>
+                <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginTop: 3 }}>average projected pts</div>
+              </div>
+              <div>
+                <div className="disp num" style={{ fontSize: 30, fontWeight: 800, lineHeight: 1, color: "#F2655C" }}>
+                  {Math.round(t.myRuns.reduce((s2, r) => s2 + (r.gapToFirst || 0), 0) / t.myRuns.length)}
+                </div>
+                <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginTop: 3 }}>average pts behind first</div>
               </div>
             </div>
+            {(() => {
+              const RUN_COLS = "34px 62px 74px 62px minmax(0,1.25fr) 74px minmax(0,1.25fr)";
+              return (
+                <div>
+                  <div style={{ display: "grid", gridTemplateColumns: RUN_COLS, gap: 9, fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, padding: "0 8px 5px" }}>
+                    <span>Mock</span>
+                    <span>Finish</span>
+                    <span style={{ textAlign: "right" }}>Your pts</span>
+                    <span style={{ textAlign: "right" }}>Behind</span>
+                    <span>How you opened</span>
+                    <span style={{ textAlign: "right" }}>Your QB</span>
+                    <span>Room winner opened</span>
+                  </div>
+                  {t.myRuns.map((r, i) => {
+                    const isBest = t.myBest && t.myBest.mock === r.mock;
+                    const isWorst = t.myWorst && t.myWorst.mock === r.mock && !isBest;
+                    return (
+                      <div key={r.mock} data-runchip={i} onMouseEnter={(e) => showTip(e, [
+                        { kind: "take", tone: r.rank <= 3 ? "good" : r.rank <= teams / 2 ? "neutral" : "bad",
+                          x: `Mock ${i + 1} — ${ordinal(r.rank)} of ${r.of} · ${r.pts} projected points${r.gapToFirst ? ` · ${r.gapToFirst} behind first` : " · won the room"}` },
+                        { t: "How you opened", x: `${r.open3 ? r.open3.replace(/-/g, " → ") : "—"}${r.qbRound < 99 ? ` · quarterback in round ${r.qbRound}` : " · no quarterback drafted"}` },
+                        ...(r.held ? [{ t: "You finished with", x: POS.map((pp) => `${r.held[pp] || 0} ${pp}`).join(" · ") }] : []),
+                        ...(r.winOpen3 ? [{ t: "The team that won the room", x: `Opened ${r.winOpen3.replace(/-/g, " → ")}${r.winQbRound != null && r.winQbRound < 99 ? `, quarterback in round ${r.winQbRound}` : ""} and finished on ${r.bestPts} points.` }] : []),
+                        { kind: "altheader", x: "The lineup you finished with" },
+                        ...(r.starters.length
+                          ? [{ kind: "playertable", cols: ["rank", "name", "pts"], players: r.starters.map((x) => ({ posRank: x.slot, pos: x.pos, name: x.name, pts: x.pts })) }]
+                          : [{ t: "—", x: "No lineup recorded" }]),
+                        ...(r.bench.length ? [{ kind: "altheader", x: "Bench" }, { kind: "playertable", cols: ["rank", "name", "pts"], players: r.bench.map((x) => ({ posRank: x.pos, pos: x.pos, name: x.name, pts: x.pts })) }] : []),
+                      ])} onMouseLeave={hideTip}
+                        style={{ display: "grid", gridTemplateColumns: RUN_COLS, gap: 9, alignItems: "center", fontSize: 12.5, padding: "7px 8px", cursor: "help",
+                          borderTop: "1px solid var(--line)", borderRadius: isBest || isWorst ? 7 : 0,
+                          background: isBest ? "rgba(95,208,168,.09)" : isWorst ? "rgba(242,101,92,.08)" : "transparent" }}>
+                        <span className="mut num" style={{ fontSize: 11.5 }}>{i + 1}</span>
+                        <span style={{ display: "flex", alignItems: "baseline", gap: 3 }}>
+                          <b className="num" style={{ fontSize: 14, color: rankColor(r.rank, r.of) }}>{ordinal(r.rank)}</b>
+                          <span className="mut" style={{ fontSize: 9.5 }}>of {r.of}</span>
+                        </span>
+                        <span className="num" style={{ textAlign: "right", fontWeight: 700 }}>{r.pts}</span>
+                        <span className="num" style={{ textAlign: "right", fontSize: 11.5, color: r.gapToFirst ? "#F2655C" : "#5FD0A8" }}>{r.gapToFirst ? `−${r.gapToFirst}` : "won"}</span>
+                        <span style={{ display: "flex", gap: 3, flexWrap: "nowrap", overflow: "hidden" }}>
+                          {(r.open3 ? r.open3.split("-") : []).map((pp, k) => (
+                            <b key={k} style={{ fontSize: 10.5, color: POS_COLOR[pp] || "var(--mut)", border: `1px solid ${POS_COLOR[pp] || "var(--line)"}44`, borderRadius: 4, padding: "1px 5px" }}>{pp}</b>
+                          ))}
+                        </span>
+                        <span className="num" style={{ textAlign: "right", fontSize: 11.5, color: "var(--mut)" }}>{r.qbRound < 99 ? `R${r.qbRound}` : "none"}</span>
+                        <span style={{ display: "flex", gap: 3, alignItems: "center", flexWrap: "nowrap", overflow: "hidden" }}>
+                          {(r.winOpen3 ? r.winOpen3.split("-") : []).map((pp, k) => (
+                            <b key={k} style={{ fontSize: 10.5, color: POS_COLOR[pp] || "var(--mut)", border: `1px solid ${POS_COLOR[pp] || "var(--line)"}44`, borderRadius: 4, padding: "1px 5px", opacity: 0.85 }}>{pp}</b>
+                          ))}
+                          {r.bestPts != null && <span className="mut num" style={{ fontSize: 10.5, marginLeft: 2 }}>{r.bestPts}</span>}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
             {t.myBest && t.myWorst && t.myBest.mock !== t.myWorst.mock && (
-              <div style={{ fontSize: 12.5, lineHeight: 1.55, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+              <div style={{ fontSize: 12.5, lineHeight: 1.55, borderTop: "1px solid var(--line)", paddingTop: 10, marginTop: 10 }}>
                 <b style={{ color: "#5FD0A8" }}>Your best run</b> finished {ordinal(t.myBest.rank)} ({t.myBest.pts} pts) opening {t.myBest.open3 ? t.myBest.open3.replace(/-/g, " → ") : "—"}
                 {t.myBest.qbRound < 99 ? ` and taking a quarterback in round ${t.myBest.qbRound}` : " without drafting a quarterback"}.{" "}
                 <b style={{ color: "#F2655C" }}>Your worst</b> finished {ordinal(t.myWorst.rank)} ({t.myWorst.pts} pts) opening {t.myWorst.open3 ? t.myWorst.open3.replace(/-/g, " → ") : "—"}
@@ -14632,6 +14830,23 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                   {c.why && (
                     <div data-why={c.pos} style={{ fontSize: 12.5, lineHeight: 1.5, marginTop: 7, paddingLeft: 9, borderLeft: `2px solid ${vc}` }}>{c.why}</div>
                   )}
+                  {/* ⭐⭐⭐ AND THE PACE. "you could take a RB in round 1… but if you wait until round 9 to
+                      take your second, you're probably in a bad spot." Everything above this line is about
+                      the FIRST one; this row is about how many you have by when, best rosters against
+                      worst, at the end of each band. */}
+                  {c.pace && c.pace.some((x) => x.top != null) && (
+                    <div data-pace={c.pos} style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, background: "var(--panel2)", border: "1px solid var(--line)" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: `92px repeat(${c.pace.length}, minmax(0,1fr))`, gap: 6, alignItems: "center" }}>
+                        <span className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700 }}>{c.pos}s held by</span>
+                        {c.pace.map((x) => <span key={x.byRound} className="mut num" style={{ fontSize: 10, textAlign: "center" }}>end of R{x.byRound}</span>)}
+                        <span style={{ fontSize: 10.5, fontWeight: 700, color: "#5FD0A8" }}>Best rosters</span>
+                        {c.pace.map((x) => <span key={x.byRound} className="num" style={{ fontSize: 13, fontWeight: 800, textAlign: "center", color: "#5FD0A8" }}>{x.top == null ? "—" : x.top}</span>)}
+                        <span className="mut" style={{ fontSize: 10.5 }}>Worst rosters</span>
+                        {c.pace.map((x) => <span key={x.byRound} className="num mut" style={{ fontSize: 13, textAlign: "center" }}>{x.bottom == null ? "—" : x.bottom}</span>)}
+                      </div>
+                      {c.paceLine && <div data-paceline={c.pos} style={{ fontSize: 12, lineHeight: 1.5, marginTop: 7, paddingTop: 7, borderTop: "1px solid var(--line)" }}>{c.paceLine}</div>}
+                    </div>
+                  )}
                   {/* ⭐⭐ WHERE THE TWO READS DISAGREE, SAY SO HERE rather than letting section 01 and this
                       one contradict each other on opposite ends of the page. */}
                   {c.conflict && (
@@ -14668,10 +14883,10 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
       {t.valuePlayers && t.valuePlayers.length > 0 && (
         <Section n={4} title="Going later than they're worth" accent="#5FD0A8"
           sub={`Where a player's ${t.valueMetric === "value" ? "long-term value" : "value over replacement"} is higher than the pick he actually goes at in your room would ordinarily buy. Read it as "goes in round 6, plays like a round 3 pick". Kickers and defenses are left out — they're priced on a different basis entirely.`}>
-          {pricePair(
-            priceCol("vE", `Rounds 1-${cut}`, "starters — a round of surplus here is the whole draft", t.valueEarly || [], "On winners", "value"),
-            priceCol("vL", `Rounds ${cut + 1}+`, "depth and fliers — cheap, and where a room gives away points", t.valueLate || [], "On winners", "value"),
-          )}
+          {pricePair("val",
+            priceCol("val", `Rounds 1-${cut}`, "starters — a round of surplus here is the whole draft", t.valueEarly || [], "On winners", "value"),
+            priceCol("val", `Rounds ${cut + 1}+`, "depth and fliers — cheap, and where a room gives away points", t.valueLate || [], "On winners", "value"),
+            hiddenIn(t.valueEarly, t.valueLate))}
         </Section>
       )}
 
@@ -14679,22 +14894,24 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
       {t.avoidPlayers && t.avoidPlayers.length > 0 && (
         <Section n={5} title="Going earlier than they're worth" accent="#F2655C"
           sub="The mirror image: your room reaches for these. Letting one come to you two rounds later costs nothing, and taking him at his going rate costs you the pick. Kickers and defenses are excluded here too.">
-          {pricePair(
-            priceCol("aE", `Rounds 1-${cut}`, "the expensive mistakes — one of these costs you a starter", t.avoidEarly || [], "Overpay", "avoid"),
-            priceCol("aL", `Rounds ${cut + 1}+`, "cheap reaches — worth knowing, but nobody loses a season here", t.avoidLate || [], "Overpay", "avoid"),
-          )}
+          {pricePair("avd",
+            priceCol("avd", `Rounds 1-${cut}`, "the expensive mistakes — one of these costs you a starter", t.avoidEarly || [], "Overpay", "avoid"),
+            priceCol("avd", `Rounds ${cut + 1}+`, "cheap reaches — worth knowing, but nobody loses a season here", t.avoidLate || [], "Overpay", "avoid"),
+            hiddenIn(t.avoidEarly, t.avoidLate))}
         </Section>
       )}
 
       {/* ---- 06 · THE EVIDENCE ---- */}
-      {/* ⭐⭐ NO GRAPHS. Trey: "The 'what separated the best rosters' is still incredibly confusing. I just
-          don't know what this is getting at with the graphs." He is right — a diverging bar around an
-          invisible zero, next to a bare number with no unit, asks the reader to reverse-engineer what is
-          being compared before they can read it. It is one question with one answer, so it is now a plain
-          table with the answer written above it in a sentence: when did the teams that finished well take
-          their first one. The hover that names the players stays, because that is the part you can act on. */}
+      {/* ⭐⭐ NO GRAPHS (see 29d) — a plain table with the answer written above it in a sentence.
+          ⭐⭐⭐ AND IT IS NOT JUST ABOUT THE FIRST ONE. Trey: "the first WR taken shows that round 6+ was
+          the 'best,' but this surprises me unless there is just a ton of strong WR post 6+ that are league
+          winners… I do think it's not just about when you took the first one, but perhaps it's about taking
+          the first one AND when you go and get someone later." Both halves are now on the row: when those
+          teams came back for their SECOND at the position and how many they finished with, plus the players
+          that actually separated them — marked when they're at the row's own position, so a finding that has
+          nothing to do with that position is visible as one. */}
       <Section n={6} title="When the best teams took each position" accent="var(--mut)"
-        sub={`Every team in every mock, sorted into groups by the round it took its FIRST player at each position, then ranked by how those teams actually finished. Avg points is that group's average projected starting-lineup total. Vs field is the same number as a difference from the average team across all ${t.n} mock${t.n === 1 ? "" : "s"}, holding keeper value equal — so +40 means the group finished 40 points ahead of the room. Teams is how many team-drafts are in the group; anything under ${Math.max(3, Math.round((t.rows || []).length * 0.08))} is dropped as too thin to read.`}>
+        sub={`Every team in every mock, grouped by the round it took its FIRST player at each position, then ranked by how those teams finished. Avg lineup pts is the group's average projected starting-lineup total; vs room is that figure against the average team across all ${t.n} mock${t.n === 1 ? "" : "s"} with keeper value held equal; 2nd one is the round they came back for another; Held is how many they finished with. Anything under ${Math.max(3, Math.round((t.rows || []).length * 0.08))} team-drafts is dropped as too thin to read.`}>
         <div className="panel" style={{ padding: 14 }}>
           {(t.groups || []).map((g) => {
             if (!g || g.buckets.length < 2) return null;
@@ -14703,29 +14920,45 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
             const nice = (k) => k.replace(/^First \w+ in /, "").replace(/-early$/, "-heavy");
             const best = g.buckets[0], worst = g.buckets[g.buckets.length - 1];
             const spread = best.pts - worst.pts;
+            const COLS = isShape ? "minmax(0,1fr) 100px 68px 74px" : "minmax(0,1fr) 100px 68px 76px 56px 74px";
             const takeaway = isShape
               ? `Teams that opened ${nice(best.key)} averaged ${best.pts} projected points — ${spread} more than the ones that opened ${nice(worst.key)}.`
-              : `Teams that took their first ${g.label} in ${nice(best.key).toLowerCase()} averaged ${best.pts} projected points — ${spread} more than the ones that waited until ${nice(worst.key).toLowerCase()}.`;
+              : `Teams that took their first ${g.label} in ${nice(best.key).toLowerCase()} averaged ${best.pts} projected points — ${spread} more than the ones that waited until ${nice(worst.key).toLowerCase()}${best.secondRound ? `, and they came back for a second around round ${best.secondRound}` : ""}.`;
+            // ⭐ THE SANITY CHECK ON "BEST". If the winning bucket's separating players are mostly NOT at
+            //   this position, the row is telling you about the rest of those rosters, and it should say so.
+            const caveat = !isShape && best.winners && best.winners.length >= 2 && best.atPosShare != null && best.atPosShare < 40
+              ? `Careful reading this one as a ${g.label} finding: only ${best.atPosShare}% of the players separating that group are ${g.label}s — what those teams did elsewhere is doing most of the work.`
+              : null;
             return (
-              <div key={g.label} style={{ marginBottom: 16 }}>
+              <div key={g.label} style={{ marginBottom: 18 }}>
                 <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 3, color: isShape ? "var(--mut)" : POS_COLOR[g.label] || "var(--mut)", fontWeight: 800 }}>{label}</div>
-                <div data-takeaway={g.label} style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 7 }}>{spread > 0 ? takeaway : `No timing separated itself at ${isShape ? "the open" : g.label} — every group finished within ${Math.abs(spread)} points of the others, so take the board.`}</div>
-                <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 100px 72px 84px", gap: 9, fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, padding: "0 8px 4px", maxWidth: 600 }}>
+                <div data-takeaway={g.label} style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: caveat ? 4 : 7 }}>{spread > 0 ? takeaway : `No timing separated itself at ${isShape ? "the open" : g.label} — every group finished within ${Math.abs(spread)} points of the others, so take the board.`}</div>
+                {caveat && <div data-caveat={g.label} style={{ fontSize: 12, lineHeight: 1.45, marginBottom: 7, color: "var(--gold)" }}>{caveat}</div>}
+                <div style={{ display: "grid", gridTemplateColumns: COLS, gap: 9, fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, padding: "0 8px 4px" }}>
                   <span>{isShape ? "Opening shape" : "When they took one"}</span>
                   <span style={{ textAlign: "right" }}>Avg lineup pts</span>
                   <span style={{ textAlign: "right" }}>vs room</span>
+                  {!isShape && <span style={{ textAlign: "right" }}>2nd one</span>}
+                  {!isShape && <span style={{ textAlign: "right" }}>Held</span>}
                   <span style={{ textAlign: "right" }}>Team-drafts</span>
                 </div>
                 {g.buckets.map((b, i) => (
                   <div key={b.key} data-bucket={`${g.label}:${i}`} onMouseEnter={(e) => showTip(e, [
                     { kind: "take", tone: b.edge >= 0 ? "good" : "bad", x: `${b.key} — averaged ${b.pts} projected points` },
-                    { t: "vs the room", x: `${b.edge >= 0 ? "+" : ""}${b.edge} projected points against the average team across all of your mocks (keeper value held equal), measured over ${b.n} team-drafts.` },
+                    { t: "vs the room", x: `${b.edge >= 0 ? "+" : ""}${b.edge} projected points against the average team across all of your mocks (keeper value held equal), measured over ${b.n} team-drafts${b.topShare != null ? `, ${b.topShare}% of which finished in the top quarter` : ""}.` },
+                    ...(!isShape && b.secondRound
+                      ? [{ t: `And their second ${g.label}`, x: `${b.secondShare}% of them took another, around round ${b.secondRound}. They finished with ${b.held} ${g.label}${b.held === 1 ? "" : "s"} on average.` }]
+                      : !isShape ? [{ t: `And their second ${g.label}`, x: `Most of these teams never took a second one.` }] : []),
+                    ...(b.winners && b.winners.length
+                      ? [{ kind: "altheader", x: "The players that separated them — most over-represented on the top quarter" },
+                         { kind: "playertable", cols: ["rank", "name", "pts"], players: b.winners.map((w) => ({ posRank: `+${w.lift}%`, pos: w.pos, name: w.name, pts: w.pts })) }]
+                      : []),
                     { kind: "altheader", x: `What those teams typically took, round by round — every position, not just ${isShape ? "the opening" : g.label}` },
                     ...(b.typical && b.typical.some((x) => x.p)
                       ? [{ kind: "playertable", cols: ["rank", "name", "pts"], players: b.typical.filter((x) => x.p).map((x) => ({ posRank: `R${x.round}`, pos: x.p.pos, name: x.p.name, pts: Math.round(x.p.pts || 0) })) }]
                       : [{ t: "—", x: "No single player recurred often enough to name" }]),
                   ])} onMouseLeave={hideTip}
-                    style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 100px 72px 84px", gap: 9, alignItems: "center", fontSize: 12.5, padding: "6px 8px", cursor: "help", maxWidth: 600,
+                    style={{ display: "grid", gridTemplateColumns: COLS, gap: 9, alignItems: "center", fontSize: 12.5, padding: "6px 8px", cursor: "help",
                       borderTop: "1px solid var(--line)", borderRadius: i === 0 ? 7 : 0,
                       background: i === 0 && spread > 0 ? "rgba(212,175,55,.09)" : "transparent" }}>
                     <span style={{ color: i === 0 && spread > 0 ? "var(--gold)" : "var(--ink)", fontWeight: i === 0 && spread > 0 ? 700 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -14733,9 +14966,31 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                     </span>
                     <span className="num" style={{ textAlign: "right", fontWeight: 700 }}>{b.pts}</span>
                     <span className="num" style={{ textAlign: "right", fontSize: 11.5, color: b.edge >= 0 ? "#5FD0A8" : "#F2655C" }}>{b.edge >= 0 ? "+" : ""}{b.edge}</span>
+                    {!isShape && <span className="num" style={{ textAlign: "right", fontSize: 11.5 }}>{b.secondRound ? `R${b.secondRound}` : <span className="mut">none</span>}</span>}
+                    {!isShape && <span className="num mut" style={{ textAlign: "right", fontSize: 11.5 }}>{b.held != null ? b.held : "—"}</span>}
                     <span className="num mut" style={{ textAlign: "right", fontSize: 11 }}>{b.n}</span>
                   </div>
                 ))}
+                {/* ⭐ THE LEAGUE WINNERS, ON THE PAGE — not only in a hover. The ones at this row's own
+                    position are outlined, so "is this really a WR finding?" is answerable at a glance. */}
+                {best.winners && best.winners.length > 0 && (
+                  <div data-winners={g.label} style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                    <span className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>League winners in the best group</span>
+                    {best.winners.map((w) => (
+                      <span key={w.id} onMouseEnter={(e) => showTip(e, [
+                        { kind: "take", tone: "good", x: `${w.name} — on ${w.onN} of the ${w.of} teams in this group` },
+                        { t: "Why he's flagged", x: `Across all your mocks he shows up ${w.lift}% more often on the top quarter of finishers than the bottom quarter.` },
+                        ...(isShape ? [] : [{ t: w.atPos ? `He IS a ${g.label}` : `He is not a ${g.label}`, x: w.atPos ? `So this group's edge really is about the ${g.label} timing.` : `So part of this group's edge comes from what those teams did at other positions.` }]),
+                      ])} onMouseLeave={hideTip}
+                        style={{ fontSize: 11, padding: "1.5px 8px", borderRadius: 999, cursor: "help",
+                          border: `1px solid ${w.atPos && !isShape ? POS_COLOR[w.pos] : "var(--line)"}`,
+                          background: w.atPos && !isShape ? "var(--panel2)" : "transparent" }}>
+                        <b style={{ color: POS_COLOR[w.pos], fontSize: 9.5, marginRight: 4 }}>{w.pos}</b>
+                        {surname(w.name)} <span className="mut num">+{w.lift}%</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}
