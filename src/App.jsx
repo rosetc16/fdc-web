@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29f";
+const BUILD_TAG = "2026.07.29g";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -2373,6 +2373,12 @@ const DEFAULT_SCORING = {
   idpSolo: 1, idpAst: 0.5, idpSack: 2, idpTFL: 1, idpQBH: 1,
   idpInt: 3, idpPD: 1, idpFF: 2, idpFR: 2, idpDTD: 6, idpSaf: 2,
 };
+// ⚠ Positions whose projections are entirely missing from the current pack (see buildPlayers). Declared
+// HERE, above buildPlayers, and not beside FLEX_BASE further down — buildPlayers ASSIGNS it, and a `let`
+// referenced before its declaration is a temporal-dead-zone crash that no parse check catches. Module
+// level because it is set during the rebuild and read by the board, which renders long after.
+let PROJ_MISSING = [];
+
 function scoreFromStats(pos, s, sc) {
   if (!s) return 0;
   if (pos === "K") return (s.fg || 0) * sc.fg + (s.fg50 || 0) * sc.fg50 + (s.pat || 0) * sc.pat + (s.fgMiss || 0) * sc.fgMiss;
@@ -2631,7 +2637,34 @@ function buildPlayers(cfg) {
   // SAME in redraft and dynasty (Derek Henry's 234-pt season is worth more raw VBD than a 169-pt rookie's,
   // period). We keep p.vbd as this raw number so the "VBD" column always means what people expect. The
   // dynasty-specific re-weighting lives in p.value (below), not in VBD.
-  ps.forEach((p) => { p.vbd = (scoredPos.includes(p.pos) && repl[p.pos] != null) ? Math.round((p.pts - repl[p.pos]) * 10) / 10 : -50; p.vbd0 = p.vbd; });
+  // ⚠⚠ A POSITION WHERE EVERY PROJECTION IS ZERO IS MISSING DATA, NOT A FLAT POSITION. Trey found every
+  //   team defense reading 0 points and 0 VBD; the cause was in the backend's stat mapper (no DST branch at
+  //   all), but the FRONT END should not have presented an empty feed as a confident set of zeros — a whole
+  //   position tied at exactly 0 is the shape of a data outage, and a board that prints it as a projection
+  //   is the McCaffrey lie again in a different costume. When a position that the league STARTS has no
+  //   usable projection anywhere, fall back to ordering it by market ADP and flag it, so the board says
+  //   "we don't know" instead of "they are all worthless".
+  const noProj = {};
+  ALL_POS.forEach((pos) => {
+    if (!scoredPos.includes(pos)) return;
+    const list = ps.filter((p) => cpos(p.pos) === pos);
+    if (list.length >= 3 && list.every((p) => !(p.pts > 0))) noProj[pos] = list.length;
+  });
+  PROJ_MISSING = Object.keys(noProj);
+  ps.forEach((p) => {
+    const pos = cpos(p.pos);
+    if (noProj[pos]) {
+      // No projection for anyone here. Rank them the only honest way left — the market's own order — and
+      // mark them so the UI can print a dash rather than a number nobody should trust.
+      p.projMissing = true;
+      const rank = ps.filter((x) => cpos(x.pos) === pos && (x.adp0 ?? 999) < (p.adp0 ?? 999)).length;
+      p.vbd = Math.round((Math.max(0, 24 - rank) * 0.5) * 10) / 10;
+      p.vbd0 = p.vbd;
+      return;
+    }
+    p.vbd = (scoredPos.includes(p.pos) && repl[p.pos] != null) ? Math.round((p.pts - repl[p.pos]) * 10) / 10 : -50;
+    p.vbd0 = p.vbd;
+  });
   FLEX_BASE = Math.max(repl.RB || 0, repl.WR || 0) || null; // flex slot's replacement level (see marginalVbd)
   // ---- DYNASTY VALUE ADJUSTMENT --------------------------------------------------------------
   // "Value" is the composite ranking number. In REDRAFT, value === VBD (you're just trying to win now). In
@@ -5301,6 +5334,21 @@ function roundWeight(overall) {
   // ~3-4x a late-round one, but a genuine late reach/steal still registers instead of rounding to zero.
   return 0.22 + 0.78 * Math.pow(0.984, Math.max(1, overall) - 1);
 }
+// The most a single pick can be worth, in either direction, and how it gets there.
+// ⚠ A HARD CLIP WOULD THROW AWAY THE ORDERING IT IS MEANT TO PRESERVE: clipping at 50 makes a 120-spot
+//   reach and a 500-spot reach the same number, so the worst pick in the draft stops being identifiable.
+//   Below PICK_VALUE_KNEE nothing is touched at all — the -15 to -30 range Trey says is typical passes
+//   straight through — and above it the remaining headroom is spent on an exponential approach to the cap,
+//   so a worse pick always grades worse and nothing ever reaches -516.
+const PICK_VALUE_CAP = 50;
+const PICK_VALUE_KNEE = 32;
+function softCap(v) {
+  const a = Math.abs(v);
+  if (a <= PICK_VALUE_KNEE) return Math.round(v);
+  const head = PICK_VALUE_CAP - PICK_VALUE_KNEE;
+  const squashed = PICK_VALUE_KNEE + head * (1 - Math.exp(-(a - PICK_VALUE_KNEE) / 60));
+  return Math.sign(v) * Math.round(squashed * 10) / 10;
+}
 function pickValue(p, overall, cfg, ctx) {
   if (!p) return 0;                       // stale/unknown pick id — no value contribution
   const actual = overall + 1;            // where he was actually taken (1-based)
@@ -5338,12 +5386,24 @@ function pickValue(p, overall, cfg, ctx) {
     if (deficit > 0) need = Math.min(2, deficit) * 4 * w;         // filled a real need → positive
     else if (deficit <= -1) need = Math.max(-2, deficit) * 2.5 * w; // piled onto a full position → negative
   }
-  return Math.round(market + need);
+  // ⭐⭐ AND IT IS CLAMPED. Trey: "can you make a maximum of +50 and a minimum of -50 (I'm seeing more issues
+  //   on the biggest reaches where players are getting -219 and -516 and it's just ruining the draft value
+  //   of each team… I'm seeing most of the biggest reaches of -15 to -30, so we shouldn't crush people)."
+  //   He is describing a distribution with a long tail, and a SUM over a roster is the worst possible way to
+  //   read one: a single -516 outweighs seventeen ordinary picks and the team total stops measuring the
+  //   draft at all. The tail is usually real in kind (taking a player the market ranks 600th at pick 60 IS
+  //   bad) but not in degree — it is one mistake, not thirty. Clamping each pick is winsorizing: the pick
+  //   still grades as the worst thing on the board, it just cannot drown out everything around it.
+  //   ⚠ The clamp lives HERE, not at the display layer, so the per-pick chip, the biggest-steals list and
+  //   the team's draft-value total can never disagree about what a pick was worth.
+  return softCap(market + need);
 }
 // Overall pick number (1-based) from a 0-based pick index.
 const overallPick = (o) => o + 1;
 const heat = (pct) => `hsla(${Math.round(pct * 1.25)},60%,45%,0.22)`;
-const valBg = (v) => (v === 0 ? "transparent" : v > 0 ? `rgba(124,217,178,${Math.min(0.5, Math.abs(v) / 80)})` : `rgba(242,101,92,${Math.min(0.5, Math.abs(v) / 80)})`);
+// Shade scaled to the CAP, so a maxed-out pick is the strongest colour on the board rather than a washed-out
+// one — with the old /80 divisor nothing could ever reach full strength once values were clamped at 50.
+const valBg = (v) => (v === 0 ? "transparent" : v > 0 ? `rgba(124,217,178,${Math.min(0.5, Math.abs(v) / (PICK_VALUE_CAP * 1.1))})` : `rgba(242,101,92,${Math.min(0.5, Math.abs(v) / (PICK_VALUE_CAP * 1.1))})`);
 // Shared green→yellow→red scale for VBD / Value (points above replacement): strong ≥40, solid ≥20, fringe
 // ≥5, replacement-ish ≥0, below replacement <0. Used across hovers so strong values pop and weak ones warn.
 const vbdColor = (v) => v == null ? "var(--mut)" : v >= 40 ? "#5FD0A8" : v >= 20 ? "#9BD17E" : v >= 5 ? "#E7C24B" : v >= 0 ? "#C9A54B" : "#F2655C";
@@ -14022,6 +14082,15 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
     const band = bandsFor(pos).find(([lo, hi]) => rd >= lo && rd <= hi);
     return band ? band[2] : null;
   })).concat([bucketBy("shape", (r) => r.shape)]);
+  // Each bucket keeps the round window it stands for, so the UI can draw it instead of re-parsing the key.
+  groups.forEach((g) => {
+    if (!POS.includes(g.label)) return;
+    const bands = bandsFor(g.label);
+    g.buckets.forEach((b) => {
+      const band = bands.find(([, , k]) => k === b.key);
+      if (band) { b.lo = band[0]; b.hi = Math.min(band[1], rounds); }
+    });
+  });
 
   // ⭐ WHO THOSE TEAMS ACTUALLY TOOK. Trey: "can you show on hovers who those players typically were in
   // each round." A bucket that says "+34" and nothing else is a number you have to take on faith; the
@@ -14057,9 +14126,27 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
   groups.forEach((g) => g.buckets.forEach((b) => { b.typical = typicalByRound(b.teamKeys, Math.min(6, rounds)); }));
 
   // ---- what the BEST teams actually did ---------------------------------------------------------
+  // ⭐⭐ "BEST" MEANS A TOP-3 FINISH IN ITS OWN ROOM. Trey: "I don't think % of winners should just be the
+  //   team that wins… it should be finish on a top-3 team." The old cohort was the top QUARTILE of the
+  //   keeper-adjusted edge pooled across every mock, which is a different thing in two ways: it is a
+  //   league-wide percentile rather than a finish, and pooling means a strong mock could contribute five
+  //   "winners" while a weak one contributed none. Ranking INSIDE each mock is what a manager actually
+  //   experiences, and it keeps every room contributing the same number of samples.
+  //   The rank is still on the keeper-ADJUSTED edge, so a team that finished third on the back of a
+  //   round-13 stud is not credited for its draft.
+  const PODIUM = 3;
+  const byMock = new Map();
+  rows.forEach((r) => { const a = byMock.get(r.mock) || []; a.push(r); byMock.set(r.mock, a); });
+  const top = [], bottom = [];
+  byMock.forEach((arr) => {
+    const rk = arr.slice().sort((a, b) => b.edge - a.edge);
+    const k = Math.min(PODIUM, Math.max(1, Math.floor(rk.length / 3)));
+    rk.slice(0, k).forEach((r, i) => { r.mockRank = i + 1; top.push(r); });
+    rk.slice(-k).forEach((r) => bottom.push(r));
+    rk.forEach((r, i) => { r.mockRank = i + 1; });
+  });
   const ranked2 = rows.slice().sort((a, b) => b.edge - a.edge);
-  const topN = Math.max(1, Math.round(ranked2.length / 4));
-  const top = ranked2.slice(0, topN), bottom = ranked2.slice(-topN);
+  base.podium = PODIUM;
   const share = (arr, fn) => (arr.length ? Math.round((arr.filter(fn).length / arr.length) * 100) : 0);
   const findings = [];
   groups.forEach((g) => {
@@ -14071,7 +14158,7 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
   });
   findings.push({
     k: "top", head: "What the best rosters had in common",
-    body: `${share(top, (r) => r.shape === "RB-early")}% of the top quarter opened RB-heavy (bottom quarter: ${share(bottom, (r) => r.shape === "RB-early")}%), and ${share(top, (r) => r.qbRound >= 9)}% waited until round 9+ for a quarterback (bottom quarter: ${share(bottom, (r) => r.qbRound >= 9)}%).`,
+    body: `${share(top, (r) => r.shape === "RB-early")}% of the top-${PODIUM} finishers opened RB-heavy (bottom ${PODIUM}: ${share(bottom, (r) => r.shape === "RB-early")}%), and ${share(top, (r) => r.qbRound >= 9)}% waited until round 9+ for a quarterback (bottom ${PODIUM}: ${share(bottom, (r) => r.qbRound >= 9)}%).`,
   });
 
   // ---- ⭐ AND WHAT THAT MEANS FOR *HIS* ROSTER --------------------------------------------------
@@ -14150,10 +14237,19 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
     liftById.set(pid, { p: a.p, lift: Math.round(((a.onWin - a.onLose) / Math.max(1, a.n)) * 100), n: a.n });
   });
   const winnerKeys = new Set(top.map((r) => `${r.mock}:${r.team}`));
+  // ⚠⚠ AND THE LIST IS FILTERED TO THE SECTION IT SITS IN. Trey: "the 'league winners in the best group'
+  //   should not show a kicker… In fact, it's showing multiple different positions in each section (i.e.
+  //   First WR taken) is also showing Gibbs (RB), and Dicker (K)." Both were mine. Kickers and defenses
+  //   have no business here at all — same reasoning as the price lists — and a WR section that names backs
+  //   is answering a question nobody asked on that row. Off-position players still shape the finding, but
+  //   that belongs in a sentence, not in a row of chips under a heading that says WR.
   const bucketWinners = (teamKeys, pos) => {
     const tally = new Map();
     teamKeys.forEach((k) => (picksByTeamKey.get(k) || []).forEach((x) => {
       if (x.kept) return;
+      const pp = cpos(x.p.pos);
+      if (pp === "K" || pp === "DST") return;          // never a kicker or a defense
+      if (pos && pp !== pos) return;                    // and, in a position section, only that position
       tally.set(x.p.id, (tally.get(x.p.id) || 0) + 1);
     }));
     // ⚠ A PLAYER CAN ONLY BE DRAFTED ONCE PER MOCK, so a threshold scaled off the number of TEAM-DRAFTS in
@@ -14171,9 +14267,14 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
   };
   groups.forEach((g) => g.buckets.forEach((b) => {
     const pos = POS.includes(g.label) ? g.label : null;
-    b.winners = bucketWinners(b.teamKeys, pos);
+    b.winners = bucketWinners(b.teamKeys, pos);                 // chips: this position only
+    const anyPos = bucketWinners(b.teamKeys, null);             // the same read across all four positions
+    b.winnersAll = anyPos;
+    // ⭐ THE HONEST CAVEAT still needs the UNFILTERED read: if hardly any of the players separating this
+    //   group play the position the row is about, the row is really telling you about the rest of those
+    //   rosters, and it should say so in words rather than by showing backs under a WR heading.
+    b.atPosShare = anyPos.length ? Math.round((anyPos.filter((w) => cpos(w.pos) === pos).length / anyPos.length) * 100) : null;
     b.topShare = b.teamKeys.length ? Math.round((b.teamKeys.filter((k) => winnerKeys.has(k)).length / b.teamKeys.length) * 100) : null;
-    b.atPosShare = b.winners.length ? Math.round((b.winners.filter((w) => w.atPos).length / b.winners.length) * 100) : null;
   }));
 
   // (a) ⭐ BARGAINS — "players who have higher VBD than what their ADP would suggest, or players that
@@ -14195,7 +14296,19 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
   //   round they're worth.
   const byWorth = (a, b) => (a.worthRound - b.worthRound) || (b.val - a.val);
   const rankBargain = (a, b) => (b.goesRound - b.worthRound) * 12 + b.lift * 0.5 - ((a.goesRound - a.worthRound) * 12 + a.lift * 0.5);
-  const bargains = priced.filter((x) => x.worthRound <= x.goesRound - 1 || (x.lift >= 25 && x.edge > 0)).sort(rankBargain);
+  // ⭐⭐ A PLAYER GOING FIRST OVERALL CANNOT BE "GOING LATER THAN HE'S WORTH". Trey: "'going later than
+  //   they're worth' has Jahmyr Gibbs and Bijan Robinson on this list… they both went top 3 in every mock
+  //   draft… therefore they can't be drafted earlier lol." Dead right, and the cause was a second entry
+  //   door: `|| (lift >= 25 && edge > 0)` let a player onto the list purely for showing up on good teams,
+  //   with no requirement that he go later than his value. The best player in the draft is on winning
+  //   teams because he is the best player in the draft — that is not a market inefficiency, it is the
+  //   market working. The surplus condition is now the ONLY way in; lift stays as a ranking signal.
+  //   ⚠ And a floor on top of it: there is no earlier slot than the top of round 1, so anyone whose
+  //   average pick is inside the first half-round is excluded outright whatever the arithmetic says.
+  const NO_EARLIER = Math.max(3, Math.round(teams / 2));
+  const bargains = priced
+    .filter((x) => x.worthRound <= x.goesRound - 1 && x.avgO > NO_EARLIER)
+    .sort(rankBargain);
   base.valuePlayers = bargains.slice(0, 12).sort(byWorth);
   base.valueEarly = bargains.filter((x) => x.goesRound <= EARLY_CUT).slice(0, 18).sort(byWorth);
   base.valueLate = bargains.filter((x) => x.goesRound > EARLY_CUT).slice(0, 18).sort(byWorth);
@@ -14564,13 +14677,13 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
         onMouseEnter={(e) => showTip(e, good ? [
           { kind: "take", tone: "good", x: `${v.name} — goes around pick ${v.avgO} (round ${v.goesRound})` },
           { t: "Why he's a bargain", x: `On this board his ${t.valueMetric === "value" ? "long-term value" : "value over replacement"} is what a ${worthLabel(v)} pick ordinarily returns — ${surplus} round${surplus === 1 ? "" : "s"} of surplus.` },
-          { t: "On the best rosters", x: v.lift > 0 ? `He appears ${v.lift}% more often on the top quarter of finishers than the bottom quarter.` : "He shows up about equally on strong and weak rosters — the value here is the price, not the company he keeps." },
+          { t: "On the best rosters", x: v.lift > 0 ? `He appears ${v.lift}% more often on teams that finished top ${t.podium || 3} in their room than on the ones that finished bottom ${t.podium || 3}.` : "He shows up about equally on strong and weak rosters — the value here is the price, not the company he keeps." },
           { t: "Seen in", x: `${v.n} of your ${t.n} mock${t.n === 1 ? "" : "s"}` },
           { kind: "playercard", p: v.p },
         ] : [
           { kind: "take", tone: "bad", x: `${v.name} — goes around pick ${v.avgO} (round ${v.goesRound})` },
           { t: "Why to let him go", x: `His ${t.valueMetric === "value" ? "long-term value" : "value over replacement"} is what a ${worthLabel(v)} pick ordinarily returns, so taking him where your room does spends ${v.worthRound - v.goesRound} rounds of draft capital you don't get back.` },
-          ...(v.lift < 0 ? [{ t: "And it shows", x: `He appears ${Math.abs(v.lift)}% more often on the BOTTOM quarter of finishers than the top.` }] : []),
+          ...(v.lift < 0 ? [{ t: "And it shows", x: `He appears ${Math.abs(v.lift)}% more often on teams that finished BOTTOM ${t.podium || 3} in their room than on the top-${t.podium || 3} ones.` }] : []),
           { t: "Seen in", x: `${v.n} of your ${t.n} mock${t.n === 1 ? "" : "s"}` },
           { kind: "playercard", p: v.p },
         ])} onMouseLeave={hideTip}
@@ -14902,90 +15015,106 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
       )}
 
       {/* ---- 06 · THE EVIDENCE ---- */}
-      {/* ⭐⭐ NO GRAPHS (see 29d) — a plain table with the answer written above it in a sentence.
-          ⭐⭐⭐ AND IT IS NOT JUST ABOUT THE FIRST ONE. Trey: "the first WR taken shows that round 6+ was
-          the 'best,' but this surprises me unless there is just a ton of strong WR post 6+ that are league
-          winners… I do think it's not just about when you took the first one, but perhaps it's about taking
-          the first one AND when you go and get someone later." Both halves are now on the row: when those
-          teams came back for their SECOND at the position and how many they finished with, plus the players
-          that actually separated them — marked when they're at the row's own position, so a finding that has
-          nothing to do with that position is visible as one. */}
-      <Section n={6} title="When the best teams took each position" accent="var(--mut)"
-        sub={`Every team in every mock, grouped by the round it took its FIRST player at each position, then ranked by how those teams finished. Avg lineup pts is the group's average projected starting-lineup total; vs room is that figure against the average team across all ${t.n} mock${t.n === 1 ? "" : "s"} with keeper value held equal; 2nd one is the round they came back for another; Held is how many they finished with. Anything under ${Math.max(3, Math.round((t.rows || []).length * 0.08))} team-drafts is dropped as too thin to read.`}>
+      {/* ⭐⭐⭐ THIRD REWRITE, AND THIS TIME BY SUBTRACTION. Trey, for the third time: "The 'When the best
+          teams took each position' is still so incredibly confusing." Each previous attempt answered his
+          complaint by ADDING — more columns, more labels, a caveat line — and every addition made the thing
+          he could not read slightly larger. So this version throws out the tables. It is ONE SENTENCE and
+          ONE PICTURE per position: the rounds the best rosters took their first at that position, the round
+          they came back for the second, and the same window for the group that did worst. Every number that
+          used to sit in a column is still available, in the hover, where it belongs. */}
+      <Section n={6} title="When to take each position" accent="var(--mut)"
+        sub={`Read straight across. The solid band is the window the best-finishing rosters took their FIRST at that position; the dot after it is when they came back for their second; the dashed band underneath is what the worst-finishing rosters did. The number inside each band is that group's average projected lineup, and "best" means a top-${t.podium || 3} finish in its own room. Hover any band for the sample behind it.`}>
         <div className="panel" style={{ padding: 14 }}>
-          {(t.groups || []).map((g) => {
-            if (!g || g.buckets.length < 2) return null;
-            const isShape = g.label === "shape";
-            const label = isShape ? "How they opened" : `First ${g.label} taken`;
-            const nice = (k) => k.replace(/^First \w+ in /, "").replace(/-early$/, "-heavy");
+          {(t.groups || []).filter((g) => g && POS.includes(g.label) && g.buckets.length >= 2).map((g) => {
             const best = g.buckets[0], worst = g.buckets[g.buckets.length - 1];
             const spread = best.pts - worst.pts;
-            const COLS = isShape ? "minmax(0,1fr) 100px 68px 74px" : "minmax(0,1fr) 100px 68px 76px 56px 74px";
-            const takeaway = isShape
-              ? `Teams that opened ${nice(best.key)} averaged ${best.pts} projected points — ${spread} more than the ones that opened ${nice(worst.key)}.`
-              : `Teams that took their first ${g.label} in ${nice(best.key).toLowerCase()} averaged ${best.pts} projected points — ${spread} more than the ones that waited until ${nice(worst.key).toLowerCase()}${best.secondRound ? `, and they came back for a second around round ${best.secondRound}` : ""}.`;
-            // ⭐ THE SANITY CHECK ON "BEST". If the winning bucket's separating players are mostly NOT at
-            //   this position, the row is telling you about the rest of those rosters, and it should say so.
-            const caveat = !isShape && best.winners && best.winners.length >= 2 && best.atPosShare != null && best.atPosShare < 40
-              ? `Careful reading this one as a ${g.label} finding: only ${best.atPosShare}% of the players separating that group are ${g.label}s — what those teams did elsewhere is doing most of the work.`
+            const R = Math.max(1, t.lastRound || 15);
+            const pct = (r) => `${Math.max(0, Math.min(100, ((r - 1) / R) * 100))}%`;
+            const wide = (lo, hi) => `${Math.max(3, ((Math.min(hi, R) - lo + 1) / R) * 100)}%`;
+            const col = POS_COLOR[g.label] || "var(--gold)";
+            const sentence = spread <= 0
+              ? `No timing separated itself at ${g.label} — every group finished within ${Math.abs(spread)} points of the others, so take the board.`
+              : `Take your first ${g.label} in ${best.lo === best.hi ? `round ${best.lo}` : `rounds ${best.lo}-${best.hi === R ? "" : best.hi}`}${best.hi >= R ? "+" : ""}${best.secondRound ? `, and the second around round ${Math.round(best.secondRound)}` : ""}. Rosters that did averaged ${best.pts} projected points — ${spread} more than the ones that waited until ${worst.lo === worst.hi ? `round ${worst.lo}` : `round ${worst.lo}${worst.hi >= R ? "+" : `-${worst.hi}`}`}.`;
+            // ⭐ THE HONEST CAVEAT, kept from the last version but now as words only — the chips below are
+            //   filtered to this position, so nothing under a "WR" heading is a running back any more.
+            const caveat = best.atPosShare != null && best.atPosShare < 40 && spread > 0
+              ? `Worth knowing: only ${best.atPosShare}% of the players separating that group are ${g.label}s, so a good part of their edge came from what they did elsewhere.`
               : null;
+            const band = (b, tone) => (
+              <div key={tone} data-window={`${g.label}:${tone}`} onMouseEnter={(e) => showTip(e, [
+                { kind: "take", tone: tone === "best" ? "good" : "bad", x: `${b.key} — averaged ${b.pts} projected points` },
+                { t: "vs the room", x: `${b.edge >= 0 ? "+" : ""}${b.edge} against the average team across all your mocks, keeper value held equal, over ${b.n} team-drafts.` },
+                ...(b.topShare != null ? [{ t: `Top-${t.podium || 3} finishes`, x: `${b.topShare}% of these teams finished top ${t.podium || 3} in their own room.` }] : []),
+                ...(b.secondRound
+                  ? [{ t: `Their second ${g.label}`, x: `${b.secondShare}% took another, around round ${b.secondRound}. They finished with ${b.held} ${g.label}${b.held === 1 ? "" : "s"}.` }]
+                  : [{ t: `Their second ${g.label}`, x: "Most of these teams never took a second one." }]),
+                ...(b.typical && b.typical.some((x) => x.p)
+                  ? [{ kind: "altheader", x: "What those teams typically took, round by round — all positions" },
+                     { kind: "playertable", cols: ["rank", "name", "pts"], players: b.typical.filter((x) => x.p).map((x) => ({ posRank: `R${x.round}`, pos: x.p.pos, name: x.p.name, pts: Math.round(x.p.pts || 0) })) }]
+                  : []),
+              ])} onMouseLeave={hideTip}
+                style={{ position: "absolute", left: pct(b.lo), width: wide(b.lo, b.hi), top: tone === "best" ? 0 : 20, height: 17, borderRadius: 4, cursor: "help",
+                  // ⚠ The BEST band takes the position's own colour, which for QB and TE is already a warm
+                  //   red — so the worst band cannot be red too or the two read as the same thing. Muted
+                  //   dashed outline instead: filled = what worked, outlined = what didn't.
+                  background: tone === "best" ? col : "transparent", opacity: tone === "best" ? 0.9 : 1,
+                  border: tone === "best" ? "none" : "1px dashed var(--mut)",
+                  display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                <span className={tone === "best" ? "num" : "num mut"} style={{ fontSize: 9.5, fontWeight: 700, color: tone === "best" ? "#0d0f12" : undefined, whiteSpace: "nowrap" }}>
+                  {b.pts}
+                </span>
+              </div>
+            );
             return (
-              <div key={g.label} style={{ marginBottom: 18 }}>
-                <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 3, color: isShape ? "var(--mut)" : POS_COLOR[g.label] || "var(--mut)", fontWeight: 800 }}>{label}</div>
-                <div data-takeaway={g.label} style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: caveat ? 4 : 7 }}>{spread > 0 ? takeaway : `No timing separated itself at ${isShape ? "the open" : g.label} — every group finished within ${Math.abs(spread)} points of the others, so take the board.`}</div>
-                {caveat && <div data-caveat={g.label} style={{ fontSize: 12, lineHeight: 1.45, marginBottom: 7, color: "var(--gold)" }}>{caveat}</div>}
-                <div style={{ display: "grid", gridTemplateColumns: COLS, gap: 9, fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, padding: "0 8px 4px" }}>
-                  <span>{isShape ? "Opening shape" : "When they took one"}</span>
-                  <span style={{ textAlign: "right" }}>Avg lineup pts</span>
-                  <span style={{ textAlign: "right" }}>vs room</span>
-                  {!isShape && <span style={{ textAlign: "right" }}>2nd one</span>}
-                  {!isShape && <span style={{ textAlign: "right" }}>Held</span>}
-                  <span style={{ textAlign: "right" }}>Team-drafts</span>
+              <div key={g.label} data-poswhen={g.label} style={{ padding: "12px 0", borderTop: "1px solid var(--line)" }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginBottom: 5, flexWrap: "wrap" }}>
+                  <span style={{ fontWeight: 800, color: col, fontSize: 15 }}>{g.label}</span>
+                  <span data-takeaway={g.label} style={{ fontSize: 12.5, lineHeight: 1.5 }}>{sentence}</span>
                 </div>
-                {g.buckets.map((b, i) => (
-                  <div key={b.key} data-bucket={`${g.label}:${i}`} onMouseEnter={(e) => showTip(e, [
-                    { kind: "take", tone: b.edge >= 0 ? "good" : "bad", x: `${b.key} — averaged ${b.pts} projected points` },
-                    { t: "vs the room", x: `${b.edge >= 0 ? "+" : ""}${b.edge} projected points against the average team across all of your mocks (keeper value held equal), measured over ${b.n} team-drafts${b.topShare != null ? `, ${b.topShare}% of which finished in the top quarter` : ""}.` },
-                    ...(!isShape && b.secondRound
-                      ? [{ t: `And their second ${g.label}`, x: `${b.secondShare}% of them took another, around round ${b.secondRound}. They finished with ${b.held} ${g.label}${b.held === 1 ? "" : "s"} on average.` }]
-                      : !isShape ? [{ t: `And their second ${g.label}`, x: `Most of these teams never took a second one.` }] : []),
-                    ...(b.winners && b.winners.length
-                      ? [{ kind: "altheader", x: "The players that separated them — most over-represented on the top quarter" },
-                         { kind: "playertable", cols: ["rank", "name", "pts"], players: b.winners.map((w) => ({ posRank: `+${w.lift}%`, pos: w.pos, name: w.name, pts: w.pts })) }]
-                      : []),
-                    { kind: "altheader", x: `What those teams typically took, round by round — every position, not just ${isShape ? "the opening" : g.label}` },
-                    ...(b.typical && b.typical.some((x) => x.p)
-                      ? [{ kind: "playertable", cols: ["rank", "name", "pts"], players: b.typical.filter((x) => x.p).map((x) => ({ posRank: `R${x.round}`, pos: x.p.pos, name: x.p.name, pts: Math.round(x.p.pts || 0) })) }]
-                      : [{ t: "—", x: "No single player recurred often enough to name" }]),
-                  ])} onMouseLeave={hideTip}
-                    style={{ display: "grid", gridTemplateColumns: COLS, gap: 9, alignItems: "center", fontSize: 12.5, padding: "6px 8px", cursor: "help",
-                      borderTop: "1px solid var(--line)", borderRadius: i === 0 ? 7 : 0,
-                      background: i === 0 && spread > 0 ? "rgba(212,175,55,.09)" : "transparent" }}>
-                    <span style={{ color: i === 0 && spread > 0 ? "var(--gold)" : "var(--ink)", fontWeight: i === 0 && spread > 0 ? 700 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {nice(b.key)}{i === 0 && spread > 0 && <span className="mut" style={{ fontSize: 9, marginLeft: 6, textTransform: "uppercase", letterSpacing: ".05em" }}>best</span>}
-                    </span>
-                    <span className="num" style={{ textAlign: "right", fontWeight: 700 }}>{b.pts}</span>
-                    <span className="num" style={{ textAlign: "right", fontSize: 11.5, color: b.edge >= 0 ? "#5FD0A8" : "#F2655C" }}>{b.edge >= 0 ? "+" : ""}{b.edge}</span>
-                    {!isShape && <span className="num" style={{ textAlign: "right", fontSize: 11.5 }}>{b.secondRound ? `R${b.secondRound}` : <span className="mut">none</span>}</span>}
-                    {!isShape && <span className="num mut" style={{ textAlign: "right", fontSize: 11.5 }}>{b.held != null ? b.held : "—"}</span>}
-                    <span className="num mut" style={{ textAlign: "right", fontSize: 11 }}>{b.n}</span>
+                {spread > 0 && (
+                  <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 128px", gap: 14, alignItems: "center" }}>
+                    <div>
+                      <div style={{ position: "relative", height: 37 }}>
+                        {/* the round rail */}
+                        <div style={{ position: "absolute", left: 0, right: 0, top: 8, height: 1, background: "var(--line)" }} />
+                        <div style={{ position: "absolute", left: 0, right: 0, top: 28, height: 1, background: "var(--line)" }} />
+                        {band(best, "best")}
+                        {band(worst, "worst")}
+                        {/* ⭐ WHEN THEY CAME BACK. The whole reason "first WR in round 6+" looked wrong. */}
+                        {best.secondRound && (
+                          <div data-second={g.label} onMouseEnter={(e) => showTip(e, [
+                            { kind: "take", tone: "good", x: `Their second ${g.label} — around round ${best.secondRound}` },
+                            { t: "How many did it", x: `${best.secondShare}% of the teams in the winning group came back for another, and they finished with ${best.held} ${g.label}${best.held === 1 ? "" : "s"} on average.` },
+                          ])} onMouseLeave={hideTip}
+                            style={{ position: "absolute", left: pct(best.secondRound), top: -1, transform: "translateX(-50%)", cursor: "help" }}>
+                            <div style={{ width: 12, height: 12, borderRadius: 999, background: col, border: "2px solid var(--panel)" }} />
+                            <div className="mut num" style={{ fontSize: 8.5, marginTop: 1, transform: "translateX(-30%)" }}>2nd</div>
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 1 }}>
+                        {[1, Math.ceil(R / 4), Math.ceil(R / 2), Math.ceil((3 * R) / 4), R].map((r, k) => (
+                          <span key={k} className="mut num" style={{ fontSize: 8.5 }}>R{r}</span>
+                        ))}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div className="num" style={{ fontSize: 17, fontWeight: 800, color: "#5FD0A8", lineHeight: 1.15 }}>+{spread}</div>
+                      <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em" }}>pts, best vs worst</div>
+                      <div className="mut num" style={{ fontSize: 9.5, marginTop: 2 }}>{best.n} team-drafts{best.topShare != null ? ` · ${best.topShare}% top ${t.podium || 3}` : ""}</div>
+                    </div>
                   </div>
-                ))}
-                {/* ⭐ THE LEAGUE WINNERS, ON THE PAGE — not only in a hover. The ones at this row's own
-                    position are outlined, so "is this really a WR finding?" is answerable at a glance. */}
+                )}
+                {caveat && <div data-caveat={g.label} style={{ fontSize: 11.5, lineHeight: 1.45, marginTop: 6, color: "var(--gold)" }}>{caveat}</div>}
                 {best.winners && best.winners.length > 0 && (
-                  <div data-winners={g.label} style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-                    <span className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>League winners in the best group</span>
+                  <div data-winners={g.label} style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 7, flexWrap: "wrap" }}>
+                    <span className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>The {g.label}s on those rosters</span>
                     {best.winners.map((w) => (
                       <span key={w.id} onMouseEnter={(e) => showTip(e, [
                         { kind: "take", tone: "good", x: `${w.name} — on ${w.onN} of the ${w.of} teams in this group` },
-                        { t: "Why he's flagged", x: `Across all your mocks he shows up ${w.lift}% more often on the top quarter of finishers than the bottom quarter.` },
-                        ...(isShape ? [] : [{ t: w.atPos ? `He IS a ${g.label}` : `He is not a ${g.label}`, x: w.atPos ? `So this group's edge really is about the ${g.label} timing.` : `So part of this group's edge comes from what those teams did at other positions.` }]),
+                        { t: "Why he's flagged", x: `Across all your mocks he shows up ${w.lift}% more often on teams that finished top ${t.podium || 3} in their room than on the ones that finished bottom ${t.podium || 3}.` },
                       ])} onMouseLeave={hideTip}
-                        style={{ fontSize: 11, padding: "1.5px 8px", borderRadius: 999, cursor: "help",
-                          border: `1px solid ${w.atPos && !isShape ? POS_COLOR[w.pos] : "var(--line)"}`,
-                          background: w.atPos && !isShape ? "var(--panel2)" : "transparent" }}>
-                        <b style={{ color: POS_COLOR[w.pos], fontSize: 9.5, marginRight: 4 }}>{w.pos}</b>
+                        style={{ fontSize: 11, padding: "1.5px 8px", borderRadius: 999, cursor: "help", border: `1px solid ${col}55`, background: "var(--panel2)" }}>
                         {surname(w.name)} <span className="mut num">+{w.lift}%</span>
                       </span>
                     ))}
@@ -14994,8 +15123,23 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
               </div>
             );
           })}
+          {/* the opening-shape finding, as one sentence rather than its own table */}
+          {(() => {
+            const g = (t.groups || []).find((x) => x && x.label === "shape" && x.buckets.length >= 2);
+            if (!g) return null;
+            const b = g.buckets[0], w = g.buckets[g.buckets.length - 1];
+            const d = b.pts - w.pts;
+            return (
+              <div data-takeaway="shape" style={{ fontSize: 12.5, lineHeight: 1.55, borderTop: "1px solid var(--line)", paddingTop: 11, marginTop: 4 }}>
+                <b>How they opened. </b>
+                {d > 0
+                  ? <span className="mut">Rosters that opened <b style={{ color: "var(--ink)" }}>{b.key.replace(/-early$/, "-heavy")}</b> averaged {b.pts} projected points, {d} more than the ones that opened {w.key.replace(/-early$/, "-heavy")} ({b.n} team-drafts vs {w.n}).</span>
+                  : <span className="mut">Neither an RB-heavy nor a WR-heavy start separated itself — every opening finished within {Math.abs(d)} points of the others.</span>}
+              </div>
+            );
+          })()}
           {t.findings.filter((f) => f.k === "top").map((f) => (
-            <div key={f.k} style={{ fontSize: 12.5, lineHeight: 1.55, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+            <div key={f.k} style={{ fontSize: 12.5, lineHeight: 1.55, borderTop: "1px solid var(--line)", paddingTop: 10, marginTop: 8 }}>
               <b>{f.head}. </b><span className="mut">{f.body}</span>
             </div>
           ))}
@@ -18413,6 +18557,15 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
                 <button className="btn" disabled={busy} onClick={() => runJob("defvspos")} title="Build last season's defense-vs-position table (~18 calls to your platform, then cached). This is the other half of Playoff SOS — it is what makes an opponent 'soft' or 'tough' for a given position.">
                   <i className={`ti ti-${runningJob === "defvspos" ? "loader-2 spin" : "shield-half"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
                   {runningJob === "defvspos" ? "Working…" : "Build defense ranks"}
+                </button>
+                {/* ⭐ AND THIS ONE SHIPS WITH ITS JOB, same rule. Trey: "can you check DST point projections…
+                    most/all are coming up as 0 (and VBD is 0). I also think the Kicker projected points is
+                    extremely low (in the 40s)." The defense half was a certain bug (the pack's stat mapper
+                    had no team-defense branch at all); the kicker half needs the live feed to answer, and
+                    this prints what it actually carries. */}
+                <button className="btn" disabled={busy} onClick={() => runJob("proj-check")} title="Reads nothing and writes nothing. Reports, per position, how many players have a projection, which raw stat keys those projections carry, and which of the stats the scoring engine reads never survive the mapping. This is how to tell a scoring-settings problem from a missing-data one.">
+                  <i className={`ti ti-${runningJob === "proj-check" ? "loader-2 spin" : "stethoscope"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
+                  {runningJob === "proj-check" ? "Working…" : "Check projections"}
                 </button>
                 {jobProgress && <span style={{ fontSize: 12, color: jobProgress.startsWith("Done") ? "var(--green)" : "var(--gold)", fontWeight: 600 }}>{jobProgress}</span>}
               </div>
@@ -23476,6 +23629,21 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   </div>
                 );
               })()}
+              {/* ⚠⚠ AND IF A WHOLE POSITION HAS NO PROJECTIONS, SAY SO ON THE BOARD. Trey found every team
+                  defense reading 0 points and 0 VBD and had to ask whether it was real. The root cause was
+                  in the backend pack, but a board that prints an empty feed as a confident column of zeros
+                  is the deeper fault — the number renders, fills the space, and convinces you that you were
+                  told something. The rows are now ordered by the market instead, and this line admits why. */}
+              {PROJ_MISSING.length > 0 && (
+                <div data-projgap="1" style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "9px 12px", margin: "0 0 8px", borderRadius: 9, background: "rgba(224,166,60,.08)", border: "1px solid rgba(224,166,60,.4)" }}>
+                  <i className="ti ti-alert-triangle" style={{ fontSize: 15, color: "var(--gold)", marginTop: 1 }} aria-hidden="true" />
+                  <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+                    <b style={{ color: "var(--gold)" }}>No projections for {PROJ_MISSING.join(" or ")} right now. </b>
+                    Every {PROJ_MISSING.length === 1 ? "one" : "player at those positions"} came through the data feed with no stats, so their projected points and VBD aren't real numbers.
+                    They're ordered by market ADP instead, and the engine still fills the roster slot — but don't read the values as a ranking.
+                  </div>
+                </div>
+              )}
               <table className={`board${dense ? " dense-board" : ""}`}>
                 <thead>
                   <tr className="sechead">
@@ -27152,7 +27320,10 @@ function SummaryTable({ rows, userIdx, focusIdx, rookieAdp }) {
             <td className="num" style={{ textAlign: "right" }}>{overallPick(g.o)}<span className="mut" style={{ fontSize: 10.5, marginLeft: 4 }}>({pickLabel(g.o)})</span></td>
             <td style={{ color: g.t === hi ? "var(--gold)" : "var(--ink)", fontWeight: g.t === hi ? 700 : 400, paddingLeft: 8 }}>{g.t === userIdx ? "You" : TEAM_NAMES[g.t].split(" ")[0]}</td>
             <td className="num" style={{ textAlign: "right" }}>{adpV != null ? adpV.toFixed(1) : "—"}</td>
-            <td className="num" style={{ textAlign: "right", background: valBg(g.val) }}>{g.val > 0 ? `+${g.val}` : g.val}</td>
+            {/* ⚠ Rounded for DISPLAY only. pickValue keeps a decimal past the soft-cap knee so that a
+                500-spot reach still grades worse than a 200-spot one; the board has no use for the
+                decimal, and every other number in this column is a whole one. */}
+            <td className="num" style={{ textAlign: "right", background: valBg(g.val) }}>{g.val > 0 ? `+${Math.round(g.val)}` : Math.round(g.val)}</td>
           </tr>
         );})}
       </tbody>
