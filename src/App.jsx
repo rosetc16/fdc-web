@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29g";
+const BUILD_TAG = "2026.07.29h";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 const normName = (s) => String(s || "").toLowerCase()
@@ -141,6 +141,37 @@ function readLeagueAvoid(league) {
     const ls = JSON.parse(localStorage.getItem(listStorageKey("fdc-avoid", league)) || "[]");
     return Array.isArray(ls) ? ls : [];
   } catch { return []; }
+}
+// ⭐⭐ THE PRIORITY LIST HAS THE SAME TWO SCOPES. Trey: "there is a 'Do Not Draft List' — but there is not
+// a 'Priority List'. I want to be able to save these lists and import them into other leagues as well (to
+// try and not duplicate a ton of work that's not necessary). I want it to work very similarly to the 'Do
+// not draft list'." So it is the same model, the same reader shape and the same editor — a player you love
+// is usually a view about the PLAYER, and re-starring him in six leagues is exactly the duplicated work he
+// is describing.
+//   effective(league) = (master − league.queueAllow) ∪ league.priorityQueue
+function readLeagueQueue(league) {
+  try {
+    if (Array.isArray(league && league.priorityQueue)) return league.priorityQueue;
+    const ls = JSON.parse(localStorage.getItem(listStorageKey("fdc-queue", league)) || "[]");
+    return Array.isArray(ls) ? ls : [];
+  } catch { return []; }
+}
+function readMasterQueue(user) {
+  try {
+    if (Array.isArray(user && user.queueMaster)) return user.queueMaster;
+    const ls = JSON.parse(localStorage.getItem("fdc-queue-master") || "[]");
+    return Array.isArray(ls) ? ls : [];
+  } catch { return []; }
+}
+function readQueueAllow(league) {
+  return Array.isArray(league && league.queueAllow) ? league.queueAllow : [];
+}
+function effectiveQueue(league, user) {
+  const allow = new Set(readQueueAllow(league));
+  const out = [], seen = new Set();
+  readMasterQueue(user).forEach((n) => { if (!allow.has(n) && !seen.has(n)) { seen.add(n); out.push(n); } });
+  readLeagueQueue(league).forEach((n) => { if (!seen.has(n)) { seen.add(n); out.push(n); } });
+  return out;
 }
 function readMasterAvoid(user) {
   try {
@@ -394,6 +425,10 @@ function mergeUser(local, server) {
     rankAdj: local.rankAdj || server.rankAdj,
     colPrefs: local.colPrefs || server.colPrefs,
     avoidMaster: local.avoidMaster || server.avoidMaster,
+    // ⚠ Same rule as avoidMaster: a browser-only field the server does not own, so it MERGES rather than
+    //   being overwritten — see the 28d note. Adding a field here and forgetting this line is how "my ranks
+    //   keep not saving" happened.
+    queueMaster: local.queueMaster || server.queueMaster,
     homeView: local.homeView || server.homeView,
     hubSeen: local.hubSeen || server.hubSeen,
     fav: local.fav || server.fav,
@@ -2352,6 +2387,10 @@ function fallbackCopy(text) {
 
 // Default PPR scoring. Every value is points-per-unit of a raw projected stat.
 // Changing any of these reprices the whole board because pts is computed from stats.
+// League-wide distance mix of MADE field goals, used only when a projection doesn't break them out. These
+// are stable year to year (the share of attempts by distance barely moves), which is what makes modelling
+// them safer than modelling volume. Sums to less than 1 because the short buckets carry no bonus.
+const FG_MIX = { f40: 0.27, f50: 0.16 };
 const DEFAULT_SCORING = {
   passYd: 0.04, passTD: 4, INT: -2, pass2pt: 2,
   rushYd: 0.1, rushTD: 6, rushAtt: 0, rush2pt: 2,
@@ -2366,7 +2405,12 @@ const DEFAULT_SCORING = {
   bonus40Rush: 0,     // per 40+ yard run
   bonus40PassTD: 0,   // per 40+ yard passing TD
   // kicker
-  fg: 3, fg50: 2, pat: 1, fgMiss: -1,
+  // ⭐ KICKING. `fg` is the base value of ANY made field goal; the three bonuses stack on top of it for the
+  // longer ones, which is how Sleeper, ESPN and Yahoo all express distance scoring (Sleeper's default is
+  // 3 / +1 at 40-49 / +2 at 50+). Trey: "I wonder if you're not taking into account the rules for different
+  // points for different length field goals… Something is off." fg50 already existed; fg40 did not, so a
+  // league scoring 40-49 yarders at 4 was under-counting every one of them.
+  fg: 3, fg40: 1, fg50: 2, pat: 1, fgMiss: -1,
   // dst
   sack: 1, dint: 2, dfr: 2, dtd: 6, paPer: 1,
   // IDP (individual defensive players) — common balanced defaults
@@ -2381,7 +2425,17 @@ let PROJ_MISSING = [];
 
 function scoreFromStats(pos, s, sc) {
   if (!s) return 0;
-  if (pos === "K") return (s.fg || 0) * sc.fg + (s.fg50 || 0) * sc.fg50 + (s.pat || 0) * sc.pat + (s.fgMiss || 0) * sc.fgMiss;
+  if (pos === "K") {
+    const made = s.fg || 0;
+    // Distance buckets, when the feed publishes them. When it doesn't — which is most of the time — the
+    // 40-49 and 50+ counts are MODELLED from the made total using the league-wide distance mix, because a
+    // kicker's distribution is far more stable than his volume. ⚠ `fg50` may arrive on its own (the pack
+    // has carried it for a while); only the 40-49 bucket is ever estimated, and only when it is absent.
+    const long50 = s.fg50 != null ? s.fg50 : made * FG_MIX.f50;
+    const long40 = s.fg40 != null ? s.fg40 : Math.max(0, made * FG_MIX.f40);
+    return made * sc.fg + long40 * (sc.fg40 || 0) + long50 * (sc.fg50 || 0)
+      + (s.pat || 0) * sc.pat + (s.fgMiss || 0) * sc.fgMiss;
+  }
   if (pos === "DST") return (s.sack || 0) * sc.sack + (s.dint || 0) * sc.dint + (s.dfr || 0) * sc.dfr + (s.dtd || 0) * sc.dtd + Math.max(0, 35 - (s.pa || 350) / 10) * sc.paPer;
   if (pos === "DL" || pos === "LB" || pos === "DB") {
     return (s.solo || 0) * sc.idpSolo + (s.ast || 0) * sc.idpAst + (s.idpSack || 0) * sc.idpSack
@@ -2803,7 +2857,7 @@ function buildPlayers(cfg) {
   // level — are already baked into public ADP (everyone drafts with them), so they must NOT count as
   // "weirdness" or we'd reshuffle a totally normal board. We exclude those keys from the distance.
   let scoreDist = 0;
-  const COMMON_KEYS = new Set(["passTD", "recTE", "rec", "rushTD", "recTD", "passYd", "rushYd", "recYd", "INT", "fum", "pass2pt", "rush2pt", "rec2pt", "fg", "fg50", "pat", "fgMiss"]);
+  const COMMON_KEYS = new Set(["passTD", "recTE", "rec", "rushTD", "recTD", "passYd", "rushYd", "recYd", "INT", "fum", "pass2pt", "rush2pt", "rec2pt", "fg", "fg40", "fg50", "pat", "fgMiss"]);
   Object.keys(DEFAULT_SCORING).forEach((k) => { if (COMMON_KEYS.has(k)) return; const base = Math.abs(DEFAULT_SCORING[k]) || 1; scoreDist += Math.abs((sc[k] || 0) - DEFAULT_SCORING[k]) / base; });
   const valByPts = ps.filter((p) => POS.includes(p.pos)).slice().sort((a, b) => b.pts - a.pts);
   valByPts.forEach((p, i) => (p.valueOverall = i + 1));
@@ -5941,6 +5995,21 @@ body.buybar-open .bugbtn{bottom:76px!important}
   .bugbtn i{margin:0!important;font-size:17px!important}
 }
 .hairline{border-bottom:1px solid var(--line)} .mut{color:var(--mut)} .gold{color:var(--gold)}
+/* THE TOP BAR STAYS PUT. Trey: "can you make sure that the top banner always stays frozen at the top of
+   every page (the section that says home/back, admin, sign out, etc.)". Both header variants get it, so
+   the draft room, the league pages, the hub and the trends page all behave the same way.
+   z-index 40 sits above page content and BELOW the modal layer (90+) and the floating bug/sync buttons
+   (92), so a dialog still covers it. The background must be opaque — a transparent sticky header lets the
+   content scroll through it and reads as a rendering fault.
+   NOT ON A PHONE. Under 760px this header WRAPS to two or three rows and would eat a third of the
+   viewport, and the mobile tabbar already sticks at top:0 - two stacked sticky bars on a 390px screen
+   leaves almost nothing for the board. The narrow breakpoint keeps the tabbar as the one pinned thing.
+   AND NOTE: NO BACKTICKS IN THIS BLOCK. The stylesheet is a JS template literal, so a backtick inside a
+   CSS comment terminates the string and the app dies with a TypeError whose message is the whole sheet.
+   I have now made that exact mistake twice. */
+@media (min-width:761px){
+  .appheader,.hubbar{position:sticky;top:0;z-index:40;background:var(--bg)}
+}
 .btn{background:var(--panel3);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer;font-family:'Barlow';font-size:13px}
 .btn:hover{transition:border-color .15s,background .15s,transform .1s,box-shadow .15s}
 .btn:hover,.btn-mini:hover{border-color:var(--gold);background:#2B3340}
@@ -7739,6 +7808,8 @@ export default function App() {
         allLeagues={leagues}
         onSaveAvoid={(id, arr, allowArr) => { const next = leagues.map((l) => (l.id === id ? { ...l, avoidList: arr, ...(allowArr ? { avoidAllow: allowArr } : {}) } : l)); setLeagues(next); persist({ leagues: next }); }}
         onSaveMasterAvoid={(arr) => updateUser({ avoidMaster: arr })}
+        onSaveQueue={(id, arr, allowArr) => { const next = leagues.map((l) => (l.id === id ? { ...l, priorityQueue: arr, ...(allowArr ? { queueAllow: allowArr } : {}) } : l)); setLeagues(next); persist({ leagues: next }); }}
+        onSaveMasterQueue={(arr) => updateUser({ queueMaster: arr })}
         onUpdateUser={updateUser}
         onSaveCfg={(id, cfg) => updateLeagueCfg(id, cfg)}
         onFixSlot={(id, slot) => { const next = leagues.map((l) => (l.id === id ? { ...l, cfg: { ...l.cfg, slot } } : l)); setLeagues(next); persist({ leagues: next }); }}
@@ -8417,10 +8488,31 @@ function PlatformRanksModal({ league, user, onSave, onClose }) {
   );
 }
 
-function AvoidListModal({ league, allLeagues, user, onSave, onSaveMaster, onClose }) {
-  const [leagueList, setLeagueList] = useState(() => readLeagueAvoid(league).slice());
-  const [master, setMaster] = useState(() => readMasterAvoid(user).slice());
-  const [allow, setAllow] = useState(() => readAvoidAllow(league).slice());
+// ⭐⭐ ONE EDITOR, TWO LISTS. `kind` is "avoid" or "queue". Trey asked for the priority list to "work very
+// similarly to the do not draft list", and the honest reading of that is not "build a similar screen" but
+// "it IS that screen" — the search, the two scopes, the per-league exceptions and the cross-league import
+// are identical machinery, and two copies would drift the moment either one changed.
+const LIST_KINDS = {
+  avoid: {
+    title: "Do-not-draft list", icon: "ti-ban", accent: "var(--red)",
+    blurb: "Players you won't take at any price. They STAY on your board — you still need to see when the room takes them, and you can change your mind — but they'll never be recommended to you.",
+    empty: "Nobody on the list yet.", verb: "Never draft",
+    readLeague: readLeagueAvoid, readMaster: readMasterAvoid, readAllow: readAvoidAllow,
+    otherOf: (l) => readLeagueAvoid(l),
+  },
+  queue: {
+    title: "Priority list", icon: "ti-star", accent: "var(--gold)",
+    blurb: "Players you want. They're pulled to the top of the board when they're available, and the recommendation calls them out — but they never override a pick that is clearly better, so this is a nudge and not an autopick.",
+    empty: "Nobody on the list yet.", verb: "Target",
+    readLeague: readLeagueQueue, readMaster: readMasterQueue, readAllow: readQueueAllow,
+    otherOf: (l) => readLeagueQueue(l),
+  },
+};
+function AvoidListModal({ league, allLeagues, user, onSave, onSaveMaster, onClose, kind = "avoid" }) {
+  const K = LIST_KINDS[kind] || LIST_KINDS.avoid;
+  const [leagueList, setLeagueList] = useState(() => K.readLeague(league).slice());
+  const [master, setMaster] = useState(() => K.readMaster(user).slice());
+  const [allow, setAllow] = useState(() => K.readAllow(league).slice());
   const [scope, setScope] = useState("league");     // where a NEW addition goes
   const [q, setQ] = useState("");
   const [pos, setPos] = useState("ALL");
@@ -8478,9 +8570,9 @@ function AvoidListModal({ league, allLeagues, user, onSave, onSaveMaster, onClos
   const promote = (name) => { setLeagueList((L) => L.filter((x) => x !== name)); setMaster((M) => (M.includes(name) ? M : [...M, name])); };
 
   // Import another league's list into the scope currently selected.
-  const importable = (allLeagues || []).filter((l) => l && l.id !== league.id && (readLeagueAvoid(l) || []).length > 0);
+  const importable = (allLeagues || []).filter((l) => l && l.id !== league.id && (K.otherOf(l) || []).length > 0);
   const importFrom = (l) => {
-    const names = readLeagueAvoid(l);
+    const names = K.otherOf(l);
     if (scope === "master") setMaster((M) => [...M, ...names.filter((n) => !M.includes(n))]);
     else setLeagueList((L) => [...L, ...names.filter((n) => !L.includes(n))]);
     setImportOpen(false);
@@ -8491,9 +8583,9 @@ function AvoidListModal({ league, allLeagues, user, onSave, onSaveMaster, onClos
     if (typeof onSaveMaster === "function") onSaveMaster(master);
     onClose();
   };
-  const dirty = JSON.stringify(leagueList) !== JSON.stringify(readLeagueAvoid(league))
-    || JSON.stringify(master) !== JSON.stringify(readMasterAvoid(user))
-    || JSON.stringify(allow) !== JSON.stringify(readAvoidAllow(league));
+  const dirty = JSON.stringify(leagueList) !== JSON.stringify(K.readLeague(league))
+    || JSON.stringify(master) !== JSON.stringify(K.readMaster(user))
+    || JSON.stringify(allow) !== JSON.stringify(K.readAllow(league));
 
   const meta = (name) => {
     const p = byName.get(name);
@@ -8505,10 +8597,10 @@ function AvoidListModal({ league, allLeagues, user, onSave, onSaveMaster, onClos
     <div className="modalbg" onClick={onClose}>
       <div className="panel" style={{ maxWidth: 660, width: "100%", maxHeight: "88vh", display: "flex", flexDirection: "column", padding: 0, overflow: "hidden" }} onClick={(e) => e.stopPropagation()}>
         <div style={{ padding: "18px 20px 12px", borderBottom: "1px solid var(--line)" }}>
-          <div className="disp" style={{ fontSize: 20, fontWeight: 700, marginBottom: 3 }}>Do-not-draft list</div>
-          <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55 }}>
-            Players you won't take at any price. They <b style={{ color: "var(--ink)" }}>stay on your board</b> — you still need to see when the room takes them, and you can change your mind — but they'll never be recommended to you.
+          <div className="disp" style={{ fontSize: 20, fontWeight: 700, marginBottom: 3, display: "flex", alignItems: "center", gap: 8 }}>
+            <i className={`ti ${K.icon}`} style={{ fontSize: 18, color: K.accent }} aria-hidden="true" />{K.title}
           </div>
+          <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55 }}>{K.blurb}</div>
         </div>
 
         {/* ---- where a new addition goes ---- */}
@@ -8521,7 +8613,7 @@ function AvoidListModal({ league, allLeagues, user, onSave, onSaveMaster, onClos
           ))}
           <span style={{ flex: 1 }} />
           {importable.length > 0 && (
-            <button className="btn btn-mini" onClick={() => setImportOpen((v) => !v)} title="Copy another league's do-not-draft list into the scope selected above">
+            <button className="btn btn-mini" onClick={() => setImportOpen((v) => !v)} title={`Copy another league's ${K.title.toLowerCase()} into the scope selected above`}>
               <i className="ti ti-download" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Import from a league
             </button>
           )}
@@ -8533,7 +8625,7 @@ function AvoidListModal({ league, allLeagues, user, onSave, onSaveMaster, onClos
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 {importable.map((l) => (
                   <button key={l.id} className="btn btn-mini" style={{ textAlign: "left", justifyContent: "flex-start" }} onClick={() => importFrom(l)}>
-                    {l.name} <span className="mut" style={{ marginLeft: 6 }}>· {readLeagueAvoid(l).length} player{readLeagueAvoid(l).length === 1 ? "" : "s"}</span>
+                    {l.name} <span className="mut" style={{ marginLeft: 6 }}>· {K.otherOf(l).length} player{K.otherOf(l).length === 1 ? "" : "s"}</span>
                   </button>
                 ))}
               </div>
@@ -8625,7 +8717,7 @@ function AvoidListModal({ league, allLeagues, user, onSave, onSaveMaster, onClos
   );
 }
 
-function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, onSignOut, onOfficial, onMock, onMockPlan, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings, onSaveAvoid, onSaveMasterAvoid, onFixSlot, onUpdateUser, onSaveCfg }) {
+function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, onSignOut, onOfficial, onMock, onMockPlan, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings, onSaveAvoid, onSaveMasterAvoid, onSaveQueue, onSaveMasterQueue, onFixSlot, onUpdateUser, onSaveCfg }) {
   // The checklist used to print league.cfg.slot with a tick beside it, and that number could be months old
   // and simply wrong. Ask the platform instead — and write the answer back, so the room, the mocks and this
   // page stop each holding a different opinion about where the user is sitting.
@@ -8690,6 +8782,9 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
   const avoidSaved = effectiveAvoid(league, user);
   const avoidCount = avoidSaved.length;
   const [avoidOpen, setAvoidOpen] = useState(false);
+  const queueSaved = effectiveQueue(league, user);
+  const queueCount = queueSaved.length;
+  const [queueOpen, setQueueOpen] = useState(false);
   const [adpOpen, setAdpOpen] = useState(false);   // your-league's-ADP editor, opened from the checklist row
   // Which settings section the checklist opened, if any: 'scoring' | 'order' | 'trades'. Null = closed.
   const [setupSeg, setSetupSeg] = useState(null);
@@ -8770,6 +8865,16 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
       hint: "Players you've decided you won't take at any price — the guy with the half-season injury, the holdout, the one you just can't watch. They stay on the board (you still need to see when the room takes them, and you can always change your mind), but they'll never be recommended to you.\n\nOpens a searchable list. You can also add players one at a time in the draft room with the ⊘ beside their name.",
       go: () => setAvoidOpen(true),
     });
+    // ⭐ AND ITS TWIN. Trey: "there is a 'Do Not Draft List' — but there is not a 'Priority List'." Same
+    // shape, same editor, same optional status — a list of guys you want is no more a readiness gate than
+    // a list of guys you don't.
+    rows.push({
+      key: "queue", title: "Priority list", optional: true,
+      status: queueCount ? `${queueCount} player${queueCount === 1 ? "" : "s"}` : "None",
+      done: queueCount > 0,
+      hint: "The players you actually want — your guys, the ones you think the market has wrong, the late fliers you always end up taking. They're pulled to the top of the board when they're available and the recommendation calls them out, but they never override a pick that is clearly better, so this stays a nudge rather than an autopick.\n\nLike the do-not-draft list it has two scopes: this league only, or every league on your account — and you can copy either one in from another league so you aren't rebuilding it every time.",
+      go: () => setQueueOpen(true),
+    });
     return rows;
   })();
   // Optional rows are shown but never counted — otherwise "5/7" would be the permanent state of a perfectly
@@ -8833,6 +8938,23 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
           onSaveMaster={(arr) => {
             try { localStorage.setItem("fdc-avoid-master", JSON.stringify(arr)); } catch {}
             if (typeof onSaveMasterAvoid === "function") onSaveMasterAvoid(arr);
+          }}
+        />
+      )}
+      {queueOpen && (
+        <AvoidListModal
+          kind="queue"
+          league={league}
+          allLeagues={allLeagues}
+          user={user}
+          onClose={() => setQueueOpen(false)}
+          onSave={(arr, allowArr) => {
+            try { localStorage.setItem(listStorageKey("fdc-queue", league), JSON.stringify(arr)); } catch {}
+            if (typeof onSaveQueue === "function") onSaveQueue(league.id, arr, allowArr);
+          }}
+          onSaveMaster={(arr) => {
+            try { localStorage.setItem("fdc-queue-master", JSON.stringify(arr)); } catch {}
+            if (typeof onSaveMasterQueue === "function") onSaveMasterQueue(arr);
           }}
         />
       )}
@@ -13032,7 +13154,7 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
 
   return (
     <div>
-      <div className="hairline" style={{ display: "flex", alignItems: "center", gap: 16, padding: "12px 20px" }}>
+      <div className="hairline appheader" style={{ display: "flex", alignItems: "center", gap: 16, padding: "12px 20px" }}>
         <Wordmark size={20} />
         <div style={{ flex: 1 }} />
         <button className="btn" onClick={() => onHelp && onHelp("help")}><i className="ti ti-help-circle" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />Help & FAQ</button>
@@ -14256,8 +14378,31 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
     //   the bucket (teams x mocks) is unreachable — a 30-team bucket demanded 9 appearances from a player
     //   who can appear at most 6 times. The ceiling is the mock count, not the team count.
     const min = Math.max(2, Math.round(Math.min(teamKeys.length, usable.length) * 0.34));
+    // ⭐⭐ AND HE HAS TO ACTUALLY PLAY. Trey: "make sure that the players showing up on % of rosters only
+    //   show up if they are playing a meaningful role. For example, Mike Washington and Chris Rodriguez
+    //   should not be showing up as a RB to target since they are pure backups. It's really just chance
+    //   that they are truly ending up on winning teams." Exactly right, and it is survivorship noise: a
+    //   deep backup is on six rosters out of chance, and if four of those happened to finish top-3 he
+    //   scores a +67% lift off a sample that means nothing. Lift alone cannot tell a league winner from a
+    //   coincidence — so the player also has to clear a VALUE bar: he must be worth at least a startable
+    //   body at his position. `startBar` is the value of the last player the league actually starts there,
+    //   which is the same replacement idea the whole board is built on.
+    const startBar = (pos2) => {
+      const same = (players || []).filter((pp) => pp && cpos(pp.pos) === pos2 && Number.isFinite(valOf(pp)))
+        .sort((a, b) => valOf(b) - valOf(a));
+      if (!same.length) return -Infinity;
+      const starters = Math.max(1, Math.round(teams * (SPEC[pos2] || 1)));
+      return valOf(same[Math.min(same.length - 1, starters - 1)]);
+    };
+    const barCache = {};
     return [...tally.entries()]
-      .filter(([pid, n]) => n >= min && liftById.has(pid) && liftById.get(pid).lift > 0)
+      .filter(([pid, n]) => {
+        if (n < min || !liftById.has(pid) || liftById.get(pid).lift <= 0) return false;
+        const pl = liftById.get(pid).p;
+        const pp = cpos(pl.pos);
+        if (barCache[pp] === undefined) barCache[pp] = startBar(pp);
+        return valOf(pl) >= barCache[pp];
+      })
       .map(([pid, n]) => {
         const L = liftById.get(pid);
         return { id: pid, name: L.p.name, pos: L.p.pos, pts: Math.round(L.p.pts || 0), lift: L.lift, onN: n, of: teamKeys.length, atPos: cpos(L.p.pos) === pos };
@@ -14309,9 +14454,13 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
   const bargains = priced
     .filter((x) => x.worthRound <= x.goesRound - 1 && x.avgO > NO_EARLIER)
     .sort(rankBargain);
-  base.valuePlayers = bargains.slice(0, 12).sort(byWorth);
-  base.valueEarly = bargains.filter((x) => x.goesRound <= EARLY_CUT).slice(0, 18).sort(byWorth);
-  base.valueLate = bargains.filter((x) => x.goesRound > EARLY_CUT).slice(0, 18).sort(byWorth);
+  // ⭐ ORDERED BY HOW MUCH VALUE THE GAP IS WORTH, then by the round. Trey: "I want to see that Brock is
+  //   ahead of Nico in value basically" — a round-3 pick who plays like a round-1 is a bigger find than a
+  //   round-3 who plays like a round-2, and sorting purely by `worthRound` buried that.
+  const byGap = (a, b) => ((b.goesRound - b.worthRound) - (a.goesRound - a.worthRound)) || (a.worthRound - b.worthRound) || (b.val - a.val);
+  base.valuePlayers = bargains.slice(0, 12).sort(byGap);
+  base.valueEarly = bargains.filter((x) => x.goesRound <= EARLY_CUT).slice(0, 18).sort(byGap);
+  base.valueLate = bargains.filter((x) => x.goesRound > EARLY_CUT).slice(0, 18).sort(byGap);
   base.earlyCut = EARLY_CUT;
   // (b) ⭐ AND THE OPPOSITE, which is the section he asked me to replace the reach list with: "players who
   //     have lower VBD who are going too high." The old reach list just found first-rounders, because
@@ -14321,9 +14470,10 @@ function analyzeLeagueMockTrends(mocks, players, cfg, opts) {
   // worth order like the bargains.
   const avoids = priced.filter((x) => x.worthRound >= x.goesRound + 2)
     .sort((a, b) => (b.worthRound - b.goesRound) - (a.worthRound - a.goesRound));
-  base.avoidPlayers = avoids.slice(0, 12).sort(byWorth);
-  base.avoidEarly = avoids.filter((x) => x.goesRound <= EARLY_CUT).slice(0, 18).sort(byWorth);
-  base.avoidLate = avoids.filter((x) => x.goesRound > EARLY_CUT).slice(0, 18).sort(byWorth);
+  const byGapBad = (a, b) => ((b.worthRound - b.goesRound) - (a.worthRound - a.goesRound)) || (a.worthRound - b.worthRound) || (a.lift - b.lift);
+  base.avoidPlayers = avoids.slice(0, 12).sort(byGapBad);
+  base.avoidEarly = avoids.filter((x) => x.goesRound <= EARLY_CUT).slice(0, 18).sort(byGapBad);
+  base.avoidLate = avoids.filter((x) => x.goesRound > EARLY_CUT).slice(0, 18).sort(byGapBad);
 
   // (c) ⭐⭐ WAIT OR DON'T, MEASURED THE ONLY WAY THAT WORKS: RELATIVE.
   //     The first version compared each position's drop to an absolute point threshold and told Trey to
@@ -14672,6 +14822,8 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
   const priceRow = (v, i, kind) => {
     const good = kind === "value";
     const surplus = Math.max(0, v.goesRound - v.worthRound);
+    // Rounds of value in whichever direction this table is about.
+    const gap = good ? surplus : Math.max(0, v.worthRound - v.goesRound);
     return (
       <div key={v.id} data-bargain={good ? v.id : undefined} data-avoid={good ? undefined : v.id}
         onMouseEnter={(e) => showTip(e, good ? [
@@ -14691,9 +14843,21 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
         <span style={{ fontWeight: 800, color: POS_COLOR[v.pos], fontSize: 11 }}>{v.pos}</span>
         <span style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v.name}</span>
         <span className="mut num" style={{ fontSize: 11, textAlign: "right" }}>R{v.goesRound}</span>
+        {/* ⭐⭐ HOW BIG THE GAP IS, VISIBLE. Trey: "Nico Collins is a 3rd rounder, but plays like a 2nd
+            rounder… but Brock Bowers is a 3rd rounder that plays like a 1st rounder (I want to see that
+            Brock is ahead of Nico in value basically)." Both rows read "round 3" in the Goes column and
+            the difference was one digit apart in another. The gap is now the loudest thing on the row —
+            sized, coloured by magnitude, and stated in rounds. */}
         <span className="num" style={{ fontSize: 12, fontWeight: 800, color: good ? "#5FD0A8" : "#F2655C", textAlign: "right" }}>{worthLabel(v)}</span>
-        <span className="num" style={{ fontSize: 11, textAlign: "right", color: good ? (v.lift > 0 ? "#5FD0A8" : "var(--mut)") : "#F2655C" }}>
-          {good ? (v.lift > 0 ? `+${v.lift}%` : "—") : `${Math.max(0, v.worthRound - v.goesRound)} rds`}
+        <span style={{ textAlign: "right", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 4 }}>
+          <span style={{ display: "inline-flex", gap: 1.5 }}>
+            {Array.from({ length: Math.min(4, Math.max(0, gap)) }).map((_, k) => (
+              <span key={k} style={{ width: 4, height: 11 + k * 2, borderRadius: 1, background: good ? "#5FD0A8" : "#F2655C", opacity: 0.55 + k * 0.15 }} />
+            ))}
+          </span>
+          <span className="num" style={{ fontSize: 11.5, fontWeight: gap >= 3 ? 800 : 600, color: gap >= 3 ? (good ? "#5FD0A8" : "#F2655C") : "var(--mut)" }}>
+            {gap > 0 ? `${gap}${gap > 4 ? "+" : ""}` : "—"}
+          </span>
         </span>
       </div>
     );
@@ -14997,8 +15161,8 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
         <Section n={4} title="Going later than they're worth" accent="#5FD0A8"
           sub={`Where a player's ${t.valueMetric === "value" ? "long-term value" : "value over replacement"} is higher than the pick he actually goes at in your room would ordinarily buy. Read it as "goes in round 6, plays like a round 3 pick". Kickers and defenses are left out — they're priced on a different basis entirely.`}>
           {pricePair("val",
-            priceCol("val", `Rounds 1-${cut}`, "starters — a round of surplus here is the whole draft", t.valueEarly || [], "On winners", "value"),
-            priceCol("val", `Rounds ${cut + 1}+`, "depth and fliers — cheap, and where a room gives away points", t.valueLate || [], "On winners", "value"),
+            priceCol("val", `Rounds 1-${cut}`, "starters — a round of surplus here is the whole draft", t.valueEarly || [], "Rounds of value", "value"),
+            priceCol("val", `Rounds ${cut + 1}+`, "depth and fliers — cheap, and where a room gives away points", t.valueLate || [], "Rounds of value", "value"),
             hiddenIn(t.valueEarly, t.valueLate))}
         </Section>
       )}
@@ -15008,8 +15172,8 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
         <Section n={5} title="Going earlier than they're worth" accent="#F2655C"
           sub="The mirror image: your room reaches for these. Letting one come to you two rounds later costs nothing, and taking him at his going rate costs you the pick. Kickers and defenses are excluded here too.">
           {pricePair("avd",
-            priceCol("avd", `Rounds 1-${cut}`, "the expensive mistakes — one of these costs you a starter", t.avoidEarly || [], "Overpay", "avoid"),
-            priceCol("avd", `Rounds ${cut + 1}+`, "cheap reaches — worth knowing, but nobody loses a season here", t.avoidLate || [], "Overpay", "avoid"),
+            priceCol("avd", `Rounds 1-${cut}`, "the expensive mistakes — one of these costs you a starter", t.avoidEarly || [], "Rounds overpaid", "avoid"),
+            priceCol("avd", `Rounds ${cut + 1}+`, "cheap reaches — worth knowing, but nobody loses a season here", t.avoidLate || [], "Rounds overpaid", "avoid"),
             hiddenIn(t.avoidEarly, t.avoidLate))}
         </Section>
       )}
@@ -15037,9 +15201,18 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
               : `Take your first ${g.label} in ${best.lo === best.hi ? `round ${best.lo}` : `rounds ${best.lo}-${best.hi === R ? "" : best.hi}`}${best.hi >= R ? "+" : ""}${best.secondRound ? `, and the second around round ${Math.round(best.secondRound)}` : ""}. Rosters that did averaged ${best.pts} projected points — ${spread} more than the ones that waited until ${worst.lo === worst.hi ? `round ${worst.lo}` : `round ${worst.lo}${worst.hi >= R ? "+" : `-${worst.hi}`}`}.`;
             // ⭐ THE HONEST CAVEAT, kept from the last version but now as words only — the chips below are
             //   filtered to this position, so nothing under a "WR" heading is a running back any more.
-            const caveat = best.atPosShare != null && best.atPosShare < 40 && spread > 0
-              ? `Worth knowing: only ${best.atPosShare}% of the players separating that group are ${g.label}s, so a good part of their edge came from what they did elsewhere.`
-              : null;
+            // ⚠ THE CAVEAT USED TO READ "only 0% of the players separating that group are QBs, so a good
+            //   part of their edge came from what they did elsewhere" — Trey: "I don't know what this
+            //   means." Neither does anybody: it is a percentage of an invisible denominator, and at 0% it
+            //   is a sentence about nothing. What it was trying to say is worth saying, so say THAT: name
+            //   the positions those teams actually separated themselves at.
+            const others = (best.winnersAll || []).filter((w) => cpos(w.pos) !== g.label);
+            const otherPos = [...new Set(others.map((w) => cpos(w.pos)))];
+            const caveat = spread > 0 && otherPos.length && (best.winners || []).length === 0
+              ? `None of the players that separated this group are ${g.label}s — what set them apart was their ${otherPos.join(" and ")}. Read the timing as a by-product of that, not as a ${g.label} finding.`
+              : spread > 0 && otherPos.length >= 2 && (best.winners || []).length < otherPos.length
+                ? `Their edge wasn't only at ${g.label} — the same teams also separated themselves at ${otherPos.join(" and ")}.`
+                : null;
             const band = (b, tone) => (
               <div key={tone} data-window={`${g.label}:${tone}`} onMouseEnter={(e) => showTip(e, [
                 { kind: "take", tone: tone === "best" ? "good" : "bad", x: `${b.key} — averaged ${b.pts} projected points` },
@@ -15074,13 +15247,27 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                 {spread > 0 && (
                   <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 128px", gap: 14, alignItems: "center" }}>
                     <div>
-                      <div style={{ position: "relative", height: 37 }}>
+                      <div style={{ position: "relative", height: 48 }}>
                         {/* the round rail */}
                         <div style={{ position: "absolute", left: 0, right: 0, top: 8, height: 1, background: "var(--line)" }} />
                         <div style={{ position: "absolute", left: 0, right: 0, top: 28, height: 1, background: "var(--line)" }} />
                         {band(best, "best")}
                         {band(worst, "worst")}
                         {/* ⭐ WHEN THEY CAME BACK. The whole reason "first WR in round 6+" looked wrong. */}
+                        {/* ⭐ AND THE WORST GROUP'S SECOND PICK TOO, hollow. Trey: "I want a dot for the
+                            2nd player for the 'worst lineups' — that dot can just not be colored in."
+                            The pair is the whole point: it is the gap between when the good rosters came
+                            back and when the bad ones did. */}
+                        {worst.secondRound && (
+                          <div data-second={`${g.label}:worst`} onMouseEnter={(e) => showTip(e, [
+                            { kind: "take", tone: "bad", x: `The worst group's second ${g.label} — around round ${worst.secondRound}` },
+                            { t: "How many did it", x: `${worst.secondShare}% of the teams in the worst group came back for another, and they finished with ${worst.held} ${g.label}${worst.held === 1 ? "" : "s"} on average.` },
+                          ])} onMouseLeave={hideTip}
+                            style={{ position: "absolute", left: pct(worst.secondRound), top: 19, transform: "translateX(-50%)", cursor: "help" }}>
+                            <div style={{ width: 12, height: 12, borderRadius: 999, background: "transparent", border: `2px solid var(--mut)` }} />
+                            <div className="mut num" style={{ fontSize: 8.5, marginTop: 1, transform: "translateX(-30%)" }}>2nd</div>
+                          </div>
+                        )}
                         {best.secondRound && (
                           <div data-second={g.label} onMouseEnter={(e) => showTip(e, [
                             { kind: "take", tone: "good", x: `Their second ${g.label} — around round ${best.secondRound}` },
@@ -17403,7 +17590,15 @@ function DraftOrderTab({ f, upd, ensureNames }) {
   );
 }
 
-function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, initialMode, initialKeeperOpen }) {
+// ⭐⭐ A HALF-FILLED LEAGUE SURVIVES LEAVING THE PAGE. From a user: "I was creating a league and filled in
+// most of the information, but we are still haggling over scoring changes. I went back assuming it would
+// save my progress thus far, but it looks like it didn't."
+// Nothing existed to lose it to — the form was pure component state, so navigating away unmounted it and
+// every field went with it. Now, when `draftKey` is supplied (the CREATE flow only — editing an existing
+// league already has somewhere to save), the whole form is mirrored to localStorage as it changes and
+// restored on the way back in, with a banner so it is never a surprise. Cleared on create and on discard.
+const CFG_DRAFT_PREFIX = "fdc:cfgdraft:";
+function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, initialMode, initialKeeperOpen, draftKey }) {
   const [seg, setSeg] = useState(initialSeg || "basics");
   // Simple vs complex view. Simple shows only the essentials (Basics tab); complex reveals the full tabbed
   // form (roster, scoring, teams & order, pick trades). Mirrors the mock-setup simple/complex choice so
@@ -17431,8 +17626,55 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
     base.keepers = Array.isArray(base.keepers) ? base.keepers : [];
     base.pickTrades = Array.isArray(base.pickTrades) ? base.pickTrades : [];
     base.existingRosters = (base.existingRosters && typeof base.existingRosters === "object") ? base.existingRosters : null;
+    // Restore an unfinished setup, if there is one. ⚠ Merged OVER the defaults rather than replacing them,
+    // so a saved draft written by an older build can't remove a field this build expects to exist.
+    if (draftKey) {
+      try {
+        const raw = localStorage.getItem(CFG_DRAFT_PREFIX + draftKey);
+        if (raw) {
+          const saved = JSON.parse(raw);
+          if (saved && typeof saved === "object" && saved.f) {
+            const m = { ...base, ...saved.f };
+            m.start = { ...base.start, ...(saved.f.start || {}) };
+            m.caps = { ...base.caps, ...(saved.f.caps || {}) };
+            m.scoring = { ...base.scoring, ...(saved.f.scoring || {}) };
+            ["teamNames", "favTeams", "keepers", "pickTrades"].forEach((k) => { if (!Array.isArray(m[k])) m[k] = []; });
+            return m;
+          }
+        }
+      } catch (_) {}
+    }
     return base;
   });
+  // Mirror the form as it changes. Debounced, because every keystroke in a scoring box would otherwise
+  // write the whole object; 400ms is well inside the time it takes to navigate away.
+  const [restored, setRestored] = useState(() => {
+    if (!draftKey) return false;
+    try { return !!localStorage.getItem(CFG_DRAFT_PREFIX + draftKey); } catch (_) { return false; }
+  });
+  // ⚠ ONLY SAVE A FORM THAT HAS ACTUALLY BEEN TOUCHED. Saving the pristine defaults means merely OPENING
+  //   the wizard leaves a draft behind, and the next visit greets you with "picked up where you left off"
+  //   over a form you never filled in — which teaches you to ignore the banner. It also made "Start over"
+  //   look broken: it cleared the fields and the autosave immediately wrote the blank form back.
+  const pristineRef = useRef(null);
+  if (pristineRef.current === null) {
+    try { pristineRef.current = JSON.stringify({ ...f, name: "My league" }); } catch (_) { pristineRef.current = ""; }
+  }
+  useEffect(() => {
+    if (!draftKey) return undefined;
+    const t2 = setTimeout(() => {
+      try {
+        const now = JSON.stringify({ ...f, name: "My league" });
+        if (now === pristineRef.current && String(f.name || "") === "My league") {
+          localStorage.removeItem(CFG_DRAFT_PREFIX + draftKey);
+          return;
+        }
+        localStorage.setItem(CFG_DRAFT_PREFIX + draftKey, JSON.stringify({ at: Date.now(), f }));
+      } catch (_) {}
+    }, 400);
+    return () => clearTimeout(t2);
+  }, [draftKey, f]);
+  const clearDraft = () => { try { localStorage.removeItem(CFG_DRAFT_PREFIX + draftKey); } catch (_) {} };
   const upd = (patch) => setF((s) => ({ ...s, ...patch }));
   const updStart = (k, v) => setF((s) => ({ ...s, start: { ...s.start, [k]: v } }));
   const updCap = (k, v) => setF((s) => ({ ...s, caps: { ...s.caps, [k]: v.replace(/\D/g, "") } }));
@@ -17488,6 +17730,7 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
       teamNames: (Array.isArray(f.teamNames) && f.teamNames.length === +f.teams && f.teamNames.some((x) => String(x || "").trim())) ? f.teamNames : null,
       favTeams: (Array.isArray(f.favTeams) && f.favTeams.length === +f.teams && f.favTeams.some((x) => String(x || "").trim())) ? f.favTeams : null,
     };
+    if (draftKey) clearDraft();   // the league exists now; the unfinished copy would only confuse the next one
     onSubmit(cfg);
   };
 
@@ -17551,6 +17794,20 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
         };
         return SEG_INTRO[seg] ? <div className="mut" style={{ fontSize: 12, lineHeight: 1.5, marginBottom: 16, paddingBottom: 12, borderBottom: "1px solid var(--line)" }}>{SEG_INTRO[seg]}</div> : null;
       })()}
+
+      {/* ⭐ NEVER RESTORE SILENTLY. A form that quietly refills itself from a week-old draft is worse than
+          one that loses your work — you cannot tell which fields are yours. Say it happened, and offer the
+          one-click way out. */}
+      {restored && (
+        <div data-cfgrestored="1" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "9px 12px", marginBottom: 14, borderRadius: 9, background: "rgba(224,166,60,.08)", border: "1px solid rgba(224,166,60,.4)" }}>
+          <i className="ti ti-history" style={{ fontSize: 15, color: "var(--gold)" }} aria-hidden="true" />
+          <span style={{ fontSize: 12.5, lineHeight: 1.45, flex: 1, minWidth: 200 }}>
+            <b style={{ color: "var(--gold)" }}>Picked up where you left off. </b>
+            This league hasn't been created yet — everything you'd filled in is still here.
+          </span>
+          <button className="btn btn-mini" onClick={() => { clearDraft(); setRestored(false); setF((prev) => ({ ...prev, name: "My league", scoring: { ...DEFAULT_SCORING }, keepers: [], pickTrades: [], teamNames: [], favTeams: [] })); }}>Start over</button>
+        </div>
+      )}
 
       {seg === "basics" && (
         <>
@@ -17833,6 +18090,7 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
               {ScoreField("fum", "Fumble lost")}
               <div className="disp gold" style={{ fontSize: 12, letterSpacing: ".06em", margin: "12px 0 7px" }}>KICKING</div>
               {ScoreField("fg", "Field goal (base)")}
+              {ScoreField("fg40", "FG 40-49 bonus")}
               {ScoreField("fg50", "FG 50+ bonus")}
               {ScoreField("pat", "Extra point (PAT)")}
               {ScoreField("fgMiss", "Missed FG")}
@@ -17894,8 +18152,9 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
         </>
       )}
 
-      <div style={{ display: "flex", gap: 8, marginTop: 20, borderTop: "1px solid var(--line)", paddingTop: 16 }}>
-        {onCancel && <button className="btn" onClick={onCancel}>Cancel</button>}
+      <div style={{ display: "flex", gap: 8, marginTop: 20, borderTop: "1px solid var(--line)", paddingTop: 16, flexWrap: "wrap", alignItems: "center" }}>
+        {onCancel && <button className="btn" onClick={onCancel}>{draftKey ? "Leave — this is saved" : "Cancel"}</button>}
+        {draftKey && <span className="mut" style={{ fontSize: 11.5 }}>Your progress is kept on this device until you create the league.</span>}
         <div style={{ flex: 1 }} />
         <button className="btn btn-gold" onClick={submit}>{submitLabel}</button>
       </div>
@@ -17934,7 +18193,9 @@ function Setup({ onCreate, onBack, backLabel }) {
   return (
     <div style={{ maxWidth: 580, margin: "0 auto", padding: "32px 20px" }}>
       <button className="btn btn-mini" onClick={onBack} style={{ marginBottom: 14 }}>← {backLabel || "Library"}</button>
-      <ConfigForm initial={{}} submitLabel="Create league & enter draft room" onSubmit={onCreate} onCancel={onBack} />
+      {/* ⭐ draftKey turns on the unfinished-setup autosave. Only the CREATE flow gets it — editing an
+          existing league already has a league object to save into. */}
+      <ConfigForm initial={{}} draftKey="new" submitLabel="Create league & enter draft room" onSubmit={onCreate} onCancel={onBack} />
     </div>
   );
 }
@@ -18196,7 +18457,7 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
 
   return (
     <div>
-      <div className="hairline" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px" }}>
+      <div className="hairline appheader" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px" }}>
         <Compass size={22} spin />
         <div className="disp" style={{ fontSize: 20, fontWeight: 700 }}>ADMIN <span className="gold">CONSOLE</span></div>
         <span className="chip">Role-gated · {user.email}</span>
@@ -19666,10 +19927,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         if (Array.isArray(legacy) && legacy.length) raw = legacy;
       }
       const arr = Array.isArray(raw) ? raw : [];
-      setQueue(new Set(arr));
+      // ⭐ AND THE ACCOUNT-WIDE LIST ON TOP. The priority list gained the same two scopes as do-not-draft
+      //   (29h), so the room has to honour the master list minus this league's exceptions — otherwise the
+      //   prep screen and the board disagree about who is starred, which is exactly the failure the avoid
+      //   list's `effectiveAvoid` exists to prevent.
+      const eff = effectiveQueue({ ...(league || {}), priorityQueue: arr }, user);
+      setQueue(new Set(eff));
       try { localStorage.setItem(queueKey, JSON.stringify(arr)); } catch {}
     } catch { setQueue(new Set()); }
-  }, [queueKey, league?.id]);
+  }, [queueKey, league?.id, league?.queueAllow, user?.queueMaster]);
   const [queueOnly, setQueueOnly] = useState(false);
 
   // ---- DO-NOT-DRAFT LIST --------------------------------------------------------------------------
@@ -22463,7 +22729,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   return (
     <div>
       {tourOn && <CoachTour steps={TOUR_STEPS} onExit={() => { setTourOn(false); setTab("hub"); }} onStepTab={(t) => setTab(t)} optOut={tourOptOut} onOptOut={setTourNeverShow} />}
-      <div className="hairline" style={{ display: "flex", alignItems: "center", gap: 12, padding: "6px 16px", flexWrap: "wrap" }}>
+      {/* The draft room's own top bar. Gets .appheader so the sticky rule covers it too — Trey asked for
+          the banner to stay put on EVERY page, and the room is the page he is on longest. */}
+      <div className="hairline appheader" style={{ display: "flex", alignItems: "center", gap: 12, padding: "6px 16px", flexWrap: "wrap" }}>
         <button className="btn btn-mini" onClick={exit} title="Back to where you came from">← {exitLabel || (user ? (user.paid ? "Home" : "Library") : "Home")}</button>
         <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{league.name}</div>
         {isMock && <div className="chip" style={{ borderColor: "var(--gold)", background: "rgba(224,166,60,.10)", color: "var(--gold)" }} title="This is a practice draft — it saves to this league's mock history and never changes your real draft."><i className="ti ti-dice" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />MOCK</div>}
