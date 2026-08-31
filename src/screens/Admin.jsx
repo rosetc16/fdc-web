@@ -10,6 +10,11 @@
    needs a value at module-evaluation time must NOT be imported this way — it would be in its temporal
    dead zone and the screen would throw on first render. */
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+/* ⚠ 29r — IMPORTED FROM ITS REAL HOME, NOT RE-EXPORTED THROUGH App.jsx.
+   `api`/`hasBackend` are things App.jsx imports too, and the 29p extractor only read App.jsx's own
+   top-level DECLARATIONS — so this line was missing and the screen threw "hasBackend is not defined"
+   the instant it mounted. tools/screens-check.mjs now fails the build on any free identifier here. */
+import { api, hasBackend } from "../api.js";
 import { CURRENT_SEASON, POS, Compass, formatKey } from "../App.jsx";
 
 function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedback, onGrantComp, onRevokeComp, onBack }) {

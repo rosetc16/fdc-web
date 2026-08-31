@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29p";
+const BUILD_TAG = "2026.07.29r";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -3937,13 +3937,32 @@ function computeBoardTiers(list, metric, isDrafted) {
   // whose gaps grow steadily (every gap bigger than the last) would break on almost every row.
   const maxBreaks = Math.max(2, Math.floor(n / 5));
   let mult = 3, tierOf = null;
-  for (let guard = 0; guard < 12; guard++) {
-    const thresh = med * mult;
+  const breakAt = (m) => {
     const t = [1];
     let tier = 1;
-    for (let i = 1; i < n; i++) { if (gaps[i - 1] > thresh) tier++; t.push(tier); }
-    if (tier - 1 <= maxBreaks || mult > 40) { tierOf = t; break; }
+    for (let i = 1; i < n; i++) { if (gaps[i - 1] > med * m) tier++; t.push(tier); }
+    return { t, breaks: tier - 1 };
+  };
+  for (let guard = 0; guard < 12; guard++) {
+    const r = breakAt(mult);
+    if (r.breaks <= maxBreaks || mult > 40) { tierOf = r.t; break; }
     mult *= 1.5;
+  }
+  /* ⭐⭐⭐ 29q — AND IT HAS TO NARROW, NOT ONLY WIDEN. Trey, on a printed sheet of his real board: "it is
+     showing everyone as tier 1." The loop above only ever RAISED the multiple, to stop a board that breaks
+     everywhere. It had no answer for the opposite case, and the opposite case is the COMMON one on an
+     ADP-sorted board: ADP is an average over thousands of drafts, so it is a smooth curve by construction —
+     consecutive players differ by tenths and NOTHING is three times the median gap. Zero breaks, one tier,
+     on every board sorted the way most people read it. A tier column that always says 1 is worse than no
+     tier column, because it looks like an answer.
+     So when the first pass finds nothing, walk the multiple DOWN until real breaks appear. ⚠ Stop at 1.6:
+     below that the "cliff" is ordinary noise and the sheet would be striped into meaningless bands — better
+     to return one tier honestly than to invent twenty. */
+  if (tierOf && (tierOf[n - 1] || 1) === 1 && n >= 12) {
+    for (let m = 2.4; m >= 1.6; m -= 0.2) {
+      const r = breakAt(m);
+      if (r.breaks >= 2 && r.breaks <= maxBreaks) { tierOf = r.t; break; }
+    }
   }
   if (!tierOf) return null;
   for (let i = 0; i < n; i++) out.tierOf[i] = tierOf[i];
@@ -5782,7 +5801,7 @@ function CoachTour({ steps, onExit, onStepTab, optOut, onOptOut }) {
    lineup (lineupSlots — the same function the roster views draw), and the chart says plainly which bars are
    starters and which are bench.
    ================================================================================================== */
-function ByeWeekWidget({ roster, req, isDynasty }) {
+function ByeWeekWidget({ roster, req, isDynasty, onTip, onHideTip }) {
   const all = (roster || []).filter((p) => p && ["QB", "RB", "WR", "TE"].includes(p.pos));
   // The lineup this roster would actually field — flex and superflex slots resolved the same way the
   // My Team and League tabs resolve them, so this widget can never disagree with the roster beside it.
@@ -5799,6 +5818,21 @@ function ByeWeekWidget({ roster, req, isDynasty }) {
     m[p.bye] = (m[p.bye] || 0) + 1;
   });
   const weeks = [...new Set([...Object.keys(weekStart), ...Object.keys(weekBench)])].map(Number).sort((a, b) => a - b);
+  /* ⭐⭐ 29q — WHO, NOT JUST HOW MANY. Trey: "can you make it so that you can hover the week and it shows
+     the players that line up on the weeks there." A bar saying "3" tells you a week is bad and nothing about
+     what to do; the names tell you whether it is your RB1 and two benchwarmers or your entire receiving
+     corps. The counts above are unchanged — this is the same data, kept rather than discarded. */
+  // ⚠ Built from `withBye` and `starterIds` — the SAME two things the counts above are built from, so the
+  //   hover can never name a different set of players than the bar it is attached to.
+  const whoOut = {};
+  withBye.forEach((p) => {
+    const e = (whoOut[p.bye] = whoOut[p.bye] || { start: [], bench: [] });
+    (starterIds.has(p.id) ? e.start : e.bench).push(p);
+  });
+  Object.values(whoOut).forEach((e) => {
+    e.start.sort((a, b) => (b.pts || 0) - (a.pts || 0));
+    e.bench.sort((a, b) => (b.pts || 0) - (a.pts || 0));
+  });
   const totalIn = (w) => (weekStart[w] || 0) + (weekBench[w] || 0);
   const maxTotal = weeks.reduce((m, w) => Math.max(m, totalIn(w)), 0);
   const worstWeek = weeks.reduce((best, w) => ((weekStart[w] || 0) > (weekStart[best] || 0) ? w : best), weeks[0]);
@@ -5860,7 +5894,22 @@ function ByeWeekWidget({ roster, req, isDynasty }) {
                 const h = maxTotal ? Math.max(6, Math.round((n / maxTotal) * (CH - 10))) : 6;
                 const stH = n ? Math.round(h * (st / n)) : 0;
                 return (
-                  <div key={w} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, flex: "1 1 0", minWidth: 26, maxWidth: 52 }}
+                  <div key={w} data-byeweek={w} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, flex: "1 1 0", minWidth: 26, maxWidth: 52, cursor: n ? "help" : "default" }}
+                    onMouseEnter={n && onTip ? (e) => onTip(e, [
+                      { kind: "take", tone: st >= 3 ? "bad" : st === 2 ? "neutral" : "good",
+                        x: `Week ${w} — ${st} starter${st === 1 ? "" : "s"}${bn ? ` and ${bn} bench player${bn === 1 ? "" : "s"}` : ""} on bye` },
+                      ...((whoOut[w] && whoOut[w].start.length)
+                        ? [{ kind: "altheader", x: "Starters out" },
+                           { kind: "playertable", cols: ["rank", "name", "team", "pts"],
+                             players: whoOut[w].start.map((x) => ({ posRank: x.pos, pos: x.pos, name: x.name, team: x.team, pts: Math.round(x.pts || 0) })) }]
+                        : [{ t: "Starters out", x: "None — your starting lineup is intact this week" }]),
+                      ...((whoOut[w] && whoOut[w].bench.length)
+                        ? [{ kind: "altheader", x: "Bench out" },
+                           { kind: "playertable", cols: ["rank", "name", "team", "pts"],
+                             players: whoOut[w].bench.map((x) => ({ posRank: x.pos, pos: x.pos, name: x.name, team: x.team, pts: Math.round(x.pts || 0) })) }]
+                        : []),
+                    ]) : undefined}
+                    onMouseLeave={onTip ? onHideTip : undefined}
                     title={`Week ${w}: ${st} starter${st === 1 ? "" : "s"}${bn ? ` and ${bn} bench player${bn === 1 ? "" : "s"}` : ""} on bye`}>
                     <div style={{ height: CH, width: "100%", display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
                       <div style={{ width: "100%", maxWidth: 26, height: h, borderRadius: 4, overflow: "hidden", display: "flex", flexDirection: "column", justifyContent: "flex-end", background: "var(--line2)" }}>
@@ -7733,6 +7782,8 @@ export default function App() {
   const [authError, setAuthError] = useState(null);
   const [leagues, setLeagues] = useState([]);
   const [activeId, setActiveId] = useState(nav0.activeId || null);
+  // ⭐ 29q — set when the draft plan sends the user here to write a strategy; cleared once consumed.
+  const [openStrategyFor, setOpenStrategyFor] = useState(null);
   const [hubLeagueId, setHubLeagueId] = useState(nav0.hubLeagueId || null); // Sleeper league_id for the in-season team hub
   const [draftTab, setDraftTab] = useState(null); // optional tab to open the draft room on
   const [helpTab, setHelpTab] = useState(null); // optional tab to open Help on
@@ -7861,7 +7912,7 @@ export default function App() {
         const lg = leagues.find((l) => l.id === e.activeId);
         return lg ? lg.name : "League";
       }
-      if (e.route === "mockPlan") return "Draft plan";
+      if (e.route === "mockPlan") return "Draft plan & trends";
       const NAMES = { home: "Home", library: "Library", rankings: "Rankings", account: "Account", admin: "Admin",
         trends: "Trends", draftTrends: "Draft trends", database: "Drafts", trendsTime: "Trends", tradeTools: "Trade tools",
         adpIntel: "ADP intel", teamHub: "Team hub", help: "Help" };
@@ -8741,7 +8792,7 @@ export default function App() {
         onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }}
         onDraftTrends={() => setRoute("draftTrends")} onAutoImportSleeper={autoImportSleeper}
         onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }} onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }} onDeleteFun={deleteFunMock} onDeleteMock={deleteMock} />}
-      {route === "leagueHub" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? <LeagueUmbrella user={user} league={lg} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} backLabel={backLabelOf()}
+      {route === "leagueHub" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? <LeagueUmbrella user={user} league={lg} openStrategy={openStrategyFor === lg.id} onStrategyOpened={() => setOpenStrategyFor(null)} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} backLabel={backLabelOf()}
         onOfficial={(id) => { setDraftTab(null); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
         onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }}
         onMockPlan={(id) => { setActiveId(id); setRoute("mockPlan"); }}
@@ -8766,7 +8817,10 @@ export default function App() {
       {route === "mockPlan" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? (
         <Boundary label="mock trends">
           <MockTrendsPageLazy league={lg} user={user} onBack={() => goBack()} backLabel={backLabelOf(lg.name)} onHome={() => setRoute("home")} onSignOut={signOut}
-            onRunMock={() => startMock(lg.id)} />
+            onRunMock={() => startMock(lg.id)}
+            /* ⭐ 29q — the plan page's empty state opens the editor rather than telling him where it lives.
+               The editor is the league page's, so this routes there and asks it to open on arrival. */
+            onEditStrategy={() => { setActiveId(lg.id); setOpenStrategyFor(lg.id); setRoute("leagueHub"); }} />
         </Boundary>
       ) : null; })()}
       {route === "teamHub" && user && hubLeagueId && <Boundary label="in-season hub" fallback={(msg) => (
@@ -9642,7 +9696,7 @@ export function CheatSheetModal({ league, cfg, getRows, tierMetric, myRanks, que
             </select>
           </label>
           <button className="btn btn-mini" data-sheetcsv onClick={downloadCsv}><i className="ti ti-download" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />CSV</button>
-          <button className="btn btn-mini btn-gold" data-sheetprint onClick={() => printElement(".printsheet")}><i className="ti ti-printer" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Print / PDF</button>
+          <button className="btn btn-mini btn-gold" data-sheetprint onClick={() => printElement("[data-cheatsheet]", { title: `${league.name} — cheat sheet` })}><i className="ti ti-printer" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Print / PDF</button>
           <button className="btn btn-mini" data-sheetclose onClick={onClose}>Close</button>
         </div>
         <div style={{ padding: "10px 16px 18px" }}>
@@ -9692,32 +9746,67 @@ export function CheatSheetModal({ league, cfg, getRows, tierMetric, myRanks, que
    it that is HIS. On paper at a live draft they are also the part you cannot look up — the board is in
    front of you, "no QB before round 5" is in your head. It goes on both printable sheets.
    ⚠ Renders nothing at all when there is no plan, rather than an empty box with a heading. */
-export function PrintedStrategy({ strategy, cfg }) {
+/* ⭐⭐ 29q — THE PLAN AS A TABLE, NOT A PARAGRAPH. Trey: "can you make it look a little cleaner at the top.
+   It's harder to follow the players since it's just a large text box." It was an auto-fit grid of "R3-4
+   Malik Nabers, DeVonta Smith" strings that reflowed into a wall — six cells of different heights with no
+   common baseline, so nothing lined up and the eye had nowhere to start. One row per round window, the
+   round in its own fixed lane, the players as separate chips, and the rules on their own line underneath.
+   ⚠ `onEdit` is what makes it useful when it is EMPTY: "If the user has NOT submitted any strategy, can you
+   put a button there for them to click to fill out the strategy." An empty state that names an action must
+   contain it — the same rule that fixed the draft room's empty plan panel in 29m. */
+export function PrintedStrategy({ strategy, cfg, onEdit }) {
   const targets = (strategy && strategy.targets) || [];
   const rules = (strategy && strategy.rules) || [];
-  if (!targets.length && !rules.length) return null;
-  const byRound = {};
-  targets.forEach((t) => { const r = t.from || 0; (byRound[r] = byRound[r] || []).push(t); });
-  const rounds = Object.keys(byRound).map(Number).sort((a, b) => a - b);
+  if (!targets.length && !rules.length) {
+    if (!onEdit) return null;
+    return (
+      <div data-printplan data-noplan className="noprint" style={{ marginTop: 14, marginBottom: 4, padding: "12px 14px", borderRadius: 10, background: "rgba(224,166,60,.07)", border: "1px dashed rgba(224,166,60,.45)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <i className="ti ti-clipboard-list" style={{ fontSize: 19, color: "var(--gold)" }} aria-hidden="true" />
+        <div style={{ flex: 1, minWidth: 220 }}>
+          <div style={{ fontSize: 13, fontWeight: 700 }}>You haven't written a draft strategy yet</div>
+          <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.45, marginTop: 2 }}>
+            A few players you want and the rounds you want them in, plus a rule or two about roster shape. Everything below reads better next to it — and it prints on your cheat sheet.
+          </div>
+        </div>
+        <button className="btn btn-mini btn-gold" data-planwrite onClick={onEdit} style={{ flexShrink: 0 }}>Write your strategy</button>
+      </div>
+    );
+  }
+  // Group by the WINDOW, not the opening round, so "R3-4" is one row rather than two half-rows.
+  const byWin = new Map();
+  targets.forEach((t) => {
+    const key = `${t.from || 0}-${t.to || t.from || 0}`;
+    if (!byWin.has(key)) byWin.set(key, { from: t.from || 0, to: t.to || t.from || 0, names: [] });
+    byWin.get(key).names.push(t.name);
+  });
+  const wins = [...byWin.values()].sort((a, b) => a.from - b.from || a.to - b.to);
   return (
-    <div data-printplan style={{ marginBottom: 9, paddingBottom: 8, borderBottom: "1px solid var(--line)" }}>
-      <div className="disp" style={{ fontSize: 10, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--gold)", fontWeight: 800, marginBottom: 5 }}>Your draft strategy</div>
-      {rounds.length > 0 && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: "4px 14px", marginBottom: rules.length ? 7 : 0 }}>
-          {rounds.map((r) => (
-            <div key={r} style={{ fontSize: 10.5, lineHeight: 1.5, display: "flex", gap: 5 }}>
-              <b className="num" style={{ color: "var(--gold)", flexShrink: 0, minWidth: 42 }}>
-                {byRound[r][0] && byRound[r][0].to && byRound[r][0].to !== r ? `R${r}-${byRound[r][0].to}` : `R${r}`}
+    <div data-printplan style={{ marginTop: 12, marginBottom: 10, paddingBottom: 10, borderBottom: "1px solid var(--line)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7 }}>
+        <div className="disp" style={{ fontSize: 10, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--gold)", fontWeight: 800 }}>Your draft strategy</div>
+        <span style={{ flex: 1, height: 1, background: "var(--line)" }} />
+        {onEdit && <button className="btn btn-mini noprint" data-planedit onClick={onEdit}>Edit</button>}
+      </div>
+      {wins.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          {wins.map((w) => (
+            <div key={`${w.from}-${w.to}`} style={{ display: "flex", alignItems: "baseline", gap: 9, minWidth: 0 }}>
+              <b className="num" style={{ color: "var(--gold)", flexShrink: 0, width: 52, fontSize: 11, textAlign: "right" }}>
+                {w.from === w.to ? `R${w.from}` : `R${w.from}-${w.to}`}
               </b>
-              <span>{byRound[r].map((t) => t.name).join(", ")}</span>
+              <span style={{ display: "flex", flexWrap: "wrap", gap: "3px 5px", minWidth: 0 }}>
+                {w.names.map((nm) => (
+                  <span key={nm} style={{ fontSize: 11.5, lineHeight: 1.5, padding: "0 6px", borderRadius: 5, border: "1px solid var(--line)", background: "var(--panel2)", whiteSpace: "nowrap" }}>{nm}</span>
+                ))}
+              </span>
             </div>
           ))}
         </div>
       )}
       {rules.length > 0 && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "3px 12px" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "3px 14px", marginTop: wins.length ? 8 : 0, paddingTop: wins.length ? 7 : 0, borderTop: wins.length ? "1px solid var(--line2)" : "none" }}>
           {rules.map((rl, i) => (
-            <span key={i} style={{ fontSize: 10, color: "var(--mut)" }}>▸ {(STRAT_KINDS[rl.kind] && STRAT_KINDS[rl.kind].phrase(rl)) || rl.label || ""}</span>
+            <span key={i} style={{ fontSize: 10.5, color: "var(--mut)" }}>▸ {(STRAT_KINDS[rl.kind] && STRAT_KINDS[rl.kind].phrase(rl)) || rl.label || ""}</span>
           ))}
         </div>
       )}
@@ -9731,17 +9820,80 @@ export function PrintedStrategy({ strategy, cfg }) {
    whole app renders blank — so it is a helper, and it always cleans up: on `afterprint`, and on a timer for
    the browsers that never fire it. Saving as PDF is the same OS print dialog, which is what Trey means by
    "print or save as a PDF". */
-export function printElement(selector) {
+/* ⭐⭐⭐ 29q — PRINTING OPENS A NEW TAB, and that is a correctness fix as much as a convenience one.
+   Trey: "The printed cheat sheet is all jacked up on the second page… Also when you click print, I want to
+   bring the page up in a new tab."
+
+   The 29p version hid the app with `body.printing *{visibility:hidden}` and revealed one element pinned at
+   `position:absolute; top:0`. ⚠ AN ABSOLUTELY POSITIONED ELEMENT TALLER THAN A PAGE DOES NOT PAGINATE — it
+   is out of flow, so the browser has no block to break, and page two redraws overlapping fragments of the
+   same table. That is exactly his screenshot: two halves of the sheet superimposed.
+
+   Writing the content into its own document fixes it by construction — the sheet is the whole page, in
+   normal flow, so pagination is the browser's ordinary job. It also gives him the tab he asked for, leaves
+   the app's own state untouched (no class stranded by a cancelled print), and lets the print stylesheet be
+   simple instead of fighting the app's.
+   ⚠ MUST BE CALLED SYNCHRONOUSLY FROM THE CLICK or the pop-up blocker eats the window; if it is blocked we
+   fall back to printing in place rather than silently doing nothing. */
+export function printElement(selector, opts = {}) {
   const el = typeof document !== "undefined" ? document.querySelector(selector) : null;
-  if (el) el.classList.add("printtarget");
-  document.body.classList.add("printing");
-  const done = () => {
-    document.body.classList.remove("printing");
-    if (el) el.classList.remove("printtarget");
-    window.removeEventListener("afterprint", done);
-  };
-  window.addEventListener("afterprint", done);
-  setTimeout(() => { try { window.print(); } catch (e) { /* blocked — clean up below */ } setTimeout(done, 1200); }, 40);
+  if (!el) return;
+  const title = String(opts.title || "Fantasy Draft Compass").replace(/[<>]/g, "");
+  let w = null;
+  try { w = window.open("", "_blank"); } catch (e) { w = null; }
+  if (!w) {
+    el.classList.add("printtarget");
+    document.body.classList.add("printing");
+    const done = () => {
+      document.body.classList.remove("printing");
+      el.classList.remove("printtarget");
+      window.removeEventListener("afterprint", done);
+    };
+    window.addEventListener("afterprint", done);
+    setTimeout(() => { try { window.print(); } catch (e2) {} setTimeout(done, 1200); }, 40);
+    return;
+  }
+  // Carry the app's own stylesheets across so tier bands and position tints survive — every element already
+  // has its inline styles, but the class-based rules live in the injected <style> tags.
+  const styles = Array.from(document.querySelectorAll("style")).map((s) => s.textContent || "").join("\n");
+  const body = el.cloneNode(true);
+  body.querySelectorAll(".noprint").forEach((n) => n.remove());
+  body.classList.add("printdoc");
+  // ⭐ A dark-on-dark sheet is unreadable on paper and empties a cartridge; the printed document is light,
+  //   and its headings are heavy and ruled so a stack of pages can be navigated by eye.
+  const sheet = [
+    "@page{margin:12mm}",
+    "html,body{background:#fff!important;color:#111!important;margin:0;padding:0}",
+    "body{font-family:Barlow,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:11px;",
+    "  --ink:#111;--mut:#555;--line:#c9c9c9;--line2:#e6e6e6;--panel:#fff;--panel2:#f7f7f7;--gold:#8a6a12}",
+    ".printdoc{width:100%!important;max-width:none!important;max-height:none!important;overflow:visible!important;",
+    "  border:none!important;background:#fff!important;color:#111!important;padding:0!important;box-shadow:none!important}",
+    ".printdoc .panel{background:#fff!important;border-color:#ddd!important;box-shadow:none!important}",
+    ".printdoc table{width:100%;border-collapse:collapse}",
+    ".printdoc td,.printdoc th{border-color:#ccc!important}",
+    ".printdoc tr{break-inside:avoid;page-break-inside:avoid}",
+    ".printdoc thead{display:table-header-group}",
+    ".printdoc .sheettier{background:#ececec!important;color:#111!important}",
+    ".printdoc [data-printplan]{break-inside:avoid;page-break-inside:avoid}",
+    ".printdoc .tooltip,.printdoc .noprint,.printdoc button{display:none!important}",
+    // ⭐ "There is a ton of information on these pages, so feel free to use page breaks for different
+    //   sections and clear headings to show when information is different."
+    ".printdoc [data-printsection]{break-before:page;page-break-before:always;padding-top:2mm}",
+    ".printdoc [data-printsection]:first-of-type{break-before:auto;page-break-before:auto}",
+    ".printdoc [data-printhead]{font-size:15px!important;font-weight:800!important;color:#111!important;",
+    "  letter-spacing:.02em;border-bottom:2px solid #111;padding-bottom:3px;margin:0 0 8px}",
+    ".printdoc [data-printsub]{font-size:10.5px!important;color:#444!important;margin:-4px 0 9px}",
+    "*{-webkit-print-color-adjust:exact;print-color-adjust:exact}",
+  ].join("\n");
+  w.document.open();
+  w.document.write("<!doctype html><html><head><meta charset=\"utf-8\"><title>" + title + "</title>"
+    + "<style>" + styles + "</style><style>" + sheet + "</style></head><body></body></html>");
+  w.document.close();
+  w.document.body.appendChild(w.document.importNode(body, true));
+  // Let fonts and layout settle before opening the dialog, or Chrome measures a half-laid-out page.
+  const go = () => { try { w.focus(); w.print(); } catch (e) {} };
+  if (w.document.readyState === "complete") setTimeout(go, 400);
+  else w.addEventListener("load", () => setTimeout(go, 400));
 }
 
 function StrategyEditor({ league, user, allLeagues, taken, onSave, onSaveMaster, onClose }) {
@@ -9765,15 +9917,38 @@ function StrategyEditor({ league, user, allLeagues, taken, onSave, onSaveMaster,
   const teams = cfg.teams || 12, rounds = cfg.rounds || 15;
   const players = useMemo(() => { try { return buildPlayers(cfg) || []; } catch { return []; } }, [cfg]);
   // YOUR picks, so the round menu offers the rounds you actually own rather than 1..N.
+  /* ⭐⭐⭐ 29q — EVERY OPTION NAMES ITS PICK, AND A SPENT PICK SAYS WHO SPENT IT.
+     Trey: "for the 'target round' it's still showing 'round 8 - his round' twice as duplicates because I
+     have two picks in that round… I want to show specifically like 8.02 and 8.10 — I want this for every
+     drop down, not just rounds I have multiple picks in. Also on that drop down, if this is a keeper league
+     or there is already a player slotted at that pick… can you grey it out and somehow show who the keeper
+     is on the drop down."
+     Two identical "Round 8" options is a menu that cannot express the choice being made, and a menu offering
+     a pick that a keeper already occupies is offering something that does not exist. Each entry now carries
+     its real label, whether it is spent, and by whom. */
   const myRounds = useMemo(() => {
     const out = [];
+    const keeperAt = {};
+    (cfg.keepers || []).forEach((k) => { if (k && k.o != null) keeperAt[k.o] = k; });
+    const nameOfKeeper = (k) => {
+      if (!k) return null;
+      if (k.name) return k.name;
+      const p = k.playerId != null ? players[k.playerId] : null;
+      return p ? p.name : null;
+    };
     try {
       setTeams(teams); setOrder(cfg.order || "snake"); setPickTrades(cfg.pickTrades || [], teams, rounds); setExtraPicks(cfg);
       const me = cfg.slot ? cfg.slot - 1 : 0;
-      for (let o = 0; o < totalOf({ ...cfg, teams, rounds }); o++) if (teamAt(o) === me) out.push({ round: roundOf(o), o });
-    } catch { for (let r = 1; r <= rounds; r++) out.push({ round: r, o: (r - 1) * teams }); }
+      for (let o = 0; o < totalOf({ ...cfg, teams, rounds }); o++) {
+        if (teamAt(o) !== me) continue;
+        const k = keeperAt[o];
+        out.push({ round: roundOf(o), o, label: pickLabel(o), keeper: !!k, keeperName: nameOfKeeper(k) });
+      }
+    } catch {
+      for (let r = 1; r <= rounds; r++) out.push({ round: r, o: (r - 1) * teams, label: `${r}.01`, keeper: false, keeperName: null });
+    }
     return out;
-  }, [cfg, teams, rounds]);
+  }, [cfg, teams, rounds, players]);
 
   // ⭐⭐ 29m — WHO HAS ACTUALLY GONE, AND IN WHICH ROUND. A plan is only worth reading next to what happened
   //   to it: "targeted round 3, took him 3.05" is a plan that worked, and "targeted round 3, gone in round 1"
@@ -9830,11 +10005,13 @@ function StrategyEditor({ league, user, allLeagues, taken, onSave, onSaveMaster,
   const filtered = useMemo(() => (onlyMarked ? rows.filter(isMarked) : rows), [rows, onlyMarked, strat, avoid, queue]);
   const shown = filtered.slice(0, limit);
 
-  const setTarget = (name, from, to) => {
+  // `o` is the OVERALL PICK the user actually chose. `from`/`to` stay the round window every other surface
+  // reads, so a plan written before 29q keeps working and one written after can name the exact pick.
+  const setTarget = (name, from, to, o) => {
     setDirty(true);
     setStrat((st) => {
       const rest = (st.targets || []).filter((t) => normName(t.name) !== normName(name));
-      return { ...st, targets: from == null ? rest : [...rest, { name, from, to: to || from }] };
+      return { ...st, targets: from == null ? rest : [...rest, { name, from, to: to || from, ...(o != null ? { o } : {}) }] };
     });
   };
   const toggle = (setFn, name) => { setDirty(true); setFn((prev) => { const n = new Set(prev); if (n.has(name)) n.delete(name); else n.add(name); return n; }); };
@@ -9981,12 +10158,22 @@ function StrategyEditor({ league, user, allLeagues, taken, onSave, onSaveMaster,
                           borderColor: t2 ? (gone != null && t2.from > gone ? "var(--line2)" : "var(--gold)") : "var(--line)",
                           color: t2 ? "var(--ink)" : "var(--mut)" }}
                         data-stratround={p.name}
-                        value={t2 ? String(t2.from) : ""}
-                        onChange={(e) => { const v = e.target.value; setTarget(p.name, v === "" ? null : +v, v === "" ? null : Math.min(rounds, +v + 1)); }}>
+                        value={t2 ? String(t2.o != null ? t2.o : (myRounds.find((m) => m.round === t2.from && !m.keeper) || {}).o ?? "") : ""}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (v === "") return setTarget(p.name, null, null);
+                          const o = +v;
+                          const r = (myRounds.find((m) => m.o === o) || {}).round || 1;
+                          setTarget(p.name, r, Math.min(rounds, r + 1), o);
+                        }}>
                         <option value="">— not targeted —</option>
-                        {myRounds.map(({ round }) => (
-                          <option key={round} value={round}>
-                            {`Round ${round}`}{gone == null ? "" : round > gone ? "  · likely gone" : round === gone ? "  · his round" : "  · safe"}
+                        {myRounds.map((m) => (
+                          <option key={m.o} value={m.o} disabled={m.keeper}
+                            style={m.keeper ? { color: "var(--mut)" } : undefined}>
+                            {m.label}
+                            {m.keeper
+                              ? `  · kept${m.keeperName ? `: ${m.keeperName}` : ""}`
+                              : gone == null ? "" : m.round > gone ? "  · likely gone" : m.round === gone ? "  · his round" : "  · safe"}
                           </option>
                         ))}
                       </select>
@@ -10103,7 +10290,7 @@ function StrategyEditor({ league, user, allLeagues, taken, onSave, onSaveMaster,
 }
 
 
-function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, onSignOut, onOfficial, onMock, onMockPlan, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings, onEditRankSet, onUseRankSet, onSaveAvoid, onSaveMasterAvoid, onSaveQueue, onSaveMasterQueue, onSaveStrategy, onFixSlot, onUpdateUser, onSaveCfg }) {
+function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, onSignOut, onOfficial, onMock, onMockPlan, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings, onEditRankSet, onUseRankSet, onSaveAvoid, onSaveMasterAvoid, onSaveQueue, onSaveMasterQueue, onSaveStrategy, onFixSlot, onUpdateUser, onSaveCfg, openStrategy, onStrategyOpened }) {
   // The checklist used to print league.cfg.slot with a tick beside it, and that number could be months old
   // and simply wrong. Ask the platform instead — and write the answer back, so the room, the mocks and this
   // page stop each holding a different opinion about where the user is sitting.
@@ -10126,6 +10313,10 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
       return buildPlayers(c) || [];
     } catch (e) { return []; }
   }, [sheetOpen, league]);
+  const sheetRanks = useMemo(
+    () => (sheetPool ? resolveMyRanks(sheetPool, league.cfg, user, user && user.rankAdj, league.id) : null),
+    [sheetPool, league, user]
+  );
   const liveSeat = useConnectedSeat(
     league,
     (s) => { if (typeof onFixSlot === "function") onFixSlot(league.id, s); },
@@ -10215,7 +10406,10 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
   const queueCount = queueSaved.length;
   const stratSaved = readStrategy(league);
   const stratCount = (stratSaved.targets || []).length + (stratSaved.rules || []).length;
-  const [stratOpen, setStratOpen] = useState(false);
+  const [stratOpen, setStratOpen] = useState(!!openStrategy);
+  // ⭐ 29q — arriving here from the draft plan's "Write your strategy" button opens the editor
+  //   straight away; the flag is cleared by the parent so a later visit is normal.
+  useEffect(() => { if (openStrategy) { setStratOpen(true); if (onStrategyOpened) onStrategyOpened(); } }, [openStrategy]);
   const [ranksOpen, setRanksOpen] = useState(false);      // the rankings chooser, opened from the prep row
   const [mockMenuOpen, setMockMenuOpen] = useState(false); // the three mock-draft doors
   const [mockListOpen, setMockListOpen] = useState(false); // the completed-mock list behind door three
@@ -10296,7 +10490,7 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
       status: mocks.length ? `${mocks.length} run${trendHint ? ` · ${trendHint}` : ""}` : "None",
       done: mocks.length > 0,
       hint: mocks.length
-        ? `Each mock is scored and saved, feeds the ADP-mock column, and — read across every team in the room, not just yours — shows what the best rosters did differently. ${trendHint ? `So far: ${trendHint}. ` : ""}Open Mock Draft Trends above for the full read.`
+        ? `Each mock is scored and saved, feeds the ADP-mock column, and — read across every team in the room, not just yours — shows what the best rosters did differently. ${trendHint ? `So far: ${trendHint}. ` : ""}Open Draft Plan and Trends above for the full read.`
         : "The highest-leverage habit there is. Each mock is scored and saved, feeds the ADP-mock column, and builds a read on your own tendencies.",
       // ⭐ THREE THINGS LIVE BEHIND THIS ROW, and it used to do only one of them. Trey: "When you click
       //   'Mock Drafts' in the draft prep, I want you to give 3 options in a pop up: View Prior Completed
@@ -10655,7 +10849,12 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
               .sort((a, b) => (a.adp ?? 999) - (b.adp ?? 999))
               .slice(0, Number.isFinite(n) ? n : undefined)}
             tierMetric={(p) => p.adp}
-            myRanks={null}
+            /* ⭐ 29q — HIS OWN RANKS, ON THE SHEET HE PRINTS. Trey: "none of the 'my ranks' are showing."
+               They were not missing, they were never passed: this door and the draft plan's both handed the
+               component `null`, so the column that exists to show where HE disagrees with the market was
+               blank on every sheet printed from anywhere but the draft room — which is the one place you
+               would not print from. */
+            myRanks={sheetRanks}
             queue={new Set(effectiveQueue(league, user) || [])}
             myRoster={[]}
             strategy={readStrategy(league)}
@@ -10705,7 +10904,7 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
             <button className="hubtile" onClick={() => (onMockPlan ? onMockPlan(league.id) : setTrendsOpen((v) => !v))} style={{ flex: 1, textAlign: "left", background: trendsOpen ? "rgba(126,214,165,.09)" : "var(--panel)", border: `1px solid ${trendsOpen ? "var(--green)" : "var(--line)"}`, borderRadius: 12, padding: "12px 14px", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", display: "flex", flexDirection: "column", justifyContent: "center", minHeight: 0, overflow: "hidden" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <i className="ti ti-chart-histogram" style={{ fontSize: 19, color: "#7ed6a5" }} aria-hidden="true" />
-                <div className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Mock Draft Trends</div>
+                <div className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Draft Plan and Trends</div>
                 <div style={{ flex: 1 }} />
                 <i className={`ti ti-${onMockPlan ? "arrow-right" : `chevron-${trendsOpen ? "up" : "down"}`}`} style={{ fontSize: 14, color: "var(--mut)" }} aria-hidden="true" />
               </div>
@@ -16940,14 +17139,19 @@ function LeagueMockTrends({ league, players, compact, onRunMock }) {
 // advice, and where the sample is too thin to support a claim the page says so instead of making one.
 // Same rule as TrendsShell: a component declared inside a render is a new type every time, which remounts
 // everything under it. Both live out here.
+/* ⭐ 29q — THE SECTION IS THE PRINT UNIT. Trey: "There is a ton of information on these pages, so feel free
+   to use page breaks for different sections and clear headings to show when information is different."
+   `data-printsection` / `data-printhead` / `data-printsub` carry no styling on screen; the printed
+   document's stylesheet (see printElement) turns them into a page break, a heavy ruled heading, and a
+   caption. One set of markers, so a new section is printable the day it is written. */
 export function Section({ n, title, sub, children, accent }) {
   return (
-    <div style={{ marginTop: 26 }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 3 }}>
+    <div data-printsection style={{ marginTop: 26 }}>
+      <div data-printhead style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 3 }}>
         <span className="disp" style={{ fontSize: 13, fontWeight: 800, color: accent || "var(--gold)", letterSpacing: ".1em" }}>{String(n).padStart(2, "0")}</span>
         <span className="disp" style={{ fontSize: 20, fontWeight: 700 }}>{title}</span>
       </div>
-      {sub && <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 10, maxWidth: 780 }}>{sub}</div>}
+      {sub && <div data-printsub className="mut" style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 10, maxWidth: 780 }}>{sub}</div>}
       {children}
     </div>
   );
@@ -20210,6 +20414,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // (the first pick) as "you" just because the engine falls back to index 0. The engine still uses userIdx.
   const highlightIdx = hasSlot ? userIdx : -1;
 
+
   const [picks, setPicks] = useState(league.picks || []);
   const [preds, setPreds] = useState(league.preds || []);
   // ---- NAME-STABLE PICK PERSISTENCE ----------------------------------------------------------
@@ -20335,7 +20540,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   //   column currently belongs to — so anyone who had ever dragged a Demographics column would have opened
   //   the board with Bye sitting to the LEFT of ADP. Dropping the moved key from the stored order lets it
   //   take its new declared position; everything else the user arranged is untouched.
-  const COL_SECTION_MOVED = ["bye"];
+  const COL_SECTION_MOVED = ["bye", "age"];
   const [colOrder, setColOrder] = useState(() => (savedPrefs?.colOrder || []).filter((k) => !COL_SECTION_MOVED.includes(k)));
   const [dragCol, setDragCol] = useState(null); // column key being dragged in the header row
   // Persist column layout to the user so future drafts open the same way (until they change it again).
@@ -20354,7 +20559,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // Recommendation hub: which of your upcoming picks the decision panel is focused on. null = your next pick.
   const [recPickSel, setRecPickSel] = useState(null); // overall index (0-based) of the pick to analyze
   const [recScope, setRecScope] = useState("mine");   // "Your decision" scope: "mine" (your picks) | "all" (every upcoming pick)
-  const [decMode, setDecMode] = useState("decide");  // the decision card's two modes: "decide" | "queue"
+  const [decMode, setDecMode] = useState("decide");  // the decision card's modes: "decide" | "queue" | "rosters"
+  // ⭐ 29q — which roster the panel's Rosters mode is showing; defaults to yours.
+  const [rosterTeamRaw, setRosterTeam] = useState(null);
+  // Defaults to YOUR roster and follows a seat correction until the user picks another team.
+  // ⚠ THIS LINE HAS TO SIT BELOW `rosterTeamRaw`, not beside `userIdx` where it reads better. A `const` in
+  //   a component body runs DURING that render, so referencing state declared further down is a temporal
+  //   dead zone — minified it says "Cannot access 'la' before initialization" and names nothing. Fourth time
+  //   on this file (PROJ_MISSING 29g, the StrategyEditor filter 29j, planToolsHint 29k).
+  const rosterTeam = rosterTeamRaw == null ? userIdx : rosterTeamRaw;
   const [editPicksOpen, setEditPicksOpen] = useState(false); // Edit-picks modal: fix a specific earlier pick
   // Keep the "Your decision" selection honest as the draft moves. Once the board passes the pick you had
   // selected, that selection is stale — it was pinned to a pick that has already happened, which is why the
@@ -22964,6 +23177,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     //   for. The ADP & market section is the one pinned leftmost, so this is the only place that guarantees
     //   it is visible. It stays a normal column: hideable in Columns, and draggable within this section.
     { key: "bye", label: "Bye", group: "draft", section: "market", num: true, sortable: true, tip: "His bye week. Tinted when it collides with a week your own starters already share — the weeks you would field an incomplete lineup." },
+    // ⭐ 29q — "move age next to bye in the player hub". Age and bye are the two facts you check about a
+    //   player you already like, so they belong together and next to the market number rather than three
+    //   sections to the right in Demographics.
+    { key: "age", label: "Age", group: "draft", section: "market", num: true, sortable: true, tip: "His age this season. In dynasty this drives the Value column; in redraft it is context." },
     // — Your board (only when you have PERSONAL ranks matching this league's type + format) —
     { key: "myRank", label: "My ADP", group: "draft", section: "mine", num: true, sortable: true, needsRanks: true, tip: "Your PERSONAL rank for this format (from My Ranks) — your own board, independent of the platform. Players you didn't rank fall into their consensus spot. Powers the Blend column." },
     { key: "blendAdp", label: "Blend", group: "draft", section: "mine", num: true, sortable: true, needsRanks: true, tip: "Your PERSONAL rank (My Ranks) blended with the market ADP shown on this board (weighted ~65% toward you) — your opinion, tempered by the market." },
@@ -22978,7 +23195,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // — Demographics —
     { key: "role", label: "Team role", group: "draft", section: "demo", num: false, sortable: true, tip: "The player's depth on his NFL team — RB1, WR2, etc. The starter signal." },
     { key: "roleDesc", label: "Usage", group: "draft", section: "demo", num: false, sortable: true, tip: "Projected usage role — bellcow vs committee back, alpha vs depth receiver, every-down vs blocking TE." },
-    { key: "age", label: "Age", group: "draft", section: "demo", num: true, sortable: true },
     { key: "psos", label: "Playoff SOS", group: "draft", section: "demo", num: true, sortable: true, tip: "How hard this player's matchups are in YOUR league's fantasy playoff weeks, against his position specifically. 10 = the softest slate in the league, 1 = the toughest. A bye inside the playoff weeks drags it down. Hover a row for the opponents. This is shown, never baked into the value numbers \u2014 schedule is a weak signal next to talent." },
     // — Availability —
     { key: "avail", label: "Avail @", group: "draft", section: "avail", num: true, sortable: true, tip: "Chance this player survives to the selected pick. Use the dropdown in this column's header to choose any pick — picks your team owns are marked ★." },
@@ -23713,16 +23929,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           })),
                           ...(free.length === 0 ? [{ kind: "take", tone: "bad", x: "Every pick in this window is spoken for — widen the window or drop the target." }] : []),
                         ])} onMouseLeave={hideTip}>
-                        {wps.map((w) => (
-                          <span key={w.o} className="num" style={{
-                            fontSize: 11, fontWeight: w.keeper ? 400 : 700,
-                            color: w.keeper ? "var(--mut)" : w.used ? "var(--mut)" : "var(--ink)",
-                            textDecoration: w.keeper ? "line-through" : "none",
-                            opacity: w.keeper ? 0.75 : 1,
-                          }}>
-                            {w.label}{w.keeper && <i className="ti ti-lock" style={{ fontSize: 9, marginLeft: 2, color: "var(--gold)" }} aria-hidden="true" />}
-                          </span>
-                        ))}
+                        {/* ⭐ 29q — the pick he actually CHOSE is marked, so two eighths are no longer
+                            interchangeable on the row. Falls back to plain listing for a plan written before
+                            targets stored their pick. */}
+                        {wps.map((w) => {
+                          const chosen = t2.o != null && w.o === t2.o;
+                          return (
+                            <span key={w.o} className="num" style={{
+                              fontSize: 11, fontWeight: w.keeper ? 400 : chosen ? 800 : 600,
+                              color: w.keeper ? "var(--mut)" : chosen ? "var(--gold)" : w.used ? "var(--mut)" : "var(--ink)",
+                              textDecoration: w.keeper ? "line-through" : "none",
+                              opacity: w.keeper ? 0.75 : chosen ? 1 : 0.72,
+                              borderBottom: chosen ? "2px solid var(--gold)" : "none",
+                            }}>
+                              {w.label}{w.keeper && <i className="ti ti-lock" style={{ fontSize: 9, marginLeft: 2, color: "var(--gold)" }} aria-hidden="true" />}
+                            </span>
+                          );
+                        })}
                       </span>
                     );
                   })()}
@@ -23754,19 +23977,45 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           the row asked him to know that a comparison was being made and which way round it
                           went. The number is the same; it now says what it is, and the verdict is a phrase
                           rather than a colour he has to decode. */
-                      <span style={{ display: "flex", flexDirection: "column", gap: 1, cursor: "help", minWidth: 0 }}>
-                        <span style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
-                          <b className="num" style={{ fontSize: 13, color: risky ? "#F2655C" : tight ? "var(--gold)" : "#5FD0A8" }}>{ahead}</b>
-                          <span className="mut" style={{ fontSize: 9.5, whiteSpace: "nowrap" }}>go before him</span>
-                        </span>
-                        <span style={{ fontSize: 9.5, whiteSpace: "nowrap", color: risky ? "#F2655C" : "var(--mut)" }}>
-                          {picksUntilMine == null ? "waiting on the room"
-                            : picksUntilMine === 0 ? "you're on the clock now"
-                            : risky ? `gone before your pick in ${picksUntilMine}`
-                            : tight ? `close — you pick in ${picksUntilMine}`
-                            : `should last your ${picksUntilMine}-pick wait`}
-                        </span>
-                      </span>
+                      /* ⭐⭐⭐ 29q — PUT IT IN PICK NUMBERS, so the two halves of the row are in the same
+                          units. Trey: "it doesn't show the fact that 12 go before Brock Bowers... I have a
+                          pick up now and a pick in 5 picks... so he is likely available at those next two
+                          picks... but it shows that he is in the window of 3.08 (doesn't show an overall
+                          pick # to compare against the 12 that go before him) — but he likely doesn't get to
+                          3.08. I just want to show that isn't likely basically."
+                          `expAt` is where market order actually reaches him. Printed as a real pick label it
+                          can be compared by eye with the picks in the window column beside it — and when it
+                          lands well before the window he set, the row says so instead of leaving him to do
+                          the arithmetic across two columns. */
+                      (() => {
+                        const expO = picks.length + ahead;                       // the pick he is reached at
+                        const inRange = expO < totalOf(cfg);
+                        const expLabel = inRange ? pickLabel(expO) : null;
+                        const wps = windowPicks(t2.from, t2.to).filter((w) => !w.keeper);
+                        const firstWin = wps.length ? wps[0].o : null;
+                        // He does not reach your window if the room takes him before its FIRST usable pick.
+                        const missesWindow = firstWin != null && expO < firstWin;
+                        return (
+                          <span style={{ display: "flex", flexDirection: "column", gap: 1, cursor: "help", minWidth: 0 }}>
+                            <span style={{ display: "flex", alignItems: "baseline", gap: 4, flexWrap: "wrap" }}>
+                              <b className="num" style={{ fontSize: 13, color: risky ? "#F2655C" : tight ? "var(--gold)" : "#5FD0A8" }}>{ahead}</b>
+                              <span className="mut" style={{ fontSize: 9.5, whiteSpace: "nowrap" }}>go first →</span>
+                              <b className="num" data-stratexp={expLabel || ""} style={{ fontSize: 11.5, color: "var(--ink)" }}>
+                                {expLabel || "undrafted"}
+                              </b>
+                            </span>
+                            <span style={{ fontSize: 9.5, lineHeight: 1.35, color: missesWindow ? "#F2655C" : risky ? "#F2655C" : "var(--mut)" }}>
+                              {missesWindow && firstWin != null
+                                ? <>unlikely to reach {pickLabel(firstWin)} — take him earlier</>
+                                : picksUntilMine == null ? "waiting on the room"
+                                : picksUntilMine === 0 ? "you're on the clock now"
+                                : risky ? `gone before your pick in ${picksUntilMine}`
+                                : tight ? `close — you pick in ${picksUntilMine}`
+                                : `should last your ${picksUntilMine}-pick wait`}
+                            </span>
+                          </span>
+                        );
+                      })()
                     )}
                   </span>
                   <span className="num" style={{ fontSize: 11, fontWeight: 700, textAlign: "right", color: TONE[t2.state] }}>
@@ -24443,6 +24692,88 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   <div className="mut" style={{ fontSize: 10.5, marginBottom: 8 }}>
                     {gap.length} pick{gap.length === 1 ? "" : "s"} · {nTeams} team{nTeams === 1 ? "" : "s"} · you're back at <b style={{ color: "var(--gold)" }}>{pickLabel(endO)}</b>
                   </div>
+                  {/* ⭐⭐⭐ 29q — THE PICK AND ITS CONSEQUENCE, AS A PAIR.
+                      Trey: "I'm on the clock… I see the next 4 picks because my pick after that I'm 5 picks
+                      away. What I don't see is who is currently recommended at my pick AND who would this
+                      leave me with considering at my next pick. I want to see the overall recommendation,
+                      but I also want to see alternatives."
+
+                      Every other number on this panel is about the ROOM. This is the only one about the
+                      DECISION, and it is the reason the panel is open: a pick is not "who is best now", it
+                      is "who is best now GIVEN what that leaves me with next time". Two picks chosen
+                      together beat two picks chosen well separately, and the combined column is what makes
+                      the alternatives comparable rather than merely listed.
+                      ⚠ The survivor is taken from the SAME projection the rest of this panel draws (`path`),
+                      so the row cannot claim a player the picks above it have already spent. */}
+                  {(() => {
+                    if (onClock !== userIdx) return null;
+                    const req = REQ_F(cfg.sf);
+                    const have = (advice && advice.myCounts) || {};
+                    // Everyone the room is expected to take before you are back.
+                    const goneInGap = new Set();
+                    gap.forEach(({ o }) => { const st = projAt.get(o); if (st && st.p) goneInGap.add(st.p.id); });
+                    const avail = (players || []).filter((p) => p && !draftedSet.has(p.id));
+                    // Value to YOU, given a roster: VBD plus a bounded bonus for a starting slot still open.
+                    const valueTo = (p, counts) => {
+                      if (!p || p.vbd == null) return -1e9;
+                      const short = (req[cpos(p.pos)] || 0) - (counts[cpos(p.pos)] || 0);
+                      return p.vbd + (short > 0 ? Math.min(2, short) * 6 : 0);
+                    };
+                    // The candidates: the engine's own pick first, then the best available at each position,
+                    // deduped — "the overall recommendation, but I also want to see alternatives".
+                    const rec = advice && advice.verdict ? advice.verdict : null;
+                    const cands = [];
+                    const pushC = (p) => { if (p && !cands.some((c) => c.id === p.id)) cands.push(p); };
+                    pushC(rec);
+                    POS.forEach((pos) => pushC(advice && advice.bestNow ? advice.bestNow[pos] : null));
+                    const rows = cands.slice(0, 4).map((c) => {
+                      const after = { ...have }; after[cpos(c.pos)] = (after[cpos(c.pos)] || 0) + 1;
+                      let best = null, bestV = -1e9;
+                      for (const p of avail) {
+                        if (p.id === c.id || goneInGap.has(p.id)) continue;
+                        const v = valueTo(p, after);
+                        if (v > bestV) { bestV = v; best = p; }
+                      }
+                      return { c, next: best, combined: (c.vbd || 0) + (best && best.vbd != null ? best.vbd : 0) };
+                    }).filter((r) => r.c);
+                    if (!rows.length) return null;
+                    const top = Math.max(...rows.map((r) => r.combined));
+                    return (
+                      <div data-pickpair style={{ border: "1px solid var(--gold-line)", background: "rgba(224,166,60,.05)", borderRadius: 9, padding: "9px 10px", marginBottom: 11 }}>
+                        <div className="disp" style={{ fontSize: 10, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--gold)", fontWeight: 800, marginBottom: 6 }}>
+                          This pick and your next, together
+                        </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 16px minmax(0,1fr) 62px", gap: "0 8px", fontSize: 9, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", fontWeight: 700, paddingBottom: 3 }}>
+                          <span>Take now at {pickLabel(picks.length)}</span><span /><span>Likely still there at {pickLabel(endO)}</span><span style={{ textAlign: "right" }}>Together</span>
+                        </div>
+                        {rows.map((r, i) => {
+                          const isRec = i === 0 && rec && r.c.id === rec.id;
+                          const isBest = r.combined >= top - 0.5;
+                          return (
+                            <div key={r.c.id} data-pairrow={r.c.name}
+                              style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 16px minmax(0,1fr) 62px", gap: "0 8px", alignItems: "baseline",
+                                fontSize: 11.5, padding: "4px 0", borderTop: "1px solid var(--line2)" }}>
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                <b style={{ color: POS_COLOR[cpos(r.c.pos)], fontSize: 9.5, marginRight: 4 }}>{cpos(r.c.pos)}</b>
+                                {r.c.name}
+                                {isRec && <span className="mut" style={{ fontSize: 8.5, marginLeft: 4, color: "var(--gold)", fontWeight: 800 }}>REC</span>}
+                              </span>
+                              <span className="mut" style={{ fontSize: 11 }}>→</span>
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: r.next ? "var(--ink)" : "var(--mut)" }}>
+                                {r.next ? <><b style={{ color: POS_COLOR[cpos(r.next.pos)], fontSize: 9.5, marginRight: 4 }}>{cpos(r.next.pos)}</b>{r.next.name}</> : "—"}
+                              </span>
+                              <span className="num" style={{ textAlign: "right", fontWeight: 800, color: isBest ? "#5FD0A8" : "var(--mut)" }}>
+                                {fmtVal(r.combined)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                        <div className="mut" style={{ fontSize: 9.5, lineHeight: 1.45, marginTop: 6 }}>
+                          "Together" is the two players' combined value over replacement. The second name assumes the room takes the {gap.length} pick{gap.length === 1 ? "" : "s"} above — it is the projection, not a promise.
+                        </div>
+                      </div>
+                    );
+                  })()}
                   {/* ⭐⭐⭐ THE ANSWER, ONE CARD PER POSITION. Trey: "you can see the screenshot of how much
                       room I have. Can you fill it appropriately? I really like this one, but it's still a bit
                       difficult to follow."
@@ -24592,7 +24923,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         <button className="btn btn-mini" onClick={exit} title="Back to where you came from">← {exitLabel || (user ? (user.paid ? "Home" : "Library") : "Home")}</button>
         <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{league.name}</div>
         {isMock && <div className="chip" style={{ borderColor: "var(--gold)", background: "rgba(224,166,60,.10)", color: "var(--gold)" }} title="This is a practice draft — it saves to this league's mock history and never changes your real draft."><i className="ti ti-dice" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />MOCK</div>}
-        <div className="chip" style={{ borderColor: "var(--gold)" }}><b className="disp gold" style={{ fontSize: 15 }}>ROUND {Math.min(round, ROUNDS)} of {ROUNDS}</b></div>
+        {/* ⭐ 29q — "can you make it show the pick number within that, so something like 'Round 3 of 16 (34)'".
+            The round tells you where the ROOM is; the overall pick is what every other number on the page —
+            ADP, the market queue, "12 go before him" — is denominated in, so without it the two halves of
+            the screen are in different units. Shows the pick on the clock, or the last one made when the
+            draft is over. */}
+        <div className="chip" style={{ borderColor: "var(--gold)" }}>
+          <b className="disp gold" style={{ fontSize: 15 }}>ROUND {Math.min(round, ROUNDS)} of {ROUNDS}</b>
+          <span className="mut num" style={{ fontSize: 12, marginLeft: 5 }} title={done ? "The final pick of the draft." : `Overall pick ${Math.min(picks.length + 1, totalOf(cfg))} of ${totalOf(cfg)} — the number ADP and the market queue are measured in.`}>
+            ({Math.min(done ? picks.length : picks.length + 1, totalOf(cfg))})
+          </span>
+        </div>
         {/* ⭐ HOW MANY PICKS YOU ACTUALLY HAVE LEFT — not how many rounds are left.
             Trey: "I traded my 16th round pick, so I didn't know that while I was in round 15 of 16... it was
             technically my last pick." The round counter describes the ROOM; this describes YOUR board. They
@@ -25992,17 +26333,32 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             {/* ⭐⭐ 29p — THE TARGET TAG. The round or, better, the exact pick you wrote him
                                 down for. Turns amber once that window is the round you are actually in, so
                                 the row tells you it is time rather than making you check the plan. */}
+                            {/* ⭐⭐ 29q — THE TAG IS A COUNTDOWN, NOT A LABEL. Trey: "can you make it more
+                                clear when we are getting close to that recommendation. For example, if we
+                                are in the round of rec, then make it bright green… if we are 1-2 away, then
+                                it's another color, if it's beyond that, then it's another color."
+                                Four states, and the colour IS the message: green = this is the round, gold =
+                                one or two away so start watching him, blue = further off, red = the window
+                                has passed and he is somehow still there (which is a decision, not a note). */}
                             {!gone && (() => {
                               const tt = targetTag(p);
                               if (!tt) return null;
-                              const nowR = Math.floor(picks.length / (cfg.teams || 12)) + 1;
-                              const live = nowR >= tt.target.from && nowR <= (tt.target.to || tt.target.from);
-                              const late = nowR > (tt.target.to || tt.target.from);
-                              const col = live ? "var(--gold)" : late ? "#F2655C" : "#8FB8E8";
+                              const nowR = roundOf(Math.min(picks.length, totalOf(cfg) - 1));
+                              const from = tt.target.from, to = tt.target.to || tt.target.from;
+                              const away = nowR < from ? from - nowR : 0;
+                              const state = nowR > to ? "late" : (nowR >= from ? "now" : away <= 2 ? "soon" : "later");
+                              const col = state === "now" ? "#3BD98A" : state === "soon" ? "var(--gold)"
+                                : state === "later" ? "#7C93AD" : "#F2655C";
+                              const why = state === "now" ? "This is his round — take him or let him go on purpose."
+                                : state === "soon" ? `${away} round${away === 1 ? "" : "s"} away — start watching whether he lasts.`
+                                : state === "later" ? `${away} rounds away.`
+                                : "His window has passed and he is still on the board.";
                               return (
-                                <span data-strattag={tt.label} className="itag"
-                                  title={`On your plan${tt.target.from === tt.target.to ? ` for round ${tt.target.from}` : ` for rounds ${tt.target.from}-${tt.target.to}`}. ${live ? "That window is now." : late ? "That window has passed — he is still on the board." : "Not your window yet."}`}
-                                  style={{ flexShrink: 0, fontSize: 8.5, fontWeight: 800, letterSpacing: ".02em", color: col, border: `1px solid ${col}77`, background: `${col}1c`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap", cursor: "help" }}>
+                                <span data-strattag={tt.label} data-stratstate={state} className="itag"
+                                  title={`On your plan${from === to ? ` for round ${from}` : ` for rounds ${from}-${to}`}. ${why}`}
+                                  style={{ flexShrink: 0, fontSize: 8.5, fontWeight: 800, letterSpacing: ".02em", color: col,
+                                    border: `1px solid ${col}${state === "now" ? "" : "77"}`, background: `${col}${state === "now" ? "2e" : "1c"}`,
+                                    borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap", cursor: "help" }}>
                                   ★ {tt.label}
                                 </span>
                               );
@@ -26369,13 +26725,68 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         border, same place on the page — because it is the same job (what do I do with this
                         pick), answered two ways: the engine's read, or your own shortlist. */}
                     <div style={{ display: "inline-flex", borderRadius: 7, overflow: "hidden", border: "1px solid var(--gold-line)", marginBottom: 8 }}>
-                      {[["decide", "Your decision"], ["queue", `Queue${dqLive.length ? ` (${dqLive.length})` : ""}`]].map(([k, label]) => (
+                      {/* ⭐⭐ 29q — A THIRD MODE: ROSTERS. Trey: "On the recommendation and queue hub… can you
+                          add a button that says 'Rosters' and that then just toggles to show your roster
+                          (with a drop down to select other rosters). I'd like this to look as close to the
+                          pop up button of 'Show Rosters' on the hub, but also recognize there is less space
+                          horizontally here." The question this panel answers is "what do I do with this
+                          pick", and half of that answer is what you already have — which currently costs a
+                          trip to another view and back. */}
+                      {[["decide", "Your decision"], ["queue", `Queue${dqLive.length ? ` (${dqLive.length})` : ""}`], ["rosters", "Rosters"]].map(([k, label]) => (
                         <button key={k} className="btn btn-mini" data-decmode={k}
                           style={{ borderRadius: 0, border: "none", padding: "4px 11px", fontSize: 10.5, background: decMode === k ? "var(--gold)" : "transparent", color: decMode === k ? "#151002" : "var(--ink)", fontWeight: decMode === k ? 800 : 500 }}
                           onClick={() => setDecMode(k)}>{label}</button>
                       ))}
                     </div>
-                    {decMode === "queue" ? (
+                    {decMode === "rosters" ? (
+                      /* The narrow cousin of the Show-Rosters view: the same lineup-slot ordering and the
+                         same numbers, laid out in one column because there is a third of the width here. */
+                      <div data-rosterpanel>
+                        <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
+                          <select className="gs" data-rosterpick value={String(rosterTeam)}
+                            onChange={(e) => setRosterTeam(+e.target.value)}
+                            style={{ fontSize: 11.5, padding: "3px 6px", flex: 1, minWidth: 0 }}>
+                            {/* ⚠ NOT `shortName` — that helper is declared inside the between-panel's own
+                                closure, not here. Referencing it threw a ReferenceError the error boundary
+                                swallowed, so the whole decision card vanished on click with nothing in the
+                                console. `TEAM_NAMES` is the module-level source every other surface uses. */}
+                            {Array.from({ length: TEAMS }, (_, i) => {
+                              const nm = TEAM_NAMES[i] || `Team ${i + 1}`;
+                              return <option key={i} value={i}>{i === userIdx ? `${nm} (you)` : nm}</option>;
+                            })}
+                          </select>
+                          <span className="mut num" style={{ fontSize: 10.5, whiteSpace: "nowrap" }}>
+                            {lineupPts(rostersByTeam[rosterTeam] || [], cfg.sf)} pts
+                          </span>
+                        </div>
+                        {(() => {
+                          const r = rostersByTeam[rosterTeam] || [];
+                          if (!r.length) return <div className="mut" style={{ fontSize: 12, textAlign: "center", padding: "16px 4px" }}>No players yet.</div>;
+                          const { slots, bench } = (() => { try { return lineupSlots(r, cfg.sf); } catch (e) { return { slots: [], bench: [] }; } })();
+                          const row = (label, p, dim) => (
+                            <div key={label + (p ? p.id : "empty")} style={{ display: "grid", gridTemplateColumns: "40px minmax(0,1fr) 34px 34px", gap: 6, alignItems: "baseline", fontSize: 11.5, padding: "2px 0", opacity: dim ? 0.68 : 1 }}>
+                              <span className="mut" style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: ".03em" }}>{label}</span>
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: p ? "var(--ink)" : "var(--mut)" }}>
+                                {p ? <><b style={{ color: POS_COLOR[cpos(p.pos)] || "var(--ink)", fontSize: 9.5, marginRight: 4 }}>{cpos(p.pos)}</b>{p.name}</> : "—"}
+                              </span>
+                              <span className="mut num" style={{ fontSize: 10, textAlign: "right" }}>{p && p.bye ? `B${p.bye}` : ""}</span>
+                              <span className="num" style={{ fontSize: 10.5, textAlign: "right", color: p ? vbdColor(p.vbd) : "var(--mut)", fontWeight: 700 }}>{p && p.vbd != null ? fmtVal(p.vbd) : ""}</span>
+                            </div>
+                          );
+                          return (
+                            <div>
+                              {slots.map((sl) => row(sl.slot, sl.p && !sl.p.assumed ? sl.p : null, false))}
+                              {bench.length > 0 && (
+                                <>
+                                  <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 800, margin: "8px 0 3px", borderTop: "1px solid var(--line)", paddingTop: 6 }}>Bench</div>
+                                  {bench.map((p) => row("", p, true))}
+                                </>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    ) : decMode === "queue" ? (
                       <div data-queuepanel>
                         <div className="mut" style={{ fontSize: 11, lineHeight: 1.5, marginBottom: 9 }}>
                           Your shortlist for the next few picks, in order. Add anyone with the <b style={{ color: "var(--ink)" }}>＋</b> beside his name on the board. Players drop off on their own as the room takes them.
@@ -27295,7 +27706,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               {/* Bye-week outlook — full-width row under both columns. It lives inside the myteam-grid flex row,
                   so flexBasis:100% forces it onto its own line (full width) instead of squishing as a 3rd column. */}
               <div style={{ flexBasis: "100%", width: "100%", order: 2 }}>
-                <ByeWeekWidget roster={selRoster} req={REQ_F(isSuperflex(cfg))} isDynasty={isDynastyCfg(cfg)} />
+                <ByeWeekWidget roster={selRoster} req={REQ_F(isSuperflex(cfg))} isDynasty={isDynastyCfg(cfg)} onTip={showTip} onHideTip={hideTip} />
               </div>
             </div>
             </>)}
@@ -29219,7 +29630,7 @@ function pickRankSet(user, cfg, leagueId) {
   return inSeason.find((s) => setSettingsKey(s) === key) || sets.find((s) => setSettingsKey(s) === key) || null;
 }
 
-function resolveMyRanks(players, cfg, user, rankAdj, leagueId) {
+export function resolveMyRanks(players, cfg, user, rankAdj, leagueId) {
   const key = formatKey(cfg);
   const set = pickRankSet(user, cfg, leagueId);
   const rawList = set && set.list && set.list.length ? set.list : null;

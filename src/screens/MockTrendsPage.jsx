@@ -10,9 +10,9 @@
    needs a value at module-evaluation time must NOT be imported this way — it would be in its temporal
    dead zone and the screen would throw on first render. */
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import { readStrategy, surname, POS, cpos, bandOfRound, POS_COLOR, ORDER, ordinal, sample, positionTip, vbdColor, CheatSheetModal, PrintedStrategy, printElement, analyzeLeagueMockTrends, Section, TrendsShell } from "../App.jsx";
+import { resolveMyRanks, readStrategy, surname, POS, cpos, bandOfRound, POS_COLOR, ORDER, ordinal, sample, positionTip, vbdColor, CheatSheetModal, PrintedStrategy, printElement, analyzeLeagueMockTrends, Section, TrendsShell } from "../App.jsx";
 
-function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut, user, onRunMock }) {
+function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut, user, onRunMock, onEditStrategy }) {
   const t = useMemo(() => analyzeLeagueMockTrends(league.mocks || [], players, league.cfg), [league, players]);
   const [tip, setTip] = useState(null);
   const [expanded, setExpanded] = useState({});   // which price columns are showing their full list
@@ -26,6 +26,11 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
   const strategy = readStrategy(league);
   // The sheet's own board when opened from here: the league's pool on market order. The draft room passes
   // its live filtered board instead; same component, different builder.
+  // ⭐ 29q — his own ranks on the printed sheet; see the note at the league-hub door.
+  const sheetRanks = useMemo(
+    () => (players && players.length ? resolveMyRanks(players, league.cfg, user, user && user.rankAdj, league.mockOf != null ? league.mockOf : league.id) : null),
+    [players, league, user]
+  );
   const sheetRows = (n) => (players || []).slice()
     .filter((p) => p && p.adp != null)
     .sort((a, b) => (a.adp ?? 999) - (b.adp ?? 999))
@@ -48,7 +53,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
   // the same way, which is how I know.
   const shellProps = {
     onBack, backLabel, onHome, onSignOut, tip,
-    onPrint: () => printElement("[data-planbody]"),
+    onPrint: () => printElement("[data-planbody]", { title: `${league.name} — draft plan` }),
     onCheatSheet: () => setSheetOpen(true),
   };
 
@@ -208,7 +213,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
           league={league} cfg={league.cfg}
           getRows={sheetRows}
           tierMetric={(p) => p.adp}
-          myRanks={null} queue={null} myRoster={t.myKeepers || []}
+          myRanks={sheetRanks} queue={null} myRoster={t.myKeepers || []}
           strategy={strategy}
           onClose={() => setSheetOpen(false)}
         />
@@ -231,7 +236,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
           'Draft Strategy' at the top of this sheet." Everything below this line is what the room did; this
           is what HE decided, and on a printed page handed to a co-manager it is the part that says whose
           plan this is. Renders nothing when no plan has been written. */}
-      <PrintedStrategy strategy={strategy} cfg={league.cfg} />
+      <PrintedStrategy strategy={strategy} cfg={league.cfg} onEdit={onEditStrategy} />
 
       {/* ---- 01 · THE PLAN. The whole point of the page, at the top, before any evidence. ---- */}
       {t.pathway.length > 0 && (
