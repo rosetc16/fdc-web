@@ -26,7 +26,7 @@ let total = 0, bytes = 0;
 // names working by mapping any `x-filled` to glyph `x` in the FILLED face and scoping the family per class.
 const outlineKnown = fontIcons(FACES[0].css);
 const filledKnown = fontIcons(FACES[1].css);
-const allUsed = usedIcons('src/App.jsx', new Map([...outlineKnown, ...[...filledKnown].map(([n, c]) => [n + '-filled', c])]));
+const allUsed = usedIcons('src', new Map([...outlineKnown, ...[...filledKnown].map(([n, c]) => [n + '-filled', c])]));
 const pick = {
   outline: allUsed.filter((n) => !n.endsWith('-filled')),
   filled: allUsed.filter((n) => n.endsWith('-filled')),

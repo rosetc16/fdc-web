@@ -17,7 +17,7 @@ try {
   } else {
     known = new Map([...shipped].map((n) => [n, '']));   // node_modules absent — check against what shipped
   }
-  const missing = usedIcons('src/App.jsx', known).filter((n) => !shipped.has(n));
+  const missing = usedIcons('src', known).filter((n) => !shipped.has(n));
   if (missing.length) {
     console.warn('\n  ⚠  ICON SUBSET is missing ' + missing.length + ' icon(s) the app uses:');
     console.warn('     ' + missing.join(', '));
