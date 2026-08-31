@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node tools/icons-check.mjs && vite build",
+    "build": "node tools/icons-check.mjs && node tools/css-check.mjs && vite build",
     "preview": "vite preview",
     "icons:build": "node tools/icons-build.mjs",
-    "icons:check": "node tools/icons-check.mjs"
+    "icons:check": "node tools/icons-check.mjs",
+    "css:check": "node tools/css-check.mjs"
   },
   "dependencies": {
     "@fontsource/barlow": "^5.3.0",
