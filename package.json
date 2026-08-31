@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "node tools/icons-check.mjs && node tools/css-check.mjs && vite build",
+    "build:test": "node tools/icons-check.mjs && node tools/css-check.mjs && node tools/build-test.mjs",
     "preview": "vite preview",
     "icons:build": "node tools/icons-build.mjs",
     "icons:check": "node tools/icons-check.mjs",
