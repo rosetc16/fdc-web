@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29t";
+const BUILD_TAG = "2026.07.29u";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -2850,6 +2850,22 @@ function scoreFromStats(pos, s, sc) {
 const TIER_TOL_PCT = 0.12;    // a tier holds everyone within 12% of its leader's value
 const TIER_TOL_FLOOR = 6;     // …but never less than 6 points, or the flat tail shatters into singletons
 const TIER_MAX_RUN = 12;      // and never more than 12 deep, so "interchangeable" stays a usable claim
+/* ⭐⭐ 29u — MINIMUM RUNS, so a tier is never a party of one.
+   Trey: "Some tiers only has one player in it randomly. I feel like the tiers should be a bit more
+   balanced." A singleton is the rule working exactly as written and producing nothing usable: a player
+   falls just outside the band above him and the next man falls just outside HIM. "Interchangeable with
+   nobody" is true and worthless — the point of a tier is to name the players you can swap for each other.
+   ⚠ A BLANKET MINIMUM IS WRONG AT THE TOP OF THE BOARD, and measuring is what showed it. On Trey's real
+   pack tier 1 is Gibbs (160) and Bijan (154) with the next man 26 points below; forcing a third member in
+   to satisfy a minimum would put a 26-point gap inside a set the app calls interchangeable — the
+   Bijan/Henderson complaint in miniature. So there are two thresholds: an ORDINARY break needs the open
+   tier to hold TIER_MIN_RUN already, while an unmistakable CLIFF (more than twice the tolerance) breaks on
+   a shorter run. Measured across 10-team PPR, 12-team half-PPR and superflex, this removes every singleton
+   except the pool's own remainder, leaves tier 1 tight in all three, and moves the size spread barely at
+   all (sd 3.0 → 3.0). */
+const TIER_MIN_RUN = 3;       // an ordinary break waits until the open tier has three
+const TIER_CLIFF_MULT = 2.0;  // …but a drop twice the tolerance is a cliff and breaks anyway
+const TIER_CLIFF_MIN_RUN = 2; // even then, never leave a tier of one behind
 
 /* ⚠⚠⚠ 29s — RENUMBERING THE TIERS SILENTLY REWROTE THE PROSE, and I nearly shipped it.
    Two places describe a player in words — the hover's "elite / strong / solid / upside-depth / late-round"
@@ -3477,8 +3493,19 @@ export function buildPlayers(cfg) {
   for (let i = 0; i < byV.length; i++) {
     const v = tierVal(byV[i]);
     const tol = Math.max(TIER_TOL_FLOOR, Math.max(0, leaderVal) * TIER_TOL_PCT);
-    if (i > 0 && (leaderVal - v > tol || run >= TIER_MAX_RUN)) { vt++; leaderVal = v; run = 0; }
+    const drop = leaderVal - v;
+    const cliff = drop > tol * TIER_CLIFF_MULT && run >= TIER_CLIFF_MIN_RUN;
+    const ordinary = drop > tol && run >= TIER_MIN_RUN;
+    if (i > 0 && (cliff || ordinary || run >= TIER_MAX_RUN)) { vt++; leaderVal = v; run = 0; }
     byV[i].vbdTier = vt; byV[i].tier = vt; run++;
+  }
+  /* ⚠ AND THE POOL'S REMAINDER. The last tier is whatever is left when the players run out, so it can be a
+     single body no rule above can prevent — measured, it was the ONLY singleton left across three formats.
+     Fold a too-short final tier into the one above it; at the very bottom of a 220-man pool the distinction
+     between the 219th and 220th best player is not one anybody is making a decision on. */
+  if (byV.length > TIER_MIN_RUN && run < TIER_CLIFF_MIN_RUN) {
+    for (let i = byV.length - run; i < byV.length; i++) { byV[i].vbdTier = vt - 1; byV[i].tier = vt - 1; }
+    vt--;
   }
   // K and DST sit below every skill tier — their VBD is in a different currency (see the K/DST note below),
   // so they get one bucket of their own rather than a made-up rank among real players.
@@ -9733,7 +9760,28 @@ export function CheatSheetModal({ league, cfg, getRows, tierMetric, myRanks, que
   const [ownLimit, setOwnLimit] = useState(200);
   const sheetLimit = limit != null ? limit : ownLimit;
   const setSheetLimit = onLimit || setOwnLimit;
-  const sheetRows = getRows(sheetLimit) || [];
+  /* ⭐⭐⭐ 29u — THE SHEET SAYS "GROUPED BY TIER", SO GROUP IT BY TIER.
+     Trey: "The tier column in the cheat sheet doesn't match the tier listed on separation. You can see that
+     there are 3 and 4 tier players in tier 4."
+     He is reading a row whose Tier column says 3 under a heading that says TIER 4, which is a flat
+     contradiction on one line — the same class as 29t's "8 left" over two rows. The cause was that the
+     sheet was ORDERED BY ADP while being GROUPED BY TIER: down an ADP board the absolute tiers interleave,
+     so the bands run on a high-water mark and a better-tiered player further down sits inside a later band.
+     That is defensible on the live board, where the point is to read the market order and spot a bargain
+     inside it. It is indefensible on a printed sheet that prints the tier in a column two inches away.
+     ⭐ AND IT EXPLAINS HIS OTHER COMPLAINT TOO. "Tier 3 · 1 player" was not a one-man tier: tier 3 really
+     held three players, and the other two appeared further down the ADP order inside later bands. Sorting
+     by tier makes every band exactly its tier, so the headings, the column and the counts all agree — and
+     the singleton bands disappear without touching the model.
+     Within a tier the order stays ADP, which is how a cheat sheet is read on draft day. */
+  const sheetRows = (() => {
+    const rows = (getRows(sheetLimit) || []).slice();
+    const t = (p) => (p && p.tier != null && isFinite(p.tier) ? p.tier : 9999);
+    const a = (p) => (p && p.adp != null && isFinite(p.adp) ? p.adp : 9999);
+    // ⚠ A STABLE sort: equal tier AND equal ADP must keep the order getRows produced, or the sheet
+    //   reshuffles between renders and a printed page stops matching the screen it was printed from.
+    return rows.map((p, i) => ({ p, i })).sort((x, y) => (t(x.p) - t(y.p)) || (a(x.p) - a(y.p)) || (x.i - y.i)).map((x) => x.p);
+  })();
   /* Same tiers the board uses, so the printed sheet groups exactly the way the screen does.
      ⚠ 29s: the sheet is printed BEFORE the draft, so nothing is drafted — but it must still be told the
      whole pool, or "n left" counts only the rows that made the sheet's own limit and a 200-row sheet
@@ -10447,6 +10495,93 @@ function StrategyEditor({ league, user, allLeagues, taken, onSave, onSaveMaster,
 }
 
 
+/* ⭐⭐ 29u — ONE MOCK-HISTORY TABLE, TWO PLACES THAT SHOW IT.
+   Trey: "can you make the 'mock history' more prevalent at the bottom. It also doesn't show many details
+   when you expand this section. Can you make it look just like the summary found in the mock draft trends."
+   The rich table already existed inside the Browse-mocks modal; the section at the foot of the league page
+   was a separate, much older rendering — a date, "n/total", a view link and an ✕. Rather than write the
+   good one twice, it becomes a component both call. ⚠ THIS FILE'S RECURRING FAILURE IS TWO SURFACES
+   DERIVING THE SAME THING BY DIFFERENT CODE and then disagreeing; the fix for "make B look like A" is
+   almost never to copy A. */
+function MockRunTable({ rows, totalPicks, onOpen, onDelete, delId, setDelId, compact }) {
+  const COLS = compact
+    ? "28px 96px 70px 52px 130px minmax(0,1fr) 96px"
+    : "34px 116px 76px 60px 60px 162px minmax(0,1fr) 108px";
+  const pill = (pp, k) => (
+    <b key={k} style={{ fontSize: 10, color: POS_COLOR[pp] || "var(--mut)", border: `1px solid ${POS_COLOR[pp] || "var(--line)"}44`, borderRadius: 4, padding: "1px 4px", whiteSpace: "nowrap" }}>{pp}</b>
+  );
+  // ⭐ His bands, scaled so a 14-team league doesn't call 6th "yellow" when it is above median.
+  const finBand = (r) => {
+    if (!r || r.rank == null) return null;
+    const green = Math.max(3, Math.round(r.of * 0.3));
+    const amber = Math.max(6, Math.round(r.of * 0.6));
+    return r.rank <= green ? "good" : r.rank <= amber ? "warn" : "bad";
+  };
+  const FIN_TONE = { good: ["#5FD0A8", "rgba(95,208,168,.14)"], warn: ["var(--gold)", "rgba(224,166,60,.14)"], bad: ["#F2655C", "rgba(242,101,92,.13)"] };
+  return (
+    <>
+      <div className="mocklisthead" style={{ display: "grid", gridTemplateColumns: COLS, gap: 8, fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, padding: "0 2px 5px" }}>
+        <span>#</span><span>Ran</span><span>Finish</span><span style={{ textAlign: "right" }}>Your pts</span>
+        {!compact && <span style={{ textAlign: "right" }}>Behind</span>}
+        <span>How you opened</span><span>Your 1st-rounder</span><span />
+      </div>
+      {rows.map(({ m, n, r, live, made }, i) => {
+        const band = finBand(r);
+        const tone = band ? FIN_TONE[band] : null;
+        // "8/30/2026, 3:14:02 PM" → the date on one line, the clock under it. One string in a 76px column
+        // was the reason it used to read "8/30/2026, 3:...".
+        const ranParts = String(m.ran || "").split(/,\s+/);
+        return (
+          <div key={m.id} data-mockrow={m.id} className="mocklistgrid" style={{ display: "grid", gridTemplateColumns: COLS, gap: 10, alignItems: "center", padding: compact ? "8px 2px" : "11px 2px", fontSize: 12, borderTop: i ? "1px solid var(--line)" : "none" }}>
+            <span className="mut num">#{n}</span>
+            <span style={{ minWidth: 0, lineHeight: 1.25 }}>
+              <span style={{ display: "block", fontSize: 11.5, whiteSpace: "nowrap" }}>{ranParts[0] || "—"}</span>
+              {ranParts[1] && <span className="mut" style={{ display: "block", fontSize: 10, whiteSpace: "nowrap" }}>{ranParts[1]}</span>}
+            </span>
+            <span data-mockfin={r ? r.rank : ""} data-mockband={band || ""}>
+              {live ? (
+                <b className="num" style={{ display: "inline-block", fontSize: 11.5, fontWeight: 800, color: "var(--gold)", background: "rgba(224,166,60,.14)", border: "1px solid var(--gold)", borderRadius: 6, padding: "3px 7px", whiteSpace: "nowrap" }}>
+                  {made}<span style={{ fontWeight: 400, fontSize: 9.5, opacity: .8 }}> / {totalPicks}</span>
+                </b>
+              ) : r ? (
+                <b style={{ display: "inline-block", fontSize: 12.5, fontWeight: 800, color: tone[0], background: tone[1], border: `1px solid ${tone[0]}55`, borderRadius: 6, padding: "3px 7px", whiteSpace: "nowrap" }}>
+                  {ordinal(r.rank)} <span style={{ fontWeight: 400, fontSize: 9.5, opacity: .8 }}>of {r.of}</span>
+                </b>
+              ) : <span className="mut">—</span>}
+            </span>
+            <span className="num" style={{ textAlign: "right" }}>{r ? r.pts : <span className="mut">—</span>}</span>
+            {!compact && <span className="num" style={{ textAlign: "right", color: r && r.gapToFirst ? "var(--bad)" : "var(--good)" }}>{r ? (r.gapToFirst ? `−${r.gapToFirst}` : "won") : <span className="mut">—</span>}</span>}
+            <span style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              {r && (r.open5 || r.open3) ? (r.open5 || r.open3).split("-").filter(Boolean).map((pp, k) => pill(pp, k)) : <span className="mut">—</span>}
+            </span>
+            <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {r && r.best ? <>{pill(r.best.pos, 0)} <span style={{ marginLeft: 3 }}>{r.best.name}</span> <span className="mut num" style={{ fontSize: 10.5 }}>{r.best.pts}</span></> : <span className="mut">—</span>}
+            </span>
+            <span style={{ display: "flex", gap: 5, alignItems: "center", justifyContent: "flex-end" }}>
+              {m.ended && !(m.complete === true) && <span className="chip" style={{ fontSize: 9, borderColor: "var(--line2)", color: "var(--mut)" }}>early</span>}
+              <button className={live ? "btn btn-mini btn-gold" : "btn btn-mini"} data-mockopen={m.id} onClick={() => onOpen(m)}>
+                {live ? <><i className="ti ti-player-play" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Resume</> : compact ? "Open" : "Open board"}
+              </button>
+              {/* ⚠ TWO-STEP, NOT confirm(). A browser modal blocks the page and, in the headless suites,
+                  blocks every subsequent command — the trap the harness notes have carried since 29d. */}
+              {delId === m.id ? (
+                <>
+                  <button className="btn btn-mini" data-mockdelyes={m.id} style={{ borderColor: "var(--red)", color: "var(--red)" }}
+                    onClick={() => { setDelId(null); onDelete(m); }}>Delete</button>
+                  <button className="btn btn-mini" onClick={() => setDelId(null)}>Keep</button>
+                </>
+              ) : (
+                <button className="btn btn-mini" data-mockdel={m.id} title="Delete this mock"
+                  style={{ borderColor: "var(--line)", color: "var(--mut)", padding: "2px 6px" }}
+                  onClick={() => setDelId(m.id)}><i className="ti ti-trash" style={{ fontSize: 12 }} aria-hidden="true" /></button>
+              )}
+            </span>
+          </div>
+        );
+      })}
+    </>
+  );
+}
 function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, onSignOut, onOfficial, onMock, onMockPlan, onSettings, onViewMock, onDeleteMock, onDelete, onOpenTeamHub, onRankings, onEditRankSet, onUseRankSet, onSaveAvoid, onSaveMasterAvoid, onSaveQueue, onSaveMasterQueue, onSaveStrategy, onFixSlot, onUpdateUser, onSaveCfg, openStrategy, onStrategyOpened }) {
   // The checklist used to print league.cfg.slot with a tick beside it, and that number could be months old
   // and simply wrong. Ask the platform instead — and write the answer back, so the room, the mocks and this
@@ -10890,25 +11025,7 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
         rows.sort((a, b) => (mockListSort === "finish"
           ? ((a.r ? a.r.rank : 99) - (b.r ? b.r.rank : 99)) || ((b.r ? b.r.pts : 0) - (a.r ? a.r.pts : 0))
           : ((b.m.at || 0) - (a.m.at || 0)) || (b.n - a.n)));
-        // ⭐⭐ 29n — ROOM AND COLOUR. Trey: "you need to space things out better, have better conditional
-        //   formatting for finishes (i.e. 1-3 should be green, 3-6 yellow, rest red) and there is just more
-        //   space to make it look cleaner with the date/time and the how you started."
-        //   Wider columns so the timestamp stops reading "8/30/2026, 3:..." and the five opening pills stop
-        //   wrapping onto a second line, and the finish is a filled chip rather than coloured text — a rank
-        //   is the column you scan this table for, so it should be the thing your eye lands on.
-        const MOCK_COLS = "34px 116px 76px 60px 60px 162px minmax(0,1fr) 108px";
-        const pill = (pp, k) => (
-          <b key={k} style={{ fontSize: 10, color: POS_COLOR[pp] || "var(--mut)", border: `1px solid ${POS_COLOR[pp] || "var(--line)"}44`, borderRadius: 4, padding: "1px 4px", whiteSpace: "nowrap" }}>{pp}</b>
-        );
-        // ⭐ HIS BANDS, scaled so a 14-team league doesn't call 6th "yellow" when it is above median: top
-        //   three (or top 30%) green, through sixth (or 60%) amber, the rest red.
-        const finBand = (r) => {
-          if (!r || r.rank == null) return null;
-          const green = Math.max(3, Math.round(r.of * 0.3));
-          const amber = Math.max(6, Math.round(r.of * 0.6));
-          return r.rank <= green ? "good" : r.rank <= amber ? "warn" : "bad";
-        };
-        const FIN_TONE = { good: ["#5FD0A8", "rgba(95,208,168,.14)"], warn: ["var(--gold)", "rgba(224,166,60,.14)"], bad: ["#F2655C", "rgba(242,101,92,.13)"] };
+        // Row rendering lives in <MockRunTable> — see the note there on why it is shared.
         return (
         <div className="modalbg" onClick={() => setMockListOpen(false)}>
           <div className="panel" data-mocklist style={{ maxWidth: 1020, width: "100%", padding: 20, borderColor: "var(--gold)", maxHeight: "84vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
@@ -10935,64 +11052,10 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
               ))}
             </div>
             <div className="mocklistscroll scrollhint">
-              <div className="mocklisthead" style={{ display: "grid", gridTemplateColumns: MOCK_COLS, gap: 8, fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, padding: "0 2px 5px" }}>
-                <span>#</span><span>Ran</span><span>Finish</span><span style={{ textAlign: "right" }}>Your pts</span><span style={{ textAlign: "right" }}>Behind</span><span>How you opened</span><span>Your 1st-rounder</span><span />
-              </div>
-              {rows.map(({ m, n, r, live, made }, i) => {
-                const band = finBand(r);
-                const tone = band ? FIN_TONE[band] : null;
-                // "8/30/2026, 3:14:02 PM" → the date on one line, the clock time under it. One string in a
-                // 76px column was the reason it read "8/30/2026, 3:...".
-                const ranParts = String(m.ran || "").split(/,\s+/);
-                return (
-                <div key={m.id} data-mockrow={m.id} className="mocklistgrid" style={{ display: "grid", gridTemplateColumns: MOCK_COLS, gap: 10, alignItems: "center", padding: "11px 2px", fontSize: 12, borderTop: i ? "1px solid var(--line)" : "none" }}>
-                  <span className="mut num">#{n}</span>
-                  <span style={{ minWidth: 0, lineHeight: 1.25 }}>
-                    <span style={{ display: "block", fontSize: 11.5, whiteSpace: "nowrap" }}>{ranParts[0] || "—"}</span>
-                    {ranParts[1] && <span className="mut" style={{ display: "block", fontSize: 10, whiteSpace: "nowrap" }}>{ranParts[1]}</span>}
-                  </span>
-                  <span data-mockfin={r ? r.rank : ""} data-mockband={band || ""}>
-                    {live ? (
-                      <b className="num" style={{ display: "inline-block", fontSize: 11.5, fontWeight: 800, color: "var(--gold)", background: "rgba(224,166,60,.14)", border: "1px solid var(--gold)", borderRadius: 6, padding: "3px 7px", whiteSpace: "nowrap" }}>
-                        {made}<span style={{ fontWeight: 400, fontSize: 9.5, opacity: .8 }}> / {mockTotalPicks}</span>
-                      </b>
-                    ) : r ? (
-                      <b style={{ display: "inline-block", fontSize: 12.5, fontWeight: 800, color: tone[0], background: tone[1], border: `1px solid ${tone[0]}55`, borderRadius: 6, padding: "3px 7px", whiteSpace: "nowrap" }}>
-                        {ordinal(r.rank)} <span style={{ fontWeight: 400, fontSize: 9.5, opacity: .8 }}>of {r.of}</span>
-                      </b>
-                    ) : <span className="mut">—</span>}
-                  </span>
-                  <span className="num" style={{ textAlign: "right" }}>{r ? r.pts : <span className="mut">—</span>}</span>
-                  <span className="num" style={{ textAlign: "right", color: r && r.gapToFirst ? "var(--bad)" : "var(--good)" }}>{r ? (r.gapToFirst ? `−${r.gapToFirst}` : "won") : <span className="mut">—</span>}</span>
-                  <span style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                    {r && (r.open5 || r.open3) ? (r.open5 || r.open3).split("-").filter(Boolean).map((pp, k) => pill(pp, k)) : <span className="mut">—</span>}
-                  </span>
-                  <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {r && r.best ? <>{pill(r.best.pos, 0)} <span style={{ marginLeft: 3 }}>{r.best.name}</span> <span className="mut num" style={{ fontSize: 10.5 }}>{r.best.pts}</span></> : <span className="mut">—</span>}
-                  </span>
-                  <span style={{ display: "flex", gap: 5, alignItems: "center", justifyContent: "flex-end" }}>
-                    {m.ended && !(m.complete === true) && <span className="chip" style={{ fontSize: 9, borderColor: "var(--line2)", color: "var(--mut)" }}>early</span>}
-                    <button className={live ? "btn btn-mini btn-gold" : "btn btn-mini"} data-mockopen={m.id}
-                      onClick={() => { setMockListOpen(false); onViewMock(league.id, m); }}>
-                      {live ? <><i className="ti ti-player-play" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Resume</> : "Open board"}
-                    </button>
-                    {/* ⚠ TWO-STEP, NOT confirm(). A browser modal blocks the page and, in the headless suites,
-                        blocks every subsequent command — the trap the harness notes have carried since 29d. */}
-                    {mockDelId === m.id ? (
-                      <>
-                        <button className="btn btn-mini" data-mockdelyes={m.id} style={{ borderColor: "var(--red)", color: "var(--red)" }}
-                          onClick={() => { setMockDelId(null); if (typeof onDeleteMock === "function") onDeleteMock(league.id, m.id); }}>Delete</button>
-                        <button className="btn btn-mini" onClick={() => setMockDelId(null)}>Keep</button>
-                      </>
-                    ) : (
-                      <button className="btn btn-mini" data-mockdel={m.id} title="Delete this mock"
-                        style={{ borderColor: "var(--line)", color: "var(--mut)", padding: "2px 6px" }}
-                        onClick={() => setMockDelId(m.id)}><i className="ti ti-trash" style={{ fontSize: 12 }} aria-hidden="true" /></button>
-                    )}
-                  </span>
-                </div>
-                );
-              })}
+              <MockRunTable rows={rows} totalPicks={mockTotalPicks}
+                onOpen={(m) => { setMockListOpen(false); onViewMock(league.id, m); }}
+                onDelete={(m) => { if (typeof onDeleteMock === "function") onDeleteMock(league.id, m.id); }}
+                delId={mockDelId} setDelId={setMockDelId} />
             </div>
           </div>
         </div>
@@ -11264,26 +11327,61 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
           </div>
         )}
 
-        {/* MOCK HISTORY + TRENDS */}
+        {/* ⭐⭐ 29u — MOCK HISTORY, AS A SECTION RATHER THAN A FOOTNOTE.
+            Trey: "can you make the 'mock history' more prevalent at the bottom. It also doesn't show many
+            details when you expand this section. Can you make it look just like the summary found in the
+            mock draft trends."
+            It was a `btn-mini` toggle over four columns — a date, "n/total", "view" and an ✕ — while the
+            same league's Browse-mocks modal had been showing finish, points, gap to first, the opening five
+            and your first-rounder since 29m. Two renderings of one thing, and the one at the foot of the
+            page he actually scrolls to was the poor one. It now uses <MockRunTable>, the same component the
+            modal does, so they cannot drift apart again. */}
         {mocks.length > 0 && (
-          <div style={{ marginTop: 22 }}>
-            <button className="btn btn-mini" onClick={() => setShowMocks((s) => !s)}>{showMocks ? "Hide mock history" : `Mock history (${mocks.length})`}</button>
-            {showMocks && (
-              <div className="panel" style={{ padding: 14, marginTop: 10 }}>
-                <div style={{ maxHeight: 220, overflowY: "auto" }}>
-                  {mocks.map((m, i) => (
-                    <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12.5, borderTop: i ? "1px solid var(--line)" : "none" }}>
-                      <span className="mut num" style={{ width: 22 }}>#{mocks.length - i}</span>
-                      <span style={{ flex: 1 }}>{m.ran}</span>
-                      <span className="mut">{m.n}/{total}</span>
-                      <button className="btn btn-mini" onClick={() => onViewMock(league.id, m)}>view</button>
-                      <button className="btn btn-mini" onClick={() => onDeleteMock(league.id, m.id)}>✕</button>
-                    </div>
-                  ))}
-                </div>
-                <MockTrendsLazy league={league} />
+          <div data-mockhistory style={{ marginTop: 26, paddingTop: 18, borderTop: "1px solid var(--line)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
+              <div className="disp" style={{ fontSize: 17, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
+                <i className="ti ti-history" style={{ fontSize: 16, color: "var(--gold)" }} aria-hidden="true" />
+                Mock history
               </div>
-            )}
+              <span className="chip" style={{ fontSize: 10.5 }}>{mocks.length} saved</span>
+              {trends && trends.myAvgRank != null && (
+                <span className="chip" style={{ fontSize: 10.5, borderColor: "var(--gold)", color: "var(--gold)" }}>
+                  avg finish {ordinal(Math.round(trends.myAvgRank))}
+                </span>
+              )}
+              {inProgressMock && (
+                <button className="btn btn-mini btn-gold" data-historyresume style={{ fontSize: 10.5 }}
+                  onClick={() => onViewMock(league.id, inProgressMock)}>
+                  <i className="ti ti-player-play" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Resume {inProgressMock._made}/{mockTotalPicks}
+                </button>
+              )}
+              <div style={{ flex: 1 }} />
+              <button className="btn btn-mini" data-historytoggle onClick={() => setShowMocks((s2) => !s2)}>
+                {showMocks ? "Hide" : "Show all"}
+              </button>
+            </div>
+            <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5, marginBottom: 10 }}>
+              Where you finished in each room on projected points, and how you got there.
+            </div>
+            {showMocks && (() => {
+              // Same join the Browse-mocks modal does: the saved mock, and its row from the trends analysis.
+              const runOf = {};
+              ((trends && trends.myRuns) || []).forEach((r) => { runOf[r.mock] = r; });
+              const madeIn = (m) => (m.picks || []).filter((x) => x != null).length;
+              const rows = mocks.map((m, i) => ({ m, n: mocks.length - i, r: runOf[m.id] || null,
+                live: !mockIsDone(m), made: madeIn(m) }));
+              return (
+                <div className="panel" style={{ padding: 14 }}>
+                  <div className="mocklistscroll scrollhint" style={{ maxHeight: 320, overflowY: "auto" }}>
+                    <MockRunTable rows={rows} totalPicks={mockTotalPicks} compact
+                      onOpen={(m) => onViewMock(league.id, m)}
+                      onDelete={(m) => { if (typeof onDeleteMock === "function") onDeleteMock(league.id, m.id); }}
+                      delId={mockDelId} setDelId={setMockDelId} />
+                  </div>
+                  <MockTrendsLazy league={league} />
+                </div>
+              );
+            })()}
           </div>
         )}
 
