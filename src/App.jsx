@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29w";
+const BUILD_TAG = "2026.07.29x";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -1767,22 +1767,81 @@ export function applyLivePack(pack, isReapply) {
     });
   };
   if (trustedPlayers.length >= 20) {
-    // Build a value→adp ladder from the trusted-ADP players (sorted by value, descending), then binary-search
-    // each remaining player's value into it to find where he belongs, and read the ADP of the neighbor there.
+    /* ⭐⭐⭐ THE DEEP BOARD WAS COLLAPSING ONTO A SINGLE ADP.
+     *
+     * Trey, after a live keeper draft: "The ordering of the players was nearly spot on. It's just that the
+     * ADP is slightly inflated (lower than it should be) for players later in the draft (players at the top
+     * of the draft seem relatively fine)."  Measured on a board whose market coverage thins out the way a
+     * real one does: 43 players shared the single ADP 118.8, the deepest player on a 192-pick board read as
+     * pick 119.8, and the average gap between consecutive ADPs fell from 0.87 in picks 1-50 to 0.215 by
+     * pick 100. Ordering survived, which is why it looked "nearly spot on" — but every one of those 43 men
+     * was priced roughly seventy picks earlier than the market takes him.
+     *
+     * The cause was this ladder's placement rule. Each player without a trusted market number was given the
+     * ADP of his nearest neighbour by projection PLUS HALF A PICK. Two things follow, and both are bad:
+     *   · everyone whose value falls past the end of the ladder gets `lastAnchor.adp + 0.5` — one number,
+     *     however many hundreds of players are down there;
+     *   · several players sharing an anchor all land on the same number too, so the mid-board stops
+     *     spreading well before the tail.
+     *
+     * This is not cosmetic. `p.adp` is what the opponent model drafts against and what the reach/value
+     * scoring reads, so a flat tail tells the simulator that forty players are equally likely at pick 119 —
+     * which quietly wrecks late-round survival odds, run detection and "who goes first" in the back half of
+     * every draft.
+     *
+     * The replacement INTERPOLATES between the two ladder entries a player falls between, and EXTRAPOLATES
+     * past the end along the ladder's own local slope (picks per unit of projected value, measured at the
+     * deep end where it matters) rather than stopping dead. Then a final pass walks the placed players in
+     * order and enforces a minimum separation, so no two ever share a number and the sequence is strictly
+     * increasing. Nothing here invents a target range: the shape comes from the market data we do have. */
     const ladder = trustedPlayers
       .map((p) => ({ adp: p.adp, v: projValueAll(p) }))
       .sort((a, b) => b.v - a.v); // best value first
     const vals = ladder.map((x) => x.v); // descending
-    const worstAdp = ladder.length ? Math.max(...ladder.map((x) => x.adp)) : 200;
-    const noAdp = untrustedPlayers;
-    for (const p of noAdp) {
+
+    // Slope at the deep end, in ADP picks per unit of projected value. Taken over the last stretch of the
+    // ladder rather than the whole of it, because the curve is far flatter at the top (elite players are
+    // separated by a lot of value and few picks) than it is where the extrapolation actually happens.
+    const tailN = Math.max(8, Math.min(60, Math.floor(ladder.length * 0.25)));
+    const tailLo = ladder[ladder.length - tailN], tailHi = ladder[ladder.length - 1];
+    const dv = (tailLo && tailHi) ? (tailLo.v - tailHi.v) : 0;
+    const da = (tailLo && tailHi) ? (tailHi.adp - tailLo.adp) : 0;
+    // Fall back to a gentle slope if the tail of the ladder is degenerate (all one value).
+    const slope = dv > 1e-6 && da > 0 ? da / dv : 0.35;
+    const last = ladder[ladder.length - 1];
+
+    const placed = [];
+    for (const p of untrustedPlayers) {
       const v = projValueAll(p);
-      // binary search: first index where ladder value < v (i.e. how many project better than him)
+      // first index whose ladder value is <= v (i.e. how many project better than him)
       let lo = 0, hi = vals.length;
       while (lo < hi) { const mid = (lo + hi) >> 1; if (vals[mid] > v) lo = mid + 1; else hi = mid; }
-      const anchor = ladder[Math.min(lo, ladder.length - 1)];
-      const est = anchor ? anchor.adp + 0.5 : (worstAdp + 1);
-      provisionalAdp.set(p.id, est);
+      let est;
+      if (lo >= ladder.length) {
+        // PAST THE END — the case that used to collapse. Keep walking down the board at the rate the
+        // market itself is moving at this depth.
+        est = last.adp + Math.max(0, (last.v - v)) * slope;
+      } else if (lo === 0) {
+        est = Math.max(0.5, ladder[0].adp - 0.5);   // projects better than anyone with a real number
+      } else {
+        // BETWEEN two known points — interpolate on value rather than snapping to a neighbour.
+        const a = ladder[lo - 1], bnd = ladder[lo];
+        const span = a.v - bnd.v;
+        const t = span > 1e-6 ? (a.v - v) / span : 0.5;
+        est = a.adp + t * (bnd.adp - a.adp);
+      }
+      placed.push({ id: p.id, est, v });
+    }
+    /* No two players may share an ADP. Ties are still possible after interpolation (equal projections are
+       common deep down, where many players project to nearly nothing), and a tie means the simulator sees
+       them as interchangeable. Walk them in board order and push each at least MIN_SEP past the last. */
+    const MIN_SEP = 0.25;
+    placed.sort((a, b) => a.est - b.est || b.v - a.v);
+    let prev = -Infinity;
+    for (const x of placed) {
+      const est = Math.max(x.est, prev + MIN_SEP);
+      provisionalAdp.set(x.id, Math.round(est * 10) / 10);
+      prev = est;
     }
   } else {
     // No broad ADP coverage yet — rank the whole board by projection value.
@@ -4057,6 +4116,45 @@ function computeBoardTiers(list, metric, isDrafted, pool) {
     band.n++;
     if (!isDrafted(list[i])) band.left++;
   }
+  /* ⭐⭐⭐ NO BAND MAY HOLD A SINGLE ROW.
+     Trey, in 29u: "Some tiers only has one player in it randomly." The tier MODEL was fixed then — its loop
+     cannot close a tier under three players except at a genuine cliff, and never under two. What survived
+     is a banding artefact, and it only became visible once the test fixture stopped giving every player a
+     trusted ADP: the sheet shows a LIMITED number of rows, so a tier with four players in the pool can
+     contribute one row to the sheet, and that row gets a heading of its own reading "TIER 26 · 1 player".
+     A heading over one name is not a tier, it is a label with nothing to say — and several in a row at the
+     bottom of the sheet is exactly the "random single-player tiers" complaint, arriving by a different
+     route from the one that was fixed.
+     So after the bands are drawn, any band left holding fewer than two rows is folded into the one above
+     it. The ranges stay contiguous because the survivor simply extends its `to` over the absorbed band. */
+  const MIN_BAND_ROWS = 2;
+  if (out.bands.length > 1) {
+    const merged = [];
+    for (const bd of out.bands) {
+      const prev = merged[merged.length - 1];
+      if (prev && bd.n < MIN_BAND_ROWS) { prev.to = bd.to; prev.n += bd.n; prev.left += bd.left; bd.mergedInto = prev; }
+      else merged.push(bd);
+    }
+    // A too-short FIRST band has nothing above it, so it absorbs the one below instead.
+    if (merged.length > 1 && merged[0].n < MIN_BAND_ROWS) {
+      const a = merged[0], b = merged[1];
+      a.to = b.to; a.n += b.n; a.left += b.left; b.mergedInto = a;
+      merged.splice(1, 1);
+    }
+    if (merged.length !== out.bands.length) {
+      const indexOf = new Map();
+      merged.forEach((bd, k) => { const old = bd.idx; bd.idx = k; indexOf.set(old, k); });
+      // Re-point every row at the band that survived for it, following the merge chain.
+      const resolve = (bd) => { let cur = bd; while (cur.mergedInto) cur = cur.mergedInto; return cur.idx; };
+      const byOldIdx = new Map(out.bands.map((bd) => [bd.idx != null && indexOf.has(bd.idx) ? bd.idx : bd.idx, bd]));
+      out.bandOf = out.bandOf.map((oldIdx) => {
+        const bd = out.bands.find((x, k) => k === oldIdx);
+        return bd ? resolve(bd) : 0;
+      });
+      out.bands = merged;
+    }
+  }
+
   /* The pool-wide count per tier is still computed — the band hover names it, so "3 left on this board / 9
      left in the pool" is stated rather than left as a contradiction between a header and the rows below. */
   const src = Array.isArray(pool) && pool.length ? pool : list;
@@ -8987,6 +9085,8 @@ export default function App() {
         onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} onGuide={() => { setHelpTab("guide"); setRoute("help"); }} onAccount={() => setRoute("account")} onAdmin={() => setRoute("admin")} onSignOut={signOut}
         onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }}
         onDraftTrends={() => setRoute("draftTrends")} onAutoImportSleeper={autoImportSleeper}
+        onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
+        onStrategy={(id) => { setOpenStrategyFor(id); setActiveId(id); setRoute("leagueHub"); }}
         onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }} onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }} onDeleteFun={deleteFunMock} onDeleteMock={deleteMock} />}
       {route === "leagueHub" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? <LeagueUmbrella user={user} league={lg} openStrategy={openStrategyFor === lg.id} onStrategyOpened={() => setOpenStrategyFor(null)} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} backLabel={backLabelOf()}
         onOfficial={(id) => { setDraftTab(null); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
@@ -9284,6 +9384,24 @@ function WhyGraphic({ kind }) {
       <polygon points="64,20 60,28 68,28" fill={g} />
     </svg>
   );
+  /* A plan with its rounds ticking off as the draft passes them, and one target flagged because its window
+     is closing. The picture has to show ENFORCEMENT — a checklist alone is what every other tool offers. */
+  if (kind === "plan") return (
+    <svg viewBox="0 0 220 84" style={box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+      <rect x="14" y="10" width="120" height="64" rx="6" fill="var(--panel2)" stroke="var(--line)" strokeWidth="1" />
+      {[0, 1, 2, 3].map((i) => (
+        <g key={i}>
+          <circle cx="26" cy={22 + i * 14} r="4.5" fill={i < 2 ? g : "none"} stroke={i < 2 ? g : "var(--mut)"} strokeWidth="1.5" />
+          {i < 2 && <path d={`M23.6 ${22 + i * 14} l1.8 1.9 l3.4 -3.8`} fill="none" stroke="var(--panel2)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />}
+          <rect x="36" y={18 + i * 14} width={i === 2 ? 58 : 78} height="7" rx="3.5" fill={i === 2 ? g : "var(--line)"} opacity={i === 2 ? 0.95 : 1} />
+        </g>
+      ))}
+      <path d="M140 42 h20 m0 0 l-6 -5 m6 5 l-6 5" fill="none" stroke={g} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <rect x="166" y="26" width="40" height="32" rx="6" fill="none" stroke={g} strokeWidth="1.5" />
+      <text x="186" y="41" fontSize="8.5" fill="var(--mut)" textAnchor="middle">window</text>
+      <text x="186" y="52" fontSize="9.5" fontWeight="700" fill={g} textAnchor="middle">closing</text>
+    </svg>
+  );
   if (kind === "trust") return ( // measured accuracy gauge
     <svg viewBox="0 0 220 84" style={box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
       <path d="M70 60 A40 40 0 0 1 150 60" fill="none" stroke="var(--line)" strokeWidth="8" strokeLinecap="round" />
@@ -9352,13 +9470,7 @@ function HelpPage({ user, biz, onBack, onHome, onSignOut, onSubmit, initialTab }
               <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Get the most out of Fantasy Draft Compass</div>
               <div className="mut" style={{ fontSize: 13, lineHeight: 1.55 }}>These are the same five steps as the “Get started” flow on your home screen — here with a bit more on the why behind each. Do them in order and you'll walk into draft night more prepared than anyone in your league.</div>
             </div>
-            {[
-              ["rankings", "ti-list-numbers", "Set your rankings", "Two separate tools. My Ranks is your own board — tell the tool where you disagree with the market and your ranks become a “My ADP” column plus a “Blend” (your read tempered by the market). Platform Ranks (entered in the draft room) is your platform's ADP, and it powers the “Edge” column — how much value you're getting versus where your platform ranks a player. One global injury/news tweak ripples across every board at once."],
-              ["create", "ti-plus", "Create or connect a league", "Connect Sleeper for full live sync, import a public ESPN league's settings, or build any league by hand in a minute. Set the real rules: teams, scoring, roster slots, SuperFlex, TE premium, draft order, keepers, traded picks. Everything downstream is computed from these, so a SuperFlex 0.5-PPR board looks nothing like a standard 1QB one."],
-              ["open", "ti-stack-2", "Open an existing league", "Everything you've built lives in one place. Jump back into any league to draft, mock, edit settings, or review past drafts — your keepers, pick trades, and rankings all travel with it."],
-              ["mock", "ti-dice-5", "Run a mock", "Mocks are your highest-leverage habit — reps on your exact settings. Each one is scored and saved, and “My Mock Insights” surfaces your tendencies across them (where you reach, the values you keep missing), kept separate by format. The more you run, the sharper the read."],
-              ["draft", "ti-trophy", "Draft for real", "On the clock, the hub is mission control: projected picks, live availability odds (“will he make it back to you?”), take-now-vs-wait math, selective insight tags on the players that matter, and your custom columns — all recalculating after every selection. Trust the odds to time your picks."],
-            ].map(([kind, icon, title, body], i) => (
+            {ONBOARDING_STEPS.map(([kind, icon, title, body], i) => (
               <div key={i} className="panel" style={{ padding: 0, marginBottom: 12, overflow: "hidden" }}>
                 <div style={{ display: "flex", gap: 0, flexWrap: "wrap" }}>
                   <div style={{ flex: "1 1 320px", padding: 16, display: "flex", gap: 14, alignItems: "flex-start" }}>
@@ -14289,9 +14401,129 @@ function HubShell({ title, onBack, onHome, onSignOut, user, children }) {
   );
 }
 
-function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onOpenMock, onDeleteFun, onDeleteMock, onDraftTrends, onAutoImportSleeper }) {
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+   FIRST-RUN GUIDE — what to do the moment you've paid
+   ───────────────────────────────────────────────────────────────────────────────────────────────────
+   Trey: "When you enter the paid version for the first time (or until you click 'dismiss this message'),
+   can you prompt the user on what to do (i.e. connect to sleeper, ESPN public leagues, or start a manual
+   league… input settings, keepers, rosters… do draft prep (mock drafts, strategy, etc.)."
+
+   The hub is dense by design — it has to serve someone with six leagues mid-August. For someone who paid
+   ninety seconds ago it is a wall, and the single most expensive moment in the product is the one right
+   after the money changes hands: they either find the path or they close the tab.
+
+   TWO DECISIONS WORTH RECORDING:
+
+   1. IT READS REAL STATE RATHER THAN COUNTING VISITS. Each step is ticked by looking at what the account
+      actually contains — a league exists, that league has its scoring and keepers set, a mock or a written
+      plan exists. So it is never lying to you: it cannot congratulate you for something you have not done,
+      and it cannot nag about something you already did on another device. A "step 1 of 3" counter that
+      only tracks page views would do both.
+
+   2. IT LEAVES ON ITS OWN. Once all three steps are genuinely done the panel disappears without being
+      dismissed, because at that point it is only taking up the space the user now needs. Dismissing is
+      still there for someone who wants it gone immediately, and that choice persists.
+
+   The three steps are the real order of operations, and the same order the marketing page now teaches:
+   get the league in, tell it the rules, then prepare. Nothing here can be done usefully out of order —
+   keepers need a league, a plan needs the scoring that prices the board.
+   ═══════════════════════════════════════════════════════════════════════════════════════════════════ */
+function GetStartedPanel({ leagues, funMocks, dismissed, onDismiss, onAutoImportSleeper, onNewLeague, onSettings, onMock, onStrategy }) {
+  // ---- what has actually been done, read off the data ------------------------------------------------
+  const lg = (leagues && leagues[0]) || null;
+  const hasLeague = !!lg;
+  // "Set up" means the things that change every number on the board: the roster/scoring shape, and — for a
+  // league that has them — keepers. A league imported from Sleeper arrives with all of this already true,
+  // which is exactly right: the import IS the setup, and the step should show as done.
+  const isSetUp = !!(lg && lg.cfg && lg.cfg.start && (lg.cfg.teams || 0) > 0 && (lg.cfg.slot || lg.cfg.connect));
+  const mockCount = (leagues || []).reduce((s, l) => s + ((l.mocks || []).length), 0) + ((funMocks || []).length);
+  const hasPlan = (leagues || []).some((l) => l.strategy && ((l.strategy.targets || []).length > 0 || (l.strategy.rules || []).length > 0));
+  const hasPrep = mockCount > 0 || hasPlan;
+  const doneCount = [hasLeague, hasLeague && isSetUp, hasPrep].filter(Boolean).length;
+
+  // Gone once it is genuinely finished, or once the user says so.
+  if (dismissed || doneCount === 3) return null;
+
+  const steps = [
+    {
+      key: "league", done: hasLeague,
+      title: "Add your league",
+      body: "Connect Sleeper and everything comes with it — teams, scoring, roster slots, keepers, traded picks and your draft slot. A public ESPN league imports the same settings. Anywhere else, build it by hand in a minute.",
+      actions: [
+        ["Connect Sleeper", "ti-plug-connected", onAutoImportSleeper, true],
+        ["ESPN or manual", "ti-plus", onNewLeague, false],
+      ],
+    },
+    {
+      key: "setup", done: hasLeague && isSetUp,
+      title: "Check the settings",
+      body: "Scoring and roster shape drive every number on the board — superflex re-prices quarterbacks, TE premium lifts tight ends, keepers come off the board at the right pick cost. Worth thirty seconds even on an import.",
+      actions: [["Open league settings", "ti-adjustments", () => onSettings && lg && onSettings(lg.id), true]],
+      locked: !hasLeague,
+    },
+    {
+      key: "prep", done: hasPrep,
+      title: "Write a plan, run a mock",
+      body: "Set your targets and the rounds you want them by — the draft room then holds you to it, flagging targets as their windows close. Then mock your exact settings to test it; the trends feed back into the plan.",
+      actions: [
+        ["Write your plan", "ti-checklist", () => onStrategy && lg && onStrategy(lg.id), true],
+        ["Run a mock", "ti-dice-5", () => onMock && lg && onMock(lg.id), false],
+      ],
+      locked: !hasLeague,
+    },
+  ];
+
+  return (
+    <div data-getstarted className="panel" style={{ padding: 0, overflow: "hidden", marginBottom: 16, border: "1px solid var(--gold)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 18px", background: "rgba(224,166,60,.08)", borderBottom: "1px solid var(--line)", flexWrap: "wrap" }}>
+        <i className="ti ti-compass" style={{ fontSize: 17, color: "var(--gold)" }} aria-hidden="true" />
+        <div style={{ flex: "1 1 240px", minWidth: 0 }}>
+          <div className="disp" style={{ fontSize: 16, fontWeight: 700 }}>Let's get you drafting</div>
+          <div className="mut" style={{ fontSize: 12 }}>Three steps. The first one does most of the work for you.</div>
+        </div>
+        <span className="num mut" style={{ fontSize: 11.5, whiteSpace: "nowrap" }}>{doneCount} of 3 done</span>
+        <button className="btn btn-mini" data-getstarted-dismiss onClick={onDismiss} title="Hide this — you can always find it under Help">Dismiss</button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 0 }}>
+        {steps.map((st, i) => (
+          <div key={st.key} data-getstarted-step={st.key} style={{ padding: "15px 17px", borderRight: i < steps.length - 1 ? "1px solid var(--line)" : "none", opacity: st.locked ? 0.55 : 1 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <span style={{ width: 21, height: 21, borderRadius: 99, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                background: st.done ? "var(--gold)" : "transparent", border: st.done ? "none" : "1.5px solid var(--mut)" }}>
+                {st.done
+                  ? <i className="ti ti-check" style={{ fontSize: 12, color: "#151002", fontWeight: 800 }} aria-hidden="true" />
+                  : <span className="num" style={{ fontSize: 10.5, fontWeight: 800, color: "var(--mut)" }}>{i + 1}</span>}
+              </span>
+              <span className="disp" style={{ fontSize: 14.5, fontWeight: 700, textDecoration: st.done ? "none" : "none", color: st.done ? "var(--mut)" : "var(--ink)" }}>{st.title}</span>
+            </div>
+            <div className="mut" style={{ fontSize: 12, lineHeight: 1.5, marginBottom: 10, minHeight: 54 }}>{st.body}</div>
+            {!st.done && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {st.actions.map(([label, icon, fn, primary]) => (
+                  <button key={label} className={`btn btn-mini${primary ? " btn-gold" : ""}`} disabled={!!st.locked}
+                    onClick={() => { if (!st.locked && fn) fn(); }}
+                    style={{ cursor: st.locked ? "not-allowed" : "pointer" }}>
+                    <i className={`ti ${icon}`} style={{ fontSize: 12, marginRight: 5 }} aria-hidden="true" />{label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {st.done && <div style={{ fontSize: 11.5, color: "var(--green)", fontWeight: 700 }}>Done</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onOpenMock, onDeleteFun, onDeleteMock, onDraftTrends, onAutoImportSleeper }) {
   const totalMocks = leagues.reduce((s, l) => s + (l.mocks || []).length, 0) + funMocks.length;
   const inProgress = leagues.filter((l) => l.picks.length > 0 && l.picks.length < (l.cfg.teams || 12) * l.cfg.rounds);
+  /* First-run guidance. The dismissal is a device preference, not account data — someone who dismissed it
+     on their laptop is not telling us anything about their phone, and it costs nothing to show once there.
+     Read lazily so a browser with storage blocked still renders the hub. */
+  const [gsDismissed, setGsDismissed] = useState(() => { try { return localStorage.getItem("fdcGetStartedDone") === "1"; } catch (e) { return false; } });
+  const dismissGetStarted = () => { setGsDismissed(true); try { localStorage.setItem("fdcGetStartedDone", "1"); } catch (e) {} };
   // INCOMPLETE MOCKS surfaced for easy resume — the "hard to find an unfinished mock" fix. A mock is
   // "resumable" if it has picks but hasn't reached the final pick. We gather both league-attached mocks and
   // standalone quick mocks into one list, newest first, each carrying what's needed to reopen it directly.
@@ -14434,11 +14666,17 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
   // Single guided flow — the order of operations AND the primary actions, merged. Each step
   // opens the right thing; "open a league" and "run a mock" open inline boxes (no page jump).
   const anyMock = totalMocks > 0;
+  /* ⚠ THE SAME ORDER AS ONBOARDING_STEPS, AND FOR THE SAME REASON.
+     This list used to open with "Set your rankings — optional, but do it first", which is the opposite of
+     what the other two surfaces now teach: ranking players before the tool knows your format means ranking
+     them for the wrong league. The wording differs here because these rows carry ACTIONS and a done-state,
+     but the sequence must not: three surfaces disagreeing about what to do first is how a new user ends up
+     doing the one thing that has to be redone. */
   const steps = [
-    { n: 1, icon: "ti-list-numbers", title: "Set your rankings", note: "Optional, but do it first if you want your own values driving the board.", action: onRankings, done: (user?.rankSets || []).length > 0 },
-    { n: 2, icon: "ti-plus", title: "Create or connect a league", note: "Connect Sleeper, or build any league by hand. Settings, keepers, and drafts live here.", action: onNewLeague, done: leagues.length > 0 },
-    { n: 3, icon: "ti-stack-2", title: "Open an existing league", note: leagues.length ? `Jump into one of your ${leagues.length} league${leagues.length === 1 ? "" : "s"}.` : "Once you have a league, open it here.", action: () => (leagues.length ? openLeagueFlow() : onNewLeague()), done: false },
-    { n: 4, icon: "ti-dice-5", title: "Run a mock", note: "A quick mock, an existing mock, or a mock of a specific league.", action: openMockPanel, done: anyMock },
+    { n: 1, icon: "ti-plug-connected", title: "Create or connect a league", note: "Start here. Connect Sleeper and settings, keepers and your draft slot come with it — or build any league by hand.", action: onNewLeague, done: leagues.length > 0 },
+    { n: 2, icon: "ti-list-numbers", title: "Tune the board to your reads", note: "Now it knows your format: add your own ranks, or your platform's ADP for the Edge column.", action: onRankings, done: (user?.rankSets || []).length > 0 },
+    { n: 3, icon: "ti-dice-5", title: "Write a plan, run a mock", note: "Set your targets and rounds — the draft room holds you to them. Then mock your exact settings to test it.", action: openMockPanel, done: anyMock || leagues.some((l) => l.strategy && ((l.strategy.targets || []).length > 0 || (l.strategy.rules || []).length > 0)) },
+    { n: 4, icon: "ti-stack-2", title: "Open your league", note: leagues.length ? `Jump into one of your ${leagues.length} league${leagues.length === 1 ? "" : "s"}.` : "Once you have a league, open it here.", action: () => (leagues.length ? openLeagueFlow() : onNewLeague()), done: false },
     { n: 5, icon: "ti-trophy", title: "Draft for real", note: "Open your league and start the official draft.", action: () => (leagues.length ? openLeagueFlow() : onNewLeague()), done: leagues.some((l) => l.picks.length >= (l.cfg.teams || 12) * l.cfg.rounds) },
   ];
   const nextStep = steps.find((s) => !s.done) || steps[steps.length - 1];
@@ -14502,6 +14740,19 @@ function PaidHub({ user, leagues, funMocks, onLibrary, onNewLeague, onOfficial, 
             </div>
           </div>
         </div>
+      </div>
+
+      {/* ⭐⭐⭐ FIRST-RUN GUIDE. Directly under the greeting and above everything else, because the moment
+          it exists for is the one right after someone pays: the hub is built for a returning user with six
+          leagues, and a brand-new account sees a wall. It removes itself once the three steps are genuinely
+          done (see GetStartedPanel) so it never becomes furniture. */}
+      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "16px 20px 0" }}>
+        <GetStartedPanel
+          leagues={leagues} funMocks={funMocks}
+          dismissed={gsDismissed} onDismiss={dismissGetStarted}
+          onAutoImportSleeper={onAutoImportSleeper} onNewLeague={onNewLeague}
+          onSettings={onSettings} onMock={onMock} onStrategy={onStrategy}
+        />
       </div>
 
       {/* QUICK ACTIONS — equal-weight menu items, subtly highlighted as the primary zone. Sticky so the
@@ -15344,6 +15595,36 @@ function StickyBuyBar({ price, onBuy, onDemo }) {
 // eight picks gone, so every name, VBD and ADP on it is real. Nothing here is hand-written copy dressed up
 // as a screenshot; if the engine changes, this changes. Static (no sims) because a landing page must not
 // pay for a Monte Carlo — the availability figures are the engine's own board-outlook numbers.
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+   THE ONBOARDING STEPS — ONE LIST, THREE SURFACES
+   ───────────────────────────────────────────────────────────────────────────────────────────────────
+   These five steps were written out THREE separate times: on the marketing page ("How to Use It"), in the
+   help page's walkthrough, and as the guided flow on the paid hub. They had already drifted into three
+   different orders — and the help page opened by promising "these are the same five steps as the Get
+   started flow on your home screen", which was no longer true of either of the others.
+
+   That is the same failure as two numbers on one screen disagreeing, only in prose: whichever copy the
+   reader meets first becomes what they believe, and fixing one silently leaves the other two wrong.
+   Reordering them after Trey's review made it concrete — the edit landed on one copy, and the page he was
+   actually looking at did not change.
+
+   So there is one list now, and every surface renders from it. The order is deliberate: connect the league
+   FIRST, because every number in the product is priced off your scoring and a ranking made against the
+   wrong format has to be redone. Then tune, then plan and practise, then draft.
+   ═══════════════════════════════════════════════════════════════════════════════════════════════════ */
+const ONBOARDING_STEPS = [
+
+              /* ⭐ ORDER MATTERS AND IT WAS BACKWARDS. Rankings used to come first, which asks someone to
+               rank players before the tool knows whether they play superflex or TE-premium — and a ranking
+               made against the wrong format has to be redone. Trey: "I think you should create / connect a
+               league first before setting your rankings." Connect, prep, then draft. */
+            ["create", "ti-plug-connected", "Create or connect your league", "Start here. Link Sleeper and we pull in teams, roster slots, scoring, keepers, traded picks and your draft slot automatically. A public ESPN league imports the same settings (picks stay manual — ESPN has no live feed). Anywhere else, build it by hand in under a minute. Your scoring drives every number on every screen: add a SuperFlex slot and the whole board re-prices for 2QB, bump TE reception value and tight ends climb, mark your keepers and they come off the board with the right pick cost."],
+            ["rankings", "ti-list-numbers", "Tune the board to your reads", "Now that it knows your format, tell it where you disagree with the market. My Ranks is your own board — your ranks become a My ADP column plus a Blend that tempers your read with the market. Platform Ranks is the ADP your platform shows, powering the Edge column so you can see exactly where you're getting value. One injury or news tweak ripples a player across every board at once."],
+            ["mock", "ti-dice-5", "Write a plan, then run mocks against it", "This is the part nothing else does. Write a draft plan — the positions you want by which round, the players you're targeting, the ones you'll never take — and the draft room holds you to it: recommendations are scored against the plan, targets are flagged as their window closes, and you're told the moment you fall off pace. Then run mocks on your exact settings to test it. Every mock is saved and scored, the trends across them show where you reach and what you keep missing, and those trends feed back into the plan so it tracks how the field is actually drafting."],
+            ["open", "ti-stack-2", "Prep in one place", "Everything you've built lives in your league hub: cheat sheet, tiers, priority queue, do-not-draft list, bye-week and playoff-schedule reads, and the mock history with its full summary. Jump in to draft, mock, edit settings, or review past drafts — keepers, pick trades and rankings all travel with the league."],
+            ["draft", "ti-clock-play", "Draft live, on the clock", "The hub becomes mission control: your recommended pick and why, the cost of waiting at each position, live availability odds for everyone you're eyeing, runs forming before the rest of your league notices, and how you're tracking against your plan — all recalculating after every pick in the room. Connected to Sleeper, picks sync in within seconds; you still select in Sleeper and the compass reads it live."]
+];
+
 function HeroPickCard() {
   const data = useMemo(() => {
     try {
@@ -15367,12 +15648,22 @@ function HeroPickCard() {
 
   if (!data) return <Compass size={170} spin />;
   const { pick, alts, survives } = data;
+  /* ⭐⭐⭐ TWO BARE NUMBERS WITH NO LABEL ON THEM.
+     Trey: "the 'on the clock' widget at the top doesn't really show what all of this means. Like what is
+     the +97 (I know it's VBD), or the 8%."  He knew, because he built it. A visitor seeing this card for
+     the first time has two unexplained figures in the most important panel on the page — and an unexplained
+     number is worse than no number, because it reads as jargon rather than as an argument.
+     Both now carry a column header AND a plain-English explanation on hover, and the marketing page's own
+     tooltip machinery is not available up here, so this uses `title` — which is what a first-time visitor
+     will actually try anyway. */
+  const VBD_WHY = "Value over replacement: how many more points he scores across the season than the best player at his position you could get for free off waivers. It is the honest way to compare a running back with a receiver.";
+  const SURV_WHY = "The chance he is still on the board when you pick again, from thousands of simulations of the picks in between. Low means take him now or lose him.";
   const row = (p, top) => (
     <div key={p.id} style={{ display: "grid", gridTemplateColumns: "42px minmax(0,1fr) 46px 42px", gap: 8, alignItems: "center", padding: "7px 10px", fontSize: 12.5, borderTop: top ? "none" : "1px solid var(--line)" }}>
-      <span className="num" style={{ fontWeight: 800, color: POS_COLOR[p.pos] || "var(--ink)", fontSize: 11.5 }}>{p.pos}{p.posRank || ""}</span>
+      <span className="num" style={{ fontWeight: 800, color: POS_COLOR[p.pos] || "var(--ink)", fontSize: 11.5 }} title={`${p.pos}${p.posRank || ""} — his rank among ${p.pos}s`}>{p.pos}{p.posRank || ""}</span>
       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{top && <span style={{ color: "var(--gold)" }}>★ </span>}<b style={{ color: top ? "var(--gold)" : "var(--ink)" }}>{p.name}</b> <span className="mut" style={{ fontSize: 11 }}>{p.team}</span></span>
-      <span className="num" style={{ textAlign: "right", fontWeight: 700, color: "var(--green)", fontSize: 11.5 }}>+{Math.round(p.vbd)}</span>
-      <span className="num" style={{ textAlign: "right", fontSize: 11.5, color: survives(p) >= 65 ? "var(--green)" : survives(p) >= 35 ? "var(--gold)" : "var(--red)" }}>{survives(p)}%</span>
+      <span className="num" style={{ textAlign: "right", fontWeight: 700, color: "var(--green)", fontSize: 11.5, cursor: "help" }} title={VBD_WHY}>+{Math.round(p.vbd)}</span>
+      <span className="num" style={{ textAlign: "right", fontSize: 11.5, cursor: "help", color: survives(p) >= 65 ? "var(--green)" : survives(p) >= 35 ? "var(--gold)" : "var(--red)" }} title={SURV_WHY}>{survives(p)}%</span>
     </div>
   );
 
@@ -15392,7 +15683,7 @@ function HeroPickCard() {
             card whose job is to show the product making a confident call. */}
         <div className="mut" style={{ fontSize: 11.5, marginTop: 3, lineHeight: 1.5 }}>
           <b style={{ color: POS_COLOR[pick.pos] || "var(--ink)" }}>{pick.pos}{pick.posRank || ""}</b>
-          <span className="num"> · +{Math.round(pick.vbd)} value over replacement</span>
+          <span className="num" style={{ cursor: "help" }} title={VBD_WHY}> · +{Math.round(pick.vbd)} pts over a waiver-wire {pick.pos}</span>
           <br />
           {(() => {
             const s = survives(pick);
@@ -15402,12 +15693,16 @@ function HeroPickCard() {
           })()}
         </div>
       </div>
-      <div style={{ padding: "7px 12px 3px" }}>
+      <div style={{ padding: "7px 12px 3px", display: "grid", gridTemplateColumns: "minmax(0,1fr) 46px 42px", gap: 8, alignItems: "baseline" }}>
         <div className="disp" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--mut)", fontWeight: 800 }}>Also considered</div>
+        <div className="disp" style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 800, textAlign: "right", cursor: "help" }} title={VBD_WHY}>Value</div>
+        <div className="disp" style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 800, textAlign: "right", cursor: "help" }} title={SURV_WHY}>Lasts?</div>
       </div>
       <div>{alts.map((p, i) => row(p, i === -1))}</div>
       <div className="mut" style={{ fontSize: 10.5, padding: "8px 12px 10px", borderTop: "1px solid var(--line)", lineHeight: 1.45 }}>
-        Live from the real engine — the same board you'd be looking at on the clock.
+        <b style={{ color: "var(--ink)" }}>Value</b> = points above a freely-available replacement.
+        <b style={{ color: "var(--ink)" }}> Lasts?</b> = his odds of surviving to your next pick.
+        Hover either. Live from the real engine — the same board you'd see on the clock.
       </div>
     </div>
   );
@@ -15417,38 +15712,35 @@ function HeroPickCard() {
    THE FRONT-PAGE INTERACTIVE TOUR
    ───────────────────────────────────────────────────────────────────────────────────────────────────
    Trey: "Clearly they can go into a fake draft (for 3 rounds) and do that, but I fear if they don't make
-   it to that point that they won't understand the power of this tool. We need to put something on the
-   front page that makes the user convinced they need to buy this."
+   it to that point that they won't understand the power of this tool."
 
-   The old front page argued in prose — six feature cards describing simulations and survival odds. The
-   trouble with describing a probability engine is that the claim and the proof read identically: any
-   cheat sheet could print "availability odds" on a marketing page. Nothing on the page could only be
-   true of a tool that actually does the work.
+   WHAT THE FIRST VERSION GOT WRONG, in his words: "I don't think it really shows how cool the info is
+   that you have access to… when you click different players names on the left, nothing changes on the
+   right… that section needs to show a simple version of the player hub + other features / tabs you can
+   click on."  He was right on all three. It was one screen with one gesture: a list you could click once
+   and a paragraph that appeared. It demonstrated that a probability exists, not that this tool knows
+   more about your draft than anything else you have used.
 
-   So this doesn't describe the engine, it RUNS it. Every number below comes from the same functions the
-   paid draft room uses — buildPlayers for the board, runSims for the Monte Carlo — against a real
-   12-team PPR board, on the same data. Nothing here is a mockup or a hard-coded screenshot, which is
-   also why it can be trusted: if the engine were wrong, this panel would be wrong in public.
+   So this is now three tabs over one shared board, and every one of them is live:
 
-   THE SHAPE IS ONE DECISION, NOT A SLIDESHOW. A carousel of features is still marketing. Instead the
-   visitor is dropped into the exact moment the product exists to solve — on the clock at 2.03, with 19
-   picks until they choose again — and asked to make a pick. The moment they choose, the same engine
-   plays the next 19 picks a few hundred times and shows them what their choice actually cost: who will
-   still be there at 3.10, who will not, and what the pick they passed on would have returned instead.
-   That "oh — he won't make it back" is the entire product in one gesture, and it is a thing you can only
-   learn by doing it.
+     THE PICK   — click any player and the right half becomes HIS page: tier, positional rank, value over
+                  replacement in plain words, bye, his odds of surviving to your next turn, and the
+                  engine's verdict on him. Clicking changes it. That was the missing gesture.
+     YOUR PLAN  — the part nothing else does. A written plan with round-by-round targets that the draft
+                  room then holds you to, with each target's reach risk computed from the same sims. The
+                  plan is not a notepad: it re-orders the live board, and the panel shows it doing so.
+     THE FIELD  — what the room around you is about to do. Expected position runs before your next turn,
+                  derived from the same simulations, which is the read that makes the plan actionable.
 
-   WHY 2.03 SPECIFICALLY. Slot 10 in a 12-team snake picks at 14 and then not again until 33. The long
-   turn is where the decision is hardest and where a cheat sheet is most useless, so it is the fairest
-   possible test of whether this tool is worth anything. (It is also the exact pick Trey used as his own
-   example when reporting the next-picks bug: "it's suggesting that St. Brown will be there at 2.03".)
+   Everything is computed here and now by the shipping engine — buildPlayers for the board, runSims for
+   the Monte Carlo. Nothing is a screenshot or a fixture, which is the whole point: if the engine were
+   wrong, this panel would be wrong in public.
 
-   COST. One runSims at 240 paths on mount, one more when the visitor picks. That is the same resolution
-   the live draft room uses two picks out, and it lands in well under a second. Deferred until the panel
-   is actually on screen so it never delays first paint.
+   ⚠ THE FREE DRAFT IS THREE ROUNDS, NOT SIXTEEN. The first version's call to action said "Draft all 16
+   rounds free"; startDemo sets `demoRounds: 3`. Overstating the free tier is the one copy mistake that
+   costs trust at exactly the moment you are asking for it.
    ═══════════════════════════════════════════════════════════════════════════════════════════════════ */
 
-// A 12-team, PPR, one-QB league — the most common shape in fantasy, so the visitor recognises it.
 const TOUR_CFG = {
   name: "Tour", teams: 12, rounds: 16, type: "redraft", order: "snake", slot: 10,
   sf: false, tePremMult: 0, start: { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0, K: 0, DST: 0 },
@@ -15456,30 +15748,25 @@ const TOUR_CFG = {
 };
 const TOUR_USER = 9;      // slot 10 → index 9
 const TOUR_ON_CLOCK = 14; // overall pick index — 2.03
-const TOUR_NEXT = 33;     // their next turn — 3.10, nineteen picks later
 const TOUR_SIMS = 240;
-
-function tourLabel(o) { const r = Math.floor(o / 12) + 1, i = (o % 12) + 1; return `${r}.${String(i).padStart(2, "0")}`; }
+const TOUR_FREE_ROUNDS = 3; // must match startDemo's demoRounds
 
 function FeatureTour({ onDemo, onBuy, price, paid }) {
-  const [armed, setArmed] = useState(false);   // engine work waits until the panel is on screen
-  const [taken, setTaken] = useState(null);
-  const [peek, setPeek] = useState(null);      // hovered candidate
+  const [armed, setArmed] = useState(false);
+  const [tab, setTab] = useState("pick");
+  const [sel, setSel] = useState(null);     // the player whose page is showing
+  const [taken, setTaken] = useState(null); // the player they actually drafted
   const hostRef = useRef(null);
 
-  // Only start computing once the panel is actually visible. The hero must never wait on Monte Carlo.
   useEffect(() => {
     const el = hostRef.current;
     if (!el || armed) return;
     if (typeof IntersectionObserver !== "function") { setArmed(true); return; }
-    const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) { setArmed(true); io.disconnect(); } }, { rootMargin: "160px" });
+    const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) { setArmed(true); io.disconnect(); } }, { rootMargin: "200px" });
     io.observe(el);
     return () => io.disconnect();
   }, [armed]);
 
-  /* THE BOARD. Built by the real engine, then the first fourteen picks played off the top of ADP — which
-     is what the first fourteen picks of a real draft very nearly are. Deterministic, so every visitor
-     sees the same board and the numbers below are reproducible. */
   const board = useMemo(() => {
     if (!armed) return null;
     try {
@@ -15494,7 +15781,6 @@ function FeatureTour({ onDemo, onBuy, price, paid }) {
     } catch (e) { return null; }
   }, [armed]);
 
-  // Monte Carlo from the clock. pct[1] is survival at their NEXT turn (3.10) — the number that matters.
   const sims = useMemo(() => {
     if (!board) return null;
     try {
@@ -15503,8 +15789,6 @@ function FeatureTour({ onDemo, onBuy, price, paid }) {
     } catch (e) { return null; }
   }, [board]);
 
-  // The same engine re-run with the visitor's pick made, so "what's left at 3.10" is a real consequence
-  // of their choice rather than a fixed list.
   const after = useMemo(() => {
     if (!board || taken == null) return null;
     try {
@@ -15513,63 +15797,96 @@ function FeatureTour({ onDemo, onBuy, price, paid }) {
     } catch (e) { return null; }
   }, [board, taken]);
 
-  /* ⭐⭐⭐ THE CANDIDATE SET IS THE WHOLE DEMONSTRATION, AND THE OBVIOUS VERSION OF IT FAILS.
-     The first version listed the top six players left on the board. Every one of them came back 0% to
-     reach 3.10 — perfectly correct (nobody going around pick 15 survives another nineteen picks) and
-     completely useless as a demonstration: six identical zeroes is not a decision, it is a wall.
-     The real question at 2.03 is not "will my favourite last" but "which of these do I have to take NOW,
-     and which one is coming back to me anyway?" — so the list has to span both. Three off the top of the
-     board (the take-now tier) and three drawn from further down, around and past the next turn, where
-     survival is genuinely uncertain. Now the column separates: some read 0%, some read a coin flip, some
-     read "he'll be there" — and spending 2.03 on the last group is exactly the mistake this tool exists
-     to stop. The contrast IS the product. */
+  const survAt = (id) => (sims && sims.pct && sims.pct[1] && sims.pct[1][id] != null ? sims.pct[1][id] : null);
+
+  /* The candidate list spans from "gone for certain" to "safe to wait" on purpose — see the note on the
+     ladder below. A list of the six best players by ADP returns six identical zeroes, which is correct and
+     demonstrates nothing. */
   const candidates = useMemo(() => {
     if (!board) return [];
     const gone = new Set(board.picks);
     const open = board.sortedAdp.filter((p) => !gone.has(p.id) && ["RB", "WR", "TE", "QB"].includes(p.pos));
-    const takeNow = open.slice(0, 2);
-    // Reach down the board toward and past the next turn. Spaced widely on purpose: adjacent names carry
-    // near-identical odds, and a ladder of 0/0/0/6/60 still reads as a wall with one outlier. These
-    // offsets straddle 3.10 so the column shows the full range from "gone for certain" to "safe to wait".
-    const later = [open[6], open[11], open[17], open[24]].filter(Boolean);
+    const picked = [open[0], open[1], open[6], open[11], open[17], open[24]].filter(Boolean);
     const seen = new Set();
-    return [...takeNow, ...later].filter((p) => p && !seen.has(p.id) && seen.add(p.id));
+    return picked.filter((p) => p && !seen.has(p.id) && seen.add(p.id));
   }, [board]);
 
-  const survAtNext = (id) => (sims && sims.pct && sims.pct[1] && sims.pct[1][id] != null ? sims.pct[1][id] : null);
-  const takenPlayer = taken != null && board ? board.players[taken] : null;
+  useEffect(() => { if (!sel && candidates.length) setSel(candidates[0].id); }, [candidates, sel]);
+  const selP = sel != null && board ? board.players.find((p) => p.id === sel) : null;
 
-  /* ⭐⭐⭐ WHAT THE ENGINE ITSELF WOULD DO — and, more persuasively, WHY.
-     A tour that only lets you click around demonstrates a board, not a brain. The product's actual claim
-     is that it makes the decision for you, so it has to make one here.
-     The logic is the real scarcity argument a good drafter uses and a ranked list cannot: among the
-     players in front of you, some will not come back and some will. Value is not the tiebreaker on its
-     own — AVAILABILITY is. So take the best player who will NOT survive to your next turn, and let the
-     one who will survive come back to you. That sentence is the whole thesis of the tool, and here it is
-     stated about two named players the visitor just looked at, with the odds beside them.
-     Held back until they have chosen: shown upfront it is a spoiler and everyone just clicks the gold
-     row, learning nothing. Shown after, it is a comparison against their own instinct. */
+  /* THE ENGINE'S CALL — the scarcity argument a ranked list cannot make: take the best player who will NOT
+     survive, and let the one who will come back to you. */
   const engine = useMemo(() => {
     if (!board || !sims || !candidates.length) return null;
-    const val = (p) => (p.vbd != null && isFinite(p.vbd) ? p.vbd : (p.value != null && isFinite(p.value) ? p.value : -(p.adp || 999)));
-    const scarce = candidates.filter((p) => { const sv = survAtNext(p.id); return sv != null && sv < 35; });
-    const safe = candidates.filter((p) => { const sv = survAtNext(p.id); return sv != null && sv >= 60; });
-    const pool = scarce.length ? scarce : candidates;
-    const pick = pool.slice().sort((a, b) => val(b) - val(a))[0] || null;
+    const val = (p) => (p.vbd != null && isFinite(p.vbd) ? p.vbd : -(p.adp || 999));
+    const scarce = candidates.filter((p) => { const s = survAt(p.id); return s != null && s < 35; });
+    const safe = candidates.filter((p) => { const s = survAt(p.id); return s != null && s >= 60; });
+    const pick = (scarce.length ? scarce : candidates).slice().sort((a, b) => val(b) - val(a))[0] || null;
     if (!pick) return null;
     const waitOn = safe.slice().sort((a, b) => val(b) - val(a))[0] || null;
-    return { pick, waitOn, waitPct: waitOn ? survAtNext(waitOn.id) : null };
+    return { pick, waitOn, waitPct: waitOn ? survAt(waitOn.id) : null };
   }, [board, sims, candidates]);
 
+  /* THE FIELD — expected position runs before your next turn. Every player's survival is a probability,
+     so summing (1 - survival) across the board by position is the expected NUMBER of that position taken
+     in the nineteen picks in between. It is the same arithmetic the draft room's run detector uses, and it
+     is the read that turns a plan into a decision: "four running backs go before you pick again" is why
+     you take one now. */
+  const field = useMemo(() => {
+    if (!board || !sims || !sims.pct || !sims.pct[1]) return null;
+    const gone = new Set(board.picks);
+    const acc = { RB: 0, WR: 0, TE: 0, QB: 0 };
+    for (const p of board.sortedAdp) {
+      if (gone.has(p.id) || acc[p.pos] == null) continue;
+      const s = sims.pct[1][p.id];
+      if (s == null) continue;
+      acc[p.pos] += (100 - s) / 100;
+    }
+    const rows = Object.entries(acc).map(([pos, n]) => ({ pos, n: Math.round(n * 10) / 10 }))
+      .sort((a, b) => b.n - a.n);
+    const total = rows.reduce((s, r) => s + r.n, 0);
+    return { rows, total: Math.round(total) };
+  }, [board, sims]);
+
+  /* YOUR PLAN — a real written plan, and the thing that makes it different from a notepad: the draft room
+     holds you to it. Each round carries a target, the target's reach risk from the same simulations, and
+     whether the plan is on pace. Built from the live board so the names are the ones actually there. */
+  const plan = useMemo(() => {
+    if (!board || !sims) return null;
+    const gone = new Set(board.picks);
+    const open = board.sortedAdp.filter((p) => !gone.has(p.id));
+    const bestAt = (pos, skip = 0) => open.filter((p) => p.pos === pos)[skip] || null;
+    /* ⚠ THE FIRST ROUND OF THE PLAN TAKES ITS POSITION FROM THE FIELD TAB'S PRESSURE READ.
+       Hard-coding "anchor RB" here produced two panels of the same product disagreeing three inches
+       apart: the plan said spend 2.03 on a running back while the field tab said receivers were the
+       position under pressure. Both were rendering honestly; only one of them was looking at the data.
+       Two numbers on one screen that disagree is always a bug, and on a page whose entire argument is
+       "this thing knows things", it is the most expensive kind. */
+    const hot = field && field.rows && field.rows.length ? field.rows[0].pos : "RB";
+    const second = hot === "WR" ? "RB" : "WR";
+    const rows = [
+      { round: "Round 2", label: `Take the ${hot} you can't get back`, pos: hot, p: bestAt(hot), note: "the position under most pressure" },
+      { round: "Round 3", label: `Balance with a ${second}1`, pos: second, p: bestAt(second), note: "the run starts here" },
+      { round: "Round 5", label: "Top-6 TE before the cliff", pos: "TE", p: bestAt("TE"), note: "after this it is streamers" },
+      { round: "Round 7", label: "QB, not before", pos: "QB", p: bestAt("QB"), note: "the position with the longest shelf" },
+    ].filter((r) => r.p);
+    return rows.map((r) => ({ ...r, surv: survAt(r.p.id) }));
+  }, [board, sims, field]);
+
   const survColor = (s) => (s == null ? "var(--mut)" : s >= 70 ? "#5FD0A8" : s >= 35 ? "var(--gold)" : "#F2655C");
-  const survWord = (s) => (s == null ? "—" : s >= 70 ? "should last" : s >= 35 ? "coin flip" : "won't last");
+  const survWord = (s) => (s == null ? "—" : s >= 70 ? "He'll be there" : s >= 35 ? "Coin flip" : "Gone before you pick");
+
+  const TABS = [
+    ["pick", "ti-crosshair", "The pick"],
+    ["plan", "ti-map-2", "Your plan"],
+    ["field", "ti-users-group", "The field"],
+  ];
 
   return (
     <div ref={hostRef} data-tour-panel style={{ maxWidth: 1080, margin: "0 auto", padding: "10px 20px 40px" }}>
       <div className="panel" style={{ padding: 0, overflow: "hidden", border: "1px solid var(--line)" }}>
 
-        {/* ── header: frame the moment ────────────────────────────────────────────────────────── */}
-        <div style={{ padding: "18px 22px 14px", borderBottom: "1px solid var(--line)", background: "var(--panel2)" }}>
+        <div style={{ padding: "18px 22px 0", background: "var(--panel2)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <span className="disp" style={{ fontSize: 11, letterSpacing: ".18em", color: "var(--gold)", fontWeight: 800 }}>TRY IT RIGHT HERE</span>
             <span data-tour-live style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: "#5FD0A8", border: "1px solid rgba(95,208,168,.4)", borderRadius: 999, padding: "2px 8px" }}>live engine · not a screenshot</span>
@@ -15577,157 +15894,263 @@ function FeatureTour({ onDemo, onBuy, price, paid }) {
           <div className="disp" style={{ fontSize: 25, fontWeight: 700, marginTop: 8, lineHeight: 1.15 }}>
             You're on the clock at <span className="gold">2.03</span>. You don't pick again until <span className="gold">3.10</span>.
           </div>
-          <div className="mut" style={{ fontSize: 14, marginTop: 7, maxWidth: 660, lineHeight: 1.5 }}>
-            Nineteen players come off the board before your next turn. A cheat sheet ranks them. This tells you
-            which ones will still be sitting there — then shows you what your pick actually cost. Take someone.
+          <div className="mut" style={{ fontSize: 13.5, marginTop: 6, maxWidth: 680, lineHeight: 1.5 }}>
+            Nineteen players come off the board in between. Click any name to open his page, check what the
+            room is about to do, and see the plan the draft room will hold you to.
+          </div>
+          {/* Tabs mirror the real app so the demo is a preview of the thing, not a separate artefact. */}
+          <div style={{ display: "flex", gap: 2, marginTop: 14, flexWrap: "wrap" }}>
+            {TABS.map(([k, icon, label]) => (
+              <button key={k} data-tour-tab={k} onClick={() => setTab(k)}
+                style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", border: "none",
+                  borderBottom: tab === k ? "2px solid var(--gold)" : "2px solid transparent",
+                  color: tab === k ? "var(--gold)" : "var(--mut)", fontWeight: 700, fontSize: 13,
+                  padding: "9px 13px", cursor: "pointer", fontFamily: "inherit" }}>
+                <i className={`ti ${icon}`} style={{ fontSize: 14 }} aria-hidden="true" />{label}
+              </button>
+            ))}
           </div>
         </div>
 
         {!board && (
-          <div style={{ padding: "44px 22px", textAlign: "center" }} className="mut">
+          <div style={{ padding: "56px 22px", textAlign: "center", borderTop: "1px solid var(--line)" }} className="mut">
             <i className="ti ti-loader-2 tour-spin" style={{ fontSize: 20, color: "var(--gold)" }} aria-hidden="true" />
             <div style={{ fontSize: 13, marginTop: 8 }}>Building a real board…</div>
           </div>
         )}
 
         {board && (
-          <div className="tour-grid" style={{ display: "grid", gridTemplateColumns: "1.05fr .95fr", gap: 0 }}>
+          <div className="tour-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0, borderTop: "1px solid var(--line)" }}>
 
-            {/* ── left: the decision ──────────────────────────────────────────────────────────── */}
-            <div style={{ padding: "16px 18px", borderRight: "1px solid var(--line)" }}>
-              <div className="disp" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--mut)", fontWeight: 800, marginBottom: 9 }}>
-                On the board at 2.03
+            {/* ── LEFT: the board. Shared across tabs, because it is the thing every tab is about. ── */}
+            <div style={{ padding: "14px 16px", borderRight: "1px solid var(--line)" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "baseline", marginBottom: 8 }}>
+                <div className="disp" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--mut)", fontWeight: 800 }}>On the board at 2.03</div>
+                <div className="disp" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 800 }}>Lasts to 3.10?</div>
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 {candidates.map((p) => {
-                  const s = survAtNext(p.id);
+                  const s = survAt(p.id);
+                  const isSel = sel === p.id;
                   const isTaken = taken === p.id;
                   return (
-                    <button
-                      key={p.id}
-                      data-tour-cand={p.name}
-                      onClick={() => setTaken(p.id)}
-                      onMouseEnter={() => setPeek(p.id)}
-                      onMouseLeave={() => setPeek(null)}
-                      style={{
-                        display: "grid", gridTemplateColumns: "auto 1fr auto auto", alignItems: "center", gap: 10,
-                        padding: "9px 11px", borderRadius: 9, cursor: "pointer", textAlign: "left", fontFamily: "inherit",
-                        border: isTaken ? "1.5px solid var(--gold)" : "1px solid var(--line)",
-                        background: isTaken ? "rgba(242,182,60,.10)" : peek === p.id ? "rgba(255,255,255,.035)" : "transparent",
-                        color: "var(--ink)", transition: "background .12s, border-color .12s",
-                      }}>
-                      <span style={{ width: 30, fontSize: 10, fontWeight: 800, color: POS_COLOR[p.pos] || "var(--mut)" }}>{p.pos}</span>
+                    <button key={p.id} data-tour-cand={p.name} onClick={() => { setSel(p.id); setTab("pick"); }}
+                      style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", alignItems: "center", gap: 10,
+                        padding: "8px 11px", borderRadius: 9, cursor: "pointer", textAlign: "left", fontFamily: "inherit",
+                        border: isSel ? "1.5px solid var(--gold)" : "1px solid var(--line)",
+                        background: isTaken ? "rgba(242,182,60,.14)" : isSel ? "rgba(242,182,60,.07)" : "transparent",
+                        color: "var(--ink)", transition: "background .12s, border-color .12s" }}>
+                      <span style={{ width: 28, fontSize: 10, fontWeight: 800, color: POS_COLOR[p.pos] || "var(--mut)" }}>{p.pos}</span>
                       <span style={{ minWidth: 0 }}>
-                        <span style={{ fontSize: 13.5, fontWeight: 700, display: "block", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</span>
+                        <span style={{ fontSize: 13.5, fontWeight: 700, display: "block", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {isTaken && <i className="ti ti-circle-check-filled" style={{ fontSize: 12, color: "var(--gold)", marginRight: 5 }} aria-hidden="true" />}{p.name}
+                        </span>
                         <span className="mut" style={{ fontSize: 10.5 }}>ADP {p.adp != null ? p.adp.toFixed(1) : "—"}</span>
                       </span>
-                      <span style={{ textAlign: "right" }}>
-                        <span className="num" style={{ fontSize: 15, fontWeight: 800, color: survColor(s) }}>{s == null ? "—" : `${s}%`}</span>
-                        <span className="mut" style={{ fontSize: 9.5, display: "block", letterSpacing: ".02em" }}>to reach 3.10</span>
-                      </span>
-                      <i className={`ti ${isTaken ? "ti-circle-check-filled" : "ti-chevron-right"}`} style={{ fontSize: 14, color: isTaken ? "var(--gold)" : "var(--mut)" }} aria-hidden="true" />
+                      <span className="num" style={{ fontSize: 15, fontWeight: 800, color: survColor(s) }}>{s == null ? "—" : `${s}%`}</span>
                     </button>
                   );
                 })}
               </div>
-              <div className="mut" style={{ fontSize: 11, marginTop: 11, lineHeight: 1.5 }}>
-                Those percentages are {TOUR_SIMS} simulations of the next nineteen picks, run just now in your browser —
-                each one drafting for all eleven opponents by their real tendencies.
+              <div className="mut" style={{ fontSize: 11, marginTop: 10, lineHeight: 1.5 }}>
+                {TOUR_SIMS} simulations of the next nineteen picks, run just now in your browser — each one
+                drafting for all eleven opponents by their real tendencies.
               </div>
             </div>
 
-            {/* ── right: the consequence ──────────────────────────────────────────────────────── */}
-            <div style={{ padding: "16px 18px", background: "rgba(255,255,255,.012)" }}>
-              {!takenPlayer && (
-                <div style={{ height: "100%", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", textAlign: "center", padding: "22px 10px", minHeight: 260 }}>
-                  <i className="ti ti-hand-click" style={{ fontSize: 26, color: "var(--gold)", opacity: .8 }} aria-hidden="true" />
-                  <div className="disp" style={{ fontSize: 16, fontWeight: 700, marginTop: 10 }}>Pick one and see what it costs.</div>
-                  <div className="mut" style={{ fontSize: 12.5, marginTop: 6, maxWidth: 300, lineHeight: 1.5 }}>
-                    The engine replays the next nineteen picks and shows you the board you'll actually be
-                    choosing from at 3.10 — and who you just gave up.
-                  </div>
-                </div>
-              )}
+            {/* ── RIGHT: whichever tab is open ─────────────────────────────────────────────────────── */}
+            <div style={{ padding: "14px 16px", background: "rgba(255,255,255,.012)", minHeight: 330 }}>
 
-              {takenPlayer && (
-                <div data-tour-result>
-                  <div className="disp" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--mut)", fontWeight: 800, marginBottom: 8 }}>
-                    You took {takenPlayer.name}
+              {/* ============ THE PICK — a real player page that CHANGES when you click ============ */}
+              {tab === "pick" && selP && (
+                <div data-tour-hub>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                    <span className="disp" style={{ fontSize: 21, fontWeight: 800 }}>{selP.name}</span>
+                    <span style={{ fontSize: 11.5, fontWeight: 800, color: POS_COLOR[selP.pos] || "var(--mut)" }}>
+                      {selP.pos}{selP.posRank || ""}
+                    </span>
+                    <span className="mut" style={{ fontSize: 11.5 }}>{selP.team || "FA"}</span>
                   </div>
 
-                  {/* who you passed on, and whether it mattered */}
-                  {(() => {
-                    const passed = candidates.filter((p) => p.id !== taken);
-                    const gone = passed.filter((p) => { const s = survAtNext(p.id); return s != null && s < 35; });
-                    const safe = passed.filter((p) => { const s = survAtNext(p.id); return s != null && s >= 70; });
-                    return (
-                      <div style={{ borderRadius: 9, border: "1px solid var(--line)", padding: "11px 12px", marginBottom: 11, background: "var(--panel2)" }}>
-                        <div style={{ fontSize: 13, lineHeight: 1.55 }}>
-                          {gone.length > 0 ? (
-                            <><b style={{ color: "#F2655C" }}>{gone.length} of the {passed.length}</b> you passed on will be gone before 3.10
-                              {gone.length <= 3 ? <> — {gone.map((p) => p.name).join(", ")}</> : null}. That pick was your only shot at {gone.length === 1 ? "him" : "them"}.</>
-                          ) : (
-                            <>None of the players you passed on are likely to disappear before 3.10 — you can still have one.</>
-                          )}
-                          {safe.length > 0 && (
-                            <> <span className="mut">{safe.length === 1 ? `${safe[0].name} should still be there` : `${safe.length} of them should still be there`}, so waiting on {safe.length === 1 ? "him" : "them"} costs you nothing.</span></>
-                          )}
-                        </div>
+                  {/* Four numbers, each labelled in words. A bare figure reads as jargon. */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 7, margin: "11px 0 12px" }}>
+                    {[
+                      ["Tier", selP.tier != null ? selP.tier : "—", "Players the engine rates as interchangeable. Reaching within a tier costs you nothing; dropping a tier costs a lot."],
+                      ["Value", selP.vbd != null ? `+${Math.round(selP.vbd)}` : "—", `Points above a freely-available ${selP.pos} off waivers, across the season. The honest way to compare positions.`],
+                      ["ADP", selP.adp != null ? selP.adp.toFixed(1) : "—", "Where the market has been taking him."],
+                      ["Bye", selP.bye || "—", "His off week."],
+                    ].map(([k, v, why]) => (
+                      <div key={k} title={why} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "7px 9px", cursor: "help" }}>
+                        <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 800 }}>{k}</div>
+                        <div className="num" style={{ fontSize: 16, fontWeight: 800, marginTop: 1 }}>{v}</div>
                       </div>
-                    );
-                  })()}
+                    ))}
+                  </div>
 
-                  {/* ⭐ THE ENGINE'S OWN CALL. The one thing a ranked list can never print. */}
+                  <div style={{ borderRadius: 9, border: "1px solid var(--line)", background: "var(--panel2)", padding: "11px 12px", marginBottom: 11 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4 }}>
+                      <span className="num" style={{ fontSize: 19, fontWeight: 800, color: survColor(survAt(selP.id)) }}>
+                        {survAt(selP.id) == null ? "—" : `${survAt(selP.id)}%`}
+                      </span>
+                      <span className="disp" style={{ fontSize: 12.5, fontWeight: 700, color: survColor(survAt(selP.id)) }}>
+                        {survWord(survAt(selP.id))}
+                      </span>
+                    </div>
+                    <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+                      His chance of still being on the board at 3.10, nineteen picks from now.
+                    </div>
+                  </div>
+
                   {engine && engine.pick && (
-                    <div data-tour-engine style={{ borderRadius: 9, border: "1px solid rgba(242,182,60,.45)", background: "rgba(242,182,60,.07)", padding: "11px 12px", marginBottom: 11 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5 }}>
+                    <div data-tour-engine style={{ borderRadius: 9, border: "1px solid rgba(242,182,60,.45)", background: "rgba(242,182,60,.07)", padding: "11px 12px", marginBottom: 12 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
                         <i className="ti ti-compass" style={{ fontSize: 13, color: "var(--gold)" }} aria-hidden="true" />
-                        <span className="disp" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--gold)", fontWeight: 800 }}>
-                          {engine.pick.id === taken ? "That's our pick too" : "We'd have taken"}
-                        </span>
+                        <span className="disp" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--gold)", fontWeight: 800 }}>Our call</span>
                       </div>
-                      <div style={{ fontSize: 13.5, lineHeight: 1.55 }}>
+                      <div style={{ fontSize: 13, lineHeight: 1.55 }}>
                         <b>{engine.pick.name}</b>
                         {engine.waitOn ? (
                           <> — not because he's the best name left, but because he <b style={{ color: "#F2655C" }}>won't come back</b>, and{" "}
                             <b>{engine.waitOn.name}</b> <b style={{ color: "#5FD0A8" }}>will</b> ({engine.waitPct}% to reach 3.10). Take the one you can't get later.</>
-                        ) : (
-                          <> — the most valuable player here who won't survive to your next turn.</>
-                        )}
+                        ) : <> — the most valuable player here who won't survive to your next turn.</>}
                       </div>
                     </div>
                   )}
 
-                  {/* the board you'll actually face */}
-                  <div className="disp" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--mut)", fontWeight: 800, marginBottom: 7 }}>
-                    Expected best available at 3.10
-                  </div>
-                  {!after && <div className="mut" style={{ fontSize: 12 }}>Simulating…</div>}
-                  {after && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                      {["RB", "WR", "TE", "QB"].map((pos) => {
-                        const best = after.expBestPlayer && after.expBestPlayer[pos];
-                        const fb = after.expFallback && after.expFallback[pos];
-                        if (!best) return null;
+                  {/* ⭐ THE DROP-OFF. "He is good" is a ranking; "the next one at his position is 14 points
+                      worse and he is also gone" is an argument. Same board, no extra computation. */}
+                  {(() => {
+                    const goneSet = new Set(board.picks);
+                    const samePos = board.sortedAdp.filter((p) => p.pos === selP.pos && !goneSet.has(p.id));
+                    const idx = samePos.findIndex((p) => p.id === selP.id);
+                    const nxt = idx >= 0 ? samePos[idx + 1] : null;
+                    if (!nxt) return null;
+                    const drop = (selP.vbd != null && nxt.vbd != null) ? Math.round(selP.vbd - nxt.vbd) : null;
+                    const ns = survAt(nxt.id);
+                    return (
+                      <div data-tour-dropoff style={{ borderRadius: 9, border: "1px solid var(--line)", padding: "10px 12px", marginBottom: 12, fontSize: 12.5, lineHeight: 1.55 }}>
+                        <span className="mut">If you pass: </span>
+                        the next {selP.pos} on the board is <b>{nxt.name}</b>
+                        {drop != null && drop > 0 && <> — <b style={{ color: "#F2655C" }}>{drop} points worse</b> across the season</>}
+                        {ns != null && <>, and he is <b style={{ color: survColor(ns) }}>{ns}%</b> to reach 3.10</>}.
+                      </div>
+                    );
+                  })()}
+
+                  {taken == null ? (
+                    <button className="btn btn-gold" data-tour-draft onClick={() => setTaken(sel)} style={{ fontSize: 13.5, padding: "10px 18px" }}>
+                      <i className="ti ti-check" style={{ fontSize: 13, marginRight: 6 }} aria-hidden="true" />Draft {selP.name.split(" ").slice(-1)[0]}
+                    </button>
+                  ) : (
+                    <div data-tour-result>
+                      {(() => {
+                        const tp = board.players.find((p) => p.id === taken);
+                        const passed = candidates.filter((p) => p.id !== taken);
+                        const gone = passed.filter((p) => { const s = survAt(p.id); return s != null && s < 35; });
+                        const safe = passed.filter((p) => { const s = survAt(p.id); return s != null && s >= 70; });
                         return (
-                          <div key={pos} data-tour-next={pos} style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 9, alignItems: "center", padding: "7px 10px", borderRadius: 8, border: "1px solid var(--line)" }}>
-                            <span style={{ width: 26, fontSize: 10, fontWeight: 800, color: POS_COLOR[pos] || "var(--mut)" }}>{pos}</span>
-                            <span style={{ minWidth: 0 }}>
-                              <span style={{ fontSize: 12.5, fontWeight: 700, display: "block", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{best.name}</span>
-                              {fb && <span className="mut" style={{ fontSize: 10 }}>then {fb.name}</span>}
-                            </span>
-                            <span className="mut num" style={{ fontSize: 11 }}>{best.adp != null ? `ADP ${best.adp.toFixed(0)}` : ""}</span>
+                          <div style={{ borderRadius: 9, border: "1px solid var(--line)", padding: "11px 12px", background: "var(--panel2)" }}>
+                            <div className="disp" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--mut)", fontWeight: 800, marginBottom: 4 }}>You took {tp && tp.name}</div>
+                            <div style={{ fontSize: 13, lineHeight: 1.55 }}>
+                              {gone.length > 0
+                                ? <><b style={{ color: "#F2655C" }}>{gone.length} of the {passed.length}</b> you passed on will be gone before 3.10. That pick was your only shot at {gone.length === 1 ? "him" : "them"}.</>
+                                : <>None of the players you passed on are likely to disappear before 3.10.</>}
+                              {safe.length > 0 && <> <span className="mut">{safe.length === 1 ? `${safe[0].name} should still be there.` : `${safe.length} of them should still be there.`}</span></>}
+                            </div>
+                            {after && (
+                              <div style={{ marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--line)" }}>
+                                <div className="disp" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--mut)", fontWeight: 800, marginBottom: 5 }}>Expected best available at 3.10</div>
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                                  {["RB", "WR", "TE", "QB"].map((pos) => {
+                                    const bp = after.expBestPlayer && after.expBestPlayer[pos];
+                                    if (!bp) return null;
+                                    return (
+                                      <span key={pos} data-tour-next={pos} style={{ fontSize: 11.5, border: "1px solid var(--line)", borderRadius: 7, padding: "4px 8px" }}>
+                                        <b style={{ color: POS_COLOR[pos] }}>{pos}</b> <span>{bp.name}</span>
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                            <button className="btn" data-tour-reset onClick={() => setTaken(null)} style={{ fontSize: 12.5, padding: "7px 13px", marginTop: 10 }}>Try a different pick</button>
                           </div>
                         );
-                      })}
+                      })()}
                     </div>
                   )}
+                </div>
+              )}
 
-                  <div style={{ display: "flex", gap: 8, marginTop: 13, flexWrap: "wrap" }}>
-                    <button className="btn btn-gold" data-tour-cta onClick={onDemo} style={{ fontSize: 13.5, padding: "10px 18px" }}>
-                      <i className="ti ti-player-play" style={{ fontSize: 13, marginRight: 6 }} aria-hidden="true" />Draft all 16 rounds free
-                    </button>
-                    <button className="btn" data-tour-reset onClick={() => setTaken(null)} style={{ fontSize: 13.5, padding: "10px 16px" }}>Try a different pick</button>
+              {/* ============ YOUR PLAN — the differentiator ============ */}
+              {tab === "plan" && plan && (
+                <div data-tour-plan>
+                  <div className="disp" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--mut)", fontWeight: 800, marginBottom: 3 }}>Your draft plan</div>
+                  <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 11 }}>
+                    Write it before the draft. Then the room <b style={{ color: "var(--ink)" }}>holds you to it</b> — every
+                    recommendation is scored against the plan, targets are flagged when their window is closing,
+                    and you get told the moment you fall behind pace.
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    {plan.map((r) => (
+                      <div key={r.round} data-tour-planrow={r.round} style={{ display: "grid", gridTemplateColumns: "62px 1fr auto", gap: 9, alignItems: "center", padding: "8px 10px", border: "1px solid var(--line)", borderRadius: 8 }}>
+                        <span className="disp" style={{ fontSize: 10.5, fontWeight: 800, color: "var(--gold)", textTransform: "uppercase", letterSpacing: ".04em" }}>{r.round.replace("Round ", "R")}</span>
+                        <span style={{ minWidth: 0 }}>
+                          <span style={{ fontSize: 12.5, fontWeight: 700, display: "block" }}>{r.label}</span>
+                          <span className="mut" style={{ fontSize: 10.5 }}>
+                            <b style={{ color: POS_COLOR[r.pos] }}>{r.pos}</b> · target {r.p.name} — {r.note}
+                          </span>
+                        </span>
+                        <span className="num" style={{ fontSize: 12, fontWeight: 800, color: survColor(r.surv), whiteSpace: "nowrap" }}>
+                          {r.surv == null ? "—" : `${r.surv}%`}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ marginTop: 11, borderRadius: 9, border: "1px solid rgba(242,182,60,.45)", background: "rgba(242,182,60,.07)", padding: "11px 12px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                      <i className="ti ti-bolt" style={{ fontSize: 13, color: "var(--gold)" }} aria-hidden="true" />
+                      <span className="disp" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--gold)", fontWeight: 800 }}>The plan changes the board</span>
+                    </div>
+                    <div style={{ fontSize: 12.5, lineHeight: 1.55 }}>
+                      Because the plan wants a tight end by round 5, <b>{(plan.find((r) => r.pos === "TE") || {}).p?.name || "your TE target"}</b> is
+                      lifted on your board and tagged the moment his window starts closing. Run mocks and the trends
+                      feed back in: if the field starts taking tight ends a round earlier than last week, the plan
+                      moves with it. <b style={{ color: "var(--ink)" }}>Nothing else does this</b> — a cheat sheet
+                      cannot know what you decided in advance.
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ============ THE FIELD — what the room is about to do ============ */}
+              {tab === "field" && field && (
+                <div data-tour-field>
+                  <div className="disp" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--mut)", fontWeight: 800, marginBottom: 3 }}>Before your next turn</div>
+                  <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 12 }}>
+                    Of the <b style={{ color: "var(--ink)" }}>{field.total}</b> players expected off the board between
+                    now and 3.10, here's what the room takes — the read that tells you which position you can't wait on.
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                    {field.rows.map((r) => {
+                      const pct = field.rows[0].n > 0 ? (r.n / field.rows[0].n) * 100 : 0;
+                      return (
+                        <div key={r.pos} data-tour-fieldrow={r.pos} style={{ display: "grid", gridTemplateColumns: "34px 1fr 46px", gap: 9, alignItems: "center" }}>
+                          <span style={{ fontSize: 11, fontWeight: 800, color: POS_COLOR[r.pos] }}>{r.pos}</span>
+                          <span style={{ height: 9, borderRadius: 99, background: "var(--panel2)", overflow: "hidden", border: "1px solid var(--line)" }}>
+                            <span style={{ display: "block", height: "100%", width: `${Math.max(2, pct)}%`, background: POS_COLOR[r.pos], opacity: .78 }} />
+                          </span>
+                          <span className="num" style={{ fontSize: 12.5, fontWeight: 800, textAlign: "right" }}>{r.n}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ marginTop: 13, borderRadius: 9, border: "1px solid var(--line)", background: "var(--panel2)", padding: "11px 12px", fontSize: 12.5, lineHeight: 1.55 }}>
+                    <b>{field.rows[0].pos} is the position under pressure</b> — about {field.rows[0].n} of them go
+                    before you pick again, against {field.rows[field.rows.length - 1].n} at {field.rows[field.rows.length - 1].pos}.
+                    That is why the plan spends 2.03 on {field.rows[0].pos} and waits on {field.rows[field.rows.length - 1].pos}.
+                    The draft room raises this as a <b style={{ color: "var(--ink)" }}>run warning</b> three picks before
+                    the rest of your league notices.
                   </div>
                 </div>
               )}
@@ -15735,12 +16158,15 @@ function FeatureTour({ onDemo, onBuy, price, paid }) {
           </div>
         )}
 
-        {/* ── footer: what else it does, kept short because the panel above did the arguing ────── */}
-        <div style={{ borderTop: "1px solid var(--line)", padding: "13px 20px", display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap", background: "var(--panel2)" }}>
-          <span className="mut" style={{ fontSize: 12, lineHeight: 1.5, flex: "1 1 340px" }}>
-            It does this on <b style={{ color: "var(--ink)" }}>every pick of every round</b> — plus run detection, trade
-            values, live grades, and a weekly lineup assistant once the season starts.
+        <div style={{ borderTop: "1px solid var(--line)", padding: "13px 20px", display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", background: "var(--panel2)" }}>
+          <span className="mut" style={{ fontSize: 12, lineHeight: 1.5, flex: "1 1 320px" }}>
+            It does this on <b style={{ color: "var(--ink)" }}>every pick of every round</b> — plus trade values,
+            live grades, and a weekly lineup assistant once the season starts.
           </span>
+          <button className="btn btn-gold" data-tour-cta onClick={onDemo} style={{ fontSize: 13.5, padding: "10px 18px" }}>
+            <i className="ti ti-player-play" style={{ fontSize: 13, marginRight: 6 }} aria-hidden="true" />
+            Try {TOUR_FREE_ROUNDS} free rounds
+          </button>
           {!paid && (
             <button className="btn" onClick={onBuy} style={{ fontSize: 13, padding: "9px 16px" }}>
               Season pass · ${price != null ? price.toFixed(2) : "—"}
@@ -15974,14 +16400,8 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
       {htab === "how" && (
         <div style={{ maxWidth: 880, margin: "0 auto", padding: "34px 20px 50px" }}>
           <div className="disp" style={{ fontSize: 28, fontWeight: 700, marginBottom: 6 }}>How to Use It</div>
-          <div className="mut" style={{ fontSize: 14, marginBottom: 24, maxWidth: 640 }}>Five steps from zero to drafting. Set it up, get your reps, then let the compass do the heavy lifting on the clock.</div>
-          {[
-            ["rankings", "ti-list-numbers", "Set your rankings", "Two tools, kept separate. My Ranks is your own board — tell the tool where you disagree with the market and your ranks become a “My ADP” column plus a “Blend” (your read tempered by the market). Platform Ranks is the ADP your platform shows, and it powers the “Edge” column so you can see where you're getting value. One global injury/news tweak ripples a player across every board at once."],
-            ["create", "ti-plug-connected", "Create or connect a league", "Link Sleeper and we pull in teams, roster slots, scoring, and your draft slot automatically. A public ESPN league imports the same settings (picks stay manual — ESPN has no feed). Anywhere else, build it by hand in under a minute — same engine, you just enter the picks. Your scoring drives every number: add a SuperFlex slot and the whole board re-prices for 2QB; bump TE reception value and tight ends climb."],
-            ["open", "ti-stack-2", "Open your league", "Everything you've built lives in one place. Jump into any league to draft, mock, edit settings, or review past drafts — your keepers, pick trades, and rankings all travel with it."],
-            ["mock", "ti-dice-5", "Run a mock", "Mocks are your reps on your exact settings. Each one is scored and saved, and the tool surfaces your tendencies across them — where you reach, the values you keep missing — kept separate by format. The more you run, the sharper the read."],
-            ["draft", "ti-clock-play", "Draft live, on the clock", "The hub becomes mission control: your recommended pick, the cost of waiting at each position, live availability odds for everyone you're eyeing, runs and slides forming in real time, and selective tags on the players that matter — all recalculating after every pick in the room. Connected to Sleeper, every pick syncs in automatically within seconds; you still make your selection in Sleeper, and the compass reads it live to keep your board current."],
-          ].map(([kind, icon, title, body], i) => (
+          <div className="mut" style={{ fontSize: 14, marginBottom: 24, maxWidth: 640 }}>Five steps from zero to drafting, in the order you actually do them. Connect the league first — every number in the tool is priced off your scoring, so nothing else means much until it knows the rules you play by.</div>
+          {ONBOARDING_STEPS.map(([kind, icon, title, body], i) => (
             <div key={i} className="panel" style={{ padding: 0, marginBottom: 12, overflow: "hidden" }}>
               <div style={{ display: "flex", gap: 0, flexWrap: "wrap" }}>
                 <div style={{ flex: "1 1 320px", padding: 18, display: "flex", gap: 14, alignItems: "flex-start" }}>
@@ -16025,13 +16445,19 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
       {htab === "value" && (
         <div style={{ maxWidth: 880, margin: "0 auto", padding: "34px 20px 50px" }}>
           <div className="disp" style={{ fontSize: 28, fontWeight: 700, marginBottom: 6 }}>Why It's Worth It</div>
-          <div className="mut" style={{ fontSize: 14, marginBottom: 28, maxWidth: 640 }}>A great draft is the cheapest edge in fantasy — it sets your season before week 1. Most tools hand you a static cheat sheet. The compass works the live board with you.</div>
+          <div className="mut" style={{ fontSize: 14, marginBottom: 28, maxWidth: 640 }}>A great draft is the cheapest edge in fantasy — it sets your season before week 1. Most tools hand you a static cheat sheet and wish you luck. This one prices the board for your exact league, tells you what waiting costs, and holds you to the plan you wrote before the draft started.</div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(250px,1fr))", gap: 14, marginBottom: 26 }}>
             {[
               ["live", "ti-map-2", "A compass, not a cheat sheet", "Printed rankings are frozen the moment they're made. The compass recalculates after every pick in your room, so the advice is always current to the board in front of you."],
               ["format", "ti-database", "Real drafts, your format", "Instead of one generic ADP, it reads thousands of real drafts and re-prices the board for your exact scoring and roster — the league you're actually in, not the average one."],
               ["decide", "ti-target-arrow", "Decisions, not just data", "It doesn't dump numbers on you. It answers the only question that matters on the clock: who should I take right now, and what does waiting cost me?"],
+              /* ⭐ THE ACTUAL DIFFERENTIATOR, and it was missing from the page that exists to argue for the
+                 product. Trey: "We really need to highlight how cool the strategy sections + your draft plan
+                 is with all the mock draft implementation… the strategy directly influences decisions in your
+                 draft room by keeping you on pace with your goals." Everything else on this page is a better
+                 version of something other tools attempt; this is the part nothing else does at all. */
+              ["plan", "ti-checklist", "A plan the draft room enforces", "Write your plan before the draft — positions by round, players to target, players to avoid. Then it stops being a note to yourself: recommendations are scored against it, targets get flagged as their window closes, and you're told the moment you drift off pace. Run mocks and their trends feed back in, so the plan tracks how the field is really drafting."],
               ["trust", "ti-shield-check", "Built for trust", "No invented accuracy claims — the engine's hit rate is measured on real drafts and shown live in the app. You see exactly how often it's right."],
             ].map((v, i) => (
               <div key={i} className="panel" style={{ padding: 0, overflow: "hidden" }}>
@@ -16063,6 +16489,8 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
               ["\"Best player available\"", "What waiting actually costs, by position"],
               ["Find out you reached after the draft", "See runs and slides forming in real time"],
               ["No way to practice your format", "Unlimited mocks that learn your tendencies"],
+              ["Your plan is a note you forget by round 3", "A plan the room enforces, pick by pick"],
+              ["Mocks tell you nothing afterwards", "Mock trends feed straight back into your plan"],
               ["Your opinion lives on a napkin", "Your rankings ride the board, blended with the market"],
               ["Start over every August", "Leagues, ranks & settings carry season to season"],
             ].map((r, i) => (
