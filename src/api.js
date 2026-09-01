@@ -204,6 +204,10 @@ export const api = {
     // The league's OWN playoff weeks. This changes the playoff-SOS numbers, so it is part of the pack's
     // identity on the server too — a week-14 league must not be served a week-15 league's read.
     if (opts.playoffStart) extra.push(`pw=${Number(opts.playoffStart)}`);
+    // TE-PREMIUM SIZE. The format key only records that a league HAS a TE premium, not how big it is —
+    // but Sleeper publishes no TE-premium ADP at all, so the server has to model the shift, and a 0.5/rec
+    // bonus moves tight ends far less than a 1.5/rec one. Part of the cache identity on the server.
+    if (opts.tep) extra.push(`tep=${Number(opts.tep)}`);
     return call(`/api/player-pack?format=${encodeURIComponent(format)}${extra.length ? "&" + extra.join("&") : ""}`, { auth: false });
   },
 

@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29v";
+const BUILD_TAG = "2026.07.29w";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -6973,6 +6973,20 @@ select.gs:hover{border-color:var(--gold)}
 .menuitem{transition:background .15s}
 .hubsection{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px 20px 22px}
 .menuitem:hover{background:rgba(214,170,75,0.14)!important;color:var(--gold)!important}
+
+/* ── FRONT-PAGE INTERACTIVE TOUR ─────────────────────────────────────────────────────────────────
+   NOTE FOR ANYONE EDITING THIS FILE: no backticks anywhere in these comments. The whole stylesheet is
+   a template literal inside App.jsx, so one stray backtick ends the string and takes the build with it.
+   tools/css-check.mjs guards it. */
+.tour-spin{display:inline-block;animation:tourspin 1s linear infinite}
+@keyframes tourspin{to{transform:rotate(360deg)}}
+/* The two halves are a decision and its consequence, so on a narrow screen they must STACK in that
+   order rather than shrink side by side — the consequence panel is meaningless above the choice. */
+@media(max-width:820px){
+  .tour-grid{grid-template-columns:1fr!important}
+  .tour-grid>div:first-child{border-right:none!important;border-bottom:1px solid var(--line)}
+}
+@media(prefers-reduced-motion:reduce){.tour-spin{animation:none}}
 .menuitem:hover .disp{color:var(--gold)}
 @media(max-width:900px){.secmove{display:none!important}}
 .posdot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;vertical-align:1px;flex-shrink:0}
@@ -8929,7 +8943,11 @@ export default function App() {
     if (cache[packKey] === "miss") { LIVE_OVERLAY_STATE = "miss"; return; }
     cache[packKey] = "pending";
     const st = (active.cfg && active.cfg.start) || {};
-    const opts = { k: !!(st.K > 0), dst: !!(st.DST > 0), idp: !!(((st.DL || 0) + (st.LB || 0) + (st.DB || 0) + (st.IDPFLEX || 0)) > 0), playoffStart };
+    // ⭐ THE TE-PREMIUM SIZE travels with the request. The format key only records THAT a league has a
+    //   premium, and Sleeper publishes no TE-premium ADP at all, so the size is the only thing that can
+    //   tell the server how far a tight end should move — and it is part of the pack's cache identity.
+    const opts = { k: !!(st.K > 0), dst: !!(st.DST > 0), idp: !!(((st.DL || 0) + (st.LB || 0) + (st.DB || 0) + (st.IDPFLEX || 0)) > 0), playoffStart,
+      tep: Number((active.cfg && active.cfg.tePremMult) || 0) || 0 };
     let alive = true;
     api.playerPack(activeFmt, undefined, opts)
       .then((pack) => { if (!alive) return; if (pack && Array.isArray(pack.players) && pack.players.length) { cache[packKey] = pack; applyPack(pack); } else { cache[packKey] = "miss"; LIVE_OVERLAY_STATE = "miss"; LIVE_OVERLAY_REASON = "backend returned no players for " + activeFmt; } })
@@ -15395,6 +15413,345 @@ function HeroPickCard() {
   );
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+   THE FRONT-PAGE INTERACTIVE TOUR
+   ───────────────────────────────────────────────────────────────────────────────────────────────────
+   Trey: "Clearly they can go into a fake draft (for 3 rounds) and do that, but I fear if they don't make
+   it to that point that they won't understand the power of this tool. We need to put something on the
+   front page that makes the user convinced they need to buy this."
+
+   The old front page argued in prose — six feature cards describing simulations and survival odds. The
+   trouble with describing a probability engine is that the claim and the proof read identically: any
+   cheat sheet could print "availability odds" on a marketing page. Nothing on the page could only be
+   true of a tool that actually does the work.
+
+   So this doesn't describe the engine, it RUNS it. Every number below comes from the same functions the
+   paid draft room uses — buildPlayers for the board, runSims for the Monte Carlo — against a real
+   12-team PPR board, on the same data. Nothing here is a mockup or a hard-coded screenshot, which is
+   also why it can be trusted: if the engine were wrong, this panel would be wrong in public.
+
+   THE SHAPE IS ONE DECISION, NOT A SLIDESHOW. A carousel of features is still marketing. Instead the
+   visitor is dropped into the exact moment the product exists to solve — on the clock at 2.03, with 19
+   picks until they choose again — and asked to make a pick. The moment they choose, the same engine
+   plays the next 19 picks a few hundred times and shows them what their choice actually cost: who will
+   still be there at 3.10, who will not, and what the pick they passed on would have returned instead.
+   That "oh — he won't make it back" is the entire product in one gesture, and it is a thing you can only
+   learn by doing it.
+
+   WHY 2.03 SPECIFICALLY. Slot 10 in a 12-team snake picks at 14 and then not again until 33. The long
+   turn is where the decision is hardest and where a cheat sheet is most useless, so it is the fairest
+   possible test of whether this tool is worth anything. (It is also the exact pick Trey used as his own
+   example when reporting the next-picks bug: "it's suggesting that St. Brown will be there at 2.03".)
+
+   COST. One runSims at 240 paths on mount, one more when the visitor picks. That is the same resolution
+   the live draft room uses two picks out, and it lands in well under a second. Deferred until the panel
+   is actually on screen so it never delays first paint.
+   ═══════════════════════════════════════════════════════════════════════════════════════════════════ */
+
+// A 12-team, PPR, one-QB league — the most common shape in fantasy, so the visitor recognises it.
+const TOUR_CFG = {
+  name: "Tour", teams: 12, rounds: 16, type: "redraft", order: "snake", slot: 10,
+  sf: false, tePremMult: 0, start: { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0, K: 0, DST: 0 },
+  scoring: { rec: 1 }, caps: {}, keepers: [], pickTrades: [],
+};
+const TOUR_USER = 9;      // slot 10 → index 9
+const TOUR_ON_CLOCK = 14; // overall pick index — 2.03
+const TOUR_NEXT = 33;     // their next turn — 3.10, nineteen picks later
+const TOUR_SIMS = 240;
+
+function tourLabel(o) { const r = Math.floor(o / 12) + 1, i = (o % 12) + 1; return `${r}.${String(i).padStart(2, "0")}`; }
+
+function FeatureTour({ onDemo, onBuy, price, paid }) {
+  const [armed, setArmed] = useState(false);   // engine work waits until the panel is on screen
+  const [taken, setTaken] = useState(null);
+  const [peek, setPeek] = useState(null);      // hovered candidate
+  const hostRef = useRef(null);
+
+  // Only start computing once the panel is actually visible. The hero must never wait on Monte Carlo.
+  useEffect(() => {
+    const el = hostRef.current;
+    if (!el || armed) return;
+    if (typeof IntersectionObserver !== "function") { setArmed(true); return; }
+    const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) { setArmed(true); io.disconnect(); } }, { rootMargin: "160px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [armed]);
+
+  /* THE BOARD. Built by the real engine, then the first fourteen picks played off the top of ADP — which
+     is what the first fourteen picks of a real draft very nearly are. Deterministic, so every visitor
+     sees the same board and the numbers below are reproducible. */
+  const board = useMemo(() => {
+    if (!armed) return null;
+    try {
+      setTeams(12); setSpec(TOUR_CFG.start); setOrder("snake"); setPickTrades(null); setExtraPicks(TOUR_CFG);
+      setKeeperAdds({}); setPickKeeperIds(new Set()); setPickKeeperAt({}); setRosterAdds({});
+      setTeamNames(TEAM_NAMES_POOL.slice(0, 12));
+      const players = buildPlayers(TOUR_CFG);
+      if (!players || !players.length) return null;
+      const sortedAdp = players.slice().sort((a, b) => a.adp - b.adp);
+      const picks = sortedAdp.slice(0, TOUR_ON_CLOCK).map((p) => p.id);
+      return { players, sortedAdp, picks };
+    } catch (e) { return null; }
+  }, [armed]);
+
+  // Monte Carlo from the clock. pct[1] is survival at their NEXT turn (3.10) — the number that matters.
+  const sims = useMemo(() => {
+    if (!board) return null;
+    try {
+      setTeams(12); setSpec(TOUR_CFG.start); setOrder("snake"); setPickTrades(null);
+      return runSims(board.players, board.sortedAdp, board.picks, TOUR_USER, TOUR_CFG, null, TOUR_SIMS);
+    } catch (e) { return null; }
+  }, [board]);
+
+  // The same engine re-run with the visitor's pick made, so "what's left at 3.10" is a real consequence
+  // of their choice rather than a fixed list.
+  const after = useMemo(() => {
+    if (!board || taken == null) return null;
+    try {
+      setTeams(12); setSpec(TOUR_CFG.start); setOrder("snake"); setPickTrades(null);
+      return runSims(board.players, board.sortedAdp, [...board.picks, taken], TOUR_USER, TOUR_CFG, null, TOUR_SIMS);
+    } catch (e) { return null; }
+  }, [board, taken]);
+
+  /* ⭐⭐⭐ THE CANDIDATE SET IS THE WHOLE DEMONSTRATION, AND THE OBVIOUS VERSION OF IT FAILS.
+     The first version listed the top six players left on the board. Every one of them came back 0% to
+     reach 3.10 — perfectly correct (nobody going around pick 15 survives another nineteen picks) and
+     completely useless as a demonstration: six identical zeroes is not a decision, it is a wall.
+     The real question at 2.03 is not "will my favourite last" but "which of these do I have to take NOW,
+     and which one is coming back to me anyway?" — so the list has to span both. Three off the top of the
+     board (the take-now tier) and three drawn from further down, around and past the next turn, where
+     survival is genuinely uncertain. Now the column separates: some read 0%, some read a coin flip, some
+     read "he'll be there" — and spending 2.03 on the last group is exactly the mistake this tool exists
+     to stop. The contrast IS the product. */
+  const candidates = useMemo(() => {
+    if (!board) return [];
+    const gone = new Set(board.picks);
+    const open = board.sortedAdp.filter((p) => !gone.has(p.id) && ["RB", "WR", "TE", "QB"].includes(p.pos));
+    const takeNow = open.slice(0, 2);
+    // Reach down the board toward and past the next turn. Spaced widely on purpose: adjacent names carry
+    // near-identical odds, and a ladder of 0/0/0/6/60 still reads as a wall with one outlier. These
+    // offsets straddle 3.10 so the column shows the full range from "gone for certain" to "safe to wait".
+    const later = [open[6], open[11], open[17], open[24]].filter(Boolean);
+    const seen = new Set();
+    return [...takeNow, ...later].filter((p) => p && !seen.has(p.id) && seen.add(p.id));
+  }, [board]);
+
+  const survAtNext = (id) => (sims && sims.pct && sims.pct[1] && sims.pct[1][id] != null ? sims.pct[1][id] : null);
+  const takenPlayer = taken != null && board ? board.players[taken] : null;
+
+  /* ⭐⭐⭐ WHAT THE ENGINE ITSELF WOULD DO — and, more persuasively, WHY.
+     A tour that only lets you click around demonstrates a board, not a brain. The product's actual claim
+     is that it makes the decision for you, so it has to make one here.
+     The logic is the real scarcity argument a good drafter uses and a ranked list cannot: among the
+     players in front of you, some will not come back and some will. Value is not the tiebreaker on its
+     own — AVAILABILITY is. So take the best player who will NOT survive to your next turn, and let the
+     one who will survive come back to you. That sentence is the whole thesis of the tool, and here it is
+     stated about two named players the visitor just looked at, with the odds beside them.
+     Held back until they have chosen: shown upfront it is a spoiler and everyone just clicks the gold
+     row, learning nothing. Shown after, it is a comparison against their own instinct. */
+  const engine = useMemo(() => {
+    if (!board || !sims || !candidates.length) return null;
+    const val = (p) => (p.vbd != null && isFinite(p.vbd) ? p.vbd : (p.value != null && isFinite(p.value) ? p.value : -(p.adp || 999)));
+    const scarce = candidates.filter((p) => { const sv = survAtNext(p.id); return sv != null && sv < 35; });
+    const safe = candidates.filter((p) => { const sv = survAtNext(p.id); return sv != null && sv >= 60; });
+    const pool = scarce.length ? scarce : candidates;
+    const pick = pool.slice().sort((a, b) => val(b) - val(a))[0] || null;
+    if (!pick) return null;
+    const waitOn = safe.slice().sort((a, b) => val(b) - val(a))[0] || null;
+    return { pick, waitOn, waitPct: waitOn ? survAtNext(waitOn.id) : null };
+  }, [board, sims, candidates]);
+
+  const survColor = (s) => (s == null ? "var(--mut)" : s >= 70 ? "#5FD0A8" : s >= 35 ? "var(--gold)" : "#F2655C");
+  const survWord = (s) => (s == null ? "—" : s >= 70 ? "should last" : s >= 35 ? "coin flip" : "won't last");
+
+  return (
+    <div ref={hostRef} data-tour-panel style={{ maxWidth: 1080, margin: "0 auto", padding: "10px 20px 40px" }}>
+      <div className="panel" style={{ padding: 0, overflow: "hidden", border: "1px solid var(--line)" }}>
+
+        {/* ── header: frame the moment ────────────────────────────────────────────────────────── */}
+        <div style={{ padding: "18px 22px 14px", borderBottom: "1px solid var(--line)", background: "var(--panel2)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span className="disp" style={{ fontSize: 11, letterSpacing: ".18em", color: "var(--gold)", fontWeight: 800 }}>TRY IT RIGHT HERE</span>
+            <span data-tour-live style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: "#5FD0A8", border: "1px solid rgba(95,208,168,.4)", borderRadius: 999, padding: "2px 8px" }}>live engine · not a screenshot</span>
+          </div>
+          <div className="disp" style={{ fontSize: 25, fontWeight: 700, marginTop: 8, lineHeight: 1.15 }}>
+            You're on the clock at <span className="gold">2.03</span>. You don't pick again until <span className="gold">3.10</span>.
+          </div>
+          <div className="mut" style={{ fontSize: 14, marginTop: 7, maxWidth: 660, lineHeight: 1.5 }}>
+            Nineteen players come off the board before your next turn. A cheat sheet ranks them. This tells you
+            which ones will still be sitting there — then shows you what your pick actually cost. Take someone.
+          </div>
+        </div>
+
+        {!board && (
+          <div style={{ padding: "44px 22px", textAlign: "center" }} className="mut">
+            <i className="ti ti-loader-2 tour-spin" style={{ fontSize: 20, color: "var(--gold)" }} aria-hidden="true" />
+            <div style={{ fontSize: 13, marginTop: 8 }}>Building a real board…</div>
+          </div>
+        )}
+
+        {board && (
+          <div className="tour-grid" style={{ display: "grid", gridTemplateColumns: "1.05fr .95fr", gap: 0 }}>
+
+            {/* ── left: the decision ──────────────────────────────────────────────────────────── */}
+            <div style={{ padding: "16px 18px", borderRight: "1px solid var(--line)" }}>
+              <div className="disp" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--mut)", fontWeight: 800, marginBottom: 9 }}>
+                On the board at 2.03
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                {candidates.map((p) => {
+                  const s = survAtNext(p.id);
+                  const isTaken = taken === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      data-tour-cand={p.name}
+                      onClick={() => setTaken(p.id)}
+                      onMouseEnter={() => setPeek(p.id)}
+                      onMouseLeave={() => setPeek(null)}
+                      style={{
+                        display: "grid", gridTemplateColumns: "auto 1fr auto auto", alignItems: "center", gap: 10,
+                        padding: "9px 11px", borderRadius: 9, cursor: "pointer", textAlign: "left", fontFamily: "inherit",
+                        border: isTaken ? "1.5px solid var(--gold)" : "1px solid var(--line)",
+                        background: isTaken ? "rgba(242,182,60,.10)" : peek === p.id ? "rgba(255,255,255,.035)" : "transparent",
+                        color: "var(--ink)", transition: "background .12s, border-color .12s",
+                      }}>
+                      <span style={{ width: 30, fontSize: 10, fontWeight: 800, color: POS_COLOR[p.pos] || "var(--mut)" }}>{p.pos}</span>
+                      <span style={{ minWidth: 0 }}>
+                        <span style={{ fontSize: 13.5, fontWeight: 700, display: "block", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</span>
+                        <span className="mut" style={{ fontSize: 10.5 }}>ADP {p.adp != null ? p.adp.toFixed(1) : "—"}</span>
+                      </span>
+                      <span style={{ textAlign: "right" }}>
+                        <span className="num" style={{ fontSize: 15, fontWeight: 800, color: survColor(s) }}>{s == null ? "—" : `${s}%`}</span>
+                        <span className="mut" style={{ fontSize: 9.5, display: "block", letterSpacing: ".02em" }}>to reach 3.10</span>
+                      </span>
+                      <i className={`ti ${isTaken ? "ti-circle-check-filled" : "ti-chevron-right"}`} style={{ fontSize: 14, color: isTaken ? "var(--gold)" : "var(--mut)" }} aria-hidden="true" />
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="mut" style={{ fontSize: 11, marginTop: 11, lineHeight: 1.5 }}>
+                Those percentages are {TOUR_SIMS} simulations of the next nineteen picks, run just now in your browser —
+                each one drafting for all eleven opponents by their real tendencies.
+              </div>
+            </div>
+
+            {/* ── right: the consequence ──────────────────────────────────────────────────────── */}
+            <div style={{ padding: "16px 18px", background: "rgba(255,255,255,.012)" }}>
+              {!takenPlayer && (
+                <div style={{ height: "100%", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", textAlign: "center", padding: "22px 10px", minHeight: 260 }}>
+                  <i className="ti ti-hand-click" style={{ fontSize: 26, color: "var(--gold)", opacity: .8 }} aria-hidden="true" />
+                  <div className="disp" style={{ fontSize: 16, fontWeight: 700, marginTop: 10 }}>Pick one and see what it costs.</div>
+                  <div className="mut" style={{ fontSize: 12.5, marginTop: 6, maxWidth: 300, lineHeight: 1.5 }}>
+                    The engine replays the next nineteen picks and shows you the board you'll actually be
+                    choosing from at 3.10 — and who you just gave up.
+                  </div>
+                </div>
+              )}
+
+              {takenPlayer && (
+                <div data-tour-result>
+                  <div className="disp" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--mut)", fontWeight: 800, marginBottom: 8 }}>
+                    You took {takenPlayer.name}
+                  </div>
+
+                  {/* who you passed on, and whether it mattered */}
+                  {(() => {
+                    const passed = candidates.filter((p) => p.id !== taken);
+                    const gone = passed.filter((p) => { const s = survAtNext(p.id); return s != null && s < 35; });
+                    const safe = passed.filter((p) => { const s = survAtNext(p.id); return s != null && s >= 70; });
+                    return (
+                      <div style={{ borderRadius: 9, border: "1px solid var(--line)", padding: "11px 12px", marginBottom: 11, background: "var(--panel2)" }}>
+                        <div style={{ fontSize: 13, lineHeight: 1.55 }}>
+                          {gone.length > 0 ? (
+                            <><b style={{ color: "#F2655C" }}>{gone.length} of the {passed.length}</b> you passed on will be gone before 3.10
+                              {gone.length <= 3 ? <> — {gone.map((p) => p.name).join(", ")}</> : null}. That pick was your only shot at {gone.length === 1 ? "him" : "them"}.</>
+                          ) : (
+                            <>None of the players you passed on are likely to disappear before 3.10 — you can still have one.</>
+                          )}
+                          {safe.length > 0 && (
+                            <> <span className="mut">{safe.length === 1 ? `${safe[0].name} should still be there` : `${safe.length} of them should still be there`}, so waiting on {safe.length === 1 ? "him" : "them"} costs you nothing.</span></>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* ⭐ THE ENGINE'S OWN CALL. The one thing a ranked list can never print. */}
+                  {engine && engine.pick && (
+                    <div data-tour-engine style={{ borderRadius: 9, border: "1px solid rgba(242,182,60,.45)", background: "rgba(242,182,60,.07)", padding: "11px 12px", marginBottom: 11 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5 }}>
+                        <i className="ti ti-compass" style={{ fontSize: 13, color: "var(--gold)" }} aria-hidden="true" />
+                        <span className="disp" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--gold)", fontWeight: 800 }}>
+                          {engine.pick.id === taken ? "That's our pick too" : "We'd have taken"}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 13.5, lineHeight: 1.55 }}>
+                        <b>{engine.pick.name}</b>
+                        {engine.waitOn ? (
+                          <> — not because he's the best name left, but because he <b style={{ color: "#F2655C" }}>won't come back</b>, and{" "}
+                            <b>{engine.waitOn.name}</b> <b style={{ color: "#5FD0A8" }}>will</b> ({engine.waitPct}% to reach 3.10). Take the one you can't get later.</>
+                        ) : (
+                          <> — the most valuable player here who won't survive to your next turn.</>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* the board you'll actually face */}
+                  <div className="disp" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--mut)", fontWeight: 800, marginBottom: 7 }}>
+                    Expected best available at 3.10
+                  </div>
+                  {!after && <div className="mut" style={{ fontSize: 12 }}>Simulating…</div>}
+                  {after && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      {["RB", "WR", "TE", "QB"].map((pos) => {
+                        const best = after.expBestPlayer && after.expBestPlayer[pos];
+                        const fb = after.expFallback && after.expFallback[pos];
+                        if (!best) return null;
+                        return (
+                          <div key={pos} data-tour-next={pos} style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 9, alignItems: "center", padding: "7px 10px", borderRadius: 8, border: "1px solid var(--line)" }}>
+                            <span style={{ width: 26, fontSize: 10, fontWeight: 800, color: POS_COLOR[pos] || "var(--mut)" }}>{pos}</span>
+                            <span style={{ minWidth: 0 }}>
+                              <span style={{ fontSize: 12.5, fontWeight: 700, display: "block", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{best.name}</span>
+                              {fb && <span className="mut" style={{ fontSize: 10 }}>then {fb.name}</span>}
+                            </span>
+                            <span className="mut num" style={{ fontSize: 11 }}>{best.adp != null ? `ADP ${best.adp.toFixed(0)}` : ""}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", gap: 8, marginTop: 13, flexWrap: "wrap" }}>
+                    <button className="btn btn-gold" data-tour-cta onClick={onDemo} style={{ fontSize: 13.5, padding: "10px 18px" }}>
+                      <i className="ti ti-player-play" style={{ fontSize: 13, marginRight: 6 }} aria-hidden="true" />Draft all 16 rounds free
+                    </button>
+                    <button className="btn" data-tour-reset onClick={() => setTaken(null)} style={{ fontSize: 13.5, padding: "10px 16px" }}>Try a different pick</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── footer: what else it does, kept short because the panel above did the arguing ────── */}
+        <div style={{ borderTop: "1px solid var(--line)", padding: "13px 20px", display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap", background: "var(--panel2)" }}>
+          <span className="mut" style={{ fontSize: 12, lineHeight: 1.5, flex: "1 1 340px" }}>
+            It does this on <b style={{ color: "var(--ink)" }}>every pick of every round</b> — plus run detection, trade
+            values, live grades, and a weekly lineup assistant once the season starts.
+          </span>
+          {!paid && (
+            <button className="btn" onClick={onBuy} style={{ fontSize: 13, padding: "9px 16px" }}>
+              Season pass · ${price != null ? price.toFixed(2) : "—"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTab }) {
   // Interactive preview: a live mini board. Hover any player to see the real AI outlook
   // the tool shows; the compass needle swings to "point at" the highlighted pick.
@@ -15471,6 +15828,13 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
           </div>
         </div>
       </div>
+
+      {/* ⭐⭐⭐ THE INTERACTIVE TOUR SITS DIRECTLY UNDER THE HERO, ABOVE EVERYTHING ELSE.
+          Placement is the argument. Trey's worry was that a visitor who never reaches the free demo
+          never learns what the tool does — so the proof has to be the first thing after the headline,
+          before the feature cards, the pricing and the FAQ. Someone who scrolls one screen and leaves
+          should still have made a pick and seen the engine answer. See FeatureTour for the rest. */}
+      <FeatureTour onDemo={onDemo} onBuy={onBuy} price={biz.price} paid={paid} />
 
       {/* STICKY BUY BAR. The price used to live ~80% down a long page, so someone who scrolled past the
           hero had no way to buy without hunting for it. This appears once the hero is out of view and
