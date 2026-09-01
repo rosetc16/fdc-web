@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29u";
+const BUILD_TAG = "2026.07.29v";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -5491,12 +5491,22 @@ function rankTierColor(pos, posRank) {
 // Build a whole-league snapshot for the "League Overview" panel: every team's roster reconstructed from
 // picks, with per-position counts, whether starting slots are filled, a quality+quantity strength score
 // per position, and a projected starting-lineup total (for an at-a-glance power ranking). Pure function.
-function leagueOverview(allPicks, players, teamAtFn, cfg) {
+/* ⚠⚠ 29v — TAKES THE ROSTERS IF IT IS GIVEN THEM. Building them from `allPicks` alone means no keepers:
+   neither the no-cost kind nor the pick-cost kind, so the League tab's needs, position badges and strength
+   colours all described a team missing its kept players. That is the same fault as the rostersByTeam one
+   Trey reported ("the draft board shows me with him, but the rest isn't picking it up"), in a second place —
+   the draft room already computes keeper-aware rosters, and this was re-deriving worse ones from scratch.
+   `rostersOverride` is optional so the function still works standalone. */
+function leagueOverview(allPicks, players, teamAtFn, cfg, rostersOverride) {
   const n = cfg.teams || TEAMS_FALLBACK;
   const sf = cfg.sf;
   const req = REQ_F(sf);
   const rosters = Array.from({ length: n }, () => []);
-  allPicks.forEach((pk, o) => { const pl = players[pk]; if (pl) { const t = teamAtFn(o); if (t != null && rosters[t]) rosters[t].push(pl); } });
+  if (Array.isArray(rostersOverride) && rostersOverride.length) {
+    for (let i = 0; i < n; i++) (rostersOverride[i] || []).forEach((p) => { if (p) rosters[i].push(p); });
+  } else {
+    allPicks.forEach((pk, o) => { const pl = players[pk]; if (pl) { const t = teamAtFn(o); if (t != null && rosters[t]) rosters[t].push(pl); } });
+  }
   const positions = ["QB", "RB", "WR", "TE"];
   // per-team, per-position: count + best vbd + strength tier (0 strong / 1 middle / 2 weak), plus filled?
   const teams = rosters.map((r, idx) => {
@@ -21336,6 +21346,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   setPickKeeperIds(new Set(Object.values(keeperByPick)));
   // Also give projections the slot→keeper map so they place each pick-cost keeper AT its pick (see projectAll).
   setPickKeeperAt(keeperByPick);
+  // Stable signature of the pick-cost keeper map, declared HERE so memos between this point and `keeperSig`
+  // (≈300 lines below) can depend on keeper identity without tripping its temporal dead zone. See draftedSet.
+  const pickKeeperSig = JSON.stringify(keeperByPick);
 
   const pickConvertDone = useRef(false);
   useEffect(() => {
@@ -21469,12 +21482,27 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // Everyone who is off the board: picks made, no-cost keepers, and any forced picks that live ahead of the
   // current slot (commissioner filler, early-written keepers). A forced-ahead player is genuinely owned, so he
   // must never be recommended or counted as available just because the draft hasn't reached his slot yet.
+  /* ⭐⭐⭐ 29v — "ON THE POP UP WINDOW FOR RECOMMENDATIONS, IT'S SHARING KEEPERS THAT I CAN DRAFT… BUT I
+     SHOULDN'T BE ABLE TO DRAFT THEM SINCE THEY ARE KEEPERS."
+     This set is what every UI surface means by "still on the board" — the recommendation pop-up, the player
+     list, the next-picks scenarios, availByPos, the queue. It folded in real picks, no-cost keepers and
+     forcedAhead, and PICK-COST keepers reached it only VIA forcedAhead… which the effect below refuses to
+     populate for a CONNECTED LIVE draft ("live feed manages forcedAhead"). Trey is in an official Sleeper
+     draft, so for him that channel is switched off entirely and every pick-cost keeper in the league sat in
+     the pool as draftable until the board physically crawled to his slot.
+     The engine globals were already right (setPickKeeperIds above → runSims/projectAll exclude them), which
+     is why the sims were sane while the pop-up was not. Fixing it at the source: a kept player is off the
+     board from pick 1, whatever channel put him there, live or not. Idempotent with forcedAhead — it's a Set. */
   const draftedSet = useMemo(() => {
     const s = new Set(picks);
     Object.values(noCostByTeam).flat().forEach((id) => s.add(id));
     (forcedAhead || []).forEach((f) => s.add(f.id));
+    Object.values(keeperByPick).forEach((id) => { if (id != null) s.add(id); });
     return s;
-  }, [picks, cfg, forcedAhead]);
+    // ⚠ NOT `keeperSig` here — that const is declared ~300 lines BELOW this memo, and a dep array is evaluated
+    //   during render, so naming it would be a temporal-dead-zone ReferenceError on the very first paint.
+    //   keeperByPick is built above us, so sign it directly.
+  }, [picks, cfg, forcedAhead, pickKeeperSig]);
   // Count only players still ON the board. "Injured (34)" is a reason to look; counting men who were
   // drafted two rounds ago is just a number that never goes down.
   const injCount = useMemo(() => (players || []).reduce((n, p) => n + ((p.inj && !draftedSet.has(p.id)) ? 1 : 0), 0), [players, draftedSet]);
@@ -21505,9 +21533,34 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const out = Array.from({ length: TEAMS }, () => []);
     picks.forEach((pk, o) => { const p = players[pk]; if (p) out[teamAt(o)].push(p); });
     Object.entries(noCostByTeam).forEach(([t, ids]) => { (ids || []).forEach((id) => { const p = players[id]; if (p && out[+t]) out[+t].push(p); }); });
+    /* ⭐⭐⭐ 29v — A PICK-COST KEEPER IS ON YOUR ROSTER FROM THE FIRST PICK, NOT FROM HIS SLOT.
+       Trey, mid-live-draft: "The 'how you're doing' on the hub is not picking up the keeper I have in a pick
+       that I traded for. The draft board shows me with him on my team, but I don't think the rest is
+       picking it up."
+       ⚠ THIS IS THE SAME PLAYER MISSING FROM EVERY ROSTER-DERIVED SURFACE AT ONCE — How you're doing, the
+       League tab, the positional ranks, the projected finish, the roster panel — because all of them read
+       this one memo, and this memo only knew about players in `picks` plus NO-COST keepers. A pick-cost
+       keeper occupies a real board slot, so he only appeared once the draft physically REACHED that slot.
+       The draft board looked right the whole time because it renders PICK_KEEPER_AT directly, and
+       projectAll places him too (see `kAt`), which is exactly why the projected finish and the current-roster
+       views disagreed — half the app knew about him and half did not.
+       ⚠ He is attributed by `teamAt(o)`, which honours pick trades: the keeper sits on the slot's CURRENT
+       owner, which is the whole point of Trey's case — he traded FOR the pick and put a keeper on it.
+       ⚠ And only when the slot is still empty, deduped by id: once the draft reaches it and `picks[o]` is
+       filled with that keeper, the loop above has already added him. */
+    Object.entries(keeperByPick).forEach(([oStr, id]) => {
+      const o = +oStr;
+      if (picks[o] != null) return;                       // already counted from `picks`
+      const p = players[id];
+      if (!p) return;
+      let t = null;
+      try { t = teamAt(o); } catch (e) { t = null; }
+      if (t == null || !out[t]) return;
+      if (!out[t].some((x) => x.id === p.id)) out[t].push(p);
+    });
     (forcedAhead || []).forEach((f) => { const p = players[f.id]; if (p && out[f.team] && !out[f.team].some((x) => x.id === p.id)) out[f.team].push(p); });
     return out;
-  }, [picks, players, noCostByTeam, forcedAhead, liveSlots, cfg]);
+  }, [picks, players, noCostByTeam, keeperByPick, forcedAhead, liveSlots, cfg]);
   // LEAGUE-RELATIVE POSITIONAL RANK per team (1 = best room in the league … TEAMS = worst) at each position,
   // from the SAME shared scorer the hub rail, the rankings grid and Team Analysis use — so "you're 7th at RB"
   // means one thing everywhere, and the recommendation can finally read it. Defined HERE, above adviceFor, so
@@ -25842,8 +25895,19 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               const kHave = (have.K || 0), dstHave = (have.DST || 0);
               const posRankByPos = posRankMineActual; // drafted-so-far + gettable cushion (see def) — not projected end-state
               const standings = (proj && proj.rank) ? Array.from({ length: TEAMS }, (_, i) => ({ i, rank: proj.rank[i], pts: proj.pts ? proj.pts[i] : 0 })).sort((a, b) => a.rank - b.rank) : [];
+              /* ⭐⭐⭐ 29v — "AT ONE POINT IN THE DRAFT MY 'HOW YOU'RE DOING' SHOWS THAT I'M EXPECTED TO BE 4TH,
+                 BUT THE 'LEAGUE' TAB HAD ME AS 3RD."  Both numbers were right; neither said what it was.
+                 This ordinal is projectAll's PROJECTED FINISH — every team drafted out to a full roster, then
+                 ranked. The League tab in *Current* mode ranks by the starting-lineup points actually ON the
+                 board right now. In the middle of a draft those diverge constantly, and they should: a team
+                 that has taken the best players available so far can lead on current points while projecting
+                 lower, because the projection knows what is still coming to everyone else.
+                 The bug was never the maths — it was two unlabelled ordinals three inches apart. So: label
+                 this one PROJ on the face of it, and spell the difference out in the hover. */
               const finishTip = standings.length ? (e) => showTip(e, [
                 { kind: "take", tone: finish <= 3 ? "good" : finish <= Math.ceil(TEAMS / 2) ? "neutral" : "bad", x: `Projected finish — ${finish != null ? ordinal(finish) : "—"} of ${TEAMS}` },
+                { t: "What this is", x: "Where you finish once EVERY team is drafted out to a full roster — the engine fills the rest of the board for all 12 teams, then ranks the finished lineups. It is a forecast, not a scoreboard." },
+                { t: "Why the League tab can differ", x: `The League tab's Current view ranks by the starting-lineup points teams have on the board RIGHT NOW. Early and mid-draft the two disagree often${finish != null ? "" : ""} — Current rewards who has taken the most so far, this rewards who is set up best at the end. Switch the League tab to Projected to see this same number.` },
                 { kind: "playertable", cols: ["rank", "name", "pts"], players: standings.map((s) => ({ posRank: s.rank, pos: "", name: s.i === userIdx ? "YOUR TEAM" : TEAM_NAMES[s.i], pts: Math.round(s.pts), rec: s.i === userIdx, star: s.i === userIdx })) },
               ]) : undefined;
               // ===== THE TWO LOOKAHEAD GAPS ==============================================================
@@ -25949,7 +26013,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         ...(!isReDraft && myWindow.decided ? [{ t: "Your inputs", x: `Avg core age ${myWindow.avgAge != null ? myWindow.avgAge.toFixed(1) : "—"} across ${myWindow.picksIn} skill picks${finish != null ? ` · projected ${ordinal(finish)} of ${TEAMS}` : ""}` }] : []),
                         { t: "What it changes", x: "Sets the My-Build lens and the advice tilt: Rebuild lifts young players and rookies, Win-now lifts proven veterans, Balanced takes pure value." },
                       ])} onMouseLeave={hideTip} style={{ display: "inline-flex", alignItems: "center", gap: 3, cursor: "help" }}><i className={`ti ${lane.i}`} style={{ fontSize: 11, color: lane.c }} aria-hidden="true" /><span style={{ fontSize: 10.5, fontWeight: 700, color: lane.c }}>{showBuild ? lane.t : "…"}</span></span>
-                      <span onMouseEnter={finishTip} onMouseLeave={finishTip ? hideTip : undefined} style={{ display: "inline-flex", alignItems: "baseline", gap: 2, cursor: finishTip ? "help" : "default" }}><span style={{ fontSize: 14, fontWeight: 800, color: finishColor, lineHeight: 1 }}>{finish != null ? ordinal(finish) : "—"}</span><span className="mut" style={{ fontSize: 8.5 }}>/{TEAMS}</span></span>
+                      <span data-hud="projfinish" onMouseEnter={finishTip} onMouseLeave={finishTip ? hideTip : undefined} style={{ display: "inline-flex", alignItems: "baseline", gap: 2, cursor: finishTip ? "help" : "default" }}><span className="mut" style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800, alignSelf: "center" }}>proj</span><span style={{ fontSize: 14, fontWeight: 800, color: finishColor, lineHeight: 1 }}>{finish != null ? ordinal(finish) : "—"}</span><span className="mut" style={{ fontSize: 8.5 }}>/{TEAMS}</span></span>
                     </div>
                   </div>
                   {/* ===== HOW MUCH OF EACH POSITION GOES BEFORE YOU'RE BACK UP =====================
@@ -28044,7 +28108,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 <span className="mut" style={{ fontSize: 11.5 }}>— positions drafted & position strength across all {cfg.teams || 12} teams</span>
               </div>
               {(() => {
-                const lo = leagueOverview(picks, players, teamAt, cfg);
+                const lo = leagueOverview(picks, players, teamAt, cfg, rostersByTeam);
                 const tierColor = (tier) => tier === 0 ? "var(--green)" : tier === 1 ? "var(--gold)" : "var(--red)";
                 const posClr = { QB: POS_COLOR.QB, RB: POS_COLOR.RB, WR: POS_COLOR.WR, TE: POS_COLOR.TE };
                 return (
@@ -28125,7 +28189,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               const finishRank = (proj && proj.rank && proj.rank[selTeam] != null) ? proj.rank[selTeam] : null;
               const dyn = isDynastyCfg(cfg);
               // per-position standing (from this team's byPos + the league position tiers)
-              const loSum = leagueOverview(picks, players, teamAt, cfg);
+              const loSum = leagueOverview(picks, players, teamAt, cfg, rostersByTeam);
               const leagueTiers = (loSum && loSum.posTiers && loSum.posTiers[selTeam]) ? loSum.posTiers[selTeam] : null;
               const posStand = ["QB", "RB", "WR", "TE"].map((pos) => {
                 const b = ta.byPos[pos]; if (!b) return null;
@@ -28585,6 +28649,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <div>
                 <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>League — every team</div>
                 <div className="mut" style={{ fontSize: 12, marginTop: 2 }}>One place to see everyone's roster, ranked by {useProj ? "projected" : "current"} points. Player color = strength at his position; the badges up top rate each team's position group vs the league.</div>
+                {/* ⭐ 29v — say WHICH question this ranking answers, because the hub's "How you're doing" answers
+                    the other one and the two ordinals sat three inches apart with no label between them. */}
+                <div className="mut" style={{ fontSize: 11, marginTop: 3, opacity: .85 }}>
+                  {useProj
+                    ? <>Ranked on the <b>projected final</b> roster — every team drafted out to full. This matches the <b>proj</b> number in <i>How you're doing</i>.</>
+                    : <>Ranked on the starting-lineup points <b>on the board right now</b>. This is a different question from the <b>proj</b> number in <i>How you're doing</i> — mid-draft the two will disagree. Switch to Projected to line them up.</>}
+                </div>
               </div>
               <div style={{ display: "flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }}>
                 <button className="btn" style={{ borderRadius: 0, border: "none", background: !teamsProj ? "var(--gold)" : "transparent", color: !teamsProj ? "#151002" : "var(--ink)", fontWeight: !teamsProj ? 700 : 400 }} onClick={() => setTeamsProj(false)}>Current</button>
