@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29y";
+const BUILD_TAG = "2026.07.29z";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -4906,6 +4906,80 @@ function survivalAtPick(players, sortedAdp, picks, targetOverall, cfg, nSims) {
   }
   const m = {}; players.forEach((p) => (m[p.id] = Math.round((surv[p.id] / nSims) * 100)));
   return m;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+   ODDS AT EVERY PICK YOU OWN — one pass, the same model the draft room uses
+   ───────────────────────────────────────────────────────────────────────────────────────────────────
+   Trey: "make sure you aren't just looking at 'his round' but also looking at the ADP of the player. For
+   example, if Bijan Robinson has an ADP of 1.5 and you have pick 1.10, then you probably aren't getting
+   him. Of course if ADP is within 3-4, then there is a chance."
+
+   The strategy screen priced targets by ROUND: `Math.ceil(adp / teams)`. In a 12-team league that puts an
+   ADP of 1.5 and an ADP of 11.9 in the same bucket, so picking at 1.10 the menu said "his round" about a
+   man who has never once lasted past pick three. Rounds are the wrong unit — a round is twelve picks wide
+   and the thing being asked is about a specific pick.
+
+   TWO WAYS TO FIX IT, AND WHY THIS ONE:
+   The cheap version is arithmetic on ADP — some spread around the average, a normal curve, done. It would
+   have been about right, and it would have been a SECOND opinion: the draft room already answers "will he
+   be there at pick N?" with a Monte Carlo that knows about positional runs, roster needs, keepers and
+   traded picks. Two models of one question is the failure this file keeps repeating — they drift, they
+   disagree on screen, and the user is left deciding which number to believe.
+
+   So this runs the real simulation. The trick that makes it affordable is doing every pick in ONE pass:
+   survivalAtPick simulates up to a single boundary and is called per pick, which for sixteen picks means
+   sixteen runs re-simulating the same early rounds over and over. Here the draft is played out once per
+   path and availability is recorded as it sweeps past each checkpoint, so sixteen answers cost barely more
+   than one — and they are automatically consistent with each other (survival can only fall as you go
+   later, which separate runs with separate seeds cannot guarantee).
+   ═══════════════════════════════════════════════════════════════════════════════════════════════════ */
+function survivalAcrossPicks(players, sortedAdp, picks, checkpoints, cfg, nSims) {
+  // Checkpoints are 0-indexed overall picks. One already made has no odds to report — it happened.
+  const cps = [...new Set((checkpoints || []).filter((o) => Number.isFinite(o) && o >= picks.length))].sort((a, b) => a - b);
+  if (!cps.length || !players.length) return {};
+  seedRng(picks.length * 2654435761 + cps[cps.length - 1] * 2246822519 + 7);
+  const TOTAL = totalOf(cfg), R = cfg.rounds, sf = cfg.sf, dem = demand(sf);
+  const last = Math.min(TOTAL, cps[cps.length - 1]);
+  const baseDrafted = new Uint8Array(players.length);
+  const baseCounts = Array.from({ length: TEAMS }, newCounts);
+  picks.forEach((pk, o) => {
+    const pl = players[pk]; if (!pl) return;
+    baseDrafted[pk] = 1;
+    const c = baseCounts[teamAt(o)]; if (c[cpos(pl.pos)] != null) c[cpos(pl.pos)]++;
+  });
+  for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, baseCounts[t]); seedRosterCounts(t, baseCounts[t]); }
+  allUnavailableKeeperIds().forEach((id) => { baseDrafted[id] = 1; });
+  const baseRecent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
+  const PL = picksLeftTable(cfg);
+  const tally = cps.map(() => new Float64Array(players.length));
+  for (let s = 0; s < nSims; s++) {
+    const drafted = baseDrafted.slice();
+    const counts = baseCounts.map((c) => ({ ...c }));
+    let recent = baseRecent.slice();
+    let k = 0;
+    for (let o = picks.length; o <= last && k < cps.length; o++) {
+      // ⚠ RECORD BEFORE THE PICK IS MADE. "Available at pick 10" means available when pick 10 is on the
+      //   clock, not after it has been spent — recording after would quietly shift every number by one.
+      while (k < cps.length && cps[k] <= o) { const tk = tally[k]; for (const p of players) if (!drafted[p.id]) tk[p.id]++; k++; }
+      if (k >= cps.length || o >= TOTAL) break;
+      const t = teamAt(o), round = roundOf(o), pickNum = o + 1;
+      const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts[t], cfg, plAt(PL, t, o));
+      const ws = cands.map((c, ri) => weightFor(c, pickNum, counts[t], round, recent, dem, R, ri));
+      const c = cands[sample(cands, ws)];
+      if (!c) break;
+      drafted[c.id] = 1; counts[t][cpos(c.pos)] = (counts[t][cpos(c.pos)] || 0) + 1; recent = [...recent.slice(-7), c.pos];
+    }
+    // A checkpoint past the end of the draft: everyone still undrafted is trivially "available".
+    while (k < cps.length) { const tk = tally[k]; for (const p of players) if (!drafted[p.id]) tk[p.id]++; k++; }
+  }
+  const out = {};
+  cps.forEach((o, i) => {
+    const m = {}; const t = tally[i];
+    players.forEach((p) => { m[p.id] = Math.round((t[p.id] / nSims) * 100); });
+    out[o] = m;
+  });
+  return out;
 }
 
 function projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId) {
@@ -10283,7 +10357,7 @@ function StrategyEditor({ league, user, allLeagues, taken, onSave, onSaveMaster,
   //   losing "save these lists and import them into other leagues… to not duplicate a ton of work that's not
   //   necessary" was not. Both survive here as one checkbox and one dropdown instead of a second modal.
   const [alsoMaster, setAlsoMaster] = useState(false);
-  const [importFrom, setImportFrom] = useState("");
+  const [copyOpen, setCopyOpen] = useState(false);   // the pick-what-to-copy prompt
   useEffect(() => { setLimit(60); }, [q, pos, onlyMarked]);
 
   const cfg = league.cfg || {};
@@ -10415,11 +10489,129 @@ function StrategyEditor({ league, user, allLeagues, taken, onSave, onSaveMaster,
     onClose();
   };
 
-  // The round the market says he is already gone by — everything at or after it is greyed in the picker,
-  // because "target him in round 9" is not a plan if he goes in round 4.
+  // The round the market says he is already gone by. Kept as a coarse column heading; the PICK-level odds
+  // below are what the round menu actually reasons with now.
   const goneBy = (p) => (p.adp != null && Number.isFinite(p.adp) ? Math.max(1, Math.ceil(p.adp / teams)) : null);
 
+  /* ⭐⭐⭐ THE ODDS AT EACH OF YOUR OWN PICKS.
+   *
+   * Trey: "if Bijan Robinson has an ADP of 1.5 and you have pick 1.10, then you probably aren't getting
+   * him. Of course if ADP is within 3-4, then there is a chance."
+   *
+   * Run OFF THE MAIN PATH. This is a full Monte Carlo of the draft, and doing it inside a useMemo would
+   * block the modal's first paint on it — the screen would appear to hang for a second every time it is
+   * opened. Instead the board renders immediately with the round labels it always had, and the percentages
+   * arrive a beat later. A number that shows up late is fine; a modal that stutters on open is not.
+   *
+   * ⚠ THE MODULE-LEVEL DRAFT GEOMETRY HAS TO BE RE-ARMED HERE. teamAt/roundOf/pickLabel read globals that
+   *   whatever screen ran last may have set to a different league — so this sets them again from THIS cfg
+   *   immediately before simulating, exactly as `myRounds` does. Without it the sim silently plays out a
+   *   twelve-team snake for a ten-team linear draft and the odds are confidently wrong. */
+  const [pickOdds, setPickOdds] = useState(null);
+  const oddsKey = `${league.id}|${myRounds.map((m) => m.o).join(",")}|${players.length}`;
+  useEffect(() => {
+    let alive = true;
+    if (!players.length || !myRounds.length) { setPickOdds(null); return; }
+    setPickOdds(null);
+    const id = setTimeout(() => {
+      let res = null;
+      try {
+        setTeams(teams); setOrder(cfg.order || "snake"); setPickTrades(cfg.pickTrades || [], teams, rounds); setExtraPicks(cfg);
+        /* Keepers, both flavours. A no-cost keeper is a body already on a roster; a pick-cost keeper
+           occupies a real slot. Either way he is not in this draft, and simulating him as draftable would
+           hand every target odds that assume a player who cannot be taken is still competing for picks. */
+        const byName = {}; players.forEach((p) => { byName[normName(p.name)] = p.id; });
+        const adds = {}, atMap = {}, pickIds = new Set();
+        (cfg.keepers || []).forEach((k) => {
+          if (!k) return;
+          const id = k.playerId != null && players[k.playerId] ? k.playerId : (k.name ? byName[normName(k.name)] : null);
+          if (id == null) return;
+          if (k.o != null) { atMap[k.o] = id; pickIds.add(id); }
+          else if (k.team != null) (adds[k.team] = adds[k.team] || []).push(id);
+        });
+        setKeeperAdds(adds); setPickKeeperAt(atMap); setPickKeeperIds(pickIds);
+        const er = (cfg.connect && cfg.connect.existingRosters) || cfg.existingRosters || null;
+        setRosterAdds(er && (cfg.type === "dynasty" || cfg.type === "rookie")
+          ? Object.fromEntries(Object.entries(er).map(([slot, list]) => [String(+slot - 1), (list || []).map((x) => ({ pos: cpos(x.pos) }))]))
+          : {});
+        const sortedAdp = players.slice().sort((a, b) => (a.adp ?? 999) - (b.adp ?? 999));
+        res = survivalAcrossPicks(players, sortedAdp, league.picks || [], myRounds.map((m) => m.o), { ...cfg, teams, rounds }, 90);
+      } catch (_) { res = null; }
+      if (alive) setPickOdds(res);
+    }, 30);
+    return () => { alive = false; clearTimeout(id); };
+  }, [oddsKey]);
+  // % chance he is still on the board when a given pick of yours comes up. null = not computed yet.
+  const oddsAt = (o, pid) => (pickOdds && pickOdds[o] && pickOdds[o][pid] != null ? pickOdds[o][pid] : null);
+  /* Four words for four situations. A bare percentage is honest but slow to read in a menu you are
+     scanning; the word is the answer and the number is the evidence for it. */
+  const oddsWord = (pct) => (pct >= 70 ? "likely there" : pct >= 35 ? "coin flip" : pct >= 10 ? "long shot" : "gone by then");
+
   const [ruleDraft, setRuleDraft] = useState({ kind: "atLeast", pos: "RB", count: 2, round: 3, to: 6 });
+
+  /* ═════════════════════════════════════════════════════════════════════════════════════════════════
+     TRANSLATING A PLAN BETWEEN TWO DIFFERENT DRAFTS
+     ─────────────────────────────────────────────────────────────────────────────────────────────────
+     Trey: "recognize this won't be apples to apples depending on what pick you have, how many teams,
+     how many rounds, etc."
+
+     Exactly — and the naive copy is worse than it looks. A target stored as `{from: 3, o: 26}` means "my
+     third-round pick, which was overall 26". Paste that into a ten-team league and overall 26 is the third
+     pick of round 3; into a fourteen-team league it is the middle of round 2. Copying the ROUND keeps a
+     label and throws away the market position; copying `o` keeps a number that may not even be a pick you
+     own here.
+
+     So targets are re-anchored by MARKET POSITION — the overall pick — onto the nearest pick this league
+     actually gives you. That is the quantity that decides whether you can have the player: pick 26 is pick
+     26 whether it is 3.02 or 2.12, and it is the number the odds column reasons about.
+
+     A target from round 14 of a 16-round league has no home in a 12-round draft, so it is reported and
+     dropped rather than pinned to your last pick and quietly misrepresented.
+     ═════════════════════════════════════════════════════════════════════════════════════════════════ */
+  const translateTargets = (srcLeague) => {
+    const sCfg = (srcLeague && srcLeague.cfg) || {};
+    const sTeams = sCfg.teams || 12;
+    const mine = myRounds.filter((m) => !m.keeper);
+    const lastOverall = mine.length ? mine[mine.length - 1].o + 1 : 0;
+    const out = { moved: [], dropped: [] };
+    (readStrategy(srcLeague).targets || []).forEach((t) => {
+      if (!t || !t.name) return;
+      // Where in the SOURCE draft this target sat. With no recorded pick, the middle of the round it named
+      // is the honest stand-in — a round is a range, and its midpoint is the least wrong single point.
+      const srcOverall = t.o != null ? t.o + 1 : (Math.max(1, +t.from || 1) - 1) * sTeams + Math.ceil(sTeams / 2);
+      if (!mine.length || srcOverall > lastOverall) { out.dropped.push({ name: t.name, srcOverall }); return; }
+      let best = null, bestD = Infinity;
+      mine.forEach((m) => { const d = Math.abs(m.o + 1 - srcOverall); if (d < bestD) { bestD = d; best = m; } });
+      if (!best) { out.dropped.push({ name: t.name, srcOverall }); return; }
+      out.moved.push({ name: t.name, srcOverall, o: best.o, round: best.round, label: best.label, shift: best.o + 1 - srcOverall });
+    });
+    return out;
+  };
+
+  const applyCopy = (srcLeague, want) => {
+    if (!srcLeague) return;
+    setDirty(true);
+    if (want.queue) { const q2 = effectiveQueue(srcLeague, user); setQueue((prev) => new Set([...prev, ...q2])); }
+    if (want.avoid) { const a2 = effectiveAvoid(srcLeague, user); setAvoid((prev) => new Set([...prev, ...a2])); }
+    if (want.targets || want.rules) {
+      const tr = want.targets ? translateTargets(srcLeague) : { moved: [] };
+      const srcRules = want.rules ? (readStrategy(srcLeague).rules || []) : [];
+      setStrat((st) => {
+        // ⚠ MERGE, NEVER REPLACE. Someone copying a plan across is adding to what they have already written
+        //   here; a target that exists in both leagues keeps THIS league's round, because that is the one
+        //   they set while looking at this draft's picks.
+        const haveT = new Set((st.targets || []).map((t) => normName(t.name)));
+        const addT = tr.moved.filter((m) => !haveT.has(normName(m.name)))
+          .map((m) => ({ name: m.name, from: m.round, to: Math.min(rounds, m.round + 1), o: m.o }));
+        const haveR = new Set((st.rules || []).map((r) => JSON.stringify(r)));
+        const addR = srcRules.filter((r) => !haveR.has(JSON.stringify(r)))
+          // A rule naming a round past the end of this draft cannot be satisfied or broken; clamp it in.
+          .map((r) => ({ ...r, round: Math.min(rounds, Math.max(1, +r.round || 1)), ...(r.to != null ? { to: Math.min(rounds, Math.max(1, +r.to || 1)) } : {}) }));
+        return { ...st, targets: [...(st.targets || []), ...addT], rules: [...(st.rules || []), ...addR] };
+      });
+    }
+    setCopyOpen(false);
+  };
 
   return (
     <div className="modalbg" onClick={onClose}>
@@ -10526,9 +10718,21 @@ function StrategyEditor({ league, user, allLeagues, taken, onSave, onSaveMaster,
                         average of rooms, not a fact about this one, and a plan built on a player slipping is a
                         real plan. The picker's job is to TELL him the odds, not to overrule him. */}
                     <span>
+                      {/* The border grades the plan you wrote: gold when the pick you chose is a realistic
+                          place to get him, red when the simulation says he is long gone by then. Grey while
+                          the odds are still computing, or when there is no ADP to reason from. */}
                       <select className="gs" disabled={dim}
+                        data-stratodds={t2 ? String(oddsAt(t2.o != null ? t2.o : -1, p.id) ?? "") : ""}
+                        title={t2 && oddsAt(t2.o != null ? t2.o : -1, p.id) != null
+                          ? `${oddsAt(t2.o, p.id)}% chance he is still on the board at pick ${t2.o + 1} — simulated against this league's teams, scoring and keepers, not just his ADP.`
+                          : undefined}
                         style={{ fontSize: 11.5, padding: "3px 5px", width: "100%",
-                          borderColor: t2 ? (gone != null && t2.from > gone ? "var(--line2)" : "var(--gold)") : "var(--line)",
+                          borderColor: (() => {
+                            if (!t2) return "var(--line)";
+                            const pc = t2.o != null ? oddsAt(t2.o, p.id) : null;
+                            if (pc == null) return gone != null && t2.from > gone ? "var(--line2)" : "var(--gold)";
+                            return pc < 10 ? "var(--red)" : pc < 35 ? "#E0A63C88" : "var(--gold)";
+                          })(),
                           color: t2 ? "var(--ink)" : "var(--mut)" }}
                         data-stratround={p.name}
                         value={t2 ? String(t2.o != null ? t2.o : (myRounds.find((m) => m.round === t2.from && !m.keeper) || {}).o ?? "") : ""}
@@ -10540,15 +10744,28 @@ function StrategyEditor({ league, user, allLeagues, taken, onSave, onSaveMaster,
                           setTarget(p.name, r, Math.min(rounds, r + 1), o);
                         }}>
                         <option value="">— not targeted —</option>
-                        {myRounds.map((m) => (
-                          <option key={m.o} value={m.o} disabled={m.keeper}
-                            style={m.keeper ? { color: "var(--mut)" } : undefined}>
-                            {m.label}
-                            {m.keeper
-                              ? `  · kept${m.keeperName ? `: ${m.keeperName}` : ""}`
-                              : gone == null ? "" : m.round > gone ? "  · likely gone" : m.round === gone ? "  · his round" : "  · safe"}
-                          </option>
-                        ))}
+                        {/* ⭐⭐⭐ EVERY OPTION NOW CARRIES THE OVERALL PICK AND THE REAL ODDS.
+                            Trey asked for two things here and they turn out to be the same thing. "On the
+                            drop down, can you put the overall pick next to the pick number (i.e. 1.01 (1))"
+                            — because 1.10 and 2.03 are only comparable to an ADP once you know they are
+                            picks 10 and 15. And: don't judge by his ROUND. The old suffix came from
+                            ceil(adp / teams), which called pick 1.10 "his round" for a man with an ADP of
+                            1.5; the percentage comes from simulating this exact draft to this exact pick. */}
+                        {myRounds.map((m) => {
+                          const pct = oddsAt(m.o, p.id);
+                          const tail = m.keeper
+                            ? `  · kept${m.keeperName ? `: ${m.keeperName}` : ""}`
+                            : pct != null ? `  · ${pct}% — ${oddsWord(pct)}`
+                            // Until the simulation lands (and for a player with no ADP at all) fall back to
+                            // the round-level read rather than showing a blank where a verdict belongs.
+                            : gone == null ? "" : m.round > gone ? "  · likely gone" : m.round === gone ? "  · his round" : "  · safe";
+                          return (
+                            <option key={m.o} value={m.o} disabled={m.keeper}
+                              style={m.keeper ? { color: "var(--mut)" } : undefined}>
+                              {m.label} ({m.o + 1}){tail}
+                            </option>
+                          );
+                        })}
                       </select>
                     </span>
                     {/* ⭐⭐ 29m — WHAT ACTUALLY HAPPENED, RIGHT BESIDE WHAT YOU PLANNED. Trey: "if you do select
@@ -10625,24 +10842,16 @@ function StrategyEditor({ league, user, allLeagues, taken, onSave, onSaveMaster,
         )}
 
         <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "12px 20px", borderTop: "1px solid var(--line)", flexWrap: "wrap", background: "var(--panel2)" }}>
-          {/* ⭐ CROSS-LEAGUE IMPORT, kept from the do-not-draft editor this screen replaced. */}
+          {/* ⭐⭐⭐ COPY FROM ANOTHER LEAGUE — now a prompt, because it was silently copying half the plan.
+              Trey: "Copying the list over from prior leagues is not working. I want this to prompt what do
+              you want to copy over: check boxes next to priorities, do not draft, and round suggestions."
+              The old control was a one-gesture dropdown that merged the two LISTS and said nothing about
+              the targets or rules, so a plan copied across arrived with its round suggestions missing and
+              no indication that anything had been left behind. See CopyPlanModal. */}
           {otherLeagues.length > 0 && (
-            <select className="gs" data-stratimport style={{ fontSize: 11.5, padding: "4px 6px", maxWidth: 210 }} value={importFrom}
-              onChange={(e) => {
-                const id = e.target.value; setImportFrom("");
-                const src2 = otherLeagues.find((l) => l.id === id); if (!src2) return;
-                const a2 = effectiveAvoid(src2, user), q2 = effectiveQueue(src2, user);
-                if (!a2.length && !q2.length) return;
-                setDirty(true);
-                setAvoid((prev) => new Set([...prev, ...a2]));
-                setQueue((prev) => new Set([...prev, ...q2]));
-              }}>
-              <option value="">Copy lists from another league…</option>
-              {otherLeagues.map((l) => {
-                const n = effectiveAvoid(l, user).length + effectiveQueue(l, user).length;
-                return <option key={l.id} value={l.id} disabled={!n}>{l.name}{n ? ` (${n})` : " — empty"}</option>;
-              })}
-            </select>
+            <button className="btn btn-mini" data-stratcopyopen onClick={() => setCopyOpen(true)}>
+              <i className="ti ti-copy" style={{ fontSize: 12, marginRight: 5 }} aria-hidden="true" />Copy from another league…
+            </button>
           )}
           {/* ⭐ AND THE ACCOUNT-WIDE SCOPE. */}
           <label data-stratmaster className="mut" style={{ fontSize: 11.5, display: "inline-flex", alignItems: "center", gap: 5, cursor: "pointer" }}
@@ -10656,6 +10865,120 @@ function StrategyEditor({ league, user, allLeagues, taken, onSave, onSaveMaster,
           <div style={{ flex: 1 }} />
           <button className="btn" onClick={onClose}>Cancel</button>
           <button className="btn btn-gold" disabled={!dirty} onClick={save}>Save strategy</button>
+        </div>
+      </div>
+      {copyOpen && (
+        <CopyPlanModal leagues={otherLeagues} user={user} rounds={rounds} translateTargets={translateTargets}
+          onClose={() => setCopyOpen(false)} onApply={applyCopy} />
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+   COPY A PLAN ACROSS — pick the league, then pick what comes with it
+   ───────────────────────────────────────────────────────────────────────────────────────────────────
+   Trey: "Copying the list over from prior leagues is not working. I want this to prompt what do you want
+   to copy over: check boxes next to priorities, do not draft, and round suggestions."
+
+   What was there was a dropdown that merged the priority and do-not-draft lists the instant you chose a
+   league — no confirmation, no undo, and nothing at all about the round targets or the rules, which are
+   most of a plan. Choosing a league and watching two counters change is indistinguishable from choosing a
+   league and nothing happening, which is very likely why it read as broken.
+
+   Three things this screen does that the dropdown could not:
+     · SAYS WHAT IT WILL DO before it does it, per category, with counts.
+     · TRANSLATES the round targets onto the picks this league actually gives you (see translateTargets),
+       and reports the ones that have no home here instead of silently mangling them.
+     · MERGES rather than replaces, and says so — nothing you have already written is overwritten.
+   ═══════════════════════════════════════════════════════════════════════════════════════════════════ */
+function CopyPlanModal({ leagues, user, rounds, translateTargets, onClose, onApply }) {
+  const withContent = (leagues || []).map((l) => {
+    const st = readStrategy(l);
+    return { l, q: effectiveQueue(l, user).length, a: effectiveAvoid(l, user).length, t: (st.targets || []).length, r: (st.rules || []).length };
+  });
+  const firstUseful = withContent.find((x) => x.q + x.a + x.t + x.r > 0) || withContent[0];
+  const [srcId, setSrcId] = useState(firstUseful ? firstUseful.l.id : "");
+  const [want, setWant] = useState({ queue: true, avoid: true, targets: true, rules: false });
+  const row = withContent.find((x) => x.l.id === srcId) || null;
+  const src = row ? row.l : null;
+  const tr = useMemo(() => (src ? translateTargets(src) : { moved: [], dropped: [] }), [srcId]);
+  const nothing = !want.queue && !want.avoid && !want.targets && !want.rules;
+  const available = row ? { queue: row.q, avoid: row.a, targets: row.t, rules: row.r } : { queue: 0, avoid: 0, targets: 0, rules: 0 };
+  const total = (want.queue ? available.queue : 0) + (want.avoid ? available.avoid : 0)
+    + (want.targets ? tr.moved.length : 0) + (want.rules ? available.rules : 0);
+
+  const Check = ({ k, label, n, note, disabled }) => (
+    <label data-copyopt={k} style={{ display: "flex", gap: 9, alignItems: "flex-start", padding: "9px 11px", borderRadius: 8,
+      border: `1px solid ${want[k] && !disabled ? "var(--gold)" : "var(--line)"}`, background: want[k] && !disabled ? "rgba(224,166,60,.07)" : "transparent",
+      cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1 }}>
+      <input type="checkbox" checked={!!want[k] && !disabled} disabled={disabled} style={{ marginTop: 2 }}
+        onChange={(e) => setWant((w) => ({ ...w, [k]: e.target.checked }))} />
+      <span style={{ minWidth: 0 }}>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>{label}</span>
+        <span className="num mut" style={{ fontSize: 11.5, marginLeft: 6 }}>{disabled ? "none to copy" : n}</span>
+        {note && <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5, marginTop: 3 }}>{note}</div>}
+      </span>
+    </label>
+  );
+
+  return (
+    <div className="modalbg" style={{ zIndex: 90 }} onClick={onClose}>
+      <div className="panel" data-copymodal style={{ maxWidth: 520, width: "100%", padding: 22, borderColor: "var(--gold)", maxHeight: "88vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+        <div className="disp" style={{ fontSize: 19, fontWeight: 700, marginBottom: 4 }}>Copy from another league</div>
+        <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 14 }}>
+          Everything you pick is <b style={{ color: "var(--ink)" }}>added</b> to this league's plan — nothing here is removed or overwritten.
+        </div>
+
+        <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700, marginBottom: 5 }}>Copy from</div>
+        <select className="gs" data-copysrc style={{ width: "100%", fontSize: 13, padding: "7px 9px", marginBottom: 15 }} value={srcId} onChange={(e) => setSrcId(e.target.value)}>
+          {withContent.map((x) => (
+            <option key={x.l.id} value={x.l.id}>
+              {x.l.name} — {x.q + x.a + x.t + x.r ? `${x.q} priority · ${x.a} never · ${x.t} targets · ${x.r} rules` : "nothing saved"}
+            </option>
+          ))}
+        </select>
+
+        <div style={{ display: "grid", gap: 7 }}>
+          <Check k="queue" label="Priority list" n={available.queue} disabled={!available.queue}
+            note="Players you always want. Travels cleanly — it is a view about the player, not about a draft." />
+          <Check k="avoid" label="Do-not-draft list" n={available.avoid} disabled={!available.avoid}
+            note="Same: a player you will never take is a player you will never take." />
+          <Check k="targets" label="Round suggestions" n={available.targets} disabled={!available.targets}
+            note={available.targets
+              ? <>Re-anchored to the picks you own here, by <b style={{ color: "var(--ink)" }}>overall pick</b> rather than round number — {src ? `${(src.cfg || {}).teams || 12} teams there, different picks here` : ""}. {tr.dropped.length ? <b style={{ color: "var(--gold)" }}>{tr.dropped.length} fall past your last pick and will be left behind.</b> : "All of them land on a pick you own."}</>
+              : null} />
+          <Check k="rules" label="Roster rules" n={available.rules} disabled={!available.rules}
+            note={`Things like "two RBs by round 6". Rounds beyond this draft's ${rounds} get clamped in.`} />
+        </div>
+
+        {/* What will actually land, spelled out. A plan copied across is a lot of small changes at once, and
+            the thing that makes it trustworthy is being able to read them before agreeing to them. */}
+        {want.targets && tr.moved.length > 0 && (
+          <div data-copypreview style={{ marginTop: 13, padding: "9px 11px", borderRadius: 8, background: "var(--panel2)", border: "1px solid var(--line)", maxHeight: 132, overflowY: "auto" }}>
+            <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700, marginBottom: 6 }}>Where the targets land</div>
+            {tr.moved.slice(0, 8).map((m) => (
+              <div key={m.name} style={{ fontSize: 11.5, display: "flex", gap: 6, alignItems: "baseline", marginBottom: 2 }}>
+                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name}</span>
+                <span className="num mut">pick {m.srcOverall}</span>
+                <span className="mut">→</span>
+                <span className="num" style={{ color: "var(--gold)" }}>{m.label} ({m.o + 1})</span>
+              </div>
+            ))}
+            {tr.moved.length > 8 && <div className="mut" style={{ fontSize: 11 }}>…and {tr.moved.length - 8} more.</div>}
+            {tr.dropped.length > 0 && (
+              <div className="mut" style={{ fontSize: 11, marginTop: 6, paddingTop: 6, borderTop: "1px solid var(--line)" }}>
+                Left behind: {tr.dropped.slice(0, 4).map((d) => d.name).join(", ")}{tr.dropped.length > 4 ? `, +${tr.dropped.length - 4}` : ""} — those picks don't exist in this draft.
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8, marginTop: 18, alignItems: "center" }}>
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <div style={{ flex: 1 }} />
+          <span className="mut num" style={{ fontSize: 11.5 }}>{total} item{total === 1 ? "" : "s"}</span>
+          <button className="btn btn-gold" data-copyapply disabled={nothing || !src || !total} onClick={() => onApply(src, want)}>Copy them over</button>
         </div>
       </div>
     </div>
@@ -18959,6 +19282,38 @@ function SleeperLinkPanel({ user, onUpdate }) {
   );
 }
 
+/* One quiet line: what your saved data comes to, and how close that is to the ceiling. Reads through
+   window.storage so it reports the STORED bytes — the compressed ones the 4 MB limit is measured against —
+   rather than the expanded shape the app works with, which would overstate it by roughly four times. */
+function StorageLine() {
+  const [info, setInfo] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const raw = (typeof localStorage !== "undefined" && localStorage.getItem("fdc:gs-state")) || "";
+        const r = await window.storage.get("gs-state");
+        const st = r && r.value ? JSON.parse(r.value) : {};
+        const mocks = (st.leagues || []).reduce((n, l) => n + ((l && l.mocks) || []).length, 0) + ((st.funMocks || []).length);
+        if (alive) setInfo({ bytes: raw.length, mocks, leagues: (st.leagues || []).length });
+      } catch (_) { if (alive) setInfo(null); }
+    })();
+    return () => { alive = false; };
+  }, []);
+  if (!info) return null;
+  const CAP = 4 * 1024 * 1024;
+  const pct = Math.min(100, Math.round((info.bytes / CAP) * 100));
+  return (
+    <div data-storageline style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--line)", marginBottom: 14, flexWrap: "wrap" }}>
+      <span className="mut" style={{ fontSize: 13 }}>Saved data</span>
+      <span className="num" style={{ fontSize: 12.5, color: pct >= 80 ? "var(--red)" : "var(--ink)" }}
+        title={`${info.leagues} league${info.leagues === 1 ? "" : "s"} and ${info.mocks} saved mock${info.mocks === 1 ? "" : "s"}. Mocks are the bulk of it; deleting old ones from a league's mock history frees the space.`}>
+        {(info.bytes / 1048576).toFixed(2)} MB of 4 MB <span className="mut">· {info.mocks} mock{info.mocks === 1 ? "" : "s"}</span>
+      </span>
+    </div>
+  );
+}
+
 function Account({ user, onUpdate, onBack, onHome, onSignOut, onRankings, onAdmin }) {
   const [email, setEmail] = useState(user.email);
   const [fav, setFav] = useState(user.fav || "");
@@ -18979,6 +19334,13 @@ function Account({ user, onUpdate, onBack, onHome, onSignOut, onRankings, onAdmi
             <span className="mut" style={{ fontSize: 13 }}>Membership</span>
             <span style={{ color: user.paid ? "var(--green)" : "var(--gold)" }}>{user.paid ? "Season pass active — valid through Mar 1" : "Free demo"}</span>
           </div>
+          {/* ⭐⭐ HOW MUCH ROOM YOUR MOCKS ARE ACTUALLY USING.
+              Trey: "I'm not sure if all the mock drafts are going to crash the site or cost a ton in
+              storage… but I also don't really know the impact." Neither did anyone else, because nothing
+              anywhere showed it. Your account has a fixed ceiling, mocks are what fills it, and this is
+              the one place a person can look and see where they stand. It reports the STORED size — after
+              the mock name tables are folded in — because that is the number the ceiling applies to. */}
+          <StorageLine />
           <div style={{ marginBottom: 13 }}>
             <label className="mut" style={{ fontSize: 13, display: "block", marginBottom: 4 }}>Email</label>
             <div style={{ display: "flex", gap: 8 }}>
@@ -22900,6 +23262,37 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     }
     return out;
   }, [picks.length, cfg, userIdx, liveSlots]);
+  /* ⭐⭐⭐ ODDS AT THE PICKS THE MAIN SIM DOESN'T REACH.
+   *
+   * `sims` looks three of your picks ahead, because that is what the recommendation needs. The plan panel
+   * asks a wider question — Trey, in 29t: "I'd like to show a % of availability at both 2.03 (100%) and
+   * 3.08" — and for anything past that window the panel showed nothing at all, which reads as "no data"
+   * about a question that is perfectly answerable.
+   *
+   * ⚠ THIS DELIBERATELY DOES NOT OVERLAP WITH `sims`. Two Monte Carlos of the same pick, run at different
+   *   resolutions from different seeds, will print two different percentages for the same player on the
+   *   same screen — the exact failure mode this file has hit again and again. So `sims` owns the near
+   *   picks and this owns everything beyond them, and the reader below picks whichever covers the slot.
+   *
+   * Off the main path and skipped during a fast mock: it is a full pass over the remaining draft, and
+   * nothing on the plan panel is worth a stutter on the board.
+   */
+  const [farOdds, setFarOdds] = useState(null);
+  const myRemainingSig = remainingPicks.filter((p) => p.mine).map((p) => p.o).join(",");
+  useEffect(() => {
+    let alive = true;
+    if (done || fast || !players.length) { setFarOdds(null); return; }
+    const near = new Set((sims && Array.isArray(sims.nexts) ? sims.nexts : []));
+    const want = remainingPicks.filter((p) => p.mine && !near.has(p.o)).map((p) => p.o).slice(0, 18);
+    if (!want.length) { setFarOdds(null); return; }
+    const id = setTimeout(() => {
+      let res = null;
+      try { res = survivalAcrossPicks(players, sortedAdp, picks, want, cfg, 60); } catch (_) { res = null; }
+      if (alive) setFarOdds(res);
+    }, 250);
+    return () => { alive = false; clearTimeout(id); };
+  }, [myRemainingSig, picks.length, done, fast, players.length]);
+
   // The user's NEXT pick overall (default target).
   const myNextOverall = useMemo(() => { const r = remainingPicks.find((p) => p.mine); return r ? r.o : null; }, [remainingPicks]);
   // The user's SECOND upcoming pick (the one after next) — used for a dual "you in X / then Y" countdown so you
@@ -25342,11 +25735,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
        the hover table enumerates) and the VERDICT now comes from the simulation whenever it covers the pick.
        ⚠ Falls back to market order when there is no sim for that pick — never silently to "safe". */
     const stratOdds = (p, atO) => {
-      if (!p || !sims || !Array.isArray(sims.nexts) || !sims.pct) return null;
-      const i = sims.nexts.indexOf(atO);
-      if (i < 0 || !sims.pct[i]) return null;
-      const v = sims.pct[i][p.id];
-      return v == null ? null : v / 100;
+      if (!p) return null;
+      if (sims && Array.isArray(sims.nexts) && sims.pct) {
+        const i = sims.nexts.indexOf(atO);
+        if (i >= 0 && sims.pct[i]) { const v = sims.pct[i][p.id]; if (v != null) return v / 100; }
+      }
+      // Beyond the near window, the wider pass answers — see farOdds. Slots covered by `sims` never reach
+      // here, so the two can never print different numbers for the same pick.
+      if (farOdds && farOdds[atO] && farOdds[atO][p.id] != null) return farOdds[atO][p.id] / 100;
+      return null;
     };
     const playerNamed = (name) => (players || []).find((p) => p && normName(p.name) === normName(name)) || null;
     // ⭐⭐⭐ 29o — THE QUEUE, AS A TABLE. Trey: "can you hover the column for the 'ahead of him' and see the
@@ -25526,7 +25923,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               borderBottom: chosen ? "2px solid var(--gold)" : "none",
                             }}>
                               {w.label}{w.keeper && <i className="ti ti-lock" style={{ fontSize: 9, marginLeft: 2, color: "var(--gold)" }} aria-hidden="true" />}
-                              {od != null && <span style={{ fontSize: 9, fontWeight: 800, color: oc, marginLeft: 3 }}>{Math.round(od * 100)}%</span>}
+                              {/* ⚠ IN BRACKETS, because "2.03" and "0%" set flush against each other at
+                                  9px read as the single number "2.030%". Trey wrote it in brackets himself
+                                  when he asked for this — "2.03 (100%)" — which is the tell that it is how
+                                  the pair wants to be read. */}
+                              {od != null && <span style={{ fontSize: 9, fontWeight: 800, color: oc, marginLeft: 3 }}>({Math.round(od * 100)}%)</span>}
                             </span>
                           );
                         })}

@@ -5,6 +5,8 @@
 // the built-in engine. This means the site always works even before the backend is connected —
 // connecting the backend is a pure upgrade, not a requirement to launch.
 
+import { packState, unpackState } from './statecodec.js';
+
 const API = import.meta.env.VITE_API_URL || '';
 export const hasBackend = !!API;
 
@@ -221,14 +223,19 @@ export const api = {
   // ---- per-user app state (cross-device persistence of the local gs-state blob) ----
   // We remember the updated_at we last saw from the server and send it as baseUpdatedAt on write, so the
   // server can reject a stale overwrite (409) instead of silently clobbering newer data from another device.
+  /* ⭐⭐ THE BLOB IS COMPRESSED ON THE WIRE AND IN THE DATABASE. A mock's per-pick name arrays are 82% of
+     what it costs to store, and they are recoverable from a single id→name table per league — see
+     statecodec.js for the measurements and the one case that is deliberately left uncompressed.
+     Unpack on the way in, pack on the way out, and nothing between here and React knows the difference. */
   async getState() {
     const r = await call('/api/state');
     if (r && r.updatedAt) _lastStateUpdatedAt = r.updatedAt;
+    if (r && r.state) return { ...r, state: unpackState(r.state) };
     return r;
   },
   async putState(state) {
     try {
-      const r = await call('/api/state', { method: 'PUT', body: { state, baseUpdatedAt: _lastStateUpdatedAt } });
+      const r = await call('/api/state', { method: 'PUT', body: { state: packState(state), baseUpdatedAt: _lastStateUpdatedAt } });
       if (r && r.updatedAt) _lastStateUpdatedAt = r.updatedAt;
       markSync(true);
       return r;
@@ -238,7 +245,9 @@ export const api = {
       if (e && e.status === 409 && e.data) {
         if (e.data.serverUpdatedAt) _lastStateUpdatedAt = e.data.serverUpdatedAt;
         markSync(true);   // the server answered — a conflict is a healthy connection, not a broken one
-        return { ok: false, conflict: true, state: e.data.state || {}, updatedAt: e.data.serverUpdatedAt || null };
+        // ⚠ THE CONFLICT PAYLOAD IS THE SERVER'S BLOB, so it is packed too — the caller merges it into
+        //   live React state and would otherwise be handed mocks with no names on them.
+        return { ok: false, conflict: true, state: unpackState(e.data.state || {}), updatedAt: e.data.serverUpdatedAt || null };
       }
       markSync(false);
       throw e;
