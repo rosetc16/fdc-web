@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29x";
+const BUILD_TAG = "2026.07.29y";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -2125,6 +2125,26 @@ const platformCfgPatch = (d, cfg, players, opts = {}) => {
   }
   // ⚠ ONLY THE SLEEPER-DERIVED SET IS REPLACED. Keepers the user typed by hand carry no `src` and must
   //   survive — overwriting them wholesale is the conflict 19857's diff panel exists to avoid.
+  /* ⭐⭐⭐ EXISTING ROSTERS — "When I connected my Dynasty league, it didn't pull over rosters."
+   *
+   * In a dynasty or rookie league the rosters ARE the draft context: who each team already has is what
+   * decides who they take next, so without them the pick predictions are a redraft simulation wearing a
+   * dynasty label. The backend has always returned them; two paths on this side dropped them on the floor.
+   *
+   * This is the self-healing half. A league that was imported before the fix has no rosters in its connect
+   * blob, and re-importing it would mean deleting and rebuilding the league — losing its picks, strategy
+   * and mocks. Folding them in on the next refresh means those leagues repair themselves silently.
+   *
+   * ⚠ MERGE ONTO patch.connect, NOT conn. The traded-picks branch above may have already written a
+   *   patch.connect; spreading `conn` here instead would silently throw its traded picks away. */
+  if (d.existingRosters && typeof d.existingRosters === "object" && Object.keys(d.existingRosters).length
+      && JSON.stringify(d.existingRosters) !== JSON.stringify(conn.existingRosters || null)) {
+    patch.connect = { ...(patch.connect || conn), existingRosters: d.existingRosters };
+    notes.push("existing rosters");
+  }
+  // Team names by draft slot come from the same call and are pure decoration — patched quietly, no note.
+  if (d.slotNames && !conn.slotNames) patch.connect = { ...(patch.connect || conn), slotNames: d.slotNames };
+
   const fromSleeper = platformKeepers(d, players);
   if (fromSleeper) {
     const manual = (cfg.keepers || []).filter((k) => k && k.src !== "sleeper");
@@ -8730,7 +8750,15 @@ export default function App() {
           const cfg = { ...d.cfg, name: sl.name || d.cfg.name || "Sleeper league",
             slot: (d.cfg && d.cfg.slot != null) ? d.cfg.slot : (d.yourSlot != null ? d.yourSlot : null),
             order: (d.cfg && d.cfg.order) || (d.draftType === "linear" ? "linear" : d.draftType === "3rr" ? "3rr" : "snake"),
-            connect: { platform: "sleeper", leagueId: sl.league_id, username, draftId: d.draft_id || sl.draft_id || null, status: d.status || sl.draft_status || null, tradedPicks: d.tradedPicks || [] } };
+            /* ⭐⭐⭐ EVERYTHING THE IMPORT FETCHED, NOT A SUBSET OF IT.
+             * This built its connect blob by hand and listed five fields, while the pick-a-league flow next
+             * to it passed nine. The three it forgot are the three a dynasty league is made of: the rosters
+             * (who each team already owns — the whole basis of a dynasty pick prediction), the keepers, and
+             * the team names. So the same league imported through the button worked and imported
+             * automatically did not, which is why the report read like the feature was missing entirely:
+             * "When I connected my Dynasty league, it didn't pull over rosters." */
+            connect: { platform: "sleeper", leagueId: sl.league_id, username, draftId: d.draft_id || sl.draft_id || null, status: d.status || sl.draft_status || null,
+              tradedPicks: d.tradedPicks || [], keepers: d.keepers || [], slotNames: d.slotNames || null, existingRosters: d.existingRosters || null } };
           built.push({ id: `${Date.now()}-${sl.league_id}`, name: cfg.name, cfg, picks: d.picks || [], preds: [], connect: cfg.connect, sleeperLeagueId: sl.league_id, created: new Date().toLocaleDateString() });
         } catch (e) { /* skip this league, keep going */ }
       }));
@@ -14428,7 +14456,7 @@ function HubShell({ title, onBack, onHome, onSignOut, user, children }) {
    get the league in, tell it the rules, then prepare. Nothing here can be done usefully out of order —
    keepers need a league, a plan needs the scoring that prices the board.
    ═══════════════════════════════════════════════════════════════════════════════════════════════════ */
-function GetStartedPanel({ leagues, funMocks, dismissed, onDismiss, onAutoImportSleeper, onNewLeague, onSettings, onMock, onStrategy }) {
+function GetStartedPanel({ leagues, funMocks, dismissed, onDismiss, onConnectSleeper, onNewLeague, onSettings, onMock, onStrategy }) {
   // ---- what has actually been done, read off the data ------------------------------------------------
   const lg = (leagues && leagues[0]) || null;
   const hasLeague = !!lg;
@@ -14450,7 +14478,12 @@ function GetStartedPanel({ leagues, funMocks, dismissed, onDismiss, onAutoImport
       title: "Add your league",
       body: "Connect Sleeper and everything comes with it — teams, scoring, roster slots, keepers, traded picks and your draft slot. A public ESPN league imports the same settings. Anywhere else, build it by hand in a minute.",
       actions: [
-        ["Connect Sleeper", "ti-plug-connected", onAutoImportSleeper, true],
+        /* ⚠ THIS CALLED autoImportSleeper() WITH NO ARGUMENTS AND DID NOTHING AT ALL. That function
+           takes (leagueList, username) and returns immediately on an empty list, so the most important
+           button in the first-run guide — the one the whole panel is pointing at — was inert. It is also
+           the wrong job for it: you cannot import leagues before the account is linked. Send them to the
+           link control instead, which is the actual first step. */
+        ["Connect Sleeper", "ti-plug-connected", onConnectSleeper, true],
         ["ESPN or manual", "ti-plus", onNewLeague, false],
       ],
     },
@@ -14750,7 +14783,12 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
         <GetStartedPanel
           leagues={leagues} funMocks={funMocks}
           dismissed={gsDismissed} onDismiss={dismissGetStarted}
-          onAutoImportSleeper={onAutoImportSleeper} onNewLeague={onNewLeague}
+          onConnectSleeper={() => {
+            const el = document.querySelector("[data-sleeper-anchor]");
+            if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "center" });
+            const inp = el && el.querySelector("input");
+            if (inp && inp.focus) setTimeout(() => inp.focus(), 420);
+          }} onNewLeague={onNewLeague}
           onSettings={onSettings} onMock={onMock} onStrategy={onStrategy}
         />
       </div>
@@ -14865,7 +14903,7 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
       {/* Sleeper link — a quiet one-line strip. It's an account connection, not a headline feature, so it
           shouldn't shout or carry a paragraph of explanation. */}
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "0 20px 16px" }}>
-        <div className="linkstrip" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", borderBottom: "1px solid var(--line2)", paddingBottom: 12 }}>
+        <div className="linkstrip" data-sleeper-anchor style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", borderBottom: "1px solid var(--line2)", paddingBottom: 12 }}>
           <i className="ti ti-plug-connected" style={{ fontSize: 14, color: sleeperLink.linked ? "#4FD1A1" : "var(--mut)", flexShrink: 0 }} aria-hidden="true" />
           <span className="mut" style={{ fontSize: 12.5, minWidth: 0 }}>
             {sleeperLink.linked ? <>Sleeper connected — leagues sync automatically.</> : <>Connect Sleeper to pull in your real leagues.</>}
@@ -21175,25 +21213,45 @@ function EditPicksModal({ picks, players, sortedAdp, draftedSet, userIdx, cfg, o
   const cur = players[picks[sel]];
   const selTeam = teamAt(sel);
   const selIsMine = selTeam === userIdx;
-  // Candidates: anyone still available, PLUS whoever currently occupies this slot (so he's visible/keepable).
+  /* ⭐⭐⭐ WHO YOU'RE ALLOWED TO PUT HERE — and why "already drafted" used to be a dead end.
+   *
+   *   "I tried to edit the draft picks, but they aren't available to select."
+   *
+   * The list used to be: anyone undrafted, plus the current occupant. Which is fine for a typo, and
+   * useless for the case people actually hit — two picks in the wrong order. To put Jeanty back at 1.07
+   * you need Jeanty, and Jeanty is drafted (wrongly, at 2.12), so he isn't offered. The user's workaround
+   * was to park BOTH slots on undrafted players first, then come back and set them properly: four edits
+   * and a board that is deliberately wrong in between.
+   *
+   * So a player standing at another PICK is a candidate too, and choosing him trades the two slots. The
+   * one thing that stays excluded is a player who's off the board without occupying a pick — a keeper, or
+   * someone taken ahead of you in a live draft. There is no slot to swap him with, and pulling him out of
+   * the drafted set by hand would just desync the board from the platform it's mirroring. */
+  const pickIndexOf = useMemo(() => {
+    const m = new Map();
+    (picks || []).forEach((id, i) => { if (id != null && !m.has(id)) m.set(id, i); });
+    return m;
+  }, [picks]);
   const results = useMemo(() => {
     const term = q.trim().toLowerCase();
     const out = [];
     for (const p of sortedAdp) {
-      if (draftedSet.has(p.id) && p.id !== picks[sel]) continue;
+      if (draftedSet.has(p.id) && p.id !== picks[sel] && !pickIndexOf.has(p.id)) continue;
       if (term && !`${p.name} ${p.team} ${p.pos}`.toLowerCase().includes(term)) continue;
       out.push(p);
       if (out.length >= 60) break;
     }
     return out;
-  }, [q, sortedAdp, draftedSet, picks, sel]);
+  }, [q, sortedAdp, draftedSet, picks, sel, pickIndexOf]);
+  // Where the chosen player currently stands, if he stands anywhere — this is what turns an edit into a swap.
+  const swapFrom = newId != null && pickIndexOf.has(newId) && pickIndexOf.get(newId) !== sel ? pickIndexOf.get(newId) : -1;
   const chosen = newId != null ? players[newId] : null;
   return (
     <div className="modalbg" onClick={onClose}>
       <div className="panel" style={{ maxWidth: 560, width: "100%", padding: 22, borderColor: "var(--gold)", position: "relative", maxHeight: "86vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
         <button onClick={onClose} aria-label="Close" style={{ position: "absolute", top: 10, right: 10, background: "transparent", border: "none", color: "var(--mut)", cursor: "pointer", padding: 6, fontSize: 16, lineHeight: 1 }}><i className="ti ti-x" aria-hidden="true" /></button>
         <div className="disp" style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Edit a pick</div>
-        <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 14 }}>Correct a pick that was entered wrong — without undoing everything after it. Only this slot changes.</div>
+        <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 14 }}>Correct a pick that was entered wrong — without undoing everything after it. Pick anyone still available, or pick a player who's already been drafted and the two slots trade places.</div>
 
         <div style={{ marginBottom: 12 }}>
           <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700, marginBottom: 5 }}>Which pick?</div>
@@ -21217,21 +21275,34 @@ function EditPicksModal({ picks, players, sortedAdp, draftedSet, userIdx, cfg, o
           <input className="gs" style={{ width: "100%", fontSize: 13, padding: "7px 9px" }} placeholder="Search for a player…" value={q} onChange={(e) => setQ(e.target.value)} autoFocus />
         </div>
         <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--line2)", borderRadius: 8 }}>
-          {results.length ? results.map((p) => (
-            <div key={p.id} onClick={() => setNewId(p.id)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", cursor: "pointer", fontSize: 12.5, background: newId === p.id ? "rgba(224,166,60,.16)" : "transparent", borderLeft: newId === p.id ? "3px solid var(--gold)" : "3px solid transparent" }}>
+          {results.length ? results.map((p) => {
+            const at = pickIndexOf.has(p.id) ? pickIndexOf.get(p.id) : -1;
+            const isSwap = at >= 0 && at !== sel;
+            return (
+            <div key={p.id} data-editcand={p.name} data-editswap={isSwap ? pickLabel(at) : undefined} onClick={() => setNewId(p.id)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", cursor: "pointer", fontSize: 12.5, background: newId === p.id ? "rgba(224,166,60,.16)" : "transparent", borderLeft: newId === p.id ? "3px solid var(--gold)" : "3px solid transparent" }}>
               <Dot pos={p.pos} />
               <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name} <span className="mut" style={{ fontSize: 10.5 }}>{p.pos}{p.posRank} · {p.team}</span></span>
               <span className="num mut" style={{ fontSize: 10.5 }}>ADP {p.adp != null ? p.adp.toFixed(1) : "—"}</span>
               {p.id === picks[sel] && <span className="mut" style={{ fontSize: 9, fontWeight: 700, marginLeft: 4 }}>current</span>}
+              {/* Says what will happen before you commit to it: this man is standing somewhere, and picking
+                  him here moves him — it does not clone him. */}
+              {isSwap && <span className="num" style={{ fontSize: 9, fontWeight: 800, marginLeft: 4, color: "var(--gold)", whiteSpace: "nowrap" }}>at {pickLabel(at)} · swap</span>}
             </div>
-          )) : <div className="mut" style={{ padding: 12, fontSize: 12 }}>No available players match that search.</div>}
+          ); }) : <div className="mut" style={{ padding: 12, fontSize: 12 }}>No players match that search.</div>}
         </div>
 
+        {/* Spell the swap out in full before it happens. Two picks change, and the user should read the
+            sentence — not discover the second half of it on the board afterwards. */}
+        {swapFrom >= 0 && (
+          <div style={{ marginTop: 12, padding: "8px 11px", borderRadius: 8, background: "rgba(224,166,60,.10)", border: "1px solid var(--gold)", fontSize: 12, lineHeight: 1.5 }}>
+            <b>{chosen ? chosen.name : ""}</b> is at <b>{pickLabel(swapFrom)}</b>. He moves here, and <b>{cur ? cur.name : "this slot"}</b> takes his place at {pickLabel(swapFrom)}.
+          </div>
+        )}
         <div style={{ display: "flex", gap: 8, marginTop: 18, alignItems: "center" }}>
           <button className="btn" onClick={onClose}>Cancel</button>
           <div style={{ flex: 1 }} />
           {chosen && <span className="mut" style={{ fontSize: 11.5 }}>→ {chosen.name}</span>}
-          <button className="btn btn-gold" disabled={newId == null || newId === picks[sel]} onClick={() => onApply(sel, newId)}>Update pick</button>
+          <button className="btn btn-gold" data-editapply disabled={newId == null || newId === picks[sel]} onClick={() => onApply(sel, newId)}>{swapFrom >= 0 ? "Swap the two picks" : "Update pick"}</button>
         </div>
       </div>
     </div>
@@ -21568,21 +21639,71 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // different players. Saves therefore also persist each pick's normalized NAME, and on mount we
   // remap the stored ids through the names against the CURRENT pool. Same fix as rank sets.
   const pickNamesOf = (pks) => (pks || []).map((id) => (id != null && players[id] ? normName(players[id].name) : null));
-  useEffect(() => {
-    const remap = (arr, names) => {
-      if (!names || !names.length || !arr.length || arr.length !== names.length) return arr;
-      const byN = {}; players.forEach((p) => { byN[normName(p.name)] = p.id; });
-      let changed = false;
-      const out = arr.map((id, i) => { const nid = names[i] != null ? byN[names[i]] : undefined; if (nid != null && nid !== id) { changed = true; return nid; } return id; });
-      return changed ? out : arr;
-    };
-    if (players.length) {
-      setPicks((cur) => remap(cur, league.pickNames));
-      setPreds((cur) => remap(cur, league.predNames));
-    }
-    // mount-only: after this, the session works in current-pool ids and every save re-derives names
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+
+  /* ⭐⭐⭐ PICKS ARE STORED AS POOL INDEXES, AND A NEW BUILD RESHUFFLES THEM. THIS IS THE REPAIR.
+   *
+   * A user, mid-draft: "I clicked on the update button and, when I came back, some of the draft picks were
+   * switched around… Ashton Jeanty and Amon-Ra St. Brown are switched." Fourteen picks in one draft: some
+   * swapped with each other, some replaced outright by players nobody had taken. And: "I did edit a few of
+   * the draft picks but, when I refreshed via an update again, those same picks swapped back."
+   *
+   * `picks[o]` is an INDEX into the player array. Ship a build whose data pack adds or reorders players and
+   * every index past that point names a different man — neighbours trade places, and an index that lands on
+   * a newly-added rookie becomes a "replacement". That is exactly the reported pattern, and it is why
+   * hand-editing did not stick: the edit was saved as an index too, and the next pool change moved it again.
+   *
+   * Saves already persist each pick's normalized NAME beside its index precisely so this can be undone. The
+   * repair existed — but it ran ONCE, on mount, with `[]` deps. At mount the pool is either empty or the
+   * built-in fallback: the live pack arrives a beat later and bumps `dataVersion`, rebuilding `players` with
+   * completely different indexes. By the time the real pool exists, the only code that consults the saved
+   * names has already run and will never run again.
+   *
+   * So names are now the authority for the whole session, not just its first instant:
+   *   · `nameRef` holds the canonical name per slot, seeded from what was saved.
+   *   · Whenever the POOL ITSELF changes identity, every id is re-resolved from those names.
+   *   · While the pool is stable, ids are valid, so the names are refreshed from them — which is what makes
+   *     a manual edit stick through the next rebuild instead of reverting.
+   * Ids become a cache of the names rather than the other way round.
+   *
+   * ⚠ Deliberately NOT skipped for a connected live draft. The other pool-change effect skips those because
+   *   re-pointing picks could fight the Sleeper sync; this cannot, because it only ever maps a name back to
+   *   the same name. A connected draft was just as exposed to the swap as a manual one.
+   */
+  const pickNameRef = useRef(null);
+  const predNameRef = useRef(null);
+  const poolIdentRef = useRef(null);
+  const namesSigRef = useRef(null);
+  /* Set once the stored names have actually been applied to the ids. Until then NOTHING may persist names
+     derived from the current ids — see the autosave guard. */
+  const reconciledRef = useRef(false);
+  /* ⚠ THE STORED NAMES ARE READ LAZILY, NOT CAPTURED ONCE.
+     Seeding these refs from `league.pickNames` on first render looked right and was not: DraftRoom's first
+     render can happen before the league has finished hydrating from storage/the server, so the ref captured
+     an EMPTY list and never re-seeded. The remap below then had nothing to remap with, the name-refresh half
+     ran instead, and it wrote the names of whoever happened to sit at the stale ids — baking the corruption
+     in permanently and overwriting the only record of who was really drafted.
+     So the ref is a cache of what we have LEARNED this session, and the saved names remain the fallback for
+     as long as we have learned nothing. */
+  const storedNames = (which) => {
+    /* ⚠ THE SAVED COPY WINS, ALWAYS — the in-session ref is only a fallback.
+       Preferring the ref looked like the obvious caching choice and reintroduced the bug under a different
+       shape: if a render lands between hydration and the first reconcile, the ref gets "learned" from ids
+       that are still stale, and from then on it shadows the one trustworthy record. `league.pickNames` is
+       rewritten by every save (including immediately after a manual edit), so it is never staler than the
+       ref and is correct in exactly the cases the ref is not. The ref then only matters for a draft that has
+       never been saved, where the ids are right anyway. */
+    const fromLeague = (league && (which === "picks" ? league.pickNames : league.predNames)) || null;
+    if (Array.isArray(fromLeague) && fromLeague.length) return fromLeague;
+    const ref = which === "picks" ? pickNameRef : predNameRef;
+    return (ref.current && ref.current.length) ? ref.current : [];
+  };
+
+  // ⚠ THE EFFECT ITSELF LIVES BELOW `players` (search: NAME-STABLE REMAP). It cannot sit here: `players`
+  //   is declared several hundred lines further down, and a dependency array is evaluated DURING RENDER, so
+  //   naming it up here is a temporal-dead-zone ReferenceError on the first paint — which the error boundary
+  //   catches and renders as "Something hiccuped". The previous version survived only because its dep array
+  //   was empty, which is also precisely why it never re-ran when the real pool arrived.
+
   // ---- HYPOTHETICAL / SCENARIO MODE -----------------------------------------------------------
   // Lets you "play out" picks on top of the live draft to see how decisions would cascade, without
   // affecting the real draft. While active, the live Sleeper sync is paused so your what-ifs aren't
@@ -22166,27 +22287,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // board jump between stale and live pick sets. We ONLY remap for MANUAL drafts (no live connection), and
   // only when the pool's player ORDERING actually changed (a robust signature over many ids, not just two).
   const isConnectedLive = connectedPlatform === "sleeper" && draftMode === "sleeper" && !!(cfg.connect && cfg.connect.leagueId);
-  const lastPoolRef = useRef(null);
-  useEffect(() => {
-    if (!players.length) return;
-    // robust signature: sample names across the whole pool, not just index 0/10, so a mid-board reorder
-    // is detected (and an identical pool is correctly treated as unchanged).
-    const idxs = [0, 5, 15, 30, 60, 100, 150, 200];
-    const sig = players.length + "|" + idxs.map((i) => players[i] ? players[i].name : "").join("·");
-    const byName = {}; players.forEach((p) => { byName[p.id] = p.name; });
-    if (lastPoolRef.current == null) { lastPoolRef.current = { sig, byName }; return; }
-    if (lastPoolRef.current.sig === sig) return; // truly unchanged → nothing to do
-    const prevNames = lastPoolRef.current.byName;
-    lastPoolRef.current = { sig, byName };
-    // Connected drafts: never remap here. The next sync poll (which runs immediately on data change) will
-    // rebuild picks from Sleeper by name against the new pool. Touching picks now would corrupt them.
-    if (isConnectedLive) return;
-    // Manual drafts: safely re-point existing picks/preds by name.
-    const newIdByName = {}; players.forEach((p) => { newIdByName[normName(p.name)] = p.id; });
-    const remapId = (id) => { if (id == null) return id; const nm = prevNames[id]; if (nm == null) return id; const nid = newIdByName[normName(nm)]; return nid != null ? nid : id; };
-    setPicks((pp) => pp.map(remapId));
-    setPreds((pp) => pp.map((id) => id == null ? null : remapId(id)));
-  }, [players, isConnectedLive]);
+  /* ⚠⚠ THE SECOND PICK-REMAPPER USED TO LIVE HERE, AND IT WAS PART OF THE PROBLEM.
+     It re-pointed picks across a pool change by reading each id's name out of the PREVIOUS pool
+     (prevNames[id]) and looking that name up in the new one. That is only sound if the ids were correct for
+     the previous pool — and the whole failure being fixed is that, after a reload onto a new data pack, they
+     are not. So it took already-stale ids, resolved them to whoever those indexes happened to name, and
+     rewrote them to point at those wrong players in the new pool: it did not just fail to repair the
+     corruption, it laundered it into something that looked deliberate.
+     Worse, it fought the name-based reconcile below over the same state, and the two disagreeing is exactly
+     why picks kept "swapping back" after a manual edit. The saved pickNames are the only trustworthy record,
+     so there is now ONE mechanism and it reads them. See NAME-STABLE REMAP. */
+
   // Resolve keepers pulled from a connected league (Sleeper) — name+slot → engine id+team — and merge
   // them as no-cost roster adds, so each keeper shows on the right team and counts toward strength.
   useMemo(() => {
@@ -22237,6 +22348,61 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   }, [league, isMock]);
   useEffect(() => { if (mockAdp.n > 0) setCols((c) => (c.mockAdp ? c : { ...c, mockAdp: true })); }, [mockAdp.n]);
   const sortedAdp = useMemo(() => players.slice().sort((a, b) => a.adp - b.adp), [players]);
+
+  /* NAME-STABLE REMAP — RESOLVED DURING RENDER, NOT IN AN EFFECT.
+   *
+   * See the long note beside `storedNames` for what breaks and why. This is the second attempt at the
+   * mechanism, and the reason it moved out of useEffect is worth writing down, because the first version
+   * looked correct and failed about one load in three.
+   *
+   * In an effect, this is one of several things racing over the same state: cloud hydration re-seeds `picks`
+   * from storage, the pool memo rebuilds when the live pack lands, and the autosave persists names derived
+   * from whatever ids are current. Any interleaving where a save runs before the repair destroys the saved
+   * names — the only record of who was really drafted — and the corruption becomes permanent. Every guard I
+   * added moved the race rather than closing it.
+   *
+   * Setting state during render (guarded, so it happens once per input change) runs BEFORE effects and
+   * before children commit, so no save, sync or hydration can observe the stale ids. There is nothing left
+   * to interleave with.
+   *
+   * A manual edit is safe: it changes ids while `sig` is unchanged, so no resolve runs; the save that
+   * follows rewrites `league.pickNames` to match, which changes `sig`, and the resolve that fires then is a
+   * no-op because names and ids already agree. That is what stops an edit "swapping back".
+   */
+  const [resolvedFor, setResolvedFor] = useState(null);
+  if (players.length) {
+    const at = [0, 5, 15, 30, 60, 100, 150, 200, 260];
+    const poolIdent = players.length + "|" + at.map((i) => (players[i] ? players[i].name : "")).join("\u00b7");
+    const pNames = storedNames("picks"), dNames = storedNames("preds");
+    const sig = poolIdent + "##" + pNames.join("|") + "##" + dNames.join("|");
+    if (resolvedFor !== sig) {
+      const byName = {};
+      players.forEach((p) => { byName[normName(p.name)] = p.id; });
+      /* Length is deliberately not required to match: the old version bailed whenever it differed, which is
+         the normal case the moment one more pick has been made than was last saved — so the repair was
+         skipped exactly while a draft was in progress. */
+      const byNames = (arr, names) => {
+        if (!Array.isArray(arr) || !arr.length || !names || !names.length) return arr;
+        let changed = false;
+        const out = arr.map((id, i) => {
+          const nm = names[i];
+          if (nm == null) return id;
+          const nid = byName[nm];
+          // Unresolvable means he left the pool entirely; keeping the stale id is no worse than any
+          // alternative and never silently promotes an unrelated player into his slot.
+          if (nid == null || nid === id) return id;
+          changed = true;
+          return nid;
+        });
+        return changed ? out : arr;
+      };
+      const fixedPicks = byNames(picks, pNames);
+      const fixedPreds = byNames(preds, dNames);
+      setResolvedFor(sig);
+      if (fixedPicks !== picks) setPicks(fixedPicks);
+      if (fixedPreds !== preds) setPreds(fixedPreds);
+    }
+  }
   // Personal rankings resolved for this league's format (empty if the user has none for it).
   const myRanks = useMemo(() => resolveMyRanks(players, cfg, user, user?.rankAdj, league.mockOf != null ? league.mockOf : league.id), [players, cfg, user, league]);
   useEffect(() => { if (myRanks.has) setCols((c) => (c.myRank && c.blendAdp ? c : { ...c, myRank: true, blendAdp: true })); }, [myRanks.has]);
@@ -22670,10 +22836,28 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // so the only real cost is the extra app-level re-render per pick — which is why a fast mock, where
   // picks arrive several per second and nothing is at stake, keeps the old throttle.
   const saveEveryPick = !isMock && !isDemo;
+  /* ⭐⭐⭐ THIS FIRED ON picks.LENGTH, AND THAT IS HOW THE SAVED NAMES WENT STALE.
+   *
+   * Plenty of things change a pick WITHOUT changing how many picks there are: the keeper reconciliation
+   * swaps two slots, the live Sleeper sync replaces a locally-entered pick with the real one, and a user
+   * editing a pick by hand replaces one id with another. None of those moved `picks.length`, so none of
+   * them saved — leaving `pickNames` describing an OLDER arrangement than `picks`.
+   *
+   * On its own that is invisible. It becomes the reported bug on the next reload, because the names are
+   * what a fresh data pack is repaired against: the app faithfully re-points every pick at the player the
+   * STALE name says, and the swap that was corrected mid-draft comes back. That is precisely the user's
+   * "I did edit a few of the draft picks but, when I refreshed via an update again, those same picks
+   * swapped back."
+   *
+   * Keying on the CONTENT means any change to who is at a slot persists the matching names. The write is
+   * already debounced downstream (persist collapses a burst into one blob write), so this costs nothing.
+   */
+  const picksSig = picks.join(",");
+  const predsSig = preds.join(",");
   useEffect(() => {
     if (!picks.length) return;
     if (saveEveryPick || picks.length % 5 === 0 || done) onSave(picks, preds, pickNamesOf(picks), pickNamesOf(preds));
-  }, [picks.length, done]);
+  }, [picksSig, predsSig, done]);
 
   // Sim count scales with how close YOUR pick is. During a fast mock, when your pick is many slots away,
   // running the full 300-path Monte Carlo on every CPU pick is what makes the cursor stutter — the main
@@ -23460,7 +23644,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     return [
       { kind: "take", tone: same.length ? (wouldBeShort ? "bad" : "neutral") : "good",
         x: `Week ${p.bye} bye — ${!mine.length ? "nobody on your roster is out that week"
-          : same.length ? `you already hold ${same.length} ${q}${same.length === 1 ? "" : "s"} on this bye${wouldBeShort ? `, so drafting him would leave you short at ${q}` : ""}`
+          // Say the consequence either way. "You already hold 1 RB on this bye" and then silence leaves the
+          // reader to do the roster arithmetic themselves — which is the whole job of this card.
+          : same.length ? `you already hold ${same.length} ${q}${same.length === 1 ? "" : "s"} on this bye${wouldBeShort ? `, so drafting him would leave you short at ${q}` : `, but you would still have enough ${q}s to start that week`}`
           : `${mine.length} on your roster share it, none of them ${q}s`}` },
       { kind: "altheader", x: `Same position (${q})` },
       ...(same.length ? line(same) : [{ t: "None", x: `No other ${q} on your roster has this bye.` }]),
@@ -23476,7 +23662,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // How many bodies you START at the position — a collision only actually costs you a lineup slot when
     // the players sharing that week are as many as the slots you have to fill.
     const need = (REQ_F(cfg.sf)[q] || 0) + ((SPEC.FLEX || 0) > 0 && (q === "RB" || q === "WR" || q === "TE") ? 1 : 0);
-    const severe = held.length + 1 > Math.max(1, need) ? false : true;
+    /* ⭐⭐⭐ THIS WAS BACKWARDS, AND IT PAINTED THE BOARD THE WRONG COLOUR EVERY TIME.
+     *
+     *     const severe = held.length + 1 > Math.max(1, need) ? false : true;
+     *
+     * Read it against the comment directly above: a bye costs you a lineup slot when the players sharing
+     * that week outnumber the slots you have to fill. That is `held.length + 1 > need` — the exact
+     * condition the ternary returned FALSE for. So a genuine hole was drawn as survivable, and every
+     * harmless overlap was drawn as a hole, with the tooltip promising "you would have no RB to start
+     * that week" about a week you comfortably survive.
+     *
+     * It surfaced the way these always do: the cell and its own hover disagreed. The badge said severe;
+     * the card underneath said "you already hold 1 RB on this bye" with no consequence, because by its
+     * own (correct) arithmetic there wasn't one. One of the two had to be wrong, and it was the badge. */
+    const severe = held.length + 1 > Math.max(1, need);
     return { week: p.bye, with: held.map((x) => x.name), n: held.length, severe, pos: q };
   };
   // ⭐⭐ 29o — THE SHOW-ROSTERS COLOUR LANGUAGE, CARRIED ONTO THE PLAYER LIST. Trey: "you still need to
@@ -24615,7 +24814,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         }
         const col = myByeHues[cl.week] || BYE_HUES[0];
         return (
-          <span data-byecell={cl.week} data-byesevere={cl.severe ? "1" : ""}
+          /* ⚠ data-byemark IS THE ONLY THING SEPARATING A FLAGGED CELL FROM A PLAIN ONE IN THE DOM.
+             `data-byecell` used to mean "this is a collision", then the universal hover put it on every
+             bye cell too — so from the outside a scannable column and a fully-decorated one look identical,
+             and the check that says "the mark is the exception" could not tell them apart. */
+          <span data-byecell={cl.week} data-byemark="1" data-byesevere={cl.severe ? "1" : ""}
             onMouseEnter={open} onMouseLeave={hideTip}
             style={{ display: "inline-block", minWidth: 20, padding: "0 4px", borderRadius: 4, fontWeight: 800, cursor: "help",
               color: cl.severe ? "#0d0f12" : col, background: cl.severe ? col : `${col}22`, border: `1px solid ${col}${cl.severe ? "" : "66"}` }}>
@@ -30943,7 +31146,27 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
       {editPicksOpen && <EditPicksModal picks={picks} players={players} sortedAdp={sortedAdp} draftedSet={draftedSet}
         userIdx={userIdx} cfg={cfg} onClose={() => setEditPicksOpen(false)}
-        onApply={(o, newId) => { setPicks((prev) => { const next = prev.slice(); next[o] = newId; return next; }); setEditPicksOpen(false); }} />}
+        /* ⭐⭐⭐ A ONE-SLOT EDIT, OR A TWO-SLOT SWAP — WHICHEVER THE CHOICE IMPLIES.
+         *
+         * If the player you picked is already sitting at another slot, putting him here without moving
+         * anyone would duplicate him and leave the man he displaced nowhere. So he trades places with
+         * whoever is here. That is the repair the user was reduced to doing by hand:
+         *
+         *   "Editing these picks is proving difficult as I have to choose a player that hasn't been
+         *    drafted yet for both slots and then choose the correct players."
+         *
+         * Two round trips through a modal, with the board in a knowingly wrong state in between, to
+         * express one swap. Now it is one gesture and the board is never invalid. */
+        onApply={(o, newId) => {
+          setPicks((prev) => {
+            const next = prev.slice();
+            const j = prev.indexOf(newId);
+            if (j >= 0 && j !== o) next[j] = prev[o];
+            next[o] = newId;
+            return next;
+          });
+          setEditPicksOpen(false);
+        }} />}
 
       {trendsOpen && <InDraftTrends cfg={cfg} players={players} draftedSet={draftedSet} allLeagues={allLeagues} allFunMocks={allFunMocks} onClose={() => setTrendsOpen(false)} tierOf={valueTierOf} />}
       {/* ===== BETWEEN-PICKS SUMMARY POPUP — what happened while you waited, then your decision.
