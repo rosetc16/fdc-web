@@ -47,4 +47,37 @@ if (depth !== 0) {
   process.exit(1);
 }
 
-console.log(`  ✓ stylesheet is clean (${body.split('\n').length} lines, no stray backticks, braces balanced)`);
+// A third: comment delimiters must nest properly. CSS comments DO NOT NEST, so an editing slip that leaves a
+// stray `*/` on its own line — the classic one is inserting a new paragraph after the `*/` that already
+// closed the comment you meant to extend — turns the text into garbage tokens and the parser then discards
+// everything up to the next recovery point. In 29ac that swallowed the very rule the comment described:
+// `.droomhead>.disp` never applied, the mobile header kept its old layout, and both the backtick check and
+// the brace check passed because nothing was unbalanced. Same silent-truncation family, so it belongs here.
+const marks = [];
+for (let i = 0; i < body.length - 1; i++) {
+  if (body[i] === '/' && body[i + 1] === '*') { marks.push({ k: 'open', i }); i++; }
+  else if (body[i] === '*' && body[i + 1] === '/') { marks.push({ k: 'close', i }); i++; }
+}
+const lineAt = (i) => startLine + body.slice(0, i).split('\n').length - 1;
+let open = false;
+for (const m of marks) {
+  if (m.k === 'open') {
+    if (open) continue; // /* inside a comment is just text
+    open = true;
+  } else {
+    if (!open) {
+      console.error(`\n  ✗ a stray */ at src/App.jsx:${lineAt(m.i)} closes a comment that was never opened.\n`);
+      console.error('      CSS comments do not nest — the usual cause is text added AFTER the */ that already');
+      console.error('      closed the comment. Everything from there to the next recovery point is discarded');
+      console.error(`      silently, including whatever rule follows: ${(body.slice(m.i + 2, m.i + 90).split('\n').find((l) => l.trim()) || '').trim()}\n`);
+      process.exit(1);
+    }
+    open = false;
+  }
+}
+if (open) {
+  console.error('\n  ✗ the stylesheet ends inside an unterminated /* comment — every rule after it is gone.\n');
+  process.exit(1);
+}
+
+console.log(`  ✓ stylesheet is clean (${body.split('\n').length} lines, no stray backticks, braces balanced, comments closed)`);

@@ -274,6 +274,31 @@ export const api = {
   // in the backend for why. Returns { cfg, teams, warnings, canSyncPicks:false }.
   async espnLeague(leagueId, season) { return call(`/api/connect/espn/league?league_id=${encodeURIComponent(leagueId)}${season ? `&season=${encodeURIComponent(season)}` : ''}`); },
 
+  /* ---- the other platforms -------------------------------------------------------------------
+     ⚠ THE ESPN PRIVATE IMPORT IS A POST, AND HAS TO STAY ONE. Those cookies are credentials; a GET
+       would put them in the URL, and URLs end up in access logs, proxy logs and browser history.
+       They are sent once, used for that one request, and never stored on either side. */
+  async espnPrivate({ leagueId, season, espnS2, swid, teamId }) {
+    return call('/api/connect/espn/private', { method: 'POST', body: { league_id: leagueId, season, espn_s2: espnS2, swid, team_id: teamId } });
+  },
+  async mflLeague(leagueId, season, apiKey) {
+    return call(`/api/connect/mfl/league?league_id=${encodeURIComponent(leagueId)}${season ? `&season=${encodeURIComponent(season)}` : ''}${apiKey ? `&api_key=${encodeURIComponent(apiKey)}` : ''}`);
+  },
+  async mflPicks(leagueId, season, apiKey) {
+    return call(`/api/connect/mfl/picks?league_id=${encodeURIComponent(leagueId)}${season ? `&season=${encodeURIComponent(season)}` : ''}${apiKey ? `&api_key=${encodeURIComponent(apiKey)}` : ''}`);
+  },
+  async fantraxLeagues(secretId) { return call(`/api/connect/fantrax/leagues?secret_id=${encodeURIComponent(secretId)}`); },
+  async fantraxLeague(leagueId, secretId, name) {
+    return call(`/api/connect/fantrax/league?league_id=${encodeURIComponent(leagueId)}&secret_id=${encodeURIComponent(secretId || '')}${name ? `&name=${encodeURIComponent(name)}` : ''}`);
+  },
+  async fantraxPicks(leagueId, secretId) { return call(`/api/connect/fantrax/picks?league_id=${encodeURIComponent(leagueId)}&secret_id=${encodeURIComponent(secretId || '')}`); },
+  async yahooStatus() { return call('/api/connect/yahoo/status'); },
+  async yahooAuthUrl() { return call('/api/connect/yahoo/auth-url'); },
+  async yahooExchange(code) { return call('/api/connect/yahoo/exchange', { method: 'POST', body: { code } }); },
+  async yahooMyLeagues() { return call('/api/connect/yahoo/my-leagues'); },
+  async yahooLeague(leagueKey) { return call(`/api/connect/yahoo/league?league_key=${encodeURIComponent(leagueKey)}`); },
+  async platformStatus(which) { return call(`/api/connect/${which}/status`); },
+
   // ---- feedback (public submit) ----
   async submitFeedback(payload) { return call('/api/feedback', { method: 'POST', auth: false, body: payload }); },
 

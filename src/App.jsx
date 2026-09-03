@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29z";
+const BUILD_TAG = "2026.07.29ac";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -135,11 +135,29 @@ function listStorageKey(prefix, league) {
 //
 // Everything downstream reads that one function, so the board, the recommendation engine and the editor
 // can never disagree about who is actually on the list.
+/* ⭐⭐⭐ AN EMPTY ARRAY ON THE LEAGUE OBJECT USED TO SHADOW A FULL LIST IN LOCAL STORAGE.
+ *
+ *     if (Array.isArray(league && league.avoidList)) return league.avoidList;
+ *
+ * `Array.isArray([])` is true, so a league carrying `avoidList: []` — which is what a league created before
+ * the lists moved onto the league object looks like, and what a fresh import writes — returned nothing and
+ * never reached the local-storage copy holding the names. The list was there the whole time; this line
+ * declined to look for it.
+ *
+ * It surfaced in the copy-a-plan prompt, where a source league with 35 priority and 9 never offered both
+ * categories greyed out with "none to copy" beside them.
+ *
+ * ⚠ FALLING BACK ON EMPTY IS SAFE HERE, and it is worth saying why, because "empty means unset" is usually
+ *   a bug in the other direction. Every save writes BOTH copies in the same handler — the league object and
+ *   the local-storage key — so a list the user deliberately emptied is empty in both places and there is
+ *   nothing to resurrect. The two only disagree when the object copy was never written at all. */
+const nonEmpty = (arr) => (Array.isArray(arr) && arr.length ? arr : null);
 function readLeagueAvoid(league) {
   try {
-    if (Array.isArray(league && league.avoidList)) return league.avoidList;
+    const own = nonEmpty(league && league.avoidList);
+    if (own) return own;
     const ls = JSON.parse(localStorage.getItem(listStorageKey("fdc-avoid", league)) || "[]");
-    return Array.isArray(ls) ? ls : [];
+    return Array.isArray(ls) && ls.length ? ls : (Array.isArray(league && league.avoidList) ? league.avoidList : []);
   } catch { return []; }
 }
 // ⭐⭐ THE PRIORITY LIST HAS THE SAME TWO SCOPES. Trey: "there is a 'Do Not Draft List' — but there is not
@@ -255,11 +273,13 @@ function evalStrategy(strategy, { roster, takenNames, round, rounds, myRoundOf }
   const bad = scored.filter((x) => x.state === "broken").length;
   return { targets, rules, done, bad, total: scored.length, rounds };
 }
+// Same two-copy rule as the do-not-draft list above — and the same shadowing bug. See readLeagueAvoid.
 function readLeagueQueue(league) {
   try {
-    if (Array.isArray(league && league.priorityQueue)) return league.priorityQueue;
+    const own = nonEmpty(league && league.priorityQueue);
+    if (own) return own;
     const ls = JSON.parse(localStorage.getItem(listStorageKey("fdc-queue", league)) || "[]");
-    return Array.isArray(ls) ? ls : [];
+    return Array.isArray(ls) && ls.length ? ls : (Array.isArray(league && league.priorityQueue) ? league.priorityQueue : []);
   } catch { return []; }
 }
 function readMasterQueue(user) {
@@ -4982,6 +5002,330 @@ function survivalAcrossPicks(players, sortedAdp, picks, checkpoints, cfg, nSims)
   return out;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+   "WHAT ARE THE ODDS I GET BOTH OF THESE?" — and why it is not one probability times the other
+   ───────────────────────────────────────────────────────────────────────────────────────────────────
+   Trey: "it allows you to select combinations of players and it shows you the combined points AND the %
+   chance you get both of these players at your next two picks."
+
+   The tempting answer is P(A) × P(B). It is wrong, in two different directions at once, and it is wrong by
+   enough to change a decision:
+
+     1. THE TWO EVENTS ARE CORRELATED. They play out in the same room. A run on running backs that takes A
+        is the same run that takes B; a quiet stretch spares both. Independent multiplication assumes the
+        draft rolls fresh dice for each of them, and it does not.
+     2. YOU SPEND A PICK ON A. That is the whole premise of the question — A is the one you take NOW — so B
+        has to survive a board from which A has already been removed BY YOU. Fewer bodies left for the room
+        to take between your picks makes B slightly likelier to be taken, not likelier to last.
+
+   So this simulates the actual sequence: play the room forward to your pick, check A is there, TAKE HIM,
+   play forward again to your next pick, check B is there. The fraction of paths where both hold is the
+   answer, correlation and all. It also returns the two marginals, because seeing "62% × 55% = 34%" next to
+   a true joint of 41% is the clearest possible explanation of why the shortcut was never on offer.
+
+   ⚠ THE ORDER MATTERS AND IS NOT SYMMETRIC. "Take Achane now, Jeanty later" is a different question from
+     "take Jeanty now, Achane later", and they get different answers. The caller passes them in the order
+     the user chose them, and the UI labels which is which.
+   ═══════════════════════════════════════════════════════════════════════════════════════════════════ */
+function jointSurvival(players, sortedAdp, picks, aId, bId, o1, o2, cfg, nSims = 220) {
+  if (aId == null || bId == null || aId === bId) return null;
+  if (!(o1 >= picks.length) || !(o2 > o1)) return null;
+  seedRng(picks.length * 2654435761 + (aId + 1) * 40503 + (bId + 1) * 2246822519);
+  const TOTAL = totalOf(cfg), R = cfg.rounds, dem = demand(cfg.sf);
+  const last = Math.min(TOTAL, o2);
+  const baseDrafted = new Uint8Array(players.length);
+  const baseCounts = Array.from({ length: TEAMS }, newCounts);
+  picks.forEach((pk, o) => {
+    const pl = players[pk]; if (!pl) return;
+    baseDrafted[pk] = 1;
+    const c = baseCounts[teamAt(o)]; if (c[cpos(pl.pos)] != null) c[cpos(pl.pos)]++;
+  });
+  for (let t = 0; t < TEAMS; t++) { seedKeeperCounts(players, t, baseCounts[t]); seedRosterCounts(t, baseCounts[t]); }
+  allUnavailableKeeperIds().forEach((id) => { baseDrafted[id] = 1; });
+  const baseRecent = picks.slice(-8).map((id) => players[id] && players[id].pos).filter(Boolean);
+  const PL = picksLeftTable(cfg);
+  let both = 0, aAlone = 0, bAlone = 0;
+  for (let s = 0; s < nSims; s++) {
+    const drafted = baseDrafted.slice();
+    const counts = baseCounts.map((c) => ({ ...c }));
+    let recent = baseRecent.slice();
+    const step = (from, to) => {
+      for (let o = from; o < to && o < TOTAL; o++) {
+        const t = teamAt(o), round = roundOf(o), pickNum = o + 1;
+        const cands = legalCands(candidatesOf(sortedAdp, drafted, 34), counts[t], cfg, plAt(PL, t, o));
+        const ws = cands.map((c, ri) => weightFor(c, pickNum, counts[t], round, recent, dem, R, ri));
+        const c = cands[sample(cands, ws)];
+        if (!c) return false;
+        drafted[c.id] = 1; counts[t][cpos(c.pos)] = (counts[t][cpos(c.pos)] || 0) + 1; recent = [...recent.slice(-7), c.pos];
+      }
+      return true;
+    };
+    step(picks.length, o1);
+    const aThere = !drafted[aId];
+    if (aThere) {
+      aAlone++;
+      // ⭐ YOU TAKE HIM. This single line is the difference between a joint probability and a product.
+      drafted[aId] = 1;
+      const me = teamAt(o1);
+      const ap = players[aId];
+      if (ap && counts[me] && counts[me][cpos(ap.pos)] != null) counts[me][cpos(ap.pos)]++;
+      recent = [...recent.slice(-7), ap ? ap.pos : "RB"];
+      step(o1 + 1, last);
+      if (!drafted[bId]) both++;
+    } else {
+      // B's own marginal still needs measuring on this path, so play it out without you taking A.
+      step(o1, last);
+    }
+    if (!drafted[bId]) bAlone++;
+  }
+  return {
+    both: Math.round((both / nSims) * 100),
+    a: Math.round((aAlone / nSims) * 100),
+    b: Math.round((bAlone / nSims) * 100),
+    sims: nSims,
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+   BUILD YOUR OWN PAIR
+   ───────────────────────────────────────────────────────────────────────────────────────────────────
+   Two slots — who you take now, who you hope is there at your next pick — and three numbers: their
+   combined projected points, their combined value over replacement, and the simulated chance you end up
+   with BOTH. The last one runs the real sequence rather than multiplying two percentages; jointSurvival's
+   header explains why that distinction is not pedantry.
+
+   ⚠ THE SIM RUNS OFF THE MAIN PATH AND IS CANCELLED ON EVERY CHANGE. This is a live draft room; a couple
+     of hundred simulated paths is fast but not free, and a user clicking through six candidates must not
+     queue six of them up behind each other while the board stutters.
+   ═══════════════════════════════════════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+   THE SIMPLE ROOM
+   ───────────────────────────────────────────────────────────────────────────────────────────────────
+   Trey: "Some of the feedback I've gotten is that it's overwhelming, so I'm looking to give people a
+   chance to simplify… at the top it would be last picks, recommendation, and upcoming picks. You can then
+   simplify the pulse and how you're doing into one widget that's easier to track progress. I prefer the
+   how you're doing."
+
+   THE PRINCIPLE THIS IS BUILT ON: simple mode removes NUMBERS, not ANSWERS. Every figure taken off this
+   screen is one the engine still computes and still uses; what changes is whether the user is asked to
+   read it. So there is exactly one recommendation, three alternatives, and one progress line — and the
+   Views row underneath still opens the rosters, the next-picks panel and the strategy checklist in full,
+   because Trey asked for that explicitly ("with the ability to still click buttons to see roster, next
+   picks, strategy, etc"). Nothing is hidden that cannot be got back in one click.
+
+   ⚠ IT READS THE SAME `advice` AND `proj` THE COMPLEX ROOM READS. Not a parallel calculation, not a
+     rounded-off copy — the same objects. Two views of one draft that disagreed about who to take would be
+     far worse than one busy screen.
+   ═══════════════════════════════════════════════════════════════════════════════════════════════ */
+/* ⚠ `whyPick` IS A CLOSURE INSIDE DraftRoom, NOT A MODULE FUNCTION. It reads the room's own config and
+     roster state, so it cannot be imported here — it has to be handed in. Calling it directly threw a
+     ReferenceError that the boundary caught, which turned "switch to simple" into "the app hiccuped" while
+     the complex view carried on working perfectly. */
+function SimpleStrip({ players, picks, advice, sims, proj, userIdx, onClock, TEAMS, teamNames, upcoming, onDraft, myNextOverall, done, whyPick }) {
+  const last = [];
+  for (let o = picks.length - 1; o >= 0 && last.length < 4; o--) {
+    const p = players[picks[o]];
+    if (p) last.push({ o, p, team: teamAt(o) });
+  }
+  const finish = proj && proj.rank && proj.rank[userIdx] != null ? proj.rank[userIdx] : null;
+  const mine = onClock === userIdx;
+  const v = advice && advice.verdict ? advice.verdict : null;
+
+  const Card = ({ title, children, grow = 1, accent }) => (
+    <div style={{ flex: `${grow} 1 0`, minWidth: 0, padding: "9px 11px", borderRadius: 10,
+      border: `1px solid ${accent || "var(--line)"}`, background: accent ? "rgba(224,166,60,.06)" : "var(--panel2)" }}>
+      <div className="disp" style={{ fontSize: 9.5, letterSpacing: ".07em", textTransform: "uppercase", color: accent ? "var(--gold)" : "var(--mut)", fontWeight: 800, marginBottom: 6 }}>{title}</div>
+      {children}
+    </div>
+  );
+
+  return (
+    <div data-simplestrip style={{ display: "flex", gap: 9, padding: "9px 12px", alignItems: "stretch", flexWrap: "wrap" }}>
+      {/* ---- LAST PICKS ---- */}
+      <Card title="Last picks" grow={0.8}>
+        {last.length ? last.map(({ o, p, team }) => (
+          <div key={o} data-simplelast={p.name} style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 11.5, padding: "1.5px 0" }}>
+            <span className="num mut" style={{ fontSize: 9.5, width: 32, flexShrink: 0 }}>{pickLabel(o)}</span>
+            <b style={{ color: POS_COLOR[cpos(p.pos)], fontSize: 9.5 }}>{cpos(p.pos)}</b>
+            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              color: team === userIdx ? "var(--gold)" : "var(--ink)", fontWeight: team === userIdx ? 700 : 400 }}>{p.name}</span>
+          </div>
+        )) : <div className="mut" style={{ fontSize: 11.5 }}>Nobody has picked yet.</div>}
+      </Card>
+
+      {/* ---- THE RECOMMENDATION — the one thing this screen exists to say ---- */}
+      <Card title={mine ? "Take him" : `On the clock · ${(teamNames[onClock] || "").split(" ").slice(0, 2).join(" ")}`} grow={1.5} accent="var(--gold)">
+        {v ? (
+          <>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+              <span className="disp" data-simplereco={v.name} style={{ fontSize: 21, fontWeight: 800, color: "var(--gold)", lineHeight: 1.1 }}>{v.name}</span>
+              <span className="mut" style={{ fontSize: 11.5 }}><Dot pos={v.pos} />{v.pos}{v.posRank}</span>
+            </div>
+            {/* One sentence, not five figures. `whyPick` is the same explanation the complex room shows. */}
+            <div style={{ fontSize: 11.5, lineHeight: 1.45, marginTop: 5, color: "var(--ink)" }}>
+              {whyPick(v, advice.waitCost, mine, advice.myCounts)}
+            </div>
+            {mine && <button className="btn btn-gold" data-simpledraft style={{ width: "100%", marginTop: 8 }} onClick={() => onDraft(v.id)}>Draft {surname(v.name)}</button>}
+            {(advice.alts || []).slice(0, 3).length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700, marginBottom: 3 }}>Or</div>
+                {(advice.alts || []).slice(0, 3).map((a) => (
+                  <div key={a.id} data-simplealt={a.name} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, padding: "2px 0" }}>
+                    <b style={{ color: POS_COLOR[cpos(a.pos)], fontSize: 9.5 }}>{cpos(a.pos)}</b>
+                    <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</span>
+                    {mine && <button className="btn btn-mini" style={{ fontSize: 9, padding: "1px 7px" }} onClick={() => onDraft(a.id)}>Draft</button>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        ) : <div className="mut" style={{ fontSize: 11.5 }}>{done ? "Draft complete." : "Working it out…"}</div>}
+      </Card>
+
+      {/* ---- UPCOMING PICKS ---- */}
+      <Card title="Your next picks" grow={0.8}>
+        {upcoming && upcoming.length ? upcoming.slice(0, 4).map((u) => (
+          <div key={u.o} data-simplenext={u.label} style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 11.5, padding: "1.5px 0" }}>
+            <span className="num" style={{ fontSize: 11.5, fontWeight: 700, color: "var(--gold)", width: 34, flexShrink: 0 }}>{u.label}</span>
+            <span className="mut" style={{ fontSize: 10.5 }}>{u.away === 0 ? "you're up" : u.away === 1 ? "next pick" : `${u.away} picks away`}</span>
+          </div>
+        )) : <div className="mut" style={{ fontSize: 11.5 }}>No picks left.</div>}
+        {/* ⭐⭐ THE MERGED PROGRESS LINE. Trey: "simplify the pulse and how you're doing into one widget…
+            I prefer the how you're doing." So the pulse's supply read is dropped entirely rather than
+            squeezed in beside it, and what survives is the single number people actually track. */}
+        {finish != null && (
+          <div data-simpleprogress={finish} style={{ marginTop: 8, paddingTop: 7, borderTop: "1px solid var(--line2)" }}>
+            <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700 }}>How you're doing</div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
+              <span className="disp" style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.1,
+                color: finish <= 3 ? "#5FD0A8" : finish <= Math.ceil(TEAMS / 2) ? "var(--gold)" : "#F2655C" }}>{ordinal(finish)}</span>
+              <span className="mut" style={{ fontSize: 10.5 }}>of {TEAMS} projected</span>
+            </div>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function ComboBuilder({ players, sortedAdp, picks, cfg, draftedSet, o1, o2, label1, label2 }) {
+  const [a, setA] = useState(null);
+  const [b, setB] = useState(null);
+  const [q, setQ] = useState("");
+  const [slot, setSlot] = useState(null);          // which slot the picker is filling: 1 or 2
+  const [odds, setOdds] = useState(null);
+  const [running, setRunning] = useState(false);
+
+  const avail = useMemo(() => (sortedAdp || []).filter((p) => p && !draftedSet.has(p.id)), [sortedAdp, draftedSet]);
+  const results = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    const out = [];
+    for (const p of avail) {
+      if (term && !`${p.name} ${p.team} ${p.pos}`.toLowerCase().includes(term)) continue;
+      out.push(p);
+      if (out.length >= 40) break;
+    }
+    return out;
+  }, [avail, q]);
+
+  const pa = a != null ? players[a] : null;
+  const pb = b != null ? players[b] : null;
+
+  useEffect(() => {
+    let alive = true;
+    setOdds(null);
+    if (a == null || b == null || a === b) { setRunning(false); return; }
+    setRunning(true);
+    const id = setTimeout(() => {
+      let r = null;
+      try { r = jointSurvival(players, sortedAdp, picks, a, b, o1, o2, cfg, 220); } catch (_) { r = null; }
+      if (alive) { setOdds(r); setRunning(false); }
+    }, 40);
+    return () => { alive = false; clearTimeout(id); };
+  }, [a, b, o1, o2, picks.length]);
+
+  const Slot = ({ n, p, lbl }) => (
+    <button className="btn btn-mini" data-comboslot={n} onClick={() => { setSlot(slot === n ? null : n); setQ(""); }}
+      style={{ flex: 1, minWidth: 0, justifyContent: "flex-start", textAlign: "left", padding: "6px 8px",
+        borderColor: slot === n ? "var(--gold)" : p ? "var(--line2)" : "var(--line)" }}>
+      <span style={{ display: "block", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <span className="mut" style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", display: "block" }}>{lbl}</span>
+        {p ? <><b style={{ color: POS_COLOR[cpos(p.pos)], fontSize: 9.5, marginRight: 4 }}>{cpos(p.pos)}</b>{p.name}</> : <span className="mut">choose a player</span>}
+      </span>
+    </button>
+  );
+
+  const combinedPts = pa && pb ? Math.round((pa.pts || 0) + (pb.pts || 0)) : null;
+  const combinedVbd = pa && pb ? (pa.vbd || 0) + (pb.vbd || 0) : null;
+  // The number the shortcut would have given, kept beside the real one precisely because they differ.
+  const naive = odds ? Math.round((odds.a / 100) * (odds.b / 100) * 100) : null;
+
+  return (
+    <div data-combobuilder style={{ marginTop: 10, paddingTop: 9, borderTop: "1px solid var(--line2)" }}>
+      <div className="disp" style={{ fontSize: 9.5, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--mut)", fontWeight: 800, marginBottom: 6 }}>
+        Or price a pair of your own
+      </div>
+      <div style={{ display: "flex", gap: 6, alignItems: "stretch" }}>
+        <Slot n={1} p={pa} lbl={`Take at ${label1}`} />
+        <Slot n={2} p={pb} lbl={`Then at ${label2}`} />
+        {(pa || pb) && <button className="btn btn-mini" data-comboclear onClick={() => { setA(null); setB(null); setSlot(null); setOdds(null); }} title="Clear both">✕</button>}
+      </div>
+
+      {slot != null && (
+        <div style={{ marginTop: 7 }}>
+          <input className="gs" autoFocus style={{ width: "100%", fontSize: 12, padding: "5px 8px" }} placeholder="Search available players…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <div style={{ maxHeight: 148, overflowY: "auto", marginTop: 5, border: "1px solid var(--line2)", borderRadius: 7 }}>
+            {results.map((p) => (
+              <div key={p.id} data-combocand={p.name} onClick={() => { if (slot === 1) setA(p.id); else setB(p.id); setSlot(null); setQ(""); }}
+                style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 8px", cursor: "pointer", fontSize: 12, borderBottom: "1px solid var(--line2)" }}>
+                <b style={{ color: POS_COLOR[cpos(p.pos)], fontSize: 9.5 }}>{cpos(p.pos)}</b>
+                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+                <span className="num mut" style={{ fontSize: 10 }}>ADP {p.adp != null ? p.adp.toFixed(0) : "—"}</span>
+                <span className="num" style={{ fontSize: 10, color: "var(--mut)" }}>{Math.round(p.pts || 0)} pts</span>
+              </div>
+            ))}
+            {!results.length && <div className="mut" style={{ padding: 9, fontSize: 11.5 }}>Nobody available matches that.</div>}
+          </div>
+        </div>
+      )}
+
+      {pa && pb && (
+        <div data-comboresult style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, background: "var(--panel2)", border: "1px solid var(--line)" }}>
+          <div style={{ display: "flex", gap: 14, alignItems: "baseline", flexWrap: "wrap" }}>
+            <span>
+              <span className="num" data-combopts style={{ fontSize: 18, fontWeight: 800 }}>{combinedPts}</span>
+              <span className="mut" style={{ fontSize: 9.5, marginLeft: 4 }}>PROJECTED POINTS</span>
+            </span>
+            <span>
+              <span className="num" data-combovbd style={{ fontSize: 13, fontWeight: 700, color: vbdColor(combinedVbd) }}>{fmtVal(combinedVbd)}</span>
+              <span className="mut" style={{ fontSize: 9.5, marginLeft: 4 }}>VBD</span>
+            </span>
+            <div style={{ flex: 1 }} />
+            <span style={{ textAlign: "right" }}>
+              {running || !odds
+                ? <span className="mut num" style={{ fontSize: 18, fontWeight: 800 }}>…</span>
+                : <span className="num" data-comboboth={odds.both} style={{ fontSize: 20, fontWeight: 800,
+                    color: odds.both >= 55 ? "#5FD0A8" : odds.both >= 25 ? "var(--gold)" : "#F2655C" }}>{odds.both}%</span>}
+              <span className="mut" style={{ fontSize: 9.5, marginLeft: 4 }}>YOU GET BOTH</span>
+            </span>
+          </div>
+          {odds && (
+            <div className="mut" style={{ fontSize: 10, lineHeight: 1.5, marginTop: 6 }}>
+              <b style={{ color: "var(--ink)" }}>{pa.name}</b> is there at {label1} in <b style={{ color: "var(--ink)" }}>{odds.a}%</b> of {odds.sims} simulated drafts; <b style={{ color: "var(--ink)" }}>{pb.name}</b> lasts to {label2} in <b style={{ color: "var(--ink)" }}>{odds.b}%</b>.
+              {/* ⭐⭐ THE SENTENCE THAT STOPS SOMEONE DOING THE ARITHMETIC THEMSELVES AND GETTING IT WRONG.
+                  It is shown only when the two answers actually differ enough to matter, so it reads as an
+                  explanation rather than a lecture attached to every pair. */}
+              {naive != null && Math.abs(naive - odds.both) >= 3 && (
+                <> Multiplying those gives {naive}% — but they are not independent bets: the run that takes one tends to take the other, and spending {label1} on {pa.name} leaves the room one fewer body to draft before you are back. The {odds.both}% comes from playing the sequence out.</>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function projectAll(players, sortedAdp, picks, userIdx, cfg, strategy, forcedId) {
   const TOTAL = totalOf(cfg), R = cfg.rounds, sf = cfg.sf;
   const dem = demand(sf);
@@ -7020,6 +7364,43 @@ body.buybar-open .fbdock{bottom:76px!important}
   body.printing .printtarget{--ink:#000;--mut:#444;--line:#ccc;--line2:#e3e3e3;--panel:#fff;--panel2:#f6f6f6}
   body.printing .printtarget .panel{border-color:#ddd!important;background:#fff!important;box-shadow:none!important}
   body.printing .tooltip{display:none!important}
+  /* ═══ NOTHING MAY BE CLIPPED, AND NOTHING MAY BE INVISIBLE ═══════════════════════════════════════
+     Trey, on a printed draft plan: "sometimes you can't see names of players (how you've been finishing).
+     Same with 'Going later than they're worth' and 'going earlier than they're worth'."
+
+     Three separate causes, all of them the same underlying mistake — styling written for a 1180px dark
+     screen, printed onto a 700px white page:
+
+     1. CLIPPED TEXT. Nearly every dense cell carries hidden overflow with an ellipsis and no wrapping,
+        which is right on screen: a name too long for its column gets an ellipsis and
+        the hover has the rest. On paper the columns are ~40% narrower, there IS no hover, and the ellipsis
+        ate the name down to a single letter — "WR S", "RB A". On a page with room to wrap, wrapping is
+        strictly better than truncating, so every clip is lifted and text is allowed to take a second line.
+
+     2. INVISIBLE INK. The "Goes" column is drawn in near-white at low opacity — correct on a near-black
+        panel, and literally nothing on white. It printed as a row of empty grey pills. The colours that
+        CARRY MEANING (the green/red verdicts) are deliberately left alone: they read fine on paper and
+        they are the point of the table.
+
+     3. A SCROLLING TABLE HAS NOWHERE TO SCROLL. The route grid is 720px wide by design and the printable
+        width at these margins is a little under that, so its scroll container simply cut the last column
+        in half — "Justin Jefferso", "Colston Lovelan". Zooming that one block down by an eighth makes it
+        fit whole rather than wrap into an unreadable mess; the min-width is released as a backstop.
+     ═══════════════════════════════════════════════════════════════════════════════════════════════ */
+  body.printing .printtarget *{overflow:visible!important;text-overflow:clip!important;white-space:normal!important;max-height:none!important}
+  body.printing .printtarget .shadeneutral{color:#333!important;background:#ececec!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  /* ⭐⭐ AND THE PRICED TABLES STACK RATHER THAN SIT SIDE BY SIDE.
+     Two half-width tables is right on a wide screen and wrong on paper: it leaves the player column about
+     90px, which is narrower than "Rashod Bateman". Lifting the clip (above) stopped names being cut off,
+     but it turned them into two-line wraps instead, which is only a nicer way to be hard to read. A page
+     is tall, not wide — so on paper the two halves go one above the other and each gets the full width,
+     and every name fits on its own line. */
+  body.printing .printtarget .trendpair{grid-template-columns:minmax(0,1fr)!important}
+  body.printing .printtarget .trendpair>div{padding-left:0!important;padding-right:0!important;border-left:none!important}
+  body.printing .printtarget .trendpair>div+div{border-top:1px solid #ddd!important;margin-top:10px;padding-top:10px!important}
+  body.printing .printtarget .planscroll{zoom:.86}
+  body.printing .printtarget .planscroll>div{min-width:0!important}
+  body.printing .printtarget .scrollhint::after{display:none!important}
   body.printing .printtarget [data-printplan]{break-inside:avoid;page-break-inside:avoid}
   body.printing .printtarget table{break-inside:auto}
   body.printing .printtarget tr{break-inside:avoid;page-break-inside:avoid}
@@ -7183,6 +7564,21 @@ select.gs:hover{border-color:var(--gold)}
 @media(max-width:900px){.secmove{display:none!important}}
 .posdot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;vertical-align:1px;flex-shrink:0}
 .chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;white-space:nowrap}
+/* 29ac — the View menu in the draft-room header. Shaped like a .chip on purpose: it sits in a row of chips
+   and a control that matched nothing around it would read as an alert. The word View is the label and never
+   wraps; the select carries the value in gold so the current mode is legible at a glance without the
+   segmented pair's two permanent buttons. appearance:none because the platform arrow on a dark ground is a
+   grey wedge nobody can see; the caret is drawn as a background gradient pair instead. */
+.viewsel{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line2);border-radius:6px;padding:2px 4px 2px 8px;white-space:nowrap;flex-shrink:0}
+.viewsel-lbl{font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)}
+.viewsel select{appearance:none;-webkit-appearance:none;-moz-appearance:none;font-family:inherit;font-size:11.5px;font-weight:800;letter-spacing:.03em;color:var(--gold);background-color:transparent;border:none;border-radius:5px;cursor:pointer;padding:3px 20px 3px 6px;min-height:26px;
+  background-image:linear-gradient(45deg,transparent 50%,var(--mut) 50%),linear-gradient(135deg,var(--mut) 50%,transparent 50%);
+  background-position:calc(100% - 11px) calc(50% + 1px),calc(100% - 7px) calc(50% + 1px);background-size:4px 4px,4px 4px;background-repeat:no-repeat}
+.viewsel select:hover{background-color:rgba(224,166,60,.10)}
+.viewsel select:focus-visible{outline:2px solid var(--gold);outline-offset:1px}
+/* The option list is drawn by the OS, which does not inherit the page's dark theme on every platform — set
+   it explicitly so the menu is not black-on-black in one browser and white-on-white in the next. */
+.viewsel select option{background:var(--panel2);color:var(--ink);font-weight:600}
 .ticker{display:flex;gap:8px;overflow-x:auto;padding:10px 12px;scrollbar-width:thin;align-items:stretch}
 .tickcard{min-width:118px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-shrink:0}
 .tickcard.you{border-color:var(--gold);background:rgba(224,166,60,.10)}
@@ -7441,6 +7837,22 @@ select.gs option{background:var(--panel2);color:var(--ink)}
   /* header wraps instead of overflowing, with a little breathing room */
   .appheader{flex-wrap:wrap;row-gap:6px;gap:8px!important;padding-left:12px!important;padding-right:12px!important}
   .appheader .chip{font-size:10px;padding:3px 7px}
+  /* 29ac — the View menu on a phone. Two things had to change and neither is cosmetic.
+     ⚠ THE LEAGUE NAME IS UNBOUNDED. It is set at 18px with no truncation, and a real one ("The Mediocre
+       Fantasy Players...At Best") is wider than a 390px screen on its own — which pushed View onto a second
+       row, then a third once the round chip wrapped behind it. The name now takes whatever room is left and
+       ellipses, so the two controls that matter on a small screen (back, and the view you are in) hold the
+       first row between them.
+     ⚠ AND IT HAS TO BE TAPPABLE. .btn/.btn-mini get min-height:38px on mobile; a bare select is not a
+       button and inherited none of it, leaving a 26px target in the middle of a row of 38px ones.
+     ⚠ AND flex-basis MATTERS MORE THAN flex-shrink. A grow-shrink-auto name was not enough: in a wrapping
+       flex row the browser decides where the line BREAKS from each item's basis, and only then shrinks what
+       is on it — so a name measured at its full 250px had already pushed View onto row two before shrinking
+       came into it at all. A small basis lets the name join the line at 70px, wrap nothing, and then grow
+       into whatever the row has left over. */
+  .droomhead>.disp{min-width:0;flex:1 1 70px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px!important}
+  .viewsel{padding:2px 4px 2px 7px}
+  .viewsel select{min-height:36px;font-size:12.5px;padding-right:22px}
   /* A league card carries up to four actions; on a phone they wrap under the name instead of forcing the
      whole home page wider than the screen. */
   .lgactions{flex-shrink:1!important;width:100%}
@@ -10900,11 +11312,20 @@ function CopyPlanModal({ leagues, user, rounds, translateTargets, onClose, onApp
   const firstUseful = withContent.find((x) => x.q + x.a + x.t + x.r > 0) || withContent[0];
   const [srcId, setSrcId] = useState(firstUseful ? firstUseful.l.id : "");
   const [want, setWant] = useState({ queue: true, avoid: true, targets: true, rules: false });
-  const row = withContent.find((x) => x.l.id === srcId) || null;
+  /* ⚠ NEVER LET AN UNMATCHED id GREY THE WHOLE SCREEN.
+   *   `srcId` is seeded once at mount from a list that can change underneath it — a background sync
+   *   replacing `leagues`, a league deleted in another tab. A plain `.find()` then returns null, every
+   *   count reads 0, and all four categories grey out with "none to copy" while the dropdown carries on
+   *   displaying its first option quite happily. The user sees a prompt refusing to copy a plan they can
+   *   see listed one line above. Resolving to the first entry means the screen always describes something
+   *   real, and the select is driven by the RESOLVED id so the two can never drift apart again. */
+  const row = withContent.find((x) => x.l.id === srcId) || firstUseful || null;
   const src = row ? row.l : null;
-  const tr = useMemo(() => (src ? translateTargets(src) : { moved: [], dropped: [] }), [srcId]);
+  const resolvedId = row ? row.l.id : "";
+  const tr = useMemo(() => (src ? translateTargets(src) : { moved: [], dropped: [] }), [resolvedId]);
   const nothing = !want.queue && !want.avoid && !want.targets && !want.rules;
   const available = row ? { queue: row.q, avoid: row.a, targets: row.t, rules: row.r } : { queue: 0, avoid: 0, targets: 0, rules: 0 };
+  const srcEmpty = !!row && !(available.queue + available.avoid + available.targets + available.rules);
   const total = (want.queue ? available.queue : 0) + (want.avoid ? available.avoid : 0)
     + (want.targets ? tr.moved.length : 0) + (want.rules ? available.rules : 0);
 
@@ -10931,7 +11352,7 @@ function CopyPlanModal({ leagues, user, rounds, translateTargets, onClose, onApp
         </div>
 
         <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700, marginBottom: 5 }}>Copy from</div>
-        <select className="gs" data-copysrc style={{ width: "100%", fontSize: 13, padding: "7px 9px", marginBottom: 15 }} value={srcId} onChange={(e) => setSrcId(e.target.value)}>
+        <select className="gs" data-copysrc style={{ width: "100%", fontSize: 13, padding: "7px 9px", marginBottom: srcEmpty ? 9 : 15 }} value={resolvedId} onChange={(e) => setSrcId(e.target.value)}>
           {withContent.map((x) => (
             <option key={x.l.id} value={x.l.id}>
               {x.l.name} — {x.q + x.a + x.t + x.r ? `${x.q} priority · ${x.a} never · ${x.t} targets · ${x.r} rules` : "nothing saved"}
@@ -10939,6 +11360,13 @@ function CopyPlanModal({ leagues, user, rounds, translateTargets, onClose, onApp
           ))}
         </select>
 
+        {/* Four greyed rows are not an explanation. If the chosen league genuinely holds nothing, say so
+            once, in words, rather than leaving the user to work it out from disabled checkboxes. */}
+        {srcEmpty && (
+          <div data-copyempty style={{ marginBottom: 12, padding: "9px 11px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--panel2)", fontSize: 12, lineHeight: 1.5 }}>
+            <b style={{ color: "var(--gold)" }}>{src && src.name}</b> has no plan saved yet — no priority or do-not-draft names, no round targets and no rules. Pick a different league above, or open that league's Draft strategy and write one first.
+          </div>
+        )}
         <div style={{ display: "grid", gap: 7 }}>
           <Check k="queue" label="Priority list" n={available.queue} disabled={!available.queue}
             note="Players you always want. Travels cleanly — it is a view about the player, not about a draft." />
@@ -20071,9 +20499,31 @@ const DRAFT_ORDERS = [["snake","Snake"],["linear","Linear (same order each round
 // Platforms we can connect to for live sync. Sleeper is supported via its free public API. Other
 // platforms either have no usable public draft API or require fragile credentials, so those users
 // draft with fast manual entry — which has the exact same engine, advice, and tracking.
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+   THE PLATFORMS, AND WHAT EACH ONE COSTS THE USER
+   ───────────────────────────────────────────────────────────────────────────────────────────────────
+   Users: "I know, to connect ESPN, it has to be public. But, for those of us who are not the
+   commissioners, that's not an option… perhaps it could also work on platforms such as Yahoo and NFL."
+
+   Ordered by how little the person has to hand over, because that is the honest ranking — not by market
+   share. `live` is whether picks arrive on their own during a draft, and it is stated per platform
+   because promising a sync that does not exist is the worst thing this screen could do.
+   ═══════════════════════════════════════════════════════════════════════════════════════════════ */
 const PLATFORMS = [
-  { id: "sleeper", name: "Sleeper", field: "Sleeper username", hint: "We read your leagues from Sleeper's free public API and sync your draft live.", icon: "ti-moon" },
-  { id: "espn", name: "ESPN", field: "ESPN league ID", hint: "We import a PUBLIC ESPN league's settings — teams, roster slots, scoring, draft order. ESPN has no live pick feed, so on draft night you enter picks here as they happen.", icon: "ti-ball-football" },
+  { id: "sleeper", name: "Sleeper", field: "Sleeper username", live: true, icon: "ti-moon",
+    hint: "We read your leagues from Sleeper's free public API and sync your draft live." },
+  { id: "yahoo", name: "Yahoo", live: false, icon: "ti-brand-yahoo",
+    hint: "Sign in with Yahoo and pick a league. Nothing to copy or paste — Yahoo's own consent screen does it, and you can revoke us from your Yahoo account settings at any time." },
+  { id: "espn", name: "ESPN", field: "ESPN league ID", live: false, icon: "ti-ball-football",
+    hint: "A public league imports from its ID alone. A private one needs two cookies from your signed-in browser — we use them for the one import and never store them." },
+  { id: "mfl", name: "MyFantasyLeague", field: "MFL league ID", live: true, icon: "ti-database",
+    hint: "MFL has a proper public API, so picks sync live. A private league needs the league's API key, which the commissioner generates under League Setup → Developer's API." },
+  { id: "fantrax", name: "Fantrax", field: "Fantrax Secret ID", live: true, icon: "ti-key",
+    hint: "Paste the Secret ID from your Fantrax profile — not your password. Picks sync live, and regenerating the ID in Fantrax revokes us instantly." },
+  { id: "cbs", name: "CBS Sports", live: false, icon: "ti-alert-triangle", unsupported: true,
+    hint: "CBS retired its developer API, and the only way in would be to ask for your CBS password. We won't do that." },
+  { id: "nfl", name: "NFL.com", live: false, icon: "ti-arrow-right", unsupported: true,
+    hint: "The NFL stopped running season-long fantasy in 2026 and moved leagues to ESPN. Import yours there, then connect it here as an ESPN league." },
 ];
 
 // League-connect box: pick a platform, provide its credential.
@@ -20100,6 +20550,14 @@ function ConnectBox({ connect, onConnect, onClear }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [sleeperLeagues, setSleeperLeagues] = useState(null); // null=not fetched, []=none, [...]=list
+  // The other platforms. `espnPriv` flips the ESPN step from "league ID" to "league ID + cookies".
+  const [espnPriv, setEspnPriv] = useState(false);
+  const [s2, setS2] = useState(""); const [swid, setSwid] = useState("");
+  const [key2, setKey2] = useState("");                 // MFL API key / Fantrax Secret ID
+  const [fxLeagues, setFxLeagues] = useState(null);     // Fantrax league list once the Secret ID resolves
+  const [yStatus, setYStatus] = useState(null);         // { configured, linked }
+  const [yLeagues, setYLeagues] = useState(null);
+  const [yCode, setYCode] = useState("");
   if (connect) {
     const p = PLATFORMS.find((x) => x.id === connect.platform);
     return (
@@ -20157,6 +20615,85 @@ function ConnectBox({ connect, onConnect, onClear }) {
     } catch (e) { setError(e.data?.error || e.message || "Couldn't import that ESPN league."); }
     finally { setBusy(false); }
   };
+
+  /* ⭐⭐⭐ ESPN, PRIVATE. The cookies go straight into the request and are never put in component state
+     that gets saved, never written to localStorage, and never sent anywhere but this one call. They are
+     cleared the moment the import returns — including on failure, because a failed paste is still a live
+     credential sitting in a form. */
+  const fetchEspnPrivate = async () => {
+    setError(null); setBusy(true); setEspn(null);
+    try {
+      if (!hasBackend) { setError("Importing a private ESPN league needs the backend."); setBusy(false); return; }
+      const r = await api.espnPrivate({ leagueId: val.trim().replace(/\D/g, ""), espnS2: s2.trim(), swid: swid.trim() });
+      setEspn(r);
+      setS2(""); setSwid("");
+    } catch (e) { setError(e.data?.error || e.message || "Couldn't read that private ESPN league."); setS2(""); setSwid(""); }
+    finally { setBusy(false); }
+  };
+
+  // A platform import that already knows everything: hand it straight up as a connect payload.
+  const finishImported = (r, platform, extra = {}) => {
+    onConnect({
+      platform, credential: extra.credential || "", leagueId: r.league_id, leagueName: r.name,
+      cfg: r.cfg || null, picks: r.picks || [], status: r.status || null,
+      teams: r.teams || null, yourSlot: r.yourSlot || null, slotNames: r.slotNames || null,
+      draftType: r.draftType || "snake", tradedPicks: r.tradedPicks || [], keepers: r.keepers || [],
+      existingRosters: r.existingRosters || null,
+      // ⚠ CARRIED THROUGH SO THE UI CANNOT PROMISE WHAT THE PLATFORM WILL NOT DO.
+      liveSync: !!r.liveSync,
+      ...extra,
+    });
+    setOpen(false); setSel(PLATFORMS[0]); setVal(""); setKey2(""); setEspn(null); setFxLeagues(null); setYLeagues(null);
+  };
+
+  const fetchMfl = async () => {
+    setError(null); setBusy(true);
+    try { finishImported(await api.mflLeague(val.trim(), null, key2.trim() || null), "mfl", { credential: key2.trim() }); }
+    catch (e) { setError(e.data?.error || e.message || "Couldn't import that MFL league."); }
+    finally { setBusy(false); }
+  };
+  const fetchFantraxLeagues = async () => {
+    setError(null); setBusy(true); setFxLeagues(null);
+    try {
+      const r = await api.fantraxLeagues(key2.trim());
+      setFxLeagues(r.leagues || []);
+      if (!(r.leagues || []).length) setError("That Secret ID works, but it has no football leagues on it.");
+    } catch (e) { setError(e.data?.error || e.message || "Couldn't reach Fantrax."); }
+    finally { setBusy(false); }
+  };
+  const pickFantrax = async (lg) => {
+    setError(null); setBusy(true);
+    try { finishImported(await api.fantraxLeague(lg.league_id, key2.trim(), lg.name), "fantrax", { credential: key2.trim() }); }
+    catch (e) { setError(e.data?.error || e.message || "Couldn't import that Fantrax league."); }
+    finally { setBusy(false); }
+  };
+  const loadYahoo = async () => {
+    setError(null); setBusy(true);
+    try {
+      const st2 = await api.yahooStatus();
+      setYStatus(st2);
+      if (st2.linked) setYLeagues((await api.yahooMyLeagues()).leagues || []);
+    } catch (e) { setError(e.data?.error || e.message || "Couldn't reach Yahoo."); }
+    finally { setBusy(false); }
+  };
+  const yahooSignIn = async () => {
+    setError(null); setBusy(true);
+    try { const { url } = await api.yahooAuthUrl(); window.open(url, "_blank", "noopener"); }
+    catch (e) { setError(e.data?.error || e.message || "Yahoo sign-in isn't available yet."); }
+    finally { setBusy(false); }
+  };
+  const yahooFinish = async () => {
+    setError(null); setBusy(true);
+    try { await api.yahooExchange(yCode.trim()); setYCode(""); await loadYahoo(); }
+    catch (e) { setError(e.data?.error || e.message || "Yahoo rejected that code."); }
+    finally { setBusy(false); }
+  };
+  const pickYahoo = async (lg) => {
+    setError(null); setBusy(true);
+    try { finishImported(await api.yahooLeague(lg.league_key), "yahoo"); }
+    catch (e) { setError(e.data?.error || e.message || "Couldn't import that Yahoo league."); }
+    finally { setBusy(false); }
+  };
   // The chosen team decides the draft slot. If ESPN hasn't set a draft order yet there are no slots to
   // choose from, so we import the settings and let them set the slot in the form below.
   const finishEspn = (team) => {
@@ -20200,15 +20737,23 @@ function ConnectBox({ connect, onConnect, onClear }) {
           {!sel ? (
             <div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(150px,1fr))", gap: 8 }}>
+                {/* ⭐⭐ THE BADGE IS THE POINT OF THIS GRID. "Live picks" is the single thing that decides how
+                    draft night goes, and it is true on three of these and false on the rest — so it is on
+                    the button rather than three clicks deep. The two we do not support say so here too,
+                    instead of letting someone pick them and discover it. */}
                 {PLATFORMS.map((p) => (
-                  <button key={p.id} className="btn" style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-start", padding: "9px 11px" }} onClick={() => { setSel(p); setVal(""); setSleeperLeagues(null); setEspn(null); setError(null); }}>
-                    <i className={`ti ${p.icon}`} style={{ fontSize: 17, color: "var(--gold)" }} aria-hidden="true" />{p.name}
+                  <button key={p.id} data-plat={p.id} className="btn" style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-start", padding: "9px 11px", opacity: p.unsupported ? 0.66 : 1 }}
+                    onClick={() => { setSel(p); setVal(""); setKey2(""); setS2(""); setSwid(""); setEspnPriv(false); setFxLeagues(null); setYLeagues(null); setSleeperLeagues(null); setEspn(null); setError(null); }}>
+                    <i className={`ti ${p.icon}`} style={{ fontSize: 17, color: p.unsupported ? "var(--mut)" : "var(--gold)" }} aria-hidden="true" />
+                    <span style={{ flex: 1, textAlign: "left" }}>{p.name}</span>
+                    {p.live && <span className="chip" data-platlive style={{ fontSize: 8.5, borderColor: "var(--green)", color: "var(--green)" }}>LIVE PICKS</span>}
+                    {p.unsupported && <span className="chip" style={{ fontSize: 8.5, borderColor: "var(--line2)", color: "var(--mut)" }}>READ WHY</span>}
                   </button>
                 ))}
               </div>
               <div className="panel" style={{ marginTop: 10, padding: "10px 12px", background: "var(--panel2)" }}>
-                <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>On Yahoo, CBS, Fantrax, or drafting in person?</div>
-                <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>No problem — close this and set the league up by hand. You enter each pick as it happens (it's fast), and you get the <b style={{ color: "var(--ink)" }}>exact same</b> engine: live recommendations, availability odds, cost-of-waiting, and steal/reach grades. Live pick sync is Sleeper-only; ESPN imports settings but not picks.</div>
+                <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>On CBS, or drafting in person?</div>
+                <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>No problem — close this and set the league up by hand. You enter each pick as it happens (it's fast), and you get the <b style={{ color: "var(--ink)" }}>exact same</b> engine: live recommendations, availability odds, cost-of-waiting, and steal/reach grades.</div>
                 <button className="btn btn-mini" style={{ marginTop: 8 }} onClick={() => { setOpen(false); setSel(PLATFORMS[0]); setEspn(null); setError(null); }}>Set up manually instead</button>
               </div>
             </div>
@@ -20274,11 +20819,42 @@ function ConnectBox({ connect, onConnect, onClear }) {
                       <div className="mut" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.5 }}>
                         It's the number in your league's URL: <span style={{ fontFamily: "var(--mono)" }}>…/league?leagueId=<b style={{ color: "var(--gold)" }}>1234567</b></span>
                       </div>
-                      <div className="panel" style={{ marginTop: 10, padding: "9px 11px", background: "var(--panel2)" }}>
-                        <div className="mut" style={{ fontSize: 11, lineHeight: 1.5 }}>
-                          Two things worth knowing. <b style={{ color: "var(--ink)" }}>Your league has to be public</b> for us to read it (ESPN → League Settings → Basic Settings → Visibility). And this brings in <b style={{ color: "var(--ink)" }}>settings only</b> — ESPN has no live pick feed, so on draft night you'll enter picks here as they happen, same as any manual league.
+                      {/* ⭐⭐⭐ THE PRIVATE-LEAGUE PATH. "For those of us who are not the commissioners,
+                          [making it public] is not an option" — and they are right, so this is no longer a
+                          dead end. It is deliberately the SECOND option, not the first: if the league is
+                          public, the ID alone is a better deal for everyone. */}
+                      {!espnPriv ? (
+                        <div className="panel" style={{ marginTop: 10, padding: "9px 11px", background: "var(--panel2)" }}>
+                          <div className="mut" style={{ fontSize: 11, lineHeight: 1.5 }}>
+                            This reads a <b style={{ color: "var(--ink)" }}>public</b> league (ESPN → League Settings → Basic Settings → Visibility), and brings in <b style={{ color: "var(--ink)" }}>settings only</b> — ESPN has no live pick feed, so on draft night you enter picks here as they happen.
+                          </div>
+                          <button className="btn btn-mini" data-espnprivopen style={{ marginTop: 8 }} onClick={() => { setEspnPriv(true); setError(null); }}>
+                            <i className="ti ti-lock" style={{ fontSize: 12, marginRight: 5 }} aria-hidden="true" />My league is private
+                          </button>
                         </div>
-                      </div>
+                      ) : (
+                        <div className="panel" data-espnprivform style={{ marginTop: 10, padding: "11px 12px", background: "var(--panel2)", borderColor: "var(--gold)" }}>
+                          <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 4 }}>Private league — two values from your browser</div>
+                          {/* Saying plainly what is being asked for and what happens to it. Anyone who is
+                              rightly suspicious of pasting a session cookie into a website deserves the
+                              real answer, not reassurance. */}
+                          <div className="mut" style={{ fontSize: 11, lineHeight: 1.55, marginBottom: 8 }}>
+                            ESPN has no API key and no sign-in for apps, so the only way to read a private league is with the two cookies your own signed-in browser holds. <b style={{ color: "var(--ink)" }}>We use them for this one import and never store them</b> — not in the database, not in your saved settings, not in a log. That also means there is no background refresh for a private league: come back and paste again when you want to re-sync.
+                          </div>
+                          <ol className="mut" style={{ fontSize: 11, lineHeight: 1.6, margin: "0 0 9px 16px", padding: 0 }}>
+                            <li>Sign in at <b style={{ color: "var(--ink)" }}>fantasy.espn.com</b> in this browser.</li>
+                            <li>Open DevTools (F12 or ⌥⌘I) → <b style={{ color: "var(--ink)" }}>Application</b> (Chrome) or <b style={{ color: "var(--ink)" }}>Storage</b> (Firefox) → Cookies → espn.com.</li>
+                            <li>Copy the whole value of <span style={{ fontFamily: "var(--mono)", color: "var(--gold)" }}>espn_s2</span> — it is about 300 characters — and of <span style={{ fontFamily: "var(--mono)", color: "var(--gold)" }}>SWID</span>.</li>
+                          </ol>
+                          <input className="gs" style={{ width: "100%", marginBottom: 6, fontSize: 12 }} placeholder="espn_s2 (long)" value={s2} onChange={(e) => setS2(e.target.value)} autoComplete="off" spellCheck={false} />
+                          <input className="gs" style={{ width: "100%", marginBottom: 8, fontSize: 12 }} placeholder="SWID — braces optional" value={swid} onChange={(e) => setSwid(e.target.value)} autoComplete="off" spellCheck={false} />
+                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <button className="btn btn-mini" onClick={() => { setEspnPriv(false); setS2(""); setSwid(""); setError(null); }}>Cancel</button>
+                            <div style={{ flex: 1 }} />
+                            <button className="btn btn-gold btn-mini" data-espnprivgo onClick={fetchEspnPrivate} disabled={busy || !val.trim() || !s2.trim() || !swid.trim()}>{busy ? "Reading…" : "Import private league"}</button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div>
@@ -20316,6 +20892,109 @@ function ConnectBox({ connect, onConnect, onClear }) {
                       <button className="btn btn-mini" style={{ marginTop: 8, marginLeft: 8 }} onClick={() => { setEspn(null); setError(null); }}>← Different league ID</button>
                     </div>
                   )}
+                </div>
+              ) : sel.id === "mfl" ? (
+                /* MFL is the easy one and the copy should say so rather than hedging. */
+                <div data-platmfl>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input className="gs" autoFocus style={{ flex: 1 }} inputMode="numeric" placeholder="MFL league ID, e.g. 54321" value={val}
+                      onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && val.trim()) fetchMfl(); }} />
+                    <button className="btn btn-gold" onClick={fetchMfl} disabled={busy || !val.trim()}>{busy ? "Importing…" : "Import league"}</button>
+                  </div>
+                  <input className="gs" style={{ width: "100%", marginTop: 8, fontSize: 12 }} placeholder="League API key — only if the league is private" value={key2} onChange={(e) => setKey2(e.target.value)} autoComplete="off" />
+                  <div className="mut" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.55 }}>
+                    The ID is the number in your league URL. A private league needs its API key — the commissioner finds it under <b style={{ color: "var(--ink)" }}>League Setup → Developer's API</b>. That key only reads this one league, so it is safe to keep, which is why <b style={{ color: "var(--green)" }}>picks sync live here</b>.
+                  </div>
+                </div>
+              ) : sel.id === "fantrax" ? (
+                <div data-platfantrax>
+                  {fxLeagues == null ? (
+                    <div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <input className="gs" autoFocus style={{ flex: 1 }} placeholder="Fantrax Secret ID" value={key2}
+                          onChange={(e) => setKey2(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && key2.trim()) fetchFantraxLeagues(); }} autoComplete="off" spellCheck={false} />
+                        <button className="btn btn-gold" onClick={fetchFantraxLeagues} disabled={busy || !key2.trim()}>{busy ? "Checking…" : "Find my leagues"}</button>
+                      </div>
+                      <div className="mut" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.55 }}>
+                        In Fantrax: your profile → <b style={{ color: "var(--ink)" }}>Secret ID</b>. It is a value Fantrax created for exactly this, <b style={{ color: "var(--ink)" }}>not your password</b> — and regenerating it there cuts our access off instantly.
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="mut" style={{ fontSize: 12, marginBottom: 8 }}>Pick the league to connect.</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 260, overflowY: "auto" }}>
+                        {fxLeagues.map((lg) => (
+                          <button key={lg.league_id} className="btn" disabled={busy} data-fxleague={lg.league_id}
+                            style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-start", padding: "10px 12px", textAlign: "left" }}
+                            onClick={() => pickFantrax(lg)}>
+                            <i className="ti ti-trophy" style={{ fontSize: 16, color: "var(--gold)" }} aria-hidden="true" />
+                            <span style={{ flex: 1 }}><b>{lg.name || `League ${lg.league_id}`}</b></span>
+                          </button>
+                        ))}
+                      </div>
+                      <button className="btn btn-mini" style={{ marginTop: 8 }} onClick={() => { setFxLeagues(null); setError(null); }}>← Different Secret ID</button>
+                    </div>
+                  )}
+                </div>
+              ) : sel.id === "yahoo" ? (
+                <div data-platyahoo>
+                  {yStatus == null ? (
+                    <button className="btn btn-gold" style={{ width: "100%", padding: 10 }} onClick={loadYahoo} disabled={busy}>{busy ? "Checking…" : "Continue with Yahoo"}</button>
+                  ) : !yStatus.configured ? (
+                    /* Honest about OUR state, not the user's. Yahoo gates access behind a review, so until
+                       that lands this is our problem to explain, not something they can fix by trying again. */
+                    <div className="panel" style={{ padding: "10px 12px", background: "var(--panel2)" }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 4 }}>Yahoo sign-in isn't switched on yet</div>
+                      <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.55 }}>
+                        Yahoo reviews and approves each app that reads fantasy data, and ours is waiting on that. The code is built and ready — nothing for you to do but check back. In the meantime, set the league up by hand and everything else works exactly the same.
+                      </div>
+                    </div>
+                  ) : !yStatus.linked ? (
+                    <div>
+                      <button className="btn btn-gold" style={{ width: "100%", padding: 10 }} onClick={yahooSignIn} disabled={busy}>Sign in with Yahoo</button>
+                      <div className="mut" style={{ fontSize: 11, marginTop: 8, lineHeight: 1.55 }}>
+                        Yahoo opens in a new tab and asks whether to let us read your leagues. Approve it, then paste the code it gives you here. You can revoke it any time from your Yahoo account settings.
+                      </div>
+                      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                        <input className="gs" style={{ flex: 1, fontSize: 12 }} placeholder="Code from Yahoo" value={yCode} onChange={(e) => setYCode(e.target.value)} autoComplete="off" />
+                        <button className="btn" onClick={yahooFinish} disabled={busy || !yCode.trim()}>Finish</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="mut" style={{ fontSize: 12, marginBottom: 8 }}>Pick the league to connect.</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 260, overflowY: "auto" }}>
+                        {(yLeagues || []).map((lg) => (
+                          <button key={lg.league_key} className="btn" disabled={busy} data-yleague={lg.league_key}
+                            style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-start", padding: "10px 12px", textAlign: "left" }}
+                            onClick={() => pickYahoo(lg)}>
+                            <i className="ti ti-trophy" style={{ fontSize: 16, color: "var(--gold)" }} aria-hidden="true" />
+                            <span style={{ flex: 1 }}><b>{lg.name}</b>{lg.teams ? <span className="mut" style={{ fontSize: 11 }}> · {lg.teams} teams</span> : null}</span>
+                          </button>
+                        ))}
+                        {!(yLeagues || []).length && <div className="mut" style={{ fontSize: 12 }}>No NFL leagues on that Yahoo account for this season.</div>}
+                      </div>
+                      <div className="mut" style={{ fontSize: 10.5, marginTop: 8 }}>Fantasy data provided by Yahoo Fantasy.</div>
+                    </div>
+                  )}
+                </div>
+              ) : sel.unsupported ? (
+                /* ⭐⭐ A DEAD END WITH A REASON AND A WAY FORWARD. Both of these are permanent — one because
+                   the platform is gone, one because the only route in would mean asking for a password —
+                   so the screen says which, plainly, rather than leaving someone to keep trying. */
+                <div className="panel" data-platunsupported={sel.id} style={{ padding: "11px 12px", background: "var(--panel2)" }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 4 }}>
+                    {sel.id === "cbs" ? "We won't ask for your CBS password" : "NFL.com fantasy has moved to ESPN"}
+                  </div>
+                  <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.6 }}>
+                    {sel.id === "cbs"
+                      ? <>CBS retired its developer API years ago. The only remaining way in is to send your CBS username and password to an undocumented endpoint — and no matter how carefully that is handled, teaching people to type their password into a third-party site is a habit worth not building. Set the league up by hand instead: it takes about a minute, and the draft room, recommendations and odds all work identically.</>
+                      : <>The NFL stopped running season-long fantasy in 2026 and ESPN is now its official fantasy game — existing NFL.com leagues were migrated across with their settings, keepers and history. Import yours at <b style={{ color: "var(--ink)" }}>espn.com/importnfl</b> (the league manager has to start it), then come back and connect it here as an ESPN league.</>}
+                  </div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                    <button className="btn btn-mini" onClick={() => { setOpen(false); setSel(PLATFORMS[0]); }}>Set up by hand</button>
+                    {sel.id === "nfl" && <button className="btn btn-mini btn-gold" onClick={() => { setSel(PLATFORMS.find((x) => x.id === "espn")); setError(null); setVal(""); }}>Connect as ESPN</button>}
+                  </div>
                 </div>
               ) : sel.oauth ? (
                 <button className="btn btn-gold" style={{ width: "100%", padding: 10 }} onClick={doConnect} disabled={busy}>{busy ? "Connecting…" : `Sign in with ${sel.name}`}</button>
@@ -22155,10 +22834,62 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [manualSort, setManualSort] = useState(true); // board opens in true ADP order
   const [showDrafted, setShowDrafted] = useState(false); // default: show best AVAILABLE; toggle to include drafted
   const [rookieOnly, setRookieOnly] = useState(false);
+  /* ⚠ THIS BLOCK SITS HERE, ABOVE THE COLUMN DEFAULTS, AND MOVING IT DOWN BREAKS THE ROOM.
+     `viewCols` a few lines below reads `simple`, and a component body runs top to bottom — so declaring
+     this state further down (where it reads more naturally, next to the other view state) puts `simple` in
+     the temporal dead zone at the moment `viewCols` is evaluated. The whole draft room throws on first
+     paint, in BOTH views, which is a spectacular way for an opt-in simplification to break the product it
+     was meant to leave alone. This file has now hit that trap three times; the fix is always the same and
+     the comment is here so it is not four. */
+  /* ═══ SIMPLE VIEW ══════════════════════════════════════════════════════════════════════════════
+     Trey: "I'd like to have a button at the very top that switches from a complex (current version) and
+     simple versions of the app. Some of the feedback I've gotten is that it's overwhelming… I don't want
+     this edit to impact anything that is currently built and that should just live in the default toggle
+     of 'complex'."
+
+     So this is one boolean, defaulting to false, and every use of it below is additive: `simple ? X : Y`
+     where Y is exactly what shipped. Nothing about the complex room is refactored, moved or re-styled to
+     make room for it — the fastest way to break a working product is to rebuild it in order to add an
+     alternative to it.
+
+     ⚠ IT IS A VIEW PREFERENCE, NOT LEAGUE DATA. It lives in localStorage rather than on the league,
+       because it describes how THIS person wants to read the room; two managers sharing a mock should not
+       be flipping each other's layout. */
+  const [simple, setSimple] = useState(() => { try { return localStorage.getItem("fdcSimpleView") === "1"; } catch { return false; } });
+  /* ⭐⭐ 29ac — THE DRAFT BOARD STAYS. Trey: "Actually, keep the draft board for the simple view as well
+     (and summary)." He is right and the reason is worth writing down: the draft board is not detail, it is
+     the draft. It is the one screen a manager glances at on any platform — who has taken what, where the
+     runs are, when my turn comes round — and cutting it made simple mode *harder* to follow than the app it
+     was simplifying. Everything else that came out was a second opinion about the same picks; this was the
+     picks themselves.
+     ⚠ THIS LIST IS ALSO THE STRANDING GUARD — `setSimpleView` reads it to decide whether the tab you are
+       sitting on survives the switch, so a tab added to the bar and not to this array bounces you to the
+       Hub the moment you flip modes. Bar and array are edited together, always. */
+  const SIMPLE_TABS = ["hub", "league", "board", "summary", "settings"];
+  const setSimpleView = (v) => {
+    setSimple(v);
+    try { localStorage.setItem("fdcSimpleView", v ? "1" : "0"); } catch {}
+    /* ⚠ A TAB THAT NO LONGER EXISTS IS A BLANK SCREEN. Switching to simple while sitting on Depth charts
+       leaves `tab` pointing at a tab the bar no longer renders — nothing is selected, nothing draws, and
+       the room looks broken at the exact moment someone is trying to make it simpler. Land them on the hub,
+       which is where simple mode wants them anyway. */
+    if (v) setTab((t) => (SIMPLE_TABS.includes(t) ? t : "hub"));
+  };
   const DEFAULT_COLS = { adp: true, consensus: false, edge: true, proj: true, floor: false, ceil: false, vbd: true, value: true, rank: true, vbdTier: true, adpTier: false, mockAdp: false, myRank: false, blendAdp: false, role: true, roleDesc: true, age: true, bye: true, psos: true, avail: true, passYd: true, passTD: true, rushYd: true, rushTD: true, rec: true, recYd: true, recTD: true, tgt: false };
   const DEFAULT_SECTION_ORDER = ["market", "mine", "value", "demo", "avail", "stat"];
+  /* ⭐⭐ THE SIMPLE BOARD SHOWS SIX COLUMNS. Trey: "less info in the player hub… there would just be less
+     data." The full board carries twenty-odd, which is right for someone who wants them and is the single
+     biggest source of the "overwhelming" feedback.
+     ⚠ NOT A DIFFERENT BOARD — the same table with most columns turned off, so sorting, the draft buttons,
+       the queue stars and every hover survive untouched. What is left is the four numbers a pick is
+       actually made on (ADP, projected points, value over replacement, and the odds he lasts) plus bye. */
+  const SIMPLE_COLS = { adp: true, proj: true, vbd: true, avail: true, bye: true, rank: true };
   const savedPrefs = user?.colPrefs || null;
   const [cols, setCols] = useState({ ...DEFAULT_COLS, ...(savedPrefs?.cols || {}) });
+  /* ⚠ THE USER'S OWN COLUMN CHOICES ARE NOT OVERWRITTEN. `cols` state is left exactly as it is and the
+     simple set is applied at RENDER time, so flipping to simple and back restores whatever they had
+     configured rather than resetting their board to a default they never chose. */
+  const viewCols = simple ? { ...Object.fromEntries(Object.keys(DEFAULT_COLS).map((k) => [k, false])), ...SIMPLE_COLS } : cols;
   const [boardMode, setBoardMode] = useState(savedPrefs?.boardMode || "info");
   const [sectionOrder, setSectionOrder] = useState(savedPrefs?.sectionOrder || DEFAULT_SECTION_ORDER);
   // Custom per-column order (within sections). Lets you drag actual table headers to rearrange columns;
@@ -22440,6 +23171,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [tourOptOut, setTourOptOut] = useState(false); // bound to the intro step's "don't show again" checkbox
   const setTourNeverShow = (on) => { setTourOptOut(on); try { if (window.localStorage) { if (on) window.localStorage.setItem(introKey, "1"); else window.localStorage.removeItem(introKey); } } catch (e) {} };
   const tourConnected = connectedPlatform === "sleeper" && !!(cfg.connect && cfg.connect.leagueId);
+  /* ⭐⭐⭐ A DIFFERENT TOUR FOR A DIFFERENT ROOM. Trey: "the guided tour would look different for a simple
+     vs. complex view."
+     It has to be, and not only for tidiness: the complex tour's steps point at `data-tour` anchors that
+     simple mode does not render, and a step whose selector finds nothing is skipped in silence. Left
+     alone, someone in simple view would get a tour that quietly dropped half its stops and never mentioned
+     the one widget the whole view is built around. Four steps, matching the four things there are to see. */
+  const SIMPLE_TOUR_STEPS = [
+    { sel: null, title: "The simple room", body: tourConnected
+        ? "This league syncs from Sleeper, so picks arrive on their own. Simple view keeps three things on screen: what just went, who to take, and when you're next up. Everything else is one click away and nothing has been switched off — the engine underneath is identical. Switch back any time from the View menu at the top."
+        : "You'll enter each pick as it happens. Simple view keeps three things on screen: what just went, who to take, and when you're next up. Everything else is one click away and nothing has been switched off — the engine underneath is identical. Switch back any time from the View menu at the top." },
+    { sel: '[data-simplestrip]', tab: "hub", scrollTop: true, title: "Last picks · who to take · your next picks",
+      body: "The three things a pick actually needs, left to right. The middle card is the recommendation with one line saying why, and three alternatives under it — every one has a Draft button when it's your turn. Bottom right is where you're projected to finish, which is the one number worth watching as the draft goes on." },
+    { sel: '[data-tour="views"]', tab: "hub", title: "Everything else, when you want it",
+      body: "Nothing is gone. This row opens the full panels on demand: Next picks (who drafts before you're back, and what they need), Rosters, League outlook, Position scarcity, and your written Strategy as a live checklist. Open one, read it, close it — the room stays quiet in between." },
+    { sel: '[data-tour="tabs"]', tab: "hub", title: "Five tabs",
+      body: "Hub is this screen. Draft board is the grid of every pick made so far, with steals and reaches marked and the next few rounds projected if you want them. League shows every roster. Summary grades the draft when it's done. Settings is where scoring, keepers and your draft slot live. Three more — team analysis, depth charts and trades — are waiting under Complex in the View menu, and switching back brings them all exactly as they were." },
+  ];
   const TOUR_STEPS = [
     { sel: null, title: "Welcome to your draft room", body: tourConnected
         ? "This league is connected to Sleeper, so picks sync automatically — you watch the board update and make your picks in Sleeper. This quick tour walks through the room top to bottom; hit Next to move along, or Dismiss anytime. Tip: you can hover almost anything for a deeper explanation."
@@ -25091,7 +25839,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const activeCols = orderedSections
     .filter(sectionVisible)
     .flatMap((sec) => {
-      const inSec = COL_DEFS.filter((c) => c.section === sec && cols[c.key] && colAvailable(c));
+      // ⚠ viewCols, not cols — simple mode narrows the board at RENDER time without touching the user's
+      //   saved column preferences. See where viewCols is defined.
+      const inSec = COL_DEFS.filter((c) => c.section === sec && viewCols[c.key] && colAvailable(c));
       // stable sort by custom rank (unranked keep their declared order)
       return inSec.map((c, i) => [c, i]).sort((a, b) => { const ra = colRank(a[0].key), rb = colRank(b[0].key); return ra !== rb ? ra - rb : a[1] - b[1]; }).map(([c]) => c);
     });
@@ -26898,6 +27648,26 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       </div>
                     );
                   })()}
+                  {/* ⭐⭐⭐ THE PAIR *YOU* HAVE IN MIND, not just the ones we suggest.
+                      Trey: "it allows you to select combinations of players and it shows you the combined
+                      points AND the % chance you get both of these players at your next two picks."
+
+                      ⚠ DELIBERATELY OUTSIDE THE SUGGESTED-ROWS BLOCK. That block returns null whenever it
+                        has nothing to suggest — no recommendation yet, no plan targets, an empty candidate
+                        list — and nesting this inside it meant the one thing the user came to do vanished
+                        exactly when the automated answer was unavailable, which is when they most want to
+                        work it out themselves. */}
+                  {/* ⚠ YOUR next two picks, not the next two picks in the room. `picks.length` is whoever
+                      is on the clock — which is only you when it is your turn, and the rest of the time it
+                      labelled the slot "1.01" while you sit at 1.08 and asked whether you could have a pair
+                      at somebody else's pick. myNextOverall/myNext2Overall are the two seats you own, which
+                      is what "your next two picks" means. */}
+                  {myNextOverall != null && myNext2Overall != null && (
+                    <ComboBuilder
+                      players={players} sortedAdp={sortedAdp} picks={picks} cfg={cfg}
+                      draftedSet={draftedSet} o1={myNextOverall} o2={myNext2Overall}
+                      label1={pickLabel(myNextOverall)} label2={pickLabel(myNext2Overall)} />
+                  )}
                   {/* ⭐⭐⭐ THE ANSWER, ONE CARD PER POSITION. Trey: "you can see the screenshot of how much
                       room I have. Can you fill it appropriately? I really like this one, but it's still a bit
                       difficult to follow."
@@ -27035,7 +27805,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
   return (
     <div>
-      {tourOn && <CoachTour steps={TOUR_STEPS} onExit={() => { setTourOn(false); setTab("hub"); }} onStepTab={(t) => setTab(t)} optOut={tourOptOut} onOptOut={setTourNeverShow} />}
+      {tourOn && <CoachTour steps={simple ? SIMPLE_TOUR_STEPS : TOUR_STEPS} onExit={() => { setTourOn(false); setTab("hub"); }} onStepTab={(t) => setTab(t)} optOut={tourOptOut} onOptOut={setTourNeverShow} />}
       {/* The draft room's own top bar. Gets .appheader so the sticky rule covers it too — Trey asked for
           the banner to stay put on EVERY page, and the room is the page he is on longest. */}
       {/* ⭐⭐ 29m — THE DRAFT CONTROLS FOLD AWAY ON A PHONE. Pause / speed / End draft / Save / Undo / Edit
@@ -27043,9 +27813,30 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           three rows and cost 230px of the FIRST screen — above the tracker, the tabs and the board. They now
           sit behind one "Controls" button on narrow screens; `.dctl-open` on this bar reveals them, and above
           640px the class does nothing and every button is exactly where it was. */}
-      <div ref={topBarRef} className={`hairline appheader${ctlOpen ? " dctl-open" : ""}`} style={{ display: "flex", alignItems: "center", gap: 12, padding: "6px 16px", flexWrap: "wrap" }}>
+      <div ref={topBarRef} className={`hairline appheader droomhead${ctlOpen ? " dctl-open" : ""}`} style={{ display: "flex", alignItems: "center", gap: 12, padding: "6px 16px", flexWrap: "wrap" }}>
         <button className="btn btn-mini" onClick={exit} title="Back to where you came from">← {exitLabel || (user ? (user.paid ? "Home" : "Library") : "Home")}</button>
         <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{league.name}</div>
+        {/* ⭐⭐⭐ THE SWITCH, AT THE VERY TOP, WHERE HE ASKED FOR IT — 29ac made it a labelled dropdown.
+            Trey: "For the view, make it a drop down menu for 'view'."
+            Two reasons it is better than the segmented pair it replaces, beyond his asking. A segmented
+            control has to render EVERY option at full size all the time, which is two uppercase words of
+            permanent chrome in the busiest strip on the page and, at 390px, two more things competing for a
+            header that already wraps. And the pair had no name on it: "COMPLEX | SIMPLE" sitting beside the
+            league name reads as a state badge, not a control — the word "View" is what tells you it is a
+            thing you can change. A native <select> also gets the platform's own picker on a phone, which is
+            a full-height wheel rather than a 3px-padded tap target.
+            ⚠ `data-viewtoggle` STAYS ON THE WRAPPER. The suites read the live mode off it, and it is the
+              only thing in the DOM that says which room you are in. */}
+        <div data-viewtoggle={simple ? "simple" : "complex"} className="viewsel"
+          title={simple ? "Fewer numbers, the same engine underneath — the recommendation, your progress, and the panels you open when you want them."
+                        : "Everything: the full tracker, every tab, and all the detail the engine produces."}>
+          <span className="viewsel-lbl">View</span>
+          <select data-viewselect value={simple ? "simple" : "complex"} aria-label="View"
+            onChange={(e) => setSimpleView(e.target.value === "simple")}>
+            <option value="complex">Complex</option>
+            <option value="simple">Simple</option>
+          </select>
+        </div>
         {isMock && <div className="chip" style={{ borderColor: "var(--gold)", background: "rgba(224,166,60,.10)", color: "var(--gold)" }} title="This is a practice draft — it saves to this league's mock history and never changes your real draft."><i className="ti ti-dice" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />MOCK</div>}
         {/* ⭐ 29q — "can you make it show the pick number within that, so something like 'Round 3 of 16 (34)'".
             The round tells you where the ROOM is; the overall pick is what every other number on the page —
@@ -27097,7 +27888,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             Seat {seatCorrected.from} → {seatCorrected.to} from Sleeper
           </div>
         )}
-        {onToggleHoverAnim && <button className="btn btn-mini" onClick={onToggleHoverAnim} title={noHoverAnim ? "Hover popups are OFF — click to turn them back on" : "Turn OFF hover popups & effects (the info tooltips and hover animations across every tab)"} style={{ borderColor: noHoverAnim ? "var(--gold)" : "var(--line2)", color: noHoverAnim ? "var(--gold)" : "var(--mut)" }}><i className={`ti ${noHoverAnim ? "ti-hand-off" : "ti-hand-finger"}`} style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />{noHoverAnim ? "Hover off" : "Hover"}</button>}
+        {/* ⭐ 29ac — this folds behind Controls on a phone like the other six. It is a switch for HOVER
+            popups, and a touch screen has no hover: it was a full 38px row of the header spent on a setting
+            that cannot do anything on the device reading it. Still one tap away under Controls, and above
+            900px the class does nothing and the button has not moved. */}
+        {onToggleHoverAnim && <button className="btn btn-mini dctl" onClick={onToggleHoverAnim} title={noHoverAnim ? "Hover popups are OFF — click to turn them back on" : "Turn OFF hover popups & effects (the info tooltips and hover animations across every tab)"} style={{ borderColor: noHoverAnim ? "var(--gold)" : "var(--line2)", color: noHoverAnim ? "var(--gold)" : "var(--mut)" }}><i className={`ti ${noHoverAnim ? "ti-hand-off" : "ti-hand-finger"}`} style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />{noHoverAnim ? "Hover off" : "Hover"}</button>}
         <div style={{ flex: 1 }} />
         {/* For a CONNECTED live draft, Sleeper drives the picks — pausing, sim speed, manual end, undo, and
             manual save don't apply (picks sync automatically). Those controls stay for mocks/manual drafts. */}
@@ -27247,7 +28042,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           tab bar, the Views row and the board; the summary bar still carries the projected finish, which is
           the number people open it for, and one tap gives back every zone exactly as it was. Above 640px
           `narrow` is false and this renders precisely what it always did. */}
-      {!done && narrow && (
+      {/* ⭐⭐ SIMPLE REPLACES THE WHOLE TRACKER STRIP. Not a trimmed version of it — the tracker is five
+          zones of live numbers, and leaving three of them would still read as a wall. The simple strip is
+          the three things Trey named, in his order, and everything it drops is one click away in the Views
+          row directly below. */}
+      {!done && simple && (
+        <div className="hairline" style={{ background: "var(--panel2)" }}>
+          <SimpleStrip
+            players={players} picks={picks} advice={advice} sims={sims} proj={proj}
+            userIdx={userIdx} onClock={onClock} TEAMS={TEAMS} teamNames={TEAM_NAMES}
+            upcoming={remainingPicks.filter((p) => p.mine).slice(0, 4).map((p) => ({ o: p.o, label: p.label, away: Math.max(0, p.o - picks.length) }))}
+            onDraft={draftPlayer} myNextOverall={myNextOverall} done={done} whyPick={whyPick} />
+        </div>
+      )}
+      {!done && !simple && narrow && (
         <button data-trackertoggle={trackerOpen ? "open" : "closed"} onClick={() => setTrackerOpen((v) => !v)}
           style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", minHeight: 42,
             background: "var(--panel2)", border: "none", borderTop: "1px solid var(--line)", borderBottom: "1px solid var(--line)",
@@ -27267,7 +28075,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           <i className={`ti ${trackerOpen ? "ti-chevron-up" : "ti-chevron-down"}`} style={{ fontSize: 14, color: "var(--gold)" }} aria-hidden="true" />
         </button>
       )}
-      {!done && (!narrow || trackerOpen) && (
+      {!done && !simple && (!narrow || trackerOpen) && (
         <div className="hairline" style={{ background: "var(--panel2)" }}>
           <div className="decision-grid" style={{ display: "flex", gap: 10, padding: "5px 12px", alignItems: "stretch" }}>
             {/* ---- GROUP A: decisions & outlook ---- */}
@@ -27898,7 +28706,18 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       )}
 
       <div className="hairline tabbar" data-tour="tabs" style={{ display: "flex", padding: "0 10px", overflowX: "auto", background: "var(--panel3)", borderTop: "1px solid var(--line2)", borderBottom: "1px solid var(--line2)", boxShadow: "inset 0 1px 0 rgba(255,255,255,.03)" }}>
-        {[["hub","Hub"],["myteam","Team analysis"],["league","League"],["board","Draft board"],["depth","Depth charts"],["trade","Trade"],["summary","Summary"],["settings","Settings"]].map(([k, label]) => (
+        {/* ⭐⭐ SIMPLE KEEPS FIVE TABS. Trey: "I think we can then get rid of a lot of the tabs (maybe just
+            keep league and settings?)" — plus Hub, which is the room itself; Summary, which is where a
+            finished draft goes and would otherwise be unreachable at the moment it matters most; and the
+            Draft board, which 29ac put back because it is the picks themselves rather than analysis of them.
+            What is gone is the three tabs that are second opinions: team analysis, depth charts and trades.
+            Everything they show is still reachable from the Views row inside the hub.
+            ⚠ KEEP THIS IN STEP WITH `SIMPLE_TABS` ABOVE — that array is what decides whether the tab you are
+              standing on survives the switch. */}
+        {(simple
+          ? [["hub","Hub"],["league","League"],["board","Draft board"],["summary","Summary"],["settings","Settings"]]
+          : [["hub","Hub"],["myteam","Team analysis"],["league","League"],["board","Draft board"],["depth","Depth charts"],["trade","Trade"],["summary","Summary"],["settings","Settings"]]
+        ).map(([k, label]) => (
           <button key={k} className={`tab ${tab === k ? "on" : ""}`} data-tour={`tab-${k}`} onClick={() => setTab(k)}>{label}</button>
         ))}
       </div>

@@ -84,7 +84,11 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
   const roundShade = (r, last, filled, good) => {
     const R = Math.max(1, last || 15);
     const t2 = Math.max(0, Math.min(1, (R - Math.min(r, R)) / Math.max(1, R - 1)));   // 1 at round 1 → 0 at the last
-    if (!filled) return { color: `rgba(233,238,243,${0.42 + t2 * 0.5})`, background: `rgba(136,150,165,${0.05 + t2 * 0.13})`, borderRadius: 4, padding: "1px 4px" };
+    /* ⚠ THIS COLOUR IS BUILT FOR A DARK SCREEN AND DISAPPEARS ON PAPER. Near-white ink at 42-92% opacity
+       reads perfectly on the app's near-black panel and is invisible on white — which is why the printed
+       plan's "Goes" column came out as a row of empty grey pills. The class is what the print stylesheet
+       hooks to put real ink back; see the @media print block. */
+    if (!filled) return { className: "shadeneutral", color: `rgba(233,238,243,${0.42 + t2 * 0.5})`, background: `rgba(136,150,165,${0.05 + t2 * 0.13})`, borderRadius: 4, padding: "1px 4px" };
     const rgb = good ? "95,208,168" : "242,101,92";
     return { color: `rgba(${rgb},${0.55 + t2 * 0.45})`, background: `rgba(${rgb},${0.05 + t2 * 0.2})`, borderRadius: 4, padding: "1px 4px" };
   };
@@ -117,13 +121,15 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
             dark, late rounds pale — so a glance down them shows whether this league's mispricings cluster
             at the top of the draft or the bottom, and a row where the two shades differ sharply IS the
             find. Shading only; the numbers stay plain so nothing is hidden behind colour. */}
-        <span className="num" style={{ fontSize: 11, textAlign: "right", ...roundShade(v.goesRound, t.lastRound, false) }}>R{v.goesRound}</span>
+        {(() => { const { className: sc, ...sh } = roundShade(v.goesRound, t.lastRound, false);
+          return <span className={`num ${sc || ""}`} style={{ fontSize: 11, textAlign: "right", ...sh }}>R{v.goesRound}</span>; })()}
         {/* ⭐⭐ HOW BIG THE GAP IS, VISIBLE. Trey: "Nico Collins is a 3rd rounder, but plays like a 2nd
             rounder… but Brock Bowers is a 3rd rounder that plays like a 1st rounder (I want to see that
             Brock is ahead of Nico in value basically)." Both rows read "round 3" in the Goes column and
             the difference was one digit apart in another. The gap is now the loudest thing on the row —
             sized, coloured by magnitude, and stated in rounds. */}
-        <span className="num" style={{ fontSize: 12, fontWeight: 800, textAlign: "right", ...roundShade(v.worthRound, t.lastRound, true, good) }}>{worthLabel(v)}</span>
+        {(() => { const { className: sc, ...sh } = roundShade(v.worthRound, t.lastRound, true, good);
+          return <span className={`num ${sc || ""}`} style={{ fontSize: 12, fontWeight: 800, textAlign: "right", ...sh }}>{worthLabel(v)}</span>; })()}
         <span style={{ textAlign: "right", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 4 }}>
           <span style={{ display: "inline-flex", gap: 1.5 }}>
             {Array.from({ length: Math.min(4, Math.max(0, gap)) }).map((_, k) => (
