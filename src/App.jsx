@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29aj";
+const BUILD_TAG = "2026.07.29ak";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -8745,6 +8745,9 @@ export default function App() {
   const [demoLeague, setDemoLeague] = useState(null); // unsaved demo draft from homepage
   const [mockLeague, setMockLeague] = useState(null); // transient mock draft running against a saved league
   const [quickMockOpen, setQuickMockOpen] = useState(false); // quick-mock pre-draft prompt
+  /* 29ak — a league connected from the home-page dialog, handed to the new-league form so it opens
+     pre-filled. Cleared the moment the form is left, so a later "Create New League" starts blank. */
+  const [setupConnect, setSetupConnect] = useState(null);
   const [freeNoticeOpen, setFreeNoticeOpen] = useState(false); // paywall notice for signed-in free (unpaid) users
   const [checkoutCanceled, setCheckoutCanceled] = useState(false); // came back from Stripe without paying
   const freeNoticeShown = useRef(false); // only auto-open once per session
@@ -9741,7 +9744,8 @@ export default function App() {
         </div>
       )}
       {route === "home" && user?.paid && <PaidHub user={user} leagues={leagues} funMocks={funMocks}
-        onLibrary={() => setRoute("library")} onNewLeague={() => { setSetupReturn(null); setRoute("setup"); }} onDatabase={() => setRoute("database")}
+        onLibrary={() => setRoute("library")} onNewLeague={() => { setSetupReturn(null); setSetupConnect(null); setRoute("setup"); }} onDatabase={() => setRoute("database")}
+        onConnectLeague={(c) => { setSetupReturn(null); setSetupConnect(c || null); setRoute("setup"); }}
         onOfficial={(id) => { setActiveId(id); setRoute("draft"); }} onMock={startMock} onQuickMock={() => setQuickMockOpen(true)}
         onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} onGuide={() => { setHelpTab("guide"); setRoute("help"); }} onAccount={() => setRoute("account")} onAdmin={() => setRoute("admin")} onSignOut={signOut}
         onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }}
@@ -9813,7 +9817,7 @@ export default function App() {
       {route === "adpIntel" && user && <AdpIntelPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} />}
       {route === "account" && user && <Account user={user} onUpdate={updateUser} onBack={() => goBack()} onHome={() => setRoute("home")} onSignOut={signOut} onRankings={() => setRoute("rankings")} onAdmin={() => setRoute("admin")} />}
       {route === "rankings" && user && <RankingsHub user={user} leagues={leagues} openSetId={pendingRankEdit} onConsumeOpen={() => setPendingRankEdit(null)} returnToDraft={rankEditFromDraft ? () => { const rid = rankEditFromDraft; setRankEditFromDraft(null); setActiveId(rid); setRoute("draft"); } : null} onUpdate={updateUser} onSignOut={signOut} onHome={() => { setRankEditFromDraft(null); setRoute("home"); }} onBack={() => { setRankEditFromDraft(null); goBack(); }} backLabel={backLabelOf()} onNewLeague={() => { setSetupReturn("rankings"); setRoute("setup"); }} />}
-      {route === "setup" && <Setup onCreate={createLeague} onBack={() => { const r = setupReturn || (user?.paid ? "home" : "library"); setSetupReturn(null); setRoute(r); }} backLabel={setupReturn === "rankings" ? "Rankings" : user?.paid ? "Home" : "Library"} />}
+      {route === "setup" && <Setup onCreate={createLeague} seedConnect={setupConnect} onBack={() => { const r = setupReturn || (user?.paid ? "home" : "library"); setSetupReturn(null); setSetupConnect(null); setRoute(r); }} backLabel={setupReturn === "rankings" ? "Rankings" : user?.paid ? "Home" : "Library"} />}
       {route === "draft" && active && (
         <DraftRoom key={active.id} league={active} user={user} isMock={!!(mockLeague && active.id === mockLeague.id)} isDemo={!!active.demo} initialTab={draftTab} dataVersion={dataVersion} allLeagues={leagues} allFunMocks={funMocks} noHoverAnim={noHoverAnim} onToggleHoverAnim={() => setNoHoverAnim((v) => !v)}
           onSave={(picks, preds, pickNames, predNames, opts) => {
@@ -15731,7 +15735,8 @@ function GetStartedPanel({ leagues, funMocks, dismissed, onDismiss, onConnectSle
   );
 }
 
-function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onOpenMock, onDeleteFun, onDeleteMock, onDraftTrends, onAutoImportSleeper }) {
+function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onOpenMock, onDeleteFun, onDeleteMock, onDraftTrends, onAutoImportSleeper, onConnectLeague }) {
+  const [connectOpen, setConnectOpen] = useState(false);
   const totalMocks = leagues.reduce((s, l) => s + (l.mocks || []).length, 0) + funMocks.length;
   const inProgress = leagues.filter((l) => l.picks.length > 0 && l.picks.length < (l.cfg.teams || 12) * l.cfg.rounds);
   /* First-run guidance. The dismissal is a device preference, not account data — someone who dismissed it
@@ -16085,7 +16090,7 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
       {/* Sleeper link — a quiet one-line strip. It's an account connection, not a headline feature, so it
           shouldn't shout or carry a paragraph of explanation. */}
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "0 20px 16px" }}>
-        <div className="linkstrip" data-sleeper-anchor style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", borderBottom: "1px solid var(--line2)", paddingBottom: 12 }}>
+        <div className="linkstrip" data-sleeper-anchor style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", paddingBottom: 12 }}>
           <i className="ti ti-plug-connected" style={{ fontSize: 14, color: sleeperLink.linked ? "#4FD1A1" : "var(--mut)", flexShrink: 0 }} aria-hidden="true" />
           <span className="mut" style={{ fontSize: 12.5, minWidth: 0 }}>
             {sleeperLink.linked ? <>Sleeper connected — leagues sync automatically.</> : <>Connect Sleeper to pull in your real leagues.</>}
@@ -16095,7 +16100,39 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
             <SleeperLinkControl compact link={sleeperLink.link} unlink={sleeperLink.unlink} linked={sleeperLink.linked} username={sleeperLink.username} />
           </div>
         </div>
+        {/* ⭐⭐⭐ 29ak — AND THE SAME OFFER FOR EVERYWHERE ELSE, AT THE SAME WEIGHT.
+            "I don't see anywhere on my home page to connect to any other platforms outside of sleeper? I'd
+             love it to be easier to find the link like it is for Sleeper."
+            The row above is a SLEEPER ACCOUNT link — it pulls your Sleeper leagues in and it is the only
+            connection this page has ever mentioned, which is why the app reads as Sleeper-only even with five
+            connectors shipped. This row sits directly beneath it, says the other four out loud, and opens the
+            dialog he asked for. The platform names are spelled out rather than hidden behind the button,
+            because the whole failure being fixed is one of VISIBILITY: a button labelled only "Connect a
+            league" answers the question just as poorly as no button at all. */}
+        <div data-connectrow style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", borderBottom: "1px solid var(--line2)", paddingBottom: 12 }}>
+          <i className="ti ti-world-plus" style={{ fontSize: 14, color: "var(--gold)", flexShrink: 0 }} aria-hidden="true" />
+          <span className="mut" style={{ fontSize: 12.5, minWidth: 0, display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
+            <span>On another platform?</span>
+            {PLATFORMS.filter((p) => !p.unsupported && p.id !== "sleeper").map((p) => (
+              <span key={p.id} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+                title={p.live ? `${p.name} — settings import and live pick sync.` : `${p.name} — imports your league's settings.`}>
+                <i className={`ti ${p.icon}`} style={{ fontSize: 13, color: (PLATFORM_META[p.id] || {}).color || "var(--gold)" }} aria-hidden="true" />
+                {p.name === "MyFantasyLeague" ? "MFL" : p.name}
+                {p.live && <i className="ti ti-bolt" style={{ fontSize: 10, color: "var(--green)" }} aria-hidden="true" />}
+              </span>
+            ))}
+          </span>
+          <div style={{ flex: "1 1 auto", minWidth: 0 }} />
+          <button data-connectbtn className="btn btn-gold btn-mini" style={{ flexShrink: 0 }} onClick={() => setConnectOpen(true)}>
+            <i className="ti ti-plus" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Connect a league
+          </button>
+        </div>
       </div>
+      {connectOpen && (
+        <ConnectLeagueModal
+          onClose={(how) => { setConnectOpen(false); if (how === "manual" && onNewLeague) onNewLeague(); }}
+          onConnected={(c) => { setConnectOpen(false); if (onConnectLeague) onConnectLeague(c); else if (onNewLeague) onNewLeague(); }} />
+      )}
 
       {/* ===== HOME GRID: Your leagues and Quick mocks SIDE BY SIDE =====
            Stacked, the mocks section sank below a long league list and got lost. Side by side, both are visible
@@ -16190,7 +16227,15 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
               const visible = collapsible && !showAllLeagues ? shown.slice(0, 2) : shown;
               return visible.map((l) => {
               const st = leagueStatus(l);
-              const isSleeper = !!((l.connect && l.connect.leagueId) || (l.cfg && l.cfg.connect && l.cfg.connect.leagueId));
+              /* ⭐⭐⭐ 29ak — "SLEEPER" HERE MEANT "HAS A LEAGUE ID", WHICH EVERY PLATFORM HAS.
+                 So a Yahoo, ESPN, MFL or Fantrax league was labelled `Sleeper` on the home page — visible in
+                 Trey's own screenshot, where both cards carry the chip — and, worse, was offered the "My
+                 Team" button beside it. That button opens the in-season hub, which is Sleeper-only: it would
+                 have posted a Yahoo league id to the Sleeper team-hub endpoint and failed in a way nobody
+                 could interpret. Ask which platform it actually is, once, and let both the chip and the
+                 button follow from the answer. */
+              const platId = platformOf(l);
+              const isSleeper = platId === "sleeper";
               const mocks = (l.mocks || []).length;
               const draftLive = l.picks.length > 0 && st.pct < 100;
               return (
@@ -16201,7 +16246,7 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
                   <div style={{ flex: "1 1 220px", minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                       <span className="disp" style={{ fontSize: 15.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{l.name}</span>
-                      {isSleeper && <span className="chip" style={{ fontSize: 8.5, color: "var(--blue)" }}>Sleeper</span>}
+                      {platId !== "manual" && <PlatformChip league={l} platform={platId} live={platformIsLive(platId)} size={9} />}
                       {mocks > 0 && <span className="chip" style={{ fontSize: 8.5 }}>{mocks} mock{mocks === 1 ? "" : "s"}</span>}
                       {/* The draft's own era. Reopening a completed draft shows the ADP, values and
                           projections that were live on ITS draft day — this says so from the outside, so
@@ -21086,12 +21131,107 @@ const PLATFORMS = [
     hint: "The NFL stopped running season-long fantasy in 2026 and moved leagues to ESPN. Import yours there, then connect it here as an ESPN league." },
 ];
 
+/* ⭐⭐⭐ 29ak — ONE IMPLEMENTATION OF "WHAT A CONNECTED LEAGUE MEANS", because there are now two callers.
+   Trey, looking at his home page after 29ai shipped the connect strip to the LIBRARY:
+       "I don't see anywhere on my home page to connect to any other platforms outside of sleeper?"
+   He was right twice over — the strip went on a screen he never lands on, and the home page's one connect
+   affordance is the Sleeper account link, which is a different thing entirely.
+   Adding a second entry point means this mapping — platform payload → league settings — is now read from
+   the new-league form AND from the home-page dialog. Two copies of it would drift within a release, and the
+   half that drifts is the half nobody tests: 6-point passing TDs, traded picks, a 3RR draft order. So it
+   moves here, whole, and both callers get the same answer.
+   `cur` supplies what we are merging INTO (the form's current start/scoring/order), so a partial import from
+   a platform that only knows some of it never blanks the rest. */
+function connectPatch(c, cur) {
+  const base = cur || {};
+  const patch = { connect: c, name: c.leagueName || `${(PLATFORMS.find((p) => p.id === c.platform) || {}).name || "Imported"} league` };
+  if (c.cfg) {
+    const k = c.cfg;
+    if (k.teams) patch.teams = k.teams;
+    if (k.rounds) patch.rounds = k.rounds;
+    if (k.type) patch.type = k.type;
+    if (k.start) patch.start = { ...(base.start || {}), ...k.start };
+    // Prefer the FULL per-stat scoring map when the platform gave us one. Both connectors build it (Sleeper's
+    // cfgFromLeague, ESPN's scoringFromItems) and it carries the things that actually move a board — 6-point
+    // passing TDs above all. Falling back to scoringType alone keeps only `rec` and silently scores every QB
+    // with our 4-point default.
+    if (k.scoring && typeof k.scoring === "object" && Object.keys(k.scoring).length) {
+      patch.scoring = { ...(base.scoring || {}), ...k.scoring };
+    } else if (k.scoringType) {
+      const rec = k.scoringType === "ppr" ? 1 : k.scoringType === "half" ? 0.5 : 0;
+      patch.scoring = { ...(base.scoring || {}), rec, recTE: k.tePrem ? rec + (k.tePremMult || 1) : rec };
+    }
+    // NOTE: don't patch tePremMult here — submit() DERIVES it from scoring.recTE minus scoring.rec and
+    // ignores any field of that name, so setting it would be a no-op that reads like it does something.
+    // Importing recTE (above) is what actually turns TE premium on.
+    if (k.keeper) patch.keeper = true;
+  }
+  if (c.yourSlot) patch.slot = c.yourSlot;
+  // Draft order + team names: build arrays in slot order (1-based slots → 0-based arrays)
+  if (c.slotNames && c.teams) {
+    const names = [];
+    for (let s = 1; s <= c.teams; s++) names.push(c.slotNames[s] || `Team ${s}`);
+    patch.teamNames = names; patch.manual = true;
+    // Sleeper draft order is already slot order, so draftOrder = identity (slot i → team i)
+    patch.draftOrder = Array.from({ length: c.teams }, (_, i) => i);
+  }
+  if (c.draftType) patch.order = c.draftType === "linear" ? "linear" : c.draftType === "3rr" ? "3rr" : "snake";
+  // Traded picks → owner overrides keyed by the ACTUAL overall pick index (accounting for the draft type,
+  // incl. 3RR), so picks you traded for are attributed to your team.
+  if (Array.isArray(c.tradedPicks) && c.tradedPicks.length && c.teams) {
+    const trades = tradesToOwnerOverrides(c.tradedPicks, c.teams, patch.order || base.order || "snake");
+    if (trades.length) { patch.pickTrading = true; patch.pickTrades = trades; }
+  }
+  // Keepers from the platform (name + slot). Stored on connect; the draft room resolves names→ids against
+  // the live player pool and pre-places them on the right team (no-cost roster adds).
+  if (Array.isArray(c.keepers) && c.keepers.length) patch.connect = { ...c, keepers: c.keepers };
+  return patch;
+}
+
 // League-connect box: pick a platform, provide its credential.
 //   Sleeper — fetches your leagues, imports the draft, and syncs picks live.
 //   ESPN    — imports a public league's SETTINGS only. There is no ESPN pick sync and this UI must
 //             never suggest there is; see the backend's src/lib/espn.js for the full reasoning.
-function ConnectBox({ connect, onConnect, onClear }) {
-  const [open, setOpen] = useState(false);
+/* ⭐⭐⭐ 29ak — THE CONNECT DIALOG, ON THE SCREEN HE ACTUALLY OPENS.
+     "I don't see anywhere on my home page to connect to any other platforms outside of sleeper? I'd love it
+      to be easier to find the link like it is for Sleeper. Maybe a button that just prompts to pull up a pop
+      up to log into those platforms?"
+   29ai fixed the wrong half of this. It made the platform grid the first thing the connect flow shows, and
+   put a signpost on the League library — but the library is a screen he passes through, and the home page is
+   the screen he lives on. The only connection offered there is the Sleeper ACCOUNT link, which is a different
+   thing again (it links an account to pull your leagues in; it does not import a league from anywhere else).
+   So the answer is the one he asked for, literally: a button on the home page that opens a dialog with every
+   platform in it.
+   ⚠ THE DIALOG HANDS OFF; IT DOES NOT CREATE THE LEAGUE ITSELF. Once a platform returns its payload the
+     league still has to be built from it — scoring, roster slots, draft order, traded picks, keepers — and
+     that is exactly what the new-league form already does, carefully, with a review step. Building a second
+     path to a finished league here would duplicate the one piece of this feature most expensive to get wrong.
+     The dialog collects the connection and drops the user into that form with everything filled in, which is
+     one screen further along than they were and no new code owning any of it. */
+function ConnectLeagueModal({ onClose, onConnected }) {
+  return (
+    <div data-connectmodal onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 90, background: "#000c", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
+      <div onClick={(e) => e.stopPropagation()} className="panel" style={{ width: "100%", maxWidth: 610, padding: 18 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 4 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="disp" style={{ fontSize: 19, fontWeight: 700 }}>Connect a league</div>
+            <div className="mut" style={{ fontSize: 12, lineHeight: 1.5, marginTop: 3 }}>
+              Pick where your league lives and we'll pull in its settings — teams, scoring, roster slots, draft order and keepers. Sleeper, MyFantasyLeague and Fantrax also sync your picks live on draft night.
+            </div>
+          </div>
+          <button className="btn btn-mini" onClick={onClose} title="Close" style={{ flexShrink: 0 }}><i className="ti ti-x" style={{ fontSize: 13 }} aria-hidden="true" /></button>
+        </div>
+        <ConnectBox embedded connect={null} onConnect={(c) => { if (c) onConnected(c); }} onClear={() => {}}
+          onCancel={(how) => { onClose(how === "manual" ? "manual" : undefined); }} />
+      </div>
+    </div>
+  );
+}
+
+/* `embedded` is for the home-page dialog, where the surrounding modal IS the "Connect your league" button —
+   so the box starts open and its Cancel closes the dialog instead of collapsing to a CTA nobody can see. */
+function ConnectBox({ connect, onConnect, onClear, embedded, onCancel }) {
+  const [open, setOpen] = useState(!!embedded);
   // Land on Sleeper, not on a platform picker: it's the path almost everyone takes and the only one
   // with live sync. "← Other platform" is one click away for the ESPN import.
   /* ⭐⭐⭐ 29ai — "I only see sleeper."
@@ -21307,9 +21447,9 @@ function ConnectBox({ connect, onConnect, onClear }) {
         </button>
       ) : (
         <div className="panel" style={{ padding: 14 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ display: embedded ? "none" : "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
             <div className="disp" style={{ fontSize: 15, fontWeight: 700 }}>Connect your league</div>
-            <button className="btn btn-mini" onClick={() => { setOpen(false); setSel(null); setSleeperLeagues(null); setEspn(null); setError(null); }}>Cancel</button>
+            <button className="btn btn-mini" onClick={() => { if (embedded && onCancel) { onCancel(); return; } setOpen(false); setSel(null); setSleeperLeagues(null); setEspn(null); setError(null); }}>Cancel</button>
           </div>
           {!sel ? (
             <div>
@@ -21322,16 +21462,19 @@ function ConnectBox({ connect, onConnect, onClear }) {
                   <button key={p.id} data-plat={p.id} className="btn" style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-start", padding: "9px 11px", opacity: p.unsupported ? 0.66 : 1 }}
                     onClick={() => { setSel(p); setVal(""); setKey2(""); setS2(""); setSwid(""); setEspnPriv(false); setFxLeagues(null); setYLeagues(null); setSleeperLeagues(null); setEspn(null); setError(null); }}>
                     <i className={`ti ${p.icon}`} style={{ fontSize: 17, color: p.unsupported ? "var(--mut)" : "var(--gold)" }} aria-hidden="true" />
-                    <span style={{ flex: 1, textAlign: "left" }}>{p.name}</span>
-                    {p.live && <span className="chip" data-platlive style={{ fontSize: 8.5, borderColor: "var(--green)", color: "var(--green)" }}>LIVE PICKS</span>}
-                    {p.unsupported && <span className="chip" style={{ fontSize: 8.5, borderColor: "var(--line2)", color: "var(--mut)" }}>READ WHY</span>}
+                    <span style={{ flex: 1, minWidth: 0, textAlign: "left", whiteSpace: "normal", lineHeight: 1.2 }}>{p.name}</span>
+                    {/* ⚠ flexShrink 0: at the connect DIALOG's width these grid cells are ~150px and the
+                        badge is the flex item that gives, so "LIVE PICKS" rendered as "LIV" beside the
+                        longest platform name — the one place the badge matters most. */}
+                    {p.live && <span className="chip" data-platlive style={{ fontSize: 8.5, borderColor: "var(--green)", color: "var(--green)", flexShrink: 0 }}>LIVE PICKS</span>}
+                    {p.unsupported && <span className="chip" style={{ fontSize: 8.5, borderColor: "var(--line2)", color: "var(--mut)", flexShrink: 0 }}>READ WHY</span>}
                   </button>
                 ))}
               </div>
               <div className="panel" style={{ marginTop: 10, padding: "10px 12px", background: "var(--panel2)" }}>
                 <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>On CBS, or drafting in person?</div>
                 <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>No problem — close this and set the league up by hand. You enter each pick as it happens (it's fast), and you get the <b style={{ color: "var(--ink)" }}>exact same</b> engine: live recommendations, availability odds, cost-of-waiting, and steal/reach grades.</div>
-                <button className="btn btn-mini" style={{ marginTop: 8 }} onClick={() => { setOpen(false); setSel(null); setEspn(null); setError(null); }}>Set up manually instead</button>
+                <button className="btn btn-mini" style={{ marginTop: 8 }} onClick={() => { if (embedded && onCancel) { onCancel("manual"); return; } setOpen(false); setSel(null); setEspn(null); setError(null); }}>Set up manually instead</button>
               </div>
             </div>
           ) : (
@@ -21658,7 +21801,7 @@ function DraftOrderTab({ f, upd, ensureNames }) {
 // league already has somewhere to save), the whole form is mirrored to localStorage as it changes and
 // restored on the way back in, with a banner so it is never a surprise. Cleared on create and on discard.
 const CFG_DRAFT_PREFIX = "fdc:cfgdraft:";
-function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, initialMode, initialKeeperOpen, draftKey, onDirty }) {
+function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, initialMode, initialKeeperOpen, draftKey, onDirty, seedConnect }) {
   const [seg, setSeg] = useState(initialSeg || "basics");
   // Simple vs complex view. Simple shows only the essentials (Basics tab); complex reveals the full tabbed
   // form (roster, scoring, teams & order, pick trades). Mirrors the mock-setup simple/complex choice so
@@ -21732,6 +21875,17 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
   };
   const pristineRef = useRef(null);
   if (pristineRef.current === null) pristineRef.current = cfgPrint(f);
+  /* A league connected from the home-page dialog arrives here already resolved — apply it once, through the
+     same `connectPatch` the in-form ConnectBox uses, so the two entry points produce identical leagues.
+     ⚠ ONCE, AND NOT AS A DEPENDENCY. Re-applying on every render would stamp the imported settings back over
+       anything the user then edited on this very screen, which is the whole point of showing them the form. */
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (seededRef.current || !seedConnect) return;
+    seededRef.current = true;
+    setF((cur) => ({ ...cur, ...connectPatch(seedConnect, cur) }));
+    /* eslint-disable-next-line */
+  }, [seedConnect]);
   useEffect(() => {
     if (!draftKey) return undefined;
     const t2 = setTimeout(() => {
@@ -21900,52 +22054,9 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
         <>
           <ConnectBox connect={f.connect} onConnect={(c) => {
             if (!c) { upd({ connect: null }); return; }
-            // Apply settings pulled from the connected league (Sleeper) so the form is pre-filled.
-            const patch = { connect: c, name: c.leagueName || `${PLATFORMS.find((p) => p.id === c.platform)?.name} league` };
-            if (c.cfg) {
-              const k = c.cfg;
-              if (k.teams) patch.teams = k.teams;
-              if (k.rounds) patch.rounds = k.rounds;
-              if (k.type) patch.type = k.type;
-              if (k.start) patch.start = { ...f.start, ...k.start };
-              // Prefer the FULL per-stat scoring map when the platform gave us one. Both connectors
-              // build it (Sleeper's cfgFromLeague, ESPN's scoringFromItems) and it carries the things
-              // that actually move a board — 6-point passing TDs above all. Falling back to scoringType
-              // alone keeps only `rec` and silently scores every QB with our 4-point default.
-              if (k.scoring && typeof k.scoring === "object" && Object.keys(k.scoring).length) {
-                patch.scoring = { ...f.scoring, ...k.scoring };
-              } else if (k.scoringType) {
-                const rec = k.scoringType === "ppr" ? 1 : k.scoringType === "half" ? 0.5 : 0;
-                patch.scoring = { ...f.scoring, rec, recTE: k.tePrem ? rec + (k.tePremMult || 1) : rec };
-              }
-              // NOTE: don't patch tePremMult here — submit() DERIVES it from scoring.recTE minus
-              // scoring.rec and ignores any field of that name, so setting it would be a no-op that
-              // reads like it does something. Importing recTE (above) is what actually turns TE premium on.
-              if (k.keeper) patch.keeper = true;
-            }
-            // Your draft slot
-            if (c.yourSlot) patch.slot = c.yourSlot;
-            // Draft order + team names: build arrays in slot order (1-based slots → 0-based arrays)
-            if (c.slotNames && c.teams) {
-              const names = [];
-              for (let s = 1; s <= c.teams; s++) names.push(c.slotNames[s] || `Team ${s}`);
-              patch.teamNames = names; patch.manual = true;
-              // Sleeper draft order is already slot order, so draftOrder = identity (slot i → team i)
-              patch.draftOrder = Array.from({ length: c.teams }, (_, i) => i);
-            }
-            if (c.draftType) patch.order = c.draftType === "linear" ? "linear" : c.draftType === "3rr" ? "3rr" : "snake";
-            // Traded picks → owner overrides keyed by the ACTUAL overall pick index (accounting for
-            // the draft type, incl. 3RR), so picks you traded for are attributed to your team.
-            if (Array.isArray(c.tradedPicks) && c.tradedPicks.length && c.teams) {
-              const trades = tradesToOwnerOverrides(c.tradedPicks, c.teams, patch.order || f.order || "snake");
-              if (trades.length) { patch.pickTrading = true; patch.pickTrades = trades; }
-            }
-            // Keepers from Sleeper (name + slot). Stored on connect; the draft room resolves names→ids
-            // against the live player pool and pre-places them on the right team (no-cost roster adds).
-            if (Array.isArray(c.keepers) && c.keepers.length) {
-              patch.connect = { ...c, keepers: c.keepers };
-            }
-            upd(patch);
+            // The mapping itself lives at `connectPatch` (module level) — the home-page connect dialog
+            // applies the identical one, and two copies would drift.
+            upd(connectPatch(c, f));
           }} onClear={() => upd({ connect: null })} />
           {f.connect && f.connect.platform === "sleeper" && (
             <div className="panel" style={{ padding: "14px 16px", marginBottom: 16, marginTop: -6, background: "#0E1206", borderColor: "var(--green)" }}>
@@ -22300,13 +22411,13 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
   );
 }
 
-function Setup({ onCreate, onBack, backLabel }) {
+function Setup({ onCreate, onBack, backLabel, seedConnect }) {
   return (
     <div style={{ maxWidth: 580, margin: "0 auto", padding: "32px 20px" }}>
       <button className="btn btn-mini" onClick={onBack} style={{ marginBottom: 14 }}>← {backLabel || "Library"}</button>
       {/* ⭐ draftKey turns on the unfinished-setup autosave. Only the CREATE flow gets it — editing an
           existing league already has a league object to save into. */}
-      <ConfigForm initial={{}} draftKey="new" submitLabel="Create league & enter draft room" onSubmit={onCreate} onCancel={onBack} />
+      <ConfigForm initial={{}} draftKey="new" seedConnect={seedConnect} submitLabel="Create league & enter draft room" onSubmit={onCreate} onCancel={onBack} />
     </div>
   );
 }

@@ -19,9 +19,18 @@ try {
   }
   const missing = usedIcons('src', known).filter((n) => !shipped.has(n));
   if (missing.length) {
-    console.warn('\n  ⚠  ICON SUBSET is missing ' + missing.length + ' icon(s) the app uses:');
-    console.warn('     ' + missing.join(', '));
-    console.warn('     These will render as blank squares. Run:  npm run icons:build\n');
+    /* ⭐ 29ak — THIS EXITS NON-ZERO NOW, AND IT SHOULD ALWAYS HAVE.
+       `npm run build` has run this check first for a long time, but it only warned and returned 0, so the
+       `&&` chain sailed straight past it. 29ai added the Yahoo and Fantrax connectors to a platform picker
+       using ti-brand-yahoo and ti-key — neither of which was in the subset — and shipped a platform chooser
+       with blank squares next to two of the five platforms. The warning was printed on every one of those
+       builds and scrolled by in the noise above "built in 2.7s".
+       A check whose failure does not stop anything is a comment. css-check and screens-check both exit 1;
+       so does this. The fix is one command and the message says it. */
+    console.error('\n  ✗  ICON SUBSET is missing ' + missing.length + ' icon(s) the app uses:');
+    console.error('     ' + missing.join(', '));
+    console.error('     These render as blank squares. Fix with:  npm run icons:build\n');
+    process.exit(1);
   } else {
     console.log('  ✓ icon subset covers all ' + shipped.size + ' icons in use');
   }
