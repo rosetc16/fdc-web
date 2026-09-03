@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29ag";
+const BUILD_TAG = "2026.07.29ah";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -192,9 +192,30 @@ const STRAT_KINDS = {
   notBefore: { label: "Not before", phrase: (r) => `No ${r.pos} before round ${r.round}` },
   firstIn:   { label: "First between", phrase: (r) => `First ${r.pos} between rounds ${r.round} and ${r.to || r.round}` },
 };
+/* ⭐⭐⭐ 29ah — A TARGET'S ROUND WINDOW HAS TO EARN ITS WIDTH.
+   Trey: "In my 'strategy' I have De'Von Achane as my strategy for 2.03… but in the 'your decision' box on
+   the hub, it has him as a target for rounds 2-3… his ADP is 19, so there is just about 0% chance he is a
+   3rd rounder. I also have an early 2nd rounder, so it's even less likely he is around in round 3. This
+   makes sense later in the draft to say someone is a round 10-11 because there is just more variance."
+   Exactly right, and the cause was a constant: picking any exact pick stored `to = from + 1`, so every
+   target in the app was a two-round band whether it was Achane in the second or a dart throw in the
+   fourteenth. A window that is always two rounds wide carries no information — and at the top of the board
+   it is not merely uninformative, it is false, because the second round of it cannot happen.
+   ⚠ THE WRITE PATH IS WHERE THE REAL FIX LIVES (see setTarget's caller): it widens only when the simulation
+     says the player has a genuine chance of surviving to the next of YOUR picks. This read-time clamp is for
+     the plans people have ALREADY written — an existing target cannot re-derive odds from here, so it drops
+     the blanket widening in the rounds where ADP variance is small and keeps it where it is real. Anything a
+     user set deliberately (a window wider than one round, or one written after this build) is left alone. */
+const EARLY_BAND_ROUNDS = 4;   // through round 4 the market is tight enough that "or the next round" is noise
 export function readStrategy(league) {
   const st = (league && league.strategy) || null;
-  const targets = Array.isArray(st && st.targets) ? st.targets : [];
+  const raw = Array.isArray(st && st.targets) ? st.targets : [];
+  const targets = raw.map((t) => {
+    if (!t || t.from == null || t.to == null) return t;
+    const auto = t.to === t.from + 1;                       // the old blanket +1, not a user's own window
+    if (!auto || t.from > EARLY_BAND_ROUNDS) return t;
+    return { ...t, to: t.from };
+  });
   const rules = Array.isArray(st && st.rules) ? st.rules : [];
   return { targets, rules };
 }
@@ -3775,7 +3796,25 @@ export function buildPlayers(cfg) {
   });
   ps.forEach((p) => {
     p.role = null; p.fantasyTier = null; p.usage = null;
-    const s = p.stats || {};
+    /* ⭐⭐⭐ 29ah — A ROLE MUST NEVER CONTRADICT THE PLAYER'S OWN RANK.
+       Reported with a screenshot of a projected lineup: Ja'Marr Chase "depth / dart throw", Drake London
+       "depth / dart throw", A.J. Brown "depth / dart throw", Sam LaPorta "low-volume starter". The pattern
+       names the cause. Every one of the volume tiers below keys on TARGETS and CARRIES — and neither is a
+       SCORING stat, so a projection feed that ships only what it needs to compute points carries receptions
+       and yards but no `tgt` and no `rushAtt`. Every threshold then reads 0, every receiver falls through to
+       the bottom label, and a tight end who is his team's number one lands on "Low-volume starter" — which
+       is exactly, line for line, what he was looking at.
+       ⚠ THE FIXTURE HAS THOSE KEYS, WHICH IS WHY NO SUITE EVER SAW IT. Reconstruct what is missing from what
+         is present — a reception implies roughly one and a half targets, a rushing yard implies a carry —
+         and then refuse, at the end, to call a top-of-the-position player depth whatever the volume says. */
+    const sRaw = p.stats || {};
+    const s = (() => {
+      const o = { ...sRaw };
+      const rec = o.rec || 0, recYd = o.recYd || 0;
+      if (!o.tgt && (rec || recYd)) o.tgt = Math.round((rec || recYd / 12) / 0.65);   // ~65% catch rate
+      if (!o.rushAtt && o.rushYd) o.rushAtt = Math.round(o.rushYd / 4.3);             // ~4.3 yards a carry
+      return o;
+    })();
     const r = posRankByPts[p.id] || 99;   // fantasy rank at the position
     const dep = p.posDepth;                // 1 = his NFL team's top option at the position
     const ft = fantasyTierOf(p.pos, r);
@@ -3824,6 +3863,18 @@ export function buildPlayers(cfg) {
         else if (dep === 2) usage = qbUpside[p.id] ? "Backup — sleeper upside" : "Backup";
         else usage = "Depth / 3rd string";
       } else usage = r <= 16 ? "Starter" : r <= 26 ? "Low-end starter / streamer" : "Backup";
+    }
+    /* ⚠ THE BACKSTOP, AND THE PART THAT MATTERS MOST. Even with the reconstruction above, a feed could ship
+       something we cannot read, and the failure mode is a label that argues with the rank printed beside it —
+       "WR1 · depth / dart throw" — which destroys trust in every other number on the row. A player inside the
+       starters at his position is a starter, whatever the volume fields say. */
+    if (usage && /Depth|dart throw|3rd string|Blocking/i.test(usage)) {
+      const startersAtPos = Math.max(1, Math.round((REQ_F(SPEC.SUPER > 0 || SPEC.QB > 1)[p.pos] || 1) * (TEAMS || 12)));
+      if (r <= startersAtPos) {
+        usage = p.pos === "QB" ? "Starter"
+          : p.pos === "TE" ? "Team's starting TE"
+          : r <= Math.ceil(startersAtPos / 2) ? `Every-week ${p.pos}1` : `Steady ${p.pos}2/3`;
+      }
     }
     p.role = usage || null;
     // For RB/WR/TE backups the market has drafted ahead of the pack, note the sleeper upside on the usage
@@ -11249,7 +11300,21 @@ function StrategyEditor({ league, user, allLeagues, taken, onSave, onSaveMaster,
                           if (v === "") return setTarget(p.name, null, null);
                           const o = +v;
                           const r = (myRounds.find((m) => m.o === o) || {}).round || 1;
-                          setTarget(p.name, r, Math.min(rounds, r + 1), o);
+                          /* ⭐⭐⭐ 29ah — WIDEN ONLY WHEN HE COULD ACTUALLY LAST. The window used to be
+                             `r` to `r + 1` for every target ever set, which said "rounds 2-3" about a man
+                             with an ADP of 19 whose chance of reaching round three is nil. The simulation
+                             that already prices every option in this very dropdown knows better: extend the
+                             window to the next of YOUR picks only if he has a real chance of being there,
+                             and otherwise say the one round you can actually get him in.
+                             ⚠ ODDS FIRST, ROUND SECOND. When the sim has not produced a number for that pick
+                               yet, fall back to the shape of ADP variance itself — tight at the top of the
+                               board, loose deep — rather than to the old constant. */
+                          const nxt = myRounds.find((m) => m.o > o && !m.keeper);
+                          const nxtPct = nxt ? oddsAt(nxt.o, p.id) : null;
+                          const to = !nxt ? r
+                            : nxtPct != null ? (nxtPct >= 15 ? Math.min(rounds, nxt.round) : r)
+                            : (r > EARLY_BAND_ROUNDS ? Math.min(rounds, r + 1) : r);
+                          setTarget(p.name, r, to, o);
                         }}>
                         <option value="">— not targeted —</option>
                         {/* ⭐⭐⭐ EVERY OPTION NOW CARRIES THE OVERALL PICK AND THE REAL ODDS.
@@ -13383,9 +13448,28 @@ function faabBid(o) {
   pct *= mult;
   if (!o.startable && !o.elite) pct = Math.min(pct, 4); // a depth body is a $1-$4 claim, whatever the math says
   if (o.elite && pct < 6) pct = 6;                     // rostered-everywhere types are never a minimum bid
-  pct = Math.max(1, Math.min(80, pct));
+  /* ⭐⭐⭐ 29ah — HOW MUCH YOU MAY COMMIT TO ONE CLAIM DEPENDS ON HOW MUCH SEASON IS LEFT.
+     Unspent FAAB is worth exactly nothing in week 14, so by then emptying the account on the right player is
+     correct. In week 2 it is not: the same 80% bid leaves you unable to answer the next injury, and there
+     will be one. The old model had a single flat ceiling of 80 and no idea what week it was, so it would
+     recommend spending four fifths of a season's budget in the opening fortnight.
+     ⚠ AND THE PRINTED RANGE HAS TO RESPECT THE CEILING. `hi` was computed as pct × 1.22 AFTER the clamp, so
+       a bid capped at 80 was displayed as "52-81%" — the model overruling itself in the only place the user
+       actually reads. Clamp the range, not just the midpoint. */
+  const seasonWeeks = Math.max(weeks, o.seasonWeeks || weeks);
+  const left = weeks / seasonWeeks;                    // 1.0 in week one, → 0 at the end
+  /* ⚠ AND THE OTHER HALF OF THE SAME IDEA, WHICH THE FIRST CUT OF THIS GOT BACKWARDS. Raising the ceiling
+     late is not enough: the points term collapses as the weeks run out (one week of +9 is worth a fraction
+     of thirteen weeks of it), so a genuine league-winner in the last live week priced out at 7-10% — right
+     about his remaining production, wrong about what a dollar is worth. A FAAB dollar's value is the future
+     claims it could still buy, and in the final week there are none. Scale the bid by how few uses the
+     budget has left, capped so it can never run away. Early on this factor is ~1.04 and changes nothing. */
+  const usesLeft = Math.min(2.2, Math.sqrt(seasonWeeks / weeks));
+  pct *= usesLeft;
+  const ceiling = Math.round(32 + 58 * (1 - left));    // ~32% early, ~90% when it is the last live week
+  pct = Math.max(1, Math.min(ceiling, pct));
   const lo = Math.max(1, Math.round(pct * 0.78));
-  const hi = Math.max(lo + 1, Math.round(pct * 1.22));
+  const hi = Math.max(lo + 1, Math.min(ceiling, Math.round(pct * 1.22)));
   const bud = o.budgetLeft;
   return {
     pct: Math.round(pct), lo, hi,
@@ -14063,6 +14147,19 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     const posStrength = {};
     const posQuality = {};                 // SHARED quality×quantity score — identical to the live draft app
     const posPlayers = {};                 // the players at each position (best first), for hovers
+    /* ⭐⭐ 29ah — WHAT THE POSITION ACTUALLY PUTS IN THE LINEUP. The score above measures the ROSTER — how
+       good your players are against a typical team's, slot by slot. That is the right question for a draft
+       board and it is what the draft app answers. It is not quite the question a manager asks in week 6,
+       which is "how many points do my running backs score me". The two can disagree honestly: a team with
+       two elite RBs and a receiver in the flex owns the better RB room while starting fewer RB points than a
+       team with three good ones. Rather than pick a winner and hide the other, the hover now shows both. */
+    const posStarted = {};
+    (lu.slots || []).forEach((sl) => {
+      if (!sl.p || sl.p.assumed) return;
+      const pp = sl.p.pos;
+      if (posStarted[pp] == null) posStarted[pp] = 0;
+      posStarted[pp] += sl.p.pts || 0;
+    });
     POS.forEach((pos) => {
       const need = (req[pos] || 0);
       const atPos = roster.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts);
@@ -14075,7 +14172,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     });
     const wins = t.record ? t.record.wins : 0;
     const losses = t.record ? t.record.losses : 0;
-    return { rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName, isMe: t.rosterId === data.myRosterId, power, posStrength, posQuality, posPlayers, roster, flexShare: fShare, wins, losses, pointsFor: t.pointsFor || 0, record: t.record };
+    return { rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName, isMe: t.rosterId === data.myRosterId, power, posStrength, posQuality, posPlayers, posStarted, roster, flexShare: fShare, wins, losses, pointsFor: t.pointsFor || 0, record: t.record };
   });
   // Power rankings: overall ROSTER STRENGTH (quality × quantity across positions) — a different lens than
   // projected points, so it stays distinct from projected standings even before any games are played.
@@ -14194,6 +14291,9 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   const bidFor = (f) => faabBid({
     gainPerWeek: Math.max(f.upgrade || 0, f.verdict === "add" && !f.upgrade ? 1.2 : 0),
     weeksLeft, teamsN: leagueSize,
+    // The league's own regular-season length, so the "keep some powder dry" ceiling knows how much of the
+    // year is still ahead rather than assuming a 14-week default for everybody.
+    seasonWeeks: data.regularSeasonWeeks || null,
     need: needByPos[f.p.pos] === 999,
     scarce: (f.p.pos === "QB" && isSuperflex) || (f.p.pos === "TE" && (cfg.tePremMult || 0) > 0),
     startable: seasonOf(f.p) >= startableCut[f.p.pos] * 0.92,
@@ -14321,7 +14421,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     calls: calls.map((c) => ({ slot: c.slot, startName: c.start.name, altName: c.alt.name, win: c.win })),
     adds: summaryFA.map(({ p, upgrade, verdict }) => {
       const bid = bidFor({ p, upgrade, verdict });
-      return { name: p.name, pos: p.pos, posRank: p.posRank, bid: faabLeft != null ? `bid $${bid.loAbs}–${bid.hiAbs}` : `bid ${bid.lo}–${bid.hi}% of budget`, rivals: rivalsThinAt[p.pos] || 0 };
+      return { name: p.name, pos: p.pos, posRank: p.posRank, bid: `bid ${bid.lo}–${bid.hi}% of FAAB${faabLeft != null ? ` ($${bid.loAbs}–${bid.hiAbs} of your $${faabLeft})` : ""}`, rivals: rivalsThinAt[p.pos] || 0 };
     }),
     byes: byeTrouble.map((b) => ({ week: b.week, starters: b.starters, out: b.out.map((p) => p.name), empty: b.empty, loss: b.loss })),
     injuries: injuredRoster.map((p) => ({ name: p.name, status: p.wkInj || p.inj })),
@@ -14752,14 +14852,33 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                       const rivals = rivalsThinAt[p.pos] || 0;
                       return (
                         <div onMouseEnter={(e) => showTip(e, [
-                          { kind: "take", tone: "neutral", x: `Suggested bid — ${bid.lo}–${bid.hi}% of your remaining budget` },
-                          { t: "Why this much", x: `He upgrades your ${p.pos} by about ${Math.round(Math.max(upgrade, 1.2) * 10) / 10} points a week with ${weeksLeft} week${weeksLeft > 1 ? "s" : ""} of regular season left${needByPos[p.pos] === 999 ? `, and you're genuinely short at ${p.pos}` : ""}. A waiver bid is worth what the points are worth, not what the name is worth.` },
+                          { kind: "take", tone: "neutral", x: `Suggested bid — ${bid.lo}–${bid.hi}% of your FAAB budget` },
+                          /* ⚠ SHOW THE WHOLE SUM, not a conclusion. Trey: "We also just need to triple check
+                             we like this formula." A number nobody can audit is a number nobody should act
+                             on, and every input below is one he named. */
+                          { t: "The points", x: `He upgrades your ${p.pos} by about ${Math.round(Math.max(upgrade, 1.2) * 10) / 10} points a week, and there ${weeksLeft > 1 ? "are" : "is"} ${weeksLeft} week${weeksLeft > 1 ? "s" : ""} of regular season left — roughly ${Math.round(Math.max(upgrade, 1.2) * weeksLeft)} points between now and the playoffs. The first points of an upgrade are worth far more per point than the tenth, so the bid curve flattens as the gain grows.` },
+                          { t: "Your roster & league", x: `${needByPos[p.pos] === 999 ? `You cannot field ${p.pos} from startable players, which raises the bid. ` : `You can already field ${p.pos}, so this is an upgrade rather than a hole. `}${(p.pos === "QB" && isSuperflex) ? "Superflex makes quarterbacks scarce, which raises it again. " : (p.pos === "TE" && (cfg.tePremMult || 0) > 0) ? "TE-premium scoring makes tight ends scarce, which raises it again. " : ""}${leagueSize}-team league.` },
+                          { t: "How much is left to play for", x: `Unspent budget is worth nothing in the final week, so the most worth committing to one claim rises as the season shortens — with ${weeksLeft} of ${data.regularSeasonWeeks || weeksLeft} weeks still to play, a single bid is capped well below your whole account.` },
                           { t: "Competition", x: rivals ? `${rivals} of the other ${leagueSize - 1} teams can't field a full ${p.pos} group from startable players either — expect real bidding, and bid at the top of the range if you need him.` : `No other team in the league is short at ${p.pos} right now, so you're unlikely to be outbid. The low end of the range should be enough.` },
-                          ...(faabLeft != null ? [{ t: "Your budget", x: `${faabLeft} of ${faabBudget} left — that's about ${bid.loAbs}–${bid.hiAbs}.` }] : [{ t: "Budget", x: "Your league's FAAB budget isn't available from the platform yet, so this is shown as a share of whatever you have left." }]),
+                          ...(faabLeft != null
+                            ? [{ t: "Your budget", x: `$${faabLeft} of $${faabBudget} left, so that share is about $${bid.loAbs}–${bid.hiAbs}.` }]
+                            : [{ t: "Your budget", x: `Your league's FAAB budget hasn't come through from the platform, so the bid is given as a share — it holds whether your league runs $100, $1,000 or anything else. The dollar figure beside it assumes a $100 budget.` }]),
                         ])} onMouseLeave={hideTip}
-                          style={{ flexShrink: 0, textAlign: "right", cursor: "help", minWidth: 62 }}>
-                          <div className="num" style={{ fontSize: 12.5, fontWeight: 800, color: "var(--gold)" }}>
-                            {faabLeft != null ? `$${bid.loAbs}–${bid.hiAbs}` : `${bid.lo}–${bid.hi}%`}
+                          style={{ flexShrink: 0, textAlign: "right", cursor: "help", minWidth: 96 }}>
+                          {/* ⭐⭐⭐ 29ah — THE PERCENTAGE IS THE ANSWER; THE DOLLARS ARE AN ILLUSTRATION.
+                              Trey: "I rather this be more about your % of your FAAB since we won't always be
+                              able to know if a league has 100 FAAB, 1000 FAAB, or even how much you have
+                              left. Actually, make it known that you are basing this off a $100 FAAB budget,
+                              but you can also put a % of your FAAB recommendation."
+                              The bid was always computed as a share and only ever printed as dollars — and
+                              in a $100 league those are the same digits, so "$45-71" was indistinguishable
+                              from a percentage and silently wrong in a $1,000 league. Lead with the share,
+                              which travels to any budget, and label the money as what it is. */}
+                          <div className="num" style={{ fontSize: 13, fontWeight: 800, color: "var(--gold)" }}>
+                            {bid.lo}–{bid.hi}%
+                          </div>
+                          <div className="mut" style={{ fontSize: 9 }}>
+                            {faabLeft != null ? `$${bid.loAbs}–${bid.hiAbs} of your $${faabLeft}` : `≈ $${bid.lo}–${bid.hi} per $100`}
                           </div>
                           <div className="mut" style={{ fontSize: 9.5 }}>{rivals ? `${rivals} rival${rivals > 1 ? "s" : ""} thin` : "no competition"}</div>
                         </div>
@@ -15145,9 +15264,20 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                 const myLT = leagueTeams.find((t) => t.rosterId === data.myRosterId);
                 const shapeTip = (pos) => (e) => {
                   const ex = myLT ? posQualityScore((myLT.posPlayers[pos] || []), effReqLg[pos] || 0, { dynasty: dynastyLg, flexShare: (myLT.flexShare || flexShLg)[pos] || 0, slotBaseline: replLg[pos], explain: true }) : null;
+                  /* ⭐⭐ 29ah — THE SECOND READING, BECAUSE THE TWO CAN HONESTLY DISAGREE. The score ranks the
+                     ROSTER; this ranks what the position actually puts in your lineup each week. A manager
+                     who owns three good running backs and starts all three can out-produce a rival with two
+                     better ones — and the old hover gave him no way to see that, which is exactly the gap
+                     that made the number feel wrong. Median, not mean, so one stacked roster cannot drag
+                     "typical" up on its own. */
+                  const startedAll = leagueTeams.map((t2) => (t2.posStarted || {})[pos] || 0).sort((a2, b2) => a2 - b2);
+                  const myStarted = myLT ? ((myLT.posStarted || {})[pos] || 0) : 0;
+                  const typStarted = startedAll.length ? startedAll[Math.floor(startedAll.length / 2)] : 0;
+                  const startedRank = startedAll.length ? (startedAll.length - startedAll.filter((v) => v <= myStarted).length + 1) : null;
                   const lines = [
                     { kind: "take", tone: myPosRank[pos].rank <= Math.ceil(leagueTeams.length / 3) ? "good" : myPosRank[pos].rank > Math.ceil((2 * leagueTeams.length) / 3) ? "bad" : "neutral", x: `Your ${pos} — ${ordinal(myPosRank[pos].rank)} of ${myPosRank[pos].of} in the league${ex ? `  ·  score ${Math.round(ex.total)}` : ""}` },
-                    { t: "How to read it", x: `Score = how much better (+) or worse (−) than a typical team you are at ${pos}. Bench players who'd never start contribute 0.` },
+                    { t: "How to read it", x: `Score = how much better (+) or worse (−) than a typical team you are at ${pos}. It measures your PLAYERS, slot against slot — the same reading the draft app uses. Bench players who'd never start contribute 0.` },
+                    ...(startedAll.length > 2 ? [{ t: "What you actually start", x: `Your ${pos}s put ${Math.round(myStarted * 10) / 10} points in your lineup this week; the middle team in this league gets ${Math.round(typStarted * 10) / 10}${startedRank ? ` — ${ordinal(startedRank)} of ${startedAll.length} by that measure` : ""}. This can differ from the score above: owning the better players and starting the most points are not the same question when one team flexes a ${pos === "RB" ? "receiver" : "running back"} and another does not.` }] : []),
                   ];
                   if (ex && ex.rows && ex.rows.length) lines.push({ kind: "scoremath", rows: ex.rows, dynasty: dynastyLg, slotMap: slotLabelsFor((myLT && myLT.roster) || [], cfg) });
                   else lines.push({ t: "—", x: "None on your roster" });
