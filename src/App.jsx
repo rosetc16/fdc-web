@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29ac";
+const BUILD_TAG = "2026.07.29ad";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -5121,9 +5121,22 @@ function jointSurvival(players, sortedAdp, picks, aId, bId, o1, o2, cfg, nSims =
      roster state, so it cannot be imported here — it has to be handed in. Calling it directly threw a
      ReferenceError that the boundary caught, which turned "switch to simple" into "the app hiccuped" while
      the complex view carried on working perfectly. */
-function SimpleStrip({ players, picks, advice, sims, proj, userIdx, onClock, TEAMS, teamNames, upcoming, onDraft, myNextOverall, done, whyPick }) {
+function SimpleStrip({ players, picks, advice, sims, proj, userIdx, onClock, TEAMS, teamNames, upcoming, onDraft, myNextOverall, done, whyPick, lastTip, nextTip, hideTip, narrow }) {
+  /* ⭐⭐ 29ad — EIGHT, NOT FOUR. Trey: "The player hub has a ton of blank space, so we need to appropriately
+     space everything out."
+     Measured, because "looks empty" is worth a number: the three cards stretch to a common height set by the
+     recommendation in the middle (191px), and Last picks was filling 111px of it — EIGHTY PIXELS of nothing
+     under four names. The fix is not padding and it is not a new widget: it is showing more of the list the
+     card already is. Eight covers most of a round in a 12-team league, which is the span you actually reason
+     about ("has the run started?"), and it lands the card within ~10px of the one beside it.
+     ⚠ SAME REASONING, DIFFERENT NUMBER, FOR THE THIRD CARD — see `upcoming.slice` below. */
+  /* ⚠ AND FEWER OF THEM ON A PHONE. The three cards stack full-width below 640px (see the stylesheet), so
+     the count that fills a 200px card side-by-side becomes 200px of scrolling stacked — the eight names that
+     balance the desktop row would push the board most of a screen further down. Five is the compromise: it
+     still spans half a round, and the strip stays inside the first screen-and-a-bit. */
+  const LAST_N = narrow ? 5 : 8;
   const last = [];
-  for (let o = picks.length - 1; o >= 0 && last.length < 4; o--) {
+  for (let o = picks.length - 1; o >= 0 && last.length < LAST_N; o--) {
     const p = players[picks[o]];
     if (p) last.push({ o, p, team: teamAt(o) });
   }
@@ -5144,7 +5157,9 @@ function SimpleStrip({ players, picks, advice, sims, proj, userIdx, onClock, TEA
       {/* ---- LAST PICKS ---- */}
       <Card title="Last picks" grow={0.8}>
         {last.length ? last.map(({ o, p, team }) => (
-          <div key={o} data-simplelast={p.name} style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 11.5, padding: "1.5px 0" }}>
+          <div key={o} data-simplelast={p.name}
+            onMouseEnter={lastTip ? lastTip(p, o) : undefined} onMouseLeave={lastTip ? hideTip : undefined}
+            style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 11.5, padding: "1.5px 0", cursor: lastTip ? "help" : "default" }}>
             <span className="num mut" style={{ fontSize: 9.5, width: 32, flexShrink: 0 }}>{pickLabel(o)}</span>
             <b style={{ color: POS_COLOR[cpos(p.pos)], fontSize: 9.5 }}>{cpos(p.pos)}</b>
             <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
@@ -5184,8 +5199,13 @@ function SimpleStrip({ players, picks, advice, sims, proj, userIdx, onClock, TEA
 
       {/* ---- UPCOMING PICKS ---- */}
       <Card title="Your next picks" grow={0.8}>
-        {upcoming && upcoming.length ? upcoming.slice(0, 4).map((u) => (
-          <div key={u.o} data-simplenext={u.label} style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 11.5, padding: "1.5px 0" }}>
+        {/* Five, for the same reason Last picks shows eight: the card is stretched to the recommendation's
+            height and four rows left 28px of it empty. Five upcoming picks is also the span the round-by-round
+            plan is written against, so it is more useful as well as better proportioned. */}
+        {upcoming && upcoming.length ? upcoming.slice(0, narrow ? 3 : 5).map((u) => (
+          <div key={u.o} data-simplenext={u.label}
+            onMouseEnter={nextTip ? nextTip(u.o) : undefined} onMouseLeave={nextTip ? hideTip : undefined}
+            style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 11.5, padding: "1.5px 0", cursor: nextTip ? "help" : "default" }}>
             <span className="num" style={{ fontSize: 11.5, fontWeight: 700, color: "var(--gold)", width: 34, flexShrink: 0 }}>{u.label}</span>
             <span className="mut" style={{ fontSize: 10.5 }}>{u.away === 0 ? "you're up" : u.away === 1 ? "next pick" : `${u.away} picks away`}</span>
           </div>
@@ -7579,6 +7599,38 @@ select.gs:hover{border-color:var(--gold)}
 /* The option list is drawn by the OS, which does not inherit the page's dark theme on every platform — set
    it explicitly so the menu is not black-on-black in one browser and white-on-white in the next. */
 .viewsel select option{background:var(--panel2);color:var(--ink);font-weight:600}
+/* ⭐⭐⭐ 29ad — SIMPLE MODE'S HEADER IS ONE ROW. Trey: "the top has a ton of blank space. I'm not saying to
+   add stuff in order to complicate it, but it just looks funny right now."
+   He is right and the cause is arithmetic, not taste: Pause / speed / End draft / Save / Undo / Edit picks
+   are six buttons pinned to the right of a wrapping row, and at 1500px five of them fit. The sixth wrapped,
+   so the header carried a SECOND FORTY-PIXEL ROW holding one button and a version string — 93 percent of it
+   empty. That is the funny-looking thing.
+   The fix is the mechanism 29m already built for phones, applied at every width in this view: the six fold
+   behind one Controls button. They are touched a handful of times in a whole draft, this is the view whose
+   entire premise is fewer things on screen, and nothing is removed — the door is labelled and one click
+   away. Header goes from two rows to one.
+   ⚠ SCOPED TO .simplehead. Complex keeps every button exactly where it has always been; the promise that
+     this mode changes nothing about the other one is the reason people trust the switch. */
+.simplehead .dctl{display:none!important}
+.simplehead.dctl-open .dctl{display:inline-flex!important;align-items:center}
+.simplehead .dctltoggle{display:inline-flex!important}
+/* And the admin recommendation diagnostic — a developer instrument that announces itself as hidden — is a
+   full band of chrome between the strip and the tabs. Mobile already drops it; simple view is if anything a
+   stronger case, since the whole mode exists to take instruments off the screen. */
+.simpleroom .recodiag{display:none!important}
+/* ⭐⭐⭐ 29ad — THE SIMPLE BOARD SPREADS ACROSS ITS WIDTH. Trey: "The player hub has a ton of blank space,
+   so we need to appropriately space everything out."
+   Measured at 1500px: the table is 1056px wide and the PLAYER column was taking 493 of it for content that
+   ends around 310, while the six numbers huddled together in the right half. That is what an auto-layout
+   table does — width:max-content with min-width:100% hands every spare pixel to the column with the most
+   text — and it only shows up once you take twenty columns away, which is why the complex board never had
+   the problem. A declared width on the data columns is a floor the browser must honour, so the slack goes
+   to the numbers instead of the name.
+   ⚠ NOT A FIXED TABLE LAYOUT. table-layout:fixed would size every column from the first row and break the
+     frozen PLAYER cell, the tier bands and the sticky header all at once. This leaves auto layout alone and
+     only raises the floor. */
+.simpleroom table.board thead tr:not(.sechead) th:not(.frz){min-width:104px;padding-left:12px;padding-right:12px}
+.simpleroom table.board tbody td:not(.frz){padding-left:12px;padding-right:12px}
 .ticker{display:flex;gap:8px;overflow-x:auto;padding:10px 12px;scrollbar-width:thin;align-items:stretch}
 .tickcard{min-width:118px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-shrink:0}
 .tickcard.you{border-color:var(--gold);background:rgba(224,166,60,.10)}
@@ -7850,6 +7902,13 @@ select.gs option{background:var(--panel2);color:var(--ink)}
        is on it — so a name measured at its full 250px had already pushed View onto row two before shrinking
        came into it at all. A small basis lets the name join the line at 70px, wrap nothing, and then grow
        into whatever the row has left over. */
+  /* ⭐⭐⭐ 29ad — THE SIMPLE STRIP STACKS ON A PHONE. Three cards sharing 390px gives each about 118px, and
+     at 118px a card whose entire content is names shows "J…", "B…", "J…" and wraps "16 picks away" over four
+     lines. The row was not overcrowded, it was unreadable — a strip whose one job is to say WHO just went
+     and WHO to take, saying neither. Full width each, in Trey's order, with shorter lists (see LAST_N)
+     so stacking costs height without costing the first screen. */
+  [data-simplestrip]{flex-direction:column;gap:7px!important;padding:8px 10px!important}
+  [data-simplestrip]>div{width:100%;flex:0 0 auto!important}
   .droomhead>.disp{min-width:0;flex:1 1 70px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px!important}
   .viewsel{padding:2px 4px 2px 7px}
   .viewsel select{min-height:36px;font-size:12.5px;padding-right:22px}
@@ -22883,13 +22942,27 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
      ⚠ NOT A DIFFERENT BOARD — the same table with most columns turned off, so sorting, the draft buttons,
        the queue stars and every hover survive untouched. What is left is the four numbers a pick is
        actually made on (ADP, projected points, value over replacement, and the odds he lasts) plus bye. */
-  const SIMPLE_COLS = { adp: true, proj: true, vbd: true, avail: true, bye: true, rank: true };
+  const ALL_COLS_OFF = Object.fromEntries(Object.keys(DEFAULT_COLS).map((k) => [k, false]));
+  const SIMPLE_COLS = { ...ALL_COLS_OFF, adp: true, proj: true, vbd: true, avail: true, bye: true, rank: true };
   const savedPrefs = user?.colPrefs || null;
   const [cols, setCols] = useState({ ...DEFAULT_COLS, ...(savedPrefs?.cols || {}) });
-  /* ⚠ THE USER'S OWN COLUMN CHOICES ARE NOT OVERWRITTEN. `cols` state is left exactly as it is and the
-     simple set is applied at RENDER time, so flipping to simple and back restores whatever they had
-     configured rather than resetting their board to a default they never chose. */
-  const viewCols = simple ? { ...Object.fromEntries(Object.keys(DEFAULT_COLS).map((k) => [k, false])), ...SIMPLE_COLS } : cols;
+  /* ⭐⭐⭐ 29ad — SIMPLE MODE HAS ITS OWN REAL COLUMN SET, and this is a bug fix, not a feature.
+     Trey: "we still need to give the ability to add in the columns you want (right now I think it shows them
+     all selected, but they aren't showing up. I rather the simple view show them not selected, but you can
+     select them)."
+     He is describing exactly what the old shape did. `viewCols` was COMPUTED — simple mode threw `cols` away
+     and substituted a fixed six at render time — while the Columns menu went on reading and writing `cols`.
+     So every box was ticked (that IS his saved complex layout), nothing he ticked or unticked moved a single
+     column, and the only honest description of the control was "broken". A picker that cannot change what
+     you are looking at is worse than no picker, because it makes you doubt the board rather than the button.
+     ⚠ THE FIX IS A SECOND PIECE OF STATE, NOT A CLEVERER DERIVATION. Two views, two column layouts, each
+       editable and each remembered. `viewCols`/`setViewCols` below are what every consumer uses, so the
+       menu, the header drag and the board all act on whichever layout is actually on screen.
+     ⚠ AND COMPLEX IS STILL UNTOUCHED. `cols` is never written by simple mode, so flipping back restores
+       whatever he had configured — the promise 29ab made and this keeps. */
+  const [simpleCols, setSimpleCols] = useState({ ...SIMPLE_COLS, ...(savedPrefs?.simpleCols || {}) });
+  const viewCols = simple ? simpleCols : cols;
+  const setViewCols = simple ? setSimpleCols : setCols;
   const [boardMode, setBoardMode] = useState(savedPrefs?.boardMode || "info");
   const [sectionOrder, setSectionOrder] = useState(savedPrefs?.sectionOrder || DEFAULT_SECTION_ORDER);
   // Custom per-column order (within sections). Lets you drag actual table headers to rearrange columns;
@@ -22903,7 +22976,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [colOrder, setColOrder] = useState(() => (savedPrefs?.colOrder || []).filter((k) => !COL_SECTION_MOVED.includes(k)));
   const [dragCol, setDragCol] = useState(null); // column key being dragged in the header row
   // Persist column layout to the user so future drafts open the same way (until they change it again).
-  useEffect(() => { if (onColPrefs) onColPrefs({ cols, boardMode, sectionOrder, colOrder }); }, [cols, boardMode, sectionOrder, colOrder]);
+  useEffect(() => { if (onColPrefs) onColPrefs({ cols, simpleCols, boardMode, sectionOrder, colOrder }); }, [cols, simpleCols, boardMode, sectionOrder, colOrder]);
   const [colMenu, setColMenu] = useState(false);
   const [dragSec, setDragSec] = useState(null); // section being dragged in the columns menu
   const [briefOpen, setBriefOpen] = useState(false);
@@ -25949,7 +26022,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
            badge still only appears on a real collision; the hover is universal. */
         const cl = gone ? null : byeClash(p);
         const tipFor = gone ? null : byeCellTip(p);
-        const open = tipFor ? (e) => showTip(e, tipFor) : undefined;
+        /* ⭐ EXEMPT FROM THE HOVER-OFF SWITCH (29ad). The bye column shows a week number; the hover answers
+           "who else am I missing that week", which is the only reason to look at it. With hover off this
+           cell became an unanswerable question rather than a quieter one. */
+        const open = tipFor ? (e) => showTip(e, tipFor, true) : undefined;
         if (!cl) {
           return tipFor ? (
             <span data-byecell={p.bye} onMouseEnter={open} onMouseLeave={hideTip} style={{ cursor: "help" }}>{p.bye}</span>
@@ -26243,8 +26319,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
 
   // Tooltip trigger. Works for mouse (hover) AND touch/click, since phones have no hover — we read coords
   // from whichever event type fired. On touch, the tip stays until the next tap elsewhere (see effect below).
-  const showTip = (e, content) => {
-    if (noHoverAnim) return; // hover disabled via the top-bar toggle → suppress all hover popups
+  /* ⭐⭐⭐ 29ad — TWO HOVERS SURVIVE THE OFF SWITCH, BY NAME. Trey: "When the hover toggle is turned off… I
+     still want the hover to be completely disabled, but I do want it to work for hovering the bye week in
+     the player hub and to hover to see last picks and future picks in the upper section."
+     That is a precise request and worth reading precisely: he is not asking to soften the toggle, he is
+     naming the two hovers that are not decoration. The bye number is a QUESTION the cell cannot answer on
+     its own — "who else on my roster is out that week?" — and the pick rows are names with no other route
+     to their detail. Everything else the toggle turns off is a restatement of something already on screen,
+     which is exactly why he turns it off.
+     ⚠ THE EXCEPTION IS OPT-IN AND EXPLICIT, one argument at the single choke point. The alternative — a
+       list of exempt selectors, or a class the tip reads off the DOM — puts the decision somewhere far from
+       the call site, and the next hover added near an exempt one inherits the exemption by accident. Here
+       a hover survives the switch only because someone typed `keep` at the place it is raised. */
+  const showTip = (e, content, keep) => {
+    if (noHoverAnim && !keep) return; // hover off via the top-bar toggle → suppress every popup but the named few
     let cx = 0, cy = 0;
     if (e) {
       if (e.touches && e.touches[0]) { cx = e.touches[0].clientX; cy = e.touches[0].clientY; }
@@ -26257,6 +26345,43 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     setTip(positionTip(cx, cy, content, e && e.currentTarget));
   };
   const hideTip = () => setTip(null);
+  /* ⚠⚠ 29ad — A POPUP WHOSE TRIGGER DISAPPEARS IS STRANDED FOREVER. Found while building the hover suite,
+     and it is a real one: a tooltip closes only on the `mouseleave` of the element that raised it, so if
+     that element UNMOUNTS while the pointer is still on it, the event never fires and the popup sits over
+     the room permanently — no amount of moving the mouse dismisses it, because nothing is left to leave.
+     The reproduction is ordinary use, not a contrived one: hover a row in the simple strip, then change the
+     view or the tab from the keyboard or a click that does not cross the row. The strip unmounts; a 560px
+     panel stays.
+     Both triggers below are the same family, so both are handled here rather than at each call site:
+       · `simple`/`tab` — the thing under the pointer is about to be replaced wholesale;
+       · `noHoverAnim` — the user has just asked for no popups and is looking at one.
+     ⚠ THIS IS A DISMISSAL, NOT A SUPPRESSION. It fires on the transition only, so the hovers that survive
+       the off switch keep working immediately afterwards. */
+  useEffect(() => { setTip(null); }, [simple, tab, noHoverAnim]);
+  /* ⭐⭐ 29ad — THE SIMPLE STRIP'S TWO HOVERS. Built here rather than inside SimpleStrip because every
+     ingredient — teamAt, teamFullLabel, pickLabel, the sims path — is room state, and a component that
+     recomputed any of it would be a second opinion waiting to disagree with the first. Both pass `keep`, so
+     they are among the handful that survive the hover-off switch (see showTip).
+     ⚠ THEY RETURN A HANDLER, NOT A TIP. `onMouseEnter={lastTip(p, o)}` — calling them at render time would
+       raise a tooltip for every row the moment the strip drew. */
+  const simpleLastTip = (p, o) => (e) => {
+    const gap = p.adp != null ? Math.round((o + 1) - p.adp) : null;
+    const read = gap == null ? "no ADP on file" : gap >= 8 ? `fell ${gap} spots past ADP — value` : gap <= -8 ? `taken ${Math.abs(gap)} spots ahead of ADP` : "went about where the market had him";
+    showTip(e, [
+      { kind: "photo", sid: p.sid || null, name: p.name, team: p.team, pos: p.pos, posRank: p.posRank },
+      { kind: "take", tone: gap == null ? "neutral" : gap >= 8 ? "good" : gap <= -8 ? "bad" : "neutral",
+        x: `${pickLabel(o)} · ${teamAt(o) === userIdx ? "You" : teamFullLabel(teamAt(o))} — ${read}` },
+      { kind: "playercard", p },
+    ], true);
+  };
+  const simpleNextTip = (o) => (e) => {
+    const step = (path || []).find((s) => s && s.o === o) || null;
+    const cands = step && step.cands5 && step.cands5.length ? step.cands5 : null;
+    showTip(e, [
+      { kind: "take", tone: "good", x: `${pickLabel(o)} · your pick — ${cands ? "who the sims expect to be there" : "too far out to project"}` },
+      ...(cands ? [{ kind: "playertable", probLabel: "There", cols: ["prob", "name", "rank", "adp", "pts", "vbd"], players: cands.map((c, ci) => ({ ...c.p, prob: c.prob, star: ci === 0, rec: ci === 0 })) }] : []),
+    ], true);
+  };
   // On touch devices, a hover tip has no "mouse leave" — so dismiss it on the next tap anywhere, and don't
   // let hover-handlers leave a tip stuck open. (Desktop is unaffected: it uses onMouseLeave as before.)
   useEffect(() => {
@@ -27804,7 +27929,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   );
 
   return (
-    <div>
+    <div className={simple ? "simpleroom" : undefined}>
       {tourOn && <CoachTour steps={simple ? SIMPLE_TOUR_STEPS : TOUR_STEPS} onExit={() => { setTourOn(false); setTab("hub"); }} onStepTab={(t) => setTab(t)} optOut={tourOptOut} onOptOut={setTourNeverShow} />}
       {/* The draft room's own top bar. Gets .appheader so the sticky rule covers it too — Trey asked for
           the banner to stay put on EVERY page, and the room is the page he is on longest. */}
@@ -27813,7 +27938,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           three rows and cost 230px of the FIRST screen — above the tracker, the tabs and the board. They now
           sit behind one "Controls" button on narrow screens; `.dctl-open` on this bar reveals them, and above
           640px the class does nothing and every button is exactly where it was. */}
-      <div ref={topBarRef} className={`hairline appheader droomhead${ctlOpen ? " dctl-open" : ""}`} style={{ display: "flex", alignItems: "center", gap: 12, padding: "6px 16px", flexWrap: "wrap" }}>
+      <div ref={topBarRef} className={`hairline appheader droomhead${simple ? " simplehead" : ""}${ctlOpen ? " dctl-open" : ""}`} style={{ display: "flex", alignItems: "center", gap: 12, padding: "6px 16px", flexWrap: "wrap" }}>
         <button className="btn btn-mini" onClick={exit} title="Back to where you came from">← {exitLabel || (user ? (user.paid ? "Home" : "Library") : "Home")}</button>
         <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{league.name}</div>
         {/* ⭐⭐⭐ THE SWITCH, AT THE VERY TOP, WHERE HE ASKED FOR IT — 29ac made it a labelled dropdown.
@@ -28046,12 +28171,22 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           zones of live numbers, and leaving three of them would still read as a wall. The simple strip is
           the three things Trey named, in his order, and everything it drops is one click away in the Views
           row directly below. */}
+      {/* ⚠ `upcoming` — THE CAP THAT ACTUALLY BINDS IS THE ONE HERE. SimpleStrip slices to 5 as well, but a
+          slice can only shorten what it is given: raising the number inside the card while this caller still
+          handed it four would have looked like the change did nothing. Both ends move together.
+          ⭐⭐⭐ 29ad — `lastTip`/`nextTip` ARE THE HOVER EXEMPTION, CARRIED INTO THIS VIEW. Trey asked for the
+          last-picks and future-picks hovers to keep working with hover switched off. In the complex room
+          those hovers already existed and simply needed exempting; in simple view the strip had none at all,
+          so "make it keep working" meant giving these rows the same reach into the player the other room's
+          rows have. Same tip renderer, same content shapes, same exemption — not a simple-mode variant that
+          could drift from it. */}
       {!done && simple && (
         <div className="hairline" style={{ background: "var(--panel2)" }}>
           <SimpleStrip
             players={players} picks={picks} advice={advice} sims={sims} proj={proj}
             userIdx={userIdx} onClock={onClock} TEAMS={TEAMS} teamNames={TEAM_NAMES}
-            upcoming={remainingPicks.filter((p) => p.mine).slice(0, 4).map((p) => ({ o: p.o, label: p.label, away: Math.max(0, p.o - picks.length) }))}
+            upcoming={remainingPicks.filter((p) => p.mine).slice(0, 5).map((p) => ({ o: p.o, label: p.label, away: Math.max(0, p.o - picks.length) }))}
+            lastTip={simpleLastTip} nextTip={simpleNextTip} hideTip={hideTip} narrow={narrow}
             onDraft={draftPlayer} myNextOverall={myNextOverall} done={done} whyPick={whyPick} />
         </div>
       )}
@@ -28408,6 +28543,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <div aria-hidden="true" className="decision-divider" style={{ flex: "0 0 auto", width: 2, alignSelf: "stretch", margin: "2px 5px", borderRadius: 2, background: "linear-gradient(180deg,transparent,var(--line2) 12%,var(--line2) 88%,transparent)" }} />
 
             {/* ---- GROUP B: the picks ---- */}
+            {/* ⭐⭐⭐ 29ad — EVERY HOVER IN THIS GROUP SURVIVES THE HOVER-OFF SWITCH. Trey named it: "I do
+                want it to work for… last picks and future picks in the upper section." These three cards are
+                lists of NAMES — pick 2.03, a team abbreviation, a one-word read. The hover is not a second
+                opinion about something already visible, it is the only route from a name to the player, so
+                turning it off does not quieten this section, it makes it unreadable. Each `showTip` below
+                therefore passes the third argument; see showTip for why the exemption is spelled out at the
+                call site rather than inferred from the DOM. */}
             <div data-tour="picks" className="decision-group-b" style={{ display: "grid", gridTemplateColumns: "minmax(155px,0.8fr) minmax(170px,0.9fr) minmax(175px,0.92fr)", gap: 8, flex: "1.4 1 0", minWidth: 0, padding: "5px 7px", borderRadius: 10, border: "1px solid var(--line)", background: "rgba(255,255,255,.014)" }}>
 
             {/* ===== ZONE 2: LAST PICKS ===== */}
@@ -28418,7 +28560,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 { kind: "take", tone: "neutral", x: `Recent picks — draft Score (value vs. where he went)` },
                 { kind: "playertable", cols: ["pick", "pos", "name", "drafter", "adp", "score", "valread"], players: picks.slice(-22).map((pk, i) => { const oo = Math.max(0, picks.length - Math.min(22, picks.length)) + i; const pp = players[pk]; if (!pp) return null; const gap = pp.adp != null ? Math.round((oo + 1) - pp.adp) : 0; const vr = gap >= 8 ? { t: "steal", c: "#5FD0A8" } : gap <= -8 ? { t: "reach", c: "#F2655C" } : { t: "fair", c: "var(--mut)" }; const mine = teamAt(oo) === userIdx; return { ...pp, pickNo: oo + 1, pickScore: (graded[oo] ? graded[oo].val : pickValue(pp, oo, cfg)), drafter: mine ? "You" : teamFullLabel(teamAt(oo)), valRead: vr, rec: mine, star: mine }; }).filter(Boolean).reverse() },
                 { kind: "take", tone: "neutral", x: "Score = draft-capital value gained/lost vs. his market price (ADP), weighted by round — the same value the scorecard grades teams on. Positive = got him below cost; negative = paid up." },
-              ]);
+              ], true);
               return (
                 <div className="tickcard" style={{ padding: "5px 9px", display: "flex", flexDirection: "column", minWidth: 0, height: "100%", boxSizing: "border-box" }}>
                   <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 4, fontWeight: 700 }}>Last picks</div>
@@ -28467,7 +28609,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           { k: "Pick vs ADP", v: spotGap == null ? "—" : `${spotGap > 0 ? "+" : ""}${spotGap}`, c: val.c },
                           { k: "Value read", v: val.t, c: val.c },
                         ] },
-                      ]);
+                      ], true);
                       return (
                         <div key={o} onMouseEnter={tip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "30px 1fr auto 34px", gap: "0 5px", alignItems: "center", fontSize: 11, cursor: "help", padding: "1px 0" }}>
                           <span className="num mut" style={{ fontSize: 8.5 }}>{pickLabel(o)}</span>
@@ -28495,7 +28637,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   { kind: "take", tone: isYou ? "good" : "neutral", x: `${pickLabel(picks.length)} · ${isYou ? "YOUR PICK" : teamFullLabel(onClock)} — ${isYou ? "recommendation" : "engine expects"}` },
                   ...(cAll ? [{ kind: "playertable", probLabel: "Picked", cols: ["prob", "name", "rank", "adp", "pts", "vbd"], players: cAll.map((c, ci) => ({ ...c.p, prob: c.prob, star: ci === 0, rec: ci === 0 })) }] : [{ kind: "playercard", p: currentPred }]),
                 ];
-              })()) : undefined;
+              })(), true) : undefined;
               return (
                 <div className={`tickcard clock${isYou && isTimedMock && started && !paused && clock <= 15 ? " clock-urgent" : ""}`} style={{ borderColor: isYou ? (isTimedMock && started && clock <= 0 ? "var(--red)" : "var(--gold)") : "#33476B", borderWidth: isYou ? 2 : 1, background: isYou ? "linear-gradient(165deg, rgba(224,166,60,.22), rgba(31,36,26,1) 62%)" : undefined, boxShadow: isYou ? "0 0 18px rgba(224,166,60,.34), inset 0 0 30px rgba(224,166,60,.07)" : undefined, padding: "5px 10px", cursor: curTip ? "help" : "default", height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }} onMouseEnter={curTip} onMouseLeave={curTip ? hideTip : undefined}>
                   {/* ONE compact header row: pick + overall on the left, team name (and live timer) on the
@@ -28515,7 +28657,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       if (!projPick) return <span className="mut" style={{ fontSize: 10 }}>—</span>;
                       const pp = projPick.p;
                       const vShowP = dyn ? (pp.value ?? pp.vbd) : pp.vbd;
-                      const projTip = (e) => { e.stopPropagation(); showTip(e, makeOutlook(pp, sims, false, { pickNow: picks.length + 1, dynasty: dyn, scarcity: scarcityFor(pp) })); };
+                      const projTip = (e) => { e.stopPropagation(); showTip(e, makeOutlook(pp, sims, false, { pickNow: picks.length + 1, dynasty: dyn, scarcity: scarcityFor(pp) }), true); };
                       /* ⭐⭐⭐ 29s — YOUR PLAN, ON THE CARD YOU ARE ACTUALLY LOOKING AT.
                          Trey: "On the pop up window that comes up after each pick with 'you're on the clock'
                          — with the recommendation — can you somehow highlight my draft strategy if it's
@@ -28586,7 +28728,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               {alts.map((c) => {
                                 const p = c.p;
                                 const vShow = dyn ? (p.value ?? p.vbd) : p.vbd;
-                                const openTip = (e) => { e.stopPropagation(); showTip(e, makeOutlook(p, sims, false, { pickNow: picks.length + 1, dynasty: dyn, scarcity: scarcityFor(p) })); };
+                                const openTip = (e) => { e.stopPropagation(); showTip(e, makeOutlook(p, sims, false, { pickNow: picks.length + 1, dynasty: dyn, scarcity: scarcityFor(p) }), true); };
                                 return (
                                   <div key={p.id} onMouseEnter={openTip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: isYou && !gated ? "30px 1fr 30px 26px 40px" : "30px 1fr 30px 26px", gap: "0 5px", alignItems: "center", fontSize: 10.5, padding: "1px 3px", cursor: "help" }}>
                                     <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank), fontSize: 9 }}>{p.pos}{p.posRank}</span>
@@ -28625,7 +28767,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               const moreTip = (e) => showTip(e, [
                 { kind: "take", tone: "neutral", x: "Upcoming picks — engine projection" },
                 { kind: "playertable", probLabel: "Picked", cols: ["pick", "pos", "name", "drafter", "adp", "vbd", "prob"], players: upSource.slice(0, 20).map((s) => ({ ...s.p, pickNo: s.o + 1, prob: s.prob, drafter: s.user ? "You" : teamShort(TEAM_NAMES[s.t] || ""), rec: s.user, star: s.user })) },
-              ]);
+              ], true);
               return (
                 <div className="tickcard" style={{ padding: "5px 9px", minWidth: 0, height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 4 }}>
@@ -28658,7 +28800,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       const tip = (e) => showTip(e, [
                         { kind: "take", tone: mine ? "good" : "neutral", x: `${pickLabel(step.o)} · ${mine ? "YOUR PICK" : teamFullLabel(step.t)}${cands ? " — likely options" : ""}` },
                         ...(cands ? [{ kind: "playertable", probLabel: "Picked", cols: ["prob", "name", "rank", "adp", "pts", "vbd"], players: cands.map((c, ci) => ({ ...c.p, prob: c.prob, star: ci === 0, rec: ci === 0 })) }] : [{ kind: "playercard", p }]),
-                      ]);
+                      ], true);
                       return (
                         <div key={step.o} onMouseEnter={tip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "30px 1fr 30px 32px", gap: "0 6px", alignItems: "center", fontSize: 11, cursor: "help", padding: "1px 2px 1px 3px", background: mine ? "rgba(224,166,60,.14)" : "transparent", borderRadius: 4, borderLeft: mine ? "2px solid var(--gold)" : "2px solid transparent" }}>
                           <span className="num" style={{ fontSize: 8.5, color: mine ? "var(--gold)" : "var(--mut)", fontWeight: mine ? 800 : 400 }}>{pickLabel(step.o)}</span>
@@ -29084,7 +29226,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           const why = !avail ? (c.needsPlat ? "Enter Platform Ranks (your platform's ADP) in the draft to unlock" : c.needsRanks ? "Set My Ranks for this format to unlock" : c.needsPlatform ? "Connect a platform to unlock" : c.needsMocks ? "Run mocks for this league to unlock" : "Unavailable") : "";
                           return (
                           <label key={c.key} title={avail ? (c.tip || c.label) : why} style={{ display: "flex", alignItems: "center", gap: 7, padding: "3px 0", fontSize: 12.5, cursor: (c.key === "adp" || !avail) ? "default" : "pointer", opacity: !avail ? 0.4 : (c.key === "adp" ? 0.7 : 1) }}>
-                            <input type="checkbox" checked={!!cols[c.key] && avail} disabled={c.key === "adp" || !avail} onChange={() => setCols((s) => ({ ...s, [c.key]: !s[c.key] }))} />
+                            {/* ⚠ viewCols/setViewCols, NEVER cols/setCols. Reading one set and drawing another
+                                is the whole of the bug this replaced: the ticks described his complex layout
+                                while the board drew the simple six, so the menu looked broken because it was.
+                                Bind both halves to the layout that is actually on screen. */}
+                            <input type="checkbox" checked={!!viewCols[c.key] && avail} disabled={c.key === "adp" || !avail} onChange={() => setViewCols((s) => ({ ...s, [c.key]: !s[c.key] }))} />
                             <span style={{ flex: 1 }}>{c.label}{!avail && <i className="ti ti-lock" style={{ fontSize: 10, marginLeft: 5, color: "var(--mut)" }} aria-hidden="true" />}</span>
                             {c.tip && avail && <i className="ti ti-info-circle" title={c.tip} style={{ fontSize: 12, color: "var(--mut)" }} aria-hidden="true" />}
                           </label>
@@ -29095,7 +29241,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     })}
                   </div>
                   <div style={{ display: "flex", gap: 4, marginTop: 8 }}>
-                    <button className="btn btn-mini" style={{ flex: 1 }} onClick={() => { setCols({ ...DEFAULT_COLS }); setSectionOrder(["market", "mine", "value", "demo", "avail", "stat"]); setColOrder([]); }}>Reset this view</button>
+                    {/* Reset restores the default for the view you are IN — the simple six in simple mode,
+                        the full set in complex — not the other view's default dropped on top of yours. */}
+                    <button className="btn btn-mini" style={{ flex: 1 }} onClick={() => { setViewCols({ ...(simple ? SIMPLE_COLS : DEFAULT_COLS) }); setSectionOrder(["market", "mine", "value", "demo", "avail", "stat"]); setColOrder([]); }}>Reset this view</button>
                     <button className="btn btn-mini" onClick={() => setColMenu(false)}>Done</button>
                   </div>
                 </div>
