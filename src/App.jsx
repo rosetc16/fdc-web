@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29ad";
+const BUILD_TAG = "2026.07.29ag";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -3025,8 +3025,34 @@ export function buildPlayers(cfg) {
       ceilR = 1.28 + (meta.rookie ? 0.18 : 0) + (age <= 23 ? 0.12 : age <= 25 ? 0.06 : age >= 30 ? -0.06 : 0);
       if (r[1] === "QB") ceilR -= 0.04; // QBs are a bit more stable
     }
+    /* ⭐⭐⭐ 29ae — "NO PROJECTION" IS A STATE, AND IT IS NOT THE SAME THING AS "PROJECTED ZERO".
+       A beta user, mid-draft: "For the recommended picks, it is only recommending free agents with 0
+       projected fantasy points and highly unlikely to make a roster. All seem to be RBs." His screenshot had
+       Taiwan Jones, Jerick McKinnon, David Johnson, Damien Williams and Stephen Houston — retired, all of
+       them — each with an ADP around 131-142 and each with VBD exactly -149, which is what 0 points minus
+       the RB replacement level comes to.
+       ⚠ THE PIPELINE MAKES THIS SILENT. The pack loader only records a stat line when there is one
+       (`if (p.stats && Object.keys(p.stats).length)`), and `pts` above is scored from whatever stats we
+       have — so a player the projection source has never heard of arrives with a perfectly ordinary-looking
+       0, a real ADP behind him, and a VBD computed off that 0 as though it were a forecast. Every downstream
+       number then treats "we know nothing about this man" as "we predict he will score nothing", which are
+       opposite claims: the first should exclude him from a recommendation, the second merely ranks him last.
+       ⚠⚠ IT MUST CATCH BOTH SHAPES, AND THE FIRST CUT OF THIS ONLY CAUGHT ONE. Missing stats is the obvious
+         shape — but a pack can equally ship a stat line of all zeros, and then `Object.keys(stats).length`
+         is happily non-zero while the player is just as unknown. I cannot see the production pack from here
+         to know which shape his is, and a fix that depends on guessing right is not a fix: it either works
+         or it silently does nothing and he reports the same bug a third time. So the test is the one that
+         matters either way — did we end up with any points?
+       ⚠ AND `!(pts > 0)` RATHER THAN `pts <= 0`, so a NaN from a malformed stat line is caught too.
+         This is not a new judgement call: the whole-position outage detector a few hundred lines below
+         already reads exactly this way, on exactly this reasoning ("a position tied at exactly 0 is the
+         shape of a data outage"). In any real scoring format a projected NFL player scores something — one
+         reception is a point in his PPR league — so a 0 is an absence, not a forecast. The static built-in
+         board carries a real stat line for all 277 of its players, so this is a no-op there and bites only
+         on a live pack, which is where it happened. */
+    const noProj = !Object.keys(stats).length || !(pts > 0);
     return {
-      id: i, name: r[0], pos: r[1], team: r[2], age: r[3], bye: r[4], adp0: r[5], stats, pts,
+      id: i, name: r[0], pos: r[1], team: r[2], age: r[3], bye: r[4], adp0: r[5], stats, pts, noProj,
       floor: Math.round(pts * floorR), ceil: Math.round(pts * ceilR),
       consensus0: meta.consensus != null ? meta.consensus : r[5], rookie: !!meta.rookie, inj: meta.inj || null,
       trend: meta.trend != null ? meta.trend : null, sampleN: meta.sampleN || 0,
@@ -4320,7 +4346,18 @@ function marginalVbd(c, counts, sf) {
     // and best ball keeps full VBD too (depth genuinely scores there via auto-start spike weeks).
     if (!BB && FLEX_BASE != null && c.pts != null && (c.pos === "RB" || c.pos === "WR" || c.pos === "TE")) {
       const flexVbd = Math.round((c.pts - FLEX_BASE) * 10) / 10;
-      return Math.max(flexVbd, c.vbd * 0.3);
+      /* ⭐⭐⭐ 29ae — THE FLOOR ONLY APPLIES UPWARD, AND IT USED NOT TO.
+         The intent, written in the comment above, is to retain "a small floor of positional VBD" for a good
+         player whose flex-basis value understates his backup and bye utility. For a POSITIVE vbd, 30% of it
+         is exactly that: a floor.
+         For a NEGATIVE vbd it is the opposite. 30% of -195 is -58, so `Math.max(-195, -58)` RAISED a
+         valueless body by 137 points — and that is how a beta user was recommended five retired running
+         backs. Once a -195 arrives at the comparison worth -58, the roster-shape terms that sit on top of it
+         (need bonus, over-stack penalty, positional scarcity — all scaled in tens) are large enough to
+         decide the pick, and they did: in the reproduction a TE at +20 VBD was ranked FIFTH behind four
+         men projected to score nothing.
+         A floor that lifts the worst players is not a floor. Below zero the honest flex value stands. */
+      return c.vbd > 0 ? Math.max(flexVbd, c.vbd * 0.3) : flexVbd;
     }
     return c.vbd;
   }
@@ -13803,11 +13840,36 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   // This is what makes a startable QB valuable in superflex: SUPERFLEX means QBs effectively have 2 slots.
   const flexN = start.FLEX || 0;      // RB/WR/TE eligible
   const superN = start.SUPER || 0;    // QB/RB/WR/TE eligible (superflex)
+  /* ⭐⭐⭐ 29ag — THE FLEX IS ONE SLOT, AND IT WAS BEING COUNTED THREE TIMES.
+     Reported: "on the free agent page for recommendations, it was telling this guy that he is thin at TE..
+     but he has Bowers (TE1) and Kittle (another top 10)."
+     Reproduced, and worse than reported: a team whose only tight end is BROCK BOWERS — the number one TE in
+     the league — is told "you're thin at TE" in a league that starts ONE, is shown "+8.8 vs your TE" for a
+     rookie TE17, and is advised to bid $45-71 of a $100 FAAB budget on him.
+     One line caused all three. `effDemand` added the whole FLEX slot to RB **and** WR **and** TE, so in a
+     1QB/2RB/2WR/1TE/1FLEX league the model believed a roster owed 1 QB + 3 RB + 3 WR + 2 TE = nine startable
+     bodies for a lineup that fields six. Every team is then permanently "short" somewhere, and at TE — where
+     the real requirement is one — you needed TWO top-twenty tight ends to clear the bar.
+     ⚠ THE TWO NUMBERS MEAN DIFFERENT THINGS AND MUST BE SEPARATE. "How many must I field?" governs whether
+       I am short and who my worst starter is; "how many does the league start here?" sets the line between a
+       startable player and a bench body. Collapsing them into one figure is what let a flex slot inflate a
+       roster requirement. */
+  const flexEligible = ["RB", "WR", "TE"];
+  // MUST-FIELD slots. The flex is deliberately absent: it is one slot and no position is owed it.
+  const reqStart = {
+    QB: (start.QB || 0) + superN,
+    RB: (start.RB || 0),
+    WR: (start.WR || 0),
+    TE: (start.TE || 0),
+  };
+  // LEAGUE-WIDE demand, used only to find the startable line. Here the flex IS counted — but once, split
+  // across the positions that can fill it, rather than granted in full to each of them.
+  const flexShareEach = flexEligible.length ? flexN / flexEligible.length : 0;
   const effDemand = {
     QB: (start.QB || 0) + superN,                          // QBs can fill the superflex
-    RB: (start.RB || 0) + flexN + superN,
-    WR: (start.WR || 0) + flexN + superN,
-    TE: (start.TE || 0) + flexN + superN,
+    RB: (start.RB || 0) + flexShareEach + superN,
+    WR: (start.WR || 0) + flexShareEach + superN,
+    TE: (start.TE || 0) + flexShareEach + superN,
   };
   const isSuperflex = superN > 0 || cfg.sf;
   // League-wide startable threshold per position, based on SEASON value (not this week's points — a stud on
@@ -13837,11 +13899,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   myRoster.forEach((p) => { if (myByPos[p.pos]) myByPos[p.pos].push(p); });
   POS.forEach((k) => myByPos[k].sort((a, b) => seasonOf(b) - seasonOf(a)));
   // Do you have enough startable bodies (by season value) to fill your effective demand at each position?
+  /* ⚠ "SHORT AT A POSITION" MEANS YOU CANNOT FIELD THE SLOTS YOU MUST FIELD — nothing else. Measured against
+     effDemand it meant "you don't have a spare", which for a one-TE league declared Brock Bowers' owner
+     thin. Required starters only; the flex is not owed to anybody. */
   const needByPos = {};
   POS.forEach((pos) => {
-    const demand = effDemand[pos] || 0;
+    const demand = reqStart[pos] || 0;
     const startableHave = myByPos[pos].filter((p) => seasonOf(p) >= startableCut[pos] * 0.92).length;
-    needByPos[pos] = startableHave < demand ? 999 : 0;
+    needByPos[pos] = demand > 0 && startableHave < demand ? 999 : 0;
   });
 
   const faScored = freeAgents.map((p) => {
@@ -13852,9 +13917,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     const eliteAsset = rosterableByAdp(p) || startable;
     // Upgrade vs YOUR weakest starter at this position — this DOES use weekly points (it's a lineup call),
     // but only counts when the free agent actually has a game this week (a 0.0 bye isn't a real upgrade).
-    const slotN = Math.max(1, effDemand[p.pos] || 1);
+    /* ⚠ AND "MY WORST STARTER" IS MY WORST ACTUAL STARTER. With effDemand this indexed my SECOND tight end
+       in a one-TE league — which does not exist — so the comparison fell through to 0 and the page reported
+       "+8.8 vs your TE" about a man who would sit behind Bowers every week of the season. Index the last
+       REQUIRED slot, and if the roster is shallower than that, compare against the worst body actually held
+       rather than against nothing. */
+    const slotN = Math.max(1, reqStart[p.pos] || 1);
     const myPosList = myByPos[p.pos] || [];
-    const myWorstStarter = myPosList[slotN - 1] ? myPosList[slotN - 1].pts : 0;
+    const myWorstStarter = myPosList.length ? (myPosList[Math.min(slotN, myPosList.length) - 1].pts || 0) : 0;
     const upgrade = (p.noGame ? 0 : Math.max(0, (p.pts || 0) - myWorstStarter));
     const scarce = (p.pos === "QB" && isSuperflex) || (p.pos === "TE" && (cfg.tePremMult || 0) > 0);
     const needBoost = needByPos[p.pos] === 999 ? 40 : 0;
@@ -13955,9 +14025,40 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   let leagueTeams = [], powerRanked = [], powerRankById = {}, projRanked = [], myPosRank = {}, strengths = [], weaknesses = [];
   let maxPower = 1, playoffSpots = 4, myProj = null, myPowerRank = null, leverage = null, totalGames = 0;
   try {
+    /* ⭐⭐⭐ 29ag — THE FLEX GOES TO WHOEVER ACTUALLY WINS IT ON THIS ROSTER.
+       Reported: "look at the screenshot. This is a 10 team league and I find it hard to believe a team with
+       the RB 12, 13, 17, and an upside play would be ranked 9th out of 10."
+       He is right, and it is measurable. On a 10-team fixture built the same way — a balanced RB room against
+       nine ordinary drafted rosters — the team ranked 4th of 10 by the RB production it actually STARTS and
+       6th of 10 by this score. A rival holding RB4 and RB5 but flexing a receiver ranked 2nd by the score and
+       5th by production. The model was reading roster SHAPE where the manager reads OUTPUT.
+       One cause is fixable cleanly. `flexShareOf` hands every position the same league-average slice of the
+       flex — 42% RB, 42% WR, 16% TE — so a team that genuinely starts a third running back every week was
+       credited for 0.42 of him, while a team that flexes a receiver was charged for an RB slot it never
+       fields. The flex is one slot and its owner is knowable: the lineup has already been solved a line
+       above. Give it to the position that wins it.
+       ⚠ THE LEAGUE AVERAGE REMAINS THE FALLBACK, and it has to. An empty flex slot (a roster too thin to
+         fill it, which happens in the pre-season and after bye-week carnage) has no winner to attribute, and
+         guessing one would invent a starter the team does not have. */
+    const flexShareForRoster = (lu2) => {
+      const share = { QB: 0, RB: 0, WR: 0, TE: 0 };
+      let seen = 0, filled = 0;
+      ((lu2 && lu2.slots) || []).forEach((sl) => {
+        if (!/^(FLEX|SFLX)/.test(sl.slot || "")) return;
+        seen++;
+        const pos = sl.p && !sl.p.assumed ? sl.p.pos : null;
+        if (pos && share[pos] != null) { share[pos] += 1; filled++; }
+      });
+      if (!seen) return flexShLg;
+      // Any flex slot we could not attribute falls back to the league-average split for that slot alone.
+      const unfilled = seen - filled;
+      if (unfilled > 0) POS.forEach((pp) => { share[pp] += ((flexShLg[pp] || 0) / Math.max(1, seen)) * unfilled; });
+      return share;
+    };
     leagueTeams = (data.teams || []).map((t) => {
     const roster = resolve(t.players);
     const lu = lineupSlots(roster, cfg.sf);
+    const fShare = flexShareForRoster(lu);
     const power = Math.round(lu.slots.reduce((s, sl) => s + (sl.p ? sl.p.pts : 0), 0) * 10) / 10;
     const posStrength = {};
     const posQuality = {};                 // SHARED quality×quantity score — identical to the live draft app
@@ -13967,14 +14068,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
       const atPos = roster.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts);
       const starters = atPos.slice(0, Math.max(1, need));
       posStrength[pos] = Math.round(starters.reduce((s, p) => s + p.pts, 0) * 10) / 10;
-      posQuality[pos] = posQualityScore(atPos, effReqLg[pos] || 0, { dynasty: dynastyLg, flexShare: flexShLg[pos] || 0, slotBaseline: replLg[pos] });
+      posQuality[pos] = posQualityScore(atPos, effReqLg[pos] || 0, { dynasty: dynastyLg, flexShare: fShare[pos] || 0, slotBaseline: replLg[pos] });
       // Store the position's players sorted by POSITIONAL RANK (best rank first) for the hovers — that's the
       // order a manager reads (TE5 before TE17), not raw points.
       posPlayers[pos] = atPos.slice().sort((a, b) => ((a.posRank != null ? a.posRank : 999) - (b.posRank != null ? b.posRank : 999)) || (b.pts || 0) - (a.pts || 0));
     });
     const wins = t.record ? t.record.wins : 0;
     const losses = t.record ? t.record.losses : 0;
-    return { rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName, isMe: t.rosterId === data.myRosterId, power, posStrength, posQuality, posPlayers, roster, wins, losses, pointsFor: t.pointsFor || 0, record: t.record };
+    return { rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName, isMe: t.rosterId === data.myRosterId, power, posStrength, posQuality, posPlayers, roster, flexShare: fShare, wins, losses, pointsFor: t.pointsFor || 0, record: t.record };
   });
   // Power rankings: overall ROSTER STRENGTH (quality × quantity across positions) — a different lens than
   // projected points, so it stays distinct from projected standings even before any games are played.
@@ -14080,8 +14181,11 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   POS.forEach((pos) => {
     rivalsThinAt[pos] = leagueTeams.filter((t) => {
       if (t.rosterId === data.myRosterId) return false;
+      /* Same definition of "short" the user's own team is held to — a rival is thin when he cannot FIELD the
+         position, not when he lacks a spare. Measured against effDemand this reported bidding competition
+         from teams that were perfectly well stocked, which is how a $6-10 tight end became $45-71. */
       const startable = (t.roster || []).filter((p) => p.pos === pos && seasonOf(p) >= startableCut[pos] * 0.92).length;
-      return startable < (effDemand[pos] || 0);
+      return (reqStart[pos] || 0) > 0 && startable < (reqStart[pos] || 0);
     }).length;
   });
   const faabBudget = data.faabBudget != null ? data.faabBudget : null;
@@ -14932,7 +15036,9 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                                 // Recompute WITH the explain flag so the hover can show exactly how the number
                                 // was built: each player, his value, what a typical team has at that slot, and
                                 // what he therefore contributed.
-                                const ex = posQualityScore((t.posPlayers[pos] || []), effReqLg[pos] || 0, { dynasty: dynastyLg, flexShare: flexShLg[pos] || 0, slotBaseline: replLg[pos], explain: true });
+                                /* ⚠ THE SAME SHARE THE SCORE WAS COMPUTED WITH. A hover that explains a number
+                                   using different inputs from the number is worse than no hover. */
+                                const ex = posQualityScore((t.posPlayers[pos] || []), effReqLg[pos] || 0, { dynasty: dynastyLg, flexShare: (t.flexShare || flexShLg)[pos] || 0, slotBaseline: replLg[pos], explain: true });
                                 const lines = [
                                   { kind: "take", tone: rk <= Math.ceil(n / 3) ? "good" : rk > Math.ceil((2 * n) / 3) ? "bad" : "neutral", x: `${t.teamName} — ${pos}: ${ordinal(rk)} of ${n}  ·  score ${Math.round(ex.total)}` },
                                   { t: "How to read it", x: `Score = how much better (+) or worse (−) than a TYPICAL team this roster is at ${pos}. Each starting slot is compared to what a normal team has at that slot. Bench players who'd never start contribute 0 — they can't drag you down.` },
@@ -15038,7 +15144,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
               {(() => {
                 const myLT = leagueTeams.find((t) => t.rosterId === data.myRosterId);
                 const shapeTip = (pos) => (e) => {
-                  const ex = myLT ? posQualityScore((myLT.posPlayers[pos] || []), effReqLg[pos] || 0, { dynasty: dynastyLg, flexShare: flexShLg[pos] || 0, slotBaseline: replLg[pos], explain: true }) : null;
+                  const ex = myLT ? posQualityScore((myLT.posPlayers[pos] || []), effReqLg[pos] || 0, { dynasty: dynastyLg, flexShare: (myLT.flexShare || flexShLg)[pos] || 0, slotBaseline: replLg[pos], explain: true }) : null;
                   const lines = [
                     { kind: "take", tone: myPosRank[pos].rank <= Math.ceil(leagueTeams.length / 3) ? "good" : myPosRank[pos].rank > Math.ceil((2 * leagueTeams.length) / 3) ? "bad" : "neutral", x: `Your ${pos} — ${ordinal(myPosRank[pos].rank)} of ${myPosRank[pos].of} in the league${ex ? `  ·  score ${Math.round(ex.total)}` : ""}` },
                     { t: "How to read it", x: `Score = how much better (+) or worse (−) than a typical team you are at ${pos}. Bench players who'd never start contribute 0.` },
@@ -23774,9 +23880,18 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
+  /* ⚠ 29ae — AND THE SUPPLY COUNTS EXCLUDE THEM TOO. This list is what "12 RB left in tier", the position
+     scarcity panel and the startable-left reads are all counted from, so leaving projection-less players in
+     it would keep the same lie running one layer down: a tier that says twelve men are interchangeable with
+     this one when ten of them are retired. They all carry the same worst-possible VBD, so they cluster into
+     the bottom tier together and inflate exactly the counts a late-round pick is decided on. A player we
+     have no projection for is not supply. */
   const availByPos = useMemo(() => {
     const m = { QB: [], RB: [], WR: [], TE: [] };
-    players.forEach((p) => { if (m[p.pos] && !draftedSet.has(p.id)) m[p.pos].push(p); });
+    /* Same exemption as the candidate screen: a position with NO projections anywhere is a disclosed data
+       outage, and emptying its supply list would report zero players left at a position full of them. */
+    const outage = new Set(PROJ_MISSING || []);
+    players.forEach((p) => { if (m[p.pos] && !draftedSet.has(p.id) && !(p.noProj && !outage.has(cpos(p.pos)))) m[p.pos].push(p); });
     Object.keys(m).forEach((pos) => m[pos].sort((a, b) => (b.vbd || 0) - (a.vbd || 0)));
     return m;
   }, [players, draftedSet]);
@@ -24407,7 +24522,29 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // of what they will take has to ignore it completely — otherwise avoiding a player would make the board
     // predict he lasts longer than he will, which is the opposite of useful.
     const isAvoided = (p) => forTeam === userIdx && avoid.size > 0 && avoid.has(p.name);
-    const avail = (p) => !draftedSet.has(p.id) && survivesToPick(p.id) && !isAvoided(p);
+    /* ⭐⭐⭐ 29ae — A PLAYER WE HAVE NO PROJECTION FOR IS NOT A CANDIDATE. This is the one line that answers
+       the report, and it belongs here rather than in the scoring: no weighting of a player we know nothing
+       about is defensible, so he should never enter the comparison at all.
+       ⚠ FILTER BEFORE THE SLICE. `pool0` is the forty lowest-ADP available players — filter, then take
+         forty. Screening them out afterwards would have left a pool of thirty-four with six holes in it,
+         which is how the same bug comes back wearing a smaller number.
+       ⚠ AND THIS ALONE WOULD NOT HAVE BEEN ENOUGH. See marginalVbd: a flex-bound candidate's value was
+         floored at 30% of his positional VBD, which for a NEGATIVE VBD raises him rather than protecting
+         him — a -195 body arrived at the comparison worth -58, close enough to a genuinely good player for
+         the roster-shape terms (need bonus, over-stack penalty, scarcity premium — all tens of points) to
+         decide. Both halves are fixed; either alone leaves the failure one bad pack away. */
+    /* ⚠⚠ EXCEPT WHEN THE WHOLE POSITION IS MISSING, which is a different fault with a different answer.
+       His league starts a K and a DST, and those two positions are exactly the ones whose projections
+       historically arrive empty wholesale — `PROJ_MISSING` and its banner exist for precisely that, and the
+       board already handles it honestly by ordering the position on market ADP and saying so.
+       If the ghost screen applied there it would quietly make a REQUIRED position unrecommendable: he must
+       draft a defense, and the engine would have nothing to offer him at it, for the whole draft, with no
+       explanation. So the screen means "this man is a ghost among players we do have data on" — an outlier —
+       not "we have no data for this position". One is a bad row; the other is a bad feed, and the feed case
+       is already disclosed to the user rather than hidden from them. */
+    const posOutage = new Set(PROJ_MISSING || []);
+    const isGhost = (p) => p.noProj && !posOutage.has(cpos(p.pos));
+    const avail = (p) => !draftedSet.has(p.id) && !isGhost(p) && survivesToPick(p.id) && !isAvoided(p);
     let pool0 = sortedAdp.filter((p) => avail(p) && p.adp <= pickNum + 16).slice(0, 40);
     if (pool0.length < 12) pool0 = sortedAdp.filter((p) => avail(p) && p.adp <= pickNum + 60).slice(0, 44);
     if (pool0.length < 12) {
@@ -24417,6 +24554,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // Last resort: if the list is so long that nothing survives it, the honest answer is a recommendation
     // from the full board rather than no recommendation at all. Better to suggest someone they've crossed
     // off — which they can see, and ignore — than to hand them an empty panel on the clock.
+    /* ⚠ 29ae — AND A BROKEN PACK MUST NOT BLANK THE ROOM. If a pack ever arrives with no projections at all,
+       the noProj screen above would empty every pool and the panel would go silent for the whole draft — a
+       total, unexplained failure, which is worse than the bug it is guarding against. So when the screen is
+       what emptied the pool, let them back in: a named suggestion the user can see and overrule beats a blank
+       card on the clock. This is the same reasoning as the avoid-list fallback below it, and in a healthy
+       pack it never runs. */
+    if (pool0.length === 0) {
+      pool0 = sortedAdp.filter((p) => !draftedSet.has(p.id) && survivesToPick(p.id) && !isAvoided(p))
+        .slice().sort((a, b) => (b.vbd ?? -99) - (a.vbd ?? -99)).slice(0, 44);
+    }
     if (pool0.length === 0 && avoid.size > 0) {
       const bare = (p) => !draftedSet.has(p.id) && survivesToPick(p.id);
       pool0 = sortedAdp.filter(bare).slice().sort((a, b) => (b.vbd ?? -99) - (a.vbd ?? -99)).slice(0, 44);
@@ -25985,13 +26132,20 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       case "consensus": return <span className="mut">{p.consensus.toFixed(1)}</span>;
       case "edge": { const _pAdp = platRanks.map[p.id]; const edge = _pAdp != null ? Math.round(p.adp - _pAdp) : null; return edge == null ? <span className="mut" title="Enter Platform Ranks (your platform's ADP) to see your edge vs the market">—</span> : <span style={{ color: edge > 3 ? "var(--green)" : edge < -3 ? "var(--red)" : "var(--mut)" }} title="Market ADP minus your platform's ADP for this player">{edge > 0 ? `+${edge}` : edge}</span>; }
       case "platAdp": { const _pAdp = platRanks.map[p.id]; return _pAdp == null ? <span className="mut">—</span> : <span className="num" title="Your platform's ADP for this player (from Platform Ranks)">{(+_pAdp).toFixed(1)}</span>; }
-      case "proj": return p.pts;
-      case "floor": return <span className="mut">{p.floor}</span>;
-      case "ceil": return <span className="mut">{p.ceil}</span>;
-      case "vbd": return <span style={{ color: vbdColor(p.vbd), fontWeight: 600 }}>{p.vbd > 0 ? `+${p.vbd.toFixed(0)}` : p.vbd.toFixed(0)}</span>;
-      case "value": { const v = p.value != null ? p.value : p.vbd; return <span style={{ color: vbdColor(v), fontWeight: 700 }}>{v > 0 ? `+${v.toFixed(0)}` : v.toFixed(0)}</span>; }
-      case "rank": return <span style={{ color: rankTierColor(p.pos, p.posRank) || "var(--mut)" }}>{p.pos}{p.posRank}</span>;
-      case "vbdTier": return <span className="mut">T{p.vbdTier}</span>;
+      /* ⭐⭐ 29ae — A PLAYER WITH NO PROJECTION SHOWS A DASH, NOT A ZERO. `0` and `-149` are forecasts, and
+         printing them for a man the projection source has never heard of is the same category error the
+         recommendation was making: it dresses an absence of data as a prediction, and the reader has no way
+         to tell the two apart. The dash carries its own explanation on hover. */
+      case "proj": return p.noProj ? <span className="mut" data-noproj={p.name} title="No projection for this player — the projection source has no stat line for him, so there is nothing to score. He is left out of recommendations.">—</span> : p.pts;
+      case "floor": return p.noProj ? <span className="mut">—</span> : <span className="mut">{p.floor}</span>;
+      case "ceil": return p.noProj ? <span className="mut">—</span> : <span className="mut">{p.ceil}</span>;
+      case "vbd": return p.noProj ? <span className="mut" title="No projection, so no value over replacement to compute.">—</span> : <span style={{ color: vbdColor(p.vbd), fontWeight: 600 }}>{p.vbd > 0 ? `+${p.vbd.toFixed(0)}` : p.vbd.toFixed(0)}</span>;
+      case "value": { if (p.noProj) return <span className="mut">—</span>; const v = p.value != null ? p.value : p.vbd; return <span style={{ color: vbdColor(v), fontWeight: 700 }}>{v > 0 ? `+${v.toFixed(0)}` : v.toFixed(0)}</span>; }
+      /* Rank and tier are ordinal positions computed from the points — so for a player with no points they
+         are the same fabrication as the VBD was, just wearing a different notation. "RB69" reads as a
+         considered placement; there was nothing to consider. */
+      case "rank": return p.noProj ? <span className="mut">—</span> : <span style={{ color: rankTierColor(p.pos, p.posRank) || "var(--mut)" }}>{p.pos}{p.posRank}</span>;
+      case "vbdTier": return p.noProj ? <span className="mut">—</span> : <span className="mut">T{p.vbdTier}</span>;
       case "adpTier": return <span className="mut">T{p.adpTier}</span>;
       case "mockAdp": { const v = mockAdp.avg[p.id]; return v != null ? <span title={`across ${mockAdp.cnt[p.id]} of ${mockAdp.n} mocks`}>{v.toFixed(1)}</span> : <span className="mut">—</span>; }
       case "myRank": { const r = myRanks.map[p.id]; if (!r) return <span className="mut">—</span>; return r.exact ? <span className="gold" style={{ fontWeight: 700 }} title="Your personal rank">{r.rank}</span> : <span className="mut" title="Consensus spot — you didn't personally rank this player">{r.rank}</span>; }
@@ -29559,6 +29713,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               );
                             })()}
                             {p.rookie && <span style={{ flexShrink: 0, fontSize: 9, color: "var(--gold)", border: "1px solid var(--gold)", borderRadius: 3, padding: "0 3px" }}>R</span>}
+                            {/* ⭐⭐ 29ae — SAY WHY HE IS SITTING THERE WITH DASHES. He keeps his row because a
+                                leaguemate might actually take him and the pick has to be recordable, but a
+                                board full of blank numbers with no explanation is its own small mystery. The
+                                chip answers it in two words and names the consequence on hover. */}
+                            {p.noProj && <span data-noprojchip={p.name} title="No projection — the projection source has no stat line for this player, so there is nothing to score him on. He is left out of every recommendation, tier count and scarcity read. He stays on the board because someone in your league might still draft him."
+                              style={{ flexShrink: 0, fontSize: 8.5, fontWeight: 800, letterSpacing: ".02em", color: "var(--mut)", border: "1px solid var(--line2)", background: "rgba(255,255,255,.04)", borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap", cursor: "help" }}>no proj</span>}
                             {/* ⭐ THE BYE FLAG. Only when it collides with a player you already hold AT THAT
                                 POSITION — a badge on every shared week would fire on half the board and mean
                                 nothing. Hover names who it clashes with.
