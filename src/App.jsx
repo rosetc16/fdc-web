@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29ah";
+const BUILD_TAG = "2026.07.29aj";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -13466,9 +13466,32 @@ function faabBid(o) {
      budget has left, capped so it can never run away. Early on this factor is ~1.04 and changes nothing. */
   const usesLeft = Math.min(2.2, Math.sqrt(seasonWeeks / weeks));
   pct *= usesLeft;
-  const ceiling = Math.round(32 + 58 * (1 - left));    // ~32% early, ~90% when it is the last live week
+  let ceiling = Math.round(32 + 58 * (1 - left));      // ~32% early, ~90% when it is the last live week
+  /* ⭐⭐⭐ 29ai — "Jahmyr Gibbs was showing up as a FA and it wasn't saying to use my whole FAAB (100%),
+     which that is wrong in itself in multiple ways."
+     Both halves of that are right, and the second is a flaw in this function independent of the first. The
+     29ah ceiling exists to stop the model emptying the account in week two, and that reasoning is sound for
+     the players this page normally discusses — a streamer, a handcuff, a hot backup. It is not sound for a
+     first-round asset, and the ceiling had no way to tell the difference: it knew what WEEK it was and
+     nothing about WHO it was pricing, so a top-five running back on waivers priced out at the same ~32% cap
+     as a bye-week tight end.
+     Budget restraint is an argument about opportunity cost — hold something back for the injury that is
+     coming. That argument fails completely against a player better than anything the rest of the season will
+     offer, because the claim you are saving for cannot be worth more than this one. There is also no such
+     thing as finishing second in a FAAB auction: a 60% bid that loses buys nothing at all, which is why the
+     right answer to "the RB2 overall is available" has always been "everything, minus a dollar".
+     ⚠ AND THE FLOOR MATTERS AS MUCH AS THE CEILING. Simply lifting the cap changes nothing — the points term
+       produced ~34% on its own and would have gone on printing 27-41%. A ceiling permits; it does not
+       recommend. The bid itself has to move. */
+  if (o.superElite) {
+    ceiling = 100;
+    pct = Math.max(pct, 92);
+  }
   pct = Math.max(1, Math.min(ceiling, pct));
-  const lo = Math.max(1, Math.round(pct * 0.78));
+  /* ⚠ AND THE RANGE HAS TO MEAN WHAT THE HEADLINE MEANS. The ±22% spread that makes an ordinary bid honest
+     turns "everything you have" into "72–100%", and 72% of your budget is not a max bid — it is a bid that
+     loses to somebody who read the same advice and rounded up. A max bid is a narrow band at the top. */
+  const lo = o.superElite ? Math.max(90, Math.round(pct * 0.96)) : Math.max(1, Math.round(pct * 0.78));
   const hi = Math.max(lo + 1, Math.min(ceiling, Math.round(pct * 1.22)));
   const bud = o.budgetLeft;
   return {
@@ -13916,7 +13939,23 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   opt.slots.forEach((s) => { if (s.p) starterSlotBySid[s.p.sid] = s.slot; });
 
   // -------- Free agents: best available, weighted by posture, positional scarcity, and your needs --------
-  const rosteredSet = new Set((data.rostered || []).map(String));
+  /* ⭐⭐⭐ 29ai — "the free agents are messed up now (it's showing players that aren't available)… for example,
+     Jahmyr Gibbs was showing up as a FA."
+     `data.rostered` is ONE list, assembled server-side from each roster's `players` array, and everything on
+     this page trusted it completely. That is a single point of failure for the page's most basic claim — that
+     the man is actually available — and it fails silently: a player the list misses is not shown as an error,
+     he is shown as the best add in the league. Sleeper reports a roster in several fields (`players`, plus
+     `starters`, and IR/taxi in `reserve`/`taxi`), and a platform that drops one of them, or an id that arrives
+     as a number where the pool holds a string, is enough to hand somebody Jahmyr Gibbs on waivers.
+     ⚠ SO DO NOT ASK ONE SOURCE. Union every roster-bearing field in the payload. The union can only ever
+       REMOVE false free agents, never add one — a player on any team's roster in any field is rostered, full
+       stop — so there is no failure mode where this is worse than the old behaviour.
+     The second half of the answer is below at `implausible`: when a top-of-the-draft asset still comes through
+     as available, the page must say so rather than price him like a bench flier. */
+  const rosteredSet = new Set();
+  const addRostered = (arr) => { (Array.isArray(arr) ? arr : []).forEach((x) => { if (x != null) rosteredSet.add(String(x)); }); };
+  addRostered(data.rostered);
+  (data.teams || []).forEach((t) => { addRostered(t.players); addRostered(t.starters); addRostered(t.reserve); addRostered(t.taxi); });
   const freeAgents = perGamePool.filter((p) => p.sid != null && !rosteredSet.has(String(p.sid)));
   const req = REQ_F(cfg.sf);
   const start = cfg.start || {};
@@ -13966,10 +14005,44 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     const lastStarterIdx = Math.max(0, Math.round((effDemand[pos] || 0) * teamsN) - 1);
     startableCut[pos] = ranked[lastStarterIdx] ? seasonOf(ranked[lastStarterIdx]) : 0;
   });
-  // "Rostered everywhere" proxy: real leagues don't have elite players truly available. A free agent with a
-  // strong ADP or top-tier season value is almost certainly rostered elsewhere (here he's on a bye, hurt, or
-  // was just dropped) — we must never suggest dropping a real starter for him, and we flag him as a stash.
-  const rosterableByAdp = (p) => (p.adp != null && p.adp <= teamsN * 14); // ~ drafted inside standard roster depth
+  /* Positional rank by SEASON value across the whole pool — the spine of everything below. Computed once
+     here because three separate places were each re-sorting the pool to ask the same question. */
+  const posRankBySid = {};
+  const posCountBy = {};
+  POS.forEach((pos) => {
+    const ranked = perGamePool.filter((p) => p.pos === pos).sort((a, b) => seasonOf(b) - seasonOf(a));
+    posCountBy[pos] = ranked.length;
+    ranked.forEach((p, i) => { posRankBySid[String(p.sid)] = i + 1; });
+  });
+  const posRankOf = (p) => posRankBySid[String(p.sid)] || 999;
+  /* ⭐⭐⭐ 29ai — "ROSTERED EVERYWHERE" WAS AN OVERALL NUMBER ASKED OF A POSITIONAL QUESTION, AND IT TURNED
+     THE FREE-AGENT BOARD INTO A LIST OF BACKUP QUARTERBACKS.
+     The old test was `adp <= teams × 14` — roughly "was he drafted at all". In a ten-team league that is ADP
+     140, so QB21 through QB30 all cleared it, all collected the +25 "rostered everywhere" asset boost, and
+     all arrived at the top of the board reading "a rosterable QB — worth a bench spot". Measured against a
+     board I dumped before this change: the top fifteen free agents were an RB, a TE, and THIRTEEN
+     QUARTERBACKS, in a league that starts one.
+     Nobody rosters thirty quarterbacks in a ten-team 1QB league. They roster about thirteen. How deep a
+     position is actually held is `teams × (starters at that position + a bench allowance)`, and the bench
+     allowance is proportional to the starting requirement — you carry a backup QB because you start one QB,
+     and three spare RBs because you start two and a flex. That number differs per position by a factor of
+     three, which is exactly the distinction one league-wide ADP cut cannot make. */
+  const ROSTER_DEPTH_MULT = 1.35;             // ~a third more held than started: handcuffs, byes, upside
+  const rosteredDepth = {};
+  POS.forEach((pos) => { rosteredDepth[pos] = Math.max(1, Math.round(teamsN * (effDemand[pos] || 0) * ROSTER_DEPTH_MULT)); });
+  /* ADP tells the same story for someone season points cannot yet describe — a rookie rostered everywhere on
+     draft capital alone reads as a nobody by production in week 3. So keep ADP as a second route in, but ask
+     it the POSITIONAL question too: rank by ADP within the position and apply the same depth. Comparing a
+     positional question to an overall ADP number is the mistake this whole block exists to undo, and leaving
+     it in the fallback would just move it one branch down. */
+  const adpPosRankBySid = {};
+  POS.forEach((pos) => {
+    perGamePool.filter((p) => p.pos === pos && p.adp != null).sort((a, b) => a.adp - b.adp)
+      .forEach((p, i) => { adpPosRankBySid[String(p.sid)] = i + 1; });
+  });
+  const rosterableByAdp = (p) =>
+    posRankOf(p) <= rosteredDepth[p.pos] ||
+    (adpPosRankBySid[String(p.sid)] != null && adpPosRankBySid[String(p.sid)] <= rosteredDepth[p.pos]);
   // Absolute "elite tier" per position by SEASON value — the top (demand × teams) players. Anyone in this
   // tier is a proven asset and is never a throwaway drop in a contending build, ADP data present or not.
   const eliteTierPts = {};
@@ -13978,6 +14051,25 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     const idx = Math.max(0, Math.round((effDemand[pos] || 0) * teamsN) - 1);
     eliteTierPts[pos] = ranked[idx] ? seasonOf(ranked[idx]) : 0;
   });
+  /* ⭐⭐⭐ 29ai — THE OTHER HALF OF THE GIBBS REPORT. Unioning every roster field above closes the gap I can
+     see; it cannot close one I cannot, and the cost of being wrong here is not a slightly odd row. It is the
+     page telling a man that the RB2 overall is sitting on waivers and quoting him eight percent of his
+     budget for it — advice that is absurd whichever way reality falls. If the listing is a data gap he needs
+     to know that; if it is real, eight percent is not remotely the answer.
+     So name the case. A player drafted inside the first two rounds, or producing like a top-of-position
+     starter, is not a waiver flier in any league that is still being played. */
+  const eliteAdpCut = Math.max(12, Math.round(teamsN * 1.6));   // ≈ the first two rounds
+  /* ⚠ "IS THIS LEAGUE UNDER WAY" IS A QUESTION ABOUT ROSTERS, NOT ABOUT PROJECTIONS. The first cut of this
+     gated on `haveWeeklyData`, which is whether the platform has posted weekly projections — a different
+     fact entirely, false all through the off-season AND false in the fixture written to test this guard, so
+     the whole check sat inert and the suite reported the 29ah behaviour against the fixed build. Ask what is
+     actually meant: the season has started, and these teams have real rosters. Before a draft every elite
+     player IS unrostered and flagging them all would be noise, which is exactly what the roster test rules
+     out. */
+  const leagueLive = (data.week || 0) >= 1 && rosteredSet.size >= teamsN * 5;
+  const implausibleFA = (p) =>
+    leagueLive && ((p.adp != null && p.adp <= eliteAdpCut) ||
+                   posRankOf(p) <= Math.max(1, Math.round(teamsN * (reqStart[p.pos] || 0) * 0.4)));
   // Your roster by position — ranked by SEASON value so a bye-week stud stays where he belongs.
   const myByPos = { QB: [], RB: [], WR: [], TE: [] };
   myRoster.forEach((p) => { if (myByPos[p.pos]) myByPos[p.pos].push(p); });
@@ -13993,12 +14085,32 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     needByPos[pos] = demand > 0 && startableHave < demand ? 999 : 0;
   });
 
+  /* ⭐⭐⭐ 29ai — THE BOARD WAS RANKING FOUR POSITIONS AGAINST EACH OTHER IN RAW POINTS.
+     `postureValue` returns a redraft player's weekly points and nothing else, so the free-agent score was
+     essentially "who scores the most this week". Quarterbacks score about seventeen and running backs about
+     eleven, in every league ever played — so the board sorted itself into a quarterback list before any of
+     the boosts below were even applied. Fixing the rostered-depth cut removed the +25 that made it grotesque;
+     it could not fix the ordering, because the ordering was never asking a fair question.
+     The fair question is how much better he is than what else is sitting there AT HIS POSITION. Seventeen
+     points from the twenty-first quarterback is worth nothing when the twentieth is also free; eleven from a
+     startable back is worth a great deal when the alternative is eight. Measure the edge over the last player
+     his position is actually rostered to, and the comparison is finally like-for-like.
+     ⚠ NEGATIVE IS A REAL ANSWER HERE and must be allowed through: a body below replacement SHOULD sort below
+       one above it, and clamping at zero would flatten the entire bottom of the board into a tie. */
+  const replSeasonBy = {};
+  POS.forEach((pos) => {
+    const ranked = perGamePool.filter((p) => p.pos === pos).sort((a, b) => seasonOf(b) - seasonOf(a));
+    const idx = Math.max(0, (rosteredDepth[pos] || 1) - 1);
+    replSeasonBy[pos] = ranked[idx] ? seasonOf(ranked[idx]) : 0;
+  });
   const faScored = freeAgents.map((p) => {
-    const base = postureValue(p, activePosture, isDynasty);
+    const edgeWk = (seasonOf(p) - (replSeasonBy[p.pos] || 0)) / GAMES;
+    const base = postureValue({ ...p, pts: edgeWk }, activePosture, isDynasty);
     const pSeason = seasonOf(p);
     // Startable / rosterable is judged on SEASON value + ADP, NOT this week's points.
     const startable = pSeason >= startableCut[p.pos] * 0.92;
     const eliteAsset = rosterableByAdp(p) || startable;
+    const implausible = implausibleFA(p);
     // Upgrade vs YOUR weakest starter at this position — this DOES use weekly points (it's a lineup call),
     // but only counts when the free agent actually has a game this week (a 0.0 bye isn't a real upgrade).
     /* ⚠ AND "MY WORST STARTER" IS MY WORST ACTUAL STARTER. With effDemand this indexed my SECOND tight end
@@ -14042,7 +14154,13 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     const fmtUp = (u) => (Math.round(u * 10) / 10);
     // MOVE VERDICT — is he worth a roster spot for your team + window?
     let verdict = "hold", reason = "";
-    if (eliteAsset && !startable && p.noGame) {
+    /* Checked FIRST, because every branch below it assumes the listing is trustworthy. A top-two-round asset
+       showing as free is either the best waiver claim of the season or a roster your platform didn't report —
+       and the honest move is to say which of those it is before pricing it. */
+    if (implausible) {
+      verdict = "verify";
+      reason = `${p.name.split(" ").slice(-1)[0]} is rostered in essentially every league — if he really is free here, claim him with everything you have; if not, your platform hasn't reported whose roster he's on`;
+    } else if (eliteAsset && !startable && p.noGame) {
       // Elite by ADP but 0 this week (bye/injury) — a stash-worthy add, never a throwaway.
       verdict = "add"; reason = `high-value ${p.pos} available (likely on bye or just dropped) — worth grabbing`;
     } else if (needByPos[p.pos] === 999 && (startable || eliteAsset)) {
@@ -14069,7 +14187,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
       else { verdict = "hold"; reason = `below rosterable value for your team`; }
     }
     const score = base + upgrade * 2 + needBoost + startableBoost + assetBoost + (young && isDynasty ? 8 : 0);
-    return { p, score, upgrade, verdict, reason, worstOnRoster, startable, scarce, eliteAsset };
+    return { p, score, upgrade, verdict, reason, worstOnRoster, startable, scarce, eliteAsset, implausible };
   }).sort((a, b) => b.score - a.score);
   const topFA = faScored.slice(0, 15);
 
@@ -14080,7 +14198,15 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   if (byeThisWeek.length) notes.push({ tone: "warn", icon: "ti-calendar-off", text: `${byeThisWeek.length} of your players are on bye in Week ${data.week}: ${byeThisWeek.map((p) => p.name).join(", ")}.` });
   const injured = myRoster.filter((p) => p.inj);
   if (injured.length) notes.push({ tone: "warn", icon: "ti-ambulance", text: `Injury flags: ${injured.map((p) => `${p.name} (${p.inj})`).join(", ")}.` });
-  if (topFA.length && topFA[0].upgrade > 2) notes.push({ tone: "good", icon: "ti-arrow-up-right", text: `${topFA[0].p.name} is available and projects ${(Math.round(topFA[0].upgrade * 10) / 10)} pts/wk better than your weakest ${topFA[0].p.pos} starter.` });
+  /* ⚠ THE HEADLINE NOTE MUST CARRY THE SAME DOUBT THE ROW DOES. "Bijan Robinson is available" stated flatly
+     on the notes panel is the same unverified claim the free-agent row now hedges — and it is the line most
+     people read first, so it cannot be the one place the caveat is missing. */
+  if (topFA.length && topFA[0].upgrade > 2) {
+    const f0 = topFA[0];
+    notes.push(f0.implausible
+      ? { tone: "warn", icon: "ti-alert-triangle", text: `${f0.p.name} is showing as a free agent, which almost never happens with a player at his level — check your league before you act on it. If he really is free, he is worth your whole waiver budget.` }
+      : { tone: "good", icon: "ti-arrow-up-right", text: `${f0.p.name} is available and projects ${(Math.round(f0.upgrade * 10) / 10)} pts/wk better than your weakest ${f0.p.pos} starter.` });
+  }
   // Matchup difficulty flags for your projected starters (disabled — see SHOW_MATCHUP_DIFF above).
   const starterList = opt.slots.map((s) => s.p).filter(Boolean);
   const toughStarters = SHOW_MATCHUP_DIFF ? starterList.filter((p) => p.matchupDiff && p.matchupDiff.tier === "tough") : [];
@@ -14298,6 +14424,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
     scarce: (f.p.pos === "QB" && isSuperflex) || (f.p.pos === "TE" && (cfg.tePremMult || 0) > 0),
     startable: seasonOf(f.p) >= startableCut[f.p.pos] * 0.92,
     elite: rosterableByAdp(f.p),
+    // A first-round asset on waivers is not a bid, it is a max bid — see the ceiling note in faabBid.
+    superElite: !!f.implausible,
     rivals: rivalsThinAt[f.p.pos] || 0,
     budgetLeft: faabLeft,
   });
@@ -14829,14 +14957,18 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
               })}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              {faFiltered.map(({ p, upgrade, verdict, reason, worstOnRoster }) => {
-                const vc = verdict === "add" ? { c: "var(--green)", bg: "rgba(95,208,168,.10)", label: "Add" } : verdict === "stream" ? { c: "var(--gold)", bg: "rgba(224,166,60,.10)", label: "Stream" } : { c: "var(--mut)", bg: "transparent", label: "Hold" };
+              {faFiltered.map(({ p, upgrade, verdict, reason, worstOnRoster, implausible }) => {
+                const vc = verdict === "verify" ? { c: "var(--gold)", bg: "rgba(224,166,60,.14)", label: "Check first" }
+                  : verdict === "add" ? { c: "var(--green)", bg: "rgba(95,208,168,.10)", label: "Add" }
+                  : verdict === "stream" ? { c: "var(--gold)", bg: "rgba(224,166,60,.10)", label: "Stream" }
+                  : { c: "var(--mut)", bg: "transparent", label: "Hold" };
                 return (
-                  <div key={p.sid} onMouseEnter={(e) => showPlayerTip(e, p)} onMouseLeave={hideTip} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", cursor: "help", background: vc.bg !== "transparent" ? vc.bg : "var(--panel2)", border: `1px solid ${verdict === "add" ? "var(--green)" : "var(--line)"}`, borderRadius: 8 }}>
+                  <div key={p.sid} data-fa-verdict={verdict} onMouseEnter={(e) => showPlayerTip(e, p)} onMouseLeave={hideTip} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", cursor: "help", background: vc.bg !== "transparent" ? vc.bg : "var(--panel2)", border: `1px ${implausible ? "dashed" : "solid"} ${verdict === "add" ? "var(--green)" : verdict === "verify" ? "var(--gold)" : "var(--line)"}`, borderRadius: 8 }}>
                     <Dot pos={p.pos} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · {p.team}{p.age ? ` · ${p.age}y` : ""}{p.rookie ? " · rookie" : ""}{p.noGame ? " · 0 this week" : ""}</span></div>
-                      <div style={{ fontSize: 10.5, color: verdict === "add" ? "var(--green)" : "var(--mut)", lineHeight: 1.35 }}>
+                      <div style={{ fontSize: 10.5, color: verdict === "add" ? "var(--green)" : verdict === "verify" ? "var(--gold)" : "var(--mut)", lineHeight: 1.35 }}>
+                        {verdict === "verify" && <i className="ti ti-alert-triangle" style={{ fontSize: 10.5, marginRight: 4 }} aria-hidden="true" />}
                         {reason}{verdict === "add" && worstOnRoster ? <span className="mut"> · drop candidate: {worstOnRoster.name}</span> : (verdict === "add" ? <span className="mut"> · no obvious drop — your bench is all worth keeping</span> : null)}
                       </div>
                     </div>
@@ -14848,17 +14980,21 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
                         competition read underneath it is the one thing a tool without league-wide rosters
                         can never tell you. */}
                     {verdict !== "hold" && (() => {
-                      const bid = bidFor({ p, upgrade, verdict });
+                      // ⚠ `implausible` MUST travel with this — it is what lifts the ceiling to the whole
+                      //   budget, and this call site rebuilt the object by hand and dropped it once already.
+                      const bid = bidFor({ p, upgrade, verdict, implausible });
                       const rivals = rivalsThinAt[p.pos] || 0;
                       return (
                         <div onMouseEnter={(e) => showTip(e, [
-                          { kind: "take", tone: "neutral", x: `Suggested bid — ${bid.lo}–${bid.hi}% of your FAAB budget` },
+                          { kind: "take", tone: implausible ? "good" : "neutral", x: implausible ? `Max bid — ${bid.lo}–${bid.hi}% of your FAAB budget` : `Suggested bid — ${bid.lo}–${bid.hi}% of your FAAB budget` },
+                          ...(implausible ? [{ t: "Why the whole budget", x: `${p.name} is a first-round-calibre asset, and there is no second place in a FAAB auction — a bid that loses buys nothing. The usual reason to hold budget back is the injury still to come, and that argument fails here: no claim left this season can be worth more than this one. Bid everything, minus a dollar.` },
+                                              { t: "But check the roster page first", x: `Players at this level are rostered in essentially every league. Either someone dropped him — in which case claim him — or your platform hasn't reported whose roster he's on and he was never available. Confirm in your league app before you commit the budget.` }] : []),
                           /* ⚠ SHOW THE WHOLE SUM, not a conclusion. Trey: "We also just need to triple check
                              we like this formula." A number nobody can audit is a number nobody should act
                              on, and every input below is one he named. */
                           { t: "The points", x: `He upgrades your ${p.pos} by about ${Math.round(Math.max(upgrade, 1.2) * 10) / 10} points a week, and there ${weeksLeft > 1 ? "are" : "is"} ${weeksLeft} week${weeksLeft > 1 ? "s" : ""} of regular season left — roughly ${Math.round(Math.max(upgrade, 1.2) * weeksLeft)} points between now and the playoffs. The first points of an upgrade are worth far more per point than the tenth, so the bid curve flattens as the gain grows.` },
                           { t: "Your roster & league", x: `${needByPos[p.pos] === 999 ? `You cannot field ${p.pos} from startable players, which raises the bid. ` : `You can already field ${p.pos}, so this is an upgrade rather than a hole. `}${(p.pos === "QB" && isSuperflex) ? "Superflex makes quarterbacks scarce, which raises it again. " : (p.pos === "TE" && (cfg.tePremMult || 0) > 0) ? "TE-premium scoring makes tight ends scarce, which raises it again. " : ""}${leagueSize}-team league.` },
-                          { t: "How much is left to play for", x: `Unspent budget is worth nothing in the final week, so the most worth committing to one claim rises as the season shortens — with ${weeksLeft} of ${data.regularSeasonWeeks || weeksLeft} weeks still to play, a single bid is capped well below your whole account.` },
+                          ...(implausible ? [] : [{ t: "How much is left to play for", x: `Unspent budget is worth nothing in the final week, so the most worth committing to one claim rises as the season shortens — with ${weeksLeft} of ${data.regularSeasonWeeks || weeksLeft} weeks still to play, a single bid is capped well below your whole account.` }]),
                           { t: "Competition", x: rivals ? `${rivals} of the other ${leagueSize - 1} teams can't field a full ${p.pos} group from startable players either — expect real bidding, and bid at the top of the range if you need him.` : `No other team in the league is short at ${p.pos} right now, so you're unlikely to be outbid. The low end of the range should be enough.` },
                           ...(faabLeft != null
                             ? [{ t: "Your budget", x: `$${faabLeft} of $${faabBudget} left, so that share is about $${bid.loAbs}–${bid.hiAbs}.` }]
@@ -14891,7 +15027,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
               {!faFiltered.length && <div className="mut">{faPosFilter === "all" ? "No available players found — your league pool may be fully rostered." : `No available ${faPosFilter} found.`}</div>}
             </div>
             <div className="mut" style={{ fontSize: 10.5, marginTop: 10, lineHeight: 1.45 }}>
-              <b style={{ color: "var(--green)" }}>Add</b> = worth a roster move for your team{isDynasty ? ` in ${postureLabel[activePosture].toLowerCase()} mode` : ""}. <b style={{ color: "var(--gold)" }}>Stream</b> = only in a bye/injury pinch. <b>Hold</b> = not better than what you have.
+              <b style={{ color: "var(--green)" }}>Add</b> = worth a roster move for your team{isDynasty ? ` in ${postureLabel[activePosture].toLowerCase()} mode` : ""}. <b style={{ color: "var(--gold)" }}>Stream</b> = only in a bye/injury pinch. <b>Hold</b> = not better than what you have. <b style={{ color: "var(--gold)" }}>Check first</b> = a player this good is rostered in almost every league, so confirm he's really free before you spend the budget — the bid beside him assumes he is.
             </div>
           </div>
           );
@@ -18096,10 +18232,20 @@ function MockTrendsLazy({ league }) {
 function remapPicksByNames(picks, names, players) {
   if (!Array.isArray(picks) || !picks.length) return picks;
   if (!Array.isArray(names) || names.length !== picks.length) return picks;
-  const byN = {}; (players || []).forEach((p) => { if (p && p.name != null) byN[normName(p.name)] = p.id; });
+  /* ⚠ 29aj — SAME COLLISION GUARD AS THE DRAFT ROOM'S REPAIR, AND FOR THE SAME REASON. Two players can share
+     a normalised name ("DeMario Douglas" of Buffalo and "Demario Douglas" of New Orleans are both in the
+     current pool), and a map built by plain assignment keeps only whichever came last. In the room that
+     rewrote a live pick into a different player; here it would quietly re-attribute a historical mock pick
+     to a man who was never taken — and mock trends are read as evidence about your own tendencies. An id
+     that already answers to the stored name is right by definition and is left alone; where a name is
+     ambiguous the map now keeps the first id rather than the last, so the choice is at least stable across
+     renders. See the long note at the draft-room repair. */
+  const byN = {};
+  (players || []).forEach((p) => { if (p && p.name != null) { const n = normName(p.name); if (byN[n] == null) byN[n] = p.id; } });
   let changed = false;
   const out = picks.map((id, i) => {
     const nm = names[i]; if (nm == null) return id;
+    if (id != null && players && players[id] && normName(players[id].name) === nm) return id;
     const nid = byN[nm];
     if (nid != null && nid !== id) { changed = true; return nid; }
     // A name the current pool no longer has (retired, or filtered out of this league's pool) is NOT the
@@ -19803,7 +19949,10 @@ function LeagueCard({ l, onUmbrella, onDelete, onOpenMockView, onDeleteMock }) {
         <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{l.name}</div>
         <span style={{ fontSize: 11, color: badge[1] }}>{badge[0]}</span>
       </div>
-      <div style={{ display: "flex", gap: 6, margin: "8px 0", flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 6, margin: "8px 0", flexWrap: "wrap", alignItems: "center" }}>
+        {/* 29ai — "create icons that show the type of platform next to the league". First in the row, because
+            where a league came from is the thing you scan for when you own six of them. */}
+        <PlatformChip league={l} live={platformIsLive(platformOf(l))} />
         <span className="chip">{l.cfg.teams || 12} teams</span>
         <span className="chip">{l.cfg.sf ? "Superflex" : "1QB"}{l.cfg.tePremMult > 0 ? ` · TE+${l.cfg.tePremMult}` : ""}</span>
         <span className="chip">{l.cfg.rounds} rds{l.cfg.slot ? ` · slot ${l.cfg.slot}` : " · slot TBD"}</span>
@@ -19862,13 +20011,24 @@ function Library({ user, leagues, onSyncCloud, onNew, onUmbrella, onDelete, onAd
   const [q, setQ] = useState("");
   const [sort, setSort] = useState("date");
   const [filter, setFilter] = useState("all");
+  /* 29ai — "you should be able to filter by all / specific platforms". Only the platforms actually present
+     get a button: a filter row offering ESPN to somebody with three Sleeper leagues is a row of dead ends,
+     and the list grows on its own the first time they connect somewhere new. */
+  const [platFilter, setPlatFilter] = useState("all");
+  const platsPresent = useMemo(() => {
+    const seen = [];
+    (leagues || []).forEach((l) => { const id = platformOf(l); if (!seen.includes(id)) seen.push(id); });
+    const order = Object.keys(PLATFORM_META);
+    return seen.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  }, [leagues]);
   const statusOf = (l) => { const total = (l.cfg.teams || 12) * l.cfg.rounds; if (l.picks.length >= total) return "complete"; if (l.picks.length > 0) return "progress"; return "mock"; };
   const view = useMemo(() => {
     let v = leagues.filter((l) => l.name.toLowerCase().includes(q.toLowerCase()));
     if (filter !== "all") v = v.filter((l) => statusOf(l) === filter);
+    if (platFilter !== "all") v = v.filter((l) => platformOf(l) === platFilter);
     v = v.slice().sort((a, b) => sort === "name" ? a.name.localeCompare(b.name) : sort === "date" ? b.id - a.id : (b.picks.length / ((b.cfg.teams || 12) * b.cfg.rounds)) - (a.picks.length / ((a.cfg.teams || 12) * a.cfg.rounds)));
     return v;
-  }, [leagues, q, sort, filter]);
+  }, [leagues, q, sort, filter, platFilter]);
   return (
     <div>
       <AppHeader user={user} onAdmin={onAdmin} onSignOut={onSignOut} onHome={onHome} onAccount={onAccount} onHelp={onHelp} onApp={user?.paid ? onHome : undefined} backLabel="Hub" title="League library" />
@@ -19902,18 +20062,70 @@ function Library({ user, leagues, onSyncCloud, onNew, onUmbrella, onDelete, onAd
             </select>
           </div>
         )}
+        {/* One platform is not a filter, it is a label — the row only earns its space once there are two. */}
+        {platsPresent.length > 1 && (
+          <div data-platfilter style={{ display: "flex", gap: 6, marginTop: -8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+            <span className="mut" style={{ fontSize: 11.5, letterSpacing: ".04em" }}>Platform</span>
+            <button className="btn btn-mini" data-platbtn="all" style={{ borderColor: platFilter === "all" ? "var(--gold)" : "var(--line)" }} onClick={() => setPlatFilter("all")}>All</button>
+            {platsPresent.map((id) => {
+              const m = PLATFORM_META[id];
+              const n = leagues.filter((l) => platformOf(l) === id).length;
+              return (
+                <button key={id} className="btn btn-mini" data-platbtn={id} title={`Show only your ${m.name} leagues`}
+                  style={{ borderColor: platFilter === id ? "var(--gold)" : "var(--line)", display: "inline-flex", alignItems: "center", gap: 5 }}
+                  onClick={() => setPlatFilter(platFilter === id ? "all" : id)}>
+                  <i className={`ti ${m.icon}`} style={{ fontSize: 12, color: m.color }} aria-hidden="true" />{m.name}
+                  <span className="mut num" style={{ fontSize: 10.5 }}>{n}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {/* 29ai — "make it clear how to connect other leagues to the hub for drafting."
+            The connect flow lived one screen inside the new-league form, so the library — the screen you are
+            on when the thought "I should add my other league" occurs — never mentioned that importing was
+            possible at all, let alone from where. This strip is the signpost, and it names the platforms. */}
+        <div data-connectstrip className="panel" style={{ padding: "11px 14px", marginBottom: 14, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", background: "var(--panel2)" }}>
+          <div style={{ flex: "1 1 260px", minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 3 }}>Add a league from another platform</div>
+            <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              {PLATFORMS.filter((p) => !p.unsupported).map((p) => (
+                <span key={p.id} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+                  title={p.live ? `${p.name} — picks sync live during your draft.` : `${p.name} — imports your league's settings.`}>
+                  <i className={`ti ${p.icon}`} style={{ fontSize: 13, color: PLATFORM_META[p.id] ? PLATFORM_META[p.id].color : "var(--gold)" }} aria-hidden="true" />
+                  {p.name === "MyFantasyLeague" ? "MFL" : p.name}
+                  {p.live && <i className="ti ti-bolt" style={{ fontSize: 10, color: "var(--green)" }} aria-hidden="true" />}
+                </span>
+              ))}
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }} title="Every league can be built by hand — you get the same engine.">
+                <i className="ti ti-pencil" style={{ fontSize: 13 }} aria-hidden="true" />by hand
+              </span>
+            </div>
+          </div>
+          <button className="btn" onClick={onNew} title="Pick a platform and import the league — or set one up by hand">
+            <i className="ti ti-plug-connected" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Connect a league
+          </button>
+        </div>
+        <div className="mut" style={{ fontSize: 10.5, marginTop: -8, marginBottom: 14 }}>
+          <i className="ti ti-bolt" style={{ fontSize: 10, color: "var(--green)", marginRight: 3 }} aria-hidden="true" />means picks sync live on draft night. The rest import your settings and you enter picks as they happen.
+        </div>
         {leagues.length === 0 && (
           <div className="panel" style={{ padding: 30, textAlign: "center" }}>
             <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}><Compass size={40} spin /></div>
             <div className="disp" style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>No leagues yet</div>
-            <div className="mut" style={{ fontSize: 13.5, marginBottom: 16 }}>Create your first league — pick your settings, then run the draft live or as a mock. Leagues save to your account and persist between sessions.</div>
-            <button className="btn btn-gold" onClick={onNew}>Set up a league</button>
+            <div className="mut" style={{ fontSize: 13.5, marginBottom: 16 }}>Connect one from Sleeper, Yahoo, ESPN, MyFantasyLeague or Fantrax — or set one up by hand in a minute. Either way you get the same engine, and leagues save to your account.</div>
+            <button className="btn btn-gold" onClick={onNew}>Connect or set up a league</button>
           </div>
         )}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(270px,1fr))", gap: 12 }}>
           {view.map((l) => <LeagueCard key={l.id} l={l} onUmbrella={onUmbrella} onDelete={onDelete} onDeleteMock={onDeleteMock} onOpenMockView={onOpenMockView} />)}
         </div>
-        {leagues.length > 0 && view.length === 0 && <div className="mut" style={{ textAlign: "center", padding: 20 }}>No leagues match your search.</div>}
+        {leagues.length > 0 && view.length === 0 && (
+          <div className="mut" style={{ textAlign: "center", padding: 20 }}>
+            No leagues match your {platFilter !== "all" ? "filters" : "search"}.
+            {platFilter !== "all" && <> <button className="btn btn-mini" style={{ marginLeft: 6 }} onClick={() => setPlatFilter("all")}>Show all platforms</button></>}
+          </div>
+        )}
         <div className="mut" style={{ fontSize: 11.5, marginTop: 20 }}>Your library holds every league you build or connect — settings, keepers, pick trades, personal ranks, and every draft and mock you've run, each locked to the values that were live that day.</div>
       </div>
     </div>
@@ -20804,6 +21016,59 @@ const DRAFT_ORDERS = [["snake","Snake"],["linear","Linear (same order each round
    share. `live` is whether picks arrive on their own during a draft, and it is stated per platform
    because promising a sync that does not exist is the worst thing this screen could do.
    ═══════════════════════════════════════════════════════════════════════════════════════════════ */
+/* ⭐⭐⭐ 29ai — ONE PLACE THAT KNOWS WHICH PLATFORM A LEAGUE CAME FROM.
+   Trey: "Can you also make it clear how to connect other leagues to the hub for drafting. I only see
+   sleeper. I also want to be able to connect multiple different platforms. Then you should be able to filter
+   by all / specific platforms. Also create icons that show the type of platform next to the league."
+   Every one of those needs the same fact — this league's platform — and until now nothing asked for it in a
+   single place. The connection is written to `cfg.connect.platform` by the importer, but older leagues carry
+   it on `league.connect` instead, and a league built by hand carries nothing at all. Three shapes and a
+   silence, read differently by each surface that cared, which is why the identity never made it onto a card.
+   ⚠ A LEAGUE WITH NO CONNECTION IS NOT AN ERROR, IT IS A KIND. Most leagues start as hand-built boards and
+     many stay that way; "Manual" is a real answer and gets a real chip, not a blank space that reads as
+     something failing to load. */
+const PLATFORM_META = {
+  sleeper: { name: "Sleeper", icon: "ti-moon", color: "#5FD0A8" },
+  espn: { name: "ESPN", icon: "ti-ball-football", color: "#F2655C" },
+  yahoo: { name: "Yahoo", icon: "ti-brand-yahoo", color: "#8E7CE0" },
+  mfl: { name: "MyFantasyLeague", icon: "ti-database", color: "#6BA8E5" },
+  fantrax: { name: "Fantrax", icon: "ti-key", color: "#E0A63C" },
+  cbs: { name: "CBS Sports", icon: "ti-alert-triangle", color: "var(--mut)" },
+  nfl: { name: "NFL.com", icon: "ti-arrow-right", color: "var(--mut)" },
+  manual: { name: "Manual", icon: "ti-pencil", color: "var(--mut)" },
+};
+function platformOf(league) {
+  if (!league) return "manual";
+  const c = (league.cfg && league.cfg.connect) || league.connect || null;
+  const id = c && c.platform ? String(c.platform).toLowerCase() : null;
+  if (id && PLATFORM_META[id]) return id;
+  // A Sleeper league imported before the platform field existed still carries its league id.
+  if (league.sleeperLeagueId || (c && c.leagueId && !id)) return "sleeper";
+  return "manual";
+}
+/* Does this platform sync picks, or did it only import settings once? The distinction people actually ask
+   about, and the one that decides whether a draft needs manual entry. Read from PLATFORMS so there is a
+   single source of truth — a function declaration, so the const below it is already initialised by call time. */
+function platformIsLive(id) {
+  const p = PLATFORMS.find((x) => x.id === id);
+  return !!(p && p.live);
+}
+/* The chip itself, so a league reads the same everywhere it appears. `live` marks a connection that syncs
+   picks rather than one that only imported settings once — the distinction people actually ask about. */
+function PlatformChip({ league, platform, live, size = 11 }) {
+  const id = platform || platformOf(league);
+  const m = PLATFORM_META[id] || PLATFORM_META.manual;
+  return (
+    <span data-platchip={id} title={id === "manual" ? "Built by hand — not connected to a platform." : `Connected to ${m.name}${live ? " — picks sync live" : ""}.`}
+      style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: size, fontWeight: 700, whiteSpace: "nowrap",
+        color: m.color, border: `1px solid ${m.color === "var(--mut)" ? "var(--line2)" : m.color + "66"}`,
+        background: m.color === "var(--mut)" ? "rgba(255,255,255,.04)" : m.color + "14",
+        borderRadius: 5, padding: "1px 6px" }}>
+      <i className={`ti ${m.icon}`} style={{ fontSize: size + 1 }} aria-hidden="true" />{m.name}
+      {live && <i className="ti ti-bolt" style={{ fontSize: size - 1 }} aria-hidden="true" />}
+    </span>
+  );
+}
 const PLATFORMS = [
   { id: "sleeper", name: "Sleeper", field: "Sleeper username", live: true, icon: "ti-moon",
     hint: "We read your leagues from Sleeper's free public API and sync your draft live." },
@@ -20829,7 +21094,14 @@ function ConnectBox({ connect, onConnect, onClear }) {
   const [open, setOpen] = useState(false);
   // Land on Sleeper, not on a platform picker: it's the path almost everyone takes and the only one
   // with live sync. "← Other platform" is one click away for the ESPN import.
-  const [sel, setSel] = useState(PLATFORMS[0]);
+  /* ⭐⭐⭐ 29ai — "I only see sleeper."
+     He was right, and not because anything was missing: every one of these connectors was built and wired.
+     This state opened on PLATFORMS[0] — Sleeper — so the platform GRID, the only screen that says the other
+     six exist, sat behind a "← Other platform" link at the top right of a form that already looked like the
+     whole feature. Nobody clicks "other" when they have not been shown that there is an other. Open on the
+     grid: it costs a Sleeper user one click, and it is the click that tells everyone else the product
+     supports their league. */
+  const [sel, setSel] = useState(null);
   // ESPN import: null = nothing fetched yet, else the mapped league awaiting a team choice.
   const [espn, setEspn] = useState(null);
   // Remember previously-used Sleeper usernames so we can autofill the last one and offer a dropdown.
@@ -20892,7 +21164,7 @@ function ConnectBox({ connect, onConnect, onClear }) {
         draftType: d.draftType || "snake", tradedPicks: d.tradedPicks || [], keepers: d.keepers || [],
         existingRosters: d.existingRosters || null,
       });
-      setOpen(false); setSel(PLATFORMS[0]); setVal(""); setSleeperLeagues(null); setEspn(null);
+      setOpen(false); setSel(null); setVal(""); setSleeperLeagues(null); setEspn(null);
     } catch (e) { setError(e.data?.error || e.message || "Couldn't load that league's draft."); }
     finally { setBusy(false); }
   };
@@ -20938,7 +21210,7 @@ function ConnectBox({ connect, onConnect, onClear }) {
       liveSync: !!r.liveSync,
       ...extra,
     });
-    setOpen(false); setSel(PLATFORMS[0]); setVal(""); setKey2(""); setEspn(null); setFxLeagues(null); setYLeagues(null);
+    setOpen(false); setSel(null); setVal(""); setKey2(""); setEspn(null); setFxLeagues(null); setYLeagues(null);
   };
 
   const fetchMfl = async () => {
@@ -21008,7 +21280,7 @@ function ConnectBox({ connect, onConnect, onClear }) {
       warnings: espn.warnings || [],
       canSyncPicks: false,
     });
-    setOpen(false); setSel(PLATFORMS[0]); setVal(""); setEspn(null);
+    setOpen(false); setSel(null); setVal(""); setEspn(null);
   };
   const statusChip = (s) => {
     if (s === "drafting") return { t: "Drafting now", c: "var(--green)" };
@@ -21020,14 +21292,24 @@ function ConnectBox({ connect, onConnect, onClear }) {
   return (
     <div style={{ marginBottom: 16 }}>
       {!open ? (
-        <button className="btn btn-gold" style={{ width: "100%", padding: 13, fontSize: 14, fontWeight: 700 }} onClick={() => setOpen(true)}>
-          <i className="ti ti-brand-sleeper" style={{ fontSize: 16, marginRight: 2 }} aria-hidden="true" /><i className="ti ti-bolt" style={{ fontSize: 15 }} aria-hidden="true" /> Connect your league — Sleeper live sync, or import ESPN settings
+        /* The banner named two platforms out of five that work, which set the expectation the grid then had
+           to fight. Name them all — the row of icons does more of that work than the sentence does. */
+        <button data-connectcta className="btn btn-gold" style={{ width: "100%", padding: "12px 13px", fontSize: 14, fontWeight: 700, display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }} onClick={() => setOpen(true)}>
+          <span><i className="ti ti-plug-connected" style={{ fontSize: 16, marginRight: 5 }} aria-hidden="true" />Connect your league</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 9, fontWeight: 600, fontSize: 11.5, opacity: 0.92, flexWrap: "wrap", justifyContent: "center" }}>
+            {PLATFORMS.filter((p) => !p.unsupported).map((p) => (
+              <span key={p.id} style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+                <i className={`ti ${p.icon}`} style={{ fontSize: 13 }} aria-hidden="true" />{p.name === "MyFantasyLeague" ? "MFL" : p.name}
+                {p.live && <i className="ti ti-bolt" style={{ fontSize: 10 }} title="Picks sync live" aria-hidden="true" />}
+              </span>
+            ))}
+          </span>
         </button>
       ) : (
         <div className="panel" style={{ padding: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
             <div className="disp" style={{ fontSize: 15, fontWeight: 700 }}>Connect your league</div>
-            <button className="btn btn-mini" onClick={() => { setOpen(false); setSel(PLATFORMS[0]); setSleeperLeagues(null); setEspn(null); setError(null); }}>Cancel</button>
+            <button className="btn btn-mini" onClick={() => { setOpen(false); setSel(null); setSleeperLeagues(null); setEspn(null); setError(null); }}>Cancel</button>
           </div>
           {!sel ? (
             <div>
@@ -21049,7 +21331,7 @@ function ConnectBox({ connect, onConnect, onClear }) {
               <div className="panel" style={{ marginTop: 10, padding: "10px 12px", background: "var(--panel2)" }}>
                 <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>On CBS, or drafting in person?</div>
                 <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>No problem — close this and set the league up by hand. You enter each pick as it happens (it's fast), and you get the <b style={{ color: "var(--ink)" }}>exact same</b> engine: live recommendations, availability odds, cost-of-waiting, and steal/reach grades.</div>
-                <button className="btn btn-mini" style={{ marginTop: 8 }} onClick={() => { setOpen(false); setSel(PLATFORMS[0]); setEspn(null); setError(null); }}>Set up manually instead</button>
+                <button className="btn btn-mini" style={{ marginTop: 8 }} onClick={() => { setOpen(false); setSel(null); setEspn(null); setError(null); }}>Set up manually instead</button>
               </div>
             </div>
           ) : (
@@ -21287,7 +21569,7 @@ function ConnectBox({ connect, onConnect, onClear }) {
                       : <>The NFL stopped running season-long fantasy in 2026 and ESPN is now its official fantasy game — existing NFL.com leagues were migrated across with their settings, keepers and history. Import yours at <b style={{ color: "var(--ink)" }}>espn.com/importnfl</b> (the league manager has to start it), then come back and connect it here as an ESPN league.</>}
                   </div>
                   <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                    <button className="btn btn-mini" onClick={() => { setOpen(false); setSel(PLATFORMS[0]); }}>Set up by hand</button>
+                    <button className="btn btn-mini" onClick={() => { setOpen(false); setSel(null); }}>Set up by hand</button>
                     {sel.id === "nfl" && <button className="btn btn-mini btn-gold" onClick={() => { setSel(PLATFORMS.find((x) => x.id === "espn")); setError(null); setVal(""); }}>Connect as ESPN</button>}
                   </div>
                 </div>
@@ -23795,8 +24077,33 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const pNames = storedNames("picks"), dNames = storedNames("preds");
     const sig = poolIdent + "##" + pNames.join("|") + "##" + dNames.join("|");
     if (resolvedFor !== sig) {
+      /* ⭐⭐⭐ 29aj — A NAME IS NOT A KEY, AND THIS MAP PRETENDED IT WAS.
+         `stress.mjs` reported DUPLICATE PICKS x2 for months: one player appearing three times on a finished
+         200-pick board. It looked like a race in the pick handler and it was not — the pick handler is
+         correct. The pool contains "DeMario Douglas" (BUF) and "Demario Douglas" (NO). Two different men;
+         one normalised name. This map is built by assignment, so the second silently overwrote the first and
+         the name resolved to whichever id was later in the pool.
+         The rest follows on its own. You draft DeMario Douglas (id 128). The next save writes his name.
+         The repair below reads that name back, resolves it to id 199 — a different player, on a different
+         team — and rewrites your pick. The man you drafted is now nowhere on the board and back in the pool,
+         so the room offers him again at the top of the list, you take him again, and it happens again. Three
+         picks, one row, and a board that quietly holds a player nobody chose.
+         ⚠ THIS IS NOT A TEST-DATA PROBLEM. Duplicate names are ordinary in football — two Michael Thomases,
+           two Josh Allens, a rookie every year who shares a name with a veteran. The fixture is only where
+           it was caught.
+         THE FIX IS THE ONE LINE BELOW: IF THE ID ALREADY CARRIES THAT NAME, THERE IS NOTHING TO REPAIR.
+         This whole block exists to fix ids that DRIFTED when the pool changed underneath a saved draft. An id
+         whose own player answers to the stored name has not drifted, and rewriting it can only do harm. It
+         also stops a lot of needless churn in the ordinary case.
+         ⚠ AND THE FIRST VERSION OF THIS FIX WENT FURTHER THAN THAT, WHICH WAS WRONG. It also refused to
+           remap on any ambiguous name at all. That sounds prudent and is not: when an id IS genuinely stale
+           it points at a stranger, so declining to repair leaves a definitely-wrong player in the slot rather
+           than one of the two men who actually bear the name. Half right beats certainly wrong. What the
+           ambiguous case really needs is only that it be STABLE, so the map now keeps the FIRST id for a
+           name instead of letting each later duplicate overwrite it — same answer on every render, which is
+           what the old last-one-wins map could not promise. */
       const byName = {};
-      players.forEach((p) => { byName[normName(p.name)] = p.id; });
+      players.forEach((p) => { const n = normName(p.name); if (byName[n] == null) byName[n] = p.id; });
       /* Length is deliberately not required to match: the old version bailed whenever it differed, which is
          the normal case the moment one more pick has been made than was last saved — so the repair was
          skipped exactly while a draft was in progress. */
@@ -23806,6 +24113,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         const out = arr.map((id, i) => {
           const nm = names[i];
           if (nm == null) return id;
+          // (1) the id already answers to this name — it never drifted, so leave it alone.
+          if (id != null && players[id] && normName(players[id].name) === nm) return id;
           const nid = byName[nm];
           // Unresolvable means he left the pool entirely; keeping the stale id is no worse than any
           // alternative and never silently promotes an unrelated player into his slot.
