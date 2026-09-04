@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29am";
+const BUILD_TAG = "2026.07.29an";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -10113,7 +10113,7 @@ function HelpPage({ user, biz, onBack, onHome, onSignOut, onSubmit, initialTab }
     ["How do the predictions work?", "We read thousands of real drafts in your exact format to learn how the board actually behaves — runs, slides, reaches — then run simulations to turn that into live availability odds and pick recommendations. It updates after every selection."],
     ["Is my draft data private?", "Yes. Your leagues, drafts, mock drafts, and personal rankings are tied to your account and are never shared with or visible to other users."],
     ["What does the season pass cover?", "One pass covers unlimited leagues and unlimited mock drafts with every feature through the March 1 league-year cutoff. You'll always see the current price — including any active promo — on the home page and at checkout before you pay anything."],
-    ["Which platforms sync automatically?", "Sleeper is the one that syncs picks live — picks, traded picks, rosters, and depth charts all flow in. A public ESPN league can import its settings (teams, roster slots, scoring, draft order) so you don't type them, but ESPN has no pick feed, so the draft itself is manual entry. Yahoo, CBS and everything else is manual entry too."],
+    ["Which platforms sync automatically?", "Three of them publish a live draft feed, and those are the three that sync picks as they happen: Sleeper, MyFantasyLeague and Fantrax. Sleeper goes furthest — traded picks, rosters and depth charts flow in as well. A public ESPN league can import its settings (teams, roster slots, scoring, draft order) so you don't type them, but ESPN has no pick feed, so the draft itself is manual entry, and the same goes for Yahoo, CBS and NFL.com. Manual entry is a first-class path, not a fallback: type each pick as it's announced and the engine advises in real time exactly the same way."],
     ["Can I set keepers and traded picks?", "Yes — in any draft's Settings tab. Keepers can be kept at a specific pick or added free to a roster, and you can reassign traded picks between teams. These apply to the official draft and every mock for that league."],
     ["How do I get help fast?", "Use the form on this page. It reaches the team directly, and replies come to the email you submit with."],
   ];
@@ -21147,7 +21147,9 @@ const PLATFORM_META = {
   sleeper: { name: "Sleeper", icon: "ti-moon", color: "#5FD0A8" },
   espn: { name: "ESPN", icon: "ti-ball-football", color: "#F2655C" },
   yahoo: { name: "Yahoo", icon: "ti-brand-yahoo", color: "#8E7CE0" },
-  mfl: { name: "MyFantasyLeague", icon: "ti-database", color: "#6BA8E5" },
+  // `short` is what running copy uses ("MFL hasn't reported it yet"); `name` is for headings and menus,
+  // where the full name is what a user scanning a list of platforms is looking for.
+  mfl: { name: "MyFantasyLeague", short: "MFL", icon: "ti-database", color: "#6BA8E5" },
   fantrax: { name: "Fantrax", icon: "ti-key", color: "#E0A63C" },
   cbs: { name: "CBS Sports", icon: "ti-alert-triangle", color: "var(--mut)" },
   nfl: { name: "NFL.com", icon: "ti-arrow-right", color: "var(--mut)" },
@@ -21161,6 +21163,50 @@ function platformOf(league) {
   // A Sleeper league imported before the platform field existed still carries its league id.
   if (league.sleeperLeagueId || (c && c.leagueId && !id)) return "sleeper";
   return "manual";
+}
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+   29an — ONE LIVE PICK POLL, THREE PLATFORMS
+   ───────────────────────────────────────────────────────────────────────────────────────────────────
+   The draft room's fast poll used to call api.sleeperPicks directly. This normalises MyFantasyLeague and
+   Fantrax into the SAME payload shape Sleeper answers with, so the ~120 lines of pick-placement logic
+   below it — forced picks, holes, the local-ahead fail-safe, scenario mode — stay one implementation
+   rather than three. That logic took a long time to get right and is not worth having twice.
+
+   ⚠ THE POLL IS SLOWER ON MFL AND FANTRAX, ON PURPOSE. Sleeper's API is built for this and documents a
+     rate limit; the other two are a small shop's export endpoint and a beta partner API with no stated
+     ceiling at all. The backend already collapses every viewer of one draft into a single upstream
+     fetch, so this interval sets the load for a whole league, not per person — and four seconds is
+     imperceptible next to the time it takes someone to announce a pick.
+
+   ⚠ NEITHER FEED SAYS WHETHER THE DRAFT IS FINISHED, so the caller decides from what it knows locally
+     (teams × rounds). Without that, a completed MFL draft sits forever showing a phantom pick on the
+     clock with a timer counting down — the exact symptom a finished Sleeper league had before
+     `status === "complete"` was honoured.
+   ═══════════════════════════════════════════════════════════════════════════════════════════════ */
+const LIVE_POLL_MS = { sleeper: 2000, mfl: 4000, fantrax: 4000 };
+async function livePicksFor(platform, connect, draftIdCache, totalPicks) {
+  const c = connect || {};
+  if (platform === "sleeper") return api.sleeperPicks(c.leagueId, draftIdCache);
+  const r = platform === "mfl"
+    ? await api.mflPicks(c.leagueId, c.season || null, c.credential || null)
+    : await api.fantraxPicks(c.leagueId, c.credential || null);
+  const rows = Array.isArray(r && r.picks) ? r.picks : [];
+  return {
+    /* `name` is the whole ballgame: the board resolves picks by normalised name, and both of these feeds
+       answer with platform player IDs. The backend fills the names in from each platform's own player
+       directory (src/lib/playerIds.js) — if that ever comes back empty the picks arrive name-less and
+       land in LIVE_UNRESOLVED_PICKS, visible in the admin diagnostic, rather than vanishing. */
+    picks: rows.map((p, i) => ({
+      name: p.name || null,
+      pick_no: Number(p.overall) || i + 1,
+      draft_slot: p.slot != null ? Number(p.slot) : null,
+      // Neither platform reports traded picks in its draft feed, so the owning team IS the drafting team.
+      // Where the feed doesn't name a slot at all, the room falls back to teamAt() — the board's own order.
+      team_slot: p.slot != null ? Number(p.slot) : null,
+    })),
+    status: (totalPicks && rows.length >= totalPicks) ? "complete" : (rows.length ? "drafting" : "pre_draft"),
+    draft_id: null,
+  };
 }
 /* Does this platform sync picks, or did it only import settings once? The distinction people actually ask
    about, and the one that decides whether a draft needs manual entry. Read from PLATFORMS so there is a
@@ -23567,15 +23613,21 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
      and every pick has to be typed. On draft night that is the difference between watching the board fill
      itself and quietly falling ten picks behind while you wait for it to.
      ⚠ PLATFORMS[].live IS NOT THE RIGHT TEST HERE, WHICH IS WHY THIS IS ITS OWN LIST. That flag describes
-       what the CONNECTOR can do — MyFantasyLeague and Fantrax both have real pick APIs and the backend and
-       api.js both have the calls. But the draft ROOM polls exactly one of them (search: api.sleeperPicks),
-       so on any other platform the picks do not arrive however capable the connector is. This constant is
-       what the room actually does, and mixing the two up is how the wrong promise got made in the first
-       place. When MFL/Fantrax polling is wired into the room, they get added HERE, and the UI follows.
+       what the CONNECTOR can do; this one describes what the ROOM does. Keeping them apart is what stops
+       the UI promising a sync that no code performs — the exact bug Trey reported — and it is why adding a
+       platform here is a deliberate act rather than a side effect of writing a connector.
      ⚠ AND IT MUST NORMALISE WHAT IS ALREADY SAVED. `cfg.draftMode` persists, so every ESPN league created
        before this build carries draftMode:"espn" on disk. Reading it back unchanged would leave exactly the
-       leagues that hit the bug still showing the false banner. */
-  const ROOM_SYNCS_PICKS = ["sleeper"];
+       leagues that hit the bug still showing the false banner.
+
+     ⭐⭐⭐ 29an — MFL AND FANTRAX JOIN THE LIST, because the room now genuinely polls them (search:
+       livePicksFor). Both publish a real draft feed to a plain server-side poll, which is a thing only
+       these three of the eight platforms do; ESPN, Yahoo, CBS and NFL.com stay off this list and stay
+       honest about being manual entry. The one piece that was actually missing was not the polling — it
+       was that both feeds answer with PLATFORM PLAYER IDS and no names, and the board places picks by
+       name. See the backend's src/lib/playerIds.js; without it this list would be another false promise
+       with more code behind it. */
+  const ROOM_SYNCS_PICKS = ["sleeper", "mfl", "fantrax"];
   const platformSyncsPicks = (id) => !!id && ROOM_SYNCS_PICKS.includes(id);
   const defaultOfficialMode = platformSyncsPicks(connectedPlatform) ? connectedPlatform : "manual";
   const savedMode = cfg.draftMode && cfg.draftMode !== "auto" && cfg.draftMode !== "manual" && !platformSyncsPicks(cfg.draftMode)
@@ -26106,7 +26158,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const localAheadRef = useRef(localAhead);
   picksRef.current = picks;
   localAheadRef.current = localAhead;
-  const sleeperLive = connectedPlatform === "sleeper" && draftMode === "sleeper" && !!(cfg.connect && cfg.connect.leagueId) && hasBackend;
+  /* ⭐⭐⭐ 29an — WHICH PLATFORM IS FEEDING THIS ROOM, or null for manual entry.
+     This replaced a boolean called `sleeperLive`, and the rename is the point: every read of it used to
+     be a question about Sleeper and is now a question about "the connected feed", which is what the
+     surrounding code always actually meant. `livePlatform` is the id — "sleeper" | "mfl" | "fantrax" —
+     so the copy below can name the platform the user is actually on rather than naming Sleeper at
+     someone drafting on MyFantasyLeague. */
+  const livePlatform = (platformSyncsPicks(connectedPlatform) && draftMode === connectedPlatform
+    && !!(cfg.connect && cfg.connect.leagueId) && hasBackend) ? connectedPlatform : null;
+  const liveOn = !!livePlatform;
+  const pm = PLATFORM_META[livePlatform] || null;
+  const livePlatformName = (pm && (pm.short || pm.name)) || "the platform";
   // One-time fetch of team names + Sleeper usernames — runs even when the draft is COMPLETE (the live
   // sync below stops once `done`, so without this a finished league would never load owner names).
   //
@@ -26201,13 +26263,19 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     return () => { alive = false; };
   }, [cfg.connect && cfg.connect.leagueId, done]);
   useEffect(() => {
-    if (!sleeperLive || done) return;
+    if (!liveOn || done) return;
     let alive = true;
     let draftIdCache = (cfg.connect && cfg.connect.draftId) || null; // learned on first fast poll
     let sinceHeavy = 0; // poll counter — do a full /draft refresh occasionally for names/trades/rosters
     // Heavy refresh: names, owners, traded picks, rosters/keepers. These change rarely, so we only do this
     // every ~15th fast poll (~30s) instead of every tick.
+    // ⚠ SLEEPER ONLY, AND NOT BECAUSE OF AN OVERSIGHT. Neither MFL nor Fantrax publishes traded picks or
+    //   live owner names in a payload that is cheap to re-fetch — the only thing either has is the full
+    //   league import, which is far too heavy to run every thirty seconds. Their team names and order come
+    //   across at import time and stay put; calling the import on a loop to re-learn what has not changed
+    //   would spend most of the poll budget on it.
     const heavyRefresh = async () => {
+      if (livePlatform !== "sleeper") return;
       try {
         const d = await api.sleeperDraft(cfg.connect.leagueId, cfg.connect.username);
         if (!alive) return;
@@ -26228,11 +26296,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         }
       } catch (e) { /* keep last-known context */ }
     };
-    // Fast poll: picks + clock only. This is the near-instant path — a tiny payload and ~2 Sleeper calls
-    // (draft meta + picks), with the big player list served from the backend's in-process cache.
+    // Fast poll: picks + clock only. This is the near-instant path — a tiny payload and ~2 upstream calls,
+    // with the big player list served from the backend's in-process cache.
+    const totalPicks = (cfg.teams || 0) * (cfg.rounds || 0) || null;
     const pull = async () => {
       try {
-        const d = await api.sleeperPicks(cfg.connect.leagueId, draftIdCache);
+        const d = await livePicksFor(livePlatform, cfg.connect, draftIdCache, totalPicks);
         if (!alive) return;
         if (d.draft_id) draftIdCache = d.draft_id;
         const mapped = [];
@@ -26294,7 +26363,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           return a === b ? prev : forcedAhead;
         });
         setSyncState({ status: d.status, lastAt: Date.now(), error: null });
-        setLiveSlots((prev) => { const next = JSON.stringify(slotTeam); return prev && JSON.stringify(prev) === next ? prev : slotTeam; });
+        /* ⚠ AN EMPTY MAP MUST NOT WIPE A GOOD ONE. Fantrax's pick feed names a team we can't always resolve
+           to a slot, so slotTeam can legitimately come back empty on a platform where the import already
+           established who sits where. Overwriting with {} would drop every pick's team attribution and the
+           board would re-derive it from the raw order, silently misfiling any pick that isn't in seat
+           order. Nothing to say is not the same as saying nothing is there. */
+        setLiveSlots((prev) => {
+          if (!Object.keys(slotTeam).length && prev && Object.keys(prev).length) return prev;
+          const next = JSON.stringify(slotTeam);
+          return prev && JSON.stringify(prev) === next ? prev : slotTeam;
+        });
         if (d.pickDeadlineMs && d.serverNowMs) setLiveClock({ deadlineMs: d.pickDeadlineMs, timerSec: d.pickTimerSec || 0, skewMs: Date.now() - d.serverNowMs });
         else setLiveClock(d.pickTimerSec ? { deadlineMs: null, timerSec: d.pickTimerSec, skewMs: 0 } : null);
         // Decide the new board (and any local-ahead/conflict changes) from the CURRENT snapshot, with NO nested
@@ -26346,11 +26424,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         if (alive) setSyncState((s) => ({ ...s, error: "Sync paused — retrying…" }));
       }
     };
-    heavyRefresh(); // one full context load up front (names/trades)
+    heavyRefresh(); // one full context load up front (names/trades) — Sleeper only, see above
     pull();          // immediate first pick pull
-    const iv = setInterval(pull, 2000); // fast: ~2s
+    const iv = setInterval(pull, LIVE_POLL_MS[livePlatform] || 2000);
     return () => { alive = false; clearInterval(iv); };
-  }, [sleeperLive, done, cfg, nameToId, hypoMode, hypoBase]);
+  }, [livePlatform, done, cfg, nameToId, hypoMode, hypoBase]);
 
   // Which positions the team ON THE CLOCK can no longer draft, because the league sets an explicit maximum and
   // they've hit it. Only meaningful when the league actually defines caps — most don't, and we don't want to
@@ -26397,7 +26475,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     setPicks((prev) => [...prev, id]);
     // In a live-connected draft (not scenario mode), a manual pick is a local fail-safe entry that Sleeper
     // hasn't reported yet — track it so the sync preserves it instead of reverting.
-    if (sleeperLive && !hypoMode) setLocalAhead((n) => n + 1);
+    if (liveOn && !hypoMode) setLocalAhead((n) => n + 1);
     setSearch(""); setTip(null);
   };
   // ⭐ UNDO REOPENS A FINISHED DRAFT. `done` is `picks.length >= TOTAL || endedEarly`, so removing a pick
@@ -26406,7 +26484,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const undo = () => {
     setPaused(true); setTip(null); setEndedEarly(false);
     setPicks((p) => p.slice(0, -1)); setPreds((p) => p.slice(0, -1));
-    if (sleeperLive && !hypoMode) setLocalAhead((n) => Math.max(0, n - 1));
+    if (liveOn && !hypoMode) setLocalAhead((n) => Math.max(0, n - 1));
   };
   // Discard local fail-safe picks and snap back to exactly what Sleeper reports.
   const revertToLive = () => { setLiveConflict(null); setLocalAhead(0); firstLiveSyncDone.current = false; };
@@ -27298,7 +27376,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const onResize = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(measure); };
     window.addEventListener("resize", onResize);
     return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", onResize); };
-  }, [tab, done, hypoMode, sleeperLive]);
+  }, [tab, done, hypoMode, liveOn]);
 
 
   // ⭐⭐⭐ THE HUB'S FOUR CHECKS, LIFTED OUT OF THE PAGE AND PUT BEHIND BUTTONS (29i).
@@ -28911,7 +28989,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <i className="ti ti-pencil" style={{ fontSize: 13 }} aria-hidden="true" />Edit picks
           </button>
         )}
-        {!done && !hypoMode && sleeperLive && (
+        {!done && !hypoMode && liveOn && (
           <button onClick={startHypo}
             onMouseEnter={(e) => showTip(e, [
               { kind: "take", tone: "good", x: "Explore a scenario" },
@@ -28983,11 +29061,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           <button className="btn btn-mini" style={{ borderColor: "var(--gold)", color: "var(--gold)" }} onClick={() => setLiveConflict(null)}>Got it</button>
         </div>
       )}
-      {!done && !hypoMode && !liveConflict && sleeperLive && localAhead > 0 && (
+      {!done && !hypoMode && !liveConflict && liveOn && localAhead > 0 && (
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 16px", flexWrap: "wrap", background: "rgba(224,166,60,.08)", borderBottom: "1px solid var(--line)" }}>
           <i className="ti ti-hand-finger" style={{ fontSize: 14, color: "var(--gold)" }} aria-hidden="true" />
           <span style={{ fontSize: 12, color: "var(--mut)" }}>
-            You've entered <b style={{ color: "var(--gold)" }}>{localAhead}</b> pick{localAhead === 1 ? "" : "s"} manually (Sleeper hasn't reported {localAhead === 1 ? "it" : "them"} yet). They'll be confirmed automatically, or you can revert.
+            You've entered <b style={{ color: "var(--gold)" }}>{localAhead}</b> pick{localAhead === 1 ? "" : "s"} manually ({livePlatformName} hasn't reported {localAhead === 1 ? "it" : "them"} yet). They'll be confirmed automatically, or you can revert.
           </span>
           <div style={{ flex: 1 }} />
           <button className="btn btn-mini" onClick={undo} title="Undo the last manual pick">Undo last</button>
@@ -29800,7 +29878,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   </button>
                 ))}
               </div>
-              {draftMode !== "manual" && <div className="mut" style={{ fontSize: 11, marginTop: 10, lineHeight: 1.45 }}><i className="ti ti-info-circle" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />{draftMode === "sleeper" && sleeperLive ? "Sleeper sync is live — picks made in your Sleeper draft flow in automatically every few seconds. You can also enter a pick manually if needed." : "Live auto-sync is Sleeper-only. On any other platform, enter each pick here as it happens — the engine advises in real time exactly the same way."}</div>}
+              {draftMode !== "manual" && <div className="mut" style={{ fontSize: 11, marginTop: 10, lineHeight: 1.45 }} data-modehelp><i className="ti ti-info-circle" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />{liveOn
+                ? `${livePlatformName} sync is live — picks made in your ${livePlatformName} draft flow in automatically every few seconds. You can also enter a pick manually if needed.`
+                /* ⚠ NAMES THE THREE, RATHER THAN SAYING "SLEEPER ONLY". It said Sleeper-only for as long as
+                   that was true; saying it now would be the same false statement in the other direction,
+                   and someone on MFL reading it would go and enter every pick by hand for no reason. */
+                : "Live auto-sync works on Sleeper, MyFantasyLeague and Fantrax — the three platforms that publish a draft feed. On any other platform, enter each pick here as it happens and the engine advises in real time exactly the same way."}</div>}
             </div>
           </div>
         )}
@@ -29823,7 +29906,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 </div>
                 <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>
                   {syncs
-                    ? "We read your Sleeper draft as it happens and advise in real time — you still make each pick inside Sleeper. Prefer to type picks yourself instead?"
+                    /* ⚠ NAME THE PLATFORM THE USER IS ON. This sentence said "Sleeper" twice while sitting
+                       under a heading that said MyFantasyLeague, which reads as a bug even when the sync
+                       works — and the whole reason this panel was rewritten in 29al was copy that named
+                       something other than what was happening. */
+                    ? `We read your ${pname} draft as it happens and advise in real time — you still make each pick inside ${pname}. Prefer to type picks yourself instead?`
                     : `${pname} has no live pick feed, so nothing arrives on its own. Type each pick here as it happens and the engine advises in real time exactly the same way — your teams, scoring, roster and draft order all came across already.`}
                 </div>
               </div>

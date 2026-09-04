@@ -281,17 +281,26 @@ export const api = {
   async espnPrivate({ leagueId, season, espnS2, swid, teamId }) {
     return call('/api/connect/espn/private', { method: 'POST', body: { league_id: leagueId, season, espn_s2: espnS2, swid, team_id: teamId } });
   },
+  /* ⚠⚠⚠ MFL AND FANTRAX ARE POSTS FOR THE SAME REASON THE ESPN PRIVATE IMPORT IS ONE, only more so.
+     An MFL league API key and a Fantrax Secret ID are credentials, and these two platforms are the ones
+     the DRAFT ROOM POLLS. In a query string the credential would be written into an access log every
+     couple of seconds for three hours — thousands of times per draft, per user — and into browser
+     history besides. In a body it is sent and gone.
+     ⚠ THESE USED TO BE GETs. If you are reading this while adding a sixth platform: a credential in a
+       URL is never acceptable, however convenient the call site. */
   async mflLeague(leagueId, season, apiKey) {
-    return call(`/api/connect/mfl/league?league_id=${encodeURIComponent(leagueId)}${season ? `&season=${encodeURIComponent(season)}` : ''}${apiKey ? `&api_key=${encodeURIComponent(apiKey)}` : ''}`);
+    return call('/api/connect/mfl/league', { method: 'POST', body: { league_id: leagueId, season: season || null, api_key: apiKey || null } });
   },
   async mflPicks(leagueId, season, apiKey) {
-    return call(`/api/connect/mfl/picks?league_id=${encodeURIComponent(leagueId)}${season ? `&season=${encodeURIComponent(season)}` : ''}${apiKey ? `&api_key=${encodeURIComponent(apiKey)}` : ''}`);
+    return call('/api/connect/mfl/picks', { method: 'POST', body: { league_id: leagueId, season: season || null, api_key: apiKey || null } });
   },
-  async fantraxLeagues(secretId) { return call(`/api/connect/fantrax/leagues?secret_id=${encodeURIComponent(secretId)}`); },
+  async fantraxLeagues(secretId) { return call('/api/connect/fantrax/leagues', { method: 'POST', body: { secret_id: secretId } }); },
   async fantraxLeague(leagueId, secretId, name) {
-    return call(`/api/connect/fantrax/league?league_id=${encodeURIComponent(leagueId)}&secret_id=${encodeURIComponent(secretId || '')}${name ? `&name=${encodeURIComponent(name)}` : ''}`);
+    return call('/api/connect/fantrax/league', { method: 'POST', body: { league_id: leagueId, secret_id: secretId || null, name: name || null } });
   },
-  async fantraxPicks(leagueId, secretId) { return call(`/api/connect/fantrax/picks?league_id=${encodeURIComponent(leagueId)}&secret_id=${encodeURIComponent(secretId || '')}`); },
+  async fantraxPicks(leagueId, secretId) {
+    return call('/api/connect/fantrax/picks', { method: 'POST', body: { league_id: leagueId, secret_id: secretId || null } });
+  },
   async yahooStatus() { return call('/api/connect/yahoo/status'); },
   async yahooAuthUrl() { return call('/api/connect/yahoo/auth-url'); },
   async yahooExchange(code) { return call('/api/connect/yahoo/exchange', { method: 'POST', body: { code } }); },
