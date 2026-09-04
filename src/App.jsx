@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29ak";
+const BUILD_TAG = "2026.07.29am";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -7519,6 +7519,15 @@ select.gs{cursor:pointer}
 select.gs:hover{border-color:var(--gold)}
 .btn:hover{border-color:var(--gold);background:#15140d;transform:translateY(-1px);box-shadow:0 2px 10px #0006}
 .btn:active{transform:translateY(0)}
+/* 29am - a disabled control must LOOK disabled. There was no rule for this anywhere, so a button that
+   cannot be clicked still took the full hover treatment: gold border, a lift, a shadow, a pointer cursor.
+   A beta user hit exactly that on sign-up and reported it as the site being broken - "the create account
+   button lit up when hovered over, but didn't take me anywhere... I tried it 3-4 times". He was reading the
+   button correctly; the button was lying. These rules win over the hover ones because they come after and
+   carry the same specificity, and :disabled only ever matches a control that genuinely cannot be used. */
+.btn:disabled,.btn-mini:disabled,.btn-gold:disabled,button:disabled{cursor:not-allowed;opacity:.55}
+.btn:disabled:hover,.btn-mini:disabled:hover,.btn-gold:disabled:hover{transform:none;box-shadow:none;filter:none;border-color:var(--line);background:var(--panel2)}
+.btn-gold:disabled,.btn-gold:disabled:hover{background:var(--gold);filter:saturate(.45)}
 .btn:focus-visible{outline:2px solid var(--gold);outline-offset:1px}
 .btn-gold{background:var(--gold);color:#151002;border:none;font-weight:700}
 .btn-gold:hover{filter:brightness(1.08);border-color:transparent;background:var(--gold2);box-shadow:0 3px 16px rgba(224,166,60,.4)}
@@ -8697,6 +8706,7 @@ export default function App() {
     } catch { return null; }
   });
   const [authError, setAuthError] = useState(null);
+  const [authCode, setAuthCode] = useState(null);   // machine-readable reason, so the modal can offer a way out
   const [leagues, setLeagues] = useState([]);
   const [activeId, setActiveId] = useState(nav0.activeId || null);
   // ⭐ 29q — set when the draft plan sends the user here to write a strategy; cleared once consumed.
@@ -9268,7 +9278,7 @@ export default function App() {
     if (hasBackend) {
       try {
         const u = mode === "signup" ? await api.signup(email, password) : await api.signin(email, password);
-        setAuthError(null);
+        setAuthError(null); setAuthCode(null);
         const admin = isAdminEmail(u.email || email);
         const srvUser = migrateRankSets({ ...u, rankSets: u.rankSets || [], admin, paid: u.paid || admin });
         // Signing in REPLACES by default — a different account must not inherit the last user's boards. But
@@ -9290,7 +9300,16 @@ export default function App() {
           // Merge (union) the server blob with whatever is local so NEITHER side loses leagues: a league made
           // on another device arrives from the server, and a league made locally-but-never-synced is preserved
           // and pushed up. Server copies win ties (passed first to the merge), fresher drafts win by pick count.
-          const localNow = (leagues && leagues.length) ? leagues : ((localBlob && Array.isArray(localBlob.leagues)) ? localBlob.leagues : []);
+          /* ⭐⭐⭐ 29am — THE WARNING FOUR LINES ABOVE WAS ABOUT THIS EXACT LINE, AND IT WAS STILL HERE.
+             `localBlob` is a `let` inside the BOOT effect; naming it here is a ReferenceError, and it is
+             thrown INSIDE this try — whose catch reads "server state unavailable — local copy stands" and
+             says nothing. So the failure looked like a quiet fallback and was actually a crash: the throw
+             happens before `setLeagues`, so signing in on a second device restored NONE of your leagues from
+             the server, every time, silently. The previous fix corrected one reference and the comment
+             warning about it, and missed the reference the comment was warning about.
+             The live `leagues` state is this device's copy and is genuinely in scope, which is all this
+             needed; there is no second source to consult. */
+          const localNow = (leagues && leagues.length) ? leagues : [];
           const srvLeagues = srv && Array.isArray(srv.leagues) ? srv.leagues : [];
           const mergedLeagues = mergeLeaguesById(srvLeagues, localNow);
           const mergedMocks = mergeLeaguesById(srv && Array.isArray(srv.funMocks) ? srv.funMocks : [], funMocks || []);
@@ -9304,6 +9323,7 @@ export default function App() {
         persist({ user: merged });
         return merged;
       } catch (e) {
+        setAuthCode((e && e.data && e.data.code) || null);
         setAuthError(e.message === "NO_BACKEND" ? "Backend not reachable" : e.message === "BACKEND_WAKING" ? "The server is waking up (it sleeps when idle). Give it a few seconds and try again." : (e.data?.error || e.message || "Sign-in failed"));
         throw e;
       }
@@ -9974,10 +9994,10 @@ export default function App() {
         setUser(migrateRankSets({ ...u, rankSets: u.rankSets || [], admin, paid: u.paid || admin }));
         setResetToken(null); setAuthOpen(false); setRoute("home");
       }} />}
-      {authOpen && <AuthModal hasBackend={hasBackend} authError={authError} onClose={() => { setAuthOpen(false); setAuthError(null); }} onSignUp={async (email, password, mode) => {
+      {authOpen && <AuthModal hasBackend={hasBackend} authError={authError} authCode={authCode} onClearAuthError={() => { setAuthError(null); setAuthCode(null); }} onClose={() => { setAuthOpen(false); setAuthError(null); setAuthCode(null); }} onSignUp={async (email, password, mode) => {
         try {
           const u = await signUp(email, password, mode);
-          setAuthOpen(false); setAuthError(null);
+          setAuthOpen(false); setAuthError(null); setAuthCode(null);
           setRoute(u && u.paid ? "home" : "checkout");
         } catch (e) { /* error shown in modal */ }
       }} />}
@@ -17900,7 +17920,7 @@ function ResetPasswordModal({ token, onClose, onDone }) {
   );
 }
 
-function AuthModal({ onClose, onSignUp, hasBackend, authError }) {
+function AuthModal({ onClose, onSignUp, hasBackend, authError, authCode, onClearAuthError }) {
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");        // confirm password (signup only)
@@ -17943,8 +17963,44 @@ function AuthModal({ onClose, onSignUp, hasBackend, authError }) {
   };
   const title = mode === "signup" ? "Create your account" : mode === "forgotpw" ? "Reset your password" : mode === "forgotuser" ? "Find your username" : "Sign in";
   const pwMismatch = mode === "signup" && pw2.length > 0 && pw !== pw2;
-  const canSubmit = email.includes("@") && pw.length >= 6 && (mode !== "signup" || pw === pw2);
-  const submit = async () => { if (!canSubmit) return; setBusy(true); try { await onSignUp(email, pw, mode); } finally { setBusy(false); } };
+  /* ⭐⭐⭐ 29am — THE CREATE-ACCOUNT BUTTON REFUSED IN SILENCE, AND A REAL USER LOST AN EVENING TO IT.
+       "I put my email (along with password) under 'sign up', clicked on 'create account' but nothing
+        happened. I tried it 3-4 times and my Chrome browser didn't even 'spin'... the create account button
+        lit up when hovered over, but didn't take me anywhere."
+     Every word of that is the symptom of a DISABLED button, and it was one. `canSubmit` required a matching
+     confirmation field, and the button was disabled until it got one — but the "Passwords don't match"
+     warning only rendered once `pw2` had something in it. So the single most likely mistake, leaving the
+     confirm box empty (he says "email along with password", singular), produced a form with no message, no
+     request, no spinner, and a button that still lit up under the cursor because nothing styled :disabled.
+     Three separate things had to be true for a person to be stuck, and they all were.
+     ⚠ THE FIX IS NOT A BETTER DISABLED MESSAGE. It is that a primary action should not be disabled for
+       validation at all. Disabled means "this control is inert right now" — correct while a request is in
+       flight, wrong as a way of saying "you missed a field", because the button is the only thing the user
+       is looking at and it cannot speak. Let the click through, then say exactly what is missing and put the
+       cursor in the field that is missing it. A refusal the user can read is not a failure; a refusal they
+       cannot is the site being broken. */
+  const emailRef = useRef(null), pwRef = useRef(null), pw2Ref = useRef(null);
+  const [formErr, setFormErr] = useState(null);
+  const firstProblem = () => {
+    const e = email.trim();
+    if (!e) return ["Enter the email address you want to use.", emailRef];
+    if (!e.includes("@") || !/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(e)) return ["That doesn't look like an email address — check it over.", emailRef];
+    if (!pw) return ["Choose a password.", pwRef];
+    if (pw.length < 6) return [`Passwords need at least 6 characters — that one has ${pw.length}.`, pwRef];
+    if (mode === "signup" && !pw2) return ["Type your password a second time to confirm it.", pw2Ref];
+    if (mode === "signup" && pw !== pw2) return ["Those two passwords don't match.", pw2Ref];
+    return null;
+  };
+  const submit = async () => {
+    const problem = firstProblem();
+    if (problem) {
+      setFormErr(problem[0]);
+      try { problem[1].current && problem[1].current.focus(); } catch (e) {}
+      return;
+    }
+    setFormErr(null); setBusy(true);
+    try { await onSignUp(email.trim(), pw, mode); } finally { setBusy(false); }
+  };
   // a small reusable eye button for the password fields
   const EyeBtn = () => (
     <button type="button" tabIndex={-1} onClick={() => setShowPw((s) => !s)} aria-label={showPw ? "Hide password" : "Show password"}
@@ -17959,21 +18015,36 @@ function AuthModal({ onClose, onSignUp, hasBackend, authError }) {
 
         {(mode === "signin" || mode === "signup") && <>
           <div className="mut" style={{ fontSize: 12, marginBottom: 14 }}>{hasBackend ? "Your account is secured with hashed credentials." : "Demo mode — accounts are stored locally in your browser. Connect the backend for real accounts."}</div>
-          <input className="gs" style={{ width: "100%", marginBottom: 8 }} placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input ref={emailRef} className="gs" style={{ width: "100%", marginBottom: 8 }} placeholder="Email" value={email} onChange={(e) => { setEmail(e.target.value); setFormErr(null); }} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
           <div style={{ position: "relative", marginBottom: mode === "signup" ? 8 : 14 }}>
-            <input className="gs" type={showPw ? "text" : "password"} style={{ width: "100%", paddingRight: 34 }} placeholder="Password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && canSubmit) submit(); }} />
+            <input ref={pwRef} className="gs" type={showPw ? "text" : "password"} style={{ width: "100%", paddingRight: 34 }} placeholder={mode === "signup" ? "Password (6 characters or more)" : "Password"} value={pw} onChange={(e) => { setPw(e.target.value); setFormErr(null); }} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
             <EyeBtn />
           </div>
           {mode === "signup" && <>
             <div style={{ position: "relative", marginBottom: 6 }}>
-              <input className="gs" type={showPw ? "text" : "password"} style={{ width: "100%", paddingRight: 34, borderColor: pwMismatch ? "var(--red)" : undefined }} placeholder="Confirm password" value={pw2} onChange={(e) => setPw2(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && canSubmit) submit(); }} />
+              <input ref={pw2Ref} className="gs" type={showPw ? "text" : "password"} style={{ width: "100%", paddingRight: 34, borderColor: pwMismatch ? "var(--red)" : undefined }} placeholder="Confirm password" value={pw2} onChange={(e) => { setPw2(e.target.value); setFormErr(null); }} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
               <EyeBtn />
             </div>
             {pwMismatch && <div style={{ color: "var(--red)", fontSize: 11.5, marginBottom: 8 }}>Passwords don't match</div>}
             {!pwMismatch && <div style={{ height: 6 }} />}
           </>}
-          {authError && <div style={{ color: "var(--red)", fontSize: 12, marginBottom: 10 }}>{authError}</div>}
-          <button className="btn btn-gold" style={{ width: "100%", padding: 10 }} disabled={busy || !canSubmit} onClick={submit}>{busy ? "…" : mode === "signup" ? "Create account" : "Sign in"}</button>
+          {formErr && <div data-authformerr style={{ color: "var(--red)", fontSize: 12, marginBottom: 10, lineHeight: 1.45 }}>{formErr}</div>}
+          {/* ⭐⭐ "THAT EMAIL ALREADY EXISTS" IS A DEAD END UNLESS IT COMES WITH THE WAY OUT.
+              The beta user's account had been created FOR him, so signing up was always going to collide —
+              and the honest next step is not "try again", it is "sign in instead" or "you don't know the
+              password, reset it". Both are one click, with the address he already typed carried across. */}
+          {authError && authCode === "EMAIL_EXISTS" ? (
+            <div data-authexists style={{ marginBottom: 10, padding: "10px 12px", borderRadius: 8, border: "1px solid var(--gold)", background: "rgba(224,166,60,.08)" }}>
+              <div style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 8 }}>
+                <b style={{ color: "var(--gold)" }}>You already have an account</b> with {email.trim() || "that address"} — so there's nothing to create. Sign in with it, or reset the password if you don't have one yet.
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button className="btn btn-gold btn-mini" onClick={() => { if (onClearAuthError) onClearAuthError(); setFormErr(null); setMode("signin"); setPw2(""); }}>Sign in instead</button>
+                <button className="btn btn-mini" onClick={() => { if (onClearAuthError) onClearAuthError(); setFormErr(null); setSent(false); setNoAcct(false); setResetErr(null); setMode("forgotpw"); }}>Send me a password link</button>
+              </div>
+            </div>
+          ) : authError ? <div data-autherr style={{ color: "var(--red)", fontSize: 12, marginBottom: 10 }}>{authError}</div> : null}
+          <button data-authsubmit className="btn btn-gold" style={{ width: "100%", padding: 10 }} disabled={busy} onClick={submit}>{busy ? "…" : mode === "signup" ? "Create account" : "Sign in"}</button>
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, gap: 8, flexWrap: "wrap" }}>
             {mode === "signin"
               ? <button className="btn-link" style={{ background: "none", border: "none", color: "var(--gold)", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", padding: 0 }} onClick={() => { setMode("signup"); setPw(""); setPw2(""); }}>Need an account? Sign up</button>
@@ -23241,6 +23312,18 @@ function InDraftTrends({ cfg, players, draftedSet, allLeagues, allFunMocks, onCl
 
 
 
+/* Is a draft-day snapshot one we should still trust? A snapshot locks ADP/VBD/projections by name and
+   overrides live values forever after, so a bad one is permanent — which makes "should we believe it" a
+   question worth asking in exactly one place, because the reader and the writer must answer it identically.
+   A snapshot captured from a materially smaller pool than the league now sees was taken from the built-in
+   placeholder board rather than the real pack (see the writer's dataVersion guard). `n` is stamped by the
+   writer; snapshots from before that are judged on how much of the current board they cover. */
+function snapshotIsStale(snap, poolLen) {
+  if (!snap || snap.v !== 2 || !poolLen) return false;
+  if (snap.n == null) return Object.keys(snap.p || {}).length < Math.min(450, poolLen) * 0.6;
+  return poolLen > snap.n * 1.35;
+}
+
 function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQueue, onSaveAvoid, onSaveStrategy, onSaveDraftQueue, onSaveSnap, onExit, exitLabel, onBuy, onSettings, onEditRanks, onEditRankSet, onDeleteRankSet, onRanksOff, onUseRankSet, onColPrefs, onSaveInRoomRanks, onUpdate, dataVersion = 0, allLeagues, allFunMocks, noHoverAnim, onToggleHoverAnim }) {
   const cfg = league.cfg;
   // Live per-pick ownership from a connected platform (Sleeper draft_slot). Declared here so it can
@@ -23474,8 +23557,31 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // is connected, adopt it; otherwise ask on arrival (default manual).
   const mockLike = isMock || isDemo;
   const connectedPlatform = cfg.connect && cfg.connect.platform ? cfg.connect.platform : null;
-  const defaultOfficialMode = connectedPlatform === "sleeper" ? "sleeper" : connectedPlatform ? connectedPlatform : "manual";
-  const [draftMode, setDraftModeRaw] = useState(cfg.draftMode || (mockLike ? "auto" : defaultOfficialMode)); // auto | manual | sleeper | espn | yahoo | ...
+  /* ⭐⭐⭐ 29al — ONLY A PLATFORM THIS ROOM CAN ACTUALLY POLL MAY CLAIM A LIVE DRAFT MODE.
+       Trey: "HUB window shows 'ESPN Connected - picks come in as you enter them' but this platform I don't
+              think has the live picks. Should be forced to be Manual."
+     He is right, and the mode was the cause rather than the copy. `defaultOfficialMode` handed a connected
+     league a draft mode NAMED AFTER ITS PLATFORM — so an ESPN import sat in mode "espn", a mode with no sync
+     behind it anywhere in this file. The room then presented it as a connection ("ESPN connected", green,
+     plugged-in icon, "selections flow in from the platform"), which is exactly false: ESPN has no pick feed
+     and every pick has to be typed. On draft night that is the difference between watching the board fill
+     itself and quietly falling ten picks behind while you wait for it to.
+     ⚠ PLATFORMS[].live IS NOT THE RIGHT TEST HERE, WHICH IS WHY THIS IS ITS OWN LIST. That flag describes
+       what the CONNECTOR can do — MyFantasyLeague and Fantrax both have real pick APIs and the backend and
+       api.js both have the calls. But the draft ROOM polls exactly one of them (search: api.sleeperPicks),
+       so on any other platform the picks do not arrive however capable the connector is. This constant is
+       what the room actually does, and mixing the two up is how the wrong promise got made in the first
+       place. When MFL/Fantrax polling is wired into the room, they get added HERE, and the UI follows.
+     ⚠ AND IT MUST NORMALISE WHAT IS ALREADY SAVED. `cfg.draftMode` persists, so every ESPN league created
+       before this build carries draftMode:"espn" on disk. Reading it back unchanged would leave exactly the
+       leagues that hit the bug still showing the false banner. */
+  const ROOM_SYNCS_PICKS = ["sleeper"];
+  const platformSyncsPicks = (id) => !!id && ROOM_SYNCS_PICKS.includes(id);
+  const defaultOfficialMode = platformSyncsPicks(connectedPlatform) ? connectedPlatform : "manual";
+  const savedMode = cfg.draftMode && cfg.draftMode !== "auto" && cfg.draftMode !== "manual" && !platformSyncsPicks(cfg.draftMode)
+    ? "manual"                       // a saved platform mode the room cannot sync IS manual entry, so say so
+    : cfg.draftMode;
+  const [draftMode, setDraftModeRaw] = useState(savedMode || (mockLike ? "auto" : defaultOfficialMode)); // auto | manual | sleeper
   const setDraftMode = (m) => { setDraftModeRaw(m); if (!mockLike && onSettings) onSettings({ ...cfg, draftMode: m }); };
   const autoSim = draftMode === "auto"; // engine fills opponent picks only in auto mode
   // Only prompt an official draft for its mode when we genuinely don't know (no platform connected
@@ -24035,7 +24141,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     // forever judged against 2026 draft-day numbers, not whatever ADP looks like months later. Keyed by
     // normalized name so it survives pool rebuilds/id shifts. (Tier chips still come from the live build;
     // the graded numbers — the part that matters — are locked.)
-    const snapP = league.snap && league.snap.v === 2 && league.snap.p; // v1 snaps could hold wrong-format data — ignore
+    /* ⚠ 29al — AND A SNAPSHOT TAKEN FROM THE PLACEHOLDER POOL MUST NOT BE HONOURED, OR THE FIX ABOVE ONLY
+       HELPS DRAFTS THAT HAVE NOT HAPPENED YET. Every league that already locked its era off the built-in
+       fallback carries that snapshot on disk, and this reader would go on overriding real projections with
+       placeholder ones forever — the write guard makes it permanent. So distrust a snapshot that was
+       demonstrably captured from a smaller board than this league is now looking at, exactly as v1 snapshots
+       are distrusted a line below. The writer stamps `n`; a snapshot from before that (or one whose pool was
+       a third smaller than today's) is treated as absent, which makes the writer above replace it with a
+       good one on the next render. Self-healing, with no league to delete and nothing for the user to do. */
+    const snapRaw = league.snap && league.snap.v === 2 ? league.snap : null;
+    const snapP = snapRaw && !snapshotIsStale(snapRaw, base.length) && snapRaw.p; // v1 snaps could hold wrong-format data — ignore
     if (!snapP) return base;
     return base.map((p) => {
       const s = snapP[normName(p.name)];
@@ -24546,7 +24661,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // snapshots taken long after a pre-feature draft ended, so the UI can be honest about late locking.
   useEffect(() => {
     if (!started || picks.length < 1 || isDemo || !onSaveSnap || !players.length) return;
-    if (league.snap && league.snap.v === 2) return; // already have a trustworthy snapshot
+    /* ⭐⭐⭐ 29al — DO NOT FREEZE THE ERA FROM THE PLACEHOLDER POOL.
+       This effect exists to lock draft-day values so a refresh mid-draft cannot silently move the board, and
+       the overlay guard below already protects it from a wrong-FORMAT pool. It had no protection at all from
+       a wrong-SIZE one. The app paints instantly off a 277-player built-in fallback and swaps in the real
+       pack a beat later (see the `players` memo and `dataVersion`), so a first pick entered inside that
+       window — a fast connection is not required, only a fast user — freezes the placeholder's projections
+       and ADP for that league PERMANENTLY. The reader below then overrides the real numbers with them for
+       the rest of the draft and every reopening after it: low, flat projections, a truncated board, and
+       recommendations drawn from whatever survived. There is no way back, either, because the write is
+       guarded on `league.snap` already existing.
+       `dataVersion` bumps exactly when the live pack lands, so it is the precise question to ask — but only
+       where a pack is coming at all. With no backend the built-in pool IS the real pool and locking it is
+       correct. */
+    if (hasBackend && !dataVersion) return;
+    // ⚠ THE SAME TEST THE READER USES. A snapshot the reader has decided to ignore must be REWRITTEN here,
+    //   or the league is stuck with live values it was told to lock and a stale record it never replaces.
+    if (league.snap && league.snap.v === 2 && !snapshotIsStale(league.snap, players.length)) return;
     // CRITICAL RACE GUARD: the per-draft format-correct ADP overlay is fetched ASYNC — on first render
     // the board may still show a DIFFERENT format's ADP (whatever league was viewed last, e.g. TE-prem).
     // Snapshotting before the overlay settles froze those wrong-format values and then permanently
@@ -24577,8 +24708,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       ];
     });
     const retro = league.lastPickAt ? (Date.now() - league.lastPickAt > 36 * 3600 * 1000) : false;
-    onSaveSnap({ v: 2, fmt: hasBackend ? backendFormatKey(cfg) : "local", at: Date.now(), retro, p });
-  }, [started, done, isDemo, league.snap, players, sortedAdp, picks, onSaveSnap]);
+    // `n` records how big the pool was when this era was locked, so a snapshot taken from a smaller pool
+    // than the league now sees can be recognised later rather than trusted forever. See the reader.
+    onSaveSnap({ v: 2, fmt: hasBackend ? backendFormatKey(cfg) : "local", at: Date.now(), retro, n: players.length, p });
+  }, [started, done, isDemo, league.snap, players, sortedAdp, picks, onSaveSnap, dataVersion]);
   // Demo stops after a limited number of rounds (it's not "complete" — you must purchase to continue).
   const demoCap = isDemo && cfg.demoRounds ? cfg.demoRounds * TEAMS : null;
   const demoCapped = demoCap != null && picks.length >= demoCap && !user?.paid;
@@ -25337,7 +25470,19 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           excludedLine = sortedAdp
             .filter((p) => p && !draftedSet.has(p.id) && !inPool.has(p.id) && p.adp != null && p.adp <= pickNum + 6)
             .slice(0, 8)
-            .map((p) => `${p.name}(${p.pos},adp${p.adp},vbd${p.vbd},${(() => { try { return survivesToPick(p.id) ? "surv" : "GONE"; } catch (e) { return "?"; } })()}${(myCounts[p.pos] || 0) >= (capsOf(cfg)[p.pos] || 99) ? ",CAPPED" : ""})`)
+            /* ⚠ 29al — NAME EVERY REASON, NOT JUST THE TWO IT KNEW. This line is the only way to find out why a
+               good player is missing from the recommendation on a board I cannot see, and it reported just
+               survival and caps — so a player screened out for having no projection, or sitting on the
+               do-not-draft list, appeared here as "surv" with no explanation at all, which is worse than not
+               listing him. Every filter in `avail` gets a token. */
+            .map((p) => {
+              const why = [];
+              try { if (!survivesToPick(p.id)) why.push("GONE"); } catch (e) { why.push("?"); }
+              try { if (isGhost(p)) why.push("NOPROJ"); } catch (e) {}
+              try { if (isAvoided(p)) why.push("AVOIDED"); } catch (e) {}
+              if ((myCounts[p.pos] || 0) >= (capsOf(cfg)[p.pos] || 99)) why.push("CAPPED");
+              return `${p.name}(${p.pos},adp${p.adp},vbd${p.vbd},${why.length ? why.join("+") : "scored-lower"})`;
+            })
             .join("  ·  ");
         }
         // Everything is flattened to PLAIN STRINGS here, inside the try. The panel renders strings and nothing
@@ -29638,9 +29783,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 8 }}>
                 {[
-                  ["manual", "ti-keyboard", "Manual entry", "Type each pick as it happens. Works for any platform or an in-person draft."],
-                  ["sleeper", "ti-plug-connected", "Sync from Sleeper", "Picks flow in live from your Sleeper draft. You still select in Sleeper; we read it and advise."],
-                  ["espn", "ti-keyboard", "Other platform", "ESPN imports its settings if your league is public. Yahoo, CBS and the rest: enter settings once. Either way you type picks as they happen."],
+                  /* ⚠ 29al — THIS WAS THREE OPTIONS FOR TWO BEHAVIOURS. "Other platform" stored the mode as
+                     `espn` and then did precisely what "Manual entry" does — you type each pick — so the
+                     panel offered a choice that changes nothing, under a name that implies it does. Worse,
+                     the stored value was a platform name, which is what let the room greet an ESPN league
+                     with a connection banner. There are two ways picks reach this room and only two. */
+                  ["manual", "ti-keyboard", "I'll type each pick", "Works for any platform and for an in-person draft. Import your league's settings from ESPN, Yahoo, MyFantasyLeague or Fantrax first if you like — those bring the setup across, but their picks are still typed here."],
+                  ["sleeper", "ti-plug-connected", "Sync from Sleeper", "Picks flow in live from your Sleeper draft. You still select in Sleeper; we read it and advise. Sleeper is the only platform that feeds picks in."],
                 ].map(([m, icon, lbl, desc]) => (
                   <button key={m} onClick={() => setDraftMode(m)} className="bigact" style={{ textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", padding: 12, borderRadius: 10, border: `1.5px solid ${draftMode === m ? "var(--gold)" : "var(--line)"}`, background: draftMode === m ? "rgba(214,170,75,0.10)" : "var(--panel2)" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4 }}>
@@ -29655,18 +29804,34 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             </div>
           </div>
         )}
-        {!isMock && connectedPlatform && picks.length === 0 && (
+        {/* ⭐⭐⭐ 29al — TWO DIFFERENT FACTS WERE BEING TOLD IN ONE GREEN PANEL.
+            "Your league is linked" and "picks arrive by themselves" are separate claims, and for every
+            platform but Sleeper the first is true and the second is false. The panel asserted both, in green,
+            behind a plug icon — so an ESPN league was told "selections flow in from the platform" when
+            nothing flows in at all. Split them: the settings ARE imported and that is worth saying; the picks
+            are typed, and that is worth saying louder, because it is what draft night depends on. */}
+        {!isMock && connectedPlatform && picks.length === 0 && (() => {
+          const syncs = platformSyncsPicks(connectedPlatform);
+          const pname = (PLATFORMS.find((x) => x.id === connectedPlatform) || {}).name || "Platform";
+          return (
           <div style={{ padding: "12px 14px 0" }}>
-            <div className="panel" style={{ padding: 12, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", background: "#0d1410", borderColor: "var(--green)" }}>
-              <i className="ti ti-plug-connected" style={{ fontSize: 18, color: "var(--green)" }} aria-hidden="true" />
+            <div className="panel" data-connbanner={syncs ? "live" : "manual"} style={{ padding: 12, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", background: syncs ? "#0d1410" : "var(--panel2)", borderColor: syncs ? "var(--green)" : "var(--gold)" }}>
+              <i className={`ti ${syncs ? "ti-plug-connected" : "ti-keyboard"}`} style={{ fontSize: 18, color: syncs ? "var(--green)" : "var(--gold)" }} aria-hidden="true" />
               <div style={{ flex: "1 1 240px" }}>
-                <div style={{ fontWeight: 600, color: "var(--green)" }}>{(PLATFORMS.find((x) => x.id === connectedPlatform)?.name) || "Platform"} connected — picks come in {connectedPlatform === "sleeper" ? "live" : "as you enter them"}</div>
-                <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>{connectedPlatform === "sleeper" ? "We read your Sleeper draft as it happens and advise in real time — you still make each pick inside Sleeper." : "Your league is linked, so selections flow in from the platform. The engine advises; it never picks for the room."} Prefer to type picks yourself instead?</div>
+                <div style={{ fontWeight: 600, color: syncs ? "var(--green)" : "var(--gold)" }}>
+                  {syncs ? `${pname} connected — picks come in live` : `${pname} settings imported — you enter the picks`}
+                </div>
+                <div className="mut" style={{ fontSize: 12, lineHeight: 1.45 }}>
+                  {syncs
+                    ? "We read your Sleeper draft as it happens and advise in real time — you still make each pick inside Sleeper. Prefer to type picks yourself instead?"
+                    : `${pname} has no live pick feed, so nothing arrives on its own. Type each pick here as it happens and the engine advises in real time exactly the same way — your teams, scoring, roster and draft order all came across already.`}
+                </div>
               </div>
-              <button className="btn btn-mini" onClick={() => setDraftMode("manual")} style={{ borderColor: draftMode === "manual" ? "var(--gold)" : "var(--line)", color: draftMode === "manual" ? "var(--gold)" : "var(--ink)" }}>{draftMode === "manual" ? "✓ Manual entry" : "Switch to manual"}</button>
+              {syncs && <button className="btn btn-mini" onClick={() => setDraftMode("manual")} style={{ borderColor: draftMode === "manual" ? "var(--gold)" : "var(--line)", color: draftMode === "manual" ? "var(--gold)" : "var(--ink)" }}>{draftMode === "manual" ? "✓ Manual entry" : "Switch to manual"}</button>}
             </div>
           </div>
-        )}
+          );
+        })()}
         {isMock && hasSlot && cfg.slotRandomized && started && picks.length === 0 && (
           <div style={{ padding: "12px 14px 0" }}>
             <div className="panel" style={{ padding: 12, borderColor: "var(--gold)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", background: "#16120A" }}>
