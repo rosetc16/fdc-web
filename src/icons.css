@@ -89,7 +89,6 @@
 .ti-dice-5:before{content:"\f08f"}
 .ti-download:before{content:"\ea96"}
 .ti-edit:before{content:"\ea98"}
-.ti-equal:before{content:"\ee87"}
 .ti-eye:before{content:"\ea9a"}
 .ti-eye-off:before{content:"\ecf0"}
 .ti-file:before{content:"\eaa4"}
@@ -144,6 +143,7 @@
 .ti-pick:before{content:"\fafc"}
 .ti-player-play:before{content:"\ed46"}
 .ti-plug-connected:before{content:"\f00a"}
+.ti-plug-connected-x:before{content:"\f0a0"}
 .ti-plus:before{content:"\eb0b"}
 .ti-pointer:before{content:"\f265"}
 .ti-pool:before{content:"\ed91"}

@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29ao";
+const BUILD_TAG = "2026.07.29ap";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -23617,6 +23617,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [livePending, setLivePending] = useState(null); // {picks} captured from a real update while in hypo mode
   const [localAhead, setLocalAhead] = useState(0);      // # of manual picks made locally BEYOND Sleeper's live count (connected fail-safe)
   const [liveConflict, setLiveConflict] = useState(null); // {slot, localName, liveName} when Sleeper overrides a locally-made pick
+  // Picks the live feed reported that we could not match to a player. {n, placed, names} — see the pull.
+  const [liveUnmatched, setLiveUnmatched] = useState(null);
   // ⭐ A MOCK DEFAULTS TO FAST. Trey: "On Mock drafts, I just want to default to fast mode so that it goes
   // from your pick to your next pick. Right now, it's a bit confusing when you can click pick or not since it
   // might not be your pick." Both speeds already batch every CPU pick between your turns into one update, so
@@ -26378,6 +26380,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           mapped[o] = id;
         }
         LIVE_UNRESOLVED_PICKS = unresolved.length ? unresolved : null;
+        /* ⭐⭐⭐ 29ap — AND SAY SO ON THE SCREEN, NOT IN A HOVER ON THE BUILD NUMBER.
+           Until now the only trace of a pick the board could not place was a line inside the version
+           badge's tooltip — a thing nobody hovers, least of all mid-draft. That was survivable while
+           Sleeper was the only feed, because an unmatched Sleeper pick is a rare oddity (a filler entry,
+           an unusual name). It is NOT survivable now: MFL and Fantrax answer with platform player IDs and
+           the backend resolves them through each platform's own directory (src/lib/playerIds.js), and if
+           that directory ever answers in a shape the parser does not expect, EVERY pick arrives name-less.
+           The sync then reports itself perfectly healthy and the board fills with nothing — which is the
+           exact failure the whole feature was built to avoid, reached through the one path I cannot test
+           from here: the real API's payload shape.
+           ⚠ TWO DIFFERENT FAULTS, TWO DIFFERENT MESSAGES. A few unmatched picks is a data oddity you can
+             type around; NOTHING matching is a broken sync, and the honest thing to do is say so and hand
+             the user the manual path while there is still time to use it. */
+        const placed = mapped.filter((x) => x != null).length;
+        setLiveUnmatched(unresolved.length
+          ? { n: unresolved.length, placed, names: unresolved.slice(0, 4).map((u) => u.name).filter(Boolean) }
+          : null);
         // The array may now be sparse (holes where picks haven't happened). The rest of the app treats `picks`
         // as dense up to the current pick, so trim to the first hole: everything before it is settled.
         //
@@ -29085,7 +29104,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             if (TRUST_LIVE_ADP) lines.push({ kind: "take", tone: "good", x: "Trusting live Sleeper ADP (connected draft)" });
             const unres = (typeof LIVE_UNRESOLVED_PICKS !== "undefined") ? LIVE_UNRESOLVED_PICKS : null;
             if (unres && unres.length) {
-              lines.push({ kind: "take", tone: "bad", x: `${unres.length} pick${unres.length === 1 ? "" : "s"} from Sleeper couldn't be matched to a player` });
+              lines.push({ kind: "take", tone: "bad", x: `${unres.length} pick${unres.length === 1 ? "" : "s"} from ${livePlatformName} couldn't be matched to a player` });
               lines.push({ t: "Unmatched", x: unres.slice(0, 6).map((u) => `${pickLabel(u.o)} — "${u.name}"`).join(" · ") });
             }
             showTip(e, lines);
@@ -29096,11 +29115,34 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       </div>
 
       <div ref={stickyHeadRef} className="draft-stickyhead" style={{ position: "sticky", top: topBarH, zIndex: 12, background: "var(--bg)" }}>
+      {/* ⭐⭐⭐ 29ap — THE SYNC IS RUNNING AND THE BOARD IS NOT FILLING. Sits first, above every other
+          banner, because when it is showing nothing else on this screen is trustworthy. Two cases:
+          NOTHING placed is a broken feed and gets the red treatment plus the way out; a few unmatched
+          among many placed is a data oddity and gets a quiet amber line naming them, since the fix is to
+          type those few in and carry on. ⚠ The escape hatch is the point — a draft clock does not pause
+          while somebody works out why, so the banner's job is to hand back the manual path immediately. */}
+      {!done && !hypoMode && liveOn && liveUnmatched && (() => {
+        const broken = liveUnmatched.placed === 0;
+        return (
+          <div data-unmatched={broken ? "none" : "some"} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 16px", flexWrap: "wrap",
+            background: broken ? "rgba(242,101,92,.12)" : "rgba(224,166,60,.08)", borderBottom: `1px solid ${broken ? "var(--red)" : "var(--line)"}` }}>
+            <i className={`ti ${broken ? "ti-plug-connected-x" : "ti-help-circle"}`} style={{ fontSize: 15, color: broken ? "var(--red)" : "var(--gold)" }} aria-hidden="true" />
+            <span style={{ fontSize: 12.5, color: broken ? "var(--ink)" : "var(--mut)", fontWeight: broken ? 600 : 400, flex: "1 1 300px" }}>
+              {broken
+                ? <>{livePlatformName} is sending picks but we can't identify the players — the board can't fill itself. Switch to entering picks by hand and you won't lose any time.</>
+                : <><b>{liveUnmatched.n}</b> pick{liveUnmatched.n === 1 ? "" : "s"} from {livePlatformName} couldn't be matched to a player{liveUnmatched.names.length ? ` (${liveUnmatched.names.join(", ")})` : ""} — everything else is syncing. Enter {liveUnmatched.n === 1 ? "that one" : "those"} by hand.</>}
+            </span>
+            <button className="btn btn-mini" style={broken ? { borderColor: "var(--gold)", color: "var(--gold)" } : undefined}
+              onClick={() => { setDraftMode("manual"); setLiveUnmatched(null); }}>Enter picks by hand</button>
+            {!broken && <button className="btn btn-mini" onClick={() => setLiveUnmatched(null)}>Dismiss</button>}
+          </div>
+        );
+      })()}
       {!done && !hypoMode && liveConflict && (
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 16px", flexWrap: "wrap", background: "rgba(242,101,92,.12)", borderBottom: "1px solid var(--red)" }}>
           <i className="ti ti-alert-triangle" style={{ fontSize: 15, color: "var(--red)" }} aria-hidden="true" />
           <span style={{ fontSize: 12.5, color: "var(--ink)", fontWeight: 600 }}>
-            Sleeper recorded <b>{liveConflict.liveName}</b> where you had entered <b>{liveConflict.localName}</b> — the board now matches the live draft.
+            {livePlatformName} recorded <b>{liveConflict.liveName}</b> where you had entered <b>{liveConflict.localName}</b> — the board now matches the live draft.
           </span>
           <div style={{ flex: 1 }} />
           <button className="btn btn-mini" style={{ borderColor: "var(--gold)", color: "var(--gold)" }} onClick={() => setLiveConflict(null)}>Got it</button>

@@ -320,8 +320,10 @@ export const api = {
   //   • a long timeout, or the client aborts a job that's working fine
   //   • retries: 0 — a client abort does NOT cancel the server, so retrying stacks a second harvest on top
   //     of the one still running, hammering the DB and duplicating work
-  async adminRunJob(job) {
-    return call('/api/admin/run-job', { method: 'POST', body: { job }, timeoutMs: 300000, retries: 0 });
+  // `extra` carries the few jobs that take arguments (connect-check needs a platform and, optionally, a
+  // league and its credential). Merged into the body so every other caller is unchanged.
+  async adminRunJob(job, extra) {
+    return call('/api/admin/run-job', { method: 'POST', body: { job, ...(extra || {}) }, timeoutMs: 300000, retries: 0 });
   },
   async adminDbSize() { return call('/api/admin/db-size', { timeoutMs: 60000, retries: 0 }); },
   async adminDbCleanup(keepDays) { return call('/api/admin/db-cleanup', { method: 'POST', body: { keepDays }, timeoutMs: 600000, retries: 0 }); },

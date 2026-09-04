@@ -52,6 +52,11 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
   const cancelInvite = async (email) => { setBusy(true); try { await api.adminCancelInvite(email); await loadInvites(); note(`Invite canceled for ${email}`); } catch (e) {} finally { setBusy(false); } };
   const [jobResult, setJobResult] = useState(null);
   const [runningJob, setRunningJob] = useState(null);   // which job id is currently running (for per-button UI)
+  // Inputs for the live-pick-sync diagnostic. The credential lives in component state for the length of one
+  // call and is never persisted — same handling as the ESPN cookies in ConnectBox.
+  const [ccPlatform, setCcPlatform] = useState("mfl");
+  const [ccLeague, setCcLeague] = useState("");
+  const [ccCred, setCcCred] = useState("");
   const [jobProgress, setJobProgress] = useState("");   // live progress line shown next to the buttons
   const [dbSize, setDbSize] = useState(null);           // { total, tables[], adp_observations }
   const [dbBusy, setDbBusy] = useState(false);
@@ -242,7 +247,7 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
     catch (e) { note(e.data?.error || e.message || "Could not remove event."); }
     finally { setBusy(false); }
   };
-  const runJob = async (job) => {
+  const runJob = async (job, extra) => {
     setBusy(true); setJobResult(null); setRunningJob(job); setJobProgress("Waking the server…");
     try {
       // Wake the (possibly sleeping) dyno first, showing a live counter, so the button visibly does something
@@ -254,7 +259,7 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
         return;
       }
       setJobProgress(job === "refresh" ? "Server is up. Running full refresh — re-crawling real drafts…" : "Server is up. Pulling Sleeper ADP…");
-      const r = await api.adminRunJob(job);
+      const r = await api.adminRunJob(job, extra);
       setJobResult(r);
       const w = r?.detail?.publishedAdp?.observationsWritten ?? r?.detail?.observationsWritten;
       setJobProgress(r.ok ? `Done. ${w != null ? w.toLocaleString() + " ADP rows written." : "See result below."}` : "");
@@ -666,6 +671,31 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
                   {runningJob === "proj-check" ? "Working…" : "Check projections"}
                 </button>
                 {jobProgress && <span style={{ fontSize: 12, color: jobProgress.startsWith("Done") ? "var(--green)" : "var(--gold)", fontWeight: 600 }}>{jobProgress}</span>}
+              </div>
+              {/* ⭐⭐⭐ 29ap — THE INSTRUMENT FOR THE MFL / FANTRAX LIVE PICK SYNC, shipped with its job.
+                  That sync depends on translating platform player ids into names through each platform's own
+                  directory, and BOTH PLATFORMS ARE UNREACHABLE FROM THE SANDBOX IT WAS WRITTEN IN — so the
+                  parser has only ever been checked against a stub built from the same documentation. If
+                  production's shape differs, the poll degrades quietly: tidy picks, a healthy-looking sync,
+                  an empty board. This says which link broke instead of us guessing across a round trip.
+                  ⚠ The league id and credential are OPTIONAL: with none, it checks the directory alone,
+                    which is the half that fails for everybody at once. */}
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line)" }}>
+                <span className="mut" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700 }}>Live pick sync</span>
+                <select className="gs" value={ccPlatform} onChange={(e) => setCcPlatform(e.target.value)} style={{ fontSize: 12, padding: "5px 8px" }}>
+                  <option value="mfl">MyFantasyLeague</option>
+                  <option value="fantrax">Fantrax</option>
+                </select>
+                <input className="gs" style={{ fontSize: 12, padding: "5px 8px", width: 130 }} placeholder="League id (optional)"
+                  value={ccLeague} onChange={(e) => setCcLeague(e.target.value)} />
+                <input className="gs" style={{ fontSize: 12, padding: "5px 8px", width: 150 }} placeholder="API key / Secret ID"
+                  value={ccCred} onChange={(e) => setCcCred(e.target.value)} />
+                <button className="btn" disabled={busy}
+                  onClick={() => runJob("connect-check", { platform: ccPlatform, leagueId: ccLeague.trim() || null, credential: ccCred.trim() || null })}
+                  title="Reads nothing and writes nothing. Reports whether the platform's player directory loaded, what its records look like, and — given a league — how many of that draft's picks resolve to a named player. That last number is the one that decides whether live sync works at all. The credential is used for the call and never stored or echoed.">
+                  <i className={`ti ti-${runningJob === "connect-check" ? "loader-2 spin" : "plug-connected"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
+                  {runningJob === "connect-check" ? "Working…" : "Check live pick sync"}
+                </button>
               </div>
               {jobResult && (
                 <div className="panel" style={{ padding: 12, marginTop: 12, background: jobResult.ok ? "#0E1606" : "#1A0E0E", borderColor: jobResult.ok ? "var(--green)" : "var(--red)" }}>
