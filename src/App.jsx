@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29an";
+const BUILD_TAG = "2026.07.29ao";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -960,6 +960,13 @@ let RAW = [
   ["Jessie Bates III","DB","ATL",28,5,196.0,152],
   ["Kyle Hamilton","DB","BAL",24,7,198.0,150]
 ];
+/* The built-in board's names, as they are on the line above. Filled in by applyLivePack at the instant it
+   replaces RAW (see the note there) — null until then, which means no pack has landed and RAW still IS the
+   built-in board, so `seedNames()` falls back to reading it directly. Correct in both worlds.
+   ⚠ DECLARED HERE, ASSIGNED THERE, ON PURPOSE. Several sim harnesses slice this file by source markers and
+     a `new Set(RAW.map(normName))` sitting next to the array lands inside their slices without `normName`
+     in scope — sim/tiers.js died on exactly that. A bare declaration is inert wherever it is sliced. */
+let SEED_NAMES = null;
 
 const OUTLOOKS = {
   "Ja'Marr Chase":{p:"The consensus 1.01. Elite target share in a pass-first offense with Burrow healthy. Locked into league-winning WR1 volume."},
@@ -1933,6 +1940,16 @@ export function applyLivePack(pack, isReapply) {
     };
   }
   if (raw.length < 50) return false; // sanity: don't swap in a too-small pool
+  /* ⭐⭐⭐ REMEMBER THE BUILT-IN BOARD'S NAMES BEFORE THROWING IT AWAY — this is the only moment they exist.
+     `snapshotIsStale` has to answer "was this draft-day snapshot captured from the placeholder board?", and
+     after the line below RAW is the real pack, so the built-in names are gone for good. Captured HERE, next
+     to the assignment that destroys them, because that is the one place it cannot be got wrong — and the
+     first version of this WAS got wrong: a lazy cache next to `snapshotIsStale` reads RAW at first call,
+     the draft room mounts long after boot, so it would have frozen the REAL pack's names and judged every
+     good snapshot to be a placeholder one — rejected and rewritten on every render, forever.
+     ⚠ ONLY THE FIRST PACK. Format overlays and re-fetches call this repeatedly; capturing on any but the
+       first would record a pack, not the seed. */
+  if (SEED_NAMES == null) SEED_NAMES = new Set(RAW.map((r) => normName(r[0])));
   RAW = raw; STATS = stats; META = meta;
   LIVE_LOADED = true;
   LIVE_PACK_FORMAT = pack.format || null;
@@ -23361,12 +23378,40 @@ function InDraftTrends({ cfg, players, draftedSet, allLeagues, allFunMocks, onCl
 /* Is a draft-day snapshot one we should still trust? A snapshot locks ADP/VBD/projections by name and
    overrides live values forever after, so a bad one is permanent — which makes "should we believe it" a
    question worth asking in exactly one place, because the reader and the writer must answer it identically.
-   A snapshot captured from a materially smaller pool than the league now sees was taken from the built-in
-   placeholder board rather than the real pack (see the writer's dataVersion guard). `n` is stamped by the
-   writer; snapshots from before that are judged on how much of the current board they cover. */
+   A snapshot captured from the built-in placeholder board rather than the real pack (see the writer's
+   dataVersion guard) is the one to catch: it freezes placeholder projections over every real one, for good.
+
+   ⭐⭐⭐ 29an — THE TEST WAS A SIZE RATIO AGAINST A NUMBER NOBODY HAD MEASURED, AND IT WAS DEAD IN THE CASE IT
+     WAS WRITTEN FOR. Both branches compared "how many names does the snapshot hold" against "how big is the
+     pool now", with constants picked by eye — and the placeholder board holds 221 skill players (253 with
+     K and DST), which sim/snapstale.js sweeps against every plausible production pool size. The un-stamped
+     branch missed it at 250, 300 and 350; the K/DST case missed it at 400 too. Seven of sixteen sizes, and
+     the un-stamped vintage is EXACTLY the population the fix exists for: every league that hit this bug did
+     so before 29al existed to stamp `n`. So the self-heal was a coin flip on a constant that lives in
+     another repo and moves whenever the backend's inclusion gate changes.
+
+   THE DECISIVE TEST INSTEAD OF THE PROXY. The placeholder board is a known, fixed list sitting in this
+   file. A snapshot taken from it holds those names AND NOTHING ELSE; one taken from the real pack carries
+   hundreds of names the built-in board has never heard of. That is a fact about the snapshot rather than an
+   inference from its size, so it cannot be defeated by a pool that turns out smaller than someone guessed.
+   ⚠ `poolLen > seedNames().size` IS LOAD-BEARING, NOT A BELT-AND-BRACES. The reader and the WRITER share
+     this function: a snapshot judged stale is rewritten. On a deployment with no backend the built-in board
+     IS the real board, its snapshot is correct and all-seed by definition, and without this clause every
+     render would reject it, rewrite it identically, and reject it again — a write loop, on every draft.
+     Requiring the pool to be bigger than the whole built-in list means a real pack has demonstrably landed.
+   The two ratio branches stay as a backstop for the in-between case: a snapshot caught mid-race, holding
+   some real names and some placeholder ones, is not all-seed and still needs catching. */
 function snapshotIsStale(snap, poolLen) {
   if (!snap || snap.v !== 2 || !poolLen) return false;
-  if (snap.n == null) return Object.keys(snap.p || {}).length < Math.min(450, poolLen) * 0.6;
+  const keys = Object.keys(snap.p || {});
+  if (!keys.length) return true;                 // nothing to lock: rewrite it
+  /* The built-in board's names. SEED_NAMES is filled by applyLivePack at the moment it replaces RAW; while
+     it is null no pack has landed and RAW still IS the built-in board, so reading it here is the same
+     answer. ⚠ What must NEVER happen is reading RAW after a pack landed and calling that the seed — that
+     is a rewrite loop (see applyLivePack). */
+  const seed = SEED_NAMES || new Set(RAW.map((r) => normName(r[0])));
+  if (poolLen > seed.size && keys.length <= seed.size && keys.every((k) => seed.has(k))) return true;
+  if (snap.n == null) return keys.length < Math.min(450, poolLen) * 0.6;
   return poolLen > snap.n * 1.35;
 }
 
