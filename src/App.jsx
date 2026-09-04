@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29au";
+const BUILD_TAG = "2026.07.29av";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -527,6 +527,20 @@ function typeFamily(t) { return t === "dynasty" ? "dynasty" : t === "bestball" ?
 // Canonical superflex/2QB detection. A league is "QB-premium" if it starts more than one
 // QB-eligible slot — either an explicit SUPER/superflex slot, two or more dedicated QB slots,
 // or the legacy cfg.sf flag. This is the single source of truth used everywhere QB scarcity matters.
+/* ⭐⭐⭐ ONE RULE FOR EVERY SIMPLE/COMPLEX SWITCH IN THE APP.
+   Trey: "Can we default to 'complex' view when you enter a league until someone sets it to simple. If they
+   set it to simple, you can default to that (or whatever they left it on) going forward."
+   There were three of these switches and three different answers: the draft room defaulted to complex and
+   remembered (this is what he asked for), the quick-mock setup opened Simple every time, and the in-league
+   Settings form was hard-coded to open Simple by a prop at its call site — so a full-control user had to
+   click Complex again on every visit, and the app kept forgetting a preference it had already been told.
+   ⚠ SEPARATE KEY FROM THE ROOM'S `fdcSimpleView`, deliberately. They are different questions — how much of
+     the SETUP FORM you want versus how much of the DRAFT ROOM you want — and folding them into one switch
+     would mean simplifying a form silently re-lays-out somebody's live draft board. */
+const DETAIL_KEY = "fdcDetailMode";
+const readDetailMode = () => { try { return localStorage.getItem(DETAIL_KEY) === "simple" ? "simple" : "complex"; } catch { return "complex"; } };
+const writeDetailMode = (m) => { try { localStorage.setItem(DETAIL_KEY, m === "simple" ? "simple" : "complex"); } catch {} };
+
 function isSuperflex(cfg) {
   if (!cfg) return false;
   if (cfg.sf) return true;
@@ -3199,7 +3213,12 @@ export function buildPlayers(cfg) {
   // synthetic SF/TE transform on top (that double-counts and overweights QBs). We only transform when the
   // loaded ADP format differs from this league's format (e.g. SF league on a 1QB-baseline pool).
   const loadedFmt = (typeof LIVE_PACK_FORMAT !== "undefined" && LIVE_PACK_FORMAT) ? LIVE_PACK_FORMAT : "";
-  const loadedFmtIsSF = /\|SF\|/.test(loadedFmt);
+  /* ⚠ THE 2QB BUCKET IS ALSO A MULTI-QB MARKET, and this test only knew the word SF. Backend 129 gave true
+     2QB leagues their own ADP bucket, so a pack can now arrive keyed 2QB — and matching on SF alone made
+     that read as "the market does not price quarterbacks", which fired the synthetic lift ON TOP of a board
+     that was already correct. A real 2QB market got the 2QB correction applied to it twice; the label the
+     fix introduced was the thing that broke the guard. */
+  const loadedFmtIsSF = /\|(SF|2QB)\|/.test(loadedFmt);
   // A format LABEL of SF isn't enough — the loaded ADP must actually PRICE QBs like a superflex room, or the
   // synthetic SF lift below gets wrongly suppressed and QBs stay buried at their 1QB values (the "QBs at ADP
   // 40 in a superflex draft" bug). We treat the loaded ADP as genuinely SF-correct only when the raw board
@@ -3208,25 +3227,66 @@ export function buildPlayers(cfg) {
   const bestQbRaw = qbRawSorted.length ? qbRawSorted[0] : 999;
   const loadedSFPricesQBs = loadedFmtIsSF && bestQbRaw <= (2 * (cfg.teams || 12)); // top QB inside ~round 2
   const loadedIsSF = loadedSFPricesQBs;
+  const loadedIs2QB = /\|2QB\|/.test(loadedFmt) && loadedSFPricesQBs;   // the market we were handed IS a 2QB board
   const loadedIsTEP = /\|TEP\|/.test(loadedFmt);
+  /* ⭐⭐⭐ THE LADDER A MULTI-QB ROOM ACTUALLY DRAFTS, AND IT IS NOT ONE LADDER.
+     Trey: "i'd anticipate something way more aggressive on QBs (even more so than a superflex league)."
+     A superflex slot is optional — when the quarterbacks dry up a running back goes there — so superflex
+     rooms take four or five QBs early and then pause. A second DEDICATED slot cannot be filled that way:
+     every team needs two, nobody can opt out, and the run starts at pick one and does not stop. So 2QB gets
+     its own, steeper ladder rather than borrowing superflex's.
+     ⚠ Calibrated BETWEEN the two honest reference points, deliberately. FantasyPros' 2QB ranks (Trey's
+       screenshot) put five quarterbacks in the top five; Sleeper's own 2QB ADP is far softer, more like
+       four in the top fifteen. Experts rank what SHOULD happen and ADP records what DOES, and a draft
+       assistant that ignores either one is wrong in a way its user will feel — take the QB too late and you
+       are starting a streamer for a season, take him at the expert number and you paid a round of edge you
+       did not have to. This lands nearer the market than the ranking, because the market is who you are
+       actually bidding against. */
+  const qbLadder = (r, two) => (two
+    ? (r <= 8 ? 2 + (r - 1) * 2.6 : 20.2 + (r - 8) * 5.5)      // 2QB:  QB1≈2, QB2≈4.6, QB3≈7.2, QB4≈9.8…
+    : (r <= 6 ? 3 + (r - 1) * 3.5 : 26 + (r - 6) * 7));         // SF:   QB1≈3, QB2≈6.5, QB3≈10, QB4≈13.5…
   const adpTransform = (raw, pos) => {
     let a = raw;
     if (sf && !loadedIsSF) {
       if (pos === "QB") {
-        // Superflex lifts QBs. In a real SF (esp. dynasty) startup the top few QBs go inside the first
-        // 3-6 picks, because two QB slots roughly double QB scarcity. This blend used to keep 45% of the
-        // 1QB raw ADP, which dragged elite QBs down to ~pick 20 — far later than an SF room takes them.
-        // Weight the SF target more heavily (esp. for the top tier) so QB1-QB5 land in a realistic SF range,
-        // while still easing off for streamer QBs so we don't flood round 1 with backups.
+        /* ⚠⚠ THE OLD BLEND LET A 1QB PRICE DRAG THE TARGET, AND THE DRAG WAS THE WHOLE ERROR.
+           It kept 22% of the raw 1QB ADP even for QB1 — and on the built-in board QB1's raw ADP is 40, so
+           0.22 × 40 alone is nearly nine picks of ballast: the top quarterback in a superflex league came
+           out at 11.1 when the target said 3. The bug is structural rather than a bad constant, because the
+           error scales with how LATE the 1QB market has him — the further the format is from the data, the
+           more the data pulls. The ladder is the estimate; raw ADP is kept only as a tie-breaker that
+           preserves the market's ordering within the tier. */
         const r = qbRankOfRaw(raw);
-        const target = r <= 6 ? 3 + (r - 1) * 3.5 : 26 + (r - 6) * 7; // QB1≈3, QB2≈6.5, QB3≈10, QB4≈13.5…
-        const tw = r <= 6 ? 0.78 : 0.5; // top QBs lean hard on the SF target; tail stays closer to raw
+        const target = qbLadder(r, twoQb);
+        /* ⚠ THE TOP TIER TAKES THE TARGET OUTRIGHT, AND KEEPING "A LITTLE RAW" IS NOT THE SAFE CHOICE IT
+           LOOKS LIKE. Even a tenth of a raw ADP of 40 is four picks of ballast, so QB1 came out at 6.7
+           against a target of 3 — and the further the loaded market is from this format, the harder it
+           pulls, which is backwards: that is exactly when the market knows least. The ladder IS the
+           estimate for the tier every multi-QB room drafts inside round one or two. The streamer tail
+           still blends, because there the market is informative and the ladder is a straight line.
+           Ordering cannot invert: rank comes from the raw sort, so a rank-indexed target is monotonic. */
+        const topN = twoQb ? 8 : 6;      // each ladder's own tier boundary, not a shared constant
+        const tw = r <= topN ? 1 : 0.5;
         a = raw * (1 - tw) + target * tw;
-        a = Math.min(a, raw);
-        a = Math.max(1.8, a);
+        a = Math.min(a, raw);            // never move a QB LATER than his 1QB price
+        a = Math.max(1.5, a);
       } else {
         a = raw * 1.02;
       }
+    } else if (twoQb && loadedIsSF && !loadedIs2QB && pos === "QB") {
+      /* ⭐⭐⭐ A 2QB LEAGUE SERVED SUPERFLEX DATA — the exact case Trey is looking at, and previously the
+         one case that got NO correction at all. The pack is multi-QB priced, so the old test ("does this
+         market price QBs early?") passed and the transform stood down entirely. But superflex is a softer
+         market than 2QB by construction, so standing down means shipping a 2QB drafter a board that
+         systematically underrates the position his format is built around.
+         ⚠ A PARTIAL MOVE, ON PURPOSE. This data is real and close — it is the neighbouring format, not the
+           wrong one — so it is nudged a third of the way to the 2QB ladder rather than overwritten. Once the
+           2QB bucket has drafts of its own the pack arrives keyed 2QB, loadedIs2QB is true, and this stops
+           firing altogether: the correction fades out exactly as the evidence arrives. */
+      const r = qbRankOfRaw(raw);
+      const target = qbLadder(r, true);
+      if (target < raw) a = raw + (target - raw) * 0.35;
+      a = Math.max(1.5, a);
     } else if (!sf && loadedIsSF && pos === "QB") {
       // INVERSE CASE — this is a 1QB league but the loaded ADP is an SF board (QBs artificially high,
       // often inside round 1). Without correction, a 1QB draft sends QBs off way too early. Push each QB
@@ -3317,8 +3377,26 @@ export function buildPlayers(cfg) {
     // Per-team starters at each position. The +constants are the bench/streamer tail — the players
     // beyond the last starter who are still rostered somewhere, which is what makes replacement the
     // last USEFUL body rather than the last starting one.
+    /* ⭐⭐⭐⭐ THE BACKUP-QB TAIL WAS BORROWED FROM 1QB LEAGUES, AND IT IS WHY QBs LOOKED CHEAP IN 2QB.
+       Trey: "I feel like QBs are being undervalued by a lot… i'd anticipate something way more aggressive
+       on QBs (even more so than a superflex league)."
+       Every rate here is STARTERS + a small bench tail, and the QB tail was a flat +0.17/team — the rate at
+       which teams carry a spare quarterback when they only have to start ONE. Read that onto a format with
+       two MANDATORY QB slots and it says almost nobody drafts a third quarterback, which is the opposite of
+       what those rooms do: a bye week leaves a slot you cannot fill from the flex or the waiver wire, so
+       carrying a spare is compulsory rather than optional. Replacement therefore sat far too shallow — QB17
+       in his 8-team room, QB26 in a 12-team one — and since VBD is measured against it, EVERY starting
+       quarterback was worth less than he really is, by the same amount, invisibly.
+       ⚠ THE EXTRA TAIL IS FOR DEDICATED SLOTS ONLY, and that is the whole point of separating 2QB from
+         superflex rather than lumping them. A SUPER/OP slot can be filled with a running back when the
+         quarterbacks run out, so it does not force a backup — superflex keeps the 0.17 it was tuned with
+         and no existing superflex board moves. Only the thing that differs, differs.
+       0.45 says roughly four teams in nine carry a third quarterback in a 2QB league; at twelve teams that
+       is QB31, which is about where the last rostered starting NFL quarterback actually goes. */
+    const dedicatedQb = +st.QB || 1;
+    const qbTail = 0.17 + 0.45 * Math.max(0, dedicatedQb - 1);
     const rate = {
-      QB: (+st.QB || 1) + superN * 0.82 + 0.17,  // a SUPER/OP slot holds a QB about four times in five
+      QB: dedicatedQb + superN * 0.82 + qbTail,  // a SUPER/OP slot holds a QB about four times in five
       RB: (+st.RB || 0) + flex * 0.30 + 0.20,
       WR: (+st.WR || 0) + flex * 0.55 + 0.45,
       TE: (+st.TE || 0) + flex * 0.15 + 0.02,
@@ -10528,7 +10606,6 @@ function LeagueSettingsModal({ league, seg, keeperOpen, onSave, onClose }) {
         <ConfigForm
           initial={{ ...cfg, slot: cfg.slot == null ? "" : cfg.slot, scoring: { ...DEFAULT_SCORING, ...(cfg.scoring || {}) } }}
           initialSeg={seg}
-          initialMode="complex"
           initialKeeperOpen={!!keeperOpen}
           submitLabel="Save settings"
           onSubmit={(newCfg) => { onSave(newCfg); onClose(); }}
@@ -13028,7 +13105,7 @@ function HeroShowcase() {
 // Quick-mock pre-draft prompt: choose type + simple format + your slot, shown over a faded
 // preview of the draft board behind it. On submit, builds a cfg and launches the mock.
 function QuickMockSetup({ onStart, onCancel }) {
-  const [mode, setMode] = useState("simple"); // simple | complex
+  const [mode, setMode] = useState(readDetailMode); // simple | complex — complex until this user picks simple
   const [type, setType] = useState("redraft");
   const [teams, setTeams] = useState(12);
   const [te, setTe] = useState("std");      // std | tep
@@ -13079,7 +13156,7 @@ function QuickMockSetup({ onStart, onCancel }) {
   const modeToggle = (
     <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 9, overflow: "hidden", marginTop: 4 }}>
       {[["simple", "Simple"], ["complex", "Complex"]].map(([k, l]) => (
-        <button key={k} onClick={() => setMode(k)} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, padding: "6px 16px", border: "none", background: mode === k ? "var(--gold)" : "transparent", color: mode === k ? "#151002" : "var(--mut)" }}>{l}</button>
+        <button key={k} onClick={() => { setMode(k); writeDetailMode(k); }} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, padding: "6px 16px", border: "none", background: mode === k ? "var(--gold)" : "transparent", color: mode === k ? "#151002" : "var(--mut)" }}>{l}</button>
       ))}
     </div>
   );
@@ -21086,7 +21163,12 @@ function RankSetEditor({ user, set, leagues, allSets, onBackToList, onBack, onHo
           <i className="ti ti-layout-list" style={{ fontSize: 13 }} aria-hidden="true" />
           {fmtState === "ok"
             ? <>Starting order is the <b style={{ color: "var(--ink)" }}>{fmtKey.replace(/\|/g, " · ")}</b> consensus board — the same one a draft room in this format opens on.{attached ? ` Scoring and team count come from ${attached.name}.` : ""}
-                {set.qbType === "2QB" && <> <b style={{ color: "var(--gold)" }}>There is no separate 2QB consensus</b> — the market publishes superflex, and a 2QB room takes quarterbacks earlier than a superflex room does, so expect to move yours up. “Use our value order” below seeds from our own 2QB valuation instead.</>}</>
+                {/* ⚠ THIS SENTENCE WAS TRUE UNTIL 29av AND IS NOT ANY MORE. 2QB now has its own ADP bucket,
+                    fed by Sleeper's own published 2QB market and by real 2QB drafts as they are harvested,
+                    and it falls back to superflex only while its own data is thin. Saying "there is no 2QB
+                    consensus" underneath a board that IS one would send people to hand-move quarterbacks
+                    that have already been moved. */}
+                {set.qbType === "2QB" && <> <b style={{ color: "var(--gold)" }}>2QB has its own board now</b> — Sleeper's published 2QB market plus real 2QB drafts, falling back to superflex where that data is still thin. A 2QB room takes quarterbacks earlier than a superflex one, so this order already reflects that.</>}</>
             : fmtState === "loading"
               ? <>Loading the consensus board for <b style={{ color: "var(--ink)" }}>{fmtKey.replace(/\|/g, " · ")}</b>…</>
               : <span style={{ color: "var(--gold)" }}>Couldn't reach the {fmtKey.replace(/\|/g, " · ")} board, so the starting order is the general consensus one. Your own ordering is unaffected — only the suggested starting point is.</span>}
@@ -22095,12 +22177,15 @@ function DraftOrderTab({ f, upd, ensureNames }) {
 // league already has somewhere to save), the whole form is mirrored to localStorage as it changes and
 // restored on the way back in, with a banner so it is never a surprise. Cleared on create and on discard.
 const CFG_DRAFT_PREFIX = "fdc:cfgdraft:";
-function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, initialMode, initialKeeperOpen, draftKey, onDirty, seedConnect }) {
+function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, initialKeeperOpen, draftKey, onDirty, seedConnect }) {
   const [seg, setSeg] = useState(initialSeg || "basics");
   // Simple vs complex view. Simple shows only the essentials (Basics tab); complex reveals the full tabbed
   // form (roster, scoring, teams & order, pick trades). Mirrors the mock-setup simple/complex choice so
   // opening settings mid-draft isn't jarring after starting from a simple mock.
-  const [mode, setMode] = useState(initialMode === "simple" ? "simple" : "complex");
+  /* ⚠ THE `initialMode` PROP IS GONE ON PURPOSE. It was how the Settings tab forced Simple on every open,
+     which is the behaviour Trey asked to end — and leaving the prop in place would let any future call site
+     quietly re-introduce it. The stored preference is now the only answer, and it defaults to complex. */
+  const [mode, setMode] = useState(readDetailMode);
   // Opening straight into the keeper editor. The prep-checklist row is called "Keepers & pick trades", so
   // landing the user on the Teams & order tab and making him hunt for a button would repeat the mistake the
   // ADP row just had fixed: a row that names a thing and then delivers you near it.
@@ -22299,7 +22384,7 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
         <span className="mut" style={{ fontSize: 11.5, fontWeight: 600 }}>View</span>
         <div style={{ display: "flex", gap: 4 }}>
           {[["simple", "Simple"], ["complex", "Complex"]].map(([k, l]) => (
-            <button key={k} onClick={() => { setMode(k); if (k === "simple") setSeg("basics"); }}
+            <button key={k} onClick={() => { setMode(k); writeDetailMode(k); if (k === "simple") setSeg("basics"); }}
               style={{ padding: "5px 12px", borderRadius: 7, border: `1px solid ${mode === k ? "var(--gold)" : "var(--line)"}`, background: mode === k ? "rgba(224,166,60,.10)" : "transparent", color: mode === k ? "var(--gold)" : "var(--mut)", fontWeight: 600, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
               {l}
             </button>
@@ -33431,7 +33516,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             </div>
           )}
           <div style={{ marginBottom: 8 }} />
-          <ConfigForm initial={{ ...cfg, slot: cfg.slot == null ? "" : cfg.slot, scoring: { ...DEFAULT_SCORING, ...(cfg.scoring || {}) } }} initialMode="simple" submitLabel="Save settings" onSubmit={(newCfg) => { onSettings(newCfg); setTab("hub"); }} onCancel={() => setTab("hub")} />
+          <ConfigForm initial={{ ...cfg, slot: cfg.slot == null ? "" : cfg.slot, scoring: { ...DEFAULT_SCORING, ...(cfg.scoring || {}) } }} submitLabel="Save settings" onSubmit={(newCfg) => { onSettings(newCfg); setTab("hub"); }} onCancel={() => setTab("hub")} />
         </div>
       )}
 
@@ -34131,7 +34216,14 @@ function SummaryTable({ rows, userIdx, focusIdx, rookieAdp }) {
 // consensus blend from those sources keyed by the same format signature; nothing else in
 // the trade UI changes. `formatKey(cfg)` is the cache key that the live feed would use.
 export function formatKey(cfg) {
-  const qb = (cfg.start && cfg.start.SUPER > 0) || cfg.sf ? "SF" : "1QB";
+  /* ⚠⚠ A 2QB LEAGUE USED TO COME OUT OF HERE AS "1QB", which is the worst available answer.
+     A true 2QB lineup is QB:2 with no SUPER slot and often no `sf` flag, so both tests above failed and the
+     key said single-quarterback. That key drives the TRADE VALUES (quarterbacks priced as though only one
+     started) and the grouping on the mock-trends page ("how the board moves across your other 1QB drafts"),
+     so a 2QB league was being compared with, and valued like, the one format least like it. rankSetLabel
+     already knew about a "2QB" segment; nothing ever produced one. */
+  const st = cfg.start || {};
+  const qb = (st.QB || 0) >= 2 ? "2QB" : (st.SUPER > 0 || cfg.sf) ? "SF" : "1QB";
   const te = cfg.tePremMult > 0 ? `TEP${cfg.tePremMult}` : "TEstd";
   const t = (cfg.type || "redraft").toLowerCase();
   // Rookie-only drafts use a completely different player pool (rookies only), so their picks are NOT
@@ -34149,7 +34241,12 @@ export function formatKey(cfg) {
 function backendFormatKey(cfg) {
   const rec = (cfg.scoring && cfg.scoring.rec != null) ? cfg.scoring.rec : 1;
   const scoring = rec >= 0.75 ? "PPR" : rec >= 0.25 ? "HALF" : "STD";
-  const qb = ((cfg.start && cfg.start.SUPER > 0) || cfg.sf || (cfg.start && cfg.start.QB >= 2)) ? "SF" : "1QB";
+  /* ⭐⭐⭐ MUST MATCH THE BACKEND'S qbClass EXACTLY — this is the key the ADP bucket is looked up by, and a
+     mismatch does not error, it silently serves the wrong market. 2QB left the SF bucket in backend 129
+     because a superflex slot is optional and a second dedicated QB slot is not; the two formats price
+     quarterbacks differently and were being averaged together. */
+  const st0 = cfg.start || {};
+  const qb = (st0.QB || 0) >= 2 ? "2QB" : (cfg.sf || (st0.SUPER || 0) > 0) ? "SF" : "1QB";
   const te = cfg.tePremMult > 0 ? "TEP" : "STD";
   const t = (cfg.type || "redraft").toLowerCase();
   const pool = t === "dynasty" ? "DYNASTY" : t === "keeper" ? "KEEPER" : t === "bestball" ? "BESTBALL" : (t === "rookie" || t === "rookie only") ? "ROOKIE" : "REDRAFT";
