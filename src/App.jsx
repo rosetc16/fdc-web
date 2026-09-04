@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from "react";
-import { api, hasBackend, setToken, syncHealth } from "./api.js";
+import { api, hasBackend, getToken, setToken, syncHealth, authHealth } from "./api.js";
 
 // Lightweight SECTION-level error boundary. The app has a full-page boundary at the root, but a render error
 // in one panel (e.g. a rare data edge case in the draft recap/superlatives) shouldn't take down the entire
@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29ap";
+const BUILD_TAG = "2026.07.29au";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -540,6 +540,23 @@ function is2QB(cfg) {
   if (!cfg) return false;
   const st = cfg.start || {};
   return (st.QB || 0) >= 2;
+}
+/* ⭐⭐⭐ 29at — WHAT THE USER IS TOLD HIS FORMAT IS. One function, because eight places were each deciding
+   it for themselves with `cfg.sf ? "Superflex" : "1QB"`, and that test is wrong twice over:
+     · a TRUE 2QB league (two dedicated QB slots) reads "Superflex", which is a different format — the app
+       distinguishes them everywhere that matters, `is2QB` exists precisely because two mandatory QB slots
+       are scarcer than one flexible one, and only the LABEL collapsed them;
+     · worse, a 2QB league whose cfg carries the slots but no explicit `sf` flag reads "1QB", because
+       `cfg.sf` is only one of the three things `isSuperflex` looks at. The engine prices that board for
+       two quarterbacks while every label on screen calls it a single-QB league.
+   ⚠ THIS COST A ROUND TRIP AND IT WAS THE LABEL'S FAULT. Trey sent a cheat sheet headed "8 teams ·
+     Superflex" for what he calls his two-QB league, then told me the screenshot must be from a different
+     league — reasonably, because it did not say what he calls the format. The board was right and the
+     caption was wrong. A label that disagrees with the user's own word for the thing makes him doubt
+     correct output, which is worse than saying nothing. */
+function qbFormatLabel(cfg) {
+  if (is2QB(cfg)) return "2QB";
+  return isSuperflex(cfg) ? "Superflex" : "1QB";
 }
 // The defensive (IDP) position set, parallel to the offensive POS list.
 const IDP_POS = ["DL", "LB", "DB"];
@@ -1842,38 +1859,105 @@ export function applyLivePack(pack, isReapply) {
      * deep end where it matters) rather than stopping dead. Then a final pass walks the placed players in
      * order and enforces a minimum separation, so no two ever share a number and the sequence is strictly
      * increasing. Nothing here invents a target range: the shape comes from the market data we do have. */
-    const ladder = trustedPlayers
-      .map((p) => ({ adp: p.adp, v: projValueAll(p) }))
-      .sort((a, b) => b.v - a.v); // best value first
-    const vals = ladder.map((x) => x.v); // descending
+    /* ⭐⭐⭐⭐ 29as — ONE LADDER PER POSITION, BECAUSE A CROSS-POSITION LADDER IS A VOLUME COMPARISON.
+     *
+     *   Trey, prepping an 8-team 2QB league: "the ADPs are a little wonky: gibbs 80th, jeremiah love 8th…
+     *   maybe just from a paucity of drafts with that format."
+     *
+     * He is right about the trigger and it is not the fault. Thin 2QB coverage is what leaves most players
+     * without a trusted number and therefore ON this ladder; what happens once they are here is the bug.
+     * Reproduced from this very code in sim/sfadp.js: Jahmyr Gibbs lands at ADP 72.7 — round TEN of an
+     * eight-team draft — sitting below fifteen of the sixteen quarterbacks, for one reason only. He
+     * projects 266 and they project 306-402, so a ladder keyed on RAW PROJECTED POINTS puts the entire
+     * quarterback block above the best running back in football. Remove the quarterbacks from the ladder
+     * and change nothing else and he lands at 17.0. It is the comparison, not the data.
+     *
+     * ⚠ THE K/DST BLOCK ABOVE ALREADY SAYS THIS IN SO MANY WORDS — "THE UNDERLYING ERROR IS THE ONE THIS
+     *   PROJECT KEEPS MAKING: comparing positions on VOLUME" — and then carves out two positions and
+     *   leaves the other four on the volume ladder. That was survivable while quarterbacks and running
+     *   backs were separated by fifty points and a 1QB market gave nearly everyone a real number. In a 2QB
+     *   format the gap is a hundred and fifty and the coverage is thin, so the same error is the whole board.
+     *
+     * A per-position ladder needs no replacement level, no format flag and no notion of scarcity: a running
+     * back is priced against the running backs the market has actually drafted, and the cross-position
+     * interleaving is INHERITED from those real ADPs, which already encode how this format values a QB
+     * against an RB. It is the same interpolation as before, scoped to the only comparison that means
+     * anything.
+     * ⚠ A POSITION WITH TOO FEW ANCHORS FALLS BACK TO THE OLD GLOBAL LADDER rather than to something
+     *   invented — two points cannot describe a curve, and no-worse-than-today is the right floor for a
+     *   fallback nobody can measure against production from here. */
+    const MIN_POS_ANCHORS = 3;
+    const byPosTrusted = {};
+    trustedPlayers.forEach((p) => { const q = normPos(p.pos); (byPosTrusted[q] = byPosTrusted[q] || []).push(p); });
+    const mkLadder = (list) => {
+      const l = list.map((p) => ({ adp: p.adp, v: projValueAll(p) })).sort((a, b) => b.v - a.v);
+      return { l, vals: l.map((x) => x.v) };
+    };
+    const globalLadder = mkLadder(trustedPlayers);
+    const posLadders = {};
+    Object.keys(byPosTrusted).forEach((q) => {
+      if (byPosTrusted[q].length >= MIN_POS_ANCHORS) posLadders[q] = mkLadder(byPosTrusted[q]);
+    });
+    // Which ladder prices this player: his own position's when it has enough anchors, else the old one.
+    const ladderFor = (p) => posLadders[normPos(p.pos)] || globalLadder;
 
-    // Slope at the deep end, in ADP picks per unit of projected value. Taken over the last stretch of the
-    // ladder rather than the whole of it, because the curve is far flatter at the top (elite players are
-    // separated by a lot of value and few picks) than it is where the extrapolation actually happens.
-    const tailN = Math.max(8, Math.min(60, Math.floor(ladder.length * 0.25)));
-    const tailLo = ladder[ladder.length - tailN], tailHi = ladder[ladder.length - 1];
-    const dv = (tailLo && tailHi) ? (tailLo.v - tailHi.v) : 0;
-    const da = (tailLo && tailHi) ? (tailHi.adp - tailLo.adp) : 0;
-    // Fall back to a gentle slope if the tail of the ladder is degenerate (all one value).
-    const slope = dv > 1e-6 && da > 0 ? da / dv : 0.35;
-    const last = ladder[ladder.length - 1];
+    /* Slope in ADP picks per unit of projected value, measured over a stretch of ONE ladder rather than the
+       whole of it, because the curve is far flatter at the top (elite players are separated by a lot of
+       value and few picks) than where the extrapolation happens. Computed per ladder now, since a position's
+       curve is its own — quarterbacks in a 2QB format come off the board far faster than tight ends. */
+    const slopeOf = (L, atTail) => {
+      const l = L.l;
+      const n = Math.max(3, Math.min(60, Math.floor(l.length * 0.25)));
+      const [a, b] = atTail ? [l[l.length - n], l[l.length - 1]] : [l[0], l[Math.min(n - 1, l.length - 1)]];
+      const dv = (a && b) ? (a.v - b.v) : 0;
+      const da = (a && b) ? (b.adp - a.adp) : 0;
+      // A degenerate or INVERTED stretch (the market disagreeing with the projections, which is ordinary and
+      // is the whole reason ADP is interesting) gets a gentle positive default rather than a negative slope
+      // that would price a better player later the further above the ladder he sits.
+      return dv > 1e-6 && da > 0 ? da / dv : 0.35;
+    };
 
     const placed = [];
     for (const p of untrustedPlayers) {
+      const L = ladderFor(p);
+      const ladderL = L.l, valsL = L.vals;
       const v = projValueAll(p);
       // first index whose ladder value is <= v (i.e. how many project better than him)
-      let lo = 0, hi = vals.length;
-      while (lo < hi) { const mid = (lo + hi) >> 1; if (vals[mid] > v) lo = mid + 1; else hi = mid; }
+      let lo = 0, hi = valsL.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (valsL[mid] > v) lo = mid + 1; else hi = mid; }
       let est;
-      if (lo >= ladder.length) {
+      if (lo >= ladderL.length) {
         // PAST THE END — the case that used to collapse. Keep walking down the board at the rate the
         // market itself is moving at this depth.
-        est = last.adp + Math.max(0, (last.v - v)) * slope;
+        const last = ladderL[ladderL.length - 1];
+        est = last.adp + Math.max(0, (last.v - v)) * slopeOf(L, true);
       } else if (lo === 0) {
-        est = Math.max(0.5, ladder[0].adp - 0.5);   // projects better than anyone with a real number
+        /* ⭐⭐⭐ ABOVE THE TOP OF THE LADDER — EXTRAPOLATE, DO NOT STEP HALF A PICK.
+           This branch used to hand every such player `ladder[0].adp - 0.5`, which quietly assumes the
+           best-PROJECTING anchor is also the earliest-DRAFTED one. On a thin board those are routinely
+           different people: in Trey's 2QB league the highest-projecting anchored running back sits at pick
+           70 while the market takes two lower-projected ones in the first four rounds, so a back projecting
+           thirty points clear of the field was being priced at 69.5 — half a pick better than a man he
+           outscores by a mile. Walk UP the ladder's own slope instead, exactly as the past-the-end branch
+           walks down it, and let a player who is far better land far earlier.
+
+           ⭐⭐⭐⭐ AND THE CEILING THAT ACTUALLY FIXES THE REPORT: YOU CANNOT BE PRICED LATER THAN SOMEONE
+           YOU ARE PROJECTED TO BEAT. When a player is above EVERY anchor there is no upper neighbour to
+           interpolate against, so the slope is guessing — and on an inverted stretch (the market liking
+           players our projections do not, which is ordinary) the guess stays anchored to whichever of them
+           happens to project highest, however late he goes. The market has told us something much more
+           useful: it has already spent pick 15.8 on a running back this man outscores. So he goes at 15.8
+           or earlier, and the extrapolation only decides HOW much earlier.
+           ⚠ Deliberately narrow — this applies ONLY where we are extrapolating above all the data. Applying
+             the same monotonic rule across the whole ladder would erase exactly the disagreement between the
+             market and the projections that makes ADP worth having. */
+        const top = ladderL[0];
+        const earliest = Math.min(...ladderL.map((x) => x.adp));
+        const bySlope = top.adp - Math.max(0, v - top.v) * slopeOf(L, false);
+        est = Math.max(0.5, Math.min(bySlope, earliest - 0.5));
       } else {
         // BETWEEN two known points — interpolate on value rather than snapping to a neighbour.
-        const a = ladder[lo - 1], bnd = ladder[lo];
+        const a = ladderL[lo - 1], bnd = ladderL[lo];
         const span = a.v - bnd.v;
         const t = span > 1e-6 ? (a.v - v) / span : 0.5;
         est = a.adp + t * (bnd.adp - a.adp);
@@ -8308,6 +8392,52 @@ function SyncStatus({ user }) {
   );
 }
 
+/* ⭐⭐⭐⭐ SIGNED OUT WITHOUT BEING TOLD — the other half of "but I'm signed in."
+ *
+ * Trey, trying to comp a free account: "It's saying I must sign in, but I'm signed in." Both true. The
+ * header, the admin button and the whole admin screen come from state restored out of local storage, with
+ * the admin flag recomputed from the email address. None of that involves the token — so the app happily
+ * presents an admin console it has no credentials to use, and only the requests know.
+ *
+ * This is the notice that was missing. It appears only when a call actually came back 401 with a token in
+ * hand (api.js clears the dead token and fires once), and it does the one thing that helps: says what
+ * happened in a sentence that does not contradict the user, and opens the sign-in box.
+ *
+ * ⚠ It must NEVER fire for an unreachable or slow backend. "Sign in again" is expensive advice — it costs
+ *   a password and, if the server is what's wrong, it fails too and teaches the user their account is
+ *   broken. A server that could not check answers 503 AUTH_UNAVAILABLE and is retried, never surfaced here.
+ * ⚠ And it does not touch leagues, drafts or the local user: nothing on this device is lost by a session
+ *   expiring, and wiping local state on a 401 would turn an inconvenience into data loss.
+ */
+function SessionStatus({ onSignIn }) {
+  const [dead, setDead] = useState(() => authHealth.dead);
+  const [dismissed, setDismissed] = useState(false);
+  useEffect(() => authHealth.subscribe((info) => { setDead(info); setDismissed(false); }), []);
+  if (!hasBackend || !dead || dismissed) return null;
+  return (
+    /* ⚠ SIZED FOR A PHONE FIRST — that is where this bug was actually met. Trey: "this was from mobile.
+       When I went to the desktop version, it worked perfectly." A fixed 460px box centred by translate
+       overflows a 390px viewport and pushes the dismiss button off-screen, which would make the one notice
+       explaining the problem into a second problem. */
+    <div role="alert" style={{ position: "fixed", left: "50%", transform: "translateX(-50%)", top: 12, zIndex: 96, width: "calc(100vw - 24px)", maxWidth: 460, boxSizing: "border-box",
+      display: "flex", alignItems: "flex-start", gap: 10, background: "var(--panel)", border: "1px solid var(--gold)",
+      borderRadius: 12, padding: "12px 14px", boxShadow: "0 8px 26px #0009" }}>
+      <i className="ti ti-lock-open" style={{ fontSize: 17, color: "var(--gold)", marginTop: 1 }} aria-hidden="true" />
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>Your sign-in expired on this device</div>
+        <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5, marginTop: 3 }}>
+          Everything here is still saved. Sign in again to sync across devices and use the admin tools —
+          until then the server treats this browser as signed out, whatever the header says.
+        </div>
+        <button className="btn btn-gold btn-mini" style={{ marginTop: 8 }} onClick={() => { setDismissed(true); if (onSignIn) onSignIn(); }}>Sign in again</button>
+      </div>
+      <button onClick={() => setDismissed(true)} title="Hide" className="btn btn-mini" style={{ flexShrink: 0, padding: "2px 6px", fontSize: 11 }}>
+        <i className="ti ti-x" style={{ fontSize: 12 }} aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
 // THE INJURY REPORT — every flagged player still on the board, in one place, newest news first.
 //
 // The complaint this answers: "I have never seen a good tool that shows all injury updates — you have to
@@ -9013,6 +9143,14 @@ export default function App() {
         if (d.leagues) setLeagues(d.leagues);
         if (d.biz) setBiz(d.biz);
         if (d.user) { const comped = !!compFor(d.biz, d.user.email); setUser(migrateRankSets({ ...d.user, admin: isAdminEmail(d.user.email), paid: d.user.paid || comped, comp: comped })); }
+        /* ⭐⭐⭐ THE SPLIT-BRAIN, CAUGHT AT BOOT. The user above came out of one store; the token lives in
+           another (localStorage), and browsers clear those on different schedules — Safari's 7-day cap on
+           script-written storage will take the token off a device that still has every league on it. With no
+           token there is nothing to 401, so nothing would ever notice: the header says signed in, the admin
+           button is there, and only a request that needs the server disagrees. Say it at boot instead. */
+        if (hasBackend && d.user && d.user.email && !getToken()) {
+          authHealth.reportDead("NO_TOKEN", "This device has no sign-in saved any more.");
+        }
         if (d.funMocks) setFunMocks(d.funMocks);
         if (d.feedback) setFeedback(d.feedback);
       } catch (e) {}
@@ -9369,29 +9507,14 @@ export default function App() {
     // runs on the live site, where hasBackend is true.
     const u = { ...user, paid: true }; setUser(u); persist({ user: u }); setRoute("home");
   };
-  // Admin: grant a free comp subscription to an email (season or forever), or revoke it.
-  const grantComp = (email, scope) => {
-    const e = String(email).trim().toLowerCase();
-    if (!e) return;
-    const others = (biz.comps || []).filter((c) => c.email.toLowerCase() !== e);
-    const comp = { email: e, scope, season: scope === "season" ? CURRENT_SEASON : null, granted: new Date().toLocaleDateString(), revoked: false };
-    const b = { ...biz, comps: [comp, ...others] };
-    setBiz(b);
-    // if the comp targets the currently signed-in user, flip them to paid immediately
-    let nextUser = user;
-    if (user && user.email && user.email.toLowerCase() === e) { nextUser = { ...user, paid: true, comp: true }; setUser(nextUser); }
-    persist({ biz: b, user: nextUser });
-  };
-  const revokeComp = (email) => {
-    const e = String(email).trim().toLowerCase();
-    const comps = (biz.comps || []).map((c) => c.email.toLowerCase() === e ? { ...c, revoked: true } : c);
-    const b = { ...biz, comps };
-    setBiz(b);
-    let nextUser = user;
-    // only downgrade the live user if their paid status came from a comp (not a real purchase)
-    if (user && user.email && user.email.toLowerCase() === e && user.comp) { nextUser = { ...user, paid: false, comp: false }; setUser(nextUser); }
-    persist({ biz: b, user: nextUser });
-  };
+  /* ⭐⭐⭐ THE LOCAL COMP GRANTER IS GONE, AND ITS ABSENCE IS THE POINT.
+     `grantComp`/`revokeComp` wrote a comp into `biz.comps` in this browser and never told the server. They
+     were still being passed to the Admin screen, which stopped calling them long ago — it comps people
+     through /api/admin/invite, the only place that can grant access to somebody who is not sitting at this
+     laptop. Two mechanisms for one feature, one of them silently local, is how "I granted them access and
+     nothing happened" gets written; and it is what I read first when Trey reported this bug, which cost a
+     detour. Existing `biz.comps` entries are still HONOURED at sign-in by compFor — nothing anyone was
+     given is taken away — there is simply no longer a way to create one that only this device can see. */
   const signOut = () => { try { setToken(null); } catch (e) {} setUser(null); persist({ user: null }); setRoute("home"); };
 
   const createLeague = (cfg) => {
@@ -9974,7 +10097,7 @@ export default function App() {
           onUpdate={(patch) => { if (user) updateUser(patch); }}
           onBuy={() => { if (!user) setAuthOpen(true); else setRoute("checkout"); }} />
       )}
-      {route === "admin" && user && (isAdminEmail(user.email) || user.admin) && <Admin biz={biz} setBiz={(b) => { setBiz(b); persist({ biz: b }); }} user={user} leagues={leagues} feedback={feedback} onRespond={respondFeedback} onDeleteFeedback={deleteFeedback} onGrantComp={grantComp} onRevokeComp={revokeComp} onBack={() => goBack()} />}
+      {route === "admin" && user && (isAdminEmail(user.email) || user.admin) && <Admin biz={biz} setBiz={(b) => { setBiz(b); persist({ biz: b }); }} user={user} leagues={leagues} feedback={feedback} onRespond={respondFeedback} onDeleteFeedback={deleteFeedback} onBack={() => goBack()} />}
       {quickMockOpen && <QuickMockSetup onCancel={() => setQuickMockOpen(false)} onStart={(cfg) => { setQuickMockOpen(false); startQuickMock(cfg); }} />}
       {/* GLOBAL "Report a bug" — a small fixed button on every page (bottom-left, out of the way of the
           top-right version badge). Opens a lightweight modal that reuses the existing submitFeedback
@@ -9982,6 +10105,8 @@ export default function App() {
       <div data-chrome="1"><GlobalBugReport user={user} onSubmit={submitFeedback} /></div>
       {/* Tells you when the browser is the only copy of your draft. Nothing else does. */}
       <div data-chrome="1"><SyncStatus user={user} /></div>
+      {/* Tells you when the SERVER has stopped believing you're signed in, which the header cannot know. */}
+      <div data-chrome="1"><SessionStatus onSignIn={() => setAuthOpen(true)} /></div>
       {/* Last line of defence against a blank page (see the watchdog above). Never navigates on its own. */}
       {blank && (
         <div data-chrome="1" style={{ position: "fixed", inset: 0, zIndex: 95, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "var(--bg, #0E1217)" }}>
@@ -10735,7 +10860,7 @@ export function CheatSheetModal({ league, cfg, getRows, tierMetric, myRanks, que
         <div style={{ padding: "10px 16px 18px" }}>
           <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 2 }}>{league.name} — draft cheat sheet</div>
           <div className="mut" style={{ fontSize: 10.5, marginBottom: 6 }}>
-            {cfg.teams || 12} teams · {cfg.sf ? "Superflex" : "1QB"} · {cfg.rounds} rounds{cfg.slot ? ` · your slot ${cfg.slot}` : ""} · fantasydraftcompass.com
+            {cfg.teams || 12} teams · {qbFormatLabel(cfg)} · {cfg.rounds} rounds{cfg.slot ? ` · your slot ${cfg.slot}` : ""} · fantasydraftcompass.com
           </div>
           <PrintedStrategy strategy={strategy} cfg={cfg} />
           {/* The key. A coloured sheet with no key is a decorated sheet. */}
@@ -12206,7 +12331,7 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
           <Compass size={40} />
           <div style={{ flex: 1 }}>
             <div className="disp" style={{ fontSize: 27, fontWeight: 700 }}>{league.name}</div>
-            <div className="mut" style={{ fontSize: 13 }}>{league.cfg.teams || 12} teams · {league.cfg.sf ? "Superflex" : "1QB"}{league.cfg.tePremMult > 0 ? ` · TE+${league.cfg.tePremMult}` : ""} · {league.cfg.rounds} rounds{league.cfg.slot ? ` · your slot ${league.cfg.slot}` : ""} · {LEAGUE_TYPES.find((t) => t[0] === league.cfg.type)?.[1] || "Redraft"}</div>
+            <div className="mut" style={{ fontSize: 13 }}>{league.cfg.teams || 12} teams · {qbFormatLabel(league.cfg)}{league.cfg.tePremMult > 0 ? ` · TE+${league.cfg.tePremMult}` : ""} · {league.cfg.rounds} rounds{league.cfg.slot ? ` · your slot ${league.cfg.slot}` : ""} · {LEAGUE_TYPES.find((t) => t[0] === league.cfg.type)?.[1] || "Redraft"}</div>
           </div>
         </div>
         {keepers.length > 0 && <div className="gold" style={{ fontSize: 12, marginBottom: 4 }}><i className="ti ti-lock" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />{keepers.length} keeper{keepers.length > 1 ? "s" : ""} set — applied to the official draft and every mock.</div>}
@@ -16034,7 +16159,7 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
               return (
                 <div key={l.id} style={{ flex: "1 1 260px", maxWidth: 420, minWidth: 0, border: "1px solid var(--line2)", borderRadius: 12, background: "var(--panel)", padding: "12px 14px" }}>
                   <div className="disp" style={{ fontSize: 15, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.name}</div>
-                  <div className="mut" style={{ fontSize: 11, marginTop: 2 }}>{l.cfg.teams || 12}-team · {l.cfg.sf ? "Superflex" : "1QB"}{l.cfg.tePremMult > 0 ? " · TE+" : ""}</div>
+                  <div className="mut" style={{ fontSize: 11, marginTop: 2 }}>{l.cfg.teams || 12}-team · {qbFormatLabel(l.cfg)}{l.cfg.tePremMult > 0 ? " · TE+" : ""}</div>
                   <div style={{ display: "flex", gap: 7, marginTop: 10, flexWrap: "wrap" }}>
                     <button onClick={() => onOpenHub && onOpenHub({ league_id: hubIdOf(l) })} className="btn btn-gold btn-mini" style={{ padding: "7px 13px", fontSize: 12.5 }}>
                       <i className="ti ti-user-heart" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Open my team
@@ -16297,7 +16422,7 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
                       )}
                     </div>
                     <div className="mut" style={{ fontSize: 11, marginTop: 2, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                      <span>{l.cfg.teams || 12}T · {l.cfg.sf ? "Superflex" : "1QB"}{l.cfg.tePremMult > 0 ? " · TE+" : ""} · {l.cfg.rounds} rds</span>
+                      <span>{l.cfg.teams || 12}T · {qbFormatLabel(l.cfg)}{l.cfg.tePremMult > 0 ? " · TE+" : ""} · {l.cfg.rounds} rds</span>
                       <span style={{ color: st.color, fontWeight: 600 }}>· {st.label}{st.pct > 0 && st.pct < 100 ? ` (${st.pct}%)` : ""}</span>
                     </div>
                   </div>
@@ -16405,7 +16530,7 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
                         {(l.cfg.keepers || []).length > 0 && <span className="chip" style={{ fontSize: 9 }}><i className="ti ti-lock" style={{ fontSize: 9, marginRight: 2 }} aria-hidden="true" />{(l.cfg.keepers || []).length}</span>}
                         {mocks > 0 && <span className="chip" style={{ fontSize: 9 }}>{mocks} mock{mocks === 1 ? "" : "s"}</span>}
                       </div>
-                      <div className="mut" style={{ fontSize: 11, marginTop: 1 }}>{l.cfg.teams || 12}T · {l.cfg.sf ? "Superflex" : "1QB"}{l.cfg.tePremMult > 0 ? " · TE+" : ""} · {l.cfg.rounds} rds · <span style={{ color: st.color, fontWeight: 600 }}>{st.label}</span></div>
+                      <div className="mut" style={{ fontSize: 11, marginTop: 1 }}>{l.cfg.teams || 12}T · {qbFormatLabel(l.cfg)}{l.cfg.tePremMult > 0 ? " · TE+" : ""} · {l.cfg.rounds} rds · <span style={{ color: st.color, fontWeight: 600 }}>{st.label}</span></div>
                     </button>
                     <button className="btn btn-mini" onClick={() => onUmbrella(l.id)} style={{ flexShrink: 0 }}>Open</button>
                     {onDelete && (delConfirm === l.id
@@ -16669,7 +16794,7 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
                         {(l.cfg.keepers || []).length > 0 && <span className="chip" style={{ fontSize: 9 }}><i className="ti ti-lock" style={{ fontSize: 9, marginRight: 2 }} aria-hidden="true" />{(l.cfg.keepers || []).length}</span>}
                         {mocks > 0 && <span className="chip" style={{ fontSize: 9 }}>{mocks} mock{mocks === 1 ? "" : "s"}</span>}
                       </div>
-                      <div className="mut" style={{ fontSize: 11, marginTop: 1 }}>{l.cfg.teams || 12}T · {l.cfg.sf ? "Superflex" : "1QB"}{l.cfg.tePremMult > 0 ? " · TE+" : ""} · {l.cfg.rounds} rds · <span style={{ color: st.color, fontWeight: 600 }}>{st.label}</span></div>
+                      <div className="mut" style={{ fontSize: 11, marginTop: 1 }}>{l.cfg.teams || 12}T · {qbFormatLabel(l.cfg)}{l.cfg.tePremMult > 0 ? " · TE+" : ""} · {l.cfg.rounds} rds · <span style={{ color: st.color, fontWeight: 600 }}>{st.label}</span></div>
                     </button>
                     <button className="btn btn-mini" onClick={() => onUmbrella(l.id)} style={{ flexShrink: 0 }}>Open</button>
                     {onDelete && (delConfirm === l.id
@@ -20087,7 +20212,7 @@ function LeagueCard({ l, onUmbrella, onDelete, onOpenMockView, onDeleteMock }) {
             where a league came from is the thing you scan for when you own six of them. */}
         <PlatformChip league={l} live={platformIsLive(platformOf(l))} />
         <span className="chip">{l.cfg.teams || 12} teams</span>
-        <span className="chip">{l.cfg.sf ? "Superflex" : "1QB"}{l.cfg.tePremMult > 0 ? ` · TE+${l.cfg.tePremMult}` : ""}</span>
+        <span className="chip">{qbFormatLabel(l.cfg)}{l.cfg.tePremMult > 0 ? ` · TE+${l.cfg.tePremMult}` : ""}</span>
         <span className="chip">{l.cfg.rounds} rds{l.cfg.slot ? ` · slot ${l.cfg.slot}` : " · slot TBD"}</span>
       </div>
       <div className="mut" style={{ fontSize: 12, marginBottom: 6 }}>{st === "complete" ? "Official draft complete" : `${l.picks.length}/${total} picks`} • {LEAGUE_TYPES.find((t) => t[0] === l.cfg.type)?.[1] || "Redraft"}{mocks.length ? ` • ${mocks.length} mock${mocks.length === 1 ? "" : "s"}` : ""} • created {l.created}</div>
@@ -20389,6 +20514,10 @@ function Account({ user, onUpdate, onBack, onHome, onSignOut, onRankings, onAdmi
   const [pw2, setPw2] = useState("");
   const [pwErr, setPwErr] = useState("");
   const [saved, setSaved] = useState("");
+  // The weekly-brief SUBSCRIPTION. Opt-in, so this is false for everybody until they say otherwise; seeded
+  // from the server's copy of the user, which is where the answer lives.
+  const [briefOn, setBriefOn] = useState(!!user.briefOptIn);
+  const [briefBusy, setBriefBusy] = useState(false);
   const flash = (m) => { setSaved(m); setTimeout(() => setSaved(""), 1500); };
   return (
     <div>
@@ -20402,6 +20531,37 @@ function Account({ user, onUpdate, onBack, onHome, onSignOut, onRankings, onAdmi
             <span className="mut" style={{ fontSize: 13 }}>Membership</span>
             <span style={{ color: user.paid ? "var(--green)" : "var(--gold)" }}>{user.paid ? "Season pass active — valid through Mar 1" : "Free demo"}</span>
           </div>
+          {/* ⭐⭐⭐⭐ THE WEEKLY EMAIL IS OFF UNTIL YOU ASK FOR IT, AND THIS SWITCH IS THE ASKING.
+              Trey: "I don't think I want to send automated emails unless someone subscribes to them."
+              The job was written to mail every linked paying user by default; it now sends only to accounts
+              that turned this on, and the column defaults to false, so today it would send to nobody. That
+              is the intended state — consent is something people give, not something they fail to withdraw,
+              and a season pass is not a request for email.
+              ⚠ THE CONTROL SAYS WHEN IT ARRIVES AND WHAT IS IN IT before you decide, because a switch
+                labelled only "weekly email" asks you to opt into something you cannot see. And it names
+                what is NOT affected: nobody should have to wonder whether declining this costs them their
+                password-reset email.
+              ⚠ Sleeper-linked accounts only — the brief reads Sleeper leagues, so for anybody else this
+                would be a switch that turns on nothing. */}
+          {hasBackend && user.sleeperUserId && (
+            <div data-briefpref style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "8px 0", borderBottom: "1px solid var(--line)", marginBottom: 14 }}>
+              <div style={{ minWidth: 0 }}>
+                <div className="mut" style={{ fontSize: 13 }}>Weekly email <span style={{ opacity: 0.7 }}>— off unless you ask for it</span></div>
+                <div className="mut" style={{ fontSize: 11, opacity: 0.8 }}>Tuesday mornings: points sitting on your bench, and bye weeks coming that would leave you short. Nothing else — your password and account emails arrive either way.</div>
+              </div>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, whiteSpace: "nowrap", cursor: "pointer" }}>
+                <input type="checkbox" checked={briefOn} disabled={briefBusy}
+                  onChange={async (e) => {
+                    const want = e.target.checked;   // checked = subscribed
+                    setBriefOn(want); setBriefBusy(true);
+                    try { await api.setEmailPrefs(want); onUpdate({ briefOptIn: want }); flash(want ? "You'll get it Tuesdays" : "Weekly email off"); }
+                    catch (err) { setBriefOn(!want); flash("Couldn't save that — try again"); }
+                    finally { setBriefBusy(false); }
+                  }} />
+                {briefOn ? "On" : "Off"}
+              </label>
+            </div>
+          )}
           {/* ⭐⭐ HOW MUCH ROOM YOUR MOCKS ARE ACTUALLY USING.
               Trey: "I'm not sure if all the mock drafts are going to crash the site or cost a ton in
               storage… but I also don't really know the impact." Neither did anyone else, because nothing
@@ -23198,7 +23358,7 @@ function InDraftTrends({ cfg, players, draftedSet, allLeagues, allFunMocks, onCl
           <div className="disp" style={{ fontSize: 18, fontWeight: 700, flex: 1 }}>Draft Trends</div>
           <button className="btn btn-mini" onClick={onClose}><i className="ti ti-x" style={{ fontSize: 13 }} aria-hidden="true" /></button>
         </div>
-        <div className="mut" style={{ fontSize: 12, marginBottom: 14 }}>How the board moves across your other <b style={{ color: "var(--ink)" }}>{cfg.sf ? "Superflex" : "1QB"}{cfg.tePremMult > 0 ? " TE-premium" : ""} {cfg.type === "dynasty" ? "dynasty" : cfg.type === "bestball" ? "best-ball" : cfg.type === "rookie" ? "rookie" : "redraft"}</b> drafts — recent ones weighted more.</div>
+        <div className="mut" style={{ fontSize: 12, marginBottom: 14 }}>How the board moves across your other <b style={{ color: "var(--ink)" }}>{qbFormatLabel(cfg)}{cfg.tePremMult > 0 ? " TE-premium" : ""} {cfg.type === "dynasty" ? "dynasty" : cfg.type === "bestball" ? "best-ball" : cfg.type === "rookie" ? "rookie" : "redraft"}</b> drafts — recent ones weighted more.</div>
 
         {/* ⭐ MARKET MOVERS — the real answer to "what's trending", and the reason this panel used to be
             empty for almost everybody. The section below it analyses YOUR OWN drafts, which most people

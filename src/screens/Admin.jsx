@@ -17,7 +17,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import { api, hasBackend } from "../api.js";
 import { CURRENT_SEASON, POS, Compass, formatKey } from "../App.jsx";
 
-function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedback, onGrantComp, onRevokeComp, onBack }) {
+function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedback, onBack }) {
   const [tab, setTab] = useState("users"); // users | invites | feedback | tools
   const [users, setUsers] = useState(null);
   const [totals, setTotals] = useState(null);
@@ -35,21 +35,56 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
   const [msg, setMsg] = useState(null);
   const note = (t) => { setMsg(t); setTimeout(() => setMsg(null), 3500); };
 
-  const loadUsers = async (search) => { try { const r = await api.adminUsers(search); setUsers(r.users); setTotals(r.totals); } catch (e) { note("Couldn't load users: " + (e.data?.error || e.message)); } };
-  const loadInvites = async () => { try { const r = await api.adminInvites(); setInvites(r.invites); } catch (e) {} };
-  const loadFeedback = async () => { try { const r = await api.adminFeedback(); setFb(r.feedback); setFbNew(r.newCount); } catch (e) {} };
+  /* ⭐⭐⭐⭐ WHY A REFUSAL HERE NEEDS TRANSLATING.
+     Trey: "It's not letting me add free / comp users… It's saying I must sign in, but I'm signed in."
+     He was — this console renders off locally saved state and never consults the token, so it can be open
+     and usable-looking while the server has no idea who is asking. The server used to answer every such
+     request with the same four words, which read as an accusation ("you didn't sign in") when the truth
+     might be that his token expired, or that the DATABASE didn't answer and nobody could have known.
+     Each of those needs a different action from him, so each now gets a different sentence. */
+  const [authNote, setAuthNote] = useState(null);   // set when a call fails for an identity reason
+  const [sess, setSess] = useState(null);           // the server's own verdict, on demand
+  const explain = (e) => {
+    const code = (e && (e.code || (e.data && e.data.code))) || null;
+    if (code === "AUTH_UNAVAILABLE") return "The server couldn't check your sign-in — its database didn't answer. Nothing is wrong with your account or your password; wait a few seconds and try again.";
+    if (code === "SESSION_EXPIRED" || code === "NO_SESSION" || code === "NO_TOKEN" || (e && e.status === 401))
+      return "Your sign-in expired on this device, so the server is treating this browser as signed out. Sign in again and this will work.";
+    if (code === "NOT_ADMIN") return "You're signed in, but the server doesn't have this address on its admin allowlist (ADMIN_EMAILS) — or the account row's admin flag is off.";
+    if (e && e.message === "BACKEND_WAKING") return "The backend is still waking up. Give it a few seconds and try again.";
+    return (e && ((e.data && e.data.error) || e.message)) || "Something went wrong.";
+  };
+  // Identity failures get a persistent banner as well as the transient note — a toast that vanishes in
+  // 3.5 seconds is the wrong shape for "and here is what to do about it".
+  const trouble = (e) => {
+    const code = (e && (e.code || (e.data && e.data.code))) || null;
+    const identity = code === "AUTH_UNAVAILABLE" || code === "SESSION_EXPIRED" || code === "NO_SESSION" || code === "NOT_ADMIN" || (e && (e.status === 401 || e.status === 403));
+    if (identity) setAuthNote(explain(e));
+    return explain(e);
+  };
+  const checkSession = async () => {
+    setSess({ state: "checking" });
+    try { setSess(await api.session()); }
+    catch (e) { setSess({ state: "unreachable", detail: (e && e.message) || "no answer" }); }
+  };
+
+  const loadUsers = async (search) => { try { const r = await api.adminUsers(search); setUsers(r.users); setTotals(r.totals); setAuthNote(null); } catch (e) { note("Couldn't load users: " + trouble(e)); } };
+  /* ⚠ These two used to swallow everything. On a dead session the invites list simply stayed empty, which
+     reads as "no pending invites" — a wrong answer presented as a fact, on the very screen where the thing
+     that is broken lives. */
+  const loadInvites = async () => { try { const r = await api.adminInvites(); setInvites(r.invites); } catch (e) { setInvites([]); trouble(e); } };
+  const loadFeedback = async () => { try { const r = await api.adminFeedback(); setFb(r.feedback); setFbNew(r.newCount); } catch (e) { trouble(e); } };
   useEffect(() => { if (!hasBackend) return; loadUsers(); loadInvites(); loadFeedback(); }, []);
 
-  const toggleDisabled = async (email, disabled) => { setBusy(true); try { await api.adminSetDisabled(email, disabled); await loadUsers(uSearch); note(disabled ? `Access turned OFF for ${email}` : `Access restored for ${email}`); } catch (e) { note(e.data?.error || e.message); } finally { setBusy(false); } };
-  const revoke = async (email) => { setBusy(true); try { await api.adminRevokeComp(email); await loadUsers(uSearch); note(`Comp revoked for ${email}`); } catch (e) { note(e.data?.error || e.message); } finally { setBusy(false); } };
+  const toggleDisabled = async (email, disabled) => { setBusy(true); try { await api.adminSetDisabled(email, disabled); await loadUsers(uSearch); note(disabled ? `Access turned OFF for ${email}` : `Access restored for ${email}`); } catch (e) { note(trouble(e)); } finally { setBusy(false); } };
+  const revoke = async (email) => { setBusy(true); try { await api.adminRevokeComp(email); await loadUsers(uSearch); note(`Comp revoked for ${email}`); } catch (e) { note(trouble(e)); } finally { setBusy(false); } };
   const sendInvite = async () => {
     const email = inviteEmail.trim().toLowerCase();
     if (!email.includes("@")) return;
     setBusy(true);
-    try { const r = await api.adminInvite(email, inviteScope); note(r.applied ? `Free access granted to ${email}` : `Invite saved — ${email} gets free access when they sign up`); setInviteEmail(""); await loadInvites(); await loadUsers(uSearch); }
-    catch (e) { note(e.data?.error || e.message); } finally { setBusy(false); }
+    try { const r = await api.adminInvite(email, inviteScope); note(r.applied ? `Free access granted to ${email}` : `Invite saved — ${email} gets free access when they sign up`); setInviteEmail(""); setAuthNote(null); await loadInvites(); await loadUsers(uSearch); }
+    catch (e) { note(trouble(e)); } finally { setBusy(false); }
   };
-  const cancelInvite = async (email) => { setBusy(true); try { await api.adminCancelInvite(email); await loadInvites(); note(`Invite canceled for ${email}`); } catch (e) {} finally { setBusy(false); } };
+  const cancelInvite = async (email) => { setBusy(true); try { await api.adminCancelInvite(email); await loadInvites(); note(`Invite canceled for ${email}`); } catch (e) { note(trouble(e)); } finally { setBusy(false); } };
   const [jobResult, setJobResult] = useState(null);
   const [runningJob, setRunningJob] = useState(null);   // which job id is currently running (for per-button UI)
   // Inputs for the live-pick-sync diagnostic. The credential lives in component state for the length of one
@@ -291,6 +326,35 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
       </div>
 
       {!hasBackend && <div className="mut" style={{ maxWidth: 980, margin: "12px auto 0", padding: "0 18px", fontSize: 12.5 }}>Connect the backend to manage real users, invites, and feedback. (Currently running without a backend.)</div>}
+
+      {/* THE BANNER THAT SHOULD HAVE BEEN HERE. It says which of the three identity problems this is, and
+          "Check session" asks the server directly — that route answers with no session at all, precisely so
+          the diagnosis is not locked behind the thing that is broken. */}
+      {authNote && (
+        <div className="panel" role="alert" style={{ maxWidth: 980, margin: "12px auto 0", padding: "12px 16px", borderColor: "var(--gold)" }}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+            <i className="ti ti-lock-open" style={{ fontSize: 17, color: "var(--gold)", marginTop: 1 }} aria-hidden="true" />
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 700 }}>The server didn't accept that</div>
+              <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.5, marginTop: 3 }}>{authNote}</div>
+              {sess && (
+                <div className="mut" style={{ fontSize: 12, lineHeight: 1.5, marginTop: 8 }}>
+                  {sess.state === "checking" ? "Asking the server…"
+                    : sess.state === "unreachable" ? `The server didn't answer at all (${sess.detail}) — that's a connection or cold-start problem, not your account.`
+                    : sess.state === "ok" ? `The server sees you as ${sess.email}${sess.admin ? " and as an admin — so this was something else; try the action again." : `, but NOT as an admin (allowlisted: ${sess.adminEmail ? "yes" : "no"}, admin flag on the account row: ${sess.adminFlag ? "yes" : "no"}).`}`
+                    : sess.state === "expired" ? "The server sees an expired sign-in from this browser. Sign in again from the app header, then come back."
+                    : sess.state === "unavailable" ? "The server couldn't reach its database to check. Wait a few seconds and check again — your account is fine."
+                    : "The server sees no sign-in from this browser at all. Sign in again from the app header, then come back."}
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button className="btn btn-mini" onClick={checkSession}>Check session</button>
+                <button className="btn btn-mini" onClick={() => { setAuthNote(null); setSess(null); }}>Dismiss</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {totals && (
         <div style={{ maxWidth: 980, margin: "0 auto", padding: "14px 18px 0", display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }}>

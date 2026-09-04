@@ -16,6 +16,45 @@ let _lastStateUpdatedAt = null;
 export const getToken = () => { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } };
 export const setToken = (t) => { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch {} };
 
+/* ⭐⭐⭐⭐ A DEAD SESSION HAS TO BE VISIBLE, BECAUSE THE APP CANNOT TELL ON ITS OWN.
+ *
+ * Trey: "It's not letting me add free / comp users… It's saying I must sign in, but I'm signed in."
+ *
+ * He was. The app restores the signed-in user from local storage on boot and recomputes the admin flag
+ * from the email — no token is consulted — while the TOKEN lives in a different store and can be gone,
+ * expired, or issued by a different backend. Nothing reconciled the two, so the screen said "signed in as
+ * an admin" and every admin request came back "Sign in required," and both were telling the truth about
+ * different things.
+ *
+ * The only place that can notice is here, where the 401 actually arrives. So: when an authenticated call
+ * is refused because the session is dead, drop the dead token (keeping it only guarantees the next call
+ * fails the same way) and tell the app, once, so it can say so and offer the sign-in box.
+ *
+ * ⚠ ONLY on a genuine session failure. A 503 AUTH_UNAVAILABLE means the server could not check — signing
+ *   the user out then would turn a five-second database blip into a lost session and a password prompt
+ *   for a password that was never wrong. That case retries (it is a 5xx) and never reaches here.
+ */
+const _authSubs = new Set();
+let _authDead = null;          // null while healthy; otherwise { code, message, at }
+export const authHealth = {
+  get dead() { return _authDead; },
+  clear() { _authDead = null; },
+  subscribe(cb) { _authSubs.add(cb); return () => _authSubs.delete(cb); },
+  /* For the ONE case no request can discover: a signed-in user restored from local storage with no token
+     to send. api.me() short-circuits when there is no token, so nothing 401s, nothing fires, and the app
+     shows a signed-in header forever. Boot reports it here instead. */
+  reportDead(code, message) { markSessionDead(code, message); },
+};
+function markSessionDead(code, message) {
+  setToken(null);
+  const info = { code, message, at: Date.now() };
+  // First one wins the notification; a burst of parallel calls all 401 at once and one banner is enough.
+  const already = !!_authDead;
+  _authDead = info;
+  if (already) return;
+  for (const cb of _authSubs) { try { cb(info); } catch {} }
+}
+
 // `timeoutMs`   — override the per-attempt timeout. Long admin jobs (harvest, full refresh) run SYNCHRONOUSLY
 //                 on the server and can take minutes; the default 45s ceiling aborts them client-side long
 //                 before they finish, which surfaces as a bogus "BACKEND_WAKING" even though the job is fine.
@@ -44,7 +83,13 @@ async function call(path, { method = 'GET', body, auth = true, retries = 2, time
       if (!res.ok) {
         // 5xx from a still-booting backend is worth a retry; 4xx (bad credentials etc.) is not.
         if (res.status >= 500 && attempt < retries) { lastErr = Object.assign(new Error(data.error || `HTTP ${res.status}`), { status: res.status, data }); await new Promise((r) => setTimeout(r, 1500 * (attempt + 1))); continue; }
-        throw Object.assign(new Error(data.error || `HTTP ${res.status}`), { status: res.status, data });
+        // A 401 on a call that PRESENTED a token means that token is dead — the one case where the client
+        // knows more than the screen does. (A 401 with no token sent is just an anonymous request hitting a
+        // gated route; there is nothing to invalidate and nobody to tell.)
+        if (res.status === 401 && token && data.code !== 'AUTH_UNAVAILABLE') {
+          markSessionDead(data.code || 'SESSION_EXPIRED', data.error || 'Your sign-in has expired on this device.');
+        }
+        throw Object.assign(new Error(data.error || `HTTP ${res.status}`), { status: res.status, data, code: data.code || null });
       }
       return data;
     } catch (e) {
@@ -116,16 +161,20 @@ export const api = {
   // ---- auth ----
   async signup(email, password) {
     const r = await call('/api/auth/signup', { method: 'POST', auth: false, body: { email, password } });
-    setToken(r.token); return r.user;
+    setToken(r.token); authHealth.clear(); return r.user;
   },
   async signin(email, password) {
     const r = await call('/api/auth/signin', { method: 'POST', auth: false, body: { email, password } });
-    setToken(r.token); return r.user;
+    setToken(r.token); authHealth.clear(); return r.user;
   },
   async me() {
     if (!getToken()) return null;
     const r = await call('/api/auth/me'); return r.user;
   },
+  /* Always answers, even with no session — that is the whole point of it. Says which of the four states
+     the server sees us in (ok / anon / expired / unavailable) so a screen can report the real reason
+     instead of relaying a refusal. Used by the admin screen's session check. */
+  async session() { return call('/api/auth/session'); },
   // Password reset. `forgot` now answers 404 with code NO_ACCOUNT when the address has no account (see the
   // note in the backend's auth route — a deliberate, rate-limited trade), so the modal can say which of the
   // two things went wrong instead of leaving someone waiting for an email that was never sent to anybody.
@@ -144,7 +193,12 @@ export const api = {
     // Guard the shape: a 200 that isn't the expected body (an old build, a proxy, a misrouted path) would
     // otherwise sign nobody in and surface as a raw TypeError in the modal.
     if (!r || !r.token || !r.user) throw new Error('The server did not complete the reset. Request a new link.');
-    setToken(r.token); return r.user;
+    setToken(r.token); authHealth.clear(); return r.user;
+  },
+  // The Tuesday weekly-brief SUBSCRIPTION. Opt-in: nobody is emailed unless they turned this on, so this
+  // call is the consent itself. Both directions, because the unsubscribe link promises a way back.
+  async setEmailPrefs(briefOptIn) {
+    return call('/api/auth/email-prefs', { method: 'POST', body: { briefOptIn: !!briefOptIn } });
   },
   async saveRankSets(rankSets, platformRanks) {
     // platformRanks rides along on the same endpoint: it is the other thing the user hand-builds, and it had

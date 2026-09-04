@@ -1,0 +1,15 @@
+import { chromium } from 'playwright';
+const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const page = await (await b.newContext({viewport:{width:1380,height:1000}})).newPage();
+page.on('pageerror', e=>console.log('PAGEERROR:', String(e.message).slice(0,200)));
+await page.goto('http://localhost:4173/', { waitUntil:'domcontentloaded' });
+await page.evaluate(() => { localStorage.clear(); sessionStorage.clear();
+  localStorage.setItem('fdc:token','t'); localStorage.setItem('fdcTourSeen','1');
+  localStorage.setItem('fdc:gs-state', JSON.stringify({ user:{email:'t@x.com',paid:true,rankSets:[]}, leagues:[], funMocks:[] }));
+  sessionStorage.setItem('gs-nav', JSON.stringify({ route:'home', activeId:null, hubLeagueId:null })); });
+await page.reload({ waitUntil:'domcontentloaded' });
+await page.waitForTimeout(3000);
+console.log('has getstarted:', await page.evaluate(()=>!!document.querySelector('[data-getstarted]')));
+console.log('has PaidHub marker (Season pass active):', await page.evaluate(()=>/Season pass active/.test(document.body.innerText)));
+console.log('body head:', (await page.evaluate(()=>document.body.innerText)).slice(0,240).replace(/\n/g,' | '));
+await b.close();
