@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29ax";
+const BUILD_TAG = "2026.07.29ay";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -10423,7 +10423,7 @@ function HelpPage({ user, biz, onBack, onHome, onSignOut, onSubmit, initialTab }
     ["How do the predictions work?", "We read thousands of real drafts in your exact format to learn how the board actually behaves — runs, slides, reaches — then run simulations to turn that into live availability odds and pick recommendations. It updates after every selection."],
     ["Is my draft data private?", "Yes. Your leagues, drafts, mock drafts, and personal rankings are tied to your account and are never shared with or visible to other users."],
     ["What does the season pass cover?", "One pass covers unlimited leagues and unlimited mock drafts with every feature through the March 1 league-year cutoff. You'll always see the current price — including any active promo — on the home page and at checkout before you pay anything."],
-    ["Which platforms sync automatically?", "Three of them publish a live draft feed, and those are the three that sync picks as they happen: Sleeper, MyFantasyLeague and Fantrax. Sleeper goes furthest — traded picks, rosters and depth charts flow in as well. A public ESPN league can import its settings (teams, roster slots, scoring, draft order) so you don't type them, but ESPN has no pick feed, so the draft itself is manual entry, and the same goes for Yahoo, CBS and NFL.com. Manual entry is a first-class path, not a fallback: type each pick as it's announced and the engine advises in real time exactly the same way."],
+    ["Which platforms sync automatically?", `${nameList(livePlatforms())} publish a live draft feed, and those are the ones that sync picks as they happen. ${syncClaim()} Sleeper goes furthest — traded picks, rosters and depth charts flow in as well. A public ESPN league can import its settings (teams, roster slots, scoring, draft order) so you don't type them, but ESPN has no pick feed, so the draft itself is manual entry, and the same goes for Yahoo, CBS and NFL.com. Manual entry is a first-class path, not a fallback: type each pick as it's announced and the engine advises in real time exactly the same way.`],
     ["Can I set keepers and traded picks?", "Yes — in any draft's Settings tab. Keepers can be kept at a specific pick or added free to a roster, and you can reassign traded picks between teams. These apply to the official draft and every mock for that league."],
     ["How do I get help fast?", "Use the form on this page. It reaches the team directly, and replies come to the email you submit with."],
   ];
@@ -17975,7 +17975,11 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
         <div className="hubsection" style={{ maxWidth: 760, width: "100%", margin: "0 auto" }}>
           <div className="disp" style={{ fontSize: 24, fontWeight: 700, marginBottom: 14 }}>FAQ</div>
           {[
-            ["Which platforms does it work with?", "Live auto-sync with Sleeper at launch — every pick in the room, traded picks, rosters, and depth charts flow in automatically and the board updates within seconds. Note: you still make your pick inside Sleeper (their draft is the source of truth); we read it live and tell you what to do — we don't draft for you. ESPN is halfway there: if your league is public we import its settings so you don't retype them, but ESPN has no pick feed, so the draft is manual. Yahoo and everywhere else is manual entry start to finish: type a few letters, hit Enter, done."],
+            /* ⚠ THIS ANSWER SAID "WITH SLEEPER AT LAUNCH" FOR THREE BUILDS AFTER IT STOPPED BEING TRUE.
+               MyFantasyLeague and Fantrax sync picks too now — and the honest version of that sentence has
+               to carry which of them anyone has actually drafted through, which is why the middle of it is
+               generated from the platform table rather than typed. */
+            ["Which platforms does it work with?", `${syncClaim()} You still make your pick on the platform — their draft is the source of truth; we read it live and tell you what to do, we don't draft for you. Sleeper goes furthest: traded picks, rosters and depth charts come across as well. ESPN is halfway there — a public league imports its settings so you don't retype them, but ESPN publishes no pick feed, so the draft itself is manual. Yahoo sign-in is built and waiting on Yahoo's own approval. Everywhere else is manual entry start to finish: type a few letters, hit Enter, done.`],
             ["What makes the predictions different?", "We don't just read public ADP — we read thousands of real completed drafts in your format to learn actual board behavior: runs, slides, reaches, and weekly trends. Then 1,000 simulations per pick turn that into live availability odds and recommendations."],
             ["What formats are supported?", "Redraft, dynasty, keeper, best ball, and rookie-only drafts. 1QB and Superflex/2QB. PPR variants and adjustable TE premium. Your league's exact scoring drives every number you see."],
             ["Do you support IDP (individual defensive players)?", "Yes. Turn IDP on in your league settings and set how many DL, LB, DB and DP slots you start — the board adds defensive players, prices them against defensive replacement level the same way it does skill positions, and gives IDP its own scoring section so tackles, sacks and takeaways count the way your league counts them. Fair warning: IDP projections across the industry are looser than skill-position ones, so treat the defensive tiers as a guide rather than gospel."],
@@ -20538,7 +20542,7 @@ function Library({ user, leagues, onSyncCloud, onNew, onUmbrella, onDelete, onAd
           <div className="panel" style={{ padding: 30, textAlign: "center" }}>
             <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}><Compass size={40} spin /></div>
             <div className="disp" style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>No leagues yet</div>
-            <div className="mut" style={{ fontSize: 13.5, marginBottom: 16 }}>Connect one from Sleeper, Yahoo, ESPN, MyFantasyLeague or Fantrax — or set one up by hand in a minute. Either way you get the same engine, and leagues save to your account.</div>
+            <div className="mut" style={{ fontSize: 13.5, marginBottom: 16 }}>Connect one from {nameList(PLATFORMS.filter((p) => !p.unsupported))} — or set one up by hand in a minute. Either way you get the same engine, and leagues save to your account.</div>
             <button className="btn btn-gold" onClick={onNew}>Connect or set up a league</button>
           </div>
         )}
@@ -21580,22 +21584,68 @@ function PlatformChip({ league, platform, live, size = 11 }) {
     </span>
   );
 }
+/* ⭐⭐⭐⭐ `live` IS A PROMISE ABOUT DRAFT NIGHT, AND `proven` IS HOW MUCH OF ONE WE HAVE EARNED.
+   Trey: "Should you say sync to a platform (and list the ones that can do that now — I thought it was more
+   than sleeper). I don't want to make promises unless we know those sites work though."
+   Both halves are right, and they need different answers. `live` says the code path exists and the feed
+   publishes picks — true for three platforms now, not one, and the copy that still said "Sleeper is the
+   only platform that feeds picks in" was simply out of date.
+   `proven` says somebody has actually drafted through it. Only Sleeper has. MyFantasyLeague and Fantrax
+   were built against each platform's published documentation and verified against a stub written from that
+   same documentation — which proves the two halves of MY work agree with each other and NOTHING about
+   whether either agrees with the real service (both are blocked from the build sandbox; see plan29ap). If
+   their payload is shaped differently in one detail, picks arrive nameless and the room reports a healthy
+   sync over an empty board.
+   ⚠ SO THE UI SAYS SO. An unproven integration is worth offering — it will work for most people and it
+     degrades loudly — but it is not worth advertising as though it were Sleeper. The difference between
+     "supported" and "proven" is exactly the difference between a feature and a promise, and this is a
+     product people rely on for two hours once a year with no chance to retry. */
 const PLATFORMS = [
-  { id: "sleeper", name: "Sleeper", field: "Sleeper username", live: true, icon: "ti-moon",
+  { id: "sleeper", name: "Sleeper", field: "Sleeper username", live: true, proven: true, icon: "ti-moon",
     hint: "We read your leagues from Sleeper's free public API and sync your draft live." },
   { id: "yahoo", name: "Yahoo", live: false, icon: "ti-brand-yahoo",
     hint: "Sign in with Yahoo and pick a league. Nothing to copy or paste — Yahoo's own consent screen does it, and you can revoke us from your Yahoo account settings at any time." },
   { id: "espn", name: "ESPN", field: "ESPN league ID", live: false, icon: "ti-ball-football",
     hint: "A public league imports from its ID alone. A private one needs two cookies from your signed-in browser — we use them for the one import and never store them." },
-  { id: "mfl", name: "MyFantasyLeague", field: "MFL league ID", live: true, icon: "ti-database",
-    hint: "MFL has a proper public API, so picks sync live. A private league needs the league's API key, which the commissioner generates under League Setup → Developer's API." },
-  { id: "fantrax", name: "Fantrax", field: "Fantrax Secret ID", live: true, icon: "ti-key",
-    hint: "Paste the Secret ID from your Fantrax profile — not your password. Picks sync live, and regenerating the ID in Fantrax revokes us instantly." },
+  { id: "mfl", name: "MyFantasyLeague", field: "MFL league ID", live: true, proven: false, icon: "ti-database",
+    hint: "MFL has a proper public API, so picks sync live. A private league needs the league's API key, which the commissioner generates under League Setup → Developer's API. New — this one hasn't been through a real draft yet, so check the first few picks land before you rely on it, and switch to typing them if anything looks off." },
+  { id: "fantrax", name: "Fantrax", field: "Fantrax Secret ID", live: true, proven: false, icon: "ti-key",
+    hint: "Paste the Secret ID from your Fantrax profile — not your password. Picks sync live, and regenerating the ID in Fantrax revokes us instantly. New — this one hasn't been through a real draft yet, so check the first few picks land before you rely on it, and switch to typing them if anything looks off." },
   { id: "cbs", name: "CBS Sports", live: false, icon: "ti-alert-triangle", unsupported: true,
     hint: "CBS retired its developer API, and the only way in would be to ask for your CBS password. We won't do that." },
   { id: "nfl", name: "NFL.com", live: false, icon: "ti-arrow-right", unsupported: true,
     hint: "The NFL stopped running season-long fantasy in 2026 and moved leagues to ESPN. Import yours there, then connect it here as an ESPN league." },
 ];
+
+/* ⭐⭐⭐ EVERY SENTENCE THAT NAMES THE SYNCING PLATFORMS IS GENERATED FROM THE TABLE ABOVE.
+   There were four of them written out by hand — the draft-mode chooser, its own help line directly
+   underneath it, the connect dialog and two FAQ answers — and they had already drifted apart: the chooser
+   read "Sleeper is the only platform that feeds picks in" while the help text eight lines below it named
+   all three. A user reading both learns only that the app does not know its own capabilities.
+   ⚠ THIS IS THE SAME CLASS AS THE FORMAT KEY: a fact stated independently in several places is a fact that
+     will be wrong in some of them. When Yahoo's app is approved, one row changes and every sentence in the
+     product changes with it. */
+const livePlatforms = () => PLATFORMS.filter((p) => p.live);
+const provenPlatforms = () => PLATFORMS.filter((p) => p.live && p.proven);
+const newPlatforms = () => PLATFORMS.filter((p) => p.live && !p.proven);
+// "Sleeper, MyFantasyLeague and Fantrax" — an Oxford-free list, because it is read as speech.
+const nameList = (list) => {
+  const n = list.map((p) => p.name);
+  if (n.length <= 1) return n[0] || "";
+  return `${n.slice(0, -1).join(", ")} and ${n[n.length - 1]}`;
+};
+/* The whole claim in one sentence, qualified where it should be. Reads "Picks flow in live from Sleeper.
+   MyFantasyLeague and Fantrax are supported too — both are new and haven't been through a real draft yet."
+   when that is the state of the world, and collapses to one clause when everything is proven. */
+const syncClaim = () => {
+  const proven = provenPlatforms(), fresh = newPlatforms();
+  if (!proven.length && !fresh.length) return "No platform feeds picks in yet — every draft is entered here by hand.";
+  const first = proven.length ? `Picks flow in live from ${nameList(proven)}.` : "";
+  if (!fresh.length) return first;
+  const verb = fresh.length === 1 ? "is" : "are";
+  const tail = `${nameList(fresh)} ${verb} supported too — ${fresh.length === 1 ? "it is" : "they are"} new, and ${fresh.length === 1 ? "has" : "have"} not been through a real draft yet, so watch the first few picks land.`;
+  return first ? `${first} ${tail}` : tail;
+};
 
 /* ⭐⭐⭐ 29ak — ONE IMPLEMENTATION OF "WHAT A CONNECTED LEAGUE MEANS", because there are now two callers.
    Trey, looking at his home page after 29ai shipped the connect strip to the LIBRARY:
@@ -21682,7 +21732,7 @@ function ConnectLeagueModal({ onClose, onConnected }) {
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="disp" style={{ fontSize: 19, fontWeight: 700 }}>Connect a league</div>
             <div className="mut" style={{ fontSize: 12, lineHeight: 1.5, marginTop: 3 }}>
-              Pick where your league lives and we'll pull in its settings — teams, scoring, roster slots, draft order and keepers. Sleeper, MyFantasyLeague and Fantrax also sync your picks live on draft night.
+              Pick where your league lives and we'll pull in its settings — teams, scoring, roster slots, draft order and keepers. {syncClaim()}
             </div>
           </div>
           <button className="btn btn-mini" onClick={onClose} title="Close" style={{ flexShrink: 0 }}><i className="ti ti-x" style={{ fontSize: 13 }} aria-hidden="true" /></button>
@@ -24009,7 +24059,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
        was that both feeds answer with PLATFORM PLAYER IDS and no names, and the board places picks by
        name. See the backend's src/lib/playerIds.js; without it this list would be another false promise
        with more code behind it. */
-  const ROOM_SYNCS_PICKS = ["sleeper", "mfl", "fantrax"];
+  // ⚠ DERIVED, NOT RESTATED — this was a hand-kept copy of PLATFORMS' `live` flags, and a fourth platform
+  //   would have had to be added in both places by somebody who remembered both places existed.
+  const ROOM_SYNCS_PICKS = livePlatforms().map((p) => p.id);
   const platformSyncsPicks = (id) => !!id && ROOM_SYNCS_PICKS.includes(id);
   const defaultOfficialMode = platformSyncsPicks(connectedPlatform) ? connectedPlatform : "manual";
   const savedMode = cfg.draftMode && cfg.draftMode !== "auto" && cfg.draftMode !== "manual" && !platformSyncsPicks(cfg.draftMode)
@@ -30435,10 +30487,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                      panel offered a choice that changes nothing, under a name that implies it does. Worse,
                      the stored value was a platform name, which is what let the room greet an ESPN league
                      with a connection banner. There are two ways picks reach this room and only two. */
-                  ["manual", "ti-keyboard", "I'll type each pick", "Works for any platform and for an in-person draft. Import your league's settings from ESPN, Yahoo, MyFantasyLeague or Fantrax first if you like — those bring the setup across, but their picks are still typed here."],
-                  ["sleeper", "ti-plug-connected", "Sync from Sleeper", "Picks flow in live from your Sleeper draft. You still select in Sleeper; we read it and advise. Sleeper is the only platform that feeds picks in."],
+                  ["manual", "ti-keyboard", "I'll type each pick", `Works for any platform and for an in-person draft. Import your league's settings from ${nameList(PLATFORMS.filter((p) => !p.unsupported && p.id !== "sleeper"))} first if you like — those bring the setup across, but their picks are still typed here.`],
+                  /* ⚠ THE SECOND TILE USED TO SAY "Sync from Sleeper" AND SET draftMode TO "sleeper" — on a
+                     screen that only appears when NOTHING IS CONNECTED. So it named one platform out of
+                     three, and the mode it set could not sync anything, because there was no linked league
+                     to read from: a promise that did nothing, under a brand that was no longer the whole
+                     truth. It now names what actually feeds picks, says which of those are new, and does
+                     the one thing that can make it work — takes you to Connect. */
+                  ["connect", "ti-plug-connected", "Sync from my platform", `${syncClaim()} You still select on the platform; we read it and advise. Connect the league first — sync needs a linked league to read from.`],
                 ].map(([m, icon, lbl, desc]) => (
-                  <button key={m} onClick={() => setDraftMode(m)} className="bigact" style={{ textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", padding: 12, borderRadius: 10, border: `1.5px solid ${draftMode === m ? "var(--gold)" : "var(--line)"}`, background: draftMode === m ? "rgba(214,170,75,0.10)" : "var(--panel2)" }}>
+                  <button key={m} onClick={() => (m === "connect" ? setTab("settings") : setDraftMode(m))} className="bigact" style={{ textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", padding: 12, borderRadius: 10, border: `1.5px solid ${draftMode === m ? "var(--gold)" : "var(--line)"}`, background: draftMode === m ? "rgba(214,170,75,0.10)" : "var(--panel2)" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4 }}>
                       <i className={`ti ${icon}`} style={{ fontSize: 15, color: draftMode === m ? "var(--gold)" : "var(--mut)" }} aria-hidden="true" />
                       <span className="disp" style={{ fontSize: 14, fontWeight: 700, color: draftMode === m ? "var(--gold)" : "var(--ink)" }}>{lbl}</span>
@@ -30447,12 +30505,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   </button>
                 ))}
               </div>
-              {draftMode !== "manual" && <div className="mut" style={{ fontSize: 11, marginTop: 10, lineHeight: 1.45 }} data-modehelp><i className="ti ti-info-circle" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />{liveOn
+              <div className="mut" style={{ fontSize: 11, marginTop: 10, lineHeight: 1.45 }} data-modehelp><i className="ti ti-info-circle" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />{liveOn
                 ? `${livePlatformName} sync is live — picks made in your ${livePlatformName} draft flow in automatically every few seconds. You can also enter a pick manually if needed.`
-                /* ⚠ NAMES THE THREE, RATHER THAN SAYING "SLEEPER ONLY". It said Sleeper-only for as long as
-                   that was true; saying it now would be the same false statement in the other direction,
-                   and someone on MFL reading it would go and enter every pick by hand for no reason. */
-                : "Live auto-sync works on Sleeper, MyFantasyLeague and Fantrax — the three platforms that publish a draft feed. On any other platform, enter each pick here as it happens and the engine advises in real time exactly the same way."}</div>}
+                /* ⚠ GENERATED FROM THE PLATFORM TABLE. It said "Sleeper only" for as long as that was true,
+                   then had to be hand-corrected to three when MFL and Fantrax landed, and the tile above it
+                   was missed in that pass — which is how one panel came to contradict itself. Nobody edits
+                   this sentence again; they edit the table. */
+                : `${syncClaim()} On any other platform, enter each pick here as it happens and the engine advises in real time exactly the same way.`}</div>
             </div>
           </div>
         )}
