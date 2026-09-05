@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29av";
+const BUILD_TAG = "2026.07.29ax";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -3403,13 +3403,77 @@ export function buildPlayers(cfg) {
     };
     const out = {};
     POS.forEach((pos) => { out[pos] = Math.max(1, Math.round(teams * rate[pos])); });
+    // The MANDATORY starters alone — the tail stripped off. Used as the anchor for the cliff guard below,
+    // because "the last player somebody has to start" is the one number in here that is not a judgement call.
+    out.starters = {
+      QB: Math.max(1, Math.round(teams * (dedicatedQb + superN * 0.82))),
+      RB: Math.max(1, Math.round(teams * ((+st.RB || 0) + flex * 0.30))),
+      WR: Math.max(1, Math.round(teams * ((+st.WR || 0) + flex * 0.55))),
+      TE: Math.max(1, Math.round(teams * ((+st.TE || 0) + flex * 0.15))),
+    };
     // Expose it for the admin diagnostic — replacement level is the most consequential number on the board
     // and the only one with no column of its own, so when a format looks mis-valued this is what to read.
     LAST_REPL_COUNTS = out;
     return out;
   })();
+  /* ⭐⭐⭐⭐ REPLACEMENT HAS TO BE SOMEBODY WHO PLAYS, AND IN 2QB IT STOPPED BEING ONE.
+     Trey's 12-team 2QB cheat sheet: every quarterback's VBD was his projection minus 133 — twelve of them
+     ranked above Ja'Marr Chase, and Bo Nix outranked him. 133 is what the 31st quarterback projects, and
+     the 18th projects 265. That is not a shallower version of the same player: a projection near 133 is a
+     BACKUP's, and it is low because the model expects him to sit, not because he would score that if he
+     started. Measuring a starter against a man who does not play manufactures value out of playing time,
+     which is the same volume-comparison error this file has made at K/DST and on the provisional ADP ladder.
+     ⚠ THE COUNT WAS NOT THE PROBLEM — THE POOL RUNNING OUT WAS. Twenty-four quarterbacks really do start in
+       a 12-team 2QB league and a few spares really are rostered, so "about QB31 gets taken" is true. What is
+       false is reading a number off the curve there: past roughly the last starter the curve stops
+       describing starters at all and falls off a cliff. So the count still expresses the intent, and this
+       walks out from the last MANDATORY starter only as far as the curve stays honest — stopping at the
+       cliff itself (a step several times the normal gap) or when the projection drops below what a startable
+       player looks like. On a smooth curve — every RB/WR board — it walks the whole way and changes nothing. */
+  /* ⚠ TEN, NOT SIX. This test is for a COLLAPSE — a starter's projection giving way to a man the model
+     expects to hold a clipboard, which is a 40-60% drop and lands around twenty times the usual gap. At six
+     it also fired on merely steep-but-real steps, and then the baseline hinged on exactly where one gap
+     happened to fall in the least-known part of the curve. The floor below is the principled bound; this
+     exists for the case where the curve falls off before the floor is reached. */
+  const CLIFF_STEP_MULT = 10;    // a gap this many times the usual one is the backup cliff, not a ranking
+  /* ⚠ 0.75, AND THE NUMBER IS DOING THE REAL WORK — the step test alone was knife-edge. Whether it fires
+     depends on exactly where one gap happens to fall, and the part of the curve it is judging is the part
+     we know least about, so a rule that hinges on it is a rule calibrated to guesswork. A floor stated
+     against the LAST MANDATORY STARTER cannot be: three-quarters of a starter's projection is still a
+     startable projection by construction, whatever shape the curve turns out to have, and it lands the
+     baseline within a couple of spots of the last starter on any of them. */
+  const CLIFF_FLOOR_PCT = 0.75;  // below this share of the last starter, the projection is a bench role
+  const replIndexFor = (s, count, starters) => {
+    const last = s.length - 1;
+    if (last < 0) return -1;
+    const nominal = Math.min(count - 1, last);
+    const anchor = Math.min(Math.max(0, starters - 1), last);
+    if (nominal <= anchor) return nominal;
+    /* ⚠ THE AVERAGE SLOPE, NOT THE MEDIAN GAP. A position's curve is flat through its middle — eight of
+       the twelve gaps between the QB5 and the QB18 are two points or less — so the MEDIAN gap is about
+       three, and any multiple of three is a threshold that fires on ordinary steepness. The mean is the
+       slope of the whole starter range, which is what "steeper than this curve normally falls" means. */
+    let span = 0;
+    for (let i = 1; i <= anchor; i++) span += Math.max(0, s[i - 1].pts - s[i].pts);
+    const medStep = anchor > 0 ? span / anchor : 0;
+    const floor = s[anchor].pts * CLIFF_FLOOR_PCT;
+    let idx = anchor;
+    for (let i = anchor + 1; i <= nominal; i++) {
+      if (s[i].pts < floor) break;
+      if (medStep > 0 && (s[i - 1].pts - s[i].pts) > medStep * CLIFF_STEP_MULT) break;
+      idx = i;
+    }
+    return idx;
+  };
   const repl = {};
-  POS.forEach((pos) => { const s = ps.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts); repl[pos] = s.length ? s[Math.min(counts[pos] - 1, s.length - 1)].pts : 0; });
+  POS.forEach((pos) => {
+    const s = ps.filter((p) => p.pos === pos).sort((a, b) => b.pts - a.pts);
+    const i = replIndexFor(s, counts[pos], (counts.starters && counts.starters[pos]) || counts[pos]);
+    repl[pos] = i >= 0 ? s[i].pts : 0;
+    // Report the index actually used, not the one we asked for — the admin diagnostic exists to show where
+    // the baseline really landed, and a guard that silently moves it would make that line a lie.
+    if (LAST_REPL_COUNTS) LAST_REPL_COUNTS[pos] = i >= 0 ? i + 1 : counts[pos];
+  });
   // IDP replacement levels (only relevant when IDP players are in the pool). Indices approximate
   // a typical 12-team IDP starting requirement so VBD is comparable to offense.
   const idpCounts = { DL: 24, LB: 30, DB: 24 };
@@ -5495,7 +5559,7 @@ function SimpleStrip({ players, picks, advice, sims, proj, userIdx, onClock, TEA
   );
 }
 
-function ComboBuilder({ players, sortedAdp, picks, cfg, draftedSet, o1, o2, label1, label2 }) {
+function ComboBuilder({ players, sortedAdp, picks, cfg, draftedSet, o1, o2, label1, label2, oddsAt }) {
   const [a, setA] = useState(null);
   const [b, setB] = useState(null);
   const [q, setQ] = useState("");
@@ -5518,6 +5582,28 @@ function ComboBuilder({ players, sortedAdp, picks, cfg, draftedSet, o1, o2, labe
   const pa = a != null ? players[a] : null;
   const pb = b != null ? players[b] : null;
 
+  /* ⭐⭐⭐ THE ODDS BELONG ON THE CHOICE, NOT ONLY ON THE ANSWER.
+     Trey: "I also want those two players to show a percentage of the chance they make it to that pick on
+     the drop downs."
+     Picking two names and then reading a joint percentage makes you choose blind and find out afterwards —
+     six candidates is six round trips through a simulation to learn something the room already knows about
+     each of them separately. So every row in the picker carries the chance that player reaches the seat you
+     are filling, and so does each filled slot.
+     ⚠ THESE ARE MARGINALS AND THE BIG NUMBER BELOW IS NOT. Each row answers "does HE last", on a board
+       where you have spent nothing; the joint answers "do I get BOTH", on a board where you have spent your
+       first pick on the first one. They are different questions and will not multiply out — which is the
+       whole point of jointSurvival, and why the microcopy says so rather than leaving two percentages that
+       look like they should agree sitting next to each other. */
+  const oddsFor = (p, n) => {
+    if (!p || !oddsAt) return null;
+    const v = oddsAt(n === 1 ? o1 : o2, p.id);
+    return v == null ? null : v;
+  };
+  const Pct = ({ v, suffix }) => (v == null ? null : (
+    <span className="num" style={{ fontSize: 9.5, fontWeight: 800, marginLeft: 5,
+      color: v >= 0.55 ? "#5FD0A8" : v >= 0.3 ? "var(--gold)" : "#F2655C" }}>{Math.round(v * 100)}%{suffix ? ` ${suffix}` : ""}</span>
+  ));
+
   useEffect(() => {
     let alive = true;
     setOdds(null);
@@ -5537,7 +5623,7 @@ function ComboBuilder({ players, sortedAdp, picks, cfg, draftedSet, o1, o2, labe
         borderColor: slot === n ? "var(--gold)" : p ? "var(--line2)" : "var(--line)" }}>
       <span style={{ display: "block", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         <span className="mut" style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", display: "block" }}>{lbl}</span>
-        {p ? <><b style={{ color: POS_COLOR[cpos(p.pos)], fontSize: 9.5, marginRight: 4 }}>{cpos(p.pos)}</b>{p.name}</> : <span className="mut">choose a player</span>}
+        {p ? <><b style={{ color: POS_COLOR[cpos(p.pos)], fontSize: 9.5, marginRight: 4 }}>{cpos(p.pos)}</b>{p.name}<span data-slotodds={p.name}><Pct v={oddsFor(p, n)} suffix="there" /></span></> : <span className="mut">choose a player</span>}
       </span>
     </button>
   );
@@ -5561,6 +5647,9 @@ function ComboBuilder({ players, sortedAdp, picks, cfg, draftedSet, o1, o2, labe
       {slot != null && (
         <div style={{ marginTop: 7 }}>
           <input className="gs" autoFocus style={{ width: "100%", fontSize: 12, padding: "5px 8px" }} placeholder="Search available players…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <div className="mut" style={{ fontSize: 9.5, marginTop: 4 }}>
+            The percentage is the chance that player is still on the board at <b style={{ color: "var(--ink)" }}>{slot === 1 ? label1 : label2}</b>, taken on its own — the joint number below is what you get once you have spent {label1} on somebody.
+          </div>
           <div style={{ maxHeight: 148, overflowY: "auto", marginTop: 5, border: "1px solid var(--line2)", borderRadius: 7 }}>
             {results.map((p) => (
               <div key={p.id} data-combocand={p.name} onClick={() => { if (slot === 1) setA(p.id); else setB(p.id); setSlot(null); setQ(""); }}
@@ -5569,6 +5658,7 @@ function ComboBuilder({ players, sortedAdp, picks, cfg, draftedSet, o1, o2, labe
                 <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
                 <span className="num mut" style={{ fontSize: 10 }}>ADP {p.adp != null ? p.adp.toFixed(0) : "—"}</span>
                 <span className="num" style={{ fontSize: 10, color: "var(--mut)" }}>{Math.round(p.pts || 0)} pts</span>
+                <span data-candodds={p.name} style={{ minWidth: 34, textAlign: "right" }}><Pct v={oddsFor(p, slot)} /></span>
               </div>
             ))}
             {!results.length && <div className="mut" style={{ padding: 9, fontSize: 11.5 }}>Nobody available matches that.</div>}
@@ -28815,6 +28905,18 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                  mildly rather have now is still worth a nudge — and the old supply rule survives verbatim as
                  the fallback for when no cost has been computed yet. */
               const verdictOf = (r, cost) => {
+                /* ⭐⭐⭐⭐ NOBODY AHEAD OF YOU NEEDS ONE AND NOBODY IS PROJECTED TO TAKE ONE — THAT IS "WAIT",
+                   WHATEVER THE POINTS SAY. Trey: "I need a QB, there are 5 picks in front of me… but they
+                   all have a QB, so I should wait for QB until my next pick on the way back."
+                   The cost rule below is about the SHAPE OF THE BOARD — how far the drop is from the best
+                   quarterback to the next one — and it will happily shout "take now" at a position that
+                   literally cannot be taken before you are back, because a big gap between QB1 and QB2 is a
+                   big gap whether or not anybody in this room wants a quarterback. That is the two-numbers-
+                   disagreeing bug this panel already fixed once at the card level, arriving from the other
+                   side: the card would read "Take now" directly above "0 of 5 still need one · none expected
+                   to go". Both conditions are required, deliberately — teams draft backups and upside picks
+                   they do not "need", so an unmet need is not the only way a quarterback leaves the board. */
+                if (r.need === 0 && r.projected === 0) return { t: "Safe to wait", c: "var(--green)" };
                 if (cost != null && isFinite(cost)) {
                   if (cost >= 14) return { t: "Take now", c: "var(--red)" };
                   if (cost >= 4) return { t: r.projected >= 3 ? "Take now" : "At risk", c: r.projected >= 3 ? "var(--red)" : "var(--gold)" };
@@ -28838,6 +28940,71 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   <div className="mut" style={{ fontSize: 10.5, marginBottom: 8 }}>
                     {gap.length} pick{gap.length === 1 ? "" : "s"} · {nTeams} team{nTeams === 1 ? "" : "s"} · you're back at <b style={{ color: "var(--gold)" }}>{pickLabel(endO)}</b>
                   </div>
+
+                  {/* ⭐⭐⭐⭐ THE SENTENCE, WRITTEN OUT — FOR THE POSITIONS *YOU* STILL OWE A STARTER AT.
+                      Trey: "We need a clear way to show this problem: I need a QB, there are 5 picks in
+                      front of me... but they all have a QB, so I should wait for QB until my next pick on
+                      the way back."
+                      Every number needed to say that was already on this panel and the reader was being
+                      asked to combine three of them in their head: their OWN unfilled slots (which the panel
+                      never showed at all), how many teams in the gap still owe that position, and whether
+                      anything is projected to go there. So the panel led with a grid of positions rather
+                      than with the decision, and the decision is what he opened it for.
+                      ⚠ IT FILTERS TO WHAT YOU STILL OWE, and that is the point rather than a tidiness
+                        measure: "wait on TE" is noise when your tight end is already in. When every starter
+                        is filled there is no question left to answer, so it says so and stops. */}
+                  {(() => {
+                    const mine = (advice && advice.myCounts) || {};
+                    const owedRows = POS.map((pos) => {
+                      const owe = Math.max(0, (reqE[pos] || 0) - (mine[pos] || 0));
+                      const r = summary.find((x) => x.pos === pos) || { need: 0, projected: 0 };
+                      const now = advice && advice.bestNow ? advice.bestNow[pos] : null;
+                      const cost = advice && advice.waitCost ? advice.waitCost[pos] : null;
+                      const survIdx2 = sims && Array.isArray(sims.nexts) ? sims.nexts.indexOf(endO) : -1;
+                      const map2 = survIdx2 >= 0 && sims.pct ? sims.pct[survIdx2] : null;
+                      const lasts = now && map2 && map2[now.id] != null ? map2[now.id] / 100 : null;
+                      return { pos, owe, r, now, cost, lasts, v: verdictOf(r, cost) };
+                    }).filter((x) => x.owe > 0);
+                    if (!owedRows.length) {
+                      return (
+                        <div className="mut" style={{ fontSize: 11, lineHeight: 1.5, marginBottom: 10, padding: "7px 9px", border: "1px solid var(--line2)", borderRadius: 8 }}>
+                          Every starting slot is filled, so nothing here is urgent — you are drafting for value and depth now, and the pairs below are the way to read that.
+                        </div>
+                      );
+                    }
+                    return (
+                      <div data-waitread style={{ border: "1px solid var(--line2)", borderRadius: 9, padding: "8px 10px", marginBottom: 11 }}>
+                        <div className="disp" style={{ fontSize: 10, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--mut)", fontWeight: 800, marginBottom: 5 }}>
+                          Can you wait? — the slots you still owe
+                        </div>
+                        {owedRows.map(({ pos, owe, r, now, lasts, v }) => {
+                          const needers = [...teamInfo.entries()]
+                            .filter(([, x]) => x.owed[pos] > 0 || (x.flexOpenN > 0 && ["RB", "WR", "TE"].includes(pos)))
+                            .map(([t]) => shortName(t));
+                          return (
+                            <div key={pos} data-waitrow={pos} style={{ display: "flex", alignItems: "baseline", gap: 7, padding: "4px 0", borderTop: "1px solid var(--line2)", fontSize: 11, lineHeight: 1.45, cursor: "help" }}
+                              onMouseEnter={(e) => showTip(e, [
+                                { kind: "take", tone: v.t === "Safe to wait" ? "good" : v.t === "At risk" ? "neutral" : "bad", x: `${pos} — ${v.t.toLowerCase()}` },
+                                { t: "You still owe", x: `${owe} starting ${pos} slot${owe === 1 ? "" : "s"}` },
+                                /* The roster read he asked for, at the only scope that matters here: not all
+                                   twelve teams, the ones who actually pick before you are back. */
+                                { t: `Teams before ${pickLabel(endO)}`, x: needers.length ? `${needers.length} of ${nTeams} still owe a ${pos}: ${needers.join(", ")}` : `None — all ${nTeams} of them already have their ${pos} starters` },
+                                { t: "Expected to go there", x: r.projected ? `${r.projected} of the ${gap.length} picks in between` : "None of the picks in between" },
+                                ...(now ? [{ t: "Best on the board now", x: `${now.name}${lasts != null ? ` — ${Math.round(lasts * 100)}% to still be there at ${pickLabel(endO)}` : ""}` }] : []),
+                              ])} onMouseLeave={hideTip}>
+                              <span style={{ fontWeight: 800, fontSize: 11.5, color: POS_COLOR[pos], width: 26, flexShrink: 0 }}>{pos}</span>
+                              <span style={{ flex: 1, minWidth: 0 }}>
+                                You still need {owe}. <b style={{ color: r.need === 0 ? "#5FD0A8" : "var(--ink)" }}>{r.need === 0 ? `None of the ${nTeams} teams` : `${r.need} of the ${nTeams} teams`}</b> ahead of you {r.need === 1 ? "does" : "do"}
+                                {r.projected > 0 ? `, and ${r.projected} of the ${gap.length} picks in between project ${pos}` : `, and none of the ${gap.length} picks in between project ${pos}`}.
+                                {now && lasts != null && <> {now.name} is <b style={{ color: lasts >= 0.55 ? "#5FD0A8" : lasts >= 0.3 ? "var(--gold)" : "#F2655C" }}>{Math.round(lasts * 100)}%</b> to last to {pickLabel(endO)}.</>}
+                              </span>
+                              <span style={{ color: v.c, fontWeight: 800, fontSize: 11, flexShrink: 0 }}>{v.t === "Safe to wait" ? "WAIT" : v.t === "At risk" ? "AT RISK" : "TAKE NOW"}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
                   {/* ⭐⭐⭐ 29q — THE PICK AND ITS CONSEQUENCE, AS A PAIR.
                       Trey: "I'm on the clock… I see the next 4 picks because my pick after that I'm 5 picks
                       away. What I don't see is who is currently recommended at my pick AND who would this
@@ -28852,7 +29019,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       ⚠ The survivor is taken from the SAME projection the rest of this panel draws (`path`),
                       so the row cannot claim a player the picks above it have already spent. */}
                   {(() => {
-                    if (onClock !== userIdx) return null;
+                    /* ⭐⭐⭐⭐ IT USED TO SAY `if (onClock !== userIdx) return null` — SO THE AUTOMATED PAIRS
+                       EXISTED ONLY ON THE CLOCK, WHICH IS THE ONE MOMENT YOU DO NOT NEED THEM.
+                       Trey: "I love that you added the ability to put in two players, but I didn't want you
+                       to get rid of the automated combinations you'd recommend with that."
+                       Nothing was removed — it was hidden, and hidden in the state he is in whenever he
+                       opens this panel to think ahead. On the clock you are choosing; five picks out you are
+                       PLANNING, and the plan is the pair. What changes off the clock is only which two seats
+                       the question is about: on the clock it is "this pick and the next one", off it, it is
+                       your next two, the same two the pair builder below already uses.
+                       ⚠ AND THE FIRST COLUMN CHANGES MEANING WITH IT. On the clock a candidate is available
+                         by definition, so his percentage answers "does he last if I WAIT". Off the clock he
+                         may not even reach you, so it answers "is he still there when I'm up" — a different
+                         question, and showing one number under the other question is how a panel lies. */
+                    const oNow = onClock === userIdx ? picks.length : myNextOverall;
+                    const oThen = myNext2Overall;
+                    if (oNow == null || oThen == null || oThen <= oNow) return null;
+                    const onClockNow = onClock === userIdx;
                     const req = REQ_F(cfg.sf);
                     const have = (advice && advice.myCounts) || {};
                     /* ⭐⭐⭐ 29s — "LIKELY STILL THERE" NOW MEANS LIKELY.
@@ -28877,12 +29060,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                        fallback for the case where no survival map covers this pick. */
                     const goneInGap = new Set();
                     gap.forEach(({ o }) => { const st = projAt.get(o); if (st && st.p) goneInGap.add(st.p.id); });
-                    const survIdx = sims && Array.isArray(sims.nexts) ? sims.nexts.indexOf(endO) : -1;
-                    const survMap = survIdx >= 0 && sims.pct ? sims.pct[survIdx] : null;
+                    const mapAt = (o) => {
+                      const i = sims && Array.isArray(sims.nexts) ? sims.nexts.indexOf(o) : -1;
+                      return i >= 0 && sims.pct ? sims.pct[i] : null;
+                    };
+                    const survMap = mapAt(oThen);
+                    const survNow = mapAt(oNow);
                     // null = we have no odds for this pick and fall back to the single projected path.
                     const oddsOf = (p) => {
                       if (survMap && survMap[p.id] != null) return survMap[p.id] / 100;
                       return goneInGap.has(p.id) ? 0 : null;
+                    };
+                    // Odds he is there at the seat you would TAKE him in. On the clock that is certainty —
+                    // he is on the board in front of you — so this is only a question off the clock.
+                    const oddsNowOf = (p) => {
+                      if (onClockNow) return null;
+                      if (survNow && survNow[p.id] != null) return survNow[p.id] / 100;
+                      return null;
                     };
                     const avail = (players || []).filter((p) => p && !draftedSet.has(p.id));
                     // Value to YOU, given a roster: VBD plus a bounded bonus for a starting slot still open.
@@ -28926,6 +29120,32 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         if (cands.length < 5) pushC(p);
                       });
                     }
+                    /* ⚠ OFF THE CLOCK, A CANDIDATE HAS TO REACH YOU FIRST. On the clock every name above is
+                       sitting on the board in front of you; five picks out, half of them will be gone, and a
+                       plan built on the ones who will not be there is worse than no plan. Drop anyone with
+                       less than a one-in-four chance of lasting to your seat, and rank what is left by
+                       EXPECTED value — his value times his odds — so the list reads as "what you can
+                       realistically do", not "what you would do if the room stopped drafting.
+                       The recommendation and any open plan target stay regardless: they are the two rows he
+                       came to check, and dropping a target because it is unlikely is the panel answering a
+                       question he did not ask. */
+                    if (!onClockNow) {
+                      const keep = new Set([rec && rec.id, ...planNow.map(({ p }) => p.id)].filter((x) => x != null));
+                      const ev = (p) => (p.vbd || 0) * (oddsNowOf(p) == null ? 1 : oddsNowOf(p));
+                      const ranked = cands.slice().sort((a, b) => ev(b) - ev(a));
+                      const likely = ranked.filter((c) => keep.has(c.id) || (oddsNowOf(c) == null ? true : oddsNowOf(c) >= 0.25));
+                      /* ⚠ THE FLOOR WINS OVER THE FILTER, and finding that out took a run of the real room:
+                         at pick 1.05 with four picks ahead of you, the top of the board is 0-13% to survive,
+                         so a straight 25% cut left THREE rows on a panel he asked to show at least five. A
+                         filter that empties the panel in round one is worse than the unlikely names it was
+                         removing — those still tell you something, and their percentage is printed in red
+                         next to them. So the cut applies only while there is enough left to satisfy the
+                         floor, and the rest are topped up in expected-value order. */
+                      const out = likely.slice();
+                      if (out.length < 5) for (const p of ranked) { if (out.length >= 5) break; if (!out.includes(p)) out.push(p); }
+                      cands.length = 0;
+                      out.forEach((p) => cands.push(p));
+                    }
                     const planIds = new Set(planNow.map(({ p }) => p.id));
                     /* A player is a realistic answer to "who would this leave me with" only if he is odds-on
                        to be there. 55% rather than 50% because the second name is offered as a plan, and a
@@ -28952,6 +29172,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         c, next: pick, likely: !!best,
                         odds: pick ? oddsOf(pick) : null,
                         cOdds: oddsOf(c),
+                        cHere: oddsNowOf(c),
                         onPlan: planIds.has(c.id),
                         combined: (c.vbd || 0) + (pick && pick.vbd != null ? pick.vbd : 0),
                       };
@@ -28964,7 +29185,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           This pick and your next, together
                         </div>
                         <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 16px minmax(0,1fr) 62px", gap: "0 8px", fontSize: 9, textTransform: "uppercase", letterSpacing: ".04em", color: "var(--mut)", fontWeight: 700, paddingBottom: 3 }}>
-                          <span>Take now at {pickLabel(picks.length)}</span><span /><span>Likely still there at {pickLabel(endO)}</span><span style={{ textAlign: "right" }}>Together</span>
+                          <span>{onClockNow ? "Take now at" : "You take at"} {pickLabel(oNow)}</span><span /><span>Likely still there at {pickLabel(oThen)}</span><span style={{ textAlign: "right" }}>Together</span>
                         </div>
                         {rows.map((r, i) => {
                           const isRec = i === 0 && rec && r.c.id === rec.id;
@@ -28980,10 +29201,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                 {/* ⭐ 29t — the target he came to check, marked as such. */}
                                 {r.onPlan && <span data-pairplan={r.c.name} style={{ fontSize: 8.5, marginLeft: 4, color: "#3BD98A", fontWeight: 800 }}>★ PLAN</span>}
                                 {/* ⭐ The number that answers "what happens if I pass on him" directly. */}
-                                {r.cOdds != null && (
+                                {onClockNow && r.cOdds != null && (
                                   <span data-passodds={r.c.name} style={{ fontSize: 8.5, marginLeft: 5, fontWeight: 800,
                                     color: r.cOdds >= 0.55 ? "var(--mut)" : "#F2655C" }}>
                                     {r.cOdds < 0.55 ? `gone if you wait · ${Math.round(r.cOdds * 100)}%` : `${Math.round(r.cOdds * 100)}% lasts`}
+                                  </span>
+                                )}
+                                {/* Off the clock the honest first number is whether he even reaches you. */}
+                                {!onClockNow && r.cHere != null && (
+                                  <span data-hereodds={r.c.name} className="num" style={{ fontSize: 8.5, marginLeft: 5, fontWeight: 800,
+                                    color: r.cHere >= 0.55 ? "#5FD0A8" : r.cHere >= 0.3 ? "var(--gold)" : "#F2655C" }}>
+                                    {Math.round(r.cHere * 100)}% there
                                   </span>
                                 )}
                               </span>
@@ -29004,7 +29232,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           );
                         })}
                         <div className="mut" style={{ fontSize: 9.5, lineHeight: 1.45, marginTop: 6 }}>
-                          "Together" is the two players' combined value over replacement. The percentage is the simulated chance that player is still on the board at {pickLabel(endO)} — the second name is the best player who is odds-on to last, so a name in <b style={{ color: "#F2655C" }}>red</b> means nothing safe is left and you are looking at a gamble.
+                          "Together" is the two players' combined value over replacement. {onClockNow
+                            ? <>The percentage is the simulated chance that player is still on the board at {pickLabel(oThen)} — the second name is the best player who is odds-on to last, so a name in <b style={{ color: "#F2655C" }}>red</b> means nothing safe is left and you are looking at a gamble.</>
+                            : <>You are not on the clock, so the first percentage is the chance that player is still there when you pick at {pickLabel(oNow)}, and the second is the chance the follow-up lasts to {pickLabel(oThen)}. Rows are ordered by value × odds — what you can realistically do, not what you would do if the room stopped drafting.</>}
                         </div>
                       </div>
                     );
@@ -29027,7 +29257,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     <ComboBuilder
                       players={players} sortedAdp={sortedAdp} picks={picks} cfg={cfg}
                       draftedSet={draftedSet} o1={myNextOverall} o2={myNext2Overall}
-                      label1={pickLabel(myNextOverall)} label2={pickLabel(myNext2Overall)} />
+                      label1={pickLabel(myNextOverall)} label2={pickLabel(myNext2Overall)}
+                      /* The same Monte Carlo the board's "Avail @" column reads — one simulation feeding every
+                         survival number in the room, so two panels can never quote different odds. */
+                      oddsAt={(o, id) => {
+                        const i = sims && Array.isArray(sims.nexts) ? sims.nexts.indexOf(o) : -1;
+                        const m = i >= 0 && sims.pct ? sims.pct[i] : null;
+                        return m && m[id] != null ? m[id] / 100 : null;
+                      }} />
                   )}
                   {/* ⭐⭐⭐ THE ANSWER, ONE CARD PER POSITION. Trey: "you can see the screenshot of how much
                       room I have. Can you fill it appropriately? I really like this one, but it's still a bit
