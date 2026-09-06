@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29ay";
+const BUILD_TAG = "2026.07.29b";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -540,6 +540,56 @@ function typeFamily(t) { return t === "dynasty" ? "dynasty" : t === "bestball" ?
 const DETAIL_KEY = "fdcDetailMode";
 const readDetailMode = () => { try { return localStorage.getItem(DETAIL_KEY) === "simple" ? "simple" : "complex"; } catch { return "complex"; } };
 const writeDetailMode = (m) => { try { localStorage.setItem(DETAIL_KEY, m === "simple" ? "simple" : "complex"); } catch {} };
+
+/* ⭐⭐⭐⭐ A STOPWATCH ON THE ONE MACHINE THAT HAS THE BUG.
+   Trey: "when I'm drafting from the hub, it's really smooth and fast… as soon as I start clicking on the
+   draft button in the [tracker] top section… it makes the draft lag a ton."
+   Five separate rigs could not reproduce it here: the tracker's Draft button, the board's, and the
+   between-picks pop-up's all call the same function and all measured the same, throttled and not, pointer
+   moved away and parked, alternating and in long runs (perf29az / perf29b / perf29c / perf29d). A CPU
+   profile says a pick costs 120-140ms of blocked main thread on this box, all of it the Monte Carlo, and
+   it costs that wherever you click.
+   ⚠ SO THE NEXT MEASUREMENT HAS TO HAPPEN WHERE THE BUG IS, WHICH IS HIS BROWSER, NOT MINE. Guessing again
+     would mean shipping a change to a hot path on a hunch — the thing that turns one report into two.
+   `?perf=1` on the draft-room URL turns on a small readout: every pick, which button started it, and how
+   long the room took to come back. Off by default, costs nothing when off (the flag is read once at module
+   load and every hook is behind it), and it names the surface — which is the one fact no screen recording
+   can give me, because the two buttons look identical in a video. */
+const PERF_ON = (() => { try { return new URLSearchParams(window.location.search).get("perf") === "1"; } catch (e) { return false; } })();
+const PERF_LOG = [];
+const PERF_SUBS = new Set();
+/* Two frames, deliberately. The first fires after React has committed the new tree; the SECOND fires after
+   the browser has actually painted it, which is the moment the room looks like it has answered you. One
+   frame measures our work, two measure the wait. */
+function perfMark(source) {
+  if (!PERF_ON) return;
+  const t0 = performance.now();
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    PERF_LOG.unshift({ source: source || "?", ms: Math.round(performance.now() - t0), at: Date.now() });
+    if (PERF_LOG.length > 14) PERF_LOG.pop();
+    PERF_SUBS.forEach((cb) => { try { cb(); } catch (e) {} });
+  }));
+}
+function PerfReadout() {
+  const [, bump] = useState(0);
+  useEffect(() => { const cb = () => bump((n) => n + 1); PERF_SUBS.add(cb); return () => PERF_SUBS.delete(cb); }, []);
+  if (!PERF_ON) return null;
+  const rows = PERF_LOG;
+  const worst = rows.reduce((m, r) => Math.max(m, r.ms), 0);
+  return (
+    <div data-perfreadout style={{ position: "fixed", left: 10, bottom: 10, zIndex: 99, background: "rgba(8,10,14,.94)", border: "1px solid var(--gold)",
+      borderRadius: 9, padding: "8px 10px", fontSize: 11, fontFamily: "ui-monospace, monospace", color: "var(--ink)", minWidth: 210, boxShadow: "0 8px 24px #000a" }}>
+      <div style={{ color: "var(--gold)", fontWeight: 800, marginBottom: 4, letterSpacing: ".04em" }}>PICK TIMING · ?perf=1</div>
+      {rows.length === 0 ? <div className="mut">Draft a player…</div> : rows.map((r, i) => (
+        <div key={r.at + "-" + i} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "1px 0" }}>
+          <span style={{ color: "var(--mut)" }}>{r.source}</span>
+          <span style={{ fontWeight: 700, color: r.ms > 600 ? "#F2655C" : r.ms > 250 ? "var(--gold)" : "#5FD0A8" }}>{r.ms}ms</span>
+        </div>
+      ))}
+      {rows.length > 1 && <div className="mut" style={{ marginTop: 4, borderTop: "1px solid var(--line2)", paddingTop: 3 }}>worst {worst}ms · newest first</div>}
+    </div>
+  );
+}
 
 function isSuperflex(cfg) {
   if (!cfg) return false;
@@ -5066,6 +5116,17 @@ function runMultF(recent, pos, round, R) {
   const rawBoost = Math.min(0.5, 0.18 * (c - 2)); // capped run boost (max +0.5 → 1.5x)
   return 1 + rawBoost * lateFade;
 }
+/* ⚠ A MEMOISATION OF THIS FUNCTION WAS TRIED AND REVERTED — do not re-invent it without measuring first.
+   The reasoning was sound on paper: two of the three factors, `needMult` and `runMultF`, depend on the
+   POSITION and not the player, so across 34 candidates they compute at most six distinct values, and a CPU
+   profile puts weightFor at 40% of all application self-time (five picks, 12-team superflex: perf29c.mjs).
+   Caching them per position, one cache per simulated pick, measured as a WASH — 989/961ms against 1089/1023
+   before, which is inside the run-to-run spread. The explanation is that V8 inlines `baseW`, so most of what
+   the profiler attributes to weightFor is baseW's own exp/sigma arithmetic, which is genuinely per-player
+   and cannot be shared. The change also allocated two closures per call, four hundred thousand times per
+   recompute, which plausibly gave back whatever the cache saved.
+   ⭐ THE LESSON IS ABOUT THE PROFILE, NOT THE FUNCTION: self-time on a function whose callees are inlined
+   tells you where the CPU is, not which line to change. */
 function weightFor(p, pickNum, counts, round, recent, dem, R, adpRank) {
   // K/DST ordering nudge: their ADPs cluster in a tight band, so the ADP magnet barely separates DST1 from
   // DST12 and bots ended up taking a random defense instead of the best available. Multiply in a gentle factor
@@ -10275,6 +10336,8 @@ export default function App() {
       <div data-chrome="1"><SyncStatus user={user} /></div>
       {/* Tells you when the SERVER has stopped believing you're signed in, which the header cannot know. */}
       <div data-chrome="1"><SessionStatus onSignIn={() => setAuthOpen(true)} /></div>
+      {/* Off unless the room was opened with ?perf=1 — see perfMark. */}
+      <div data-chrome="1"><PerfReadout /></div>
       {/* Last line of defence against a blank page (see the watchdog above). Never navigates on its own. */}
       {blank && (
         <div data-chrome="1" style={{ position: "fixed", inset: 0, zIndex: 95, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "var(--bg, #0E1217)" }}>
@@ -22349,6 +22412,12 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
     base.pickTrades = Array.isArray(base.pickTrades) ? base.pickTrades : [];
     base.extraPicks = Array.isArray(base.extraPicks) ? base.extraPicks : [];
     base.existingRosters = (base.existingRosters && typeof base.existingRosters === "object") ? base.existingRosters : null;
+    /* ⭐⭐ THE FLAG FOLLOWS THE SLOTS, because the ENGINE reads the slots. `idpOn` is "flag OR any defensive
+       starting slot", so a league imported from a platform with a LB slot is already an IDP league as far as
+       every valuation is concerned — while this form, keyed on the flag alone, would open with the whole
+       defensive section hidden and no way to see or edit the slots it is drafting against. */
+    const st0 = base.start || {};
+    if (((st0.DL || 0) + (st0.LB || 0) + (st0.DB || 0) + (st0.IDPFLEX || 0)) > 0) base.idp = true;
     // Restore an unfinished setup, if there is one. ⚠ Merged OVER the defaults rather than replacing them,
     // so a saved draft written by an older build can't remove a field this build expects to exist.
     if (draftKey) {
@@ -22470,7 +22539,8 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
     const cfg = {
       name: f.name || "My league", type: f.type, teams: +f.teams, rounds: +f.rounds,
       slot: f.slot === "" || f.slot == null ? null : +f.slot,
-      order: f.order, excludeRookies: !!f.excludeRookies, pickTrading: !!f.pickTrading, keeper: !!f.keeper || f.type === "keeper", idp: !!f.idp,
+      order: f.order, excludeRookies: !!f.excludeRookies, pickTrading: !!f.pickTrading, keeper: !!f.keeper || f.type === "keeper",
+      idp: !!f.idp || ((f.start.DL || 0) + (f.start.LB || 0) + (f.start.DB || 0) + (f.start.IDPFLEX || 0)) > 0,
       sf: f.start.SUPER > 0 || (f.start.QB || 0) >= 2, tePrem: tePremMult > 0, tePremMult,
       start: f.start, caps: f.caps, scoring: f.scoring, connect: f.connect,
       draftOrder: f.draftOrder && f.draftOrder.length === +f.teams ? f.draftOrder : null,
@@ -22745,6 +22815,35 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
               {k === "SUPER" && f.start.SUPER > 0 && <div className="gold" style={{ fontSize: 11, marginBottom: 8, marginLeft: 2 }}>⚑ Superflex / 2QB format active — QB values surge across the entire board.</div>}
             </div>
           ))}
+          {/* ⭐⭐⭐⭐ THE SWITCH THAT DID NOT EXIST.
+              Feedback: "can't configure roster to accept IDPs, i could be dumb." He wasn't. Everything below
+              this line was gated on `f.idp`, the form initialised that flag to false, and NOTHING in the app
+              ever set it — not a checkbox, not a menu, nowhere. So the defensive slots were unreachable from
+              a fresh league by any sequence of clicks, and the Simple tab's own hint ("Need bench caps or IDP
+              slots? Switch to Complex → Roster") sent people to a tab where the control was invisible. A
+              feature can be fully built, tested and documented and still not exist, if there is no way in.
+              ⚠ TURNING IT OFF ZEROES THE SLOTS, and that is not tidiness. The engine's `idpOn` is "flag OR any
+                defensive slot", so leaving DL:2 behind a hidden section would keep every defender in the pool
+                and in replacement level while the form showed no reason why — the same flag-versus-reality
+                split that made this unreachable in the first place, pointing the other way. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 9, margin: "16px 0 4px", padding: "9px 11px", border: `1px solid ${f.idp ? "var(--gold)" : "var(--line)"}`, borderRadius: 9, background: f.idp ? "rgba(214,170,75,0.07)" : "transparent" }}>
+            <input id="idptoggle" type="checkbox" checked={!!f.idp} onChange={(e) => {
+              const on = e.target.checked;
+              setF((prev) => {
+                const st = { ...prev.start };
+                const any = (st.DL || 0) + (st.LB || 0) + (st.DB || 0) + (st.IDPFLEX || 0);
+                if (on && any === 0) { st.DL = 2; st.LB = 3; st.DB = 2; }   // the common full-IDP lineup, as a starting point
+                if (!on) { st.DL = 0; st.LB = 0; st.DB = 0; st.IDPFLEX = 0; }
+                return { ...prev, idp: on, start: st };
+              });
+            }} style={{ width: 16, height: 16, accentColor: "var(--gold)", cursor: "pointer" }} />
+            <label htmlFor="idptoggle" style={{ fontSize: 13, cursor: "pointer", flex: 1 }}>
+              <b>This league starts defensive players (IDP)</b>
+              <span className="mut" style={{ display: "block", fontSize: 11, marginTop: 2 }}>
+                Turns on DL/LB/DB — they join the draft pool, get their own replacement level, and unlock the IDP scoring section. Switching it on fills in a typical 2 DL / 3 LB / 2 DB lineup; change the numbers to match your league.
+              </span>
+            </label>
+          </div>
           {f.idp && (
             <>
               <div className="disp gold" style={{ fontSize: 12, letterSpacing: ".06em", margin: "16px 0 8px" }}>DEFENSIVE (IDP) SLOTS</div>
@@ -26909,8 +27008,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     });
     return out;
   }, [cfg, rostersByTeam, userIdx]);
-  const draftPlayer = (id) => {
+  const draftPlayer = (id, source) => {
     if (done || draftedSet.has(id) || (gated && onClock === userIdx)) return;
+    // Names WHICH button started this pick, so a slow one can be attributed rather than guessed at. No-op
+    // unless the room was opened with ?perf=1.
+    perfMark(source);
     const p = players[id];
     // enforce EXPLICIT per-position caps on manual picks (engine already enforces them in sims)
     if (cfg.caps && cfg.caps[p.pos] != null && cfg.caps[p.pos] !== "" && +cfg.caps[p.pos] > 0) {
@@ -29735,7 +29837,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             userIdx={userIdx} onClock={onClock} TEAMS={TEAMS} teamNames={TEAM_NAMES}
             upcoming={remainingPicks.filter((p) => p.mine).slice(0, 5).map((p) => ({ o: p.o, label: p.label, away: Math.max(0, p.o - picks.length) }))}
             lastTip={simpleLastTip} nextTip={simpleNextTip} hideTip={hideTip} narrow={narrow}
-            onDraft={draftPlayer} myNextOverall={myNextOverall} done={done} whyPick={whyPick} />
+            onDraft={(id) => draftPlayer(id, "simple")} myNextOverall={myNextOverall} done={done} whyPick={whyPick} />
         </div>
       )}
       {!done && !simple && narrow && (
@@ -30265,7 +30367,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                 {projPick.prob != null && <span className="mut">· {isYou ? "avail" : "take"} {projPick.prob}%</span>}
                               </div>
                             </div>
-                            {isYou && !gated && <button className="btn btn-gold btn-mini" style={{ padding: "3px 9px", fontSize: 10, flexShrink: 0 }} onClick={(e) => { e.stopPropagation(); draftPlayer(pp.id); }}>Draft</button>}
+                            {/* data-clockdraft: the perf rig needs to click THIS button specifically, and
+                                distinguishing it from the twenty other buttons reading "Draft" by DOM shape
+                                is exactly the kind of selector that breaks on an unrelated layout change. */}
+                            {isYou && !gated && <button data-clockdraft={pp.name} className="btn btn-gold btn-mini" style={{ padding: "3px 9px", fontSize: 10, flexShrink: 0 }} onClick={(e) => { e.stopPropagation(); draftPlayer(pp.id, "tracker"); }}>Draft</button>}
                           </div>
                           {/* 3 alternatives */}
                           {alts && alts.length > 0 && (
@@ -30286,7 +30391,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                     </span>
                                     <span className="num" style={{ fontSize: 9, textAlign: "right", color: vbdColor(vShow) }}>{(vShow > 0 ? "+" : "") + Math.round(vShow)}</span>
                                     <span className="num" style={{ fontSize: 8.5, textAlign: "right", color: adpReadColor(picks.length + 1, p.adp) }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
-                                    {isYou && !gated && <button className="btn btn-mini" style={{ fontSize: 8.5, padding: "1px 5px", borderColor: "var(--gold)", color: "var(--gold)" }} onClick={(e) => { e.stopPropagation(); draftPlayer(p.id); }}>Draft</button>}
+                                    {isYou && !gated && <button className="btn btn-mini" style={{ fontSize: 8.5, padding: "1px 5px", borderColor: "var(--gold)", color: "var(--gold)" }} onClick={(e) => { e.stopPropagation(); draftPlayer(p.id, "tracker-alt"); }}>Draft</button>}
                                   </div>
                                 );
                               })}
@@ -30608,7 +30713,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   rather than claiming a row of their own. Multi-select survives — a chip toggles, so QB+TE is
                   two clicks — which is everything the dropdown could do, minus the dropdown. */}
               {(() => {
-                const all = [...POS, ...((cfg.start && cfg.start.DST) > 0 ? ["DST"] : []), ...((cfg.start && cfg.start.K) > 0 ? ["K"] : [])];
+                /* ⭐⭐⭐ AND THE DEFENDERS GET CHIPS TOO, which is the other half of "can't configure roster to
+                   accept IDPs". Turning IDP on does put DL/LB/DB in the pool — they are there, and a name
+                   search finds them — but they sort by ADP behind two hundred offensive players, and this
+                   row offered no way to filter to them. So the board was technically complete and
+                   practically unusable for the format: the only route to a linebacker was to already know
+                   his name. K and DST have been conditional here since the chips came back; IDP was simply
+                   never added, for the same reason the roster switch was missing — nobody had drafted one. */
+                const idpSlots = cfg.start ? ["DL", "LB", "DB"].filter((p) => (cfg.start[p] || 0) > 0 || (cfg.start.IDPFLEX || 0) > 0) : [];
+                const all = [...POS, ...((cfg.start && cfg.start.DST) > 0 ? ["DST"] : []), ...((cfg.start && cfg.start.K) > 0 ? ["K"] : []), ...(idpOn(cfg) ? (idpSlots.length ? idpSlots : ["DL", "LB", "DB"]) : [])];
                 const toggle = (p) => setPosSel((cur) => { const n = new Set(cur); n.has(p) ? n.delete(p) : n.add(p); return n; });
                 // ⚠ CLICKING A CHIP THAT IS ALREADY THE ONLY ONE ON CLEARS THE FILTER. Otherwise "WR" is a
                 // one-way door and getting back to the whole board means hunting for the All chip.
@@ -31090,7 +31203,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             {!gone
                               ? (cappedPos[p.pos] != null
                                   ? <button className="btn btn-mini" disabled title={`Roster maximum reached — ${onClock === userIdx ? "your team has" : "this team has"} the league limit of ${cappedPos[p.pos]} at ${p.pos}. You can't draft another.`} style={{ flexShrink: 0, border: "1.5px solid #F2655C", background: "rgba(242,101,92,.16)", color: "#F2655C", fontWeight: 800, cursor: "not-allowed" }}>Max</button>
-                                  : <button className={`btn btn-mini${(onClock === userIdx || isRec) ? " btn-gold" : ""}`} style={{ flexShrink: 0, border: (onClock === userIdx || isRec) ? "none" : "1.5px solid #fff", fontWeight: 700 }} onClick={() => draftPlayer(p.id)}>{onClock === userIdx ? "Draft" : "Pick"}</button>)
+                                  : <button className={`btn btn-mini${(onClock === userIdx || isRec) ? " btn-gold" : ""}`} style={{ flexShrink: 0, border: (onClock === userIdx || isRec) ? "none" : "1.5px solid #fff", fontWeight: 700 }} onClick={() => draftPlayer(p.id, "board")}>{onClock === userIdx ? "Draft" : "Pick"}</button>)
                               : <span style={{ width: 38, flexShrink: 0 }} />}
                             <span onClick={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: isDynastyCfg(cfg), run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: isDynastyCfg(cfg), run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseLeave={hideTip} className="pnamewrap" style={{ cursor: "help", whiteSpace: "nowrap" }}>
                               <PosName p={p} /> <span className="mut pteam">{p.team}</span>
@@ -31862,7 +31975,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       </div>
                     );
                   })()}
-                  <button className="btn btn-gold" style={{ width: "100%", marginTop: 9 }} onClick={() => draftPlayer(advice.verdict.id)}>
+                  <button className="btn btn-gold" style={{ width: "100%", marginTop: 9 }} onClick={() => draftPlayer(advice.verdict.id, "rail")}>
                     Draft {surname(advice.verdict.name)}{onClock !== userIdx ? ` (to ${TEAM_NAMES[onClock].split(" ")[0]})` : ""}
                   </button>
                   <div className="mut" style={{ fontSize: 11.5, margin: "10px 0 4px", textTransform: "uppercase", letterSpacing: ".07em" }}>Alternatives</div>
@@ -34199,7 +34312,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           </span>
                           <div style={{ flex: 1 }} />
                           <button className="btn btn-mini" style={{ padding: "1px 7px", fontSize: 10, borderColor: st.color, color: st.color, flexShrink: 0 }}
-                            onClick={() => { draftPlayer(p.id); closeRecap(); }}>Draft</button>
+                            onClick={() => { draftPlayer(p.id, "popup"); closeRecap(); }}>Draft</button>
                         </div>
                       ))}
                     </div>
@@ -34259,7 +34372,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               <td style={tdR}>{p.vbd != null ? Math.round(p.vbd) : "—"}</td>
                               <td style={tdR}>{p.value != null ? Math.round(p.value) : "—"}</td>
                               <td style={tdR}>{p.pts != null ? Math.round(p.pts) : "—"}</td>
-                              <td style={{ ...tdR, paddingRight: 10 }}><button className={top ? "btn btn-gold btn-mini" : "btn btn-mini"} onClick={() => { draftPlayer(p.id); closeRecap(); }}>Draft</button></td>
+                              <td style={{ ...tdR, paddingRight: 10 }}><button className={top ? "btn btn-gold btn-mini" : "btn btn-mini"} onClick={() => { draftPlayer(p.id, "popup"); closeRecap(); }}>Draft</button></td>
                             </tr>
                           );
                         })}
