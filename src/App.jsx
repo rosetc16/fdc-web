@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29b";
+const BUILD_TAG = "2026.07.29d";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -10135,7 +10135,7 @@ export default function App() {
       {route === "home" && user?.paid && <PaidHub user={user} leagues={leagues} funMocks={funMocks}
         onLibrary={() => setRoute("library")} onNewLeague={() => { setSetupReturn(null); setSetupConnect(null); setRoute("setup"); }} onDatabase={() => setRoute("database")}
         onConnectLeague={(c) => { setSetupReturn(null); setSetupConnect(c || null); setRoute("setup"); }}
-        onOfficial={(id) => { setActiveId(id); setRoute("draft"); }} onMock={startMock} onQuickMock={() => setQuickMockOpen(true)}
+        onOfficial={(id) => { setDraftTab(officialTabFor(leagues.find((l) => l.id === id))); setActiveId(id); setRoute("draft"); }} onMock={startMock} onQuickMock={() => setQuickMockOpen(true)}
         onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} onGuide={() => { setHelpTab("guide"); setRoute("help"); }} onAccount={() => setRoute("account")} onAdmin={() => setRoute("admin")} onSignOut={signOut}
         onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }}
         onDraftTrends={() => setRoute("draftTrends")} onAutoImportSleeper={autoImportSleeper}
@@ -10143,7 +10143,7 @@ export default function App() {
         onStrategy={(id) => { setOpenStrategyFor(id); setActiveId(id); setRoute("leagueHub"); }}
         onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }} onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }} onDeleteFun={deleteFunMock} onDeleteMock={deleteMock} />}
       {route === "leagueHub" && user && (() => { const lg = leagues.find((l) => l.id === activeId); return lg ? <LeagueUmbrella user={user} league={lg} openStrategy={openStrategyFor === lg.id} onStrategyOpened={() => setOpenStrategyFor(null)} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} backLabel={backLabelOf()}
-        onOfficial={(id) => { setDraftTab(null); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
+        onOfficial={(id) => { setDraftTab(officialTabFor(leagues.find((l) => l.id === id))); setActiveId(id); setRoute("draft"); }} onMock={startMock} onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
         onViewMock={(leagueId, m) => { const l2 = leagues.find((x) => x.id === leagueId); if (!l2) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${l2.name} — mock`, cfg: l2.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }}
         onMockPlan={(id) => { setActiveId(id); setRoute("mockPlan"); }}
         onDeleteMock={deleteMock} onRankings={() => setRoute("rankings")} onDelete={(id) => { deleteLeague(id); setRoute(user.paid ? "home" : "library"); }}
@@ -16211,6 +16211,19 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
   const [showSteps, setShowSteps] = useState(leagues.length === 0); // getting-started collapsed by default for veterans; open for first-timers
   const [showTools, setShowTools] = useState(false); // toolkit collapsed into a dropdown by default
   const [statusFilter, setStatusFilter] = useState("all"); // all | pre | drafting | complete — league status tabs
+  /* ⭐⭐⭐⭐ WHICH SLEEPER ACCOUNT'S LEAGUES YOU ARE LOOKING AT.
+     Trey: "when I unlink a sleeper account and I log in to a new sleeper, it still keeps my existing leagues
+     from my prior sleeper name… keep all the leagues, but just allow for filtering of different usernames
+     or highlight different usernames within the section."
+     Every imported league has recorded the username that imported it since the auto-import shipped, in its
+     connect blob. Nothing ever read it, so two accounts' leagues sat in one undifferentiated list and there
+     was no way to tell which login any of them came from.
+     ⚠ FILTER, NOT HIDE — and that is his correction, not my design. The first cut of this scoped the list to
+       the linked account and put the others away behind a note. He asked for the opposite: everything stays
+       on screen, labelled, and narrowing is something the READER does when they want it. That is the better
+       rule for a list of your own things: an app that decides what you may see has to be right every time,
+       and a filter only has to be available. */
+  const [acctFilter, setAcctFilter] = useState("all"); // "all" | a lowercased sleeper username
   const [showMocks, setShowMocks] = useState(false); // standalone quick-mock history dropdown
   const [showAllLeagues, setShowAllLeagues] = useState(false); // collapse a long league list to the top few + "show more"
   const [mockQ, setMockQ] = useState(""); // search within quick mocks
@@ -16485,7 +16498,12 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
         <div className="linkstrip" data-sleeper-anchor style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", paddingBottom: 12 }}>
           <i className="ti ti-plug-connected" style={{ fontSize: 14, color: sleeperLink.linked ? "#4FD1A1" : "var(--mut)", flexShrink: 0 }} aria-hidden="true" />
           <span className="mut" style={{ fontSize: 12.5, minWidth: 0 }}>
-            {sleeperLink.linked ? <>Sleeper connected — leagues sync automatically.</> : <>Connect Sleeper to pull in your real leagues.</>}
+            {/* ⭐⭐ NAME THE ACCOUNT. "Sleeper connected" was true of both accounts and identified neither, so
+                after switching there was nothing on the page that said WHICH login you were looking at —
+                half of "I wanted to show what the new username shows". */}
+            {sleeperLink.linked
+              ? <>Sleeper connected as <b style={{ color: "var(--ink)" }}>{sleeperLink.username || "your account"}</b> — leagues sync automatically.</>
+              : <>Connect Sleeper to pull in your real leagues.</>}
           </span>
           <div style={{ flex: "1 1 auto", minWidth: 0 }} />
           <div style={{ flex: "0 1 300px", minWidth: 0 }}>
@@ -16548,6 +16566,32 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
           </div>
         )}
 
+        {/* ⭐⭐⭐ THE ACCOUNT ROW — only when there is more than one account to tell apart, because a filter
+            with one option is furniture. Counts are on the chips for the same reason the status row carries
+            them: "3" answers the question the filter was going to be used to ask. */}
+        {(() => {
+          const byAcct = new Map();
+          leagues.forEach((l) => { const o = sleeperOwnerOf(l); if (o) byAcct.set(o, (byAcct.get(o) || 0) + 1); });
+          const nManual = leagues.filter((l) => !sleeperOwnerOf(l)).length;
+          if (byAcct.size < 2 && !(byAcct.size === 1 && nManual > 0 && leagues.length > 3)) return null;
+          const rows = [["all", `All (${leagues.length})`], ...[...byAcct.entries()].map(([n, c]) => [n, `${n} (${c})`]),
+            ...(nManual ? [["__manual", `Not from Sleeper (${nManual})`]] : [])];
+          return (
+            <div className="filterchips" data-acctchips style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10, alignItems: "center" }}>
+              <span className="mut" style={{ fontSize: 11, marginRight: 2 }}><i className="ti ti-users" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Sleeper account</span>
+              {rows.map(([k, label]) => {
+                const active = acctFilter === k;
+                return (
+                  <button key={k} data-acctchip={k} onClick={() => setAcctFilter(k)} aria-pressed={active}
+                    style={{ cursor: "pointer", fontFamily: "inherit", padding: "5px 10px", borderRadius: 99, fontSize: 12, fontWeight: 600, lineHeight: 1,
+                      border: `1px solid ${active ? "var(--gold)" : "var(--line)"}`, background: active ? "rgba(224,166,60,.10)" : "transparent",
+                      color: active ? "var(--gold)" : "var(--mut)" }}>{label}</button>
+                );
+              })}
+            </div>
+          );
+        })()}
+
         {/* Status list — filter your leagues by where their draft stands, as a vertical list with detail */}
         {leagues.length > 1 && (() => {
           const statusOf = (l) => { const tot = (l.cfg.teams || 12) * l.cfg.rounds; return l.picks.length >= tot ? "complete" : l.picks.length > 0 ? "drafting" : "pre"; };
@@ -16607,6 +16651,12 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
             )}
             {(() => {
               const shown = sortedLeagues.filter((l) => {
+                // Account first — it is the coarser question ("whose leagues am I looking at") and it reads
+                // more naturally as the outer one.
+                if (acctFilter !== "all") {
+                  const o = sleeperOwnerOf(l);
+                  if (acctFilter === "__manual" ? !!o : o !== acctFilter) return false;
+                }
                 if (statusFilter === "all") return true;
                 const tot = (l.cfg.teams || 12) * l.cfg.rounds;
                 const s = l.picks.length >= tot ? "complete" : l.picks.length > 0 ? "drafting" : "pre";
@@ -16631,7 +16681,10 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
               const mocks = (l.mocks || []).length;
               const draftLive = l.picks.length > 0 && st.pct < 100;
               return (
-                <div key={l.id} style={{ border: `1px solid ${draftLive ? "var(--gold)" : "var(--line)"}`, background: draftLive ? "linear-gradient(90deg,rgba(224,166,60,.06),transparent 60%)" : "var(--panel)", borderRadius: 12, padding: "11px 14px", display: "flex", alignItems: "center", gap: 13, flexWrap: "wrap" }}>
+                /* data-leaguecard: the league list has to be readable by a test WITHOUT reading the whole
+                   page — league names also appear in the not-yet-imported strip and in recent activity, so a
+                   text search for one proves nothing about this list. */
+                <div key={l.id} data-leaguecard={l.name} style={{ border: `1px solid ${draftLive ? "var(--gold)" : "var(--line)"}`, background: draftLive ? "linear-gradient(90deg,rgba(224,166,60,.06),transparent 60%)" : "var(--panel)", borderRadius: 12, padding: "11px 14px", display: "flex", alignItems: "center", gap: 13, flexWrap: "wrap" }}>
                   {/* status icon */}
                   <div style={{ width: 38, height: 38, borderRadius: 10, background: draftLive ? "rgba(224,166,60,.14)" : "var(--panel3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className={`ti ${st.icon}`} style={{ fontSize: 18, color: st.color }} aria-hidden="true" /></div>
                   {/* name + meta */}
@@ -16639,6 +16692,23 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
                     <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                       <span className="disp" style={{ fontSize: 15.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{l.name}</span>
                       {platId !== "manual" && <PlatformChip league={l} platform={platId} live={platformIsLive(platId)} size={9} />}
+                      {/* ⭐⭐⭐ WHOSE LOGIN THIS CAME FROM. The platform chip says Sleeper; with two accounts
+                          linked over a season that is the half of the answer nobody needed. The username is
+                          the half they did, and it is the only thing on the card that distinguishes two
+                          leagues that otherwise look identical. Gold when it is the account you are linked
+                          as right now, quiet when it is not — so "these three are from my other login" reads
+                          without touching a filter. */}
+                      {(() => {
+                        const owner = sleeperOwnerOf(l);
+                        if (!owner) return null;
+                        const isCurrent = !!sleeperLink.username && owner === String(sleeperLink.username).trim().toLowerCase();
+                        return (
+                          <span className="chip" data-acctchip-card={owner} title={isCurrent ? `Imported from the Sleeper account you're linked as (${owner}).` : `Imported from your other Sleeper account (${owner}). It stays here whether or not that account is linked.`}
+                            style={{ fontSize: 8.5, color: isCurrent ? "var(--gold)" : "var(--mut)", borderColor: isCurrent ? "var(--gold)" : "var(--line2)" }}>
+                            <i className="ti ti-user" style={{ fontSize: 9, marginRight: 3 }} aria-hidden="true" />{owner}
+                          </span>
+                        );
+                      })()}
                       {mocks > 0 && <span className="chip" style={{ fontSize: 8.5 }}>{mocks} mock{mocks === 1 ? "" : "s"}</span>}
                       {/* The draft's own era. Reopening a completed draft shows the ADP, values and
                           projections that were live on ITS draft day — this says so from the outside, so
@@ -21571,6 +21641,57 @@ const PLATFORM_META = {
   nfl: { name: "NFL.com", icon: "ti-arrow-right", color: "var(--mut)" },
   manual: { name: "Manual", icon: "ti-pencil", color: "var(--mut)" },
 };
+/* ⭐⭐⭐⭐ WHICH SLEEPER ACCOUNT A LEAGUE CAME FROM.
+   Trey: "When I unlink a sleeper account and I log in to a new sleeper, it still keeps my existing leagues
+   from my prior sleeper name… and obviously, if I log back in and link back into the other username, it
+   would bring up those other leagues, including the mock drafts."
+   Every imported league already records the username that imported it, in its connect blob — the auto-import
+   has written it since the feature shipped. Nothing ever READ it, so leagues from every Sleeper account you
+   have ever linked piled into one list with no way to tell them apart and no way to put them away.
+   ⚠ THE ANSWER IS LABELLING, NOT HIDING, AND THAT IS HIS CORRECTION, NOT MY DESIGN. The first cut of this
+     scoped the list to the linked account and put the rest away behind a note — which reads well, passed its
+     suite, and is not what he wanted. He looked at it and said: "keep all the leagues... but just allow for
+     filtering of different user names or highlight different usernames within the section." So every league
+     stays on screen, each Sleeper one carries the username it was imported under, and the filter is
+     something you reach for rather than something that has already happened to you. The kept-but-hidden
+     helper that went with the old design is gone; if scoping ever comes back it comes back as HIS ask.
+   ⚠ NOTHING IS EVER DELETED ON UNLINK — the half of his original sentence that survived the correction
+     intact. He expects the old leagues back when he links that account again, mocks and all. Deleting would
+     be a one-way door over an accident — a mistyped username, a shared laptop, a season on a second
+     account — and league data is the one thing we cannot re-derive.
+   ⚠ AN UNATTRIBUTABLE LEAGUE HAS NO CHIP AND IS NEVER FILTERED OUT BY AN ACCOUNT. A league built by hand
+     belongs to nobody; an import from an older build may carry no username. Those answer to the explicit
+     "Not from Sleeper" chip and to nothing else. */
+function sleeperOwnerOf(league) {
+  if (!league) return null;
+  const c = league.connect || (league.cfg && league.cfg.connect) || null;
+  const isSleeper = c
+    ? (c.platform ? String(c.platform).toLowerCase() === "sleeper" : !!c.leagueId)
+    : !!league.sleeperLeagueId;
+  if (!isSleeper) return null;
+  const u = (c && (c.username || c.sleeperUsername)) || null;
+  return u ? String(u).trim().toLowerCase() : null;
+}
+/* ⭐⭐⭐ IS THIS DRAFT OVER? One definition, because three places were about to grow their own.
+   `ended` is the explicit "I stopped early" flag; otherwise it is simply every pick having been made. Used
+   to decide which tab "View draft" lands on and whether the draft-room tour has any business firing. */
+function draftIsOver(league) {
+  if (!league) return false;
+  if (league.ended) return true;
+  const c = league.cfg || {};
+  const tot = (c.teams || 0) * (c.rounds || 0);
+  return tot > 0 && ((league.picks || []).length >= tot);
+}
+/* ⭐⭐⭐ WHICH TAB "View draft" SHOULD LAND ON.
+   Trey: "I want to be able to look at the draft results and see the summary of the draft."
+   It opened the Hub tab, which for a completed draft holds exactly one line — "Draft complete." — and a
+   button to go to the Summary. A whole screen whose only content is a link to the screen you asked for. It
+   also left `draftTab` at whatever it was last set to, so opening Settings and then View draft opened
+   Settings again. Deciding the tab from the league fixes both, and returning null for a draft still in
+   progress keeps the ordinary "resume my draft" entry exactly where it was. */
+function officialTabFor(league) {
+  return draftIsOver(league) ? "summary" : null;
+}
 function platformOf(league) {
   if (!league) return "manual";
   const c = (league.cfg && league.cfg.connect) || league.connect || null;
@@ -24558,7 +24679,23 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // button reopens it on demand either way.
   const tourSeenKey = "fdcTourSeen";
   const alreadySawTour = (() => { try { return window.localStorage ? window.localStorage.getItem(tourSeenKey) === "1" : false; } catch (e) { return false; } })();
-  const [tourOn, setTourOn] = useState(() => !optedOutOfTour && !alreadySawTour && !isDemo);
+  /* ⭐⭐⭐⭐ NOT OVER A DRAFT THAT IS ALREADY FINISHED. Trey: "if a league has already drafted and link to
+     sleeper after the draft, I want to be able to look at the draft results and see the summary."
+     Someone who finds Compass in September links an account whose leagues are DONE, so the first draft room
+     they ever open is a completed one — and the tour fired there, fourteen steps about being on the clock,
+     take-now-vs-wait and run detection, over a board where nothing is ever going to be picked again. Two
+     things wrong with that and the second is the worse one: it stands between them and the results they came
+     to look at, and it BURNS the one-time `fdcTourSeen` flag, so the tour they were owed on their first real
+     draft never comes. Skipping here leaves the flag unwritten (the effect below is gated on tourOn), which
+     is the whole point — the tour is postponed to a room where it means something, not spent. Reachable any
+     time from Tips & tour, which is where someone who wants it will look. */
+  const draftAlreadyOver = (() => {
+    const p = (league && league.picks) || [];
+    const c = (league && league.cfg) || {};
+    const tot = (c.teams || 0) * (c.rounds || 0);
+    return !!(league && league.ended) || (tot > 0 && p.length >= tot);
+  })();
+  const [tourOn, setTourOn] = useState(() => !optedOutOfTour && !alreadySawTour && !isDemo && !draftAlreadyOver);
   // Mark the tour as seen the first time it auto-opens, so future entries don't relaunch it.
   useEffect(() => { if (tourOn) { try { if (window.localStorage) window.localStorage.setItem(tourSeenKey, "1"); } catch (e) {} } }, [tourOn]);
   const [tourOptOut, setTourOptOut] = useState(false); // bound to the intro step's "don't show again" checkbox
