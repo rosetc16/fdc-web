@@ -320,6 +320,9 @@ export const api = {
   async sleeperUnlink() { return call('/api/connect/sleeper/unlink', { method: 'POST' }); },
   async sleeperMyLeagues(season) { return call(`/api/connect/sleeper/my-leagues${season ? `?season=${season}` : ''}`); },
   async sleeperTeamHub(leagueId, week) { return call(`/api/connect/sleeper/team-hub?league_id=${encodeURIComponent(leagueId)}${week ? `&week=${week}` : ''}`); },
+  // One NFL week's games that have weather worth a manager's attention. Games in domes, games with nothing
+  // to say, and games too far out to forecast never come back — see src/routes/weather.js.
+  async weatherWeek(week, season) { return call(`/api/weather/week?week=${encodeURIComponent(week)}${season ? `&season=${season}` : ''}`); },
   // Dynasty draft archive: every draft in the league's season chain (startup + each rookie draft), and
   // the finished board of any one of them.
   async sleeperDraftHistory(leagueId) { return call(`/api/connect/sleeper/draft-history?league_id=${encodeURIComponent(leagueId)}`); },

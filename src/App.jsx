@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29f";
+const BUILD_TAG = "2026.07.29h";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -8330,6 +8330,18 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .team-row:hover{border-color:var(--gold)!important;background:var(--panel3)!important;transform:translateX(2px);box-shadow:-3px 0 0 0 var(--gold)}
 .team-row:hover .team-arrow{opacity:1;transform:translateX(0)}
 .team-arrow{opacity:0;transform:translateX(-4px);transition:opacity .15s, transform .15s}
+/* THE TRACKER'S ZONES READ AS FIVE THINGS. Trey: "making it more clear of each section of the track (maybe
+   add separation lines?)".
+   ⚠ THE FIRST ATTEMPT ADDED A RULE IN THE GUTTER AND THAT WAS THE WRONG FIX - every zone ALREADY has its
+   own rounded card border, so a hairline beside it just paints a second line next to the first. Screenshot
+   said so plainly. What was actually wrong is that those borders are drawn in --line, the dimmest ink in
+   the palette, on a panel barely lighter than they are, so at a glance the pair in each group merges into
+   one wide box with two headings in it. Lifting them to --line2 and opening the gutter a little separates
+   the sections using the structure that is already there. The collapsed one-line bar is a different case
+   and does get real rules - see the Chip separator in the tracker button, where there is nothing else to
+   do the job. */
+.decision-group-a > *, .decision-group-b > *{border-color:var(--line2)!important}
+.decision-group-a, .decision-group-b{gap:10px!important}
 /* The tracker only stacks into a column on PHONES. On a narrow desktop window it stays a single scrollable row
    (see the 641-1279px block below) — stacking there buried the board under a tall header. */
 @media(max-width:640px){.decision-grid{flex-direction:column!important}.decision-group-a,.decision-group-b{flex:1 1 auto!important}.decision-divider{display:none!important}}
@@ -10301,7 +10313,7 @@ export default function App() {
         onOfficial={(id) => { setDraftTab(officialTabFor(leagues.find((l) => l.id === id))); setActiveId(id); setRoute("draft"); }} onMock={startMock} onQuickMock={() => setQuickMockOpen(true)}
         onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} onGuide={() => { setHelpTab("guide"); setRoute("help"); }} onAccount={() => setRoute("account")} onAdmin={() => setRoute("admin")} onSignOut={signOut}
         onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }}
-        onDraftTrends={() => setRoute("draftTrends")} onAutoImportSleeper={autoImportSleeper}
+        onDraftTrends={() => setRoute("draftTrends")} onAutoImportSleeper={autoImportSleeper} onMyWeek={() => setRoute("myweek")}
         onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
         onStrategy={(id) => { setOpenStrategyFor(id); setActiveId(id); setRoute("leagueHub"); }}
         onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }} onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }} onDeleteFun={deleteFunMock} onDeleteMock={deleteMock} />}
@@ -10356,6 +10368,9 @@ export default function App() {
       {route === "home" && !user?.paid && <HomePage biz={biz} user={user} onSignIn={() => setAuthOpen(true)} onDemo={startDemo} onBuy={() => (user ? setRoute("checkout") : setAuthOpen(true))} onApp={() => setRoute("library")} onHelp={(t) => { setHelpTab(t || null); setRoute("help"); }} />}
       {route === "learn" && <HomePage biz={biz} user={user} onSignIn={() => setAuthOpen(true)} onDemo={startDemo} onBuy={() => (user ? setRoute("checkout") : setAuthOpen(true))} onApp={() => setRoute(user?.paid ? "home" : "home")} onHelp={(t) => { setHelpTab(t || null); setRoute("help"); }} initialTab="how" />}
       {route === "trends" && user && <TrendsPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} />}
+      {route === "myweek" && user && <MyWeek user={user} leagues={leagues} onHome={() => setRoute("home")} onBack={() => goBack()} backLabel={backLabelOf()}
+        onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }}
+        onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }} />}
       {route === "draftTrends" && user && <DraftTrendsPage user={user} leagues={leagues} funMocks={funMocks} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} onOpenLeague={(id) => { setActiveId(id); setRoute("leagueHub"); }} />}
       {route === "help" && <HelpPage user={user} biz={biz} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} onSubmit={submitFeedback} initialTab={helpTab} />}
       {route === "checkout" && user && <Checkout biz={biz} user={user} canceled={checkoutCanceled} onDone={completePurchase} onBack={() => { setCheckoutCanceled(false); setRoute("home"); }} />}
@@ -16290,7 +16305,7 @@ function GetStartedPanel({ leagues, funMocks, dismissed, onDismiss, onConnectSle
   );
 }
 
-function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onOpenMock, onDeleteFun, onDeleteMock, onDraftTrends, onAutoImportSleeper, onConnectLeague }) {
+function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onOpenMock, onDeleteFun, onDeleteMock, onDraftTrends, onAutoImportSleeper, onConnectLeague, onMyWeek }) {
   const [connectOpen, setConnectOpen] = useState(false);
   const totalMocks = leagues.reduce((s, l) => s + (l.mocks || []).length, 0) + funMocks.length;
   const inProgress = leagues.filter((l) => l.picks.length > 0 && l.picks.length < (l.cfg.teams || 12) * l.cfg.rounds);
@@ -16559,6 +16574,19 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
             <i className="ti ti-calendar-stats" style={{ fontSize: 18, color: "var(--blue)", alignSelf: "center" }} aria-hidden="true" />
             <span className="disp" style={{ fontSize: 20, fontWeight: 800, letterSpacing: ".01em" }}>This week</span>
             {nflWk && <span className="mut" style={{ fontSize: 11.5, fontWeight: 700, background: "var(--panel2)", borderRadius: 99, padding: "1px 8px", alignSelf: "center" }}>NFL Week {nflWk}</span>}
+            <div style={{ flex: 1 }} />
+            {/* ⭐⭐⭐⭐ THE WAY IN, next to the thing it is about. Trey: "I'd like there to be somewhere on the
+                site where you can basically click on it and see flags for every single league in one place
+                and show you where to spend your time." The count is the point of the badge — "3 leagues need
+                you" is a different invitation from "My week" — and it is computed by the page itself, so
+                this only carries the door; see MyWeek.jsx for what is behind it. */}
+            {onMyWeek && (
+              <button data-myweekbtn onClick={onMyWeek} className="btn btn-gold btn-mini"
+                title="Injuries, free agents and weather across every connected league, in one place"
+                style={{ padding: "7px 14px", fontSize: 12.5, alignSelf: "center" }}>
+                <i className="ti ti-first-aid-kit" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Check my week
+              </button>
+            )}
           </div>
           {/* ⭐⭐⭐⭐ ONE ROW PER TEAM, NOT ONE CARD.
               Trey: "There are a bunch of tiles for my leagues that have a draft this week, which I like, but
@@ -30069,7 +30097,58 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           640px the class does nothing and every button is exactly where it was. */}
       <div ref={topBarRef} className={`hairline appheader droomhead${simple ? " simplehead" : ""}${ctlOpen ? " dctl-open" : ""}`} style={{ display: "flex", alignItems: "center", gap: 12, padding: "6px 16px", flexWrap: "wrap" }}>
         <button className="btn btn-mini" onClick={exit} title="Back to where you came from">← {exitLabel || (user ? (user.paid ? "Home" : "Library") : "Home")}</button>
-        <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>{league.name}</div>
+        {/* ⭐⭐⭐ THE BUILD TAG RIDES WITH THE LEAGUE NAME NOW.
+            Trey: "Can we find a way to fit the version on the top row… this would create more real estate."
+            It was already inside this bar — it just sat last in a wrapping flex row that had run out of
+            width, so it fell to a line of its own and that line cost a whole row of the first screen. Moving
+            it next to the title puts it where there is slack, and the row it was on disappears. It stays a
+            quiet, hoverable diagnostic: the tooltip on it is still the fastest way to answer "where did this
+            board's ADP come from", which is the question it exists for. */}
+        <div style={{ display: "inline-flex", alignItems: "baseline", gap: 6, minWidth: 0 }}>
+          <span className="disp" style={{ fontSize: 18, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{league.name}</span>
+          <span className="mut" style={{ fontSize: 10, opacity: 0.6, marginLeft: 4, fontVariantNumeric: "tabular-nums", cursor: "help" }}
+          onMouseEnter={(e) => {
+            const src = (typeof LIVE_ADP_SRC !== "undefined" && LIVE_ADP_SRC) ? LIVE_ADP_SRC : { published: 0, harvest: 0, none: 0, trusted: 0 };
+            const fmt = (typeof LIVE_PACK_FORMAT !== "undefined" && LIVE_PACK_FORMAT) ? LIVE_PACK_FORMAT : null;
+            const sparse = typeof LIVE_ADP_SPARSE !== "undefined" && LIVE_ADP_SPARSE;
+            const lines = [
+              { kind: "take", tone: "neutral", x: `Build v${BUILD_TAG}` },
+              { kind: "take", tone: fmt ? "good" : "bad", x: fmt ? `ADP format: ${fmt}` : "ADP: built-in fallback (live pack not loaded)" },
+            ];
+            if (fmt) {
+              lines.push({ kind: "kvtable", items: [
+                { k: "From real drafts", v: String(src.harvest || 0), c: (src.harvest || 0) > 0 ? "var(--green)" : "var(--mut)" },
+                { k: "Exact-format ADP", v: String(src.published || 0), c: (src.published || 0) > 0 ? "var(--green)" : "var(--mut)" },
+                { k: "Wrong-format ADP", v: String(src.degraded || 0), c: (src.degraded || 0) > 0 ? "var(--gold)" : "var(--mut)" },
+                { k: "No ADP (projected)", v: String(src.none || 0), c: "var(--mut)" },
+                { k: "Trusted by board", v: String(src.trusted || 0), c: (src.trusted || 0) >= 20 ? "var(--green)" : "var(--red)" },
+                { k: "Published format", v: LIVE_PACK_PUB_FORMAT || "\u2014" },
+              ] });
+            }
+            lines.push({ kind: "take", tone: sparse ? "bad" : "good",
+              x: sparse ? "Board ranked by VALUE \u2014 not enough trusted market ADP" : "Board ranked by real market ADP" });
+            // Per-draft overlay diagnostic: what format THIS draft should be on, vs what's actually loaded.
+            const target = (typeof LIVE_OVERLAY_TARGET !== "undefined") ? LIVE_OVERLAY_TARGET : null;
+            const ostate = (typeof LIVE_OVERLAY_STATE !== "undefined") ? LIVE_OVERLAY_STATE : null;
+            const oreason = (typeof LIVE_OVERLAY_REASON !== "undefined") ? LIVE_OVERLAY_REASON : null;
+            if (target) {
+              const mism = fmt && target && fmt !== target;
+              lines.push({ kind: "take", tone: mism ? "bad" : "neutral", x: `This draft wants: ${target}` });
+              lines.push({ kind: "take", tone: ostate === "applied" ? "good" : "bad", x: `overlay: ${ostate || "?"}` });
+              if (oreason) lines.push({ kind: "take", tone: "bad", x: oreason });
+            }
+            if (TRUST_LIVE_ADP) lines.push({ kind: "take", tone: "good", x: "Trusting live Sleeper ADP (connected draft)" });
+            const unres = (typeof LIVE_UNRESOLVED_PICKS !== "undefined") ? LIVE_UNRESOLVED_PICKS : null;
+            if (unres && unres.length) {
+              lines.push({ kind: "take", tone: "bad", x: `${unres.length} pick${unres.length === 1 ? "" : "s"} from ${livePlatformName} couldn't be matched to a player` });
+              lines.push({ t: "Unmatched", x: unres.slice(0, 6).map((u) => `${pickLabel(u.o)} — "${u.name}"`).join(" · ") });
+            }
+            showTip(e, lines);
+          }}
+          onMouseLeave={hideTip}>
+          v{BUILD_TAG}
+        </span>
+        </div>
         {/* ⭐⭐⭐ THE SWITCH, AT THE VERY TOP, WHERE HE ASKED FOR IT — 29ac made it a labelled dropdown.
             Trey: "For the view, make it a drop down menu for 'view'."
             Two reasons it is better than the segmented pair it replaces, beyond his asking. A segmented
@@ -30161,7 +30240,16 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         {!isConnectedLive && !done && <>
           <button className={`btn dctl${paused ? " btn-gold" : ""}`} onClick={() => setPaused((p) => !p)} title={paused ? "Autodraft is PAUSED — CPU picks are stopped until you resume" : "Pause autodraft (CPU picks stop until you resume)"}>{paused ? "▶ Resume — PAUSED" : "❚❚ Pause"}</button>
           <button className="btn dctl" onClick={() => setFast((f) => !f)}>{fast ? "Fast" : "Normal"}</button>
-          {isMock && <button className="btn dctl" style={{ borderColor: mockTradingOn ? "var(--gold)" : "var(--line)", color: mockTradingOn ? "var(--gold)" : "var(--ink)" }} onClick={() => setMockTradingOn((t) => !t)} title="Propose trades to CPU teams mid-mock — they only accept fair, format-aware deals">{mockTradingOn ? "Trading on" : "Trading off"}</button>}
+          {/* ⚠ THE TRADING TOGGLE MOVED TO THE TRADE TAB, AND "End draft" STAYED. Trey offered either as the
+              one to cut: "we could get rid of the 'trading off' button or 'end draft' button since I feel
+              like people will just click the home button to end a draft."
+              Home is not the same button. It leaves the room with the draft still open; End draft SETS a
+              persistent ended state, jumps to the summary and grades, and then becomes "Reopen draft" — it
+              is the whole "stop this mock early and see how I did" path, which is a thing he asked for in
+              29p and would have quietly lost. The trading switch, meanwhile, is a mock-only SETTING sitting
+              in a row of draft ACTIONS, and there is a Trade tab three inches below it whose contents it
+              governs. Moving it there costs the top row nothing and puts it where someone looking for it
+              would actually look. */}
           {/* ⭐ ENDED IS A STATE YOU CAN LEAVE. Ending early is now persistent (see `endedEarly`), which
               makes an accidental click destructive unless there is a way back — so the same button becomes
               the way back, and says so. */}
@@ -30203,53 +30291,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <i className="ti ti-flask" style={{ fontSize: 13 }} aria-hidden="true" />Scenario mode
           </button>
         )}
-        {/* Subtle build tag — confirms which deploy is live, and (on hover) exactly where the board's ADP came
-            from. A native `title` here proved unreliable (slow, and it never fired when the pointer landed on the
-            text node), so this uses the app's own tooltip. This is the single most useful diagnostic when a
-            player's ADP looks wrong: it says whether the board is on real format-correct market data or a
-            fallback, and how many players came from each source. */}
-        <span className="mut" style={{ fontSize: 10, opacity: 0.6, marginLeft: 4, fontVariantNumeric: "tabular-nums", cursor: "help" }}
-          onMouseEnter={(e) => {
-            const src = (typeof LIVE_ADP_SRC !== "undefined" && LIVE_ADP_SRC) ? LIVE_ADP_SRC : { published: 0, harvest: 0, none: 0, trusted: 0 };
-            const fmt = (typeof LIVE_PACK_FORMAT !== "undefined" && LIVE_PACK_FORMAT) ? LIVE_PACK_FORMAT : null;
-            const sparse = typeof LIVE_ADP_SPARSE !== "undefined" && LIVE_ADP_SPARSE;
-            const lines = [
-              { kind: "take", tone: "neutral", x: `Build v${BUILD_TAG}` },
-              { kind: "take", tone: fmt ? "good" : "bad", x: fmt ? `ADP format: ${fmt}` : "ADP: built-in fallback (live pack not loaded)" },
-            ];
-            if (fmt) {
-              lines.push({ kind: "kvtable", items: [
-                { k: "From real drafts", v: String(src.harvest || 0), c: (src.harvest || 0) > 0 ? "var(--green)" : "var(--mut)" },
-                { k: "Exact-format ADP", v: String(src.published || 0), c: (src.published || 0) > 0 ? "var(--green)" : "var(--mut)" },
-                { k: "Wrong-format ADP", v: String(src.degraded || 0), c: (src.degraded || 0) > 0 ? "var(--gold)" : "var(--mut)" },
-                { k: "No ADP (projected)", v: String(src.none || 0), c: "var(--mut)" },
-                { k: "Trusted by board", v: String(src.trusted || 0), c: (src.trusted || 0) >= 20 ? "var(--green)" : "var(--red)" },
-                { k: "Published format", v: LIVE_PACK_PUB_FORMAT || "\u2014" },
-              ] });
-            }
-            lines.push({ kind: "take", tone: sparse ? "bad" : "good",
-              x: sparse ? "Board ranked by VALUE \u2014 not enough trusted market ADP" : "Board ranked by real market ADP" });
-            // Per-draft overlay diagnostic: what format THIS draft should be on, vs what's actually loaded.
-            const target = (typeof LIVE_OVERLAY_TARGET !== "undefined") ? LIVE_OVERLAY_TARGET : null;
-            const ostate = (typeof LIVE_OVERLAY_STATE !== "undefined") ? LIVE_OVERLAY_STATE : null;
-            const oreason = (typeof LIVE_OVERLAY_REASON !== "undefined") ? LIVE_OVERLAY_REASON : null;
-            if (target) {
-              const mism = fmt && target && fmt !== target;
-              lines.push({ kind: "take", tone: mism ? "bad" : "neutral", x: `This draft wants: ${target}` });
-              lines.push({ kind: "take", tone: ostate === "applied" ? "good" : "bad", x: `overlay: ${ostate || "?"}` });
-              if (oreason) lines.push({ kind: "take", tone: "bad", x: oreason });
-            }
-            if (TRUST_LIVE_ADP) lines.push({ kind: "take", tone: "good", x: "Trusting live Sleeper ADP (connected draft)" });
-            const unres = (typeof LIVE_UNRESOLVED_PICKS !== "undefined") ? LIVE_UNRESOLVED_PICKS : null;
-            if (unres && unres.length) {
-              lines.push({ kind: "take", tone: "bad", x: `${unres.length} pick${unres.length === 1 ? "" : "s"} from ${livePlatformName} couldn't be matched to a player` });
-              lines.push({ t: "Unmatched", x: unres.slice(0, 6).map((u) => `${pickLabel(u.o)} — "${u.name}"`).join(" · ") });
-            }
-            showTip(e, lines);
-          }}
-          onMouseLeave={hideTip}>
-          v{BUILD_TAG}
-        </span>
       </div>
 
       <div ref={stickyHeadRef} className="draft-stickyhead" style={{ position: "sticky", top: topBarH, zIndex: 12, background: "var(--bg)" }}>
@@ -30361,7 +30402,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 <span style={{ fontWeight: 700, color: tone || "var(--ink)", overflow: "hidden", textOverflow: "ellipsis" }}>{children}</span>
               </span>
             );
-            const dot = <span aria-hidden="true" className="mut" style={{ opacity: .5 }}>·</span>;
+            /* ⭐⭐⭐ A RULE, NOT A MIDDLE DOT. Trey: "making it more clear of each section of the track
+               (maybe add separation lines?)" A "·" between six chips reads as one long sentence with
+               punctuation in it; a vertical rule reads as six separate things, which is what they are. */
+            const dot = <span aria-hidden="true" style={{ flexShrink: 0, width: 1, alignSelf: "stretch", minHeight: 15, margin: "0 1px", background: "var(--line2)", borderRadius: 1 }} />;
             const fin = (proj && proj.rank && proj.rank[userIdx] != null) ? proj.rank[userIdx] : null;
             const finColor = fin == null ? "var(--ink)" : fin <= 3 ? "#5FD0A8" : fin <= Math.ceil(TEAMS / 2) ? "var(--gold)" : "#F2655C";
             const last = picks.length ? players[picks[picks.length - 1]] : null;
@@ -30384,8 +30428,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             );
           })()}
           <div style={{ flex: 1, minWidth: 8 }} />
-          <span className="mut" style={{ fontSize: 10.5, flexShrink: 0 }}>{trackerOpen ? "Hide" : "Show"}</span>
-          <i className={`ti ${trackerOpen ? "ti-chevron-up" : "ti-chevron-down"}`} style={{ fontSize: 14, color: "var(--gold)", flexShrink: 0 }} aria-hidden="true" />
+          {/* ⭐⭐⭐ THE CONTROL HAS TO LOOK LIKE A CONTROL. Trey: "make it more clear on the tracker where
+              the show/hide button is." It was two muted glyphs at the end of a full-width bar that is
+              itself the button — so the one thing you can DO here was the quietest thing on the row, and on
+              a busy line it read as a label. Now it is a bordered gold pill with the word and the chevron
+              inside it, which is the same treatment every other actionable control in this room gets. */}
+          <span data-trackerbtn style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 5,
+            border: "1px solid var(--gold)", borderRadius: 99, padding: "3px 10px", background: "rgba(224,166,60,.10)",
+            color: "var(--gold)", fontSize: 10.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".05em" }}>
+            {trackerOpen ? "Hide" : "Show"}
+            <i className={`ti ${trackerOpen ? "ti-chevron-up" : "ti-chevron-down"}`} style={{ fontSize: 13 }} aria-hidden="true" />
+          </span>
         </button>
       )}
       {!done && !simple && trackerOpen && (
@@ -34422,6 +34475,22 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       ); })()}
 
       {tab === "trade" && (
+        <>
+        {/* ⭐⭐⭐ THE TRADING SWITCH LIVES HERE NOW, not in the top row of draft controls. It was only
+            settable before a mock started (the checkbox on the start card) or from a button in the header;
+            mid-draft this tab was the one place you would look for it and the one place it was not. */}
+        {isMock && (
+          <div style={{ padding: "10px 14px 0" }}>
+            <label data-tradingtoggle={mockTradingOn ? "on" : "off"}
+              title="Propose trades to CPU teams mid-mock — they only accept fair, format-aware deals."
+              style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12.5, cursor: "pointer",
+                border: `1px solid ${mockTradingOn ? "var(--gold)" : "var(--line2)"}`, borderRadius: 9, padding: "6px 12px",
+                background: mockTradingOn ? "rgba(224,166,60,.08)" : "transparent", color: mockTradingOn ? "var(--gold)" : "var(--ink)", fontWeight: 600 }}>
+              <input type="checkbox" checked={mockTradingOn} onChange={(e) => setMockTradingOn(e.target.checked)} style={{ accentColor: "var(--gold)" }} />
+              Trading with CPU teams {mockTradingOn ? "on" : "off"}
+            </label>
+          </div>
+        )}
         <TradeCenter players={players} picks={picks} userIdx={userIdx} cfg={cfg} sortedAdp={sortedAdp} draftedSet={draftedSet} showTip={showTip} hideTip={hideTip} proj={proj}
           isMock={isMock} tradingOn={mockTradingOn}
           onExecuteTrade={({ partner, givePlayers, getPlayers }) => {
@@ -34436,6 +34505,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               return next;
             });
           }} />
+        </>
       )}
 
       {tab === "settings" && (
@@ -35699,3 +35769,6 @@ function TradeToolsPage({ user, onBack, onHome, onSignOut }) {
 
 // ⭐ 29p — TradeCenter now lives in src/screens/TradeCenter.jsx and loads on demand. See lazyScreen.
 const TradeCenter = lazyScreen(() => import("./screens/TradeCenter.jsx"));
+/* ⭐ The cross-league weekly page. Lazy like every other non-room screen — it is never open during a draft
+   and it pulls a player pack plus a team-hub call per league, none of which should sit in the draft bundle. */
+const MyWeek = lazyScreen(() => import("./screens/MyWeek.jsx"));
