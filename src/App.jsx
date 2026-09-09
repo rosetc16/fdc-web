@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29h";
+const BUILD_TAG = "2026.07.29i";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -16582,7 +16582,7 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
                 this only carries the door; see MyWeek.jsx for what is behind it. */}
             {onMyWeek && (
               <button data-myweekbtn onClick={onMyWeek} className="btn btn-gold btn-mini"
-                title="Injuries, free agents and weather across every connected league, in one place"
+                title="Injuries, lineup changes, free agents and weather across every connected league, in one place"
                 style={{ padding: "7px 14px", fontSize: 12.5, alignSelf: "center" }}>
                 <i className="ti ti-first-aid-kit" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Check my week
               </button>
@@ -16669,9 +16669,17 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
           {(() => {
             // In season the bar leads with the week and, crucially, a permanent DRAFT RESULTS entry — the
             // pivot must never be the reason someone can't find their draft.
+            /* ⭐⭐⭐ MY WEEK LEADS THE IN-SEASON BAR. Trey: "I like the check my week thing. Again, I want to
+               make that a little bit more apparent as to where that's at." It was a small gold button inside
+               a section that only renders when the season view is on and you have live teams — findable if
+               you knew, invisible if you did not. In season it is the first thing this bar offers, because
+               in season it is the first thing you want; the per-league "This Week" entry stays right next to
+               it, since one is the rollup and the other is one team. */
             const items = seasonFirst
               ? [
-                { k: "week", icon: "ti-user-heart", label: "This Week", onClick: openThisWeek, primary: true },
+                ...(onMyWeek ? [{ k: "myweek", icon: "ti-first-aid-kit", label: "My Week", onClick: onMyWeek, primary: true,
+                  title: "Injuries, lineup changes, free agents and weather across every connected league, in one place" }] : []),
+                { k: "week", icon: "ti-user-heart", label: "This Week", onClick: openThisWeek, primary: !onMyWeek },
                 { k: "results", icon: "ti-flag-3", label: "Draft Results", onClick: () => onDatabase(), title: "Every draft you've run — each one locked to the values that were live on its draft day" },
                 { k: "new", icon: "ti-plus", label: "New League", onClick: () => onNewLeague() },
                 { k: "mock", icon: "ti-dice-5", label: "Quick Mock", onClick: () => onQuickMock() },
@@ -35248,7 +35256,7 @@ export function formatKey(cfg) {
 // Build the BACKEND ADP format string (SCORING|QB|TE|POOL|TEAMS) from a league cfg. Must match the
 // backend's formatKey so the player pack returns the ADP bucket that matches the league the user is in
 // (e.g. an SF dynasty TEP 12-team league gets the SF dynasty board, not the default 1QB redraft board).
-function backendFormatKey(cfg) {
+export function backendFormatKey(cfg) {
   const rec = (cfg.scoring && cfg.scoring.rec != null) ? cfg.scoring.rec : 1;
   const scoring = rec >= 0.75 ? "PPR" : rec >= 0.25 ? "HALF" : "STD";
   /* ⭐⭐⭐ MUST MATCH THE BACKEND'S qbClass EXACTLY — this is the key the ADP bucket is looked up by, and a
