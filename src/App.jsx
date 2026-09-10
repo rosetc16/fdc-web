@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29i";
+const BUILD_TAG = "2026.07.29j";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -16373,7 +16373,34 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
   const hubIdOf = (l) => (l.connect && l.connect.leagueId) || (l.cfg && l.cfg.connect && l.cfg.connect.leagueId) || null;
   const seasonTeams = leagues.filter((l) => hubIdOf(l));
   const [seasonAllOpen, setSeasonAllOpen] = useState(false);   // "This week" past the first few rows
+
   const seasonFirst = homeView === "season" || (homeView === "auto" && seasonLive && seasonTeams.length > 0);
+  /* ⭐⭐⭐⭐ THE SEVERITY BADGE'S DATA, FETCHED QUIETLY AND SHARED WITH MY WEEK.
+     Trey: "an info icon or, like, a caution icon, depending on the severity of things, that you hover and it
+     recommends, hey, keep track of this player who's questionable… without having to click into anything."
+     That needs the same fan-out My Week does — a player pack plus a team-hub call per league — so it goes
+     through src/weekcache.js rather than being fetched a second time here. Two loaders would eventually
+     disagree by a few minutes, and a home page that says "2 to check" opening a page that shows three is a
+     bug nobody would ever diagnose.
+     ⚠ AFTER PAINT, AND NEVER IN THE WAY. The home page must not wait on fifteen league reads to render, so
+       this runs on a timeout and the rows show a quiet spinner glyph until it lands. If it never lands, the
+       rows are exactly the rows — no badge, no error, nothing broken. */
+  const [weekFlags, setWeekFlags] = useState({});
+  useEffect(() => {
+    if (!seasonFirst || !seasonTeams.length || !hasBackend) return;
+    let alive = true;
+    const t = setTimeout(async () => {
+      try {
+        const { loadWeek, leagueFlags, hubIdOf: hid } = await import("./weekcache.js");
+        const w = await loadWeek(leagues);
+        if (!alive || !w) return;
+        const out = {};
+        (w.connected || []).forEach((l, i) => { const f = leagueFlags(w.hubs[i], w.pack); if (f) out[hid(l)] = f; });
+        setWeekFlags(out);
+      } catch (e) { /* the badge is a nicety; its absence is not an error state */ }
+    }, 600);
+    return () => { alive = false; clearTimeout(t); };
+  }, [seasonFirst, seasonTeams.length, leagues]);
   const openThisWeek = () => { const t = seasonTeams[0]; if (t && onOpenHub) onOpenHub({ league_id: hubIdOf(t) }); };
   const setHomeView = (v) => { if (onUpdate) onUpdate({ homeView: v }); };
 
@@ -16505,14 +16532,34 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
           drafts, mocks). Gives the home page a strong identity and sense of energy instead of a bare text
           line. Everything functional lives below, untouched. */}
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "16px 20px 0" }}>
-        <div style={{ position: "relative", overflow: "hidden", borderRadius: 18, border: "1px solid rgba(214,170,75,0.35)", background: "linear-gradient(135deg, #14100a 0%, #1b1710 55%, #241d0f 100%)", padding: "26px 26px 22px", boxShadow: "0 10px 40px -12px rgba(0,0,0,.6)" }}>
-          {/* layered depth: warm radial glow top-right + faint yard-line rhythm */}
-          <div aria-hidden="true" style={{ position: "absolute", top: -80, right: -60, width: 320, height: 320, background: "radial-gradient(circle, rgba(224,166,60,0.18) 0%, transparent 68%)", pointerEvents: "none" }} />
+        {/* ⭐⭐⭐⭐ THE TWO MODES LOOK LIKE TWO PLACES NOW.
+            Trey: "I really like the toggle between season and draft, but you need to make it more clear that
+            that is the differentiator… the season one looks very similar to the draft one… I almost wonder
+            if you still provide, like, the ability to create a new league and do a quick mock and all of
+            that stuff, but you just make it look dramatically different so that you know which one you're
+            on."
+            Nothing is removed — every control is still on both. What changes is the ROOM: draft mode keeps
+            the app's gold, season mode goes cool green, and the difference runs through the hero, its glow,
+            the compass, the eyebrow and the toggle itself. Colour is the fastest signal a person reads and
+            it does not cost a pixel of layout, which is the other thing he asked for. */}
+        <div data-homemode={seasonFirst ? "season" : "draft"} style={{ position: "relative", overflow: "hidden", borderRadius: 18,
+          border: `1px solid ${seasonFirst ? "rgba(95,208,168,0.38)" : "rgba(214,170,75,0.35)"}`,
+          background: seasonFirst ? "linear-gradient(135deg, #0b1512 0%, #10201b 55%, #0e2a22 100%)" : "linear-gradient(135deg, #14100a 0%, #1b1710 55%, #241d0f 100%)",
+          padding: "26px 26px 22px", boxShadow: "0 10px 40px -12px rgba(0,0,0,.6)" }}>
+          {/* layered depth: a radial glow top-right in the mode's colour + faint yard-line rhythm */}
+          <div aria-hidden="true" style={{ position: "absolute", top: -80, right: -60, width: 320, height: 320, background: `radial-gradient(circle, ${seasonFirst ? "rgba(95,208,168,0.20)" : "rgba(224,166,60,0.18)"} 0%, transparent 68%)`, pointerEvents: "none" }} />
           <div aria-hidden="true" style={{ position: "absolute", inset: 0, backgroundImage: "repeating-linear-gradient(90deg, transparent, transparent 58px, rgba(255,255,255,0.025) 58px, rgba(255,255,255,0.025) 59px)", pointerEvents: "none" }} />
           <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
-            <div style={{ flexShrink: 0 }}><Compass size={54} spin /></div>
+            <div style={{ flexShrink: 0, filter: seasonFirst ? "hue-rotate(105deg) saturate(.85)" : "none" }}><Compass size={54} spin /></div>
             <div style={{ flex: "1 1 260px", minWidth: 0 }}>
-              <div className="disp" style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-.02em", lineHeight: 1.02, color: "var(--ink)" }}>{timeGreet}{greetName ? <>, <span style={{ color: "var(--gold2)" }}>{greetName}</span></> : ""}.</div>
+              {/* The mode, said out loud, above everything else on the page. */}
+              <div data-homemodelabel={seasonFirst ? "season" : "draft"} style={{ display: "inline-flex", alignItems: "center", gap: 6, marginBottom: 6,
+                fontSize: 10.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".10em",
+                color: seasonFirst ? "#5FD0A8" : "var(--gold)" }}>
+                <i className={`ti ${seasonFirst ? "ti-calendar-stats" : "ti-clipboard-text"}`} style={{ fontSize: 13 }} aria-hidden="true" />
+                {seasonFirst ? "Season mode" : "Draft mode"}
+              </div>
+              <div className="disp" style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-.02em", lineHeight: 1.02, color: "var(--ink)" }}>{timeGreet}{greetName ? <>, <span style={{ color: seasonFirst ? "#5FD0A8" : "var(--gold2)" }}>{greetName}</span></> : ""}.</div>
               <div className="mut" style={{ fontSize: 13.5, marginTop: 4 }}>{
                 seasonFirst ? (nflWk
                   ? <>NFL <b style={{ color: "var(--ink)" }}>Week {nflWk}</b> — your teams are live. Draft rooms and results are still right below.</>
@@ -16521,15 +16568,27 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
                 : leagues.length ? "Your draft command center — pick up where you left off." : "Welcome to your draft command center."
               }</div>
               {/* Reversible: the calendar is a good default, not an argument. */}
+              {/* ⭐⭐⭐ AND THE SWITCH READS AS THE SWITCH. It was a 4px-padded pair of words with no name on
+                  it — "kinda not hidden, but just small". Now it is labelled, iconed, sized like the control
+                  it is, and each half carries the mode's own colour so the toggle previews what it does. */}
               {(seasonLive || homeView !== "auto") && seasonTeams.length > 0 && (
-                <div style={{ display: "inline-flex", marginTop: 9, border: "1px solid var(--line2)", borderRadius: 8, overflow: "hidden" }}>
-                  {[["season", "Season"], ["draft", "Draft"]].map(([v, label]) => {
-                    const on = seasonFirst === (v === "season");
-                    return (
-                      <button key={v} onClick={() => setHomeView(v)} title={v === "season" ? "Lead with your live teams" : "Lead with drafts and mocks"}
-                        style={{ cursor: "pointer", fontFamily: "inherit", border: "none", borderLeft: v === "draft" ? "1px solid var(--line2)" : "none", background: on ? "var(--gold)" : "transparent", color: on ? "#151002" : "var(--mut)", fontWeight: on ? 700 : 500, fontSize: 11.5, padding: "4px 12px" }}>{label}</button>
-                    );
-                  })}
+                <div style={{ display: "inline-flex", alignItems: "center", gap: 9, marginTop: 12, flexWrap: "wrap" }}>
+                  <span className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".07em", fontWeight: 800 }}>Viewing</span>
+                  <div data-homeviewtoggle={seasonFirst ? "season" : "draft"} style={{ display: "inline-flex", border: "1px solid var(--line2)", borderRadius: 10, overflow: "hidden", background: "rgba(0,0,0,.25)" }}>
+                    {[["season", "Season", "ti-calendar-stats", "#5FD0A8"], ["draft", "Draft", "ti-clipboard-text", "var(--gold)"]].map(([v, label, icon, tone]) => {
+                      const on = seasonFirst === (v === "season");
+                      return (
+                        <button key={v} data-homeview={v} onClick={() => setHomeView(v)} aria-pressed={on}
+                          title={v === "season" ? "Lead with your live teams, injuries and lineups" : "Lead with drafts, mocks and your toolkit"}
+                          style={{ cursor: "pointer", fontFamily: "inherit", border: "none", borderLeft: v === "draft" ? "1px solid var(--line2)" : "none",
+                            display: "inline-flex", alignItems: "center", gap: 6,
+                            background: on ? tone : "transparent", color: on ? "#0d1210" : "var(--mut)",
+                            fontWeight: on ? 800 : 600, fontSize: 12.5, padding: "7px 15px" }}>
+                          <i className={`ti ${icon}`} style={{ fontSize: 14 }} aria-hidden="true" />{label}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </div>
@@ -16537,7 +16596,7 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
             <div style={{ display: "flex", gap: 22, flexShrink: 0, paddingLeft: 4 }}>
               {[[leagues.length, leagues.length === 1 ? "league" : "leagues"], [inProgress.length, "in progress"], [totalMocks, totalMocks === 1 ? "mock" : "mocks"]].map(([n, label], i) => (
                 <div key={i} style={{ textAlign: "center", minWidth: 46 }}>
-                  <div className="num" style={{ fontSize: 26, fontWeight: 800, lineHeight: 1, color: i === 1 && n > 0 ? "var(--gold2)" : "var(--ink)" }}>{n}</div>
+                  <div className="num" style={{ fontSize: 26, fontWeight: 800, lineHeight: 1, color: i === 1 && n > 0 ? (seasonFirst ? "#5FD0A8" : "var(--gold2)") : "var(--ink)" }}>{n}</div>
                   <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", marginTop: 3 }}>{label}</div>
                 </div>
               ))}
@@ -16581,9 +16640,9 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
                 you" is a different invitation from "My week" — and it is computed by the page itself, so
                 this only carries the door; see MyWeek.jsx for what is behind it. */}
             {onMyWeek && (
-              <button data-myweekbtn onClick={onMyWeek} className="btn btn-gold btn-mini"
+              <button data-myweekbtn onClick={onMyWeek} className="btn btn-mini"
                 title="Injuries, lineup changes, free agents and weather across every connected league, in one place"
-                style={{ padding: "7px 14px", fontSize: 12.5, alignSelf: "center" }}>
+                style={{ padding: "7px 14px", fontSize: 12.5, alignSelf: "center", borderColor: "#5FD0A8", color: "#0d1210", background: "#5FD0A8", fontWeight: 800 }}>
                 <i className="ti ti-first-aid-kit" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Check my week
               </button>
             )}
@@ -16600,61 +16659,71 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
                 said he liked, so the teams keep a prominent lead: the first ROW_AFTER are full cards, the
                 rest are rows, and only past ROW_AFTER + a few does anything hide behind a control. Someone
                 with three teams sees exactly what they saw before. */}
+          {/* ⭐⭐⭐⭐ EVERY TEAM IS THE SAME KIND OF ROW.
+              Trey: "I don't like how there's like three, three leagues at the top and then everything else
+              is in the tabular form. I just want everything to be in the tabular form to look consistent
+              because those three aren't more important than the other ones necessarily."
+              He is right, and the reason the split existed was a compromise I made rather than a claim about
+              his leagues: 29f kept three big cards so the section would not lose the prominence he said he
+              liked. But prominence that lands on whichever three sort first is not prominence, it is an
+              accident with a spotlight on it — the first three are not the important three, they are just
+              the first three. One shape for all of them, and the show-more he asked to keep.
+              ⚠ THE SEVERITY BADGE IS WHY A ROW BEATS A CARD HERE. "It'd be cool if there was, like, an info
+                icon or, like, a caution icon, depending on the severity of things, that you hover and it,
+                like, recommends, hey, keep track of this player who's questionable." A row can carry that on
+                the same line as the name; a card puts it somewhere you have to look for. */}
           {(() => {
-            const CARDS = 3, ROWS_SHOWN = 6;
-            const cards = seasonTeams.slice(0, CARDS);
-            const rest = seasonTeams.slice(CARDS);
-            const shown = seasonAllOpen ? rest : rest.slice(0, ROWS_SHOWN);
-            const hidden = rest.length - shown.length;
+            const ROWS_SHOWN = 8;
+            const shown = seasonAllOpen ? seasonTeams : seasonTeams.slice(0, ROWS_SHOWN);
+            const hidden = seasonTeams.length - shown.length;
             const doneOf = (l) => l.picks.length >= (l.cfg.teams || 12) * l.cfg.rounds;
             const fmt = (l) => `${l.cfg.teams || 12}-team · ${qbFormatLabel(l.cfg)}${l.cfg.tePremMult > 0 ? " · TE+" : ""}`;
+            const TONE = { 3: "#F2655C", 2: "var(--gold)", 1: "#6BA8E5", 0: "#5FD0A8" };
+            const ICON = { 3: "ti-alert-octagon", 2: "ti-clock-exclamation", 1: "ti-calendar-off", 0: "ti-circle-check" };
             return (
-              <>
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  {cards.map((l) => (
-                    <div key={l.id} data-seasoncard={l.name} style={{ flex: "1 1 260px", maxWidth: 420, minWidth: 0, border: "1px solid var(--line2)", borderRadius: 12, background: "var(--panel)", padding: "12px 14px" }}>
-                      <div className="disp" style={{ fontSize: 15, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.name}</div>
-                      <div className="mut" style={{ fontSize: 11, marginTop: 2 }}>{fmt(l)}</div>
-                      <div style={{ display: "flex", gap: 7, marginTop: 10, flexWrap: "wrap" }}>
-                        <button onClick={() => onOpenHub && onOpenHub({ league_id: hubIdOf(l) })} className="btn btn-gold btn-mini" style={{ padding: "7px 13px", fontSize: 12.5 }}>
-                          <i className="ti ti-user-heart" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Open my team
-                        </button>
+              <div data-seasonrows style={{ display: "flex", flexDirection: "column", gap: 3, border: "1px solid var(--line2)", borderRadius: 12, padding: 6, background: "var(--panel)" }}>
+                {shown.map((l) => {
+                  const f = weekFlags[hubIdOf(l)] || null;
+                  const sev = f ? f.sev : null;
+                  /* The hover text IS the recommendation — a count with no names is a nag, and the whole
+                     point is to answer the question without making you click into the league. */
+                  const tip = !f ? "Reading this league's lineup…"
+                    : f.sev === 3 ? `Not expected to play: ${f.out.join(", ")}${f.check.length ? ` · also check ${f.check.join(", ")}` : ""}`
+                    : f.sev === 2 ? `Check before kickoff: ${f.check.join(", ")}`
+                    : f.sev === 1 ? `On bye this week: ${f.bye.join(", ")}`
+                    : "No injury designations on your starters, and nobody on bye.";
+                  return (
+                    <div key={l.id} data-seasonrow={l.name} style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 9px", borderRadius: 7, flexWrap: "wrap" }}>
+                      <span data-seasonsev={sev == null ? "loading" : sev} title={tip} style={{ flexShrink: 0, cursor: "help", display: "inline-flex", alignItems: "center" }}>
+                        <i className={`ti ${sev == null ? "ti-loader" : ICON[sev]}`} style={{ fontSize: 15, color: sev == null ? "var(--line2)" : TONE[sev] }} aria-hidden="true" />
+                      </span>
+                      <span style={{ fontSize: 13.5, fontWeight: 700, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "1 1 160px" }}>{l.name}</span>
+                      <span className="mut" style={{ fontSize: 10.5, whiteSpace: "nowrap", flexShrink: 0 }}>{fmt(l)}</span>
+                      {f && f.sev > 0 && (
+                        <span title={tip} style={{ cursor: "help", flexShrink: 0, fontSize: 10.5, fontWeight: 700, color: TONE[f.sev], whiteSpace: "nowrap" }}>
+                          {f.sev === 3 ? `${f.out.length} not expected to play`
+                            : f.sev === 2 ? `${f.check.length} to check`
+                            : `${f.bye.length} on bye`}
+                        </span>
+                      )}
+                      <div style={{ flex: 1, minWidth: 4 }} />
+                      <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
+                        <button onClick={() => onOpenHub && onOpenHub({ league_id: hubIdOf(l) })} className="btn btn-mini" style={{ padding: "4px 9px", fontSize: 11.5 }}>My team</button>
                         {doneOf(l) && onOfficial && (
-                          <button onClick={() => onOfficial(l.id)} className="btn btn-mini" title="Your completed draft — board, grades and recap, still locked to draft-day values" style={{ padding: "7px 13px", fontSize: 12.5 }}>
-                            <i className="ti ti-flag-3" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />View draft
-                          </button>
+                          <button onClick={() => onOfficial(l.id)} className="btn btn-mini" title="Your completed draft — board, grades and recap" style={{ padding: "4px 9px", fontSize: 11.5 }}>Draft</button>
                         )}
-                        <button onClick={() => onUmbrella(l.id)} className="btn btn-mini" style={{ padding: "7px 13px", fontSize: 12.5 }}>League hub</button>
+                        <button onClick={() => onUmbrella(l.id)} className="btn btn-mini" style={{ padding: "4px 9px", fontSize: 11.5 }}>Hub</button>
                       </div>
                     </div>
-                  ))}
-                </div>
-                {shown.length > 0 && (
-                  <div data-seasonrows style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 9, border: "1px solid var(--line)", borderRadius: 10, padding: 5, background: "var(--panel)" }}>
-                    {shown.map((l) => (
-                      <div key={l.id} data-seasonrow={l.name} style={{ display: "flex", alignItems: "center", gap: 9, padding: "5px 8px", borderRadius: 7, flexWrap: "wrap" }}>
-                        <i className="ti ti-user-heart" style={{ fontSize: 13, color: "var(--blue)", flexShrink: 0 }} aria-hidden="true" />
-                        <span style={{ fontSize: 13, fontWeight: 700, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: "1 1 150px" }}>{l.name}</span>
-                        <span className="mut" style={{ fontSize: 10.5, whiteSpace: "nowrap", flexShrink: 0 }}>{fmt(l)}</span>
-                        <div style={{ flex: 1, minWidth: 4 }} />
-                        <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
-                          <button onClick={() => onOpenHub && onOpenHub({ league_id: hubIdOf(l) })} className="btn btn-mini" style={{ padding: "4px 9px", fontSize: 11.5 }}>My team</button>
-                          {doneOf(l) && onOfficial && (
-                            <button onClick={() => onOfficial(l.id)} className="btn btn-mini" title="Your completed draft — board, grades and recap" style={{ padding: "4px 9px", fontSize: 11.5 }}>Draft</button>
-                          )}
-                          <button onClick={() => onUmbrella(l.id)} className="btn btn-mini" style={{ padding: "4px 9px", fontSize: 11.5 }}>Hub</button>
-                        </div>
-                      </div>
-                    ))}
-                    {(hidden > 0 || seasonAllOpen) && (
-                      <button data-seasonmore onClick={() => setSeasonAllOpen((v) => !v)} className="btn btn-mini"
-                        style={{ alignSelf: "center", marginTop: 3, padding: "4px 12px", fontSize: 11.5, border: "none", color: "var(--gold)", background: "transparent" }}>
-                        {hidden > 0 ? `Show ${hidden} more team${hidden === 1 ? "" : "s"} ⌄` : "Show fewer ⌃"}
-                      </button>
-                    )}
-                  </div>
+                  );
+                })}
+                {(hidden > 0 || seasonAllOpen) && (
+                  <button data-seasonmore onClick={() => setSeasonAllOpen((v) => !v)} className="btn btn-mini"
+                    style={{ alignSelf: "center", marginTop: 3, padding: "4px 12px", fontSize: 11.5, border: "none", color: "var(--gold)", background: "transparent" }}>
+                    {hidden > 0 ? `Show ${hidden} more team${hidden === 1 ? "" : "s"} ⌄` : "Show fewer ⌃"}
+                  </button>
                 )}
-              </>
+              </div>
             );
           })()}
         </div>
@@ -16665,7 +16734,12 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
           identical, so "My Rankings" pulled as hard as "Create New League" and the bar read as a tab strip.
           Width now matches the content below it (1180) instead of floating at a narrower 940. */}
       <div style={{ position: "sticky", top: 0, zIndex: 20, maxWidth: 1180, margin: "0 auto", padding: "14px 20px 18px", background: "linear-gradient(180deg, var(--bg) 82%, transparent)" }}>
-        <div className="actionbar" style={{ display: "flex", alignItems: "stretch", flexWrap: "wrap", border: "1px solid rgba(214,170,75,0.45)", borderRadius: 12, overflow: "hidden", background: "linear-gradient(180deg, rgba(38,32,18,0.98), rgba(28,26,20,0.98))", boxShadow: "0 6px 20px -6px rgba(0,0,0,.5)" }}>
+        {/* The bar wears the mode too — a gold action bar under a green hero would read as two pages
+            stitched together, and the whole point of the colour is that one glance tells you where you are. */}
+        <div className="actionbar" style={{ display: "flex", alignItems: "stretch", flexWrap: "wrap",
+          border: `1px solid ${seasonFirst ? "rgba(95,208,168,0.42)" : "rgba(214,170,75,0.45)"}`, borderRadius: 12, overflow: "hidden",
+          background: seasonFirst ? "linear-gradient(180deg, rgba(16,34,28,0.98), rgba(18,28,24,0.98))" : "linear-gradient(180deg, rgba(38,32,18,0.98), rgba(28,26,20,0.98))",
+          boxShadow: "0 6px 20px -6px rgba(0,0,0,.5)" }}>
           {(() => {
             // In season the bar leads with the week and, crucially, a permanent DRAFT RESULTS entry — the
             // pivot must never be the reason someone can't find their draft.
@@ -16692,11 +16766,13 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
               ];
             return items.map((it, i) => (
               <React.Fragment key={it.k}>
-                {i > 0 && <div style={{ width: 1, background: "rgba(214,170,75,0.30)" }} />}
+                {i > 0 && <div style={{ width: 1, background: seasonFirst ? "rgba(95,208,168,0.28)" : "rgba(214,170,75,0.30)" }} />}
                 <button onClick={it.onClick} className="menuitem" title={it.title || undefined}
-                  style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none", background: it.primary ? "rgba(214,170,75,0.13)" : "transparent", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
-                  <i className={`ti ${it.icon}`} style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
-                  <span className="disp" style={{ fontSize: 15.5, fontWeight: it.primary ? 800 : 700, color: it.primary ? "var(--gold)" : "var(--ink)" }}>{it.label}</span>
+                  style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none",
+                    background: it.primary ? (seasonFirst ? "rgba(95,208,168,0.13)" : "rgba(214,170,75,0.13)") : "transparent",
+                    padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
+                  <i className={`ti ${it.icon}`} style={{ fontSize: 18, color: seasonFirst ? "#5FD0A8" : "var(--gold)" }} aria-hidden="true" />
+                  <span className="disp" style={{ fontSize: 15.5, fontWeight: it.primary ? 800 : 700, color: it.primary ? (seasonFirst ? "#5FD0A8" : "var(--gold)") : "var(--ink)" }}>{it.label}</span>
                 </button>
               </React.Fragment>
             ));
