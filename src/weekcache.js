@@ -97,10 +97,21 @@ export async function loadWeek(leagues, opts = {}) {
    this league reports and stops there. The rich read (replacements, differentials, lineup swaps) needs the
    whole per-league pass and belongs on the page built for it; what a row on the home page owes you is
    whether it is worth opening, which is a number and a colour. */
-export function leagueFlags(hub, pack) {
+/* ⭐⭐⭐⭐⭐ AN INJURY TAG AFTER THE GAME IS NEXT WEEK'S PROBLEM — 29p.
+   Trey: "it's telling me that Ladd McConkey is questionable. He is questionable POST GAME. So I don't need
+   to check it for week 1, but rather for week 2 next week."
+   Exactly right, and it is the difference between a useful flag and a nag. A designation is a question
+   about a game that has not happened: "will he play on Sunday". Once Sunday has happened for him, the same
+   letter Q means something completely different — a knock picked up IN the game, which is a week-2 concern
+   and nothing you can act on now. Counting it as "1 to check" on week 1 sends you to look at a lineup you
+   can no longer change.
+   `playedOf` answers "is his game over"; where we cannot tell, the old behaviour stands, because an
+   unflagged injury is a worse failure than a stale one. */
+export function leagueFlags(hub, pack, opts = {}) {
   if (!hub || !hub.teams) return null;
   const mine = hub.teams.find((t) => t.rosterId === hub.myRosterId);
   if (!mine) return null;
+  const playedOf = opts.playedOf || (() => false);
   const bySid = new Map();
   ((pack && pack.players) || []).forEach((p) => { const k = p && (p.id != null ? p.id : p.sid); if (k != null) bySid.set(String(k), p); });
   const starters = (mine.starters || []).filter(Boolean).map(String);
@@ -108,7 +119,7 @@ export function leagueFlags(hub, pack) {
      when it could not — that column is null for long stretches of the year, which is how "nobody in any of
      your fifteen leagues is on bye" used to be reported with a straight face. See connect.js `byeTeams`. */
   const byeSet = Array.isArray(hub.byeTeams) ? new Set(hub.byeTeams) : null;
-  const out = { out: [], check: [], bye: [] };
+  const out = { out: [], check: [], bye: [], after: [] };  // `after` = flagged, but his game is already over
   starters.forEach((sid) => {
     const w = (hub.weekly && hub.weekly[sid]) || {};
     const p = bySid.get(sid) || {};
@@ -118,9 +129,14 @@ export function leagueFlags(hub, pack) {
     const onBye = byeSet ? (team ? byeSet.has(team) : false) : (hub.week != null && p.bye === hub.week);
     if (onBye) out.bye.push(name);
     if (!raw || /^(act|active|healthy)$/i.test(raw)) return;
+    // His game is over. Whatever the tag says now, it is about next Sunday — see the note on this function.
+    if (playedOf(sid)) { out.after.push(`${name} (${raw})`); return; }
     if (/^(ir|inj|out|o$|pup|nfi|susp)/i.test(raw)) out.out.push(`${name} (${raw})`);
     else if (/^(d|doubt|q|quest)/i.test(raw)) out.check.push(`${name} (${raw})`);
   });
+  /* Severity ranks only what you can still DO something about. A post-game knock is recorded on the row so
+     the hover can mention it — "worth knowing for next week" — but it never lights the badge, because the
+     badge's whole promise is "this league needs you before kickoff". */
   const sev = out.out.length ? 3 : out.check.length ? 2 : out.bye.length ? 1 : 0;
   return { ...out, sev };
 }

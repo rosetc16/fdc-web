@@ -47,6 +47,39 @@ const STATE = {
   unknown: { label: "—",        tone: "var(--mut)", icon: "ti-help" },
 };
 
+/* ⭐⭐⭐⭐⭐ HOW BIG A DAY IS THIS, FOR A PLAYER LIKE HIM — 29p.
+   Trey: "I also want to color code the projected points based on their impact against you (I don't want QBs
+   to always be high since their scoring is high)."
+
+   Raw points are the wrong scale for colour and always have been: quarterbacks average around 18 a week and
+   kickers around 8, so a heat map on the raw number paints every QB hot and every kicker cold and tells you
+   nothing except which position each man plays — information already on the row.
+
+   What matters is how far above or below a NORMAL week for his position he is. Fourteen from a kicker is a
+   great day; fourteen from a quarterback is a bad one. The baselines below are ordinary starter weeks in a
+   PPR league, and the colour is the z-ish distance from that baseline, so "unusually good" looks the same
+   whoever produced it.
+
+   ⚠ NEUTRAL IS THE DEFAULT AND MOST ROWS SHOULD BE NEUTRAL. If every row is coloured, none of them are —
+     the band has to be wide enough that only a genuinely notable day lights up. */
+const BASE = { QB: 18, RB: 11, WR: 11, TE: 8, K: 8, DEF: 7, DST: 7, DL: 7, LB: 8, DB: 7 };
+const SPREAD = { QB: 7, RB: 6, WR: 6, TE: 5, K: 4, DEF: 5, DST: 5, DL: 4, LB: 4, DB: 4 };
+function impactOf(pos, pts, rootFor) {
+  if (!Number.isFinite(pts) || !pos) return { z: null, tone: null, label: null };
+  const base = BASE[String(pos).toUpperCase()] ?? 10;
+  const spread = SPREAD[String(pos).toUpperCase()] ?? 6;
+  const z = (pts - base) / spread;
+  /* A big day is GOOD if he is yours and BAD if he is theirs — the colour follows the consequence to you,
+     which is the whole premise of this page, rather than following the size of the number. */
+  const good = rootFor ? z : -z;
+  const label = `${r1(pts)} — ${Math.abs(z) < 0.6 ? "an ordinary week" : z > 0 ? "well above" : "well below"} a normal ${String(pos).toUpperCase()} week (~${base})`;
+  if (good >= 1.2) return { z: r1(z), tone: "#5FD0A8", label };
+  if (good >= 0.6) return { z: r1(z), tone: "#2E8F6B", label };
+  if (good <= -1.2) return { z: r1(z), tone: "#F2655C", label };
+  if (good <= -0.6) return { z: r1(z), tone: "#B8453C", label };
+  return { z: r1(z), tone: "var(--ink)", label };
+}
+
 /* ⭐⭐⭐⭐ ONE PLAYER, ONE ROW — 29o.
    Trey: "On web, though, I'd probably just show Root For and Root Against side by side. There's a ton of
    blank space between the player name and the points right now, so I think we can use that space much more
@@ -59,7 +92,11 @@ function RootRow({ p, wide }) {
   const st = STATE[p.state] || STATE.unknown;
   const rootFor = p.net > 0;
   const tone = p.net === 0 ? "var(--mut)" : rootFor ? "#5FD0A8" : "#F2655C";
-  const names = (rootFor ? p.forLeagues : p.againstLeagues).map((l) => l.leagueName);
+  /* ⚠ DROP THE BLANKS. The live route did not put a name on its league rows until b136, so every tag came
+     back undefined and this line rendered as ", , +2" — the "it's not clear what is going on below each
+     player" in his screenshot. The server is fixed; this filter means a future gap degrades to showing
+     fewer names rather than to punctuation. */
+  const names = (rootFor ? p.forLeagues : p.againstLeagues).map((l) => l && l.leagueName).filter(Boolean);
   const shown = names.slice(0, wide ? 3 : 0);
   const extra = names.length - shown.length;
   return (
@@ -106,8 +143,15 @@ function RootRow({ p, wide }) {
       {/* ⚠ A RANGE WHEN THE LEAGUES DISAGREE. The same catch is 1.0 in PPR and 0 in standard, so one
           number would be true in none of his leagues. */}
       {p.pts && (
-        <span className="num" data-gdpts style={{ fontSize: 12.5, fontWeight: 800, flexShrink: 0, textAlign: "right",
-          minWidth: 52, color: p.state === "pre" ? "var(--mut)" : "var(--ink)" }}>
+        /* ⭐⭐⭐⭐ COLOURED BY IMPACT, NOT BY TOTAL — 29p. Trey: "I also want to color code the projected
+           points based on their impact against you (I don't want QBs to always be high since their scoring
+           is high)." A QB's 24 and a kicker's 24 are not the same event: one is an ordinary Sunday, the
+           other is the best kicking week of the year. So the colour reads how far ABOVE OR BELOW a normal
+           week for that position he is, and the number stays plain. See impactOf. */
+        <span className="num" data-gdpts data-gdimpact={p.impact == null ? "" : String(p.impact)}
+          title={p.impactLabel || undefined}
+          style={{ fontSize: 12.5, fontWeight: 800, flexShrink: 0, textAlign: "right",
+            minWidth: 52, color: p.state === "pre" ? "var(--mut)" : (p.impactTone || "var(--ink)") }}>
           {p.pts.varies ? `${r1(p.pts.lo)}–${r1(p.pts.hi)}` : r1(p.pts.median)}
         </span>
       )}
@@ -115,7 +159,7 @@ function RootRow({ p, wide }) {
   );
 }
 
-export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub }) {
+export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub, embedded }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
@@ -175,33 +219,53 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub 
     return () => { alive = false; if (timer) clearTimeout(timer); };
   }, [connected, data && data.at]);
 
+  /* ⭐⭐⭐ "I also want to be able to toggle to players that haven't played vs. already played vs. all."
+     Three different Sundays: before kickoff you are reading the slate, at 4pm you want only the men still
+     on a field, and afterwards you want the damage report.
+     ⚠ DECLARED ABOVE EVERY MEMO THAT USES IT, and that is not a style preference. These first went in next
+       to `forRows` further down, which left the `board` memo above referencing them before initialisation —
+       a temporal-dead-zone error that BUILDS PERFECTLY and throws the instant the screen renders. The
+       bundler cannot see it; only opening the page does. */
+  const [phase, setPhase] = useState("all");   // all | pre | done
+  const decorate = (p) => {
+    const rootFor = p.net > 0;
+    const pts = p.pts ? p.pts.median : null;
+    const im = impactOf(p.pos, pts, rootFor);
+    return { ...p, impact: im.z, impactTone: im.tone, impactLabel: im.label };
+  };
+  const inPhase = (p) => (phase === "all" ? true : phase === "pre" ? p.state === "pre" : p.state !== "pre");
+
   const board = useMemo(() => {
     const all = (data && data.rooting) || [];
     const rows = side === "for" ? all.filter((p) => p.net > 0)
       : side === "against" ? all.filter((p) => p.net < 0)
       : all.filter((p) => p.net !== 0 || p.for + p.against > 1);
-    return rows.slice(0, 40);
-  }, [data, side]);
+    return rows.filter(inPhase).map(decorate).slice(0, 40);
+  }, [data, side, phase]);
 
   // The two columns the desktop layout uses. Same ordering rule as the single list: biggest swing first.
-  const forRows = useMemo(() => ((data && data.rooting) || []).filter((p) => p.net > 0).slice(0, 25), [data]);
-  const againstRows = useMemo(() => ((data && data.rooting) || []).filter((p) => p.net < 0).slice(0, 25), [data]);
+  const forRows = useMemo(() => ((data && data.rooting) || []).filter((p) => p.net > 0).filter(inPhase).map(decorate).slice(0, 25), [data, phase]);
+  const againstRows = useMemo(() => ((data && data.rooting) || []).filter((p) => p.net < 0).filter(inPhase).map(decorate).slice(0, 25), [data, phase]);
 
   const T = (data && data.totals) || null;
 
   return (
-    <div data-screen="gameday" style={{ minHeight: "100vh", background: "var(--bg)" }}>
-      <div className="hairline appheader" style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px", flexWrap: "wrap" }}>
-        <button className="btn btn-mini" onClick={onBack || onHome}>← {backLabel || "Home"}</button>
-        <span className="disp" style={{ fontSize: 18, fontWeight: 800 }}>Game day</span>
-        {data && <span className="chip" style={{ fontSize: 11, padding: "2px 8px", borderRadius: 99, border: "1px solid var(--line)", color: "var(--mut)" }}>
-          NFL Week {data.week}
-        </span>}
-        <span className="mut" style={{ marginLeft: "auto", fontSize: 11 }}>
-          {at ? `updated ${new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}
-          {data && (data.rooting || []).some((p) => p.state === "live") ? " · refreshing every 45s" : " · no games in progress"}
-        </span>
-      </div>
+    <div data-screen="gameday" style={{ minHeight: embedded ? 0 : "100vh", background: "var(--bg)" }}>
+      {/* Inside the in-season shell the tab strip IS the header, so this one would be a second title bar
+          stacked on the first. See InSeason.jsx. */}
+      {!embedded && (
+        <div className="hairline appheader" style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px", flexWrap: "wrap" }}>
+          <button className="btn btn-mini" onClick={onBack || onHome}>← {backLabel || "Home"}</button>
+          <span className="disp" style={{ fontSize: 18, fontWeight: 800 }}>Game day</span>
+          {data && <span className="chip" style={{ fontSize: 11, padding: "2px 8px", borderRadius: 99, border: "1px solid var(--line)", color: "var(--mut)" }}>
+            NFL Week {data.week}
+          </span>}
+          <span className="mut" style={{ marginLeft: "auto", fontSize: 11 }}>
+            {at ? `updated ${new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}
+            {data && (data.rooting || []).some((p) => p.state === "live") ? " · refreshing every 45s" : " · no games in progress"}
+          </span>
+        </div>
+      )}
 
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "16px 16px 40px" }}>
         {!connected.length && (
@@ -244,6 +308,16 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub 
           <>
             <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
               <span className="disp" style={{ fontSize: 15, fontWeight: 800 }}>Who to root for</span>
+              <div className="filterchips" data-gdphases style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                {[["all", "All"], ["pre", "Yet to play"], ["done", "Played"]].map(([k, lbl]) => (
+                  <button key={k} data-gdphase={k} onClick={() => setPhase(k)} aria-pressed={phase === k}
+                    style={{ fontSize: 11, fontWeight: phase === k ? 800 : 600, padding: "2px 9px", borderRadius: 99,
+                      cursor: "pointer", fontFamily: "inherit",
+                      border: `1px solid ${phase === k ? "#5FD0A8" : "var(--line)"}`,
+                      color: phase === k ? "#5FD0A8" : "var(--mut)",
+                      background: phase === k ? "rgba(95,208,168,.12)" : "transparent" }}>{lbl}</button>
+                ))}
+              </div>
               {/* The chips are the PHONE control. On a wide screen both lists are on screen at once, so a
                   filter that hides half the answer would be a click that buys nothing. */}
               {!wide && (

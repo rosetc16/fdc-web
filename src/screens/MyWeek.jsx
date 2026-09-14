@@ -132,7 +132,7 @@ async function pool(items, n, fn) {
   return out;
 }
 
-export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpenHub, onUmbrella, initialView, onViewConsumed }) {
+export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpenHub, onUmbrella, initialView, onViewConsumed, embedded }) {
   // Home has two doors into this screen and they land on different tabs — see `myWeekView` in App.jsx.
   const [view, setView] = useState(initialView || "summary");   // summary | avail | lineup | fa | weather | review
   useEffect(() => { if (initialView && onViewConsumed) onViewConsumed(); }, []);
@@ -493,22 +493,42 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
   ];
 
   return (
-    <div data-screen="myweek" style={{ minHeight: "100vh", background: "var(--bg)" }}>
-      <div className="hairline appheader" style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px", flexWrap: "wrap" }}>
-        <button className="btn btn-mini" onClick={onBack || onHome}>← {backLabel || "Home"}</button>
-        <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>My week</div>
-        {week && <span className="chip" style={{ borderColor: "var(--line2)" }}>NFL Week {week}</span>}
-        <div style={{ flex: 1 }} />
-        {/* The freshness stamp is part of the promise: "check this up until the last minute of kickoffs" is
-            only trustworthy if the page says how old what you are looking at is. */}
-        {refreshedAt && <span data-wkfresh className="mut" style={{ fontSize: 11 }}>
-          <i className="ti ti-refresh" style={{ fontSize: 11, marginRight: 4 }} aria-hidden="true" />
-          updated {new Date(refreshedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · re-checks every 5 min
-        </span>}
-        <span className="mut" style={{ fontSize: 11.5 }}>{connected.length} connected league{connected.length === 1 ? "" : "s"}</span>
-      </div>
+    <div data-screen="myweek" style={{ minHeight: embedded ? 0 : "100vh", background: "var(--bg)" }}>
+      {/* Inside the in-season shell the tab strip is the header; this one would stack a second
+          title bar on the first. The freshness stamp still matters though, so it moves down into
+          the view chips row rather than being lost. See InSeason.jsx. */}
+      {!embedded && (
+        <div className="hairline appheader" style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px", flexWrap: "wrap" }}>
+          <button className="btn btn-mini" onClick={onBack || onHome}>← {backLabel || "Home"}</button>
+          <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>My week</div>
+          {week && <span className="chip" style={{ borderColor: "var(--line2)" }}>NFL Week {week}</span>}
+          <div style={{ flex: 1 }} />
+          {/* The freshness stamp is part of the promise: "check this up until the last minute of kickoffs" is
+              only trustworthy if the page says how old what you are looking at is. */}
+          {refreshedAt && <span data-wkfresh className="mut" style={{ fontSize: 11 }}>
+            <i className="ti ti-refresh" style={{ fontSize: 11, marginRight: 4 }} aria-hidden="true" />
+            updated {new Date(refreshedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · re-checks every 5 min
+          </span>}
+          <span className="mut" style={{ fontSize: 11.5 }}>{connected.length} connected league{connected.length === 1 ? "" : "s"}</span>
+        </div>
+      )}
 
       <div style={{ maxWidth: 1120, margin: "0 auto", padding: "16px 20px 60px" }}>
+        {/* ⚠ THE FRESHNESS STAMP FOLLOWS THE CHIPS WHEN EMBEDDED. Hiding this screen's own header inside the
+            in-season shell took the "updated 10:49 · re-checks every 5 min" line with it — and that line is
+            part of the promise: "check this up until the last minute of kickoffs" is only trustworthy if
+            the page says how old what you are looking at is. I wrote a comment saying it moved and then did
+            not move it; it moves here. */}
+        {embedded && refreshedAt && (
+          <div data-wkfresh className="mut" style={{ fontSize: 11, marginBottom: 8, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <span>
+              <i className="ti ti-refresh" style={{ fontSize: 11, marginRight: 4 }} aria-hidden="true" />
+              updated {new Date(refreshedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · re-checks every 5 min
+            </span>
+            <span>{connected.length} connected league{connected.length === 1 ? "" : "s"}</span>
+            {week && <span>NFL Week {week}</span>}
+          </div>
+        )}
         <div data-wkviews className="filterchips" style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
           {VIEWS.map(([k, icon, label, n]) => {
             const on = view === k;
