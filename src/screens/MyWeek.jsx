@@ -32,17 +32,50 @@
 
    ⚠ ONLY LEAGUES WHERE WE CAN SEE EVERY ROSTER, which was Trey's line and still holds: a manual league's
      roster is whatever it was on draft day, and a lineup warning drawn from that is a warning about a lineup
-     you no longer have. Those leagues are named at the bottom rather than silently missing. Multiple linked
-     accounts need nothing special here — a league remembers which account imported it, and this page reads
-     the whole list.
+     you no longer have. Those leagues are named at the bottom rather than silently missing.
+
+   ⭐⭐⭐⭐ 29k — AND THE FREE-AGENT VIEW WAS STILL EMPTY, because the three fixes above were all fixes to the
+     COMPARISON and the fault was in the POOL. This page was asking the DRAFT PLAYER PACK who was available.
+     The pack is the draftable universe: `playerPack.js` drops anyone with neither an ADP nor a season
+     projection, which by October is a precise description of the only players who are ever actually free —
+     the back-up promoted on Wednesday, this week's streaming defence, the tight end nobody drafted. So the
+     pool was "players good enough to draft in August, minus the 180 already rostered", and in twelve leagues
+     that really is close to nobody. The pool is now `hub.weekly`, the league's own projection feed, which
+     covers every NFL player with a game this week; the pack is demoted to what it is good at — injury
+     detail and bye weeks — and a player missing from it no longer disappears.
+
+   ⭐⭐⭐⭐ AND BYES GET THEIR OWN SECTION, not a row type. Trey: "Yes, I want this to be focused on bye weeks,
+     but also just specific team upgrades." A bye is the one waiver problem with a deadline and no judgment
+     in it — the slot is empty, you know it days ahead, and it is the same answer in every league that player
+     is in. It leads. The upgrades follow, and they say what they are worth.
+
+   ⚠ WHICH ACCOUNT OWNS THE TEAM. A league imported under a Sleeper account you have since removed used to
+     come back with `myRosterId: null`, and this page dropped it on the floor — "not picking up on the league
+     that I was connected to earlier". Every hub call now carries the username the league was imported under,
+     and a league we still cannot resolve is shown with the account it needs rather than omitted.
    ------------------------------------------------------------------------------------------------ */
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { api } from "../api.js";
 import { backendFormatKey, Dot } from "../App.jsx";
+import WeeklyReview from "./WeeklyReview.jsx";
 
 const REFRESH_MS = 5 * 60 * 1000;   // his number, and about right: designations move in minutes, not seconds
 
 const hubIdOf = (l) => (l && ((l.connect && l.connect.leagueId) || (l.cfg && l.cfg.connect && l.cfg.connect.leagueId) || l.sleeperLeagueId)) || null;
+const ownerOf = (l) => (l && (
+  (l.connect && (l.connect.ownerUsername || l.connect.username))
+  || (l.cfg && l.cfg.connect && (l.cfg.connect.ownerUsername || l.cfg.connect.username))
+)) || null;
+
+/* The four reasons to make a claim, each with its own word. The labels are the whole point: a streamer
+   dressed as an upgrade is how a waiver list stops being trusted, and "Bye next week" is useless unless it
+   is visibly not "Bye hole". Ordered here the way they are ranked in the list. */
+const FA_KIND = {
+  bye:     { label: "Bye hole",      tone: "var(--gold)" },
+  byeNext: { label: "Bye next week", tone: "#6BA8E5" },
+  upgrade: { label: "Upgrade",       tone: "#5FD0A8" },
+  stream:  { label: "Thin spot",     tone: "var(--mut)" },
+};
 
 /* ⭐⭐⭐⭐ THE DESIGNATION LADDER, IN HIS ORDER.
    Trey: "out would be first, then questionable, then doubtful— sorry, out, doubtful, questionable, then
@@ -84,7 +117,6 @@ const ago = (iso) => {
   return `${Math.round(d)}d ago`;
 };
 const r1 = (n) => Math.round(n * 10) / 10;
-
 /* Run the fan-out a few at a time. Fifteen parallel team-hub calls each fan out to Sleeper themselves, and
    firing them all at once is how you get rate-limited into a page that half-loads and blames your leagues. */
 async function pool(items, n, fn) {
@@ -100,8 +132,10 @@ async function pool(items, n, fn) {
   return out;
 }
 
-export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpenHub, onUmbrella }) {
-  const [view, setView] = useState("summary");      // summary | avail | lineup | fa | weather
+export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpenHub, onUmbrella, initialView, onViewConsumed }) {
+  // Home has two doors into this screen and they land on different tabs — see `myWeekView` in App.jsx.
+  const [view, setView] = useState(initialView || "summary");   // summary | avail | lineup | fa | weather | review
+  useEffect(() => { if (initialView && onViewConsumed) onViewConsumed(); }, []);
   const [sortBy, setSortBy] = useState("impact");   // impact | designation | leagues | league
   const [rows, setRows] = useState(null);
   const [pack, setPack] = useState(null);
@@ -111,7 +145,6 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
   const [refreshedAt, setRefreshedAt] = useState(null);
   const [err, setErr] = useState(null);
   const ranFor = useRef(null);
-
   const connected = useMemo(() => (leagues || []).filter((l) => hubIdOf(l)), [leagues]);
   const unconnected = useMemo(() => (leagues || []).filter((l) => !hubIdOf(l)), [leagues]);
 
@@ -136,7 +169,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
         const anyIdp = connected.some((l) => { const st = (l.cfg && l.cfg.start) || {}; return (st.DL || 0) + (st.LB || 0) + (st.DB || 0) + (st.IDPFLEX || 0) > 0; });
         const [pk, hubs] = await Promise.all([
           api.playerPack(fmt, undefined, { k: true, dst: true, idp: anyIdp }).catch(() => null),
-          pool(connected, 4, (l) => api.sleeperTeamHub(hubIdOf(l))),
+          pool(connected, 4, (l) => api.sleeperTeamHub(hubIdOf(l), undefined, ownerOf(l))),
         ]);
         if (!alive) return;
         if (pk) setPack(pk);
@@ -176,7 +209,11 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
     return rows.map(({ league, hub, error }) => {
       if (!hub || !hub.teams) return { league, error: error || "no data" };
       const mine = hub.teams.find((t) => t.rosterId === hub.myRosterId);
-      if (!mine) return { league, error: "roster not found" };
+      /* ⭐⭐⭐ A LEAGUE WE CANNOT PLACE YOU IN IS A TASK, NOT A GAP. It has one cause and one fix — the
+         Sleeper account that owns this team is not linked — so say that, name the account if the league
+         remembers it, and leave the row on the page. Dropping it is what made a whole league appear to
+         vanish from this screen with no explanation anywhere. */
+      if (!mine) return { league, error: "roster not found", needsAccount: ownerOf(league) || true };
       const wkOf = (sid) => (hub.weekly && hub.weekly[String(sid)]) || null;
       /* ⚠ NULL, NOT ZERO. A player the week feed does not cover has an UNKNOWN projection, and calling that
          zero is how the whole free-agent view went silent: every comparison became 0-vs-0 and all twelve
@@ -189,18 +226,37 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
       const bench = rosterAll.filter((s) => !startSet.has(s));
       const rostered = new Set((hub.rostered || []).map(String));
       const posOf = (sid) => { const p = bySid.get(sid); const w = wkOf(sid); return (p && p.pos) || (w && w.pos) || null; };
-      const nameOf = (sid) => { const p = bySid.get(sid); return (p && p.name) || `Player ${sid}`; };
-      const onBye = (sid) => { const p = bySid.get(sid); return hub.week != null && p && p.bye === hub.week; };
+      const nameOf = (sid) => { const p = bySid.get(sid); const w = wkOf(sid); return (p && p.name) || (w && w.name) || `Player ${sid}`; };
+      const teamOf = (sid) => { const p = bySid.get(sid); const w = wkOf(sid); return (p && p.team) || (w && w.team) || null; };
+      /* ⭐⭐⭐⭐ THE BYE TEST, IN THE ORDER WE ACTUALLY TRUST IT.
+         (1) The schedule: this player's NFL team has no game in week N. Unarguable, and the server now
+             sends the set. (2) The player pack's `bye_week`, which is null for long stretches of the year
+             and was the ONLY test before 29k — which is why a page Trey wanted "focused on bye weeks"
+             reported no byes at all. A missing team is not a bye; it is a player we cannot place, and
+             saying nothing about him is the honest move. */
+      const byeSet = Array.isArray(hub.byeTeams) ? new Set(hub.byeTeams) : null;
+      const onBye = (sid) => {
+        if (byeSet) { const t = teamOf(sid); return t ? byeSet.has(t) : false; }
+        const p = bySid.get(sid);
+        return hub.week != null && !!p && p.bye === hub.week;
+      };
       const injOf = (sid) => designationOf((wkOf(sid) || {}).inj || (bySid.get(sid) || {}).inj);
 
-      // Everyone available in this league, by position, best projection first.
+      /* ⭐⭐⭐⭐ THE FREE-AGENT POOL COMES FROM THE LEAGUE'S OWN WEEK FEED — see the header for the long
+         version. `hub.weekly` is every player with a projection this week under THIS league's scoring;
+         subtract everyone on a roster in THIS league and what is left is, by definition, available here.
+         The pack is consulted for the nicer name and the injury detail, and a player it has never heard of
+         is still a real pickup rather than an invisible one. */
       const freeByPos = new Map();
-      bySid.forEach((p, sid) => {
-        if (rostered.has(sid) || !p.pos) return;
+      Object.keys((hub && hub.weekly) || {}).forEach((sid) => {
+        if (rostered.has(sid)) return;
+        const w = hub.weekly[sid] || {};
+        const pos = posOf(sid);
+        if (!pos) return;
         const v = ptsOf(sid);
         if (v == null) return;                       // unknown, not zero — see the note on ptsOf
-        if (!freeByPos.has(p.pos)) freeByPos.set(p.pos, []);
-        freeByPos.get(p.pos).push({ sid, name: p.name, team: p.team, pts: v, bye: onBye(sid), inj: injOf(sid) });
+        if (!freeByPos.has(pos)) freeByPos.set(pos, []);
+        freeByPos.get(pos).push({ sid, name: nameOf(sid), team: teamOf(sid), pts: v, bye: onBye(sid), inj: injOf(sid), opp: w.opp });
       });
       freeByPos.forEach((arr) => arr.sort((a, b) => b.pts - a.pts));
 
@@ -260,21 +316,59 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
 
       /* ⭐⭐⭐ FREE AGENTS, IN THREE FLAVOURS RATHER THAN ONE — see the header for why one was not enough.
          Each is labelled for exactly what it is, so the list never lets a streamer pass for an upgrade. */
+      const byeNextSet = Array.isArray(hub.byeTeamsNext) ? new Set(hub.byeTeamsNext) : null;
       const fa = [];
+      /* One name is one claim. Two bye holes at the same position are two problems and deserve two answers —
+         offering the same running back for both reads like a bug and, worse, is one you cannot act on twice. */
+      const taken = new Set();
+      const claimable = (pos) => (freeByPos.get(pos) || []).filter((f) => !f.bye && !taken.has(f.name) && !(f.inj && f.inj.rank >= 4));
+
+      /* ⭐⭐⭐⭐ BYES FIRST, AND FROM THE WHOLE ROSTER RATHER THAN THE LINEUP. "I want this to be focused on
+         bye weeks." A bye is a hole you can see coming, and the reason to look at it early is that the
+         waiver wire is picked over by Tuesday. So: anyone you are STARTING who is on bye this week is an
+         open slot right now; anyone on the roster who is on bye NEXT week is a slot you can cover while
+         there is still somebody worth covering it with. The second kind is the one nothing on this site
+         has ever told him. */
+      const byeSeen = new Set();
+      const pushBye = (sid, when) => {
+        const pos = posOf(sid);
+        if (!pos || byeSeen.has(sid)) return;
+        byeSeen.add(sid);
+        const best = claimable(pos).filter((f) => !(when === "next" && byeNextSet && f.team && byeNextSet.has(f.team)))[0];
+        if (!best) return;
+        taken.add(best.name);
+        fa.push({
+          kind: when === "next" ? "byeNext" : "bye",
+          rank: when === "next" ? 3 : 4, pos, outName: nameOf(sid), inName: best.name, inTeam: best.team,
+          gain: r1(best.pts),
+          why: when === "next"
+            ? `${nameOf(sid)} is on bye in week ${(hub.week || 0) + 1} — claim now, not Tuesday`
+            : `${nameOf(sid)} is on bye in week ${hub.week}`,
+        });
+      };
+      /* ⚠ STARTERS BOTH TIMES, INCLUDING FOR NEXT WEEK. Running the next-week pass over the WHOLE roster
+         reads well until you watch what it does: a handcuff back you stashed on the bench is not a hole in
+         anything, but he generates a claim — and because byes are answered before upgrades, that phantom
+         claim SPENDS the best free player at his position and the genuine upgrade behind it goes unlisted.
+         A player you are not starting is not a slot you have to fill. */
+      starters.forEach((sid) => { if (onBye(sid)) pushBye(sid, "now"); });
+      if (byeNextSet) starters.forEach((sid) => { const t = teamOf(sid); if (t && byeNextSet.has(t)) pushBye(sid, "next"); });
+
+      /* ⭐⭐⭐ THEN THE UPGRADES — "but also just specific team upgrades." Same shape as before, now over a
+         pool that contains the players who are actually free. The bar stays deliberately high: a claim
+         costs you a roster spot and possibly FAAB, so "two points and a quarter better" is the least this
+         can be worth without turning the list into noise. */
       starters.forEach((sid) => {
         const pos = posOf(sid);
-        if (!pos) return;
+        if (!pos || onBye(sid)) return;
         const cur = ptsOf(sid);
-        const opts = (freeByPos.get(pos) || []).filter((f) => !f.bye && !(f.inj && f.inj.rank >= 4));
-        const best = opts[0];
-        if (!best) return;
-        if (onBye(sid)) {
-          fa.push({ kind: "bye", rank: 3, pos, outName: nameOf(sid), inName: best.name, inTeam: best.team,
-            gain: r1(best.pts), why: `${nameOf(sid)} is on bye in week ${hub.week}` });
-        } else if (cur != null && best.pts - cur >= Math.max(2, cur * 0.25)) {
+        const best = claimable(pos)[0];
+        if (!best || cur == null) return;
+        if (best.pts - cur >= Math.max(2, cur * 0.25) || (cur < 6 && best.pts > cur)) taken.add(best.name);
+        if (best.pts - cur >= Math.max(2, cur * 0.25)) {
           fa.push({ kind: "upgrade", rank: 2, pos, outName: nameOf(sid), inName: best.name, inTeam: best.team,
             gain: r1(best.pts - cur), why: `projects ${r1(best.pts - cur)} more than ${nameOf(sid)} this week` });
-        } else if (cur != null && cur < 6 && best.pts > cur) {
+        } else if (cur < 6 && best.pts > cur) {
           fa.push({ kind: "stream", rank: 1, pos, outName: nameOf(sid), inName: best.name, inTeam: best.team,
             gain: r1(best.pts - cur), why: `${nameOf(sid)} projects ${r1(cur)} — ${best.name} is available at ${r1(best.pts)}` });
         }
@@ -285,7 +379,11 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
         .filter((x) => { const k = `${x.pos}:${x.inName}`; if (seen.has(k)) return false; seen.add(k); return true; });
 
       const projKnown = starters.some((s) => ptsOf(s) != null);
-      return { league, hub, avail, swaps, fa: faTrim, projKnown, week: hub.week };
+      /* What the pool actually was, so an empty list can tell you WHY. "No free agents worth claiming" and
+         "we could not see the free agents" look identical on screen and are completely different problems —
+         and the second one is the one that has been true for months. */
+      const poolSize = [...freeByPos.values()].reduce((s, a) => s + a.length, 0);
+      return { league, hub, avail, swaps, fa: faTrim, projKnown, poolSize, byeKnown: !!byeSet, week: hub.week };
     });
   }, [rows, bySid]);
 
@@ -388,6 +486,10 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
     ["lineup", "ti-arrows-exchange", "Lineup changes", counts.lineup],
     ["fa", "ti-user-plus", "Free agents", counts.fa],
     ["weather", "ti-cloud-storm", "Weather", counts.wx],
+    // Last, and badgeless on purpose: everything above it is a thing to DO before kickoff, and this is the
+    // only one that is about a week you can no longer change. A count here would compete for the same
+    // attention on a Sunday morning and win, which would be exactly wrong.
+    ["review", "ti-history", "Weekly review", 0],
   ];
 
   return (
@@ -477,7 +579,16 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                       {L.league.name}
                     </button>
                     <span className="mut" style={{ fontSize: 11.5, flex: "2 1 320px", minWidth: 0 }}>
-                      {L.error ? <span style={{ color: "var(--red)" }}>Couldn't read this league</span>
+                      {/* ⭐⭐⭐ A LEAGUE WE CANNOT PLACE YOU IN GETS AN INSTRUCTION, NOT A SHRUG. There is
+                          exactly one reason this happens and exactly one fix, so print both — and print the
+                          username the league was imported under when we have it, because "link the account
+                          that owns this" is not actionable if you have four of them. */}
+                      {L.needsAccount ? (
+                        <span data-wkneedsaccount={typeof L.needsAccount === "string" ? L.needsAccount : "1"} style={{ color: "var(--gold)" }}>
+                          Can't tell which team is yours — link the Sleeper account
+                          {typeof L.needsAccount === "string" ? <> <b>{L.needsAccount}</b></> : null} under Settings
+                        </span>
+                      ) : L.error ? <span style={{ color: "var(--red)" }}>Couldn't read this league</span>
                         : urgent ? <span style={{ color: "#F2655C" }}>{urgent} not expected to play</span>
                         : check ? <span style={{ color: "var(--gold)" }}>{check} to check before kickoff</span>
                         : "No availability problems"}
@@ -553,12 +664,25 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
         {!loading && view === "fa" && !!connected.length && (
           <>
             {counts.fa === 0 ? (
+              /* ⭐⭐⭐⭐ AN EMPTY LIST HAS TO SAY WHICH KIND OF EMPTY IT IS. Trey read "nothing worth a claim"
+                 across twelve leagues and correctly refused to believe it — and he was right, the pool was
+                 broken. So this now prints the size of the pool it searched. A real all-clear says it looked
+                 at four hundred available players; a broken one says it looked at nine, and that number is
+                 the bug report. */
               <div className="panel" data-wkempty="fa" style={{ padding: 18 }}>
                 <div className="disp" style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Nothing worth a claim</div>
                 <div className="mut" style={{ fontSize: 13, lineHeight: 1.5 }}>
                   No bye holes, no available player who beats one of your starters, and no thin spot worth streaming.
                   {perLeague.some((L) => L && L.hub && !L.projKnown) && <> ⚠ At least one league has no weekly projections
                     from Sleeper yet, so there is nothing to compare there — that is a data gap, not an all-clear.</>}
+                  {perLeague.some((L) => L && L.hub && !L.byeKnown) && <> ⚠ The NFL schedule has not been loaded for this
+                    season, so bye weeks are being read from player records rather than from the schedule and may be
+                    incomplete.</>}
+                </div>
+                <div className="mut num" data-wkfapool={String(perLeague.reduce((s, L) => s + ((L && L.poolSize) || 0), 0))}
+                  style={{ fontSize: 11, marginTop: 8 }}>
+                  Searched {perLeague.reduce((s, L) => s + ((L && L.poolSize) || 0), 0).toLocaleString()} available
+                  players across {perLeague.filter((L) => L && L.hub).length} leagues.
                 </div>
               </div>
             ) : (
@@ -570,9 +694,8 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                       {L.fa.map((r, i) => (
                         <div key={i} data-wkfarow={r.inName} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderTop: "1px solid var(--line)", flexWrap: "wrap" }}>
                           <span data-wkfakind={r.kind} style={{ flexShrink: 0, fontSize: 9.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".04em",
-                            border: `1px solid ${r.kind === "bye" ? "var(--gold)" : r.kind === "upgrade" ? "#5FD0A8" : "var(--line2)"}`,
-                            color: r.kind === "bye" ? "var(--gold)" : r.kind === "upgrade" ? "#5FD0A8" : "var(--mut)",
-                            borderRadius: 99, padding: "2px 8px" }}>{r.kind === "bye" ? "Bye hole" : r.kind === "upgrade" ? "Upgrade" : "Thin spot"}</span>
+                            border: `1px solid ${FA_KIND[r.kind].tone}`, color: FA_KIND[r.kind].tone,
+                            borderRadius: 99, padding: "2px 8px" }}>{FA_KIND[r.kind].label}</span>
                           <div style={{ flex: "1 1 300px", minWidth: 0 }}>
                             <div style={{ fontSize: 13.5, fontWeight: 700 }}>
                               Add <span style={{ color: "#5FD0A8" }}>{r.inName}</span>
@@ -589,8 +712,10 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
               </div>
             )}
             <div className="mut" style={{ fontSize: 11, lineHeight: 1.5, marginTop: 10 }}>
-              Three kinds of claim, labelled so none of them pretends to be another: a starter on bye, an available
-              player who clearly beats one of yours, and a thin spot where your starter is barely producing. A
+              Four kinds of claim, labelled so none of them pretends to be another: a slot left empty by a bye this
+              week, a bye coming next week you can cover while the wire is still worth picking over, an available
+              player who clearly beats one of yours, and a thin spot where your starter is barely producing. Byes come
+              from the NFL schedule rather than from a player's bye-week field, which is blank for much of the year. A
               "trending up" read needs in-season usage — snap and target share week to week — which the app does not
               collect yet, so it is absent rather than faked from draft-market movement.
             </div>
@@ -647,6 +772,19 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
             )}
           </>
         )}
+
+        {/* ===================== WEEKLY REVIEW =====================
+            Trey: "a review of what you could have done better… should you have started someone else? Was
+            there a FA? Was it good luck or bad luck that you won or lost? Give weekly trends not just for
+            your matchup, but also compare it to the league."
+
+            ⚠ THE VERDICT LEADS, NOT THE SCORE. A scoreboard is something he already has in Sleeper; what
+              this page owes him is the sentence that says whether the result was earned — and it has to be
+              willing to say the loss was his fault, or the whole thing is a horoscope. */}
+        {/* The review itself lives in its own screen, because the league hub and the home page show the
+            SAME thing at a different scale — see WeeklyReview.jsx. Here it is handed every connected
+            league, which is the macro read. */}
+        {view === "review" && <WeeklyReview leagues={connected} scope="all" />}
 
         {!loading && unconnected.length > 0 && (
           <div data-wkunconnected className="mut" style={{ fontSize: 11.5, marginTop: 18, lineHeight: 1.55, borderTop: "1px solid var(--line)", paddingTop: 10 }}>

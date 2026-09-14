@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29j";
+const BUILD_TAG = "2026.07.29o";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -8322,6 +8322,13 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spin{display:inline-block;animation:spin .9s linear infinite}
 @keyframes pulseGold{0%,100%{opacity:.5}50%{opacity:1}}
+/* 29n - the live badge on the home page. A slow breath rather than a blink: the dot says football is
+   being played right now, and something that flashes on a page you keep open all Sunday becomes a thing
+   you want to cover with your thumb. Stilled entirely under reduced-motion, where the badge word carries
+   the whole message on its own. */
+@keyframes liveBreath{0%,100%{opacity:1}50%{opacity:.35}}
+.livedot{animation:liveBreath 2.2s ease-in-out infinite}
+@media (prefers-reduced-motion: reduce){.livedot{animation:none}}
 @keyframes clockFlash{0%,100%{background:rgba(242,101,92,.10);box-shadow:none}50%{background:rgba(242,101,92,.34);box-shadow:0 0 20px rgba(242,101,92,.5),inset 0 0 26px rgba(242,101,92,.14)}}
 .clock-urgent{animation:clockFlash 1s ease-in-out infinite}
 .glowline{background:linear-gradient(90deg,transparent,var(--gold),transparent);height:1px;opacity:.5}
@@ -9265,6 +9272,10 @@ export default function App() {
   const [hubLeagueId, setHubLeagueId] = useState(nav0.hubLeagueId || null); // Sleeper league_id for the in-season team hub
   const [draftTab, setDraftTab] = useState(null); // optional tab to open the draft room on
   const [helpTab, setHelpTab] = useState(null); // optional tab to open Help on
+  /* Which view My Week opens on. Home has two doors into that screen — "My Week" (the Sunday-morning read)
+     and "Weekly Review" (the Tuesday one) — and they are the same screen on different tabs, so the door
+     has to be able to say which. Cleared by My Week once consumed, so a later visit opens where you left. */
+  const [myWeekView, setMyWeekView] = useState(null);
   const [setupReturn, setSetupReturn] = useState(null); // where the New League flow should return to
   const [biz, setBiz] = useState({ price: 19.99, promos: [] });
   const [loaded, setLoaded] = useState(false);
@@ -9945,7 +9956,14 @@ export default function App() {
       const built = [];
       await Promise.all(toImport.map(async (sl) => {
         try {
-          const d = await api.sleeperDraft(sl.league_id, username);
+          /* ⭐⭐⭐ THE ACCOUNT THIS LEAGUE CAME IN UNDER, NOT WHICHEVER ONE IS PRIMARY — 29k.
+             With several accounts linked, `username` here is only the first of them, and using it for a
+             league owned by one of the others resolves the wrong team — or no team. `my-leagues` now tags
+             each league with the account that returned it; that tag is both what we ask the draft with and
+             what we STORE, so the league can still find your roster years later even if the account has
+             since been removed. */
+          const owner = sl.owner_username || username;
+          const d = await api.sleeperDraft(sl.league_id, owner);
           if (!d || !d.cfg) return;
           const cfg = { ...d.cfg, name: sl.name || d.cfg.name || "Sleeper league",
             slot: (d.cfg && d.cfg.slot != null) ? d.cfg.slot : (d.yourSlot != null ? d.yourSlot : null),
@@ -9957,7 +9975,8 @@ export default function App() {
              * the team names. So the same league imported through the button worked and imported
              * automatically did not, which is why the report read like the feature was missing entirely:
              * "When I connected my Dynasty league, it didn't pull over rosters." */
-            connect: { platform: "sleeper", leagueId: sl.league_id, username, draftId: d.draft_id || sl.draft_id || null, status: d.status || sl.draft_status || null,
+            connect: { platform: "sleeper", leagueId: sl.league_id, username: owner, ownerUsername: owner, ownerId: sl.owner_id || null,
+              draftId: d.draft_id || sl.draft_id || null, status: d.status || sl.draft_status || null,
               tradedPicks: d.tradedPicks || [], keepers: d.keepers || [], slotNames: d.slotNames || null, existingRosters: d.existingRosters || null } };
           built.push({ id: `${Date.now()}-${sl.league_id}`, name: cfg.name, cfg, picks: d.picks || [], preds: [], connect: cfg.connect, sleeperLeagueId: sl.league_id, created: new Date().toLocaleDateString() });
         } catch (e) { /* skip this league, keep going */ }
@@ -10314,6 +10333,7 @@ export default function App() {
         onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} onGuide={() => { setHelpTab("guide"); setRoute("help"); }} onAccount={() => setRoute("account")} onAdmin={() => setRoute("admin")} onSignOut={signOut}
         onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }}
         onDraftTrends={() => setRoute("draftTrends")} onAutoImportSleeper={autoImportSleeper} onMyWeek={() => setRoute("myweek")}
+        onGameDay={() => setRoute("gameday")} onReview={() => { setMyWeekView("review"); setRoute("myweek"); }}
         onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
         onStrategy={(id) => { setOpenStrategyFor(id); setActiveId(id); setRoute("leagueHub"); }}
         onOpenFun={(m) => { setMockLeague({ id: m.id, mockOf: null, name: m.name || "Quick mock", cfg: m.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }} onOpenMock={(leagueId, m) => { const lg = leagues.find((l) => l.id === leagueId); if (!lg) return; setMockLeague({ id: m.id, mockOf: leagueId, name: `${lg.name} — mock`, cfg: lg.cfg, picks: m.picks || [], preds: m.preds || [], snap: m.snap || null, pickNames: m.pickNames || null, predNames: m.predNames || null, ended: !!m.ended }); setActiveId(m.id); setRoute("draft"); }} onDeleteFun={deleteFunMock} onDeleteMock={deleteMock} />}
@@ -10355,7 +10375,7 @@ export default function App() {
           {msg ? <div className="mut" style={{ fontSize: 11, lineHeight: 1.5, marginBottom: 18, padding: "8px 10px", border: "1px solid var(--line)", borderRadius: 8, background: "var(--panel2)", fontFamily: "var(--mono)", wordBreak: "break-word" }}>Details (for support): {msg}</div> : null}
           <button className="btn btn-gold" onClick={() => setRoute("home")}>← Back to your leagues</button>
         </div>
-      )}><TeamHub user={user} leagues={leagues} leagueId={hubLeagueId} onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} onUpdate={updateUser} /></Boundary>}
+      )}><TeamHub user={user} leagues={leagues} leagueId={hubLeagueId} onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} onUpdate={updateUser} onGameDay={() => setRoute("gameday")} /></Boundary>}
       {route === "teamHub" && hubLeagueId && !user && (
         <HubShell title="Team hub" onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} user={user}><HubLoading /></HubShell>
       )}
@@ -10368,9 +10388,12 @@ export default function App() {
       {route === "home" && !user?.paid && <HomePage biz={biz} user={user} onSignIn={() => setAuthOpen(true)} onDemo={startDemo} onBuy={() => (user ? setRoute("checkout") : setAuthOpen(true))} onApp={() => setRoute("library")} onHelp={(t) => { setHelpTab(t || null); setRoute("help"); }} />}
       {route === "learn" && <HomePage biz={biz} user={user} onSignIn={() => setAuthOpen(true)} onDemo={startDemo} onBuy={() => (user ? setRoute("checkout") : setAuthOpen(true))} onApp={() => setRoute(user?.paid ? "home" : "home")} onHelp={(t) => { setHelpTab(t || null); setRoute("help"); }} initialTab="how" />}
       {route === "trends" && user && <TrendsPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} />}
-      {route === "myweek" && user && <MyWeek user={user} leagues={leagues} onHome={() => setRoute("home")} onBack={() => goBack()} backLabel={backLabelOf()}
+      {route === "myweek" && user && <MyWeek user={user} leagues={leagues} initialView={myWeekView} onViewConsumed={() => setMyWeekView(null)}
+        onHome={() => setRoute("home")} onBack={() => goBack()} backLabel={backLabelOf()}
         onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }}
         onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }} />}
+      {route === "gameday" && user && <GameDay leagues={leagues} onHome={() => setRoute("home")} onBack={() => goBack()} backLabel={backLabelOf()}
+        onOpenHub={(id) => { setActiveId(id); setRoute("leagueHub"); }} />}
       {route === "draftTrends" && user && <DraftTrendsPage user={user} leagues={leagues} funMocks={funMocks} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} onOpenLeague={(id) => { setActiveId(id); setRoute("leagueHub"); }} />}
       {route === "help" && <HelpPage user={user} biz={biz} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} onSubmit={submitFeedback} initialTab={helpTab} />}
       {route === "checkout" && user && <Checkout biz={biz} user={user} canceled={checkoutCanceled} onDone={completePurchase} onBack={() => { setCheckoutCanceled(false); setRoute("home"); }} />}
@@ -13690,9 +13713,16 @@ function useSleeperLink(user, onUpdate) {
     if (!name) throw new Error("Enter your Sleeper username");
     if (hasBackend) {
       const r = await api.sleeperLink(name);
-      setLinked(true); setUsername(r.sleeperUsername || name);
-      if (onUpdate) onUpdate({ sleeperUsername: r.sleeperUsername || name, sleeperUserId: r.sleeperUserId || null });
-      return r.sleeperUsername || name;
+      /* ⚠ THE PRIMARY IS THE SERVER'S TO DECIDE, NOT THE ADD'S — 29k. Linking is ADDITIVE now, so the
+         account you just added is usually NOT the primary; assuming it was made this control announce
+         "connected as <new handle>" while every server-side job kept using the first one. The response's
+         `sleeperUsername` is the primary; `added` is the one that just arrived. This returns `added`
+         (callers use it to import that account's leagues) and DISPLAYS the primary. */
+      const addedName = (r && r.added && r.added.username) || name;
+      const primary = (r && r.sleeperUsername) || addedName;
+      setLinked(true); setUsername(primary);
+      if (onUpdate) onUpdate({ sleeperUsername: primary, sleeperUserId: (r && r.sleeperUserId) || null });
+      return addedName;
     }
     setLinked(true); setUsername(name);
     if (onUpdate) onUpdate({ sleeperUsername: name });
@@ -14342,7 +14372,7 @@ function HubLoading() {
     </div>
   );
 }
-function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate }) {
+function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate, onGameDay }) {
   const [data, setData] = useState(null);      // response from /sleeper/team-hub
   const [viewWeek, setViewWeek] = useState(null); // week the user picked to look at; null = backend default (current/upcoming)
   const [curWeek, setCurWeek] = useState(null);   // the backend's resolved current/upcoming week (toggle baseline)
@@ -14387,7 +14417,11 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
   React.useEffect(() => {
     let alive = true;
     setLoading(true); setErr("");
-    api.sleeperTeamHub(leagueId, viewWeek || undefined).then((r) => {
+    /* The account this league was imported under, so the hub can point at your roster even when that account
+       is no longer the primary one (or is no longer linked at all). See connect.js `owner`. */
+    const _lg = (leagues || []).find((l) => String(hubIdOfLeague(l)) === String(leagueId));
+    const _owner = ownerUsernameOf(_lg);
+    api.sleeperTeamHub(leagueId, viewWeek || undefined, _owner).then((r) => {
       if (!alive) return;
       setData(r); setLoading(false);
       // Remember the backend's resolved current/upcoming week as the toggle baseline. This does NOT change
@@ -15239,7 +15273,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-          {[["notes", "Summary", "ti-clipboard-text"], ["lineup", "Matchup", "ti-swords"], ["freeagents", "Free agents", "ti-user-plus"], ["trades", "Trades", "ti-arrows-exchange"], ["roster", "My roster", "ti-users"], ["league", "League", "ti-trophy"]].map(([k, label, icon]) => (
+          {/* ⭐⭐⭐ 29m — "I want this to be able to be looked at within a specific league level (league
+              hub)". Placed after Matchup, because the order of these tabs is the order of the week: what
+              is happening, then what happened. Same component the cross-league view uses. */}
+          {[["notes", "Summary", "ti-clipboard-text"], ["lineup", "Matchup", "ti-swords"], ["live", "Live", "ti-activity-heartbeat"], ["review", "Review", "ti-history"], ["freeagents", "Free agents", "ti-user-plus"], ["trades", "Trades", "ti-arrows-exchange"], ["roster", "My roster", "ti-users"], ["league", "League", "ti-trophy"]].map(([k, label, icon]) => (
             <button key={k} className="btn btn-mini" style={{ background: tab === k ? "var(--gold)" : "transparent", color: tab === k ? "#151002" : "var(--ink)", fontWeight: tab === k ? 700 : 400 }} onClick={() => setTab(k)}>
               <i className={`ti ${icon}`} style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />{label}
             </button>
@@ -15720,6 +15757,23 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate 
             </div>
             <div className="mut" style={{ fontSize: 10.5, marginTop: 10 }}>Gold dot = projected starter at the position. Faded rows are bench depth.</div>
           </div>
+        )}
+
+        {/* ---- LIVE TAB (29n) ----
+            Trey: "when a week is live… the live badge shows up… There should be a review tab next to live
+            where you can dive into these. You can then see it at the league level in the hub."
+            Live and Review sit next to each other here in the same order they do on the home page, because
+            they are the same pair of questions at a different scale: what is happening, then what happened. */}
+        {tab === "live" && (
+          <LiveMatchup leagues={leagues} leagueId={leagueId} onGameDay={onGameDay} />
+        )}
+
+        {/* ---- REVIEW TAB (29m) ----
+            One league's worth of the same review the cross-league page shows. `scope="league"` only tells
+            the component there is nothing to choose between, so it opens expanded instead of making you
+            click "Detail" on a list of one. */}
+        {tab === "review" && (
+          <WeeklyReview leagues={(leagues || []).filter((l) => String(hubIdOfLeague(l)) === String(leagueId))} scope="league" />
         )}
 
         {/* ---- LEAGUE TAB ---- */}
@@ -16305,7 +16359,233 @@ function GetStartedPanel({ leagues, funMocks, dismissed, onDismiss, onConnectSle
   );
 }
 
-function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onOpenMock, onDeleteFun, onDeleteMock, onDraftTrends, onAutoImportSleeper, onConnectLeague, onMyWeek }) {
+/* ⭐⭐⭐⭐⭐ THE HOME PAGE'S LIVE STRIP — 29n.
+   ------------------------------------------------------------------------------------------------
+   Trey: "I do want to make sure that when a week is live… the live badge shows up on the home page to see
+   live results… then once games have finished (I'm thinking any game that's finished). There should be a
+   review tab next to live where you can dive into these."
+
+   ⚠ THE FOOTBALL DECIDES WHAT EXISTS HERE, NOT A TOGGLE. Three states, and the strip is a different object
+     in each: while games are on it leads with the live tab and wears a badge; from the first final whistle
+     the Review tab appears beside it; and when nothing has kicked off and nothing has finished it renders
+     NOTHING — an empty scoreboard on a Wednesday is clutter with a heartbeat icon on it.
+
+   ⚠ AND IT NEVER BLOCKS THE PAGE. The home page must paint without waiting on a cross-league read, so this
+     asks after a beat and slots in when the answer lands. If it never lands, the home page is exactly the
+     home page it was before — no error, no empty panel, nothing to explain.
+
+   ⚠ READS THROUGH livecache.js, LIKE GAME DAY AND THE HUB DO. Three screens showing one scoreboard must
+     show the SAME scoreboard; two loaders a minute apart produce a home page that says 3-2 opening a page
+     that says 2-3, and nobody would ever work out why.
+   ------------------------------------------------------------------------------------------------ */
+function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub }) {
+  const r1 = (n) => (Number.isFinite(n) ? Math.round(n * 10) / 10 : n);
+  const [live, setLive] = useState(null);
+  const [tab, setTab] = useState("live");
+  const [view, setView] = useState(null);
+  const [open, setOpen] = useState(false);   // the expander — see the button that toggles it
+
+  useEffect(() => {
+    if (!hasBackend) return;
+    let alive = true;
+    let timer = null;
+    const tick = async () => {
+      try {
+        const { loadLive, homeWeekView } = await import("./livecache.js");
+        const v = await loadLive(leagues);
+        if (!alive) return;
+        setLive(v); setView(homeWeekView(v));
+        /* The poll follows the games: half a minute while something is being played, ten when nothing is.
+           A Wednesday cannot produce a new score, and polling through it spends an application-wide rate
+           limit that other people's live drafts are also drawing on. */
+        const on = !!(v && v.weekState && v.weekState.anyLive);
+        timer = setTimeout(() => { if (typeof document === "undefined" || !document.hidden) tick(); else timer = setTimeout(tick, 60000); },
+          on ? 45000 : 10 * 60 * 1000);
+      } catch (e) { /* the strip is a nicety; its absence is not an error state */ }
+    };
+    const t0 = setTimeout(tick, 900);
+    return () => { alive = false; clearTimeout(t0); if (timer) clearTimeout(timer); };
+  }, [leagues]);
+
+  // Nothing on, nothing finished — no strip. This is the common case for most of the week.
+  if (!view || !view.show) return null;
+
+  const T = view.totals || {};
+  const rooting = ((live && live.rooting) || []).filter((p) => p.net !== 0).slice(0, 4);
+  const rows = ((live && live.leagues) || []).filter((l) => l && l.me && l.opp);
+  const tabs = [["live", "Live", view.live]].concat(view.reviewable ? [["review", "Review", false]] : []);
+  const showTab = tabs.some(([k]) => k === tab) ? tab : "live";
+
+  return (
+    <div className="panel" data-homeweek={showTab} data-homeweeklive={String(!!view.live)}
+      style={{ padding: 12, marginBottom: 12, border: `1px solid ${view.live ? "rgba(95,208,168,.45)" : "var(--line2)"}` }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+        {/* ⭐⭐⭐⭐ THE BADGE. A dot that only exists while football is being played, so its presence is the
+            message — and it is a word as well as a colour, because a green dot alone means nothing to a
+            reader who cannot see green. */}
+        {view.live && (
+          <span data-homelivebadge style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10.5,
+            fontWeight: 800, letterSpacing: ".06em", color: "#0d1210", background: "#5FD0A8",
+            borderRadius: 99, padding: "2px 9px" }}>
+            <span className="livedot" style={{ width: 6, height: 6, borderRadius: 99, background: "#0d1210" }} aria-hidden="true" />
+            LIVE
+          </span>
+        )}
+        <span className="disp" style={{ fontSize: 14.5, fontWeight: 800 }}>
+          Week {view.week}
+        </span>
+        <div className="filterchips" data-homeweektabs style={{ display: "flex", gap: 5 }}>
+          {tabs.map(([k, label]) => (
+            <button key={k} data-homeweektab={k} onClick={() => setTab(k)} aria-pressed={showTab === k}
+              style={{ fontSize: 11.5, fontWeight: showTab === k ? 800 : 600, padding: "2px 10px", borderRadius: 99,
+                cursor: "pointer", fontFamily: "inherit",
+                border: `1px solid ${showTab === k ? "var(--gold)" : "var(--line)"}`,
+                color: showTab === k ? "var(--gold)" : "var(--mut)",
+                background: showTab === k ? "rgba(224,166,60,.12)" : "transparent" }}>{label}</button>
+          ))}
+        </div>
+        {/* ⭐⭐⭐⭐ COLLAPSED UNTIL ASKED — 29o. Trey: "I also think the This Week section should have some
+            sort of expander. Rather than defaulting to showing everything at once, you could click into it
+            and expand it to see all of the information."
+            One line of score answers "do I need to care"; the table answers "which one first", and only
+            one of those questions is worth the vertical space of a home page by default. */}
+        <button className="btn btn-mini" data-homeweekexpand={String(open)} style={{ marginLeft: "auto" }}
+          onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+          {open ? "Less" : `All ${T.leagues || rows.length} leagues`} {open ? "⌃" : "⌄"}
+        </button>
+        <button className="btn btn-mini" data-homeweekopen
+          onClick={() => (showTab === "review" ? onReview && onReview() : onGameDay && onGameDay())}>
+          {showTab === "review" ? "Full review" : "Game day"} →
+        </button>
+      </div>
+
+      {showTab === "live" ? (
+        <>
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12.5, marginBottom: rows.length ? 8 : 0 }}>
+            <span><b className="num" style={{ fontSize: 14 }}>{T.winning}–{T.losing}{T.tied ? `–${T.tied}` : ""}</b>
+              <span className="mut"> across {T.leagues}</span></span>
+            {T.close > 0 && <span className="mut"><b className="num" style={{ color: "var(--gold)" }}>{T.close}</b> within 15</span>}
+            <span className="mut"><b className="num" style={{ color: "#5FD0A8" }}>{T.yetToPlay}</b> of yours yet to play</span>
+            {!view.live && view.nextKickoff && (
+              <span className="mut">next kickoff {new Date(view.nextKickoff).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}</span>
+            )}
+          </div>
+          {/* The four players whose afternoon moves yours the most — the short form of the Game Day board. */}
+          {!!rooting.length && (
+            <div data-homerooting style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {rooting.map((p) => (
+                <span key={p.sid} data-homerootrow={p.name} title={[
+                  p.forLeagues.length ? `For: ${p.forLeagues.map((l) => l.leagueName).join(", ")}` : "",
+                  p.againstLeagues.length ? `Against: ${p.againstLeagues.map((l) => l.leagueName).join(", ")}` : "",
+                ].filter(Boolean).join("  |  ")}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, padding: "3px 9px",
+                    borderRadius: 99, border: "1px solid var(--line)", background: "var(--panel2)" }}>
+                  <i className={`ti ${p.net > 0 ? "ti-arrow-up" : "ti-arrow-down"}`}
+                    style={{ fontSize: 11, color: p.net > 0 ? "#5FD0A8" : "#F2655C" }} aria-hidden="true" />
+                  <b style={{ color: p.net > 0 ? "#5FD0A8" : "#F2655C" }}>{Math.abs(p.net)}</b>
+                  <span>{p.name}</span>
+                  {p.pts && <span className="num mut">{p.pts.varies ? `${r1(p.pts.lo)}–${r1(p.pts.hi)}` : r1(p.pts.median)}</span>}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* ⭐⭐⭐⭐⭐ EVERY LEAGUE, COMPARABLE, IN ONE PLACE — 29o.
+              Trey: "I also want the homepage to give you a live view across all of your leagues so you can
+              compare them in one place."
+              COMPARE is the operative word and it is what makes this a table rather than fifteen cards:
+              the same four numbers in the same four columns, so your eye can run down the margin column and
+              find the two games you should actually be watching. Sorted by how close it is, because a
+              forty-point win and a forty-point loss are equally finished and equally not worth your Sunday.
+              ⚠ Its own horizontal scroll container, so a narrow phone scrolls the TABLE rather than the page. */}
+          {open && !!rows.length && (
+            <div data-homeweektable={String(rows.length)} style={{ marginTop: 10, overflowX: "auto" }}>
+              <table className="num" style={{ width: "100%", minWidth: 420, borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ color: "var(--mut)", textAlign: "right" }}>
+                    <th style={{ textAlign: "left", fontWeight: 600, padding: "4px 8px 6px 4px" }}>League</th>
+                    <th style={{ fontWeight: 600, padding: "4px 8px 6px" }}>You</th>
+                    <th style={{ fontWeight: 600, padding: "4px 8px 6px" }}>Them</th>
+                    <th style={{ fontWeight: 600, padding: "4px 8px 6px" }}>Margin</th>
+                    <th style={{ fontWeight: 600, padding: "4px 4px 6px 8px" }} title="Your starters yet to play, and theirs">Left</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.slice().sort((a, b) => Math.abs(a.me.pts - a.opp.pts) - Math.abs(b.me.pts - b.opp.pts)).map((L, i) => {
+                    const league = (leagues || []).find((c) => String(hubIdOfLeague(c)) === String(L.leagueId));
+                    const m = r1(L.me.pts - L.opp.pts);
+                    const tone = m > 0 ? "#5FD0A8" : m < 0 ? "#F2655C" : "var(--mut)";
+                    return (
+                      <tr key={L.leagueId || i} data-homeweekrow={(league && league.name) || L.leagueId}
+                        style={{ borderTop: "1px solid var(--line)" }}>
+                        <td style={{ textAlign: "left", padding: "5px 8px 5px 4px", maxWidth: 190, overflow: "hidden",
+                          textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <button onClick={() => league && onOpenHub && onOpenHub(league.id)}
+                            style={{ cursor: "pointer", fontFamily: "inherit", background: "none", border: "none", padding: 0,
+                              color: "var(--ink)", fontSize: 12.5, fontWeight: 700 }}>
+                            {(league && league.name) || L.leagueId}
+                          </button>
+                        </td>
+                        <td style={{ textAlign: "right", padding: "5px 8px" }}>{r1(L.me.pts)}</td>
+                        <td style={{ textAlign: "right", padding: "5px 8px", color: "var(--mut)" }}>{r1(L.opp.pts)}</td>
+                        <td style={{ textAlign: "right", padding: "5px 8px", fontWeight: 800, color: tone }}>
+                          {m > 0 ? "+" : ""}{m}
+                        </td>
+                        <td style={{ textAlign: "right", padding: "5px 4px 5px 8px", color: "var(--mut)" }}>
+                          <span style={{ color: L.me.yetToPlay ? "#5FD0A8" : "var(--mut)" }}>{L.me.yetToPlay}</span>
+                          <span style={{ opacity: .5 }}> v </span>
+                          <span style={{ color: L.opp.yetToPlay ? "#F2655C" : "var(--mut)" }}>{L.opp.yetToPlay}</span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div className="mut" style={{ fontSize: 10.5, marginTop: 5 }}>Closest games first. "Left" is your starters yet to play versus theirs.</div>
+            </div>
+          )}
+        </>
+      ) : (
+        <div style={{ fontSize: 12.5 }}>
+          {/* ⚠ THE TAB APPEARS ON THE FIRST FINAL WHISTLE; THE REVIEW ITSELF WAITS FOR THE LAST. A review
+              built while a game is still to come computes its best lineup out of players who have not
+              played and tells you to bench the man you are about to watch score thirty. So a half-finished
+              week says exactly that, rather than quietly reviewing the previous one and letting you think
+              it was this one. */}
+          {view.weekComplete ? (
+            <span className="mut">Every game in week {view.week} is final — the full review is ready.</span>
+          ) : (
+            <span className="mut">
+              Some of week {view.week} is final, but not all of it. The review opens when the last game ends —
+              scoring a lineup with players still to play would recommend benching them. Until then the
+              full review covers week {view.week - 1}.
+            </span>
+          )}
+          {!!rows.length && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+              {rows.slice(0, 6).map((L, i) => {
+                const league = (leagues || []).find((c) => String(hubIdOfLeague(c)) === String(L.leagueId));
+                const up = L.me.pts > L.opp.pts;
+                return (
+                  <button key={L.leagueId || i} data-homereviewrow={(league && league.name) || L.leagueId}
+                    onClick={() => league && onOpenHub && onOpenHub(league.id)}
+                    style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, padding: "3px 9px",
+                      borderRadius: 99, border: "1px solid var(--line)", background: "var(--panel2)", color: "var(--ink)" }}>
+                    <b style={{ color: up ? "#5FD0A8" : "#F2655C" }}>{up ? "W" : "L"}</b>{" "}
+                    {(league && league.name) || L.leagueId}{" "}
+                    <span className="num mut">{r1(L.me.pts)}–{r1(L.opp.pts)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onOpenMock, onDeleteFun, onDeleteMock, onDraftTrends, onAutoImportSleeper, onConnectLeague, onMyWeek, onGameDay, onReview }) {
   const [connectOpen, setConnectOpen] = useState(false);
   const totalMocks = leagues.reduce((s, l) => s + (l.mocks || []).length, 0) + funMocks.length;
   const inProgress = leagues.filter((l) => l.picks.length > 0 && l.picks.length < (l.cfg.teams || 12) * l.cfg.rounds);
@@ -16374,7 +16654,45 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
   const seasonTeams = leagues.filter((l) => hubIdOf(l));
   const [seasonAllOpen, setSeasonAllOpen] = useState(false);   // "This week" past the first few rows
 
-  const seasonFirst = homeView === "season" || (homeView === "auto" && seasonLive && seasonTeams.length > 0);
+  /* ⭐⭐⭐⭐⭐ WHICH OF THE TWO APPS YOU ARE IN — 29o.
+     -----------------------------------------------------------------------------------------------
+     Trey: "the homepage is just really busy, and it's hard to immediately know where to focus… When you
+     first enter, make it very simple where they have to click draft or season. Then there is navigation on
+     the home page to go to the other. You can still make a recommendation on toggle based on time of year."
+
+     This page had been trying to be two products at once — a draft command centre and an in-season
+     dashboard — with a small switch that REORDERED rather than separated. That is the busyness: every
+     control from both halves was on screen at all times, so the page had fourteen things you could click
+     and no opinion about which one you wanted.
+
+     So the switch is promoted from a control into a FRONT DOOR: two obvious choices, the seasonally right
+     one carrying a recommendation, and only the chosen half's tools on the page. The other half is never
+     more than the one click that is always visible next to it — the page separates the two experiences
+     without ever hiding one behind a setting somebody has to go and find.
+
+     ⚠ THE RECOMMENDATION IS A DEFAULT, NOT A RULE. A stored choice always wins outright — a keeper league
+       drafting in October must not be argued with by the calendar — and the suggestion only decides where
+       somebody who has never chosen lands first.
+
+     ⚠ AND THE TEST IS "IS THERE A SEASON ON", NOT "DO YOU HAVE TEAMS". Two richer rules were written here
+       first and both were wrong, in ways the season suite caught immediately:
+         • "you have connected teams" recommended SEASON in February, and one minute before week 1 kicks
+           off — pointing a man at live scores that do not exist yet and injury flags for games nobody is
+           playing. Connected teams are a year-round fact; a season is not.
+         • "a draft is in progress beats everything" sounded obviously right and is a trap: `inProgress`
+           counts any league with some picks and not all of them, which includes every draft anyone ever
+           abandoned half-way. One stale league from August would have pinned the page to draft mode
+           through the entire season.
+       What is left is the honest version — the in-season tools are recommended when there is an in-season
+       to be in, and otherwise the draft side is, because that is the half that works all year.
+     ----------------------------------------------------------------------------------------------- */
+  const inSeasonNow = seasonLive && seasonTeams.length > 0;
+  const recommended = inSeasonNow ? "season" : "draft";
+  const recommendWhy = inSeasonNow ? `NFL week ${nflWk} is live`
+    : seasonLive ? "no teams connected yet"
+    : "no games this week";
+  const mode = homeView === "auto" ? recommended : homeView;
+  const seasonFirst = mode === "season";
   /* ⭐⭐⭐⭐ THE SEVERITY BADGE'S DATA, FETCHED QUIETLY AND SHARED WITH MY WEEK.
      Trey: "an info icon or, like, a caution icon, depending on the severity of things, that you hover and it
      recommends, hey, keep track of this player who's questionable… without having to click into anything."
@@ -16401,7 +16719,9 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
     }, 600);
     return () => { alive = false; clearTimeout(t); };
   }, [seasonFirst, seasonTeams.length, leagues]);
-  const openThisWeek = () => { const t = seasonTeams[0]; if (t && onOpenHub) onOpenHub({ league_id: hubIdOf(t) }); };
+  /* `openThisWeek` lived here until 29o. It opened seasonTeams[0] — a league chosen by array order — behind
+     a button labelled "This Week", which is why Trey could not tell it apart from My Week. Removed rather
+     than renamed: every league row already carries its own Hub button, which says what it opens. */
   const setHomeView = (v) => { if (onUpdate) onUpdate({ homeView: v }); };
 
   const matchedLeagues = q.trim() ? leagues.filter((l) => l.name.toLowerCase().includes(q.toLowerCase())) : leagues;
@@ -16571,26 +16891,54 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
               {/* ⭐⭐⭐ AND THE SWITCH READS AS THE SWITCH. It was a 4px-padded pair of words with no name on
                   it — "kinda not hidden, but just small". Now it is labelled, iconed, sized like the control
                   it is, and each half carries the mode's own colour so the toggle previews what it does. */}
-              {(seasonLive || homeView !== "auto") && seasonTeams.length > 0 && (
-                <div style={{ display: "inline-flex", alignItems: "center", gap: 9, marginTop: 12, flexWrap: "wrap" }}>
-                  <span className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".07em", fontWeight: 800 }}>Viewing</span>
-                  <div data-homeviewtoggle={seasonFirst ? "season" : "draft"} style={{ display: "inline-flex", border: "1px solid var(--line2)", borderRadius: 10, overflow: "hidden", background: "rgba(0,0,0,.25)" }}>
-                    {[["season", "Season", "ti-calendar-stats", "#5FD0A8"], ["draft", "Draft", "ti-clipboard-text", "var(--gold)"]].map(([v, label, icon, tone]) => {
-                      const on = seasonFirst === (v === "season");
-                      return (
-                        <button key={v} data-homeview={v} onClick={() => setHomeView(v)} aria-pressed={on}
-                          title={v === "season" ? "Lead with your live teams, injuries and lineups" : "Lead with drafts, mocks and your toolkit"}
-                          style={{ cursor: "pointer", fontFamily: "inherit", border: "none", borderLeft: v === "draft" ? "1px solid var(--line2)" : "none",
-                            display: "inline-flex", alignItems: "center", gap: 6,
-                            background: on ? tone : "transparent", color: on ? "#0d1210" : "var(--mut)",
-                            fontWeight: on ? 800 : 600, fontSize: 12.5, padding: "7px 15px" }}>
-                          <i className={`ti ${icon}`} style={{ fontSize: 14 }} aria-hidden="true" />{label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
+              {/* ⭐⭐⭐⭐⭐ THE FRONT DOOR — 29o. "When you first enter, make it very simple where they have
+                  to click draft or season. Then there is navigation on the home page to go to the other."
+                  Two doors, both always visible, so switching is never a hunt for a setting; the one the
+                  calendar suggests says WHY it is suggested, because a recommendation you cannot argue with
+                  is just a decision somebody made for you. */}
+              <div data-homemodepick={mode} style={{ display: "flex", alignItems: "stretch", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+                {[
+                  ["season", "Season", "ti-calendar-stats", "#5FD0A8", "Live scores, lineups, injuries, waivers"],
+                  ["draft", "Draft", "ti-clipboard-text", "var(--gold)", "Draft rooms, mocks, rankings, results"],
+                ].map(([v, label, icon, tone, blurb]) => {
+                  const on = mode === v;
+                  return (
+                    <button key={v} data-homeview={v} onClick={() => setHomeView(v)} aria-pressed={on}
+                      style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left", flex: "1 1 210px", minWidth: 0,
+                        borderRadius: 12, padding: "11px 14px", display: "flex", alignItems: "center", gap: 11,
+                        border: `1px solid ${on ? tone : "var(--line2)"}`,
+                        background: on ? (v === "season" ? "rgba(95,208,168,.14)" : "rgba(224,166,60,.14)") : "rgba(0,0,0,.22)",
+                        boxShadow: on ? `inset 0 0 0 1px ${tone}` : "none" }}>
+                      <i className={`ti ${icon}`} style={{ fontSize: 21, color: on ? tone : "var(--mut)", flexShrink: 0 }} aria-hidden="true" />
+                      <span style={{ minWidth: 0 }}>
+                        <span className="disp" style={{ display: "block", fontSize: 15, fontWeight: 800, color: on ? tone : "var(--ink)" }}>
+                          {label}
+                          {!on && homeView === "auto" && recommended === v && (
+                            <span className="mut" style={{ fontSize: 10, fontWeight: 700 }}> · suggested</span>
+                          )}
+                        </span>
+                        <span className="mut" style={{ display: "block", fontSize: 11.5, marginTop: 1 }}>{blurb}</span>
+                      </span>
+                      {on && homeView === "auto" && (
+                        <span data-homemodewhy className="mut" style={{ fontSize: 10, marginLeft: "auto", flexShrink: 0, textAlign: "right", maxWidth: 130 }}>
+                          suggested — {recommendWhy}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              {/* ⭐⭐⭐⭐ CONNECT A LEAGUE, PINNED. Trey: "Connect a League is also really important and
+                  probably needs to live somewhere near the top. We don't want that getting buried farther
+                  and farther down the page as someone adds more leagues."
+                  Exactly the failure mode — it sat below the leagues list, so the more leagues you had the
+                  further you had to scroll to add another. Here it is at a fixed height from the top of the
+                  page forever. The richer row with the platform logos stays where it is; this is the door,
+                  that is the explanation. */}
+              <button data-connecttop className="btn btn-mini" onClick={() => setConnectOpen(true)}
+                style={{ marginTop: 10, padding: "6px 13px", fontSize: 12, borderColor: "var(--gold)", color: "var(--gold)" }}>
+                <i className="ti ti-world-plus" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Connect a league
+              </button>
             </div>
             {/* live stat strip */}
             <div style={{ display: "flex", gap: 22, flexShrink: 0, paddingLeft: 4 }}>
@@ -16623,6 +16971,92 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
         />
       </div>
 
+      {/* ⭐⭐⭐⭐⭐ THE ACTIONS COME BEFORE THE DETAIL — 29o.
+          Trey: "We should put more emphasis on the things we actually want people to click, and then let
+          them go deeper from there if they need to."
+          This bar used to sit BELOW the week strip and the league rows, so on a five-league account you
+          scrolled past seven blocks of detail to reach the three buttons the page exists to offer — and
+          with fifteen leagues they were off the bottom of the screen entirely. Actions first, then the
+          detail they lead into.
+          ⚠ A JSX COMMENT, NOT A JS ONE. The first cut of this move pasted a bare block comment into the
+            element tree, where it is not a comment at all — it is a text node, and it rendered the whole
+            paragraph across the top of the home page. It builds clean and looks insane. */}
+      {/* PRIMARY ACTIONS. One bar, but not a flat one: the action you most likely came here for carries a
+          gold wash and gold label, the rest sit quiet. Previously all three (or five) segments were
+          identical, so "My Rankings" pulled as hard as "Create New League" and the bar read as a tab strip.
+          Width now matches the content below it (1180) instead of floating at a narrower 940. */}
+      <div style={{ position: "sticky", top: 0, zIndex: 20, maxWidth: 1180, margin: "0 auto", padding: "14px 20px 18px", background: "linear-gradient(180deg, var(--bg) 82%, transparent)" }}>
+        {/* ⭐⭐⭐ THE BAR SAYS WHICH CATEGORY IT IS. Without a name on it, three unlabelled buttons are just
+            three buttons; with one, they are a section and the page has a shape you can hold in your head. */}
+        <div data-actionbarlabel={seasonFirst ? "season" : "draft"}
+          style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 7, flexWrap: "wrap" }}>
+          <span className="disp" style={{ fontSize: 11, fontWeight: 800, letterSpacing: ".09em", textTransform: "uppercase",
+            color: seasonFirst ? "#5FD0A8" : "var(--gold)" }}>
+            {seasonFirst ? "In season" : "Draft room"}
+          </span>
+          <span className="mut" style={{ fontSize: 11.5 }}>
+            {seasonFirst ? "Your week across every connected league" : "Build, practise and look back at drafts"}
+          </span>
+          <button data-actionbarswitch onClick={() => setHomeView(seasonFirst ? "draft" : "season")}
+            style={{ marginLeft: "auto", cursor: "pointer", fontFamily: "inherit", background: "none", border: "none",
+              padding: 0, fontSize: 11.5, color: seasonFirst ? "var(--gold)" : "#5FD0A8", fontWeight: 700 }}>
+            {seasonFirst ? "Draft room" : "In season"} →
+          </button>
+        </div>
+        {/* The bar wears the mode too — a gold action bar under a green hero would read as two pages
+            stitched together, and the whole point of the colour is that one glance tells you where you are. */}
+        <div className="actionbar" style={{ display: "flex", alignItems: "stretch", flexWrap: "wrap",
+          border: `1px solid ${seasonFirst ? "rgba(95,208,168,0.42)" : "rgba(214,170,75,0.45)"}`, borderRadius: 12, overflow: "hidden",
+          background: seasonFirst ? "linear-gradient(180deg, rgba(16,34,28,0.98), rgba(18,28,24,0.98))" : "linear-gradient(180deg, rgba(38,32,18,0.98), rgba(28,26,20,0.98))",
+          boxShadow: "0 6px 20px -6px rgba(0,0,0,.5)" }}>
+          {(() => {
+            /* ⭐⭐⭐⭐⭐ ONE MODE'S TOOLS, NOT BOTH — 29o.
+               Trey: "New League, Quick Mock, My Rankings, and Draft Results all feel like one category,
+               whereas My Week, Game Day, Weekly Review, and This Week feel like a completely different
+               category… the homepage is just really busy, and it's hard to immediately know where to focus."
+
+               This bar used to carry EIGHT actions in season — both categories at once — which is most of
+               the busyness he is describing. Now it carries only the mode you are in, three or four
+               obvious things, and the other category is one click away at the door above.
+
+               ⚠ "THIS WEEK" IS GONE, and it is the one removal worth explaining: it opened `seasonTeams[0]`,
+                 which is to say a league picked by array order rather than by you. "I also don't totally
+                 understand the difference between My Week and This Week" is the correct reaction to a
+                 button whose real label was "open whichever league happens to sort first". Every league row
+                 below has its own Hub button, which is unambiguous about what it opens. */
+            const items = seasonFirst
+              ? [
+                ...(onMyWeek ? [{ k: "myweek", icon: "ti-first-aid-kit", label: "My Week", onClick: onMyWeek, primary: true,
+                  title: "Injuries, lineup changes, free agents and weather across every connected league, in one place" }] : []),
+                ...(onGameDay ? [{ k: "gameday", icon: "ti-activity-heartbeat", label: "Game Day", onClick: onGameDay,
+                  title: "Live scores across every league, and who you have the most riding on — for and against" }] : []),
+                ...(onReview ? [{ k: "review", icon: "ti-history", label: "Weekly Review", onClick: onReview,
+                  title: "What you could have done better last week, across every league at once" }] : []),
+              ]
+              : [
+                { k: "new", icon: "ti-plus", label: "New League", onClick: () => onNewLeague(), primary: true },
+                { k: "mock", icon: "ti-dice-5", label: "Quick Mock", onClick: () => onQuickMock() },
+                { k: "ranks", icon: "ti-list-numbers", label: "My Rankings", onClick: () => onRankings() },
+                // Kept at full size on his say-so — the archive is a place he goes, not a footnote.
+                { k: "results", icon: "ti-flag-3", label: "Draft Results", onClick: () => onDatabase(), title: "Every draft you've run — each one locked to the values that were live on its draft day" },
+              ];
+            return items.map((it, i) => (
+              <React.Fragment key={it.k}>
+                {i > 0 && <div style={{ width: 1, background: seasonFirst ? "rgba(95,208,168,0.28)" : "rgba(214,170,75,0.30)" }} />}
+                <button onClick={it.onClick} className="menuitem" title={it.title || undefined}
+                  style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none",
+                    background: it.primary ? (seasonFirst ? "rgba(95,208,168,0.13)" : "rgba(214,170,75,0.13)") : "transparent",
+                    padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
+                  <i className={`ti ${it.icon}`} style={{ fontSize: 18, color: seasonFirst ? "#5FD0A8" : "var(--gold)" }} aria-hidden="true" />
+                  <span className="disp" style={{ fontSize: 15.5, fontWeight: it.primary ? 800 : 700, color: it.primary ? (seasonFirst ? "#5FD0A8" : "var(--gold)") : "var(--ink)" }}>{it.label}</span>
+                </button>
+              </React.Fragment>
+            ));
+          })()}
+        </div>
+      </div>
+
+
       {/* QUICK ACTIONS — equal-weight menu items, subtly highlighted as the primary zone. Sticky so the
           core actions stay reachable as you scroll the leagues/mocks lists below. */}
       {/* ===== YOUR TEAMS, THIS WEEK — the season-first lead. Only in season, only when you have a live
@@ -16634,19 +17068,23 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
             <span className="disp" style={{ fontSize: 20, fontWeight: 800, letterSpacing: ".01em" }}>This week</span>
             {nflWk && <span className="mut" style={{ fontSize: 11.5, fontWeight: 700, background: "var(--panel2)", borderRadius: 99, padding: "1px 8px", alignSelf: "center" }}>NFL Week {nflWk}</span>}
             <div style={{ flex: 1 }} />
-            {/* ⭐⭐⭐⭐ THE WAY IN, next to the thing it is about. Trey: "I'd like there to be somewhere on the
-                site where you can basically click on it and see flags for every single league in one place
-                and show you where to spend your time." The count is the point of the badge — "3 leagues need
-                you" is a different invitation from "My week" — and it is computed by the page itself, so
-                this only carries the door; see MyWeek.jsx for what is behind it. */}
-            {onMyWeek && (
-              <button data-myweekbtn onClick={onMyWeek} className="btn btn-mini"
-                title="Injuries, lineup changes, free agents and weather across every connected league, in one place"
-                style={{ padding: "7px 14px", fontSize: 12.5, alignSelf: "center", borderColor: "#5FD0A8", color: "#0d1210", background: "#5FD0A8", fontWeight: 800 }}>
-                <i className="ti ti-first-aid-kit" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Check my week
-              </button>
-            )}
+            {/* The "Check my week" button lived here until 29o. With the action bar moved above this
+                section, it sat four inches under a full-width My Week button doing the identical thing —
+                and a page Trey called "really busy" does not need the same door twice. */}
           </div>
+          {/* ⭐⭐⭐⭐⭐ THE WEEK, WHILE IT IS HAPPENING — 29n.
+              Trey: "when a week is live… the live badge shows up on the home page to see live results…
+              then once games have finished (I'm thinking any game that's finished). There should be a
+              review tab next to live where you can dive into these."
+              Two tabs, and which of them EXIST is decided by the football rather than by a setting: the
+              badge and the Live tab while anything is being played, the Review tab from the first final
+              whistle onward. On a Sunday afternoon both are true at once, which is the moment this strip
+              earns its place; on a Wednesday neither is, and it renders nothing at all rather than a panel
+              full of zeroes. See HomeWeekStrip and src/livecache.js. */}
+          {seasonTeams.length > 0 && (
+            <HomeWeekStrip leagues={leagues} onGameDay={onGameDay} onReview={onReview} onOpenHub={onUmbrella} />
+          )}
+
           {/* ⭐⭐⭐⭐ ONE ROW PER TEAM, NOT ONE CARD.
               Trey: "There are a bunch of tiles for my leagues that have a draft this week, which I like, but
               I have like 15 leagues, so it's just really cluttered looking."
@@ -16728,57 +17166,6 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
           })()}
         </div>
       )}
-
-      {/* PRIMARY ACTIONS. One bar, but not a flat one: the action you most likely came here for carries a
-          gold wash and gold label, the rest sit quiet. Previously all three (or five) segments were
-          identical, so "My Rankings" pulled as hard as "Create New League" and the bar read as a tab strip.
-          Width now matches the content below it (1180) instead of floating at a narrower 940. */}
-      <div style={{ position: "sticky", top: 0, zIndex: 20, maxWidth: 1180, margin: "0 auto", padding: "14px 20px 18px", background: "linear-gradient(180deg, var(--bg) 82%, transparent)" }}>
-        {/* The bar wears the mode too — a gold action bar under a green hero would read as two pages
-            stitched together, and the whole point of the colour is that one glance tells you where you are. */}
-        <div className="actionbar" style={{ display: "flex", alignItems: "stretch", flexWrap: "wrap",
-          border: `1px solid ${seasonFirst ? "rgba(95,208,168,0.42)" : "rgba(214,170,75,0.45)"}`, borderRadius: 12, overflow: "hidden",
-          background: seasonFirst ? "linear-gradient(180deg, rgba(16,34,28,0.98), rgba(18,28,24,0.98))" : "linear-gradient(180deg, rgba(38,32,18,0.98), rgba(28,26,20,0.98))",
-          boxShadow: "0 6px 20px -6px rgba(0,0,0,.5)" }}>
-          {(() => {
-            // In season the bar leads with the week and, crucially, a permanent DRAFT RESULTS entry — the
-            // pivot must never be the reason someone can't find their draft.
-            /* ⭐⭐⭐ MY WEEK LEADS THE IN-SEASON BAR. Trey: "I like the check my week thing. Again, I want to
-               make that a little bit more apparent as to where that's at." It was a small gold button inside
-               a section that only renders when the season view is on and you have live teams — findable if
-               you knew, invisible if you did not. In season it is the first thing this bar offers, because
-               in season it is the first thing you want; the per-league "This Week" entry stays right next to
-               it, since one is the rollup and the other is one team. */
-            const items = seasonFirst
-              ? [
-                ...(onMyWeek ? [{ k: "myweek", icon: "ti-first-aid-kit", label: "My Week", onClick: onMyWeek, primary: true,
-                  title: "Injuries, lineup changes, free agents and weather across every connected league, in one place" }] : []),
-                { k: "week", icon: "ti-user-heart", label: "This Week", onClick: openThisWeek, primary: !onMyWeek },
-                { k: "results", icon: "ti-flag-3", label: "Draft Results", onClick: () => onDatabase(), title: "Every draft you've run — each one locked to the values that were live on its draft day" },
-                { k: "new", icon: "ti-plus", label: "New League", onClick: () => onNewLeague() },
-                { k: "mock", icon: "ti-dice-5", label: "Quick Mock", onClick: () => onQuickMock() },
-                { k: "ranks", icon: "ti-list-numbers", label: "My Rankings", onClick: () => onRankings() },
-              ]
-              : [
-                { k: "new", icon: "ti-plus", label: "Create New League", onClick: () => onNewLeague(), primary: true },
-                { k: "mock", icon: "ti-dice-5", label: "Quick Mock", onClick: () => onQuickMock() },
-                { k: "ranks", icon: "ti-list-numbers", label: "My Rankings", onClick: () => onRankings() },
-              ];
-            return items.map((it, i) => (
-              <React.Fragment key={it.k}>
-                {i > 0 && <div style={{ width: 1, background: seasonFirst ? "rgba(95,208,168,0.28)" : "rgba(214,170,75,0.30)" }} />}
-                <button onClick={it.onClick} className="menuitem" title={it.title || undefined}
-                  style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none",
-                    background: it.primary ? (seasonFirst ? "rgba(95,208,168,0.13)" : "rgba(214,170,75,0.13)") : "transparent",
-                    padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
-                  <i className={`ti ${it.icon}`} style={{ fontSize: 18, color: seasonFirst ? "#5FD0A8" : "var(--gold)" }} aria-hidden="true" />
-                  <span className="disp" style={{ fontSize: 15.5, fontWeight: it.primary ? 800 : 700, color: it.primary ? (seasonFirst ? "#5FD0A8" : "var(--gold)") : "var(--ink)" }}>{it.label}</span>
-                </button>
-              </React.Fragment>
-            ));
-          })()}
-        </div>
-      </div>
 
       {/* NOTE: the old "Resume your draft" banner lived here. It duplicated the in-progress state already shown
           on the league card below (which has its own Resume button), so it was the same information twice —
@@ -21017,83 +21404,131 @@ function Library({ user, leagues, onSyncCloud, onNew, onUmbrella, onDelete, onAd
   );
 }
 
-// A persistent Sleeper-account link, shown on the Account page. Linking stores the Sleeper id on the
-// user's account (server-side) so it stays connected across sessions/devices until they unlink. This is
-// the foundation for the in-season team hub, which needs a durable link to pull live league data.
+/* ⭐⭐⭐⭐ SLEEPER ACCOUNTS, PLURAL — 29k.
+   ------------------------------------------------------------------------------------------------
+   Trey: "Can you make it so I can connect to multiple sleeper (or other platform) usernames at once."
+
+   This panel used to hold ONE account, and "Link account" quietly meant "replace the account you had".
+   Nobody ever chose that; it was just what two columns on a user row could express. The visible cost was
+   a league imported under the old handle going half-dead — still on your shelf, still openable, but with
+   no idea which of the twelve teams was yours, so every screen that needed your roster dropped it.
+
+   So: a LIST, with an add box that never replaces anything and a remove on each row. The first account is
+   marked as the primary, because a few server-side jobs (the weekly brief, draft harvesting) still work
+   from a single account and the user should be able to see which one that is rather than find out.
+
+   ⚠ REMOVE IS PER-ROW, AND IT IS NOT A DELETE. Unlinking an account stops us reading its leagues; it does
+     not touch the leagues themselves, which is worth saying on the panel because "remove" next to a list
+     of accounts reads like it might.
+   ------------------------------------------------------------------------------------------------ */
 function SleeperLinkPanel({ user, onUpdate }) {
-  const [linked, setLinked] = useState(!!(user && user.sleeperUsername));
-  const [username, setUsername] = useState((user && user.sleeperUsername) || "");
+  const seed = user && user.sleeperUsername
+    ? [{ platform: "sleeper", id: user.sleeperUserId || null, username: user.sleeperUsername }] : [];
+  const [accounts, setAccounts] = useState(seed);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
 
-  // On mount, confirm the real link state from the backend (source of truth), if we have one.
+  /* The server's list is the truth. `accounts` on the response is new in b132; a backend that predates it
+     still sends sleeperUsername, so fall back to a one-element list rather than showing nothing. */
+  const absorb = (r) => {
+    if (!r) return [];
+    const list = Array.isArray(r.accounts) && r.accounts.length
+      ? r.accounts
+      : (r.sleeperUsername ? [{ platform: "sleeper", id: r.sleeperUserId || null, username: r.sleeperUsername }] : []);
+    setAccounts(list);
+    if (onUpdate) onUpdate({ sleeperUsername: list[0] ? list[0].username : null, sleeperUserId: list[0] ? list[0].id : null });
+    return list;
+  };
+
   React.useEffect(() => {
     let alive = true;
     if (!hasBackend) return;
-    api.sleeperAccount().then((r) => {
-      if (!alive || !r) return;
-      setLinked(!!r.linked);
-      if (r.sleeperUsername) setUsername(r.sleeperUsername);
-    }).catch(() => {});
+    api.sleeperAccount().then((r) => { if (alive) absorb(r); }).catch(() => {});
     return () => { alive = false; };
   }, []);
 
   const doLink = async () => {
     const u = input.trim();
     if (!u) return;
+    if (accounts.some((a) => String(a.username || "").toLowerCase() === u.toLowerCase())) {
+      setErr(`${u} is already linked`); setTimeout(() => setErr(""), 2500); return;
+    }
     setBusy(true); setErr(""); setMsg("");
     try {
       if (hasBackend) {
         const r = await api.sleeperLink(u);
-        setLinked(true); setUsername(r.sleeperUsername || u); setInput("");
-        if (onUpdate) onUpdate({ sleeperUsername: r.sleeperUsername || u, sleeperUserId: r.sleeperUserId || null });
-        setMsg("Sleeper account linked");
+        absorb(r); setInput("");
+        setMsg(`Linked ${(r && r.added && r.added.username) || u}`);
       } else {
         // No backend (local/demo mode): remember locally so the flow is testable.
-        setLinked(true); setUsername(u); setInput("");
-        setMsg("Sleeper account linked (demo)");
+        setAccounts((prev) => [...prev, { platform: "sleeper", id: null, username: u }]);
+        setInput(""); setMsg(`Linked ${u} (demo)`);
       }
     } catch (e) {
       setErr(e && e.message ? e.message : "Could not link that account");
-    } finally { setBusy(false); setTimeout(() => setMsg(""), 2000); }
+    } finally { setBusy(false); setTimeout(() => setMsg(""), 2200); }
   };
 
-  const doUnlink = async () => {
+  const doUnlink = async (acct) => {
     setBusy(true); setErr(""); setMsg("");
     try {
-      if (hasBackend) await api.sleeperUnlink();
-      setLinked(false); setUsername("");
-      if (onUpdate) onUpdate({ sleeperUsername: null, sleeperUserId: null });
-      setMsg("Unlinked");
+      if (hasBackend) absorb(await api.sleeperUnlink(acct && acct.id ? acct.id : undefined));
+      else setAccounts((prev) => prev.filter((a) => a !== acct));
+      setMsg(`Removed ${(acct && acct.username) || "account"}`);
     } catch (e) {
       setErr(e && e.message ? e.message : "Could not unlink");
-    } finally { setBusy(false); setTimeout(() => setMsg(""), 2000); }
+    } finally { setBusy(false); setTimeout(() => setMsg(""), 2200); }
   };
 
   return (
-    <div className="panel" style={{ padding: 18, marginTop: 14 }}>
+    <div className="panel" data-sleeperaccounts={String(accounts.length)} style={{ padding: 18, marginTop: 14 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
         <i className="ti ti-plug-connected" style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
-        <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>Sleeper account</div>
+        <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>Sleeper accounts</div>
       </div>
       <div className="mut" style={{ fontSize: 12.5, marginBottom: 12, lineHeight: 1.5 }}>
-        Link your Sleeper account once and it stays connected — no need to re-enter it every draft. This also unlocks the in-season team hub, which reads your live rosters, matchups, and available players. Read-only; we never post or make changes on your behalf.
+        Link as many Sleeper usernames as you play under — leagues from all of them show up together, and every
+        screen that needs to know which team is yours can find it. Read-only; we never post or make changes on your
+        behalf.
       </div>
-      {linked ? (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "10px 12px", background: "var(--panel2)", borderRadius: 8, border: "1px solid var(--line)" }}>
-          <div style={{ fontSize: 13.5 }}>
-            <span style={{ color: "var(--green)", fontWeight: 700 }}>● Linked</span>
-            <span className="mut"> as </span><b>{username}</b>
-          </div>
-          <button className="btn btn-mini" onClick={doUnlink} disabled={busy}>{busy ? "..." : "Unlink"}</button>
+
+      {accounts.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+          {accounts.map((a, i) => (
+            <div key={a.id || a.username || i} data-sleeperacct={a.username || ""}
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap",
+                padding: "10px 12px", background: "var(--panel2)", borderRadius: 8, border: "1px solid var(--line)" }}>
+              <div style={{ fontSize: 13.5, minWidth: 0 }}>
+                <span style={{ color: "var(--green)", fontWeight: 700 }}>●</span>{" "}
+                <b>{a.username || "Linked account"}</b>
+                {i === 0 && accounts.length > 1 && (
+                  <span className="mut" style={{ fontSize: 11 }} title="Weekly emails and draft harvesting use this one.">
+                    {" "}· primary
+                  </span>
+                )}
+              </div>
+              <button className="btn btn-mini" data-sleeperremove={a.username || ""} onClick={() => doUnlink(a)} disabled={busy}>
+                {busy ? "..." : "Remove"}
+              </button>
+            </div>
+          ))}
         </div>
-      ) : (
-        <div style={{ display: "flex", gap: 8 }}>
-          <input className="gs" style={{ flex: 1 }} placeholder="Your Sleeper username" value={input}
-            onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") doLink(); }} />
-          <button className="btn btn-gold" onClick={doLink} disabled={busy || !input.trim()}>{busy ? "Linking…" : "Link account"}</button>
+      )}
+
+      <div style={{ display: "flex", gap: 8 }}>
+        <input className="gs" style={{ flex: 1 }} data-sleeperinput
+          placeholder={accounts.length ? "Add another Sleeper username" : "Your Sleeper username"} value={input}
+          onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") doLink(); }} />
+        <button className="btn btn-gold" data-sleeperadd onClick={doLink} disabled={busy || !input.trim()}>
+          {busy ? "Linking…" : accounts.length ? "Add account" : "Link account"}
+        </button>
+      </div>
+      {accounts.length > 0 && (
+        <div className="mut" style={{ fontSize: 11, marginTop: 8, lineHeight: 1.5 }}>
+          Removing an account only stops us reading its leagues from Sleeper — the leagues themselves stay in your
+          library, and any draft you have already run is untouched.
         </div>
       )}
       {msg && <div style={{ color: "var(--green)", fontSize: 12.5, marginTop: 10 }}>{msg} ✓</div>}
@@ -21995,6 +22430,20 @@ function sleeperOwnerOf(league) {
   const u = (c && (c.username || c.sleeperUsername)) || null;
   return u ? String(u).trim().toLowerCase() : null;
 }
+/* The platform league id and the account it was imported under. Both live in three possible places on a
+   league record depending on how old the import is, and every caller that re-derived them got a slightly
+   different answer — so they are derived once, here. `ownerUsernameOf` is what lets a hub call say which of
+   a league's rosters is yours when the linked account has changed since import (see connect.js `owner`). */
+function hubIdOfLeague(l) {
+  return (l && ((l.connect && l.connect.leagueId) || (l.cfg && l.cfg.connect && l.cfg.connect.leagueId) || l.sleeperLeagueId)) || null;
+}
+function ownerUsernameOf(l) {
+  return (l && (
+    (l.connect && (l.connect.ownerUsername || l.connect.username))
+    || (l.cfg && l.cfg.connect && (l.cfg.connect.ownerUsername || l.cfg.connect.username))
+  )) || null;
+}
+
 /* ⭐⭐⭐ IS THIS DRAFT OVER? One definition, because three places were about to grow their own.
    `ended` is the explicit "I stopped early" flag; otherwise it is simply every pick having been made. Used
    to decide which tab "View draft" lands on and whether the draft-room tour has any business firing. */
@@ -35856,3 +36305,12 @@ const TradeCenter = lazyScreen(() => import("./screens/TradeCenter.jsx"));
 /* ⭐ The cross-league weekly page. Lazy like every other non-room screen — it is never open during a draft
    and it pulls a player pack plus a team-hub call per league, none of which should sit in the draft bundle. */
 const MyWeek = lazyScreen(() => import("./screens/MyWeek.jsx"));
+/* ⭐ 29m — the live cross-league board. Lazy for the same reason, and more so: it polls, so it must not be
+   anywhere near the draft bundle where a stray timer would run during a draft. */
+const GameDay = lazyScreen(() => import("./screens/GameDay.jsx"));
+/* ⭐ 29m — the review, shared by My Week (all leagues) and the league hub (one). Its own chunk so the hub
+   tab does not drag the whole cross-league screen in with it. */
+const WeeklyReview = lazyScreen(() => import("./screens/WeeklyReview.jsx"));
+/* ⭐ 29n — one league's live matchup, for the hub tab beside Review. Its own chunk, and lazy, because it
+   polls: a timer in the draft bundle is a timer running during a draft. */
+const LiveMatchup = lazyScreen(() => import("./screens/LiveMatchup.jsx"));

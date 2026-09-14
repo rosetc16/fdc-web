@@ -30,6 +30,17 @@ let inflight = null;     // a promise shared by concurrent callers
 export const hubIdOf = (l) => (l && ((l.connect && l.connect.leagueId) || (l.cfg && l.cfg.connect && l.cfg.connect.leagueId) || l.sleeperLeagueId)) || null;
 export const connectedOf = (leagues) => (leagues || []).filter((l) => hubIdOf(l));
 
+/* ⭐⭐⭐⭐ WHICH ACCOUNT THIS LEAGUE CAME IN UNDER — b132.
+   Every imported league has carried the username since the day import was written; nothing ever read it
+   back. Sending it with the hub call is the whole fix for "it's not picking up on the league that I was
+   connected to earlier but not anymore": the server can then find your roster by that name even though the
+   account is no longer one of yours. `ownerId` is preferred when the import stored one — a Sleeper user id
+   never changes, whereas a username can be reassigned. */
+export const ownerOf = (l) => (l && (
+  (l.connect && (l.connect.ownerUsername || l.connect.username))
+  || (l.cfg && l.cfg.connect && (l.cfg.connect.ownerUsername || l.cfg.connect.username))
+)) || null;
+
 /* A few at a time. Fifteen parallel team-hub calls each fan out to Sleeper themselves, and firing them all
    at once is how you get rate-limited into a page that half-loads and blames your leagues. */
 async function pool(items, n, fn) {
@@ -68,7 +79,7 @@ export async function loadWeek(leagues, opts = {}) {
     const anyIdp = connected.some((l) => { const st = (l.cfg && l.cfg.start) || {}; return (st.DL || 0) + (st.LB || 0) + (st.DB || 0) + (st.IDPFLEX || 0) > 0; });
     const [pack, hubs] = await Promise.all([
       api.playerPack(fmt, undefined, { k: true, dst: true, idp: anyIdp }).catch(() => null),
-      pool(connected, 4, (l) => api.sleeperTeamHub(hubIdOf(l))),
+      pool(connected, 4, (l) => api.sleeperTeamHub(hubIdOf(l), undefined, ownerOf(l))),
     ]);
     const week = hubs.map((h) => h && h.week).find((w) => Number.isFinite(w)) || null;
     // A refresh that fails to fetch the pack keeps the last good one — names and injury notes do not change
@@ -93,13 +104,19 @@ export function leagueFlags(hub, pack) {
   const bySid = new Map();
   ((pack && pack.players) || []).forEach((p) => { const k = p && (p.id != null ? p.id : p.sid); if (k != null) bySid.set(String(k), p); });
   const starters = (mine.starters || []).filter(Boolean).map(String);
+  /* Byes from the SCHEDULE when the server could resolve it, and only from the player's `bye_week` column
+     when it could not — that column is null for long stretches of the year, which is how "nobody in any of
+     your fifteen leagues is on bye" used to be reported with a straight face. See connect.js `byeTeams`. */
+  const byeSet = Array.isArray(hub.byeTeams) ? new Set(hub.byeTeams) : null;
   const out = { out: [], check: [], bye: [] };
   starters.forEach((sid) => {
     const w = (hub.weekly && hub.weekly[sid]) || {};
     const p = bySid.get(sid) || {};
-    const name = p.name || `Player ${sid}`;
+    const name = p.name || w.name || `Player ${sid}`;
     const raw = String(w.inj || p.inj || "").trim();
-    if (hub.week != null && p.bye === hub.week) out.bye.push(name);
+    const team = p.team || w.team || null;
+    const onBye = byeSet ? (team ? byeSet.has(team) : false) : (hub.week != null && p.bye === hub.week);
+    if (onBye) out.bye.push(name);
     if (!raw || /^(act|active|healthy)$/i.test(raw)) return;
     if (/^(ir|inj|out|o$|pup|nfi|susp)/i.test(raw)) out.out.push(`${name} (${raw})`);
     else if (/^(d|doubt|q|quest)/i.test(raw)) out.check.push(`${name} (${raw})`);

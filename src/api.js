@@ -314,12 +314,37 @@ export const api = {
   // Fast picks-only poll for live drafts — much lighter than sleeperDraft (picks + clock only). Pass draftId
   // after the first call to skip the league→draft lookup for the quickest possible round-trip.
   async sleeperPicks(leagueId, draftId) { return call(`/api/connect/sleeper/picks?league_id=${encodeURIComponent(leagueId)}${draftId ? `&draft_id=${encodeURIComponent(draftId)}` : ''}`); },
-  // ---- persistent Sleeper account link ----
-  async sleeperAccount() { return call('/api/connect/sleeper/account'); },                          // -> { linked, sleeperUserId, sleeperUsername }
+  // ---- persistent Sleeper account links (plural since b132) ----
+  // -> { linked, accounts:[{platform,id,username}], sleeperUserId, sleeperUsername } — the last two are the
+  //    PRIMARY account, kept so every caller written before multi-account keeps working unchanged.
+  async sleeperAccount() { return call('/api/connect/sleeper/account'); },
   async sleeperLink(username) { return call('/api/connect/sleeper/link', { method: 'POST', body: { username } }); },
-  async sleeperUnlink() { return call('/api/connect/sleeper/unlink', { method: 'POST' }); },
+  // No argument = remove every linked account (what "Unlink" has always meant). An id = remove just that one.
+  async sleeperUnlink(sleeperUserId) { return call('/api/connect/sleeper/unlink', { method: 'POST', body: sleeperUserId ? { sleeperUserId } : {} }); },
   async sleeperMyLeagues(season) { return call(`/api/connect/sleeper/my-leagues${season ? `?season=${season}` : ''}`); },
-  async sleeperTeamHub(leagueId, week) { return call(`/api/connect/sleeper/team-hub?league_id=${encodeURIComponent(leagueId)}${week ? `&week=${week}` : ''}`); },
+  /* `owner` is the Sleeper username this league was imported under. It is a HINT for one question — which
+     of the league's rosters is yours — and it is what keeps a league readable after the account that owns
+     it is unlinked. Public data, so it is fine in the query string (unlike the MFL/Fantrax secrets). */
+  /* ⭐⭐⭐⭐ EVERY LEAGUE'S LIVE SCOREBOARD IN ONE REQUEST, plus the cross-league rooting board.
+     ⚠ Deliberately NOT a team-hub call per league: team-hub makes seven upstream calls each, which for
+       fifteen leagues on a one-minute poll is ~105 calls/minute against an app-wide ceiling near a
+       thousand — two people watching football would break live draft sync for everyone. See connect.js. */
+  async sleeperLive(leagueIds, week, owners) {
+    const ids = (leagueIds || []).filter(Boolean).join(',');
+    const own = (owners || []).filter(Boolean).join(',');
+    return call(`/api/connect/sleeper/live?league_ids=${encodeURIComponent(ids)}`
+      + `${week ? `&week=${week}` : ''}${own ? `&owner=${encodeURIComponent(own)}` : ''}`);
+  },
+  /* Every COMPLETED week of one league, already reduced to verdicts, misses and totals — the whole season
+     in one call so the week toggle is instant and the trend lines exist at all. See connect.js. */
+  async sleeperSeasonReview(leagueId, owner) {
+    return call(`/api/connect/sleeper/season-review?league_id=${encodeURIComponent(leagueId)}`
+      + `${owner ? `&owner=${encodeURIComponent(owner)}` : ''}`);
+  },
+  async sleeperTeamHub(leagueId, week, owner) {
+    return call(`/api/connect/sleeper/team-hub?league_id=${encodeURIComponent(leagueId)}`
+      + `${week ? `&week=${week}` : ''}${owner ? `&owner=${encodeURIComponent(owner)}` : ''}`);
+  },
   // One NFL week's games that have weather worth a manager's attention. Games in domes, games with nothing
   // to say, and games too far out to forecast never come back — see src/routes/weather.js.
   async weatherWeek(week, season) { return call(`/api/weather/week?week=${encodeURIComponent(week)}${season ? `&season=${season}` : ''}`); },
