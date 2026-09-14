@@ -486,10 +486,16 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
     ["lineup", "ti-arrows-exchange", "Lineup changes", counts.lineup],
     ["fa", "ti-user-plus", "Free agents", counts.fa],
     ["weather", "ti-cloud-storm", "Weather", counts.wx],
-    // Last, and badgeless on purpose: everything above it is a thing to DO before kickoff, and this is the
-    // only one that is about a week you can no longer change. A count here would compete for the same
-    // attention on a Sunday morning and win, which would be exactly wrong.
-    ["review", "ti-history", "Weekly review", 0],
+    /* ⭐⭐⭐ TWO DOORS TO THE SAME ROOM IS ONE DOOR TOO MANY — 29q.
+       Trey: "can we just combine the 'Summary' and 'Weekly Review'."
+       Inside the in-season shell the review is now a TAB, sitting three centimetres above this chip strip
+       and leading to exactly the same component. Offering it twice on one screen is what made the page feel
+       like it had two of everything. Standalone — which is still a real route — the chip is the only way
+       in, so it stays there.
+       ⚠ And it is last and badgeless either way: everything above it is a thing to DO before kickoff, and
+         this is the only one about a week you can no longer change. A count here would compete for Sunday
+         morning attention and win, which would be exactly wrong. */
+    ...(embedded ? [] : [["review", "ti-history", "Weekly review", 0]]),
   ];
 
   return (

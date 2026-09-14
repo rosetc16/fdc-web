@@ -62,10 +62,33 @@ export function cachedWeek(leagues) {
   return null;
 }
 
+/* ⭐⭐⭐⭐ A WEEK OTHER THAN THIS ONE — 29q.
+   Trey: "I'd like to be able to do the same thing on the home screen where I can toggle to see week 2
+   instead of just week one. Here is where you could then show the icons to check on players like Ladd
+   McConkey."
+
+   The team hub has always accepted a week; this loader simply never passed one, because the home page only
+   ever wanted "now". Looking ahead is the same request with a number in it.
+
+   ⚠ THE WEEK IS PART OF THE CACHE KEY, and that is the whole reason this change is more than one argument.
+     The signature was the league ids alone, so a week-2 read would have been served the cached week-1
+     answer — same leagues, "fresh" — and the toggle would have appeared to work while changing nothing.
+     A cache keyed on less than the request is a cache that lies. `off-week` reads also skip writing over
+     the shared current-week entry, so stepping ahead and back does not cost a refetch of today. */
+let offCache = new Map();          // week -> value, for weeks other than the current one
 export async function loadWeek(leagues, opts = {}) {
   const connected = connectedOf(leagues);
-  const sig = connected.map(hubIdOf).join(",");
+  const want = Number.isFinite(opts.week) ? Number(opts.week) : null;
+  const sig = connected.map(hubIdOf).join(",") + (want ? `@${want}` : "");
   if (!sig) return { sig, at: Date.now(), pack: null, hubs: [], week: null, connected: [] };
+  if (want) {
+    const hit = offCache.get(sig);
+    if (hit && Date.now() - hit.at < TTL_MS && !opts.force) return hit;
+    const v = await loadWeekAt(connected, sig, want);
+    if (offCache.size > 6) offCache.clear();
+    offCache.set(sig, v);
+    return v;
+  }
   const fresh = cache && cache.sig === sig && Date.now() - cache.at < TTL_MS;
   if (fresh && !opts.force) return cache;
   if (inflight && inflight.sig === sig && !opts.force) return inflight.p;
@@ -90,6 +113,22 @@ export async function loadWeek(leagues, opts = {}) {
   })();
   inflight = { sig, p };
   try { return await p; } finally { if (inflight && inflight.p === p) inflight = null; }
+}
+
+/* The same fetch, pinned to a week, kept out of the current-week cache. Deliberately NOT sharing the
+   single-flight map above: two different weeks in flight at once are two different requests, and the
+   shared map is keyed on a signature that would let one satisfy the other. */
+async function loadWeekAt(connected, sig, week) {
+  const base = connected[0];
+  const { backendFormatKey } = await import("./App.jsx");
+  const fmt = backendFormatKey(base && base.cfg ? base.cfg : { teams: 12, rounds: 15, scoring: { rec: 1 }, start: {} });
+  const anyIdp = connected.some((l) => { const st = (l.cfg && l.cfg.start) || {}; return (st.DL || 0) + (st.LB || 0) + (st.DB || 0) + (st.IDPFLEX || 0) > 0; });
+  const [pack, hubs] = await Promise.all([
+    api.playerPack(fmt, undefined, { k: true, dst: true, idp: anyIdp }).catch(() => null),
+    pool(connected, 4, (l) => api.sleeperTeamHub(hubIdOf(l), week, ownerOf(l))),
+  ]);
+  return { sig, at: Date.now(), pack: pack || (cache && cache.pack) || null, hubs,
+    week: hubs.map((h) => h && h.week).find((w) => Number.isFinite(w)) || week, connected };
 }
 
 /* ⭐⭐⭐ THE ONE-LINE VERDICT FOR A SINGLE LEAGUE — what the home page's icon is for.

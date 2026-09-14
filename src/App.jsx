@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29p";
+const BUILD_TAG = "2026.07.29q";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -13719,19 +13719,22 @@ function useSleeperLink(user, onUpdate) {
      wrong to say "1 account linked" to somebody with three. Filled in from the server on mount. */
   const [accounts, setAccounts] = useState(user && user.sleeperUsername
     ? [{ platform: "sleeper", id: user.sleeperUserId || null, username: user.sleeperUsername }] : []);
-  React.useEffect(() => {
+  /* ⚠ THE LIST HAS TO BE RE-READABLE, NOT JUST READ ONCE — 29q. The connect dialog can now unlink an
+     account without leaving the page, and a mount-only fetch meant the row it just removed stayed on
+     screen until a reload. Same function, callable again. */
+  const refresh = React.useCallback(async () => {
     if (!hasBackend) return;
-    let alive = true;
-    api.sleeperAccount().then((r) => {
-      if (!alive || !r) return;
+    try {
+      const r = await api.sleeperAccount();
+      if (!r) return;
       const list = Array.isArray(r.accounts) && r.accounts.length ? r.accounts
         : (r.sleeperUsername ? [{ platform: "sleeper", id: r.sleeperUserId || null, username: r.sleeperUsername }] : []);
       setAccounts(list);
       setLinked(list.length > 0);
       if (list[0] && list[0].username) setUsername(list[0].username);
-    }).catch(() => {});
-    return () => { alive = false; };
+    } catch {}
   }, []);
+  React.useEffect(() => { refresh(); }, [refresh]);
   const link = async (u) => {
     const name = (u || "").trim();
     if (!name) throw new Error("Enter your Sleeper username");
@@ -13757,7 +13760,7 @@ function useSleeperLink(user, onUpdate) {
     setLinked(false); setUsername("");
     if (onUpdate) onUpdate({ sleeperUsername: null, sleeperUserId: null });
   };
-  return { linked, username, accounts, link, unlink, setLinked };
+  return { linked, username, accounts, link, unlink, setLinked, refresh };
 }
 
 // The Sleeper link control — a compact pill that sits NEXT TO the teams dropdown. When not linked it shows
@@ -14317,9 +14320,30 @@ function byeOutlook(roster, fromWeek, toWeek, sf) {
 // what's wrong with your lineup, what's worth a claim, and what's coming. Pure data in, so the same
 // function can render the panel, the copy-for-the-league-chat text, and (once the backend can send mail)
 // the Sunday-morning email, with no chance of the three drifting apart.
+/* ⭐⭐⭐⭐⭐ ONE DIGEST, TWO RENDERINGS — 29q.
+   ================================================================================================
+   Trey: "This weekly brief also needs to be prettier. Use tables, colors, etc. Right now it's just a lot
+   of block text."
+
+   He is right, and the cause is visible in the old shape of this function: every section was a list of
+   SENTENCES. That is exactly what a brief pasted into a league chat needs — plain prose, no layout — and
+   it is the worst possible material for a screen, because a sentence cannot be aligned with the sentence
+   below it. Four waiver targets rendered as four near-identical paragraphs differing in three words, and
+   the eye has to read all four to find the one it wants.
+
+   So each section now carries BOTH: `lines` (the prose, which is what Copy-for-the-chat emits and what the
+   Sunday email will send) and, where the content is genuinely tabular, `cols` + `rows` for the screen.
+
+   ⚠ ONE COMPUTATION, TWO SHAPES — NOT TWO COMPUTATIONS. The temptation is to let the modal build its own
+     rows from the same inputs, and then the card and the email quietly start disagreeing about how many
+     waiver targets there are. Both come out of this function, off the same arrays, in the same pass.
+   ================================================================================================ */
 function buildDigest(o) {
   const S = [];
-  const push = (k, title, lines, tone) => { const l = (lines || []).filter(Boolean); if (l.length) S.push({ k, title, lines: l, tone }); };
+  const push = (k, title, lines, tone, table) => {
+    const l = (lines || []).filter(Boolean);
+    if (l.length) S.push({ k, title, lines: l, tone, ...(table || {}) });
+  };
   const n1 = (x) => (Math.round((x || 0) * 10) / 10);
 
   push("matchup", "This week", [
@@ -14334,19 +14358,97 @@ function buildDigest(o) {
       .concat((o.swaps || []).map((s) => `Start ${s.in} (${n1(s.inPts)}) over ${s.out} (${n1(s.outPts)}).`))
       .concat(o.oddsFromLineup ? [`Fixing it is worth about +${o.oddsFromLineup}% playoff odds a week.`] : [])
     : ["Your lineup is already optimal — nothing to change."],
-    o.leftOnBench > 0 ? "bad" : "good");
+    o.leftOnBench > 0 ? "bad" : "good",
+    (o.swaps || []).length ? {
+      cols: ["Start", "", "Over", "Gain"],
+      tmpl: "minmax(0,1fr) 18px minmax(0,1fr) 54px",
+      rows: (o.swaps || []).map((s) => [
+        { t: s.in, sub: n1(s.inPts), tone: "good" },
+        { t: "→", mut: true },
+        { t: s.out, sub: n1(s.outPts), mut: true },
+        { t: `+${n1((s.inPts || 0) - (s.outPts || 0))}`, tone: "good", num: true, right: true },
+      ]),
+      note: o.leftOnBench > 0
+        ? `${n1(o.leftOnBench)} points on the bench${o.oddsFromLineup ? ` · worth about +${o.oddsFromLineup}% playoff odds a week` : ""}`
+        : null,
+    } : null);
 
-  push("calls", "Close calls", (o.calls || []).map((c) => `${c.slot}: ${c.startName} ${c.win}% over ${c.altName} ${n1(100 - c.win)}% — ${c.win >= 56 ? "a lean" : "a coin flip"}.`), "neutral");
+  push("calls", "Close calls", (o.calls || []).map((c) => `${c.slot}: ${c.startName} ${c.win}% over ${c.altName} ${n1(100 - c.win)}% — ${c.win >= 56 ? "a lean" : "a coin flip"}.`), "neutral",
+    (o.calls || []).length ? {
+      cols: ["Slot", "Starting", "", "Alternative", ""],
+      tmpl: "44px minmax(0,1fr) auto minmax(0,1fr) auto",
+      rows: (o.calls || []).map((c) => [
+        { t: c.slot, mut: true, small: true },
+        { t: c.startName },
+        /* ⭐ The win% is a BAR as well as a number. "53% over 47%" and "72% over 28%" are the same shape
+           in text and completely different decisions; a bar makes the difference pre-verbal, which is the
+           whole point of a section headed "close calls". */
+        { t: `${c.win}%`, num: true, bar: c.win, tone: c.win >= 56 ? "good" : null },
+        { t: c.altName, mut: true },
+        { t: `${n1(100 - c.win)}%`, num: true, mut: true, right: true },
+      ]),
+      note: "too close for the projection to decide — your read matters here",
+    } : null);
 
-  push("waivers", "Waiver targets", (o.adds || []).map((a) => `${a.name} (${a.pos}${a.posRank || ""}) — ${a.bid}${a.rivals ? `, ${a.rivals} rival${a.rivals > 1 ? "s" : ""} also thin at ${a.pos}` : ", no competition"}.`), "neutral");
+  push("waivers", "Waiver targets", (o.adds || []).map((a) => `${a.name} (${a.pos}${a.posRank || ""}) — ${a.bid}${a.rivals ? `, ${a.rivals} rival${a.rivals > 1 ? "s" : ""} also thin at ${a.pos}` : ", no competition"}.`), "neutral",
+    (() => {
+      const adds = o.adds || [];
+      if (!adds.length) return null;
+      /* ⭐⭐⭐ A VALUE IDENTICAL ON EVERY ROW IS NOT A COLUMN — 29q. The bid guidance is derived from your
+         FAAB budget and the tier, so three targets at the same tier get the same string, and printing
+         "bid 7–11% of FAAB ($5–7 of your $68)" three times is most of what made this section look like
+         block text. When they all agree it is said once, underneath; when they differ it is a column,
+         because then it is genuinely per-player information. */
+      const bids = [...new Set(adds.map((a) => String(a.bid || "")))];
+      const oneBid = bids.length === 1 && bids[0];
+      return {
+        cols: oneBid ? ["Player", "Pos", "Competition"] : ["Player", "Pos", "Bid", "Competition"],
+        tmpl: oneBid ? "minmax(0,1fr) 54px minmax(0,auto)" : "minmax(0,1fr) 54px minmax(0,auto) minmax(0,auto)",
+        rows: adds.map((a) => [
+          { t: a.name },
+          { t: `${a.pos}${a.posRank || ""}`, mut: true, small: true },
+          ...(oneBid ? [] : [{ t: a.bid, small: true, tone: "gold" }]),
+          a.rivals
+            ? { t: `${a.rivals} rival${a.rivals > 1 ? "s" : ""} thin at ${a.pos}`, tone: "bad", small: true, right: true }
+            : { t: "no competition", mut: true, small: true, right: true },
+        ]),
+        note: oneBid ? `Suggested bid for ${adds.length === 1 ? "this one" : `all ${adds.length}`}: ${oneBid}` : null,
+      };
+    })());
 
   const painful = (o.byes || []).filter((b) => b.starters > 0);
   push("byes", "Byes ahead", painful.slice(0, 3).map((b) => {
     const who = b.out.slice(0, 3).join(", ");
     return `Week ${b.week}: ${b.starters} starter${b.starters > 1 ? "s" : ""} out (${who})${b.empty.length ? ` — ${b.empty.join(" and ")} can't be filled` : ""}${b.loss ? `, about ${n1(b.loss)} points` : ""}.`;
-  }), painful.some((b) => b.empty.length) ? "bad" : "neutral");
+  }), painful.some((b) => b.empty.length) ? "bad" : "neutral",
+    painful.length ? {
+      cols: ["Week", "Out", "Who", "Cost"],
+      tmpl: "52px 34px minmax(0,1fr) 54px",
+      rows: painful.slice(0, 3).map((b) => [
+        { t: `Wk ${b.week}`, num: true },
+        { t: String(b.starters), num: true, tone: b.empty.length ? "bad" : "gold" },
+        { t: b.out.slice(0, 3).join(", ") + (b.empty.length ? ` — ${b.empty.join(" and ")} can't be filled` : ""),
+          small: true, tone: b.empty.length ? "bad" : null },
+        { t: b.loss ? `−${n1(b.loss)}` : "—", num: true, mut: !b.loss, right: true },
+      ]),
+    } : null);
 
-  push("health", "Health", (o.injuries || []).map((i) => `${i.name} — ${i.status}.`), "bad");
+  /* ⚠ THE STATUS IS THE COLOUR AND THE COLOUR IS THE STATUS. "Out" and "Questionable" mean very different
+     things to a Sunday morning and were previously the same grey sentence. */
+  const sevOf = (st) => {
+    const s = String(st || "").toLowerCase();
+    if (/(^|\b)(out|ir|suspend|doubtful)/.test(s)) return "bad";
+    if (/questionable|probable|limited|gtd/.test(s)) return "gold";
+    return null;
+  };
+  push("health", "Health", (o.injuries || []).map((i) => `${i.name} — ${i.status}.`), "bad",
+    (o.injuries || []).length ? {
+      cols: ["Player", "Status"],
+      rows: (o.injuries || []).map((i) => [
+        { t: i.name },
+        { t: i.status, chip: true, tone: sevOf(i.status), right: true },
+      ]),
+    } : null);
 
   const headline = o.leftOnBench > 0
     ? `${n1(o.leftOnBench)} points are sitting on your bench`
@@ -14358,6 +14460,66 @@ function buildDigest(o) {
     .concat(["→ fantasydraftcompass.com"]).join("\n");
 
   return { headline, sections: S, text };
+}
+
+/* ⭐⭐⭐⭐ THE BRIEF'S TABLE — 29q. One tiny renderer for every tabular section, so "prettier" is a
+   property of the brief rather than six hand-laid grids that drift apart.
+   Each cell is a small object: `t` the text, plus flags for how to treat it (num → tabular figures,
+   mut → recessive, tone → semantic colour, bar → a proportion bar behind the number, chip → a pill,
+   right → right-aligned, sub → a second figure printed after it, small → caption size).
+   ⚠ COLOUR IS A TONE NAME, NOT A HEX, at the point of use. Every caller says what a value MEANS — good,
+     bad, gold — and this decides what that looks like, so the palette lives in one place. */
+function BriefTable({ cols, rows, note, tmpl }) {
+  const toneOf = (t) => (t === "good" ? "#5FD0A8" : t === "bad" ? "#F2655C" : t === "gold" ? "var(--gold)" : null);
+  /* ⚠ THE TRACKS ARE THE SECTION'S TO DECIDE. A single heuristic — first column flexible, the rest
+     auto — is right for waivers (a long player name against short fields) and wrong for close calls,
+     where the flexible column is a four-letter slot label and every real value ends up shoved against the
+     right edge under the wrong header. Sections that care say so; the heuristic covers the rest. */
+  const grid = { display: "grid", gap: "0 10px", alignItems: "center",
+    gridTemplateColumns: tmpl || `minmax(0,1.5fr) ${(cols || []).slice(1).map(() => "minmax(0,auto)").join(" ")}` };
+  return (
+    <div data-brieftable={String((rows || []).length)}>
+      {(cols || []).some(Boolean) && (
+        <div className="mut" style={{ ...grid, fontSize: 9, textTransform: "uppercase", letterSpacing: ".055em", fontWeight: 800, paddingBottom: 3 }}>
+          {cols.map((c, i) => <span key={i} style={{ textAlign: i && i === cols.length - 1 ? "right" : "left" }}>{c}</span>)}
+        </div>
+      )}
+      {(rows || []).map((r, ri) => (
+        <div key={ri} style={{ ...grid, padding: "4px 0", borderTop: ri ? "1px solid var(--line)" : "1px solid var(--line2)" }}>
+          {r.map((c, ci) => {
+            const tone = toneOf(c.tone);
+            const body = (
+              <span className={c.num ? "num" : undefined}
+                style={{ fontSize: c.small ? 11 : 12.5, fontWeight: c.mut ? 500 : 700,
+                  color: tone || (c.mut ? "var(--mut)" : "var(--ink)"),
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: c.small ? "normal" : "nowrap" }}>
+                {c.t}
+                {c.sub != null && <span className="num mut" style={{ fontWeight: 500, marginLeft: 5, fontSize: 11 }}>{c.sub}</span>}
+              </span>
+            );
+            return (
+              <span key={ci} style={{ minWidth: 0, textAlign: c.right ? "right" : "left",
+                display: "flex", justifyContent: c.right ? "flex-end" : "flex-start", alignItems: "center", gap: 6 }}>
+                {c.chip ? (
+                  <span style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".04em",
+                    border: `1px solid ${tone || "var(--line2)"}`, color: tone || "var(--mut)",
+                    borderRadius: 99, padding: "1px 8px", whiteSpace: "nowrap" }}>{c.t}</span>
+                ) : body}
+                {/* The proportion bar sits UNDER the number it describes, not instead of it. */}
+                {Number.isFinite(c.bar) && (
+                  <span aria-hidden="true" style={{ width: 40, height: 4, borderRadius: 99, background: "var(--line2)", flexShrink: 0, overflow: "hidden" }}>
+                    <span style={{ display: "block", width: `${Math.max(0, Math.min(100, c.bar))}%`, height: "100%",
+                      background: tone || "var(--mut)" }} />
+                  </span>
+                )}
+              </span>
+            );
+          })}
+        </div>
+      ))}
+      {note && <div className="mut" style={{ fontSize: 10.5, marginTop: 4, lineHeight: 1.45 }}>{note}</div>}
+    </div>
+  );
 }
 
 // Memo for the hub's expensive engines. They run AFTER the hub's early returns, where a React hook is not
@@ -15326,14 +15488,58 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                   </div>
                   <button onClick={() => setBriefOpen(false)} style={{ background: "transparent", border: "none", color: "var(--mut)", cursor: "pointer", padding: 4, flexShrink: 0 }} aria-label="Close"><i className="ti ti-x" style={{ fontSize: 17 }} aria-hidden="true" /></button>
                 </div>
-              </div>
-              <div style={{ padding: "12px 16px 14px", display: "flex", flexDirection: "column", gap: 12 }}>
-                {digest.sections.map((s) => (
-                  <div key={s.k}>
-                    <div className="disp" style={{ fontSize: 10.5, letterSpacing: ".07em", textTransform: "uppercase", marginBottom: 4, color: s.tone === "bad" ? "var(--red)" : s.tone === "good" ? "var(--green)" : "var(--mut)" }}>{s.title}</div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                      {s.lines.map((l, i) => <div key={i} style={{ fontSize: 12.5, lineHeight: 1.5 }}>{l}</div>)}
+                {/* ⭐⭐⭐⭐⭐ THE WEEK STEPPER, INSIDE THE MODAL — 29q.
+                    Trey: "For the 'weekly brief' when you click on my team… can you toggle from the current
+                    week to future weeks. For example, it's showing week 1… which is still relevant, but I
+                    want to be able to look at week 2."
+
+                    The hub has had a week stepper for builds — but this card is a full-screen overlay
+                    sitting on top of it, so from the moment you open the brief the control is behind the
+                    scrim and the only way to change week is to close, step, reopen. A control you have to
+                    dismiss the screen to reach is, for practical purposes, not there. Same state, same
+                    fetch; it just also lives where you need it. */}
+                {(() => {
+                  const shown = (data && data.week) || curWeek || 1;
+                  const minW = (data && data.minWeek) || 1;
+                  const maxW = (data && data.maxWeek) || 18;
+                  const go = (w) => { const nw = Math.min(maxW, Math.max(minW, w)); if (nw !== shown) setViewWeek(nw); };
+                  return (
+                    <div data-briefweek={String(shown)} style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 9, flexWrap: "wrap" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 2, background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 99, padding: 2 }}>
+                        <button className="btn btn-mini" data-briefweekprev disabled={shown <= minW || loading} onClick={() => go(shown - 1)}
+                          style={{ padding: "1px 9px", borderRadius: 99, opacity: shown <= minW ? 0.4 : 1 }} aria-label="Previous week">‹</button>
+                        <span className="num" style={{ minWidth: 66, textAlign: "center", fontWeight: 800, fontSize: 12 }}>Week {shown}</span>
+                        <button className="btn btn-mini" data-briefweeknext disabled={shown >= maxW || loading} onClick={() => go(shown + 1)}
+                          style={{ padding: "1px 9px", borderRadius: 99, opacity: shown >= maxW ? 0.4 : 1 }} aria-label="Next week">›</button>
+                      </div>
+                      {loading && <span className="mut" style={{ fontSize: 10.5 }}>loading…</span>}
+                      {/* ⚠ SAY WHEN YOU ARE LOOKING AT A WEEK THAT HAS NOT HAPPENED. A brief for week 4 read
+                          in week 1 is entirely projection — no injuries settled, no waiver run — and it
+                          must not be mistaken for the same thing as this week's. */}
+                      {!loading && curWeek != null && shown > curWeek && (
+                        <span className="mut" style={{ fontSize: 10.5 }}>looking ahead — projections only, nothing settled yet</span>
+                      )}
+                      {!loading && curWeek != null && shown !== curWeek && (
+                        <button className="btn btn-mini" onClick={() => setViewWeek(curWeek)} style={{ fontSize: 10.5, padding: "1px 9px" }}>↩ week {curWeek}</button>
+                      )}
                     </div>
+                  );
+                })()}
+              </div>
+              <div data-briefbody style={{ padding: "12px 16px 14px", display: "flex", flexDirection: "column", gap: 14 }}>
+                {digest.sections.map((s) => (
+                  <div key={s.k} data-briefsection={s.k}>
+                    <div className="disp" style={{ fontSize: 10.5, letterSpacing: ".07em", textTransform: "uppercase", marginBottom: 5, color: s.tone === "bad" ? "var(--red)" : s.tone === "good" ? "var(--green)" : "var(--mut)" }}>{s.title}</div>
+                    {/* ⭐⭐⭐⭐ A TABLE WHERE THE CONTENT IS TABULAR, SENTENCES WHERE IT IS NOT. "This week"
+                        is genuinely one sentence and forcing it into a grid would be worse; four waiver
+                        targets are four rows of the same four fields and reading them as prose is work the
+                        layout should have done. Each section says which it is by carrying `rows` or not. */}
+                    {s.rows ? <BriefTable cols={s.cols} rows={s.rows} note={s.note} tmpl={s.tmpl} />
+                      : (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                          {s.lines.map((l, i) => <div key={i} style={{ fontSize: 12.5, lineHeight: 1.5 }}>{l}</div>)}
+                        </div>
+                      )}
                   </div>
                 ))}
               </div>
@@ -16407,7 +16613,40 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
   const [live, setLive] = useState(null);
   const [tab, setTab] = useState("live");
   const [view, setView] = useState(null);
-  const [open, setOpen] = useState(false);   // the expander — see the button that toggles it
+  /* ⭐⭐⭐⭐ OPEN BY DEFAULT — 29q, reversing 29o on his say-so.
+     Trey, then: "I also think the This Week section should have some sort of expander. Rather than
+     defaulting to showing everything at once, you could click into it and expand it."
+     Trey, having lived with it: "Make it so you don't have to expand on the 'this week' on the home page
+     to see all the leagues. It should just default to show them all."
+     Both readings were reasonable and the second one wins because it is the one with a season behind it:
+     the table is not an optional detail during the games, it is the reason the strip exists, and a click
+     standing between him and it every single visit is a tax paid daily for tidiness he stopped wanting.
+     The expander STAYS — collapsing fifteen rows is still worth having once you have looked. */
+  const [open, setOpen] = useState(true);
+  // Looking ahead: null = this week (the live view), a number = that week's to-do list. See the stepper.
+  const [ahead, setAhead] = useState(null);
+  const [aheadData, setAheadData] = useState(null);   // { week, rows:[{name, flags, league}] } | "loading"
+
+  useEffect(() => {
+    if (!ahead || !hasBackend) { setAheadData(null); return; }
+    let alive = true;
+    setAheadData("loading");
+    (async () => {
+      try {
+        const { loadWeek, leagueFlags, hubIdOf: hid } = await import("./weekcache.js");
+        const w = await loadWeek(leagues, { week: ahead });
+        if (!alive || !w) return;
+        const out = [];
+        (w.connected || []).forEach((l, i) => {
+          const h = w.hubs[i];
+          const f = leagueFlags(h, w.pack);   // no playedOf: nothing in a future week has been played
+          out.push({ league: l, id: hid(l), name: l.name, flags: f, hub: h });
+        });
+        setAheadData({ week: w.week || ahead, rows: out });
+      } catch (e) { if (alive) setAheadData({ week: ahead, rows: [], error: true }); }
+    })();
+    return () => { alive = false; };
+  }, [ahead, leagues]);
   const [winTone, setWinTone] = useState(() => () => ({ color: "var(--mut)", label: "—" }));
 
   useEffect(() => {
@@ -16451,7 +16690,10 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
         {/* ⭐⭐⭐⭐ THE BADGE. A dot that only exists while football is being played, so its presence is the
             message — and it is a word as well as a colour, because a green dot alone means nothing to a
             reader who cannot see green. */}
-        {view.live && (
+        {/* ⚠ NOT WHILE LOOKING AHEAD. A LIVE badge beside "Week 3" in week 1 claims games are being played
+            that have not been scheduled yet — the badge means "football is on right now", and right now is
+            precisely what you stopped looking at when you stepped forward. */}
+        {view.live && !ahead && (
           <span data-homelivebadge style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10.5,
             fontWeight: 800, letterSpacing: ".06em", color: "#0d1210", background: "#5FD0A8",
             borderRadius: 99, padding: "2px 9px" }}>
@@ -16459,10 +16701,35 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
             LIVE
           </span>
         )}
-        <span className="disp" style={{ fontSize: 14.5, fontWeight: 800 }}>
-          Week {view.week}
-        </span>
-        <div className="filterchips" data-homeweektabs style={{ display: "flex", gap: 5 }}>
+        {/* ⭐⭐⭐⭐⭐ LOOK AHEAD FROM THE HOME PAGE — 29q.
+            Trey: "I'd like to be able to do the same thing on the home screen where I can toggle to see
+            week 2 instead of just week one. Here is where you could then show the icons to check on
+            players like Ladd McConkey."
+
+            That last sentence is the design. A future week has no score, so showing the live table for it
+            would be a grid of dashes; what a future week DOES have is exactly the thing he has been asking
+            about since the McConkey flag — who is questionable, who is on bye, and which leagues that hits.
+            So the stepper does not just change a number, it changes what the strip is FOR: this week it is
+            a scoreboard, next week it is a to-do list. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 2, background: "var(--panel2)",
+          border: "1px solid var(--line)", borderRadius: 99, padding: 1 }}>
+          <button className="btn btn-mini" data-homeweekprev disabled={!ahead}
+            onClick={() => setAhead((w) => (w && w > (view.week || 1) + 1 ? w - 1 : null))}
+            style={{ padding: "0 8px", borderRadius: 99, opacity: ahead ? 1 : .35 }} aria-label="Previous week">‹</button>
+          <span className="disp num" data-homeweekshown={String(ahead || view.week)} style={{ fontSize: 13, fontWeight: 800, minWidth: 62, textAlign: "center" }}>
+            Week {ahead || view.week}
+          </span>
+          <button className="btn btn-mini" data-homeweeknext disabled={(ahead || view.week || 1) >= 18}
+            onClick={() => setAhead((w) => Math.min(18, (w || view.week || 1) + 1))}
+            style={{ padding: "0 8px", borderRadius: 99, opacity: (ahead || view.week || 1) >= 18 ? .35 : 1 }} aria-label="Next week">›</button>
+        </div>
+        {ahead && (
+          <button className="btn btn-mini" data-homeweekback onClick={() => setAhead(null)}
+            style={{ fontSize: 10.5, padding: "1px 9px" }}>↩ this week</button>
+        )}
+        {/* Live and Review are both about the week that is happening; neither means anything for a week
+            that has not. They come back when you step back. */}
+        <div className="filterchips" data-homeweektabs style={{ display: ahead ? "none" : "flex", gap: 5 }}>
           {tabs.map(([k, label]) => (
             <button key={k} data-homeweektab={k} onClick={() => setTab(k)} aria-pressed={showTab === k}
               style={{ fontSize: 11.5, fontWeight: showTab === k ? 800 : 600, padding: "2px 10px", borderRadius: 99,
@@ -16487,7 +16754,60 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
         </button>
       </div>
 
-      {showTab === "live" ? (
+      {/* ⭐⭐⭐⭐ A FUTURE WEEK IS A TO-DO LIST, NOT A SCOREBOARD. Nothing has been played, so every score
+          column would be a dash; what exists is the thing worth knowing in advance — who is questionable,
+          who is on bye, and in which of your leagues. */}
+      {ahead ? (
+        <div data-homeahead={String(ahead)}>
+          {aheadData === "loading" || !aheadData ? (
+            <div className="mut" style={{ fontSize: 12 }}>Reading week {ahead} across your leagues…</div>
+          ) : aheadData.error || !aheadData.rows.length ? (
+            <div className="mut" style={{ fontSize: 12 }}>Couldn't read week {ahead} yet.</div>
+          ) : (
+            <>
+              {(() => {
+                const withWork = aheadData.rows.filter((r) => r.flags && r.flags.sev > 0);
+                return (
+                  <div style={{ fontSize: 12.5, marginBottom: withWork.length ? 8 : 0 }}>
+                    {withWork.length
+                      ? <><b style={{ color: "var(--gold)" }}>{withWork.length}</b>
+                          <span className="mut"> of {aheadData.rows.length} league{aheadData.rows.length === 1 ? "" : "s"} {withWork.length === 1 ? "has" : "have"} something to sort out in week {ahead}.</span></>
+                      : <span className="mut">Nothing flagged in any league for week {ahead} — no byes, no injury tags on your starters.</span>}
+                  </div>
+                );
+              })()}
+              <div style={{ display: "flex", flexDirection: "column" }}>
+                {aheadData.rows.filter((r) => r.flags && r.flags.sev > 0).map((r) => {
+                  const f = r.flags;
+                  const SEV = { 3: "#F2655C", 2: "var(--gold)", 1: "#6BA8E5" };
+                  return (
+                    <div key={r.id} data-homeaheadrow={r.name} style={{ display: "flex", alignItems: "baseline",
+                      gap: 9, padding: "5px 2px", borderTop: "1px solid var(--line)", flexWrap: "wrap" }}>
+                      <span style={{ width: 7, height: 7, borderRadius: 99, background: SEV[f.sev] || "var(--mut)", flexShrink: 0 }} aria-hidden="true" />
+                      <button onClick={() => onOpenTeam && onOpenTeam(r.league)}
+                        style={{ cursor: "pointer", fontFamily: "inherit", background: "none", border: "none", padding: 0,
+                          color: "var(--ink)", fontSize: 12.5, fontWeight: 700, textAlign: "left", flex: "0 1 auto" }}>
+                        {r.name}
+                      </button>
+                      <span className="mut" style={{ fontSize: 11.5, flex: "1 1 220px", minWidth: 0 }}>
+                        {f.out.length > 0 && <span style={{ color: "#F2655C" }}>Out: {f.out.join(", ")}</span>}
+                        {f.out.length > 0 && (f.check.length || f.bye.length) ? <span> · </span> : null}
+                        {f.check.length > 0 && <span style={{ color: "var(--gold)" }}>Check: {f.check.join(", ")}</span>}
+                        {f.check.length > 0 && f.bye.length ? <span> · </span> : null}
+                        {f.bye.length > 0 && <span style={{ color: "#6BA8E5" }}>Bye: {f.bye.join(", ")}</span>}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="mut" style={{ fontSize: 10.5, marginTop: 7, lineHeight: 1.45 }}>
+                Week {ahead} hasn't been played, so this is availability only — injury tags and byes read from
+                your live rosters. Scores appear once the week kicks off.
+              </div>
+            </>
+          )}
+        </div>
+      ) : showTab === "live" ? (
         <>
           {/* ⭐⭐⭐⭐⭐ THE PROJECTED RECORD LEADS — 29p. Trey: "It's saying I'm 8-2… This is true RIGHT NOW,
               but on sleeper, I'm showed that I'm projected to lose at least 5 total. So the 8-2 is
@@ -17052,14 +17372,29 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
                   top… which should also be clear that you already have x accounts linked." A button that
                   only says "Connect a league" cannot tell you whether you already did, which is why the
                   second row at the bottom of the page felt necessary in the first place. */}
+              {/* ⭐⭐⭐ THE HOVER NAMES THEM — 29q. Trey: "Can you show the exact accounts that are connected
+                  when you hover them." A count you cannot check is a claim, and this one was wrong for a
+                  real reason (see pickSleeperLeague). Names are checkable at a glance: "1 account linked"
+                  next to a tooltip reading only "trey" tells him instantly which handle went missing. */}
               <button data-connecttop data-connectcount={String(sleeperLink.accounts ? sleeperLink.accounts.length : (sleeperLink.linked ? 1 : 0))}
                 className="btn btn-mini" onClick={() => setConnectOpen(true)}
+                title={(sleeperLink.accounts && sleeperLink.accounts.length)
+                  ? `Linked Sleeper accounts: ${sleeperLink.accounts.map((a) => a.username || a.id).join(", ")}`
+                  : "No account linked yet"}
                 style={{ marginTop: 10, padding: "6px 13px", fontSize: 12, borderColor: "var(--gold)", color: "var(--gold)" }}>
                 <i className="ti ti-world-plus" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />
                 Connect a league
                 {sleeperLink.linked && (
-                  <span className="mut" style={{ fontWeight: 400, marginLeft: 6 }}>
-                    · {(sleeperLink.accounts && sleeperLink.accounts.length) || 1} account{((sleeperLink.accounts && sleeperLink.accounts.length) || 1) === 1 ? "" : "s"} linked
+                  <span className="mut" data-connectnames style={{ fontWeight: 400, marginLeft: 6 }}>
+                    {/* Up to two handles are named inline; past that the count is shorter than the list and
+                        the tooltip carries the rest. */}
+                    · {(() => {
+                      const A = sleeperLink.accounts || [];
+                      const names = A.map((a) => a.username).filter(Boolean);
+                      if (names.length && names.length <= 2) return names.join(", ");
+                      const n = A.length || 1;
+                      return `${n} account${n === 1 ? "" : "s"} linked`;
+                    })()}
                   </span>
                 )}
               </button>
@@ -17244,6 +17579,9 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
 
       {connectOpen && (
         <ConnectLeagueModal
+          accounts={sleeperLink.accounts} leagues={leagues}
+          onUnlink={async (id) => { try { await api.sleeperUnlink(id); } catch {} await sleeperLink.refresh(); }}
+          onLinked={() => sleeperLink.refresh()}
           onClose={(how) => { setConnectOpen(false); if (how === "manual" && onNewLeague) onNewLeague(); }}
           onConnected={(c) => { setConnectOpen(false); if (onConnectLeague) onConnectLeague(c); else if (onNewLeague) onNewLeague(); }} />
       )}
@@ -22583,7 +22921,7 @@ const PLATFORMS = [
     hint: "Sign in with Yahoo and pick a league. Nothing to copy or paste — Yahoo's own consent screen does it, and you can revoke us from your Yahoo account settings at any time." },
   { id: "espn", name: "ESPN", field: "ESPN league ID", live: false, icon: "ti-ball-football",
     hint: "A public league imports from its ID alone. A private one needs two cookies from your signed-in browser — we use them for the one import and never store them." },
-  { id: "mfl", name: "MyFantasyLeague", field: "MFL league ID", live: true, proven: false, icon: "ti-database",
+  { id: "mfl", name: "MyFantasyLeague", short: "MFL", field: "MFL league ID", live: true, proven: false, icon: "ti-database",
     hint: "MFL has a proper public API, so picks sync live. A private league needs the league's API key, which the commissioner generates under League Setup → Developer's API. New — this one hasn't been through a real draft yet, so check the first few picks land before you rely on it, and switch to typing them if anything looks off." },
   { id: "fantrax", name: "Fantrax", field: "Fantrax Secret ID", live: true, proven: false, icon: "ti-key",
     hint: "Paste the Secret ID from your Fantrax profile — not your password. Picks sync live, and regenerating the ID in Fantrax revokes us instantly. New — this one hasn't been through a real draft yet, so check the first few picks land before you rely on it, and switch to typing them if anything looks off." },
@@ -22700,11 +23038,129 @@ function connectPatch(c, cur) {
      path to a finished league here would duplicate the one piece of this feature most expensive to get wrong.
      The dialog collects the connection and drops the user into that form with everything filled in, which is
      one screen further along than they were and no new code owning any of it. */
-function ConnectLeagueModal({ onClose, onConnected }) {
+/* ⭐⭐⭐⭐⭐ THE DIALOG OPENS ON WHAT YOU ALREADY HAVE — 29q.
+   ------------------------------------------------------------------------------------------------
+   Trey: "When you click the button to connect a league… I want it to show the leagues you have already
+   connected to a username. I also want to be able to connect multiple usernames to one platform (i.e. I
+   want to be able to see 2 different usernames for Sleeper)."
+
+   Both halves are the same omission. The dialog was written for somebody with nothing connected, so it
+   opened on an empty platform grid and offered one username field — which is a fine first run and a bad
+   every-other-run. A man with four Sleeper handles opened it and saw no evidence that the app knew about
+   any of them, which is exactly the state that makes you type the one you already linked and wonder why
+   nothing happened.
+
+   ⚠ GROUPED BY THE HANDLE THAT OWNS THEM, not listed flat. "Which username is Work League under" is the
+     question you open this dialog to answer when a team stops resolving, and a flat list of eleven leagues
+     cannot answer it. Leagues we can't attribute to any linked handle get their own group and say so,
+     because that is a real state with a real fix (link that handle) rather than a rounding error.
+   ------------------------------------------------------------------------------------------------ */
+function ConnectedAccounts({ accounts, leagues, onUnlink, onAdd }) {
+  const list = accounts || [];
+  const conn = (leagues || []).filter((l) => {
+    const c = (l && (l.connect || (l.cfg && l.cfg.connect))) || null;
+    return c && c.platform;
+  });
+  if (!list.length && !conn.length) return null;
+
+  const handleOf = (l) => {
+    const c = (l && (l.connect || (l.cfg && l.cfg.connect))) || {};
+    return String(c.ownerUsername || c.username || "").toLowerCase();
+  };
+  const platOf = (l) => ((l && (l.connect || (l.cfg && l.cfg.connect))) || {}).platform || null;
+
+  const groups = list.map((a) => ({
+    key: `acct:${a.id || a.username}`,
+    platform: a.platform || "sleeper",
+    username: a.username,
+    id: a.id || null,
+    linkedHere: true,
+    leagues: conn.filter((l) => handleOf(l) === String(a.username || "").toLowerCase()),
+  }));
+  const claimed = new Set(groups.flatMap((g) => g.leagues.map((l) => l.id)));
+  /* Leagues connected to a platform we don't hold an account for — an ESPN import, or a Sleeper league
+     imported before the handle was linked. Grouped by platform so the list stays short. */
+  const orphans = conn.filter((l) => !claimed.has(l.id));
+  const byPlat = new Map();
+  orphans.forEach((l) => {
+    const k = platOf(l) || "other";
+    if (!byPlat.has(k)) byPlat.set(k, []);
+    byPlat.get(k).push(l);
+  });
+
+  const Names = ({ ls }) => (
+    <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5, marginTop: 2 }}>
+      {ls.length ? ls.map((l) => l.name).join(" · ") : "no leagues imported from this account yet"}
+    </div>
+  );
+
+  return (
+    <div data-connectedaccts={String(list.length)} style={{ marginBottom: 14 }}>
+      <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".055em",
+        fontWeight: 800, marginBottom: 6 }}>Already connected</div>
+      <div className="panel" style={{ padding: 0, background: "var(--panel2)", overflow: "hidden" }}>
+        {groups.map((g, i) => {
+          const P = PLATFORMS.find((p) => p.id === g.platform);
+          return (
+            <div key={g.key} data-connacct={g.username}
+              style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "9px 11px",
+                borderTop: i ? "1px solid var(--line)" : "none" }}>
+              <i className={`ti ${(P && P.icon) || "ti-link"}`} style={{ fontSize: 16, color: "var(--gold)", marginTop: 1, flexShrink: 0 }} aria-hidden="true" />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700 }}>
+                  {(P && P.name) || g.platform} <span className="mut" style={{ fontWeight: 400 }}>·</span> {g.username}
+                  <span className="mut" style={{ fontWeight: 400, fontSize: 11.5 }}>
+                    {" "}— {g.leagues.length} league{g.leagues.length === 1 ? "" : "s"}
+                  </span>
+                </div>
+                <Names ls={g.leagues} />
+              </div>
+              {onUnlink && (
+                <button className="btn btn-mini" data-connunlink={g.username} style={{ flexShrink: 0 }}
+                  onClick={() => onUnlink(g.id)}>Unlink</button>
+              )}
+            </div>
+          );
+        })}
+        {[...byPlat.entries()].map(([plat, ls], i) => {
+          const P = PLATFORMS.find((p) => p.id === plat);
+          return (
+            <div key={`plat:${plat}`} data-connorphan={plat}
+              style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "9px 11px",
+                borderTop: (groups.length || i) ? "1px solid var(--line)" : "none" }}>
+              <i className={`ti ${(P && P.icon) || "ti-link"}`} style={{ fontSize: 16, color: "var(--mut)", marginTop: 1, flexShrink: 0 }} aria-hidden="true" />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700 }}>
+                  {(P && P.name) || plat}
+                  <span className="mut" style={{ fontWeight: 400, fontSize: 11.5 }}> — {ls.length} league{ls.length === 1 ? "" : "s"}, no account linked</span>
+                </div>
+                <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5, marginTop: 2 }}>
+                  {ls.map((l) => l.name).join(" · ")}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {/* ⭐⭐⭐ "I want to be able to see 2 different usernames for Sleeper." Adding a second handle was
+          always possible — linking has been additive since b132 — but nothing on screen SAID so, and a
+          capability nobody can see is a capability nobody has. */}
+      <button className="btn btn-mini" data-connaddacct onClick={onAdd}
+        style={{ marginTop: 8, borderColor: "var(--gold)", color: "var(--gold)" }}>
+        <i className="ti ti-plus" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />
+        Add another username
+      </button>
+    </div>
+  );
+}
+
+function ConnectLeagueModal({ onClose, onConnected, accounts, leagues, onUnlink, onLinked }) {
+  // Jumping straight to the Sleeper step from "Add another username" — see ConnectBox's `jumpTo`.
+  const [jump, setJump] = useState(0);
   return (
     <div data-connectmodal onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 90, background: "#000c", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
       <div onClick={(e) => e.stopPropagation()} className="panel" style={{ width: "100%", maxWidth: 610, padding: 18 }}>
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 4 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 12 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="disp" style={{ fontSize: 19, fontWeight: 700 }}>Connect a league</div>
             <div className="mut" style={{ fontSize: 12, lineHeight: 1.5, marginTop: 3 }}>
@@ -22713,7 +23169,10 @@ function ConnectLeagueModal({ onClose, onConnected }) {
           </div>
           <button className="btn btn-mini" onClick={onClose} title="Close" style={{ flexShrink: 0 }}><i className="ti ti-x" style={{ fontSize: 13 }} aria-hidden="true" /></button>
         </div>
-        <ConnectBox embedded connect={null} onConnect={(c) => { if (c) onConnected(c); }} onClear={() => {}}
+        <ConnectedAccounts accounts={accounts} leagues={leagues} onUnlink={onUnlink}
+          onAdd={() => setJump((n) => n + 1)} />
+        <ConnectBox embedded connect={null} jumpTo={jump ? "sleeper" : null} jumpKey={jump}
+          onConnect={(c) => { if (c) { if (onLinked) onLinked(); onConnected(c); } }} onClear={() => {}}
           onCancel={(how) => { onClose(how === "manual" ? "manual" : undefined); }} />
       </div>
     </div>
@@ -22722,7 +23181,7 @@ function ConnectLeagueModal({ onClose, onConnected }) {
 
 /* `embedded` is for the home-page dialog, where the surrounding modal IS the "Connect your league" button —
    so the box starts open and its Cancel closes the dialog instead of collapsing to a CTA nobody can see. */
-function ConnectBox({ connect, onConnect, onClear, embedded, onCancel }) {
+function ConnectBox({ connect, onConnect, onClear, embedded, onCancel, jumpTo, jumpKey }) {
   const [open, setOpen] = useState(!!embedded);
   // Land on Sleeper, not on a platform picker: it's the path almost everyone takes and the only one
   // with live sync. "← Other platform" is one click away for the ESPN import.
@@ -22757,6 +23216,16 @@ function ConnectBox({ connect, onConnect, onClear, embedded, onCancel }) {
   const [yStatus, setYStatus] = useState(null);         // { configured, linked }
   const [yLeagues, setYLeagues] = useState(null);
   const [yCode, setYCode] = useState("");
+  /* "Add another username" in the dialog above has to land on the Sleeper FORM, not on the platform grid
+     with Sleeper merely highlighted — the whole point of pressing it is that you know which platform you
+     mean. `jumpKey` increments on every press so pressing it again after backing out still works; a
+     boolean would fire once and then look broken. */
+  React.useEffect(() => {
+    if (!jumpTo || !jumpKey) return;
+    const p = PLATFORMS.find((x) => x.id === jumpTo);
+    if (!p) return;
+    setSel(p); setVal(""); setSleeperLeagues(null); setEspn(null); setError(null);
+  }, [jumpTo, jumpKey]);
   if (connect) {
     const p = PLATFORMS.find((x) => x.id === connect.platform);
     return (
@@ -22787,6 +23256,21 @@ function ConnectBox({ connect, onConnect, onClear, embedded, onCancel }) {
     try {
       const d = await api.sleeperDraft(lg.league_id, val.trim());
       rememberUser(val.trim());
+      /* ⭐⭐⭐⭐⭐ IMPORTING A LEAGUE UNDER A HANDLE LINKS THAT HANDLE — 29q.
+         Trey: "On the connect a league, I see '1 account linked' but I have connected 2 sleeper accounts."
+
+         He had. The count was not lying; the two operations had simply never been connected to each other.
+         Importing a league here asked Sleeper for that username's leagues, pulled one in and stored the
+         handle in localStorage — and never called /sleeper/link, so as far as the server was concerned the
+         second account did not exist. Everything downstream is keyed off the linked list: which roster is
+         yours, whose leagues get refreshed, the count on the button. So a man with two handles got one
+         linked account, leagues that could not resolve his team, and a button insisting he had one.
+
+         ⚠ AND IT IS THE RIGHT MOMENT TO LINK, not a workaround for a count. You have just pulled a league
+           out of that account; there is no stronger evidence that it is yours, and linking is additive, so
+           this can only ever add the handle you just used. Best-effort on purpose — a link failure must not
+           lose you the league you actually came here to import. */
+      try { if (hasBackend) await api.sleeperLink(val.trim()); } catch { /* the import is what matters */ }
       onConnect({
         platform: "sleeper", credential: val.trim(), username: val.trim(),
         leagueId: lg.league_id, leagueName: lg.name,
@@ -22945,16 +23429,36 @@ function ConnectBox({ connect, onConnect, onClear, embedded, onCancel }) {
           </div>
           {!sel ? (
             <div>
+              {/* With the "already connected" block above it, the grid needs to say which of the two it is
+                  — otherwise the dialog reads as one undifferentiated list of platforms and accounts. */}
+              {embedded && (
+                <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".055em",
+                  fontWeight: 800, marginBottom: 6 }}>Connect a new league</div>
+              )}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(150px,1fr))", gap: 8 }}>
                 {/* ⭐⭐ THE BADGE IS THE POINT OF THIS GRID. "Live picks" is the single thing that decides how
                     draft night goes, and it is true on three of these and false on the rest — so it is on
                     the button rather than three clicks deep. The two we do not support say so here too,
                     instead of letting someone pick them and discover it. */}
-                {PLATFORMS.map((p) => (
+                {/* ⭐⭐⭐ THE TWO WE CANNOT DO ARE NO LONGER OFFERED — 29q. Trey: "You can also get rid of
+                    CBS Sports and NFL.com."
+                    They were listed greyed-out with a READ WHY badge, on the reasoning that someone looking
+                    for CBS should find an explanation rather than an absence. A year on, the honest read is
+                    that two permanent dead ends in a grid of five working ones is a picker that is 29%
+                    apology — and NFL.com is not even a dead end any more, it is an ESPN league. The
+                    reasoning is kept (PLATFORMS still carries both rows, so an old connected league still
+                    renders with its right name and the FAQ still answers the question) — it just is not a
+                    button you can press here. */}
+                {PLATFORMS.filter((p) => !p.unsupported).map((p) => (
                   <button key={p.id} data-plat={p.id} className="btn" style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-start", padding: "9px 11px", opacity: p.unsupported ? 0.66 : 1 }}
                     onClick={() => { setSel(p); setVal(""); setKey2(""); setS2(""); setSwid(""); setEspnPriv(false); setFxLeagues(null); setYLeagues(null); setSleeperLeagues(null); setEspn(null); setError(null); }}>
                     <i className={`ti ${p.icon}`} style={{ fontSize: 17, color: p.unsupported ? "var(--mut)" : "var(--gold)" }} aria-hidden="true" />
-                    <span style={{ flex: 1, minWidth: 0, textAlign: "left", whiteSpace: "normal", lineHeight: 1.2 }}>{p.name}</span>
+                    {/* ⚠ THE NAME IS THE FLEX ITEM THAT GIVES, AND IT GAVE. With the badge pinned at
+                        flexShrink 0 (below, for good reason) the longest platform name was the one that
+                        clipped instead — "MyFantasyL" beside a LIVE PICKS chip, in a 150px grid cell. A
+                        short form is the fix; the full name is still what the step header and every
+                        generated sentence use. */}
+                    <span style={{ flex: 1, minWidth: 0, textAlign: "left", whiteSpace: "normal", lineHeight: 1.2 }}>{p.short || p.name}</span>
                     {/* ⚠ flexShrink 0: at the connect DIALOG's width these grid cells are ~150px and the
                         badge is the flex item that gives, so "LIVE PICKS" rendered as "LIV" beside the
                         longest platform name — the one place the badge matters most. */}
@@ -22963,10 +23467,31 @@ function ConnectBox({ connect, onConnect, onClear, embedded, onCancel }) {
                   </button>
                 ))}
               </div>
-              <div className="panel" style={{ marginTop: 10, padding: "10px 12px", background: "var(--panel2)" }}>
-                <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>On CBS, or drafting in person?</div>
-                <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>No problem — close this and set the league up by hand. You enter each pick as it happens (it's fast), and you get the <b style={{ color: "var(--ink)" }}>exact same</b> engine: live recommendations, availability odds, cost-of-waiting, and steal/reach grades.</div>
-                <button className="btn btn-mini" style={{ marginTop: 8 }} onClick={() => { if (embedded && onCancel) { onCancel("manual"); return; } setOpen(false); setSel(null); setEspn(null); setError(null); }}>Set up manually instead</button>
+              {/* ⭐⭐⭐⭐ MANUAL IS A DRAFT-DAY TOOL, AND THE DIALOG NOW SAYS SO BEFORE YOU PICK IT — 29q.
+                  Trey: "You can leave the 'Set up manually' instead… but you need to be clear that this is
+                  ONLY an option for completing a draft (it won't be able to track manual leagues to the
+                  season tab since it won't be able to pull live rosters for everyone post draft — it's a
+                  static result of the draft and not dynamic with trades, free agents, etc.). You can find a
+                  more simple way to state that."
+
+                  ⚠ THIS IS A LIMIT, NOT A DISCLAIMER, AND THE DIFFERENCE MATTERS. Since the in-season pages
+                    shipped, "set up manually" quietly buys you half a product: the draft room is identical,
+                    and then My Week, Game Day and the review are permanently empty for that league, because
+                    a league we have no connection to has no rosters to read after draft night. Someone who
+                    learns that in October has spent a season on the wrong path. Two sentences here, in
+                    plain words, and nobody does. */}
+              <div className="panel" data-connectmanual style={{ marginTop: 10, padding: "10px 12px", background: "var(--panel2)" }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>League not on this list, or drafting in person?</div>
+                <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.55 }}>
+                  Set it up by hand and you get the <b style={{ color: "var(--ink)" }}>exact same</b> draft engine —
+                  live recommendations, availability odds, cost-of-waiting, steal and reach grades — by typing each
+                  pick as it's called.
+                  <br />
+                  <b style={{ color: "var(--gold)" }}>Draft day only, though.</b> A manual league is a snapshot of your
+                  draft, not a live link, so once the season starts we can't see trades, waivers or anyone's lineup —
+                  the in-season pages stay empty for it.
+                </div>
+                <button className="btn btn-mini" data-connectmanualbtn style={{ marginTop: 8 }} onClick={() => { if (embedded && onCancel) { onCancel("manual"); return; } setOpen(false); setSel(null); setEspn(null); setError(null); }}>Set up manually instead</button>
               </div>
             </div>
           ) : (

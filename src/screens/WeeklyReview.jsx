@@ -15,6 +15,7 @@
    ================================================================================================ */
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { api } from "../api.js";
+import { useWide } from "../usewide.js";
 
 const r1 = (n) => Math.round(n * 10) / 10;
 const hubIdOf = (l) => (l && ((l.connect && l.connect.leagueId) || (l.cfg && l.cfg.connect && l.cfg.connect.leagueId) || l.sleeperLeagueId)) || null;
@@ -33,6 +34,12 @@ const VERDICT = {
   blown:   { label: "Blown",       tone: "#F2655C",   icon: "ti-alert-triangle", blurb: "your best lineup beats them" },
   earned:  { label: "Earned",      tone: "#5FD0A8",   icon: "ti-check",          blurb: "the result the scores deserved" },
 };
+
+/* The table's column track. Named once so the header row and every body row cannot drift apart — two
+   grid-template strings that are "the same" until somebody widens one is the classic way a table stops
+   lining up. `minmax(0, …)` on the name column so a long league name ellipses instead of shoving the
+   numbers off the right edge. */
+const COLS = "minmax(0,1.5fr) 118px 132px 92px 72px 34px";
 
 // 1st / 2nd / 3rd / 11th — the English rule, including the teens exception that catches every naive version.
 const ord = (n) => {
@@ -190,12 +197,44 @@ async function pool(items, n, fn) {
   return out;
 }
 
+/* ⭐⭐⭐ ONE NUMBER, ITS LABEL, AND NOTHING ELSE — 29q.
+   The summary band used to be a run of coloured phrases sharing one line: "70.2 points left on benches
+   3 lost with a winning lineup available". That is three facts in a sentence, and a sentence is the wrong
+   container for figures you want to compare — nothing aligns, nothing can be scanned, and the numbers are
+   the same size as the words around them. Tiles fix all three at once. */
+function Tile({ n, label, tone, sub }) {
+  const on = Number(n) > 0 || (typeof n === "string" && n !== "0");
+  return (
+    <div data-wktile={label} style={{ minWidth: 92 }}>
+      <div className="num" style={{ fontSize: 23, fontWeight: 800, lineHeight: 1.12,
+        color: on && tone ? tone : "var(--ink)" }}>{n}</div>
+      <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".045em",
+        fontWeight: 700, marginTop: 1 }}>{label}</div>
+      {sub ? <div className="mut" style={{ fontSize: 10.5, marginTop: 1 }}>{sub}</div> : null}
+    </div>
+  );
+}
+
+/* A label above a value, aligned in a grid. Used for the season ledger, which was previously six facts
+   run together on one wrapping line where the fifth was "703 (most faced in the league)". */
+function Fact({ label, value, tone, note }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700 }}>{label}</div>
+      <div className="num" style={{ fontSize: 14, fontWeight: 800, color: tone || "var(--ink)", marginTop: 1 }}>{value}</div>
+      {note ? <div className="mut" style={{ fontSize: 10.5, lineHeight: 1.35, marginTop: 1 }}>{note}</div> : null}
+    </div>
+  );
+}
+
 export default function WeeklyReview({ leagues, scope = "all" }) {
   const [raw, setRaw] = useState(null);
   const [week, setWeek] = useState(null);
   const [openMap, setOpenMap] = useState({});
+  const [faWhy, setFaWhy] = useState(false);
   const [loading, setLoading] = useState(false);
   const ranFor = useRef(null);
+  const wide = useWide(820);
 
   const connected = useMemo(() => (leagues || []).filter((l) => hubIdOf(l)), [leagues]);
 
@@ -243,6 +282,14 @@ export default function WeeklyReview({ leagues, scope = "all" }) {
       blown: played.filter((r) => r.me.verdict && r.me.verdict.key === "blown").length,
       robbed: played.filter((r) => r.me.verdict && r.me.verdict.key === "robbed").length,
       lucky: played.filter((r) => r.me.verdict && r.me.verdict.key === "lucky").length,
+      /* ⭐⭐⭐ THE HONEST VERSION OF "HOW DID I DO". A 0–3 week against three opponents is three data
+         points; the same week against every team in all three leagues is thirty-odd, and that is the
+         number that says whether you scored badly or drew badly. It was previously buried one sentence
+         deep inside each league row, which is the least useful place for the figure that reframes the
+         headline sitting directly above it. */
+      apW: played.reduce((s, r) => s + ((r.me.allPlay && r.me.allPlay.w) || 0), 0),
+      apL: played.reduce((s, r) => s + ((r.me.allPlay && r.me.allPlay.l) || 0), 0),
+      apAny: played.some((r) => r.me.allPlay),
     };
     let worst = null;
     played.forEach((r) => (r.me.misses || []).forEach((m) => {
@@ -300,82 +347,181 @@ export default function WeeklyReview({ leagues, scope = "all" }) {
                     </button>
                   </div>
 
-                  {/* The week in one line, across every league. */}
-                  <div className="panel" data-wkreviewsum style={{ padding: 14, marginBottom: 12 }}>
-                    <div className="disp" style={{ fontSize: 17, fontWeight: 800, marginBottom: 6 }}>
-                      Week {week}: {data.sum.w}–{data.sum.l} across {data.sum.leagues} league{data.sum.leagues === 1 ? "" : "s"}
+                  {/* ⭐⭐⭐⭐⭐ THE SUMMARY AND THE REVIEW ARE ONE OBJECT — 29q.
+                      Trey: "can we just combine the 'Summary' and 'Weekly Review' — I like the info being
+                      shared in each, but they kind of belong together AND they are ugly. A lot of text and
+                      hard to follow."
+
+                      He is right on both counts and they have the same cause. They were two stacked panels
+                      because they were written a week apart, and the seam showed: the band told you the
+                      week was 0–3 and then a second panel told you the same thing three more times, each in
+                      a paragraph of prose. Three leagues produced three near-identical sentences, and on a
+                      phone each one wrapped to three lines — a screen of text you have to READ to find one
+                      number in.
+
+                      One panel now: a band of figures, then the leagues as a TABLE under it. What made it
+                      ugly was never the information, it was that every value lived inside a sentence, so
+                      nothing lined up with anything and the numbers were the same weight as the words. In a
+                      table the same facts are columns you can run your eye down, and the sentences — which
+                      are genuinely good when you want one — move into the row you opened deliberately. */}
+                  <div className="panel" data-wkreviewsum style={{ padding: 0, overflow: "hidden" }}>
+                    <div style={{ padding: "13px 15px 12px" }}>
+                      <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                        <span className="disp" style={{ fontSize: 18, fontWeight: 800 }}>Week {week}</span>
+                        <span className="num" style={{ fontSize: 18, fontWeight: 800,
+                          color: data.sum.w > data.sum.l ? "#5FD0A8" : data.sum.l > data.sum.w ? "#F2655C" : "var(--mut)" }}>
+                          {data.sum.w}–{data.sum.l}
+                        </span>
+                        <span className="mut" style={{ fontSize: 12 }}>
+                          across {data.sum.leagues} league{data.sum.leagues === 1 ? "" : "s"}
+                        </span>
+                      </div>
+                      {/* ⚠ A WRAPPING FLEX ROW OF UNEQUAL-HEIGHT TILES WRAPS RAGGED. Two of these carry a
+                          sub-line and two do not, so at phone width the third tile dropped to a second row
+                          that started below the TALLEST tile above it — a stray figure floating in white
+                          space. A grid gives every tile the same track, so rows align whatever wraps. */}
+                      <div style={{ display: "grid", gap: "14px 22px",
+                        gridTemplateColumns: wide ? "repeat(auto-fit, minmax(104px, max-content))" : "repeat(2, minmax(0,1fr))" }}>
+                        <Tile n={data.sum.left} label="Left on benches" tone="var(--gold)" />
+                        {data.sum.apAny && (
+                          <Tile n={`${data.sum.apW}–${data.sum.apL}`} label="Against the field"
+                            sub="if you had played everyone" />
+                        )}
+                        {data.sum.blown > 0 && <Tile n={data.sum.blown} label="Blown" tone="#F2655C" sub="your best lineup wins" />}
+                        {data.sum.robbed > 0 && <Tile n={data.sum.robbed} label="Robbed" tone="#6BA8E5" sub="good score, bad draw" />}
+                        {data.sum.lucky > 0 && <Tile n={data.sum.lucky} label="Got away with it" tone="var(--gold)" sub="won below the median" />}
+                      </div>
                     </div>
-                    <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 12 }}>
-                      <span><b className="num" style={{ color: "var(--gold)" }}>{data.sum.left}</b>
-                        <span className="mut"> points left on benches</span></span>
-                      {data.sum.blown > 0 && <span><b className="num" style={{ color: "#F2655C" }}>{data.sum.blown}</b>
-                        <span className="mut"> lost with a winning lineup available</span></span>}
-                      {data.sum.robbed > 0 && <span><b className="num" style={{ color: "#6BA8E5" }}>{data.sum.robbed}</b>
-                        <span className="mut"> lost on the draw</span></span>}
-                      {data.sum.lucky > 0 && <span><b className="num" style={{ color: "var(--gold)" }}>{data.sum.lucky}</b>
-                        <span className="mut"> won below the median</span></span>}
-                    </div>
+                    {/* The single best line on the page, and it used to be a grey footnote. It is the one
+                        thing here you could have actually changed, so it gets the accent rail. */}
                     {data.worst && data.worst.gain > 0 && (
-                      <div data-wkworst className="mut" style={{ fontSize: 12, marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--line)" }}>
-                        Worst call of the week — <b style={{ color: "var(--ink)" }}>{data.worst.leagueName}</b>:
-                        {" "}started <b style={{ color: "var(--ink)" }}>{data.worst.out}</b> <span className="num">{data.worst.outPts}</span>
-                        {" "}over <b style={{ color: "#5FD0A8" }}>{data.worst.in}</b> <span className="num">{data.worst.inPts}</span>
+                      <div data-wkworst style={{ fontSize: 12, padding: "9px 15px", lineHeight: 1.55,
+                        borderTop: "1px solid var(--line)", borderLeft: "3px solid #F2655C",
+                        background: "rgba(242,101,92,.055)" }}>
+                        <span className="mut" style={{ textTransform: "uppercase", letterSpacing: ".05em",
+                          fontSize: 9.5, fontWeight: 800, marginRight: 8 }}>Worst call</span>
+                        <b>{data.worst.leagueName}</b> <span className="mut">— started</span> <b>{data.worst.out}</b>
+                        {" "}<span className="num mut">{data.worst.outPts}</span> <span className="mut">over</span>
+                        {" "}<b style={{ color: "#5FD0A8" }}>{data.worst.in}</b> <span className="num mut">{data.worst.inPts}</span>
                         {" "}<span className="num" style={{ color: "#F2655C", fontWeight: 800 }}>−{data.worst.gain}</span>
                       </div>
                     )}
-                  </div>
 
-                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {/* ⭐⭐⭐ COLUMN HEADS, BECAUSE THESE ARE COLUMNS. Only on a screen wide enough to hold
+                        them: at phone width the rows stack into two lines and a header describing six
+                        columns that are no longer side by side would describe nothing. */}
+                    {wide && (
+                      <div className="mut" style={{ display: "grid", gridTemplateColumns: COLS, gap: 10,
+                        padding: "7px 15px", borderTop: "1px solid var(--line)", background: "var(--panel2)",
+                        fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700 }}>
+                        <span>League</span>
+                        <span style={{ textAlign: "right" }}>Result</span>
+                        <span>Verdict</span>
+                        <span style={{ textAlign: "right" }}>vs field</span>
+                        <span style={{ textAlign: "right" }}>Bench</span>
+                        <span />
+                      </div>
+                    )}
+
+                  <div style={{ display: "flex", flexDirection: "column" }}>
                     {data.rows.map((R) => {
                       const me = R.me;
                       const isOpen = !!openMap[R.league.id];
                       const V = me && me.verdict ? (VERDICT[me.verdict.key] || VERDICT.earned) : null;
                       const L = R.data && R.data.ledger;
+                      const verdictChip = V && (
+                        <span data-wkverdict={me.verdict.key} style={{ fontSize: 10, fontWeight: 800,
+                          textTransform: "uppercase", letterSpacing: ".04em", border: `1px solid ${V.tone}`,
+                          color: V.tone, borderRadius: 99, padding: "1px 8px", display: "inline-flex",
+                          alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                          <i className={`ti ${V.icon}`} style={{ fontSize: 11 }} aria-hidden="true" />{V.label}
+                        </span>
+                      );
+                      const score = me && (
+                        <span className="num" style={{ fontSize: 13, fontWeight: 800, whiteSpace: "nowrap",
+                          color: me.result === "W" ? "#5FD0A8" : me.result === "L" ? "#F2655C" : "var(--mut)" }}>
+                          {me.result || "—"} {r1(me.pts)}–{me.oppPts != null ? r1(me.oppPts) : "—"}
+                        </span>
+                      );
                       return (
-                        <div key={R.league.id} className="panel" data-wkreviewrow={R.league.name} style={{ padding: 12 }}>
-                          <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-                            <span className="disp" style={{ fontSize: 14.5, fontWeight: 800 }}>{R.league.name}</span>
-                            {me ? (
+                        <div key={R.league.id} data-wkreviewrow={R.league.name}
+                          style={{ borderTop: "1px solid var(--line)",
+                            background: isOpen ? "var(--panel2)" : "transparent" }}>
+                          {/* ⭐⭐⭐⭐ THE WHOLE ROW IS THE CONTROL, not a 56px button at the end of it.
+                              "Detail" as a separate target meant the obvious thing to click — the league
+                              name — did nothing, and on a phone the button had wrapped onto its own line
+                              away from the row it belonged to. The chevron stays as the visible affordance
+                              because a clickable row with no marking is a guessing game. */}
+                          <button data-wkreviewtoggle={R.league.name} disabled={!me}
+                            onClick={() => me && setOpenMap((o) => ({ ...o, [R.league.id]: !o[R.league.id] }))}
+                            aria-expanded={isOpen} aria-label={`${isOpen ? "Hide" : "Show"} detail for ${R.league.name}`}
+                            style={{ width: "100%", textAlign: "left", font: "inherit", color: "inherit",
+                              background: "none", border: "none", padding: wide ? "10px 15px" : "10px 13px",
+                              cursor: me ? "pointer" : "default", display: "grid", alignItems: "center",
+                              gap: wide ? 10 : 6,
+                              gridTemplateColumns: wide ? COLS : "minmax(0,1fr) auto" }}>
+                            <span className="disp" style={{ fontSize: 14, fontWeight: 800, minWidth: 0,
+                              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{R.league.name}</span>
+
+                            {me && wide ? (
                               <>
-                                <span className="num" style={{ fontSize: 13, fontWeight: 800,
-                                  color: me.result === "W" ? "#5FD0A8" : me.result === "L" ? "#F2655C" : "var(--mut)" }}>
-                                  {me.result || "—"} {r1(me.pts)}–{me.oppPts != null ? r1(me.oppPts) : "—"}
+                                <span style={{ textAlign: "right" }}>{score}</span>
+                                <span>{verdictChip}</span>
+                                <span className="num mut" style={{ fontSize: 11.5, textAlign: "right" }}>
+                                  {me.allPlay ? <>{me.allPlay.w}–{me.allPlay.l}
+                                    <span style={{ fontSize: 10, opacity: .75 }}> · {ord(me.allPlay.rank)}</span></> : "—"}
                                 </span>
-                                {V && (
-                                  <span data-wkverdict={me.verdict.key} style={{ fontSize: 10, fontWeight: 800,
-                                    textTransform: "uppercase", letterSpacing: ".04em", border: `1px solid ${V.tone}`,
-                                    color: V.tone, borderRadius: 99, padding: "1px 8px", display: "inline-flex",
-                                    alignItems: "center", gap: 4 }}>
-                                    <i className={`ti ${V.icon}`} style={{ fontSize: 11 }} aria-hidden="true" />{V.label}
-                                  </span>
-                                )}
-                                {me.left > 0 && <span className="num mut" style={{ fontSize: 11.5 }}>−{me.left} on the bench</span>}
-                                <button className="btn btn-mini" data-wkreviewtoggle={R.league.name} style={{ marginLeft: "auto" }}
-                                  onClick={() => setOpenMap((o) => ({ ...o, [R.league.id]: !o[R.league.id] }))}>
-                                  {isOpen ? "Less" : "Detail"}
-                                </button>
+                                <span className="num" style={{ fontSize: 11.5, textAlign: "right",
+                                  color: me.left > 0 ? "var(--gold)" : "var(--mut)" }}>
+                                  {me.left > 0 ? `−${me.left}` : "0"}
+                                </span>
+                                <span className="mut" style={{ textAlign: "right" }}>
+                                  <i className={`ti ${isOpen ? "ti-chevron-up" : "ti-chevron-down"}`} style={{ fontSize: 14 }} aria-hidden="true" />
+                                </span>
+                              </>
+                            ) : me ? (
+                              /* Phone: two lines, still aligned — name and score on the first, the
+                                 qualifiers on the second. Not a paragraph. */
+                              <>
+                                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                  {score}
+                                  <i className={`ti ${isOpen ? "ti-chevron-up" : "ti-chevron-down"}`}
+                                    style={{ fontSize: 14, color: "var(--mut)" }} aria-hidden="true" />
+                                </span>
+                                <span style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center",
+                                  gap: 8, flexWrap: "wrap", fontSize: 11.5 }}>
+                                  {verdictChip}
+                                  {me.allPlay && <span className="num mut">vs field {me.allPlay.w}–{me.allPlay.l}</span>}
+                                  {me.left > 0 && <span className="num" style={{ color: "var(--gold)" }}>−{me.left} bench</span>}
+                                </span>
                               </>
                             ) : (
-                              <span className="mut" style={{ fontSize: 12 }}>
+                              <span className="mut" style={{ fontSize: 12, gridColumn: wide ? "2 / -1" : "auto", textAlign: "left" }}>
                                 {R.error ? "Couldn't read this league" : `Nothing recorded for week ${week}`}
                               </span>
                             )}
-                          </div>
-
-                          {me && (
-                            <div className="mut" style={{ fontSize: 12, marginTop: 5, lineHeight: 1.5 }}>
-                              {me.verdict ? me.verdict.text : null}
-                              {me.allPlay && <> <span style={{ color: "var(--ink)" }}>Against the field you were {me.allPlay.w}–{me.allPlay.l}
-                                {me.allPlay.t ? `–${me.allPlay.t}` : ""}</span> ({me.allPlay.rank} of {me.allPlay.of} that week).</>}
-                            </div>
-                          )}
+                          </button>
 
                           {me && isOpen && (
-                            <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line)" }}>
+                            <div style={{ padding: wide ? "0 15px 14px" : "0 13px 14px" }}>
+                              {/* The sentence lives HERE now — in the row you chose to open, where a
+                                  sentence is worth reading, rather than repeated under every league. */}
+                              <div className="mut" style={{ fontSize: 12, lineHeight: 1.55, marginBottom: 10,
+                                paddingBottom: 10, borderBottom: "1px solid var(--line)" }}>
+                                {me.verdict ? me.verdict.text : null}
+                                {me.allPlay && <> <span style={{ color: "var(--ink)" }}>Against the field you were {me.allPlay.w}–{me.allPlay.l}
+                                  {me.allPlay.t ? `–${me.allPlay.t}` : ""}</span> ({me.allPlay.rank} of {me.allPlay.of} that week).</>}
+                              </div>
                               <FieldStrip field={R.field} mine={me.pts} median={me.median} />
 
-                              {/* ⭐⭐⭐⭐ "should you have started someone else?" — the point of the whole page. */}
-                              <div style={{ marginTop: 12 }}>
+                              {/* ⭐⭐⭐ TWO QUESTIONS, TWO COLUMNS. The detail answers "what should I have
+                                  done on Sunday" and "what does that make my season" — related but not
+                                  sequential, and stacking them made you scroll past the first to reach the
+                                  second every time. Side by side on a desktop, stacked on a phone where
+                                  there is only one column to have. */}
+                              <div style={{ display: "grid", gap: wide ? 22 : 14, marginTop: 12,
+                                gridTemplateColumns: wide ? "minmax(0,1fr) minmax(0,1fr)" : "minmax(0,1fr)" }}>
+                              <div style={{ minWidth: 0 }}>
                                 <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 4 }}>
                                   Your best lineup scored {r1(me.optimal)}{me.left > 0 ? ` — ${me.left} more than you did` : " — which is what you set"}
                                   {me.exact === false && <span className="mut" style={{ fontWeight: 400 }}> (approximate: this league's flex slots overlap)</span>}
@@ -392,61 +538,89 @@ export default function WeeklyReview({ leagues, scope = "all" }) {
                                     ))}
                                   </div>
                                 ) : <div className="mut" style={{ fontSize: 12 }}>You started the best nine you had.</div>}
+
+                                {/* ⚠ THE HALF OF HIS QUESTION THIS CANNOT ANSWER, SAID OUT LOUD.
+                                    ⚠ AND STILL SAID OUT LOUD AFTER THE TIDY-UP. The obvious way to cut
+                                      text here was to delete this paragraph, and that would have been the
+                                      one genuinely dishonest edit available: a review that quietly lists no
+                                      free agents is claiming the wire was empty. The CLAIM stays on screen
+                                      always; only the reasoning behind it folds away, because you need to
+                                      read that once and never again. */}
+                                {R.data && R.data.faBasis === "bench-only" && (
+                                  <div data-wkfabasis="bench-only" style={{ marginTop: 10 }}>
+                                    <div className="mut" style={{ fontSize: 11, lineHeight: 1.5 }}>
+                                      Free agents aren't second-guessed for past weeks — this compares you only against
+                                      your own bench.{" "}
+                                      <button data-wkfawhy onClick={() => setFaWhy((v) => !v)}
+                                        style={{ font: "inherit", background: "none", border: "none", padding: 0,
+                                          cursor: "pointer", color: "var(--gold)", textDecoration: "underline" }}>
+                                        {faWhy ? "hide" : "why?"}
+                                      </button>
+                                    </div>
+                                    {faWhy && (
+                                      <div className="mut" style={{ fontSize: 11, lineHeight: 1.5, marginTop: 4 }}>
+                                        Who was actually unrostered in week {week} can't be recovered from today's rosters —
+                                        the player you should have claimed is, by definition, on somebody's roster now.
+                                        Sleeper does record your own bench week by week, so that half is exact.
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
                               </div>
 
-                              {/* ⚠ THE HALF OF HIS QUESTION THIS CANNOT ANSWER, SAID OUT LOUD. */}
-                              {R.data && R.data.faBasis === "bench-only" && (
-                                <div className="mut" data-wkfabasis="bench-only" style={{ fontSize: 11, marginTop: 10, lineHeight: 1.5 }}>
-                                  Free agents are not second-guessed for past weeks. Who was actually unrostered in week
-                                  {" "}{week} can't be recovered from today's rosters — the player you should have claimed is,
-                                  by definition, on somebody's roster now — so this compares you only against players who were
-                                  already on your bench, which Sleeper records week by week.
-                                </div>
-                              )}
-
-                              {/* "Give weekly trends… and compare it to the league." */}
-                              <SeasonTrend weeks={R.data.weeks} selected={week} onPick={setWeek} />
-
-                              {L && (
-                                <div data-wkledger style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line)",
-                                  display: "flex", gap: 16, flexWrap: "wrap", fontSize: 12 }}>
-                                  <span><span className="mut">Record </span><b className="num">{L.actualW}–{L.actualL}</b></span>
-                                  {L.deservedW != null && (
-                                    /* ⚠ "−1 luck" is a number nobody can read. Say which way it went in words:
-                                       the gap between the record he has and the record the scores earned him. */
-                                    <span><span className="mut">Deserved </span><b className="num">{L.deservedW}–{L.deservedL}</b>
-                                      {L.luck !== 0 && (
-                                        <span style={{ color: L.luck > 0 ? "var(--gold)" : "#6BA8E5", fontWeight: 700 }}>
-                                          {" "}— {Math.abs(L.luck)} win{Math.abs(L.luck) === 1 ? "" : "s"}
-                                          {L.luck > 0 ? " better than you earned" : " short"}
-                                        </span>
-                                      )}</span>
-                                  )}
-                                  {R.data.ranks && (
-                                    <>
-                                      <span><span className="mut">Points for </span><b className="num">{L.pointsFor}</b>
-                                        <span className="mut"> ({ord(R.data.ranks.pointsForRank[String(R.data.myRosterId)])} of {R.data.teams.length})</span></span>
-                                      {/* ⚠ "Points against 703 (1st)" reads like a trophy. First in points
-                                          against is the WORST place to be, so the rank is spelled out as what
-                                          it means rather than left as an ordinal pointing the wrong way. */}
-                                      <span><span className="mut">Points against </span><b className="num">{L.pointsAgainst}</b>
-                                        <span className="mut"> ({(() => {
+                              <div style={{ minWidth: 0 }}>
+                                {L && (
+                                  /* ⚠ SIX FACTS ON ONE WRAPPING LINE IS NOT A SUMMARY. This used to read
+                                     "Record 2–4 Deserved 3–3 — 1 win short Points for 673 (5th of 12)
+                                     Points against 703 (most faced in the league) Left on benches 46.5",
+                                     which at phone width became five separate wrapped lines with no
+                                     alignment between the labels and the numbers. A labelled grid is the
+                                     same content and takes less vertical space than the prose did. */
+                                  <div data-wkledger style={{ display: "grid", gap: "10px 14px",
+                                    gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))" }}>
+                                    <Fact label="Record" value={`${L.actualW}–${L.actualL}`} />
+                                    {L.deservedW != null && (
+                                      /* ⚠ "−1 luck" is a number nobody can read. Say which way it went in words:
+                                         the gap between the record he has and the record the scores earned him. */
+                                      <Fact label="Deserved" value={`${L.deservedW}–${L.deservedL}`}
+                                        tone={L.luck === 0 ? null : L.luck > 0 ? "var(--gold)" : "#6BA8E5"}
+                                        note={L.luck === 0 ? "exactly what you earned"
+                                          : `${Math.abs(L.luck)} win${Math.abs(L.luck) === 1 ? "" : "s"} ${L.luck > 0 ? "better than you earned" : "short"}`} />
+                                    )}
+                                    {R.data.ranks && (
+                                      <>
+                                        <Fact label="Points for" value={L.pointsFor}
+                                          note={`${ord(R.data.ranks.pointsForRank[String(R.data.myRosterId)])} of ${R.data.teams.length}`} />
+                                        {/* ⚠ "Points against 703 (1st)" reads like a trophy. First in points
+                                            against is the WORST place to be, so the rank is spelled out as what
+                                            it means rather than left as an ordinal pointing the wrong way. */}
+                                        <Fact label="Points against" value={L.pointsAgainst} note={(() => {
                                           const rk = R.data.ranks.pointsAgainstRank[String(R.data.myRosterId)];
                                           const of = R.data.teams.length;
                                           if (rk === 1) return "most faced in the league";
                                           if (rk === of) return "least faced in the league";
                                           return `${ord(rk)}-most faced`;
-                                        })()})</span></span>
-                                    </>
-                                  )}
-                                  <span><span className="mut">Left on benches </span><b className="num" style={{ color: "var(--gold)" }}>{L.leftOnBench}</b></span>
-                                </div>
-                              )}
+                                        })()} />
+                                      </>
+                                    )}
+                                    <Fact label="Left on benches" value={L.leftOnBench} tone="var(--gold)" note="all season" />
+                                  </div>
+                                )}
+                              </div>
+                              </div>
+
+                              {/* "Give weekly trends… and compare it to the league."
+                                  ⚠ FULL WIDTH, BELOW BOTH COLUMNS. It spent one build inside the right-hand
+                                    column, which halved a six-point time series for no reason while the
+                                    left column sat half empty — a chart is the one thing on this page that
+                                    genuinely gets better with width. */}
+                              <SeasonTrend weeks={R.data.weeks} selected={week} onPick={setWeek} />
                             </div>
                           )}
                         </div>
                       );
                     })}
+                  </div>
                   </div>
                 </>
               )}

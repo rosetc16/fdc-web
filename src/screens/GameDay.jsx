@@ -26,6 +26,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { api } from "../api.js";
 import { Dot } from "../App.jsx";
+import { winTone } from "../livecache.js";
 
 const LIVE_MS = 45 * 1000;        // while games are on
 const IDLE_MS = 10 * 60 * 1000;   // when nothing has kicked off — the score cannot move, so neither do we
@@ -78,6 +79,129 @@ function impactOf(pos, pts, rootFor) {
   if (good <= -1.2) return { z: r1(z), tone: "#F2655C", label };
   if (good <= -0.6) return { z: r1(z), tone: "#B8453C", label };
   return { z: r1(z), tone: "var(--ink)", label };
+}
+
+/* ⭐⭐⭐⭐⭐ ONE MATCHUP, OPENED OUT — 29q.
+   ================================================================================================
+   Trey: "With the 'your matchups' I want you to be able to click on each matchup and it shows a detailed
+   breakdown to basically shows you your odds, your decisions, what to root for. Right now, it's just ugly
+   and I don't know what I'm looking at."
+
+   The collapsed row answers "am I winning". This answers the three questions that come straight after it,
+   and it answers them for THIS matchup rather than across the whole afternoon:
+
+     • THE ODDS, said in words. "22%" is a number; "you are 15.2 behind with three still to play, and they
+       are projected to add 39 more" is the reason for it. The row prints the figure; this prints the
+       arithmetic behind the figure, because a probability you cannot see the working of is a horoscope.
+
+     • WHAT TO ROOT FOR, scoped to one matchup. The cross-league board is the right answer to "who do I
+       want to score" in general and the WRONG one here — a player who is net +4 across your leagues can
+       still be the man beating you in this one. So this lists the two remaining rosters plainly: yours to
+       root for, theirs to root against, in this matchup only.
+
+     • WHAT YOU CAN STILL DO. Lineup changes are My Week's job and are computed there from the whole
+       roster, bench included, which this payload does not carry. So it LINKS rather than reimplementing
+       half of it — a second, worse lineup engine that disagreed with the first would be far more use to
+       nobody than a link.
+
+   ⚠ NO NEW ARITHMETIC. Every number here already exists on the payload; this is a layout, not a model.
+     A detail panel that recomputed the projection would eventually disagree with the row above it.
+   ================================================================================================ */
+function MatchupDetail({ L, F, tone, bySid, wide, onOpenHub }) {
+  const nameOf = (sid) => {
+    const p = bySid.get(String(sid));
+    return p ? p : { sid, name: `Player ${sid}`, pos: null, team: null, state: "unknown" };
+  };
+  const side = (s) => (s && s.players ? s.players : []);
+  const left = (s) => side(s).filter((pp) => !pp.played).map((pp) => ({ ...pp, ...nameOf(pp.sid) }))
+    .sort((a, b) => (b.proj || 0) - (a.proj || 0));
+  const mine = left(L.me), theirs = left(L.opp);
+
+  const Roster = ({ rows, label, who, rootFor, empty }) => (
+    <div style={{ minWidth: 0 }}>
+      {/* ⚠ THE TEAM NAME IS A SUFFIX, NOT PART OF THE SENTENCE. Built into the label it produced
+          "ROOT AGAINST — THEM PLAYERS STILL TO PLAY" the moment an opponent was called "Them", and
+          plenty of real team names read no better in the possessive. */}
+      <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800,
+        color: rootFor ? "#5FD0A8" : "#F2655C", marginBottom: 4 }}>
+        <i className={`ti ${rootFor ? "ti-arrow-up" : "ti-arrow-down"}`} style={{ fontSize: 11, marginRight: 4 }} aria-hidden="true" />
+        {label}
+        {who ? <span className="mut" style={{ fontWeight: 600, letterSpacing: 0, textTransform: "none", marginLeft: 6 }}>{who}</span> : null}
+      </div>
+      {rows.length ? rows.map((pp) => (
+        <div key={pp.sid} data-gdmatchplayer={pp.name} style={{ display: "flex", alignItems: "center",
+          gap: 7, fontSize: 12, padding: "3px 0" }}>
+          <span style={{ flexShrink: 0 }}><Dot pos={pp.pos} /></span>
+          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pp.name}</span>
+          <span className="mut" style={{ fontSize: 10, flexShrink: 0 }}>{pp.pos}{pp.team ? ` · ${pp.team}` : ""}</span>
+          <span className="num" style={{ fontSize: 12, fontWeight: 700, flexShrink: 0, minWidth: 34,
+            textAlign: "right", color: rootFor ? "#5FD0A8" : "#F2655C" }}>
+            {Number.isFinite(pp.proj) ? r1(pp.proj) : "—"}
+          </span>
+        </div>
+      )) : <div className="mut" style={{ fontSize: 11.5 }}>{empty}</div>}
+    </div>
+  );
+
+  /* The odds in a sentence, built from the same three numbers the row prints. Deliberately says what is
+     LEFT rather than restating the projected final, which is already two columns to the left. */
+  const behindBy = F && Number.isFinite(F.margin) ? r1(Math.abs(F.margin)) : null;
+  const liveMargin = L.opp ? r1(L.me.pts - L.opp.pts) : null;
+  const myRest = F && F.me ? r1(F.me.remaining) : null;
+  const theirRest = F && F.opp ? r1(F.opp.remaining) : null;
+
+  return (
+    <div data-gdmatchdetail={L.leagueId} style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line)" }}>
+      {F && (
+        <div data-gdodds style={{ fontSize: 12.5, lineHeight: 1.6, marginBottom: 10 }}>
+          <span style={{ color: tone ? tone.color : "var(--ink)", fontWeight: 800 }}>
+            {Math.round(F.win * 100)}% to win
+          </span>
+          <span className="mut">
+            {" — "}
+            {liveMargin != null && (liveMargin === 0 ? "level right now"
+              : liveMargin > 0 ? `up ${liveMargin} right now` : `down ${r1(Math.abs(liveMargin))} right now`)}
+            {mine.length || theirs.length
+              ? `, with ${mine.length} of yours and ${theirs.length} of theirs still to play`
+              : ", and nobody left to play"}
+            {myRest != null && theirRest != null && (mine.length || theirs.length)
+              ? `. Projections add ${myRest} to you and ${theirRest} to them`
+              : ""}
+            {behindBy != null && F.margin < 0 ? `, leaving you ${behindBy} short.` : "."}
+          </span>
+          {/* ⚠ SAY WHEN THE FORECAST IS INCOMPLETE. A starter we hold no projection for carries a full
+              starter's worth of uncertainty and none of his expected points, which pulls the number
+              toward the middle — worth knowing before you act on it. */}
+          {F.unknown > 0 && (
+            <div className="mut" style={{ fontSize: 11, marginTop: 3 }}>
+              {F.unknown} starter{F.unknown === 1 ? " has" : "s have"} no projection, so this is rougher than usual.
+            </div>
+          )}
+          {F.settled && (
+            <div className="mut" style={{ fontSize: 11, marginTop: 3 }}>Everyone has played — this one is final.</div>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: "grid", gap: wide ? 20 : 12,
+        gridTemplateColumns: wide ? "minmax(0,1fr) minmax(0,1fr)" : "minmax(0,1fr)" }}>
+        <Roster rows={mine} label="Root for — still to play" who={(L.me && L.me.teamName) || null}
+          rootFor empty="All of yours have played." />
+        <Roster rows={theirs} label="Root against — still to play" who={(L.opp && L.opp.teamName) || null}
+          rootFor={false} empty="All of theirs have played." />
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+        <button className="btn btn-mini" data-gdmatchhub onClick={onOpenHub}>
+          <i className="ti ti-layout-dashboard" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />
+          Open this team
+        </button>
+        <span className="mut" style={{ fontSize: 11, alignSelf: "center" }}>
+          Lineup changes and waiver ideas for this league live on My Week.
+        </span>
+      </div>
+    </div>
+  );
 }
 
 /* ⭐⭐⭐⭐ ONE PLAYER, ONE ROW — 29o.
@@ -227,13 +351,39 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
        a temporal-dead-zone error that BUILDS PERFECTLY and throws the instant the screen renders. The
        bundler cannot see it; only opening the page does. */
   const [phase, setPhase] = useState("all");   // all | pre | done
+  /* ⭐⭐⭐⭐⭐ TWO WAYS TO READ A SUNDAY, AND YOU PICK ONE — 29q.
+     Trey: "I want there to be a toggle to view it as a league or player level. That way you don't have to
+     scroll all the way down."
+     The page had both stacked: the rooting board, then twelve matchups underneath it. With fifteen leagues
+     that is a screen and a half of scrolling to answer "am I winning", every time, and the board you
+     scrolled past is not the thing you wanted. They are two views of one afternoon — who to root for, and
+     where you stand — so they become a toggle instead of a column.
+     ⚠ PLAYERS IS THE DEFAULT because it is the half no platform can show you. Sleeper already has your
+       scoreboard; nothing but this has your net stake across fifteen leagues. */
+  const [view, setView] = useState("players");  // players | leagues
+  // Which matchup rows are opened out. Keyed by league id, so a poll refresh does not close them.
+  const [openMatch, setOpenMatch] = useState({});
   const decorate = (p) => {
     const rootFor = p.net > 0;
     const pts = p.pts ? p.pts.median : null;
     const im = impactOf(p.pos, pts, rootFor);
     return { ...p, impact: im.z, impactTone: im.tone, impactLabel: im.label };
   };
-  const inPhase = (p) => (phase === "all" ? true : phase === "pre" ? p.state === "pre" : p.state !== "pre");
+  /* ⭐⭐⭐⭐⭐ "PLAYED" MEANS PLAYED, NOT "NOT YET TO PLAY" — 29q.
+     Trey: "we need to check the 'yet to play' button. Right now it's showing me that I have no one yet to
+     play… but Monday night football is tonight."
+
+     This read `p.state !== "pre"` for the Played bucket, which quietly swept up every player whose kickoff
+     time we do not hold — and a player we cannot time is exactly the one the Monday night game produces
+     when the schedule is a week short. So a starter who has not taken a snap was filed under "played" and
+     vanished from "yet to play", and the screen whose job is to tell you what is left told him nothing
+     was. Three states, three meanings, and the unknown ones are surfaced below rather than absorbed into
+     whichever bucket happens to be adjacent. */
+  const inPhase = (p) => (phase === "all" ? true : phase === "pre" ? p.state === "pre" : p.state === "done");
+  const phaseCount = (k) => ((data && data.rooting) || []).filter((p) => (k === "all" ? true : k === "pre" ? p.state === "pre" : p.state === "done")).length;
+  /* Starters with no kickoff time at all. Named, not counted: "3 players" is a bug report, "Kelce, Mahomes
+     and Rice have no kickoff time" is a diagnosis, and it points straight at the schedule job. */
+  const untimed = useMemo(() => ((data && data.rooting) || []).filter((p) => p.state === "unknown"), [data]);
 
   const board = useMemo(() => {
     const all = (data && data.rooting) || [];
@@ -247,7 +397,60 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
   const forRows = useMemo(() => ((data && data.rooting) || []).filter((p) => p.net > 0).filter(inPhase).map(decorate).slice(0, 25), [data, phase]);
   const againstRows = useMemo(() => ((data && data.rooting) || []).filter((p) => p.net < 0).filter(inPhase).map(decorate).slice(0, 25), [data, phase]);
 
+  /* ⭐⭐⭐⭐⭐ WHAT TO PUT ON — 29q.
+     ------------------------------------------------------------------------------------------------
+     Trey: "I think this tab could also just have more info / sections for 'game day'."
+
+     The section this page was missing is the one a Sunday actually asks: of the games still to come,
+     which one matters most to me? The board answers "who", the matchups answer "where", and neither
+     answers "when" — "9 of your starters yet to play" treats the 1pm slate, the 4:25 window and Sunday
+     night as one undifferentiated pile, when they are three separate decisions about the next three hours.
+
+     So: remaining starters grouped by kickoff, each window carrying its own net exposure. It reads
+     "4:25 — 6 for you, 2 against, biggest: Chase +5", which is the sentence that tells you which game to
+     turn on and whether you want it to go well.
+
+     ⚠ NET PER WINDOW, NOT A HEADCOUNT. Same reasoning as the board itself: four players in a window with
+       two of them on your opponents' rosters is not "four to watch", it is a wash. `net` is summed across
+       the window's players for exactly the reason it exists on each row.
+     ⚠ AND IT IS EMPTY-SAFE IN BOTH DIRECTIONS. No schedule loaded → no windows and the section does not
+       render (rather than one bucket labelled "unknown" containing everything). Nothing left to play →
+       it does not render either, because at 11pm the honest answer is that there is nothing to watch.
+     ------------------------------------------------------------------------------------------------ */
+  const windows = useMemo(() => {
+    const kicks = (data && data.kickoffs) || null;
+    if (!kicks || !Object.keys(kicks).length) return [];
+    const byTime = new Map();
+    ((data && data.rooting) || []).forEach((p) => {
+      if (p.state !== "pre") return;              // only games that have NOT started — the certain state
+      const iso = p.team ? kicks[String(p.team)] : null;
+      if (!iso) return;
+      if (!byTime.has(iso)) byTime.set(iso, []);
+      byTime.get(iso).push(p);
+    });
+    return [...byTime.entries()]
+      .map(([iso, players]) => {
+        const sorted = [...players].sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
+        return {
+          iso, at: Date.parse(iso), players: sorted,
+          net: players.reduce((s, p) => s + p.net, 0),
+          forN: players.reduce((s, p) => s + p.for, 0),
+          againstN: players.reduce((s, p) => s + p.against, 0),
+          top: sorted[0] || null,
+        };
+      })
+      .sort((a, b) => a.at - b.at);
+  }, [data]);
+
   const T = (data && data.totals) || null;
+
+  /* Every starter on the payload, by id — the board already holds one entry per player with his name,
+     position, team and game state, so the matchup drill-down can name a roster without a second lookup. */
+  const bySid = useMemo(() => {
+    const m = new Map();
+    ((data && data.rooting) || []).forEach((p) => m.set(String(p.sid), p));
+    return m;
+  }, [data]);
 
   return (
     <div data-screen="gameday" style={{ minHeight: embedded ? 0 : "100vh", background: "var(--bg)" }}>
@@ -303,19 +506,73 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
           </div>
         )}
 
-        {/* ===================== THE ROOTING BOARD ===================== */}
+          {/* ⭐⭐⭐⭐⭐ THE PAGE DIAGNOSES ITSELF WHEN THE SCHEDULE IS SHORT — 29q.
+              Every state on this screen is derived from kickoff times, so a missing schedule row does not
+              produce an error, it produces a confident wrong answer: players sorted into the wrong bucket
+              and a Monday night game that simply is not there. This says which players we could not time,
+              which teams they play for, and what fixes it — so the next person to hit this reads the
+              cause off the screen instead of filing "yet to play is broken". */}
+          {untimed.length > 0 && (
+            <div className="panel" data-gduntimed={String(untimed.length)}
+              style={{ padding: "9px 12px", marginBottom: 14, borderColor: "var(--gold)",
+                background: "rgba(224,166,60,.07)" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--gold)" }}>
+                <i className="ti ti-calendar-off" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />
+                {untimed.length} player{untimed.length === 1 ? " has" : "s have"} no kickoff time
+              </div>
+              <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.55, marginTop: 3 }}>
+                {untimed.slice(0, 6).map((p) => `${p.name}${p.team ? ` (${p.team})` : ""}`).join(", ")}
+                {untimed.length > 6 ? `, +${untimed.length - 6} more` : ""}
+                {" — "}the NFL schedule is missing {(data && data.scheduleMissing && data.scheduleMissing.length)
+                  ? `these teams this week: ${data.scheduleMissing.join(", ")}` : "those games"}.
+                {" "}They can't be sorted into yet-to-play or played, so they appear only under All.
+                Running <b style={{ color: "var(--ink)" }}>Pull schedule</b> in Admin fixes it.
+              </div>
+            </div>
+          )}
+
+        {/* ⭐⭐⭐⭐ THE TOGGLE, ABOVE BOTH VIEWS. Big enough to be the page's main control, because it is. */}
         {data && (
+          <div className="filterchips" data-gdviews style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+            {[["players", "ti-users", "By player", "Who to root for, across every league"],
+              ["leagues", "ti-list-details", "By league", "Where each matchup stands"]].map(([k, icon, lbl, title]) => {
+              const on = view === k;
+              return (
+                <button key={k} data-gdview={k} onClick={() => setView(k)} aria-pressed={on} title={title}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13,
+                    fontWeight: on ? 800 : 600, padding: "7px 14px", borderRadius: 9, cursor: "pointer",
+                    fontFamily: "inherit",
+                    border: `1px solid ${on ? "#5FD0A8" : "var(--line2)"}`,
+                    color: on ? "#0d1210" : "var(--ink)",
+                    background: on ? "#5FD0A8" : "transparent" }}>
+                  <i className={`ti ${icon}`} style={{ fontSize: 14 }} aria-hidden="true" />{lbl}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* ===================== THE ROOTING BOARD ===================== */}
+        {data && view === "players" && (
           <>
             <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
               <span className="disp" style={{ fontSize: 15, fontWeight: 800 }}>Who to root for</span>
               <div className="filterchips" data-gdphases style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                {/* ⭐⭐⭐ THE COUNT IS ON THE CHIP, AND THAT IS NOT DECORATION. An empty list under "Yet to
+                    play" is ambiguous in the worst way — it reads identically whether the filter is broken
+                    or there is genuinely nobody left, which is precisely the confusion that made this a bug
+                    report rather than a shrug. A chip that says "Yet to play 0" answers it before you
+                    click, and one that says 4 while the list is empty is a visible contradiction. */}
                 {[["all", "All"], ["pre", "Yet to play"], ["done", "Played"]].map(([k, lbl]) => (
-                  <button key={k} data-gdphase={k} onClick={() => setPhase(k)} aria-pressed={phase === k}
+                  <button key={k} data-gdphase={k} data-gdphasen={String(phaseCount(k))}
+                    onClick={() => setPhase(k)} aria-pressed={phase === k}
                     style={{ fontSize: 11, fontWeight: phase === k ? 800 : 600, padding: "2px 9px", borderRadius: 99,
                       cursor: "pointer", fontFamily: "inherit",
                       border: `1px solid ${phase === k ? "#5FD0A8" : "var(--line)"}`,
                       color: phase === k ? "#5FD0A8" : "var(--mut)",
-                      background: phase === k ? "rgba(95,208,168,.12)" : "transparent" }}>{lbl}</button>
+                      background: phase === k ? "rgba(95,208,168,.12)" : "transparent" }}>
+                    {lbl} <span style={{ opacity: .7, fontWeight: 600 }}>{phaseCount(k)}</span>
+                  </button>
                 ))}
               </div>
               {/* The chips are the PHONE control. On a wide screen both lists are on screen at once, so a
@@ -367,8 +624,76 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
               </div>
             )}
 
-            {/* ===================== THE MATCHUPS ===================== */}
+            {/* ===================== WHAT TO WATCH ===================== */}
+            {windows.length > 0 && (
+              <div data-gdwindows={String(windows.length)} style={{ marginBottom: 18 }}>
+                <div className="disp" style={{ fontSize: 15, fontWeight: 800, marginBottom: 8 }}>
+                  Still to come
+                  <span className="mut" style={{ fontSize: 11.5, fontWeight: 400, marginLeft: 8 }}>
+                    your remaining starters, by kickoff
+                  </span>
+                </div>
+                <div style={{ display: "grid", gap: 8,
+                  gridTemplateColumns: wide ? "repeat(auto-fit, minmax(240px, 1fr))" : "minmax(0,1fr)" }}>
+                  {windows.map((w) => {
+                    const good = w.net > 0, flat = w.net === 0;
+                    const tone = flat ? "var(--mut)" : good ? "#5FD0A8" : "#F2655C";
+                    return (
+                      <div key={w.iso} className="panel" data-gdwindow={w.iso} style={{ padding: "10px 12px" }}>
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                          <span className="disp" style={{ fontSize: 14, fontWeight: 800 }}>
+                            {new Date(w.at).toLocaleTimeString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}
+                          </span>
+                          {/* Net first and biggest, because it is the answer; the raw counts sit behind it
+                              so a wash of 4-for/4-against still reads as four players you care about. */}
+                          <span className="num" style={{ fontSize: 14, fontWeight: 800, color: tone }}>
+                            {flat ? "even" : `${good ? "+" : ""}${w.net}`}
+                          </span>
+                          <span className="mut" style={{ fontSize: 11 }}>
+                            {w.forN} for · {w.againstN} against
+                          </span>
+                          <span className="mut" style={{ fontSize: 11, marginLeft: "auto" }}>
+                            {w.players.length} player{w.players.length === 1 ? "" : "s"}
+                          </span>
+                        </div>
+                        <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5, marginTop: 3,
+                          overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {w.players.slice(0, 4).map((p) => (
+                            <span key={p.sid} style={{ marginRight: 9, whiteSpace: "nowrap" }}>
+                              <span style={{ color: p.net > 0 ? "#5FD0A8" : p.net < 0 ? "#F2655C" : "var(--mut)" }}>
+                                {p.net > 0 ? "↑" : p.net < 0 ? "↓" : "—"}
+                              </span>{" "}
+                              <span style={{ color: "var(--ink)" }}>{p.name}</span>
+                              {p.net !== 0 && <span className="num"> {p.net > 0 ? "+" : ""}{p.net}</span>}
+                            </span>
+                          ))}
+                          {w.players.length > 4 && <span>+{w.players.length - 4} more</span>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+          </>
+        )}
+
+        {/* ===================== THE MATCHUPS ===================== */}
+        {data && view === "leagues" && (
+          <>
             <div className="disp" style={{ fontSize: 15, fontWeight: 800, marginBottom: 8 }}>Your matchups</div>
+            {wide && (
+              <div className="mut" style={{ display: "grid", gap: 10, padding: "0 12px 5px",
+                gridTemplateColumns: "minmax(0,1.4fr) 132px 132px 108px minmax(0,150px)",
+                fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700 }}>
+                <span>League</span>
+                <span style={{ textAlign: "right" }}>Now</span>
+                <span style={{ textAlign: "right" }}>Projected</span>
+                <span style={{ textAlign: "right" }}>Win</span>
+                <span style={{ textAlign: "right" }}>Left to play</span>
+              </div>
+            )}
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {(data.leagues || []).map((L, i) => {
                 const league = connected.find((c) => String(hubIdOf(c)) === String(L.leagueId));
@@ -386,31 +711,91 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
                 }
                 const margin = L.opp ? r1(L.me.pts - L.opp.pts) : null;
                 const up = margin != null && margin > 0;
+                /* ⭐⭐⭐⭐⭐ THE PROJECTED SCORE BESIDE THE LIVE ONE — b137/29q.
+                   Trey: "I want to see the current score AND the projected score", and separately "I love
+                   on sleeper how there is color coded projection systems (i.e. 11% projected to win is red
+                   // 87% to win is green)."
+                   29p put exactly this on the home strip and then left Game Day — the screen you actually
+                   sit on during the games — showing only the live scoreline. So the two screens disagreed
+                   about the same matchup: home said a projected loss, Game Day said you were up 12. The
+                   forecast has been on this payload since b136; it just was not being drawn here. */
+                const F = L.forecast || null;
+                const tone = F && Number.isFinite(F.win) ? winTone(F.win) : null;
+                const open = !!openMatch[L.leagueId];
                 return (
-                  <div key={L.leagueId || i} className="panel" data-gdmatch={name} style={{ padding: 12 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                      <button onClick={() => onOpenHub && league && onOpenHub(league.id)}
+                  <div key={L.leagueId || i} className="panel" data-gdmatch={name}
+                    style={{ padding: "10px 12px", background: open ? "var(--panel2)" : undefined }}>
+                    <div style={{ display: "grid", alignItems: "center", gap: 10,
+                      gridTemplateColumns: wide ? "minmax(0,1.4fr) 132px 132px 108px minmax(0,150px)" : "minmax(0,1fr) auto" }}>
+                      {/* ⭐⭐⭐⭐ THE NAME OPENS THE BREAKDOWN; IT NO LONGER LEAVES THE PAGE.
+                          Trey: "I want you to be able to click on each matchup and it shows a detailed
+                          breakdown to basically shows you your odds, your decisions, what to root for."
+                          It used to navigate to the league hub — a whole screen away, mid-Sunday, to answer
+                          a question about the row you were already looking at. The hub is still one click
+                          from inside the opened row, where it is a deliberate departure rather than the
+                          only thing the row could do. */}
+                      <button data-gdmatchtoggle={name} aria-expanded={open}
+                        onClick={() => setOpenMatch((o) => ({ ...o, [L.leagueId]: !o[L.leagueId] }))}
                         style={{ cursor: "pointer", fontFamily: "inherit", background: "none", border: "none",
-                          color: "var(--ink)", fontSize: 14, fontWeight: 800, padding: 0, textAlign: "left" }}
-                        className="disp">{name}</button>
-                      <span className="num" data-gdscore style={{ fontSize: 14, fontWeight: 800,
-                        color: margin == null ? "var(--mut)" : up ? "#5FD0A8" : margin === 0 ? "var(--mut)" : "#F2655C" }}>
-                        {r1(L.me.pts)}{L.opp ? ` – ${r1(L.opp.pts)}` : ""}
-                      </span>
-                      {margin != null && (
-                        <span style={{ fontSize: 11, fontWeight: 700, color: up ? "#5FD0A8" : margin === 0 ? "var(--mut)" : "#F2655C" }}>
-                          {up ? "+" : ""}{margin}
+                          color: "var(--ink)", fontSize: 14, fontWeight: 800, padding: 0, textAlign: "left",
+                          minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                          display: "flex", alignItems: "center", gap: 6 }}
+                        className="disp">
+                        <i className={`ti ${open ? "ti-chevron-down" : "ti-chevron-right"}`}
+                          style={{ fontSize: 13, color: "var(--mut)", flexShrink: 0 }} aria-hidden="true" />
+                        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{name}</span>
+                      </button>
+                      <span style={{ textAlign: wide ? "right" : "left" }}>
+                        <span className="num" data-gdscore style={{ fontSize: 14, fontWeight: 800,
+                          color: margin == null ? "var(--mut)" : up ? "#5FD0A8" : margin === 0 ? "var(--mut)" : "#F2655C" }}>
+                          {r1(L.me.pts)}{L.opp ? ` – ${r1(L.opp.pts)}` : ""}
                         </span>
-                      )}
-                      <span className="mut" style={{ fontSize: 11.5, marginLeft: "auto" }}>
+                        {margin != null && (
+                          <span style={{ fontSize: 11, fontWeight: 700, marginLeft: 6,
+                            color: up ? "#5FD0A8" : margin === 0 ? "var(--mut)" : "#F2655C" }}>
+                            {up ? "+" : ""}{margin}
+                          </span>
+                        )}
+                        {!wide && <span className="mut" style={{ fontSize: 9.5, display: "block", textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700 }}>now</span>}
+                      </span>
+                      {/* ⚠ `forecast.me` IS A SIDE, NOT A NUMBER. It came back as
+                          {scored, remaining, projected, variance, yetToPlay, unknown} and rendering it
+                          directly printed nothing at all — React drops an object child silently, so the
+                          column was simply blank while the win% beside it worked perfectly. Caught by
+                          looking at the screen; no build or type error was ever going to say so. */}
+                      {F && F.me && Number.isFinite(F.me.projected) ? (
+                        <span data-gdproj={String(r1(F.me.projected))} className="num mut" style={{ fontSize: 13, fontWeight: 700, textAlign: wide ? "right" : "left" }}>
+                          {r1(F.me.projected)}{F.opp && Number.isFinite(F.opp.projected) ? ` – ${r1(F.opp.projected)}` : ""}
+                          {!wide && <span className="mut" style={{ fontSize: 9.5, display: "block", textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700 }}>projected</span>}
+                        </span>
+                      ) : <span />}
+                      {tone ? (
+                        /* ⚠ THE PERCENTAGE IS ALWAYS PRINTED. Red and green are the one pair a colourblind
+                           reader cannot separate, and this is the figure the whole row turns on — so the
+                           colour reinforces a number and a word rather than carrying the meaning alone. */
+                        <span data-gdwin={String(Math.round(F.win * 100))} style={{ textAlign: wide ? "right" : "left" }}>
+                          <span className="num" style={{ fontSize: 14, fontWeight: 800, color: tone.color }}>
+                            {Math.round(F.win * 100)}%
+                          </span>
+                          <span className="mut" style={{ fontSize: 10, marginLeft: 5 }}>{tone.label}</span>
+                        </span>
+                      ) : <span />}
+                      <span className="mut" style={{ fontSize: 11.5, textAlign: wide ? "right" : "left",
+                        gridColumn: wide ? "auto" : "1 / -1" }}>
                         {L.me.yetToPlay} yet to play{L.opp ? ` · ${L.opp.yetToPlay} for ${L.opp.teamName || "them"}` : ""}
                       </span>
                     </div>
+                    {open && <MatchupDetail L={L} F={F} tone={tone} bySid={bySid} wide={wide}
+                      onOpenHub={() => onOpenHub && league && onOpenHub(league.id)} />}
                   </div>
                 );
               })}
             </div>
 
+          </>
+        )}
+
+        {data && (
             <div className="mut" style={{ fontSize: 11, lineHeight: 1.55, marginTop: 14 }}>
               Scores and per-player points come from each league's own scoring, exactly as the platform settled
               them — nothing here is recomputed, so this can never disagree with your league's scoreboard.
@@ -418,7 +803,6 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
               from a window around kickoff rather than a live game clock, so treat it as a good guess and
               "yet to play" as the reliable one.
             </div>
-          </>
         )}
       </div>
     </div>
