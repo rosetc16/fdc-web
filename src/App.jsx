@@ -97,7 +97,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29w";
+const BUILD_TAG = "2026.07.29x";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -14327,6 +14327,111 @@ function replacementByPos(rosters, sf, teams) {
   return out;
 }
 
+/* ⭐⭐⭐⭐⭐ THE MARKET FOR ONE POSITION — 29x.
+   ==================================================================================================
+   Trey: "I'm also looking to be able to answer a question like this: 'I need RB... I have WR depth..
+   what teams might have RB depth to trade to improve WR depth — then show the pathways.' I feel like you
+   should be able to see trades, but then click into a position to really dive into that market."
+
+   That is a different question from the one the trade finder answers, and the difference matters. The
+   finder is bottom-up: enumerate every one-for-one swap, keep the ones that help both lineups. It is good
+   at "is there a deal here" and useless at "who should I be talking to", because a manager does not open
+   a trade tab wanting a list of swaps — he opens it knowing he is thin somewhere and wondering who can fix
+   it. The answer to THAT is a shape: which rosters are deep where I am thin, and thin where I am deep.
+
+   ⭐ THE DOUBLE COINCIDENCE OF WANTS IS THE WHOLE THING. A team with three good backs is not a trade
+     partner; a team with three good backs AND a hole at receiver is. Economics has a name for it and
+     fantasy managers feel it without naming it — this ranks partners by how well the two shortages
+     interlock, so the top of the list is the person most likely to say yes rather than the person with
+     the best player.
+
+   ⚠ DEPTH IS COUNTED IN STARTABLE BODIES, NOT POINTS. Four receivers who would each start for anybody is
+     depth; one elite receiver and three replacement-level ones is not, however well the points add up.
+     Surplus is "bodies above replacement, beyond the ones you must field", which is the only definition
+     under which trading one away leaves you whole.
+   ⚠ AND REPLACEMENT IS THIS LEAGUE'S, not a constant — a 10-team 1QB league and a 14-team superflex have
+     completely different bars. Same `replacementByPos` the finder uses, so the two views cannot disagree
+     about who counts as a real starter. */
+export function positionMarket(teams, opts) {
+  const o = opts || {};
+  const req = o.req || {};
+  const list = (teams || []).filter((t) => t && Array.isArray(t.roster));
+  if (!list.length) return { positions: [], partners: [], teams: [] };
+  const repl = o.replacement || replacementByPos(list.map((t) => t.roster), o.sf, list.length);
+  const POSNS = o.positions || ["QB", "RB", "WR", "TE"];
+
+  const readTeam = (t) => {
+    const byPos = {};
+    POSNS.forEach((pos) => {
+      const at = (t.roster || []).filter((p) => p && String(p.pos).toUpperCase() === pos)
+        .sort((a, b) => (b.pts || 0) - (a.pts || 0));
+      const bar = repl[pos] || 0;
+      /* ⚠ AT THE BAR IS STARTABLE, NOT BELOW IT. `replacementByPos` returns the LAST player who would
+         start if every team fielded its best — so a man at exactly that value IS a starter, and a strict
+         `>` quietly disqualified the last starter in every league. In a small fixture that is glaring
+         (the third-best QB in a three-team league is replacement level BY DEFINITION, and was reported as
+         a shortage); in a twelve-team league it is an off-by-one that just makes everybody look slightly
+         thinner than they are. */
+      const startable = at.filter((p) => (p.pts || 0) >= bar);
+      const need = Math.max(0, (req[pos] || 0) - startable.length);
+      const surplus = Math.max(0, startable.length - (req[pos] || 0));
+      byPos[pos] = {
+        pos, need, surplus,
+        startable: startable.length,
+        required: req[pos] || 0,
+        players: at,
+        /* The men who could actually LEAVE without opening a hole — the surplus made concrete, because
+           "they have RB depth" is not actionable until you can see which back is the spare one. */
+        spare: surplus > 0 ? startable.slice(req[pos] || 0) : [],
+        best: startable[0] || at[0] || null,
+      };
+    });
+    return { ...t, byPos };
+  };
+
+  const read = list.map(readTeam);
+  const me = read.find((t) => t.isMe) || null;
+
+  /* Partners, ranked by how well the shortages interlock. Scored rather than filtered, because a partial
+     match is still worth seeing: a team deep at my thin spot who does NOT need what I have spare is a
+     harder conversation, not an impossible one, and saying so is more useful than hiding them. */
+  const partners = !me ? [] : read.filter((t) => !t.isMe).map((t) => {
+    const helps = [];      // positions where THEY are deep and I am thin
+    const wants = [];      // positions where I am deep and THEY are thin
+    POSNS.forEach((pos) => {
+      if (t.byPos[pos].surplus > 0 && (me.byPos[pos].need > 0 || me.byPos[pos].surplus === 0)) {
+        helps.push({ pos, surplus: t.byPos[pos].surplus, urgent: me.byPos[pos].need > 0 });
+      }
+      if (me.byPos[pos].surplus > 0 && (t.byPos[pos].need > 0 || t.byPos[pos].surplus === 0)) {
+        wants.push({ pos, surplus: me.byPos[pos].surplus, urgent: t.byPos[pos].need > 0 });
+      }
+    });
+    // Both halves matter, and a match on a position somebody genuinely CANNOT field counts double.
+    const score = helps.reduce((n, h) => n + (h.urgent ? 2 : 1), 0)
+      * (wants.length ? 1 : 0.35)
+      + wants.reduce((n, w) => n + (w.urgent ? 2 : 1), 0) * 0.5;
+    return { ...t, helps, wants, fit: Math.round(score * 100) / 100 };
+  }).filter((t) => t.helps.length || t.wants.length)
+    .sort((a, b) => b.fit - a.fit);
+
+  return {
+    teams: read,
+    me,
+    replacement: repl,
+    partners,
+    /* One row per position, from MY point of view — the summary the tab opens on, so "where am I actually
+       thin" is answered before you have clicked anything. */
+    positions: !me ? [] : POSNS.map((pos) => ({
+      pos,
+      mine: me.byPos[pos],
+      /* How many rivals could sell here. A position where nobody has a spare is not a market, and saying
+         so up front saves the click. */
+      sellers: read.filter((t) => !t.isMe && t.byPos[pos].surplus > 0).length,
+      buyers: read.filter((t) => !t.isMe && t.byPos[pos].need > 0).length,
+    })),
+  };
+}
+
 function findTrades(me, others, opts) {
   const o = opts || {};
   const sf = o.sf, depth = o.depth || 14, max = o.max || 8;
@@ -14963,6 +15068,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   const [briefCopied, setBriefCopied] = useState(false);
   const [posSortCol, setPosSortCol] = useState("all"); // Positional strength grid: sort by "all"|QB|RB|WR|TE
   const [faPosFilter, setFaPosFilter] = useState("all"); // Free-agent list position filter: "all"|QB|RB|WR|TE|K|DST
+  // 29x: the wire, in full, for when "who else is out there" is the actual question. Off by default.
+  const [faShowAll, setFaShowAll] = useState(false);
+  // 29x: which position's market is open in the Trades tab. null = the overview.
+  const [mktPos, setMktPos] = useState(null);
   const [standSort, setStandSort] = useState({ key: "rank", dir: 1 }); // Standings table sort
   // Rich floating tooltip (same card the draft app uses) for player and positional hovers in this hub.
   const [tip, setTip] = useState(null);
@@ -15758,6 +15867,15 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   const tradeRoster = (t) => (t.roster || []).map((p) => ({ ...p, pts: p.ptsSeason != null ? p.ptsSeason : (p.pts || 0) * GAMES_IN_SEASON }));
   const myLT = leagueTeams.find((t) => t.rosterId === data.myRosterId);
   const tradeKey = `trades|${leagueId}|${data.week}|${(myLT ? myLT.roster : []).map((p) => p.sid).join(",")}`;
+  /* ⭐⭐⭐⭐⭐ THE MARKET VIEW — 29x. Same rosters, same replacement level, a different question: not
+     "is there a swap" but "who should I be talking to, and about what". See positionMarket above. */
+  const market = myLT ? hubMemo(`market|${tradeKey}`, () => positionMarket(
+    leagueTeams.map((t) => ({
+      rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName,
+      isMe: t.rosterId === data.myRosterId, roster: tradeRoster(t),
+    })),
+    { req: reqStart, sf: cfg.sf },
+  )) : null;
   const tradeIdeas = myLT ? hubMemo(tradeKey, () => findTrades(
     { rosterId: myLT.rosterId, teamName: myLT.teamName, roster: tradeRoster(myLT) },
     leagueTeams.filter((t) => t.rosterId !== data.myRosterId).map((t) => ({ rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName, roster: tradeRoster(t) })),
@@ -16401,11 +16519,40 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
              ⚠ Appended rather than promoted, so the ordinary ranking above him is untouched and the top
                of the list still answers "who is the best player available", which is a different question
                and also a real one. */
+          /* ⭐⭐⭐⭐⭐ THE LIST IS THE PLAYERS WHO COULD CHANGE YOUR WEEK — 29x.
+             Trey: "The free agent tab has like 60+ names. I want this to show the names that could really
+             make an impact."
+
+             Two things had made it long, and one of them was mine. (1) The 29v guarantee that a trending
+             player never gets cut off appended EVERY trending player, and (2) the ownership signal fired on
+             a raw 1,000-add threshold — which, across the millions of leagues Sleeper hosts, dozens of
+             players clear in any ordinary week. The guarantee was right and the threshold was wrong; that
+             one is fixed at source (rank-based now, see trending.js), and the guarantee is capped here.
+
+             ⚠ "HOLD" IS THE NOISE. The verdict already says it: "not better than what you have". Those rows
+               answer "who else exists", which is a real question and a different one from "what should I
+               do", and mixing them is what turns a decision screen into a directory. They are one click
+               away, never deleted — hiding the wire entirely would be the opposite mistake, and the count
+               on the button says exactly what is behind it.
+             ⚠ AND IF NOTHING CLEARS THE BAR, THE FILTER STANDS DOWN. An empty list with a "show 60 more"
+               button is a worse answer than the 60, because the page would be hiding the only thing it has
+               to say. */
           const faBase = faScored.filter((f) => matchPos(f.p));
-          const faTop = faBase.slice(0, faPosFilter === "all" ? 15 : 20);
+          const impactful = (f) => f.verdict !== "hold" || !!f.trend;
+          const faImpact = faBase.filter(impactful);
+          const faQuiet = faBase.filter((f) => !impactful(f));
+          // Fall back to the whole list when nothing is actionable, rather than showing an empty panel.
+          const faPool = (faShowAll || !faImpact.length) ? faBase : faImpact;
+          const faTop = faPool.slice(0, faPosFilter === "all" ? 15 : 20);
           const faShown = new Set(faTop.map((f) => String(f.p.sid)));
-          const faTrendExtra = faBase.filter((f) => f.trend && !faShown.has(String(f.p.sid)));
+          /* The 29v guarantee, CAPPED. A back who inherited a job this morning projects badly and would be
+             buried by the sort, so he still gets a seat — but "every trending player" is how a list of
+             fifteen became sixty, so it is the few most urgent, ordered the way trendFor ranks them. */
+          const faTrendExtra = faPool.filter((f) => f.trend && !faShown.has(String(f.p.sid)))
+            .sort((a, b) => ((b.trend && b.trend.rank) || 0) - ((a.trend && a.trend.rank) || 0))
+            .slice(0, 5);
           const faFiltered = faTop.concat(faTrendExtra);
+          const faHidden = faBase.length - faFiltered.length;
           return (
           <div className="panel" style={{ padding: 16 }}>
             <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 3 }}>Best available</div>
@@ -16425,6 +16572,18 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                   </button>
                 );
               })}
+              <span style={{ flex: 1 }} />
+              {/* ⭐⭐⭐⭐ THE REST OF THE WIRE, ONE CLICK AWAY AND COUNTED. A filter that hides rows without
+                  saying how many is indistinguishable from a page that has run out of players. */}
+              {(faQuiet.length > 0 || faShowAll) && (
+                <button data-fa-showall={faShowAll ? "1" : "0"} onClick={() => setFaShowAll((v) => !v)}
+                  className="btn btn-mini" style={{ padding: "3px 11px", fontSize: 11.5, fontWeight: 700, borderRadius: 99 }}
+                  title={faShowAll
+                    ? "Show only players who would change your lineup or are trending"
+                    : `Also show the ${faQuiet.length} available players who are not better than what you already have`}>
+                  {faShowAll ? "Impact only" : `Show all (${faBase.length})`}
+                </button>
+              )}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
               {faFiltered.map(({ p, upgrade, verdict, reason, worstOnRoster, implausible, trend, upgradeVs, upgradeStandIn }) => {
@@ -16511,6 +16670,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 );
               })}
               {!faFiltered.length && <div className="mut">{faPosFilter === "all" ? "No available players found — your league pool may be fully rostered." : `No available ${faPosFilter} found.`}</div>}
+              {/* Say what is not on screen. A shortened list that does not admit it is shortened reads as
+                  a list that has run out. */}
+              {faHidden > 0 && !faShowAll && (
+                <div className="mut" data-fa-hidden={String(faHidden)} style={{ fontSize: 11, padding: "8px 2px 0" }}>
+                  {faHidden} more available {faHidden === 1 ? "player is" : "players are"} on the wire, none of them
+                  better than what you already have. "Show all" lists them.
+                </div>
+              )}
             </div>
             <div className="mut" style={{ fontSize: 10.5, marginTop: 10, lineHeight: 1.45 }}>
               <b style={{ color: "var(--green)" }}>Add</b> = worth a roster move for your team{isDynasty ? ` in ${postureLabel[activePosture].toLowerCase()} mode` : ""}. <b style={{ color: "var(--gold)" }}>Stream</b> = only in a bye/injury pinch. <b>Hold</b> = not better than what you have. <b style={{ color: "var(--gold)" }}>Check first</b> = a player this good is rostered in almost every league, so confirm he's really free before you put in a claim.
@@ -16530,6 +16697,121 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
               Every swap below improves <b>both</b> starting lineups on season projections — the other manager has a reason to say yes.
               Value is season-long, so a bye week never makes someone look expendable.
             </div>
+
+            {/* ⭐⭐⭐⭐⭐ THE MARKET, ABOVE THE SWAPS — 29x.
+                Trey: "I need RB... I have WR depth.. what teams might have RB depth to trade to improve WR
+                depth — then show the pathways. I feel like you should be able to see trades, but then click
+                into a position to really dive into that market."
+                The swap list answers "is there a deal"; this answers "who should I be talking to", which is
+                the question you actually arrive with. It sits above because it is the one you ask first. */}
+            {market && market.positions.length > 0 && (
+              <div data-mkt style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "11px 12px", marginBottom: 14, background: "var(--panel2)" }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 9 }}>
+                  <span className="disp" style={{ fontSize: 13.5, fontWeight: 800 }}>Where you stand, by position</span>
+                  <span className="mut" style={{ fontSize: 11 }}>click a position to see who can help</span>
+                  {mktPos && (
+                    <button className="btn btn-mini" data-mktback onClick={() => setMktPos(null)}
+                      style={{ marginLeft: "auto", padding: "2px 9px", fontSize: 11 }}>← all positions</button>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                  {market.positions.map((row) => {
+                    const on = mktPos === row.pos;
+                    /* Thin, deep or settled — the three states, coloured, because "where am I short" should
+                       be answerable without reading a number. */
+                    const tone = row.mine.need > 0 ? "#F2655C" : row.mine.surplus > 0 ? "#5FD0A8" : "var(--mut)";
+                    return (
+                      <button key={row.pos} data-mktpos={row.pos} data-mktposstate={row.mine.need > 0 ? "thin" : row.mine.surplus > 0 ? "deep" : "set"}
+                        onClick={() => setMktPos(on ? null : row.pos)} aria-pressed={on}
+                        title={`You can field ${row.mine.startable} startable ${row.pos}${row.mine.startable === 1 ? "" : "s"} for ${row.mine.required} slot${row.mine.required === 1 ? "" : "s"}. ${row.sellers} rival${row.sellers === 1 ? " has" : "s have"} a spare; ${row.buyers} need one.`}
+                        style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+                          border: `1px solid ${on ? tone : "var(--line2)"}`, background: on ? "rgba(255,255,255,.04)" : "transparent",
+                          borderRadius: 9, padding: "6px 10px", minWidth: 96 }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 800, color: tone }}>
+                          {row.pos}{" "}
+                          <span style={{ fontSize: 10, fontWeight: 700 }}>
+                            {row.mine.need > 0 ? `short ${row.mine.need}` : row.mine.surplus > 0 ? `+${row.mine.surplus} spare` : "set"}
+                          </span>
+                        </div>
+                        <div className="mut" style={{ fontSize: 9.5, marginTop: 2 }}>
+                          {row.sellers} can sell · {row.buyers} need
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* THE DRILL-IN: who has a spare at this position, what they are short of, and the swap. */}
+                {mktPos && (() => {
+                  const sellers = market.partners.filter((t) => t.byPos[mktPos] && t.byPos[mktPos].surplus > 0);
+                  if (!sellers.length) {
+                    return (
+                      <div className="mut" data-mktempty={mktPos} style={{ fontSize: 12, marginTop: 11, lineHeight: 1.5 }}>
+                        Nobody in the league has a spare {mktPos} — every roster needs the ones it has. That is
+                        a market with no sellers, so a trade here would have to overpay, and the free-agent
+                        tab is the better door.
+                      </div>
+                    );
+                  }
+                  return (
+                    <div style={{ marginTop: 11, display: "flex", flexDirection: "column", gap: 8 }}>
+                      <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>
+                        {sellers.length} team{sellers.length === 1 ? "" : "s"} could spare a {mktPos}.
+                        {" "}Ranked by how well their shortages match yours — the manager who needs what you
+                        have spare is the one who says yes.
+                      </div>
+                      {sellers.slice(0, 6).map((t) => {
+                        /* THE PATHWAY. Concrete swaps with THIS manager, drawn from the same finder the list
+                           below uses, so the market view can never propose something the finder would call
+                           unfair. Filtered to the position being explored. */
+                        const paths = (tradeIdeas || []).filter((x) => x.team.rosterId === t.rosterId
+                          && String(x.get.pos).toUpperCase() === mktPos);
+                        return (
+                          <div key={t.rosterId} data-mktteam={t.teamName}
+                            style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "9px 11px", background: "var(--panel)" }}>
+                            <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 12.5, fontWeight: 800 }}>{t.teamName}</span>
+                              {t.ownerName && <span className="mut" style={{ fontSize: 10.5 }}>@{t.ownerName}</span>}
+                              <span style={{ flex: 1 }} />
+                              <span data-mktfit={String(t.fit)} className="mut" style={{ fontSize: 10 }}>fit {t.fit}</span>
+                            </div>
+                            <div style={{ fontSize: 11.5, marginTop: 4, lineHeight: 1.5 }}>
+                              <span style={{ color: "#5FD0A8" }}>Can spare:</span>{" "}
+                              {t.byPos[mktPos].spare.slice(0, 3).map((p) => p.name).join(", ") || `a ${mktPos}`}
+                              {t.wants.length ? (
+                                <>
+                                  {" · "}<span style={{ color: "var(--gold)" }}>wants:</span>{" "}
+                                  {t.wants.map((w) => `${w.pos}${w.urgent ? " (badly)" : ""}`).join(", ")}
+                                </>
+                              ) : <span className="mut"> · no obvious hole — you would be paying up</span>}
+                            </div>
+                            {paths.length > 0 ? (
+                              <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 3 }}>
+                                {paths.slice(0, 3).map((x) => (
+                                  <div key={x.get.sid} data-mktpath={`${x.give.name}->${x.get.name}`} style={{ fontSize: 11.5 }}>
+                                    <span style={{ color: "var(--red)" }}>{x.give.name}</span>
+                                    <span className="mut"> for </span>
+                                    <span style={{ color: "#5FD0A8" }}>{x.get.name}</span>
+                                    <span className="mut" style={{ fontSize: 10 }}> · you +{x.myGain}, them +{x.theirGain}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              /* No vetted swap does not mean no trade — it means no ONE-FOR-ONE swap clears
+                                 both lineups, which is a different and much narrower statement. Say which. */
+                              <div className="mut" style={{ fontSize: 10.5, marginTop: 5 }}>
+                                No clean one-for-one here — their spare {mktPos} does not line up with a single
+                                player of yours. A two-for-one, or a different position, is the way in.
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
             {tradeIdeas.length ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
                 {tradeIdeas.map((t, i) => (

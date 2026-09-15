@@ -456,6 +456,36 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
     return [...byP.values()].sort((a, b) => b.game.severity - a.game.severity || b.inLeagues.length - a.inLeagues.length || a.name.localeCompare(b.name));
   }, [perLeague, weather, bySid]);
 
+  /* ⭐⭐⭐⭐⭐ THE WEATHER IS A PROPERTY OF THE GAME, NOT OF THE PLAYER — 29x.
+     Trey: "can you condense it by game. For example... I see a line for Tee Higgins... Ja'Marr Chase...
+     Joe Burrow... Instead it should just show 'CIN @ HOU' then list the players and show what leagues
+     those players are in."
+
+     He is right and it is the same shape as several earlier fixes on this project: the page was keyed on
+     the wrong noun. One storm produced three identical forecast sentences because three of his starters
+     were in it, so the amount of screen a game took was decided by how many shares he happened to own —
+     and the thing you actually need to read, the conditions, was repeated verbatim down the column.
+     One row per GAME, with its players underneath. The sentence is said once, the players are the detail,
+     and the severity ordering is now over games rather than over near-duplicates. */
+  const wxGames = useMemo(() => {
+    const byGame = new Map();
+    wxRows.forEach((r) => {
+      const k = `${r.game.away}@${r.game.home}`;
+      if (!byGame.has(k)) byGame.set(k, { key: k, game: r.game, players: [] });
+      byGame.get(k).players.push(r);
+    });
+    return [...byGame.values()]
+      .map((g) => ({
+        ...g,
+        // Within a game, the men you have most riding on come first.
+        players: g.players.slice().sort((a, b) => b.inLeagues.length - a.inLeagues.length || a.name.localeCompare(b.name)),
+        // How many of YOUR lineups this one game touches — the reason to care about it at all.
+        lineups: g.players.reduce((n2, p) => n2 + p.inLeagues.length, 0),
+      }))
+      .sort((a, b) => b.game.severity - a.game.severity || b.lineups - a.lineups
+        || new Date(a.game.kickoff) - new Date(b.game.kickoff));
+  }, [wxRows]);
+
   const counts = useMemo(() => ({
     urgent: availRows.filter((r) => r.rank >= 4).length,
     check: availRows.filter((r) => r.rank === 3).length,
@@ -829,33 +859,54 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                 </div>
               ) : (
                 <div className="panel" style={{ padding: 6 }}>
-                  {wxRows.map((r) => (
-                    <div key={r.key} data-wkwxrow={r.name} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderTop: "1px solid var(--line)", flexWrap: "wrap" }}>
-                      <span data-wkwxsev={r.game.severity} style={{ flexShrink: 0, fontSize: 9.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".04em",
-                        border: `1px solid ${r.game.severity >= 3 ? "#F2655C" : r.game.severity === 2 ? "var(--gold)" : "#6BA8E5"}`,
-                        color: r.game.severity >= 3 ? "#F2655C" : r.game.severity === 2 ? "var(--gold)" : "#6BA8E5",
-                        borderRadius: 99, padding: "2px 8px" }}>{r.game.label}</span>
-                      <span style={{ flexShrink: 0 }}><Dot pos={r.pos} /></span>
-                      <div style={{ flex: "1 1 300px", minWidth: 0 }}>
-                        <div style={{ fontSize: 13.5, fontWeight: 700 }}>{r.name} <span className="mut" style={{ fontSize: 10.5, fontWeight: 400 }}>{r.pos} · {r.team}</span></div>
-                        <div className="mut" style={{ fontSize: 11.5, marginTop: 2 }}>
-                          {r.game.away} @ {r.game.home} · {r.game.text}
-                          {r.game.mayClose ? <span style={{ opacity: .8 }}> · roof can close</span> : null}
+                  {wxGames.map((G) => {
+                    const sev = G.game.severity;
+                    const tone = sev >= 3 ? "#F2655C" : sev === 2 ? "var(--gold)" : "#6BA8E5";
+                    return (
+                      <div key={G.key} data-wkwxgame={G.key} data-wkwxsev={sev}
+                        style={{ padding: "10px 10px 11px", borderTop: "1px solid var(--line)" }}>
+                        {/* THE GAME, SAID ONCE. */}
+                        <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
+                          <span style={{ flexShrink: 0, fontSize: 9.5, fontWeight: 800, textTransform: "uppercase",
+                            letterSpacing: ".04em", border: `1px solid ${tone}`, color: tone,
+                            borderRadius: 99, padding: "2px 8px" }}>{G.game.label}</span>
+                          <span className="disp" style={{ fontSize: 14.5, fontWeight: 800 }}>
+                            {G.game.away} @ {G.game.home}
+                          </span>
+                          <span className="mut" style={{ fontSize: 11 }}>
+                            {new Date(G.game.kickoff).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}
+                          </span>
+                          <span style={{ flex: 1 }} />
+                          <span className="mut" style={{ fontSize: 10.5, fontWeight: 700 }}>
+                            {G.players.length} starter{G.players.length === 1 ? "" : "s"} · {G.lineups} lineup{G.lineups === 1 ? "" : "s"}
+                          </span>
                         </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap", marginTop: 5 }}>
-                          <span style={{ fontSize: 10.5, fontWeight: 800, color: "var(--gold)" }}>Starting in {r.inLeagues.length}</span>
-                          {r.inLeagues.map((l) => <LeagueTag key={l.id} l={l} />)}
+                        <div className="mut" style={{ fontSize: 11.5, marginTop: 4 }}>{G.game.text}</div>
+                        {/* THE PLAYERS, UNDERNEATH — each with the leagues he is starting in, which is the
+                            part that decides whether this storm is a problem for you or a curiosity. */}
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 7 }}>
+                          {G.players.map((r) => (
+                            <div key={r.key} data-wkwxrow={r.name}
+                              style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", paddingLeft: 2 }}>
+                              <Dot pos={r.pos} />
+                              <span style={{ fontSize: 12.5, fontWeight: 700 }}>{r.name}</span>
+                              <span className="mut" style={{ fontSize: 10.5 }}>{r.pos} · {r.team}</span>
+                              <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
+                                {r.inLeagues.map((l) => <LeagueTag key={l.id} l={l} />)}
+                              </span>
+                            </div>
+                          ))}
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             {weather && weather.counts && (
               <div className="mut" style={{ fontSize: 11, marginTop: 10, lineHeight: 1.5 }}>
                 Week {weather.week}: {weather.counts.games} games · {weather.counts.indoors} indoors (never flagged) ·
                 {" "}{weather.counts.checked} forecast · {weather.counts.flagged} with conditions worth knowing.
-                Domes are excluded outright; sun and light rain are not listed.
+                Any stadium with a roof is excluded outright; sun and light rain are not listed.
               </div>
             )}
           </>
