@@ -734,6 +734,17 @@ function Admin({ biz, setBiz, user, leagues, feedback, onRespond, onDeleteFeedba
                   <i className={`ti ti-${runningJob === "proj-check" ? "loader-2 spin" : "stethoscope"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
                   {runningJob === "proj-check" ? "Working…" : "Check projections"}
                 </button>
+                {/* ⭐⭐⭐⭐⭐ AND THIS ONE SHIPS WITH ITS JOB TOO — b142/29v. The four free-agent trending
+                    signals rest on Sleeper field names that could not be verified when they were written,
+                    because the sandbox cannot reach Sleeper. `rec_tgt` is certain and `tm_off_snp` is
+                    near-certain; `off_snp` is a reasoned guess. A wrong key does not error — its signal
+                    returns null for every player forever and the page looks perfectly healthy with three
+                    reasons instead of four. This prints how many players actually carried each field, so
+                    that failure has a number beside it instead of being invisible. */}
+                <button className="btn" disabled={busy} onClick={() => runJob("trend-check")} title="Reads nothing and writes nothing. Reports, for each Sleeper field the free-agent trending signals depend on, how many players actually carried it — plus any signal that is outright dead because its input arrived for nobody. Run this first if the Free agents tab stops showing trending reasons.">
+                  <i className={`ti ti-${runningJob === "trend-check" ? "loader-2 spin" : "activity-heartbeat"}`} style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
+                  {runningJob === "trend-check" ? "Working…" : "Check trending signals"}
+                </button>
                 {jobProgress && <span style={{ fontSize: 12, color: jobProgress.startsWith("Done") ? "var(--green)" : "var(--gold)", fontWeight: 600 }}>{jobProgress}</span>}
               </div>
               {/* ⭐⭐⭐ 29ap — THE INSTRUMENT FOR THE MFL / FANTRAX LIVE PICK SYNC, shipped with its job.

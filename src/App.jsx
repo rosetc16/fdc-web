@@ -97,7 +97,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29t";
+const BUILD_TAG = "2026.07.29v";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -14808,8 +14808,18 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
         const row = (lv.leagues || []).find((L) => String(L.leagueId) === String(leagueId));
         if (!row) return;
         const m = new Map();
+        /* ⚠ CARRY THE PHASE AND THE PROJECTED FINAL, NOT JUST `played` — 29u.
+           This map used to keep `{ pts, played, proj }`, which is the two-state model written into a data
+           structure: a man in the second quarter has `played: false`, so the reader below threw away the
+           nine points already on his board and showed his preseason projection instead. Worse, the slot
+           comparison then treated his side as zero, so a finished 24.9 against a live 9.6-and-climbing
+           was drawn as 24.9 – 0 and the positional advantage arrow pointed confidently at the wrong team.
+           `projFinal` is the one quantity that means the same thing in all three phases — what he ends the
+           week on — so carrying it is what lets the comparison below be honest. */
         [row.me, row.opp].forEach((side) => ((side && side.players) || []).forEach((pp) => {
-          m.set(String(pp.sid), { pts: pp.pts, played: !!pp.played, proj: pp.proj });
+          m.set(String(pp.sid), { pts: pp.pts, played: !!pp.played, proj: pp.proj,
+            phase: pp.phase || (pp.played ? "done" : "pre"),
+            projFinal: Number.isFinite(pp.projFinal) ? pp.projFinal : null });
         }));
         if (m.size) setLiveBySid(m);
       } catch { /* no live read: the matchup shows projections exactly as it always did */ }
@@ -14995,6 +15005,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
        stop — so there is no failure mode where this is worse than the old behaviour.
      The second half of the answer is below at `implausible`: when a top-of-the-draft asset still comes through
      as available, the page must say so rather than price him like a bench flier. */
+  /* ⚠ DECLARED HERE, ABOVE EVERY READER — the TDZ trap has cost this file five builds (PROJ_MISSING in
+     29g, the StrategyEditor filter in 29j, planToolsHint in 29k, rosterTeam in 29q). A `const` referenced
+     by code that runs earlier in the render builds perfectly and throws at runtime as "Cannot access 'eo'
+     before initialization", which names nothing useful. The free-agent map below is the only reader. */
+  const trendingOf = (sid) => {
+    if (sid == null || !data || !data.trending) return null;
+    return data.trending[String(sid)] || null;
+  };
   const rosteredSet = new Set();
   const addRostered = (arr) => { (Array.isArray(arr) ? arr : []).forEach((x) => { if (x != null) rosteredSet.add(String(x)); }); };
   addRostered(data.rostered);
@@ -15284,8 +15302,53 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     } else if (verdict === "add" && !worstOnRoster && mustFill) {
       reason = `${reason} — worth dropping someone for`;
     }
-    const score = base + upgrade * 2 + needBoost + startableBoost + assetBoost + (young && isDynasty ? 8 : 0);
-    return { p, score, upgrade, verdict, reason, worstOnRoster, startable, scarce, eliteAsset, implausible };
+    /* ⭐⭐⭐⭐⭐ WHO IS ABOUT TO BE GOOD — 29v.
+       Trey: "targets, yards, points… are certainly an indication of value. Also, what that doesn't capture
+       is like if there was an injury and someone's taking over as the starter type of deal. Maybe we can
+       pull data from other sources to suggest there's new roster, like… percentage owned."
+
+       The backend computes four separate signals and sends the ones that fired, earliest-first — see
+       lib/trending.js for why they are deliberately NOT blended into one number. Here they do two jobs and
+       carefully not a third:
+
+         1. THE REASON. `why` is a sentence with the evidence in it ("steps up with Kenneth Walker out",
+            "9.5 touches+targets a game over the last 2, up from 3.5"), which is what makes the flag
+            checkable rather than a colour you learn to trust or ignore.
+         2. THE ORDER. A rising player sorts above an identical static one, because the whole value of
+            this feature is getting to him before the league does.
+
+       ⚠⚠ AND NOT THE COLOUR. It would be very easy to paint every trending player green, and that is
+         exactly the mistake Trey caught in 29r — "every name is highlighted green despite saying there is
+         no obvious drop. I want the green to draw attention to something you should really do." Trending
+         up does not by itself mean you can or should add him: if your bench is full of keepers the honest
+         answer is still "free a spot first". So the trend rides the reason and the sort, and the verdict
+         is decided exactly as it was. The one exception is spelled out below. */
+    const tr = trendingOf(p.sid);
+    if (tr) {
+      reason = `${tr.why}${reason ? ` · ${reason}` : ""}`;
+      /* ⚠ THE ONE EXEMPTION, AND IT IS NARROW ON PURPOSE. An OPPORTUNITY change — every man ahead of him
+         on the depth chart is out — is the only signal that is time-critical: it is knowable before a
+         single snap and it is the one case where you genuinely beat your league to a player. A row that
+         says "steps up with the starter on IR" and is toned grey because your bench is full is giving you
+         the right fact with the wrong urgency. It is promoted to a real add and TELLS YOU what it wants,
+         rather than silently going green. */
+      if (tr.top === "opportunity" && (verdict === "squeeze" || verdict === "hold" || verdict === "stream")) {
+        /* ⚠ AND IT LIFTS "HOLD" TOO, WHICH LOOKS LIKE OVERREACH UNTIL YOU ASK WHERE "HOLD" CAME FROM.
+           "Below rosterable value for your team" is a judgement made from his PROJECTION — and his
+           projection was computed while he was a backup, before the man ahead of him was ruled out. The
+           number is stale in a way the page can actually prove, which is the one circumstance where
+           overriding it is honest rather than optimistic. A rookie receiver who became the WR1 this
+           morning reading "Hold" is the page being confidently wrong.
+           ⚠ STILL ONLY THIS SIGNAL. A usage trend or an ownership surge is already priced into his
+             numbers, or is just the crowd; neither earns a colour. Green stays scarce, which is the whole
+             reason it means anything (29r). */
+        verdict = "add";
+        reason = `${tr.why} — his projection was set before that happened, so claim him before the league catches up`;
+      }
+    }
+    const trendBoost = tr ? 6 + Math.min(6, (tr.rank || 0) * 3) : 0;
+    const score = base + upgrade * 2 + needBoost + startableBoost + assetBoost + trendBoost + (young && isDynasty ? 8 : 0);
+    return { p, score, upgrade, verdict, reason, worstOnRoster, startable, scarce, eliteAsset, implausible, trend: tr };
   }).sort((a, b) => b.score - a.score);
   const topFA = faScored.slice(0, 15);
 
@@ -16005,13 +16068,38 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                      under a projected 14 is a slot you are winning BECAUSE of him, and a 3 under a 22 is
                      where the afternoon went wrong. */
                   const lv = (p) => (p && liveBySid ? liveBySid.get(String(p.sid)) : null);
-                  const liveOf = (p) => { const x = lv(p); return x && x.played ? Number(x.pts) : null; };
+                  /* ⭐⭐⭐⭐⭐ A LIVE PLAYER HAS A SCORE — 29u.
+                     `liveOf` read `x.played`, which is false all the way through a game, so a man in the
+                     third quarter contributed nothing to this row and the slot showed his projection as
+                     though he had not kicked off. Points on the board are points on the board in both the
+                     live and done phases; the difference between them is whether more are coming, and that
+                     is what the second line says. */
+                  const liveOf = (p) => {
+                    const x = lv(p);
+                    if (!x) return null;
+                    const on = x.phase === "done" || x.phase === "live" || x.played;
+                    return on && Number.isFinite(Number(x.pts)) ? Number(x.pts) : null;
+                  };
                   const projOf = (p) => (p ? Number(p.pts) || 0 : 0);
+                  /* ⭐⭐⭐⭐⭐ AND THE TWO SIDES ARE COMPARED ON ONE QUANTITY, IN THE SAME UNITS.
+                     The old rule was "compare on what is REAL where both have played, and on projection
+                     until then" — but it fell back to ZERO for the side without a live figure, so the
+                     instant ANY player in the matchup finished, every slot whose opponent had not yet
+                     kicked off was drawn as a blowout. `projFinal` is what a player ends the week on, and
+                     it means the same thing in all three phases: his score once he is done, his score plus
+                     what is still ahead of him while he plays, his projection before he starts. Comparing
+                     those is the only version of this row that does not change its mind about who is
+                     winning purely because of what time it is. */
+                  const finalOf = (p) => {
+                    const x = lv(p);
+                    if (x && Number.isFinite(x.projFinal)) return x.projFinal;
+                    if (x && x.phase === "done" && Number.isFinite(Number(x.pts))) return Number(x.pts);
+                    return projOf(p);
+                  };
                   const meLiveP = liveOf(row.me), oppLiveP = liveOf(row.opp);
                   const anyLive = meLiveP != null || oppLiveP != null;
-                  // Compare on what is REAL where both have played, and on projection until then.
-                  const meCmp = anyLive ? (meLiveP != null ? meLiveP : 0) : projOf(row.me);
-                  const oppCmp = anyLive ? (oppLiveP != null ? oppLiveP : 0) : projOf(row.opp);
+                  const meCmp = finalOf(row.me);
+                  const oppCmp = finalOf(row.opp);
                   const gap = Math.round((meCmp - oppCmp) * 10) / 10;
                   const meWins = row.me && row.opp && gap > 0;
                   const oppWins = row.me && row.opp && gap < 0;
@@ -16019,6 +16107,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                      coloured AND the slot label carries an arrow toward the side that is ahead, with the
                      margin printed under it — so the advantage survives greyscale and says how big it is,
                      rather than leaving you to subtract two numbers on every row. */
+                  /* ⚠ THE SECOND LINE SAYS WHERE HE IS HEADING, WHICH FOR A MAN STILL PLAYING IS NOT HIS
+                     PRESEASON PROJECTION. A live player showing "9.6 / proj 22.4" is the useful pair —
+                     what he has, and what he finishes on — so the lower figure is `projFinal` whenever the
+                     live read has one, and only falls back to the hub's projection when it does not. */
                   const num = (live, proj, wins, align) => (
                     <span style={{ width: 52, flexShrink: 0, textAlign: align, display: "inline-block" }}>
                       <span className="num" style={{ fontWeight: 800, fontSize: 13,
@@ -16032,10 +16124,23 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       )}
                     </span>
                   );
+                  // What each side is heading for — the lower line, and the quantity the arrow compares.
+                  const meProjLine = finalOf(row.me), oppProjLine = finalOf(row.opp);
                   return (
-                    <div key={i} data-hubslot={row.slot.label} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", background: "var(--panel2)", borderRadius: 7 }}>
+                    /* The four numbers this row is actually claiming, on the row, so a test can check the
+                       ARITHMETIC rather than parse it back out of a sentence. The old comparison — which
+                       scored a side with no live figure as zero — produced a gap that did not equal the
+                       difference between the two projected finals, and that is the cheapest thing to
+                       assert against. */
+                    <div key={i} data-hubslot={row.slot.label}
+                      data-hubslotmelive={meLiveP == null ? "" : String(meLiveP)}
+                      data-hubslotopplive={oppLiveP == null ? "" : String(oppLiveP)}
+                      data-hubslotmesid={(row.me && row.me.sid) || ""} data-hubslotoppsid={(row.opp && row.opp.sid) || ""}
+                      data-hubslotmefinal={String(meCmp)} data-hubslotoppfinal={String(oppCmp)}
+                      data-hubslotgap={String(gap)}
+                      style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", background: "var(--panel2)", borderRadius: 7 }}>
                       {cell(row.me, "left")}
-                      {num(meLiveP, projOf(row.me), meWins, "right")}
+                      {num(meLiveP, meProjLine, meWins, "right")}
                       <span style={{ width: 62, textAlign: "center", flexShrink: 0 }}>
                         <span className="disp" style={{ fontSize: 9.5, fontWeight: 700, color: row.slot.color, display: "block" }}>
                           {meWins ? "◀ " : ""}{row.slot.label}{oppWins ? " ▶" : ""}
@@ -16046,7 +16151,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                           </span>
                         )}
                       </span>
-                      {num(oppLiveP, projOf(row.opp), oppWins, "left")}
+                      {num(oppLiveP, oppProjLine, oppWins, "left")}
                       {cell(row.opp, "right")}
                     </div>
                   );
@@ -16119,7 +16224,21 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
           const matchPos = (p) => faPosFilter === "all" ? true : (faPosFilter === "DST" ? (p.pos === "DST" || p.pos === "DEF") : p.pos === faPosFilter);
           // When filtering to a single position, show more of that position (the top-15 overall would often hide
           // kickers/defenses entirely behind skill players).
-          const faFiltered = faScored.filter((f) => matchPos(f.p)).slice(0, faPosFilter === "all" ? 15 : 20);
+          /* ⭐⭐⭐⭐⭐ A TRENDING PLAYER IS NEVER CUT OFF AT ROW SIXTEEN — 29v.
+             The list is ranked by projected value, and that ranking is exactly what the trending signals
+             exist to correct. A back who inherited a starting job this morning PROJECTS BADLY — his
+             projection was computed while he was a backup — so the player the page most needs to show
+             you is precisely the one the sort buries. Ranking him higher would be dishonest in the other
+             direction (the score does not know), so he is not re-scored; he is simply guaranteed a seat,
+             and his row says which signal put him there.
+             ⚠ Appended rather than promoted, so the ordinary ranking above him is untouched and the top
+               of the list still answers "who is the best player available", which is a different question
+               and also a real one. */
+          const faBase = faScored.filter((f) => matchPos(f.p));
+          const faTop = faBase.slice(0, faPosFilter === "all" ? 15 : 20);
+          const faShown = new Set(faTop.map((f) => String(f.p.sid)));
+          const faTrendExtra = faBase.filter((f) => f.trend && !faShown.has(String(f.p.sid)));
+          const faFiltered = faTop.concat(faTrendExtra);
           return (
           <div className="panel" style={{ padding: 16 }}>
             <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 3 }}>Best available</div>
@@ -16141,7 +16260,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
               })}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              {faFiltered.map(({ p, upgrade, verdict, reason, worstOnRoster, implausible }) => {
+              {faFiltered.map(({ p, upgrade, verdict, reason, worstOnRoster, implausible, trend }) => {
                 /* ⚠ ONLY "ADD" IS GREEN, AND ONLY "ADD" IS FILLED. The tiers below it are things worth
                     knowing, not things to do, and giving them the same weight is what turned the whole
                     list green. "Squeeze" is the new middle: a player worth having whom you currently have
@@ -16155,7 +16274,27 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                   <div key={p.sid} data-fa-verdict={verdict} onMouseEnter={(e) => showPlayerTip(e, p)} onMouseLeave={hideTip} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", cursor: "help", background: vc.bg !== "transparent" ? vc.bg : "var(--panel2)", border: `1px ${implausible ? "dashed" : "solid"} ${verdict === "add" ? "var(--green)" : verdict === "verify" ? "var(--gold)" : "var(--line)"}`, borderRadius: 8 }}>
                     <Dot pos={p.pos} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · {p.team}{p.age ? ` · ${p.age}y` : ""}{p.rookie ? " · rookie" : ""}{p.noGame ? " · 0 this week" : ""}</span></div>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>
+                        {p.name}{" "}
+                        {/* ⭐⭐⭐⭐ THE MARKER SAYS WHICH SIGNAL, NOT JUST "TRENDING". Four different things can put
+                            a player here and they call for different urgency — a depth-chart promotion is
+                            a tonight job, a three-week usage climb is a bench stash — so a single generic
+                            arrow would throw away the only part that tells you what to do. The full
+                            sentence is in the reason line directly underneath; this is the glance version. */}
+                        {trend && (
+                          <span data-fa-trend={trend.top} title={(trend.all || []).map((x) => x.why).join(" · ")}
+                            style={{ marginLeft: 6, fontSize: 9.5, fontWeight: 800, letterSpacing: ".04em",
+                              textTransform: "uppercase", padding: "1px 5px", borderRadius: 4, verticalAlign: "middle",
+                              color: trend.top === "opportunity" ? "#1a1400" : "var(--gold)",
+                              background: trend.top === "opportunity" ? "var(--gold)" : "rgba(224,166,60,.13)",
+                              border: "1px solid var(--gold)" }}>
+                            <i className="ti ti-trending-up" style={{ fontSize: 9.5, marginRight: 3 }} aria-hidden="true" />
+                            {trend.top === "opportunity" ? "Starting" : trend.top === "role" ? "Bigger role"
+                              : trend.top === "usage" ? "Usage up" : "Hot add"}
+                          </span>
+                        )}
+                        <span className="mut" style={{ fontSize: 11 }}> {p.pos}{p.posRank} · {p.team}{p.age ? ` · ${p.age}y` : ""}{p.rookie ? " · rookie" : ""}{p.noGame ? " · 0 this week" : ""}</span>
+                      </div>
                       <div style={{ fontSize: 10.5, color: verdict === "add" ? "var(--green)" : verdict === "verify" ? "var(--gold)" : "var(--mut)", lineHeight: 1.35 }}>
                         {verdict === "verify" && <i className="ti ti-alert-triangle" style={{ fontSize: 10.5, marginRight: 4 }} aria-hidden="true" />}
                         {/* ⚠ THE OLD "no obvious drop" SUFFIX IS GONE FROM THE "add" PATH. It is the other
@@ -16357,14 +16496,15 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
           </div>
         )}
 
-        {/* ---- LIVE TAB (29n) ----
-            Trey: "when a week is live… the live badge shows up… There should be a review tab next to live
-            where you can dive into these. You can then see it at the league level in the hub."
-            Live and Review sit next to each other here in the same order they do on the home page, because
-            they are the same pair of questions at a different scale: what is happening, then what happened. */}
-        {tab === "live" && (
-          <LiveMatchup leagues={leagues} leagueId={leagueId} onGameDay={onGameDay} />
-        )}
+        {/* ---- THE LIVE TAB IS GONE - 29u, and this is where it used to render.
+            It merged into Matchup in 29r ("you can look at 'matchup' and 'live' - these should really be
+            combined"), and `setTab` has mapped "live" onto "lineup" ever since - so `tab === "live"` had
+            been unreachable for two builds while the screen behind it stayed in the bundle. That matters
+            beyond dead weight: LiveMatchup.jsx was written against the two-state played/not model and
+            still counted a man in the third quarter as "yet to play", so anyone reading it for reference
+            would have found a confident, wrong answer with nothing to say it never rendered.
+            WARNING: `setTab`'s "live" -> "lineup" mapping stays - a session restored from before 29r can
+            still carry that value, and it has to land on the merged tab rather than on nothing. */}
 
         {/* ---- REVIEW TAB (29m) ----
             One league's worth of the same review the cross-league page shows. `scope="league"` only tells
@@ -17825,7 +17965,15 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
           const lv = cachedLive(leagues) || await loadLive(leagues);
           const done = new Set();
           ((lv && lv.leagues) || []).forEach((L) => {
-            [L && L.me, L && L.opp].forEach((s) => (s && s.players || []).forEach((p) => { if (p.played) done.add(String(p.sid)); }));
+            /* ⚠ A MAN CURRENTLY PLAYING HAS TAKEN THE FIELD — 29u. This read `p.played`, which is false
+               throughout a game, so a starter in the second quarter still lit the "1 to check" badge and
+               sent Trey off to check the status of somebody he was watching play. The question this set
+               answers is "has he shown he is active this week", and both the live and done phases answer
+               yes; only a player who has not kicked off can still be a genuine question. */
+            [L && L.me, L && L.opp].forEach((s) => (s && s.players || []).forEach((p) => {
+              const on = p.phase ? (p.phase === "done" || p.phase === "live") : !!p.played;
+              if (on) done.add(String(p.sid));
+            }));
           });
           if (done.size) playedOf = (sid) => done.has(String(sid));
         } catch (e) { /* no live read: flags stay as they were */ }
@@ -37654,4 +37802,3 @@ const InSeason = lazyScreen(() => import("./screens/InSeason.jsx"));
 const WeeklyReview = lazyScreen(() => import("./screens/WeeklyReview.jsx"));
 /* ⭐ 29n — one league's live matchup, for the hub tab beside Review. Its own chunk, and lazy, because it
    polls: a timer in the draft bundle is a timer running during a draft. */
-const LiveMatchup = lazyScreen(() => import("./screens/LiveMatchup.jsx"));
