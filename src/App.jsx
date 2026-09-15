@@ -96,7 +96,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29q";
+const BUILD_TAG = "2026.07.29s";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -9266,6 +9266,34 @@ export default function App() {
   const [authError, setAuthError] = useState(null);
   const [authCode, setAuthCode] = useState(null);   // machine-readable reason, so the modal can offer a way out
   const [leagues, setLeagues] = useState([]);
+  /* ⭐⭐⭐⭐⭐ LEAGUES YOU HAVE PUT AWAY — 29r.
+     ================================================================================================
+     Trey: "I want the ability to remove leagues (or add them back) with linked accounts. For example,
+     there are leagues that either never drafted OR they were used as a placeholder. I would like to remove
+     them from what I see… but I still want the ability to add them later… It would save on every future
+     visit."
+
+     A Sleeper account accumulates junk — the league a friend made and abandoned, the placeholder from two
+     Augusts ago — and none of it can be deleted from our side, because it is not ours to delete. It still
+     costs him on every screen: a row in the week table, a fan-out request on Game Day, a line in the
+     review, a league that can never resolve a roster.
+
+     ⚠ HIDDEN, NEVER DELETED, AND THAT DISTINCTION IS THE WHOLE FEATURE. Nothing is removed — not the
+       league, not its draft, not its history. This is a view filter stored as a list of ids, so putting one
+       back is one checkbox and everything it ever had is still there. Deleting would have been less code
+       and unrecoverable.
+     ⚠ ON THE USER RECORD, NOT IN localStorage. "It would save on every future visit" includes the visits
+       from his phone, and browser storage does not travel. `updateUser` mirrors it to the backend like
+       every other preference.
+     ================================================================================================ */
+  const hiddenLeagues = React.useMemo(
+    () => new Set(((user && user.hiddenLeagues) || []).map(String)),
+    [user && user.hiddenLeagues]);
+  /* What every screen sees. `leagues` itself stays whole so the chooser can offer the hidden ones back —
+     see ConnectLeagueModal, which is the ONLY consumer that gets the unfiltered list. */
+  const visibleLeagues = React.useMemo(
+    () => (hiddenLeagues.size ? leagues.filter((l) => !hiddenLeagues.has(String(l.id))) : leagues),
+    [leagues, hiddenLeagues]);
   const [activeId, setActiveId] = useState(nav0.activeId || null);
   // ⭐ 29q — set when the draft plan sends the user here to write a strategy; cleared once consumed.
   const [openStrategyFor, setOpenStrategyFor] = useState(null);
@@ -10326,7 +10354,7 @@ export default function App() {
           <button onClick={() => setUpdateReady(false)} title="Dismiss — I'll refresh later" style={{ background: "transparent", border: "none", color: "#151002", cursor: "pointer", padding: 4, display: "flex", opacity: 0.7 }}><i className="ti ti-x" style={{ fontSize: 15 }} aria-hidden="true" /></button>
         </div>
       )}
-      {route === "home" && user?.paid && <PaidHub user={user} leagues={leagues} funMocks={funMocks}
+      {route === "home" && user?.paid && <PaidHub user={user} leagues={visibleLeagues} allLeagues={leagues} funMocks={funMocks}
         onLibrary={() => setRoute("library")} onNewLeague={() => { setSetupReturn(null); setSetupConnect(null); setRoute("setup"); }} onDatabase={() => setRoute("database")}
         onConnectLeague={(c) => { setSetupReturn(null); setSetupConnect(c || null); setRoute("setup"); }}
         onOfficial={(id) => { setDraftTab(officialTabFor(leagues.find((l) => l.id === id))); setActiveId(id); setRoute("draft"); }} onMock={startMock} onQuickMock={() => setQuickMockOpen(true)}
@@ -10375,7 +10403,7 @@ export default function App() {
           {msg ? <div className="mut" style={{ fontSize: 11, lineHeight: 1.5, marginBottom: 18, padding: "8px 10px", border: "1px solid var(--line)", borderRadius: 8, background: "var(--panel2)", fontFamily: "var(--mono)", wordBreak: "break-word" }}>Details (for support): {msg}</div> : null}
           <button className="btn btn-gold" onClick={() => setRoute("home")}>← Back to your leagues</button>
         </div>
-      )}><TeamHub user={user} leagues={leagues} leagueId={hubLeagueId} onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} onUpdate={updateUser} onGameDay={() => setRoute("gameday")} /></Boundary>}
+      )}><TeamHub user={user} leagues={visibleLeagues} leagueId={hubLeagueId} onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} onUpdate={updateUser} onGameDay={() => setRoute("gameday")} /></Boundary>}
       {route === "teamHub" && hubLeagueId && !user && (
         <HubShell title="Team hub" onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} user={user}><HubLoading /></HubShell>
       )}
@@ -10390,14 +10418,14 @@ export default function App() {
       {route === "trends" && user && <TrendsPage user={user} onSignOut={signOut} onHome={() => setRoute("home")} onBack={() => goBack()} />}
       {/* ⭐⭐⭐ 29p — My Week, Game Day and the Review are one screen now, so all three doors land on the
           same route with a different tab. `myWeekView` doubles as the tab to open on. */}
-      {route === "myweek" && user && <InSeason user={user} leagues={leagues}
+      {route === "myweek" && user && <InSeason user={user} leagues={visibleLeagues}
         initialTab={myWeekView === "review" ? "review" : myWeekView === "gameday" ? "gameday" : "myweek"}
         onHome={() => setRoute("home")} onBack={() => goBack()} backLabel={backLabelOf()}
         onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }}
         onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }} />}
       {/* The standalone Game Day route is kept so old links and the hub's "See all leagues" still work; it
           simply opens the shell on the Game Day tab. */}
-      {route === "gameday" && user && <InSeason user={user} leagues={leagues} initialTab="gameday"
+      {route === "gameday" && user && <InSeason user={user} leagues={visibleLeagues} initialTab="gameday"
         onHome={() => setRoute("home")} onBack={() => goBack()} backLabel={backLabelOf()}
         onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }}
         onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }} />}
@@ -14142,6 +14170,52 @@ function lineupValue(roster, sf) {
 // rosters for swaps that raise BOTH teams' starting lineups, which is only possible because the hub scores
 // every roster in the league on one engine. Players carry SEASON value here, not this week's points: a
 // trade is a season decision and a bye week must not make someone look tradeable.
+/* ⭐⭐⭐⭐⭐ WHAT A PLAYER IS WORTH, NOT WHAT HE SCORES — 29r.
+   ================================================================================================
+   Trey: "the 'trades' tab is spitting out some horrible trades (such as Brenton Strange for Jalen Hurts).
+   There is just no way they would do this."
+
+   No, there is not — and the generator had no way of knowing that, because the only test it applied was
+   "does each side's STARTING LINEUP go up". That test is satisfiable by an absurd trade and this is exactly
+   how: if I already start a good quarterback, Hurts is worth almost nothing to my lineup, and a tight end
+   who beats my current one raises it. Meanwhile the man receiving Hurts obviously improves too. Both
+   lineups rise, the filter is happy, and it proposes robbery.
+
+   The missing quantity is ASSET VALUE — what the player is worth in the abstract, not what he adds to one
+   particular lineup today. And raw season points cannot stand in for it, because positions are not on the
+   same scale: a starting quarterback scores roughly 350 and a starting tight end roughly 150, so any
+   points comparison makes every QB look like a king's ransom and every TE like a throw-in.
+
+   The honest measure is POINTS ABOVE REPLACEMENT, and the league itself supplies the replacement level:
+   sort every rostered player at a position and look at the one who would be the last starter if every team
+   started its best. A QB who beats that bar by 40 and a TE who beats it by 40 are worth the same, which is
+   the thing the old code could not express.
+
+   ⚠ COMPUTED FROM THIS LEAGUE, NOT A CONSTANT. Replacement level in a 10-team 1-QB league and a 14-team
+     superflex are completely different, and a hard-coded table would be wrong in most leagues. Everything
+     here is derived from the rosters passed in.
+   ================================================================================================ */
+function replacementByPos(rosters, sf, teams) {
+  const byPos = new Map();
+  (rosters || []).forEach((r) => (r || []).forEach((p) => {
+    if (!p || !p.pos) return;
+    const k = String(p.pos).toUpperCase();
+    if (!byPos.has(k)) byPos.set(k, []);
+    byPos.get(k).push(Number(p.pts) || 0);
+  }));
+  const n = teams || Math.max(1, (rosters || []).length);
+  /* Roughly how many of each position are STARTED league-wide. Flex is why RB and WR carry more than their
+     nominal slots — in a 12-team league about a third of flexes go to each. */
+  const STARTED = { QB: sf ? 1.8 : 1, RB: 2.6, WR: 2.6, TE: 1.2, K: 1, DEF: 1, DST: 1 };
+  const out = {};
+  byPos.forEach((vals, pos) => {
+    vals.sort((a, b) => b - a);
+    const idx = Math.max(0, Math.min(vals.length - 1, Math.round(n * (STARTED[pos] != null ? STARTED[pos] : 1)) - 1));
+    out[pos] = vals[idx] || 0;
+  });
+  return out;
+}
+
 function findTrades(me, others, opts) {
   const o = opts || {};
   const sf = o.sf, depth = o.depth || 14, max = o.max || 8;
@@ -14149,6 +14223,13 @@ function findTrades(me, others, opts) {
   if (!me || !me.roster || !me.roster.length) return [];
   const base = lineupValue(me.roster, sf);
   const mine = me.roster.slice().sort((a, b) => (b.pts || 0) - (a.pts || 0)).slice(0, depth);
+
+  const allRosters = [me.roster].concat((others || []).map((t) => t && t.roster).filter(Boolean));
+  const repl = replacementByPos(allRosters, sf, allRosters.length);
+  // What he is worth to ANYBODY. Floored at zero: a player below replacement is not a negative asset, he
+  // is simply a roster body, and negative values would make lopsided ratios look reasonable.
+  const worth = (p) => Math.max(0, (Number(p && p.pts) || 0) - (repl[String(p && p.pos).toUpperCase()] || 0));
+
   const out = [];
   (others || []).forEach((them) => {
     if (!them || !them.roster || !them.roster.length) return;
@@ -14156,15 +14237,30 @@ function findTrades(me, others, opts) {
     const theirs = them.roster.slice().sort((a, b) => (b.pts || 0) - (a.pts || 0)).slice(0, depth);
     mine.forEach((give) => {
       const myRest = me.roster.filter((p) => p.sid !== give.sid);
+      const wGive = worth(give);
       theirs.forEach((get) => {
         // A same-position swap of near-equal players is a wash nobody accepts; skip the noise.
         if (give.pos === get.pos && Math.abs((give.pts || 0) - (get.pts || 0)) < 6) return;
+
+        /* ⭐⭐⭐⭐⭐ THE FAIRNESS GATE. Both directions, on purpose: a proposal that fleeces me is as
+           useless as one that fleeces him — I would not send it either. The band is deliberately wide
+           (a 35% edge either way) because real trades are not symmetrical and a tab that only offers
+           dead-even swaps offers nothing; what it excludes is the order-of-magnitude mismatch that made
+           this tab embarrassing. */
+        const wGet = worth(get);
+        const hi = Math.max(wGive, wGet), lo = Math.min(wGive, wGet);
+        if (hi <= 0) return;                     // two replacement-level bodies: not a trade, just churn
+        if (lo / hi < 0.65) return;              // one side is giving up far more than he is getting back
+
         const myGain = Math.round((lineupValue(myRest.concat([get]), sf) - base) * 10) / 10;
         if (myGain <= minGain) return;
         const theirRest = them.roster.filter((p) => p.sid !== get.sid);
         const theirGain = Math.round((lineupValue(theirRest.concat([give]), sf) - theirBase) * 10) / 10;
         if (theirGain <= minGain) return;
-        out.push({ team: them, give, get, myGain, theirGain, fair: Math.min(myGain, theirGain) });
+        out.push({ team: them, give, get, myGain, theirGain, fair: Math.min(myGain, theirGain),
+          // Surfaced so the card can SHOW why this is a sane swap rather than asking to be trusted.
+          giveWorth: Math.round(wGive), getWorth: Math.round(wGet),
+          balance: Math.round((lo / hi) * 100) });
       });
     });
   });
@@ -14462,6 +14558,114 @@ function buildDigest(o) {
   return { headline, sections: S, text };
 }
 
+/* The hover panel for the week table. One renderer, four kinds — see `showCard` in HomeWeekStrip. */
+function WeekHoverCard({ card, bySid, winTone }) {
+  if (!card || !card.L) return null;
+  const { L, kind } = card;
+  const r1 = (n) => (Number.isFinite(n) ? Math.round(n * 10) / 10 : n);
+  const F = L.forecast || null;
+  const nameOf = (sid) => (bySid.get(String(sid)) || {}).name || `Player ${sid}`;
+  const posOf = (sid) => (bySid.get(String(sid)) || {}).pos || null;
+  const teamOf = (sid) => (bySid.get(String(sid)) || {}).team || null;
+
+  const Rows = ({ players, tone, empty }) => {
+    const list = (players || []).slice().sort((a, b) => (b.proj || 0) - (a.proj || 0));
+    if (!list.length) return <div className="mut" style={{ fontSize: 11 }}>{empty}</div>;
+    return (
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 34px 40px", gap: "0 8px" }}>
+        <div className="mut" style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800 }}>Player</div>
+        <div className="mut" style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800, textAlign: "right" }}>Now</div>
+        <div className="mut" style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800, textAlign: "right" }}>Proj</div>
+        {list.map((p) => (
+          <React.Fragment key={p.sid}>
+            <span style={{ fontSize: 11.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              color: p.played ? "var(--ink)" : tone }}>
+              {nameOf(p.sid)}
+              <span className="mut" style={{ fontSize: 9.5 }}> {posOf(p.sid)}{teamOf(p.sid) ? `·${teamOf(p.sid)}` : ""}</span>
+            </span>
+            <span className="num" style={{ fontSize: 11.5, textAlign: "right", color: p.played ? "var(--ink)" : "var(--mut)" }}>
+              {p.played ? r1(p.pts) : "—"}
+            </span>
+            <span className="num mut" style={{ fontSize: 11.5, textAlign: "right" }}>{Number.isFinite(p.proj) ? r1(p.proj) : "—"}</span>
+          </React.Fragment>
+        ))}
+      </div>
+    );
+  };
+
+  let body = null, title = "";
+  if (kind === "me" || kind === "opp") {
+    const side = kind === "me" ? L.me : L.opp;
+    const tone = kind === "me" ? "#5FD0A8" : "#F2655C";
+    title = `${(side && side.teamName) || (kind === "me" ? "Your team" : "Opponent")}`;
+    body = (
+      <>
+        <div style={{ display: "flex", gap: 14, marginBottom: 7, fontSize: 11.5 }}>
+          <span><span className="mut">Now </span><b className="num">{r1(side.pts)}</b></span>
+          {F && <span><span className="mut">Projected </span><b className="num">{r1((kind === "me" ? F.me : F.opp).projected)}</b></span>}
+          <span><span className="mut">Left </span><b className="num">{side.yetToPlay}</b></span>
+        </div>
+        <Rows players={side.players} tone={tone} empty="No starters recorded." />
+      </>
+    );
+  } else if (kind === "left") {
+    title = "Still to play";
+    const mine = (L.me.players || []).filter((p) => !p.played);
+    const theirs = (L.opp.players || []).filter((p) => !p.played);
+    body = (
+      <div style={{ display: "grid", gap: 12, gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)" }}>
+        <div>
+          <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800, color: "#5FD0A8", marginBottom: 3 }}>
+            Yours ({mine.length})
+          </div>
+          <Rows players={mine} tone="#5FD0A8" empty="All of yours have played." />
+        </div>
+        <div>
+          <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800, color: "#F2655C", marginBottom: 3 }}>
+            Theirs ({theirs.length})
+          </div>
+          <Rows players={theirs} tone="#F2655C" empty="All of theirs have played." />
+        </div>
+      </div>
+    );
+  } else if (kind === "win") {
+    const t = F && Number.isFinite(F.win) ? winTone(F.win) : null;
+    title = "Where this is heading";
+    const liveMargin = r1(L.me.pts - L.opp.pts);
+    body = F ? (
+      <div style={{ fontSize: 11.5, lineHeight: 1.6 }}>
+        <div><b style={{ color: t ? t.color : "var(--ink)", fontSize: 14 }}>{Math.round(F.win * 100)}%</b>
+          <span className="mut"> to win — {t ? t.label : ""}</span></div>
+        <div className="mut" style={{ marginTop: 4 }}>
+          {liveMargin === 0 ? "Level right now" : liveMargin > 0 ? `Up ${liveMargin} right now` : `Down ${Math.abs(liveMargin)} right now`}
+          {` · ${L.me.yetToPlay} of yours and ${L.opp.yetToPlay} of theirs still to play.`}
+        </div>
+        <div className="mut" style={{ marginTop: 3 }}>
+          Projections add <b className="num" style={{ color: "var(--ink)" }}>{r1(F.me.remaining)}</b> to you
+          and <b className="num" style={{ color: "var(--ink)" }}>{r1(F.opp.remaining)}</b> to them
+          {Number.isFinite(F.margin) && <> — finishing <b className="num" style={{ color: F.margin >= 0 ? "#5FD0A8" : "#F2655C" }}>
+            {F.margin >= 0 ? "+" : ""}{r1(F.margin)}</b></>}.
+        </div>
+        {F.unknown > 0 && (
+          <div className="mut" style={{ marginTop: 3 }}>
+            {F.unknown} starter{F.unknown === 1 ? " has" : "s have"} no projection, so this is rougher than usual.
+          </div>
+        )}
+      </div>
+    ) : <div className="mut" style={{ fontSize: 11.5 }}>No forecast for this matchup yet.</div>;
+  }
+
+  return (
+    <div data-weekhover={kind} style={{ position: "fixed", left: card.x, top: card.y, zIndex: 120,
+      pointerEvents: "none", maxWidth: 340, minWidth: 220 }}>
+      <div className="panel" style={{ padding: "9px 11px", boxShadow: "0 10px 30px #000a", borderColor: "var(--line2)" }}>
+        <div className="disp" style={{ fontSize: 11.5, fontWeight: 800, marginBottom: 5 }}>{title}</div>
+        {body}
+      </div>
+    </div>
+  );
+}
+
 /* ⭐⭐⭐⭐ THE BRIEF'S TABLE — 29q. One tiny renderer for every tabular section, so "prettier" is a
    property of the brief rather than six hand-laid grids that drift apart.
    Each cell is a small object: `t` the text, plus flags for how to treat it (num → tabular figures,
@@ -14565,8 +14769,44 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [posture, setPosture] = useState(null); // null until we auto-detect; user can override
-  const [tab, setTab] = useState("notes");     // notes(Summary) | lineup | freeagents | trades | roster | league
+  /* ⚠ "live" WAS A TAB UNTIL 29r and may still be sitting in a restored session. Mapped onto the merged
+     Matchup tab rather than left to render nothing. */
+  const [tab, setTab0] = useState("notes");    // notes(Summary) | lineup | freeagents | trades | roster | league
+  const setTab = (t) => setTab0(t === "live" ? "lineup" : t);
   const [briefOpen, setBriefOpen] = useState(false); // the weekly brief modal
+  /* ⭐⭐⭐⭐⭐ MATCHUP AND LIVE ARE ONE SCREEN — 29r.
+     Trey: "you can look at 'matchup' and 'live' — these should really be combined. You should be able to
+     see the live points scored and then under would show the projected points to show how the expectation
+     went."
+
+     They were two tabs because they were built for two moments — the projection you read on Saturday, the
+     scoreboard you watch on Sunday — and the split stopped making sense the moment both numbers mattered
+     at once. What you want during the games is not one or the other; it is the comparison: he was projected
+     14 and he has 27, she was projected 22 and has 3. That is a single row with two figures in it, and it
+     cannot be assembled by flicking between tabs.
+
+     ⚠ FROM THE SHARED LIVE READ, not a new fetch. Game Day and the home strip already hold this exact
+       payload for every connected league (livecache.js); taking the one league we need out of it means the
+       hub can never show a score that disagrees with the home page. */
+  const [liveBySid, setLiveBySid] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { cachedLive, loadLive } = await import("./livecache.js");
+        const lv = cachedLive(leagues) || await loadLive(leagues);
+        if (!alive || !lv) return;
+        const row = (lv.leagues || []).find((L) => String(L.leagueId) === String(leagueId));
+        if (!row) return;
+        const m = new Map();
+        [row.me, row.opp].forEach((side) => ((side && side.players) || []).forEach((pp) => {
+          m.set(String(pp.sid), { pts: pp.pts, played: !!pp.played, proj: pp.proj });
+        }));
+        if (m.size) setLiveBySid(m);
+      } catch { /* no live read: the matchup shows projections exactly as it always did */ }
+    })();
+    return () => { alive = false; };
+  }, [leagues, leagueId, viewWeek]);
   const [briefCopied, setBriefCopied] = useState(false);
   const [posSortCol, setPosSortCol] = useState("all"); // Positional strength grid: sort by "all"|QB|RB|WR|TE
   const [faPosFilter, setFaPosFilter] = useState("all"); // Free-agent list position filter: "all"|QB|RB|WR|TE|K|DST
@@ -14927,14 +15167,33 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     //  - Posture matters: in win-now/balanced, a proven veteran producer is a KEEP even if he's older, so we
     //    also protect anyone with real season value. Only in rebuild do we let an aging vet be the casualty
     //    (and even then, only for a younger player), because that's when trading age for youth makes sense.
+    /* ⚠ JUDGE A CANDIDATE AT HIS OWN POSITION, NOT THE FREE AGENT'S — 29r. These thresholds were all
+       indexed by `p.pos`, the position of the player being ADDED, which is only correct while the drop
+       list is same-position (it was). Widening the search below makes the distinction load-bearing: asking
+       whether your backup kicker clears the startable bar *for a running back* is not a question with a
+       meaningful answer. */
     const protectedFromDrop = (mp) => {
+      const q2 = mp.pos || p.pos;
       if (rosterableByAdp(mp)) return true;                          // rostered everywhere
-      if (seasonOf(mp) >= startableCut[p.pos] * 0.92) return true;   // startable by season value
-      if (seasonOf(mp) >= (eliteTierPts[p.pos] || 0) * 0.9) return true; // proven elite-tier producer (ADP-independent)
-      if (activePosture !== "rebuild" && seasonOf(mp) >= startableCut[p.pos] * 0.75) return true; // proven producer in a contending build
+      if (seasonOf(mp) >= (startableCut[q2] || 0) * 0.92) return true;   // startable by season value
+      if (seasonOf(mp) >= (eliteTierPts[q2] || 0) * 0.9) return true; // proven elite-tier producer (ADP-independent)
+      if (activePosture !== "rebuild" && seasonOf(mp) >= (startableCut[q2] || 0) * 0.75) return true; // proven producer in a contending build
       return false;
     };
-    let droppableList = posList.filter((mp) => !protectedFromDrop(mp));
+    /* ⭐⭐⭐⭐⭐ YOU DROP FROM THE WHOLE BENCH, NOT FROM ONE POSITION — 29r.
+       This searched `posList` — your players at the FREE AGENT's position — which quietly assumed waiver
+       claims are position-for-position. They are not: to add a running back you drop whoever is least
+       useful on your roster, and that is very often a spare kicker or a third tight end. The narrow search
+       is the deeper reason behind Trey's complaint — "no obvious drop" appeared constantly because a good
+       roster rarely has a droppable player at the ONE position you happen to be shopping, while almost
+       every roster has a droppable body somewhere.
+       ⚠ STARTERS ARE NEVER CASUALTIES. Anyone in the current lineup is out of the pool regardless of what
+         the value thresholds say — proposing you drop a man you are starting this week is not advice. */
+    const startingSids = new Set((myTeam.starters || []).filter(Boolean).map(String));
+    const dropPool = (myRoster || []).filter((mp) => mp && mp.sid != null && !startingSids.has(String(mp.sid)));
+    let droppableList = (dropPool.length ? dropPool : posList)
+      .filter((mp) => !protectedFromDrop(mp))
+      .sort((a, b) => (seasonOf(b) || 0) - (seasonOf(a) || 0));
     // In rebuild, an aging vet can be the casualty — but only when the incoming FA is actually younger.
     if (activePosture === "rebuild" && !droppableList.length) {
       const faAge = p.age || 27;
@@ -14979,6 +15238,42 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
       else if (young && hasUpside) { verdict = "add"; reason = `young with upside — worth a bench stash`; }
       else if (upgrade >= 0.8) { verdict = "stream"; reason = `modest ${p.pos} depth`; }
       else { verdict = "hold"; reason = `below rosterable value for your team`; }
+    }
+    /* ⭐⭐⭐⭐⭐ GREEN HAS TO MEAN "DO THIS" — 29r.
+       Trey: "On the 'Free agents' tab every name is highlighted green despite saying there is no obvious
+       drop. I want the green to draw attention to something you should really do."
+
+       He caught the list contradicting itself on the same row: "Add" in green, and beside it "no obvious
+       drop — your bench is all worth keeping". Both halves were honest and together they were nonsense,
+       because an add you have nobody to drop for is not an add — it is a wish. With fifteen rows of it the
+       colour stopped carrying information, which is the failure mode of every status colour applied too
+       freely: if everything is highlighted, nothing is.
+
+       So "add" now requires the move to be POSSIBLE as well as desirable. Where it is not, the row keeps
+       the player and the reasoning — he may still be the best thing on the wire — but it drops to a
+       quieter tier and says what is actually stopping you, which is a sentence you can act on ("free a
+       spot first") rather than a colour you learn to ignore.
+
+       ⚠ THE LIST IS NOT FILTERED, ONLY RE-TONED. Hiding these would be worse: "who is out there" is a real
+         question and the answer does not depend on whether your bench is full today. */
+    /* ⚠ ONE EXEMPTION, AND IT IS NOT AN EDGE CASE: an EMPTY STARTING SLOT. If you have nobody startable at
+       a position, "nothing is worth dropping" is the wrong conclusion — you are fielding a hole every
+       week, and something on that bench is worth less than a body who can start. Demoting this one would
+       have turned the most urgent row on the page grey, which is the opposite failure to the one being
+       fixed. Same for an implausible listing, which is a different question entirely (is this real?) and
+       has its own colour. */
+    /* ⚠ AND NOT FOR A KICKER OR A DEFENCE. "Worth dropping someone for" is a strong claim and it is never
+       true of a streaming position: the week-to-week spread at K is inside the noise, and the upgrade
+       figure there is large for uninteresting reasons (an empty slot compares against zero). A nine-point
+       kicker "upgrade" outranking a real running back is exactly the sort of green that taught him to stop
+       reading the colour. */
+    const streamingPos = p.pos === "K" || p.pos === "DST" || p.pos === "DEF";
+    const mustFill = !streamingPos && (needByPos[p.pos] === 999 || upgrade >= 2);
+    if (verdict === "add" && !worstOnRoster && !mustFill) {
+      verdict = "squeeze";
+      reason = `${reason} — but nothing on your bench is worth dropping for him`;
+    } else if (verdict === "add" && !worstOnRoster && mustFill) {
+      reason = `${reason} — worth dropping someone for`;
     }
     const score = base + upgrade * 2 + needBoost + startableBoost + assetBoost + (young && isDynasty ? 8 : 0);
     return { p, score, upgrade, verdict, reason, worstOnRoster, startable, scarce, eliteAsset, implausible };
@@ -15462,7 +15757,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
           {/* ⭐⭐⭐ 29m — "I want this to be able to be looked at within a specific league level (league
               hub)". Placed after Matchup, because the order of these tabs is the order of the week: what
               is happening, then what happened. Same component the cross-league view uses. */}
-          {[["notes", "Summary", "ti-clipboard-text"], ["lineup", "Matchup", "ti-swords"], ["live", "Live", "ti-activity-heartbeat"], ["review", "Review", "ti-history"], ["freeagents", "Free agents", "ti-user-plus"], ["trades", "Trades", "ti-arrows-exchange"], ["roster", "My roster", "ti-users"], ["league", "League", "ti-trophy"]].map(([k, label, icon]) => (
+          {[["notes", "Summary", "ti-clipboard-text"], ["lineup", "Matchup", "ti-swords"], ["review", "Review", "ti-history"], ["freeagents", "Free agents", "ti-user-plus"], ["trades", "Trades", "ti-arrows-exchange"], ["roster", "My roster", "ti-users"], ["league", "League", "ti-trophy"]].map(([k, label, icon]) => (
             <button key={k} className="btn btn-mini" style={{ background: tab === k ? "var(--gold)" : "transparent", color: tab === k ? "#151002" : "var(--ink)", fontWeight: tab === k ? 700 : 400 }} onClick={() => setTab(k)}>
               <i className={`ti ${icon}`} style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />{label}
             </button>
@@ -15694,16 +15989,55 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       <div className="mut" style={{ fontSize: 10, whiteSpace: "nowrap" }}>{p.matchupStr || p.team}{p.bye === data.week ? " · BYE" : ""}{p.noGame ? " · no game" : ""}</div>
                     </div>
                   ) : <div style={{ flex: 1, color: "var(--mut)", fontSize: 12, textAlign: align === "right" ? "right" : "left" }}>—</div>;
-                  const mePts = row.me ? row.me.pts : 0;
-                  const oppPts = row.opp ? row.opp.pts : 0;
-                  const meWins = row.me && row.opp && mePts >= oppPts;
-                  const oppWins = row.me && row.opp && oppPts > mePts;
+                  /* ⭐⭐⭐⭐⭐ LIVE ON TOP, PROJECTED UNDERNEATH — 29r. Trey: "You should be able to see the
+                     live points scored and then under would show the projected points to show how the
+                     expectation went."
+                     The pair is the point. One number tells you the score; two tell you the story — a 27
+                     under a projected 14 is a slot you are winning BECAUSE of him, and a 3 under a 22 is
+                     where the afternoon went wrong. */
+                  const lv = (p) => (p && liveBySid ? liveBySid.get(String(p.sid)) : null);
+                  const liveOf = (p) => { const x = lv(p); return x && x.played ? Number(x.pts) : null; };
+                  const projOf = (p) => (p ? Number(p.pts) || 0 : 0);
+                  const meLiveP = liveOf(row.me), oppLiveP = liveOf(row.opp);
+                  const anyLive = meLiveP != null || oppLiveP != null;
+                  // Compare on what is REAL where both have played, and on projection until then.
+                  const meCmp = anyLive ? (meLiveP != null ? meLiveP : 0) : projOf(row.me);
+                  const oppCmp = anyLive ? (oppLiveP != null ? oppLiveP : 0) : projOf(row.opp);
+                  const gap = Math.round((meCmp - oppCmp) * 10) / 10;
+                  const meWins = row.me && row.opp && gap > 0;
+                  const oppWins = row.me && row.opp && gap < 0;
+                  /* ⭐⭐⭐⭐ "make it clear which side scored more by position." The winning figure is
+                     coloured AND the slot label carries an arrow toward the side that is ahead, with the
+                     margin printed under it — so the advantage survives greyscale and says how big it is,
+                     rather than leaving you to subtract two numbers on every row. */
+                  const num = (live, proj, wins, align) => (
+                    <span style={{ width: 52, flexShrink: 0, textAlign: align, display: "inline-block" }}>
+                      <span className="num" style={{ fontWeight: 800, fontSize: 13,
+                        color: wins ? "var(--green)" : "var(--ink)" }}>
+                        {live != null ? live.toFixed(1) : proj.toFixed(1)}
+                      </span>
+                      {live != null && (
+                        <span className="num mut" style={{ display: "block", fontSize: 9.5, lineHeight: 1.2 }}>
+                          proj {proj.toFixed(1)}
+                        </span>
+                      )}
+                    </span>
+                  );
                   return (
-                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", background: "var(--panel2)", borderRadius: 7 }}>
+                    <div key={i} data-hubslot={row.slot.label} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", background: "var(--panel2)", borderRadius: 7 }}>
                       {cell(row.me, "left")}
-                      <span className="num" style={{ fontWeight: 700, fontSize: 12.5, width: 38, textAlign: "right", color: meWins ? "var(--green)" : "var(--ink)" }}>{mePts.toFixed(2)}</span>
-                      <span className="disp" style={{ fontSize: 9.5, fontWeight: 700, color: row.slot.color, width: 62, textAlign: "center", flexShrink: 0 }}>{row.slot.label}</span>
-                      <span className="num" style={{ fontWeight: 700, fontSize: 12.5, width: 38, color: oppWins ? "var(--green)" : "var(--ink)" }}>{oppPts.toFixed(2)}</span>
+                      {num(meLiveP, projOf(row.me), meWins, "right")}
+                      <span style={{ width: 62, textAlign: "center", flexShrink: 0 }}>
+                        <span className="disp" style={{ fontSize: 9.5, fontWeight: 700, color: row.slot.color, display: "block" }}>
+                          {meWins ? "◀ " : ""}{row.slot.label}{oppWins ? " ▶" : ""}
+                        </span>
+                        {(meWins || oppWins) && (
+                          <span className="num mut" style={{ fontSize: 9, display: "block", lineHeight: 1.2 }}>
+                            {Math.abs(gap).toFixed(1)}
+                          </span>
+                        )}
+                      </span>
+                      {num(oppLiveP, projOf(row.opp), oppWins, "left")}
                       {cell(row.opp, "right")}
                     </div>
                   );
@@ -15799,8 +16133,13 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
               {faFiltered.map(({ p, upgrade, verdict, reason, worstOnRoster, implausible }) => {
+                /* ⚠ ONLY "ADD" IS GREEN, AND ONLY "ADD" IS FILLED. The tiers below it are things worth
+                    knowing, not things to do, and giving them the same weight is what turned the whole
+                    list green. "Squeeze" is the new middle: a player worth having whom you currently have
+                    no room for. */
                 const vc = verdict === "verify" ? { c: "var(--gold)", bg: "rgba(224,166,60,.14)", label: "Check first" }
                   : verdict === "add" ? { c: "var(--green)", bg: "rgba(95,208,168,.10)", label: "Add" }
+                  : verdict === "squeeze" ? { c: "var(--mut)", bg: "transparent", label: "No room" }
                   : verdict === "stream" ? { c: "var(--gold)", bg: "rgba(224,166,60,.10)", label: "Stream" }
                   : { c: "var(--mut)", bg: "transparent", label: "Hold" };
                 return (
@@ -15810,7 +16149,13 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name} <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · {p.team}{p.age ? ` · ${p.age}y` : ""}{p.rookie ? " · rookie" : ""}{p.noGame ? " · 0 this week" : ""}</span></div>
                       <div style={{ fontSize: 10.5, color: verdict === "add" ? "var(--green)" : verdict === "verify" ? "var(--gold)" : "var(--mut)", lineHeight: 1.35 }}>
                         {verdict === "verify" && <i className="ti ti-alert-triangle" style={{ fontSize: 10.5, marginRight: 4 }} aria-hidden="true" />}
-                        {reason}{verdict === "add" && worstOnRoster ? <span className="mut"> · drop candidate: {worstOnRoster.name}</span> : (verdict === "add" ? <span className="mut"> · no obvious drop — your bench is all worth keeping</span> : null)}
+                        {/* ⚠ THE OLD "no obvious drop" SUFFIX IS GONE FROM THE "add" PATH. It is the other
+                            half of the contradiction Trey found: a green Add row that also told him there
+                            was nobody to drop. That state now has its own tier (see the verdict gate), and
+                            the one case that stays green — an empty starting slot — says "worth dropping
+                            someone for" in the reason itself, so printing both produced a row arguing with
+                            itself twice over. */}
+                        {reason}{verdict === "add" && worstOnRoster ? <span className="mut"> · drop candidate: {worstOnRoster.name}</span> : null}
                       </div>
                     </div>
                     <div style={{ textAlign: "right", flexShrink: 0 }}>
@@ -15912,6 +16257,20 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                     <div style={{ display: "flex", gap: 14, marginTop: 9, flexWrap: "wrap", fontSize: 11.5 }}>
                       <span><b style={{ color: "var(--green)" }}>+{t.myGain}</b> <span className="mut">to your lineup</span></span>
                       <span><b style={{ color: "var(--ink)" }}>+{t.theirGain}</b> <span className="mut">to theirs</span></span>
+                      {/* ⭐⭐⭐ THE VALUE CHECK, SHOWN RATHER THAN ASSERTED. The lineup gains say the swap
+                          helps both teams; they do not say it is a swap anyone would accept, which is the
+                          exact gap that produced "Brenton Strange for Jalen Hurts". Points above
+                          replacement is what makes two positions comparable, so printing both sides of it
+                          lets him check the reasoning instead of taking the list on faith. */}
+                      {Number.isFinite(t.giveWorth) && Number.isFinite(t.getWorth) && (
+                        <span data-tradebalance={String(t.balance)} title="Season points above a replacement starter at each position — the only way to compare a QB with a TE">
+                          <span className="mut">value </span>
+                          <b className="num">{t.giveWorth}</b>
+                          <span className="mut"> for </span>
+                          <b className="num">{t.getWorth}</b>
+                          <span className="mut" style={{ fontSize: 10.5 }}> above replacement</span>
+                        </span>
+                      )}
                       {(() => {
                         const perWeek = Math.round((t.myGain / GAMES_IN_SEASON) * 10) / 10;
                         const d = perWeek > 0 ? oddsIfMeanShifts(perWeek) : null;
@@ -16625,6 +16984,32 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
   const [open, setOpen] = useState(true);
   // Looking ahead: null = this week (the live view), a number = that week's to-do list. See the stepper.
   const [ahead, setAhead] = useState(null);
+  /* ⚠ THIS BLOCK LIVES WITH THE OTHER HOOKS, ABOVE THE EARLY RETURN, AND THAT IS NOT TIDINESS. It was
+     first written next to the code that uses it — below `if (!view || !view.show) return null` — which
+     makes it a CONDITIONAL hook: on a quiet Wednesday the component returns before reaching it and calls
+     one fewer hook than it did on Sunday. React throws #310 and the whole home page renders the error
+     boundary. Builds clean, passes every type check, and breaks the moment the strip is hidden. */
+  /* ⭐⭐⭐⭐⭐ THE HOVER CARDS — 29r.
+     Trey: "when you hover on left, can you show which players are left for each team in a neat tabular
+     format. I would also like to be able to hover each column and show key details of side by side scoring
+     for each team, projections, etc."
+
+     A table row is a summary by construction: five numbers standing in for two full lineups. The numbers
+     are the right thing to SHOW — that is what makes fifteen leagues scannable — but each one is the
+     answer to a question you will sometimes want to open up, and a hover is the cheapest possible way to
+     open it without leaving the row.
+
+     ⚠ A `title` ATTRIBUTE CANNOT DO THIS. He asked for a neat tabular format, and native tooltips are
+       unstyled, unaligned, half-a-second late and cannot hold a table — so this is a real positioned
+       panel, which also means it must be kept inside the viewport by hand (see `showCard`).
+     ⚠ HOVER IS AN ENHANCEMENT, NEVER THE ONLY ROUTE. Every figure in a card is also printed in the row or
+       reachable on Game Day; nothing lives only behind a pointer, because a touch screen has none. */
+  const [card, setCard] = useState(null);   // { x, y, L, kind }
+  const showCard = (e, L, kind) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setCard({ L, kind, x: Math.min(r.left, (typeof window !== "undefined" ? window.innerWidth : 1200) - 340), y: r.bottom + 6 });
+  };
+  const hideCard = () => setCard(null);
   const [aheadData, setAheadData] = useState(null);   // { week, rows:[{name, flags, league}] } | "loading"
 
   useEffect(() => {
@@ -16680,6 +17065,8 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
   const R = (live && live.record) || null;   // projected vs live record — see api/src/lib/winprob.js
   const rooting = ((live && live.rooting) || []).filter((p) => p.net !== 0).slice(0, 4);
   const rows = ((live && live.leagues) || []).filter((l) => l && l.me && l.opp);
+  // Every starter by id, for the hover cards — the board already carries name, position, team and state.
+  const bySid = new Map(((live && live.rooting) || []).map((p) => [String(p.sid), p]));
   const tabs = [["live", "Live", view.live]].concat(view.reviewable ? [["review", "Review", false]] : []);
   const showTab = tabs.some(([k]) => k === tab) ? tab : "live";
 
@@ -16768,7 +17155,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
               {(() => {
                 const withWork = aheadData.rows.filter((r) => r.flags && r.flags.sev > 0);
                 return (
-                  <div style={{ fontSize: 12.5, marginBottom: withWork.length ? 8 : 0 }}>
+                  <div style={{ fontSize: 12.5, marginBottom: 8 }}>
                     {withWork.length
                       ? <><b style={{ color: "var(--gold)" }}>{withWork.length}</b>
                           <span className="mut"> of {aheadData.rows.length} league{aheadData.rows.length === 1 ? "" : "s"} {withWork.length === 1 ? "has" : "have"} something to sort out in week {ahead}.</span></>
@@ -16776,25 +17163,66 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                   </div>
                 );
               })()}
+              {/* ⭐⭐⭐⭐⭐ EVERY LEAGUE, NOT ONLY THE ONES WITH A PROBLEM — 29r.
+                  Trey: "When you go to a future week, it looks great… but it's also only showing leagues
+                  that have things to flag. I want to show all leagues, show the flags, show the
+                  projections / matchups, etc."
+
+                  Filtering to the flagged ones seemed like the kindness — why list nine clean leagues —
+                  and it was wrong for a specific reason: a league that is ABSENT is indistinguishable from
+                  a league that failed to load. He cannot tell "nothing to do here" from "we never read
+                  this one", which is the difference between reassurance and a silent gap. Every league
+                  gets a row; the clean ones say they are clean and the flagged ones lead. */}
               <div style={{ display: "flex", flexDirection: "column" }}>
-                {aheadData.rows.filter((r) => r.flags && r.flags.sev > 0).map((r) => {
+                {aheadData.rows.slice().sort((a2, b2) => ((b2.flags && b2.flags.sev) || 0) - ((a2.flags && a2.flags.sev) || 0)).map((r) => {
                   const f = r.flags;
-                  const SEV = { 3: "#F2655C", 2: "var(--gold)", 1: "#6BA8E5" };
+                  const sev = (f && f.sev) || 0;
+                  const SEV = { 3: "#F2655C", 2: "var(--gold)", 1: "#6BA8E5", 0: "#5FD0A8" };
+                  const h = r.hub || null;
+                  /* The matchup for that week, straight off the hub payload — which is where the team hub
+                     reads it from too, so the two cannot disagree about who you are playing.
+                     ⚠ THE OPPONENT IS REAL; A PROJECTED SCORE HERE WOULD NOT BE. `weekPoints` is 0 for a
+                       week that has not started, and the team hub's projected totals are computed on the
+                       CLIENT from the scored player pool — fifteen leagues' worth of that on the home page
+                       would be slow, and inventing a number to fill the column would be worse than leaving
+                       it out. So this shows who you play, and the score only once there is one. */
+                  const m = (h && h.matchup) || null;
+                  const opp = m ? {
+                    oppName: (m.opp && m.opp.teamName) || null,
+                    mePts: m.me && Number(m.me.weekPoints) || 0,
+                    oppPts: m.opp && Number(m.opp.weekPoints) || 0,
+                  } : null;
+                  const hasScore = opp && (opp.mePts > 0 || opp.oppPts > 0);
                   return (
-                    <div key={r.id} data-homeaheadrow={r.name} style={{ display: "flex", alignItems: "baseline",
-                      gap: 9, padding: "5px 2px", borderTop: "1px solid var(--line)", flexWrap: "wrap" }}>
-                      <span style={{ width: 7, height: 7, borderRadius: 99, background: SEV[f.sev] || "var(--mut)", flexShrink: 0 }} aria-hidden="true" />
+                    <div key={r.id} data-homeaheadrow={r.name} data-homeaheadsev={String(sev)}
+                      style={{ display: "flex", alignItems: "baseline", gap: 9, padding: "5px 2px",
+                        borderTop: "1px solid var(--line)", flexWrap: "wrap" }}>
+                      <span style={{ width: 7, height: 7, borderRadius: 99, background: SEV[sev] || "var(--mut)", flexShrink: 0 }} aria-hidden="true" />
                       <button onClick={() => onOpenTeam && onOpenTeam(r.league)}
                         style={{ cursor: "pointer", fontFamily: "inherit", background: "none", border: "none", padding: 0,
                           color: "var(--ink)", fontSize: 12.5, fontWeight: 700, textAlign: "left", flex: "0 1 auto" }}>
                         {r.name}
                       </button>
-                      <span className="mut" style={{ fontSize: 11.5, flex: "1 1 220px", minWidth: 0 }}>
-                        {f.out.length > 0 && <span style={{ color: "#F2655C" }}>Out: {f.out.join(", ")}</span>}
-                        {f.out.length > 0 && (f.check.length || f.bye.length) ? <span> · </span> : null}
-                        {f.check.length > 0 && <span style={{ color: "var(--gold)" }}>Check: {f.check.join(", ")}</span>}
-                        {f.check.length > 0 && f.bye.length ? <span> · </span> : null}
-                        {f.bye.length > 0 && <span style={{ color: "#6BA8E5" }}>Bye: {f.bye.join(", ")}</span>}
+                      {/* Who you play and what the projection makes of it. A future week has no score, so
+                          the projected totals ARE the matchup. */}
+                      {opp && (
+                        <span className="num mut" data-homeaheadproj={r.name} style={{ fontSize: 11.5, flexShrink: 0 }}>
+                          {opp.oppName ? `vs ${opp.oppName}` : "no opponent set"}
+                          {hasScore && (
+                            <> <b style={{ color: opp.mePts >= opp.oppPts ? "#5FD0A8" : "#F2655C" }}>
+                              {Math.round(opp.mePts * 10) / 10}–{Math.round(opp.oppPts * 10) / 10}
+                            </b></>
+                          )}
+                        </span>
+                      )}
+                      <span className="mut" style={{ fontSize: 11.5, flex: "1 1 200px", minWidth: 0 }}>
+                        {sev === 0 ? <span style={{ color: "#5FD0A8" }}>Nothing to sort out</span> : null}
+                        {f && f.out.length > 0 && <span style={{ color: "#F2655C" }}>Out: {f.out.join(", ")}</span>}
+                        {f && f.out.length > 0 && (f.check.length || f.bye.length) ? <span> · </span> : null}
+                        {f && f.check.length > 0 && <span style={{ color: "var(--gold)" }}>Check: {f.check.join(", ")}</span>}
+                        {f && f.check.length > 0 && f.bye.length ? <span> · </span> : null}
+                        {f && f.bye.length > 0 && <span style={{ color: "#6BA8E5" }}>Bye: {f.bye.join(", ")}</span>}
+                        {!f && <span style={{ color: "var(--mut)" }}>Couldn't read this league</span>}
                       </span>
                     </div>
                   );
@@ -16865,15 +17293,30 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
               find the two games you should actually be watching. Sorted by how close it is, because a
               forty-point win and a forty-point loss are equally finished and equally not worth your Sunday.
               ⚠ Its own horizontal scroll container, so a narrow phone scrolls the TABLE rather than the page. */}
+          {card && <WeekHoverCard card={card} bySid={bySid} winTone={winTone} />}
           {open && !!rows.length && (
             <div data-homeweektable={String(rows.length)} style={{ marginTop: 10, overflowX: "auto" }}>
               <table className="num" style={{ width: "100%", minWidth: 560, borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
+                  {/* ⭐⭐⭐⭐⭐ GROUPED BY SIDE, NOT BY METRIC — 29r.
+                      Trey: "I also don't love the columns of 'now' 'Proj' 'them' 'win' 'Left' — I agree
+                      with having columns, but maybe we need to organize them better. Think about how
+                      sleeper shows theirs on their site."
+
+                      The old header is genuinely confusing and it is worth naming why, because the fix is
+                      not cosmetic. Now / Proj / Them mixes two different groupings in one row: the first
+                      two are MY current and MY projected, and the third silently switches to THEIR
+                      projected. Three adjacent numbers where the third changes what is being compared —
+                      so reading across tells you nothing without stopping to decode the headers.
+
+                      Sleeper groups by SIDE, and that is the right primitive for a matchup: you and your
+                      opponent, each with a live score and where it is heading. Two cells, symmetrical,
+                      each internally consistent — and the comparison you actually want (mine vs theirs) is
+                      now left-to-right rather than a mental join across three columns. */}
                   <tr style={{ color: "var(--mut)", textAlign: "right" }}>
                     <th style={{ textAlign: "left", fontWeight: 600, padding: "4px 8px 6px 4px" }}>League</th>
-                    <th style={{ fontWeight: 600, padding: "4px 8px 6px" }} title="Points on the board right now">Now</th>
-                    <th style={{ fontWeight: 600, padding: "4px 8px 6px" }} title="Where this is heading once everyone has played">Proj</th>
-                    <th style={{ fontWeight: 600, padding: "4px 8px 6px" }}>Them</th>
+                    <th style={{ fontWeight: 600, padding: "4px 8px 6px" }} title="Your score now, and where it is heading">You</th>
+                    <th style={{ fontWeight: 600, padding: "4px 8px 6px" }} title="Their score now, and where it is heading">Opponent</th>
                     <th style={{ fontWeight: 600, padding: "4px 8px 6px" }} title="Chance of winning, from the projected margin and how much is still to play">Win</th>
                     <th style={{ fontWeight: 600, padding: "4px 4px 6px 8px" }} title="Your starters yet to play versus theirs">Left</th>
                     <th style={{ padding: "4px 4px 6px 8px" }} />
@@ -16920,19 +17363,33 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                             {(league && league.name) || L.leagueName || L.leagueId}
                           </button>
                         </td>
-                        <td style={{ textAlign: "right", padding: "5px 8px" }}>{r1(L.me.pts)}</td>
-                        <td style={{ textAlign: "right", padding: "5px 8px", fontWeight: 800 }}>
-                          {f ? r1(f.me.projected) : "—"}
+                        {/* ⭐⭐⭐⭐ ONE CELL PER SIDE: the live score, and under it where it is going. The
+                            arrow is doing real work — it says these two numbers are the same quantity at
+                            two moments, which is precisely what "Now" and "Proj" in separate columns
+                            failed to convey. */}
+                        <td data-homeweekside="me" onMouseEnter={(e) => showCard(e, L, "me")} onMouseLeave={hideCard}
+                          style={{ textAlign: "right", padding: "5px 8px", cursor: "help" }}>
+                          <span style={{ fontWeight: 800 }}>{r1(L.me.pts)}</span>
+                          {f && <span className="mut" style={{ fontSize: 10.5 }}> → {r1(f.me.projected)}</span>}
                         </td>
-                        <td style={{ textAlign: "right", padding: "5px 8px", color: "var(--mut)" }}>
-                          {f ? r1(f.opp.projected) : r1(L.opp.pts)}
+                        <td data-homeweekside="opp" onMouseEnter={(e) => showCard(e, L, "opp")} onMouseLeave={hideCard}
+                          style={{ textAlign: "right", padding: "5px 8px", cursor: "help" }}>
+                          <span style={{ fontWeight: 800, color: "var(--mut)" }}>{r1(L.opp.pts)}</span>
+                          {f && <span className="mut" style={{ fontSize: 10.5 }}> → {r1(f.opp.projected)}</span>}
                         </td>
-                        {/* Colour AND number AND, on hover, a word — never colour alone. */}
+                        {/* Colour AND number AND, on hover, the arithmetic — never colour alone. */}
                         <td data-homeweekwin={f ? String(Math.round(f.win * 100)) : ""} title={tone.label}
-                          style={{ textAlign: "right", padding: "5px 8px", fontWeight: 800, color: tone.color }}>
+                          onMouseEnter={(e) => showCard(e, L, "win")} onMouseLeave={hideCard}
+                          style={{ textAlign: "right", padding: "5px 8px", fontWeight: 800, color: tone.color, cursor: "help" }}>
                           {f ? `${Math.round(f.win * 100)}%` : "—"}
                         </td>
-                        <td style={{ textAlign: "right", padding: "5px 4px 5px 8px", color: "var(--mut)" }}>
+                        {/* ⭐⭐⭐⭐ "when you hover on left, can you show which players are left for each team
+                            in a neat tabular format." The count is the summary and the names are the
+                            answer; a tooltip is the right place for the second because it is a question
+                            you ask of one row at a time. */}
+                        <td data-homeweekleft={`${L.me.yetToPlay}v${L.opp.yetToPlay}`}
+                          onMouseEnter={(e) => showCard(e, L, "left")} onMouseLeave={hideCard}
+                          style={{ textAlign: "right", padding: "5px 4px 5px 8px", color: "var(--mut)", cursor: "help" }}>
                           <span style={{ color: L.me.yetToPlay ? "#5FD0A8" : "var(--mut)" }}>{L.me.yetToPlay}</span>
                           <span style={{ opacity: .5 }}> v </span>
                           <span style={{ color: L.opp.yetToPlay ? "#F2655C" : "var(--mut)" }}>{L.opp.yetToPlay}</span>
@@ -17002,7 +17459,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
   );
 }
 
-function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onOpenMock, onDeleteFun, onDeleteMock, onDraftTrends, onAutoImportSleeper, onConnectLeague, onMyWeek, onGameDay, onReview }) {
+function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onOpenMock, onDeleteFun, onDeleteMock, onDraftTrends, onAutoImportSleeper, onConnectLeague, onMyWeek, onGameDay, onReview }) {
   const [connectOpen, setConnectOpen] = useState(false);
   // In season the leagues/mocks library is collapsed by default — see the control that toggles it.
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -17580,6 +18037,9 @@ function PaidHub({ user, leagues, funMocks, onSettings, onStrategy, onLibrary, o
       {connectOpen && (
         <ConnectLeagueModal
           accounts={sleeperLink.accounts} leagues={leagues}
+          allLeagues={allLeagues || leagues}
+          hidden={new Set(((user && user.hiddenLeagues) || []).map(String))}
+          onSaveHidden={(ids) => { if (onUpdate) onUpdate({ hiddenLeagues: ids }); }}
           onUnlink={async (id) => { try { await api.sleeperUnlink(id); } catch {} await sleeperLink.refresh(); }}
           onLinked={() => sleeperLink.refresh()}
           onClose={(how) => { setConnectOpen(false); if (how === "manual" && onNewLeague) onNewLeague(); }}
@@ -23055,7 +23515,7 @@ function connectPatch(c, cur) {
      cannot answer it. Leagues we can't attribute to any linked handle get their own group and say so,
      because that is a real state with a real fix (link that handle) rather than a rounding error.
    ------------------------------------------------------------------------------------------------ */
-function ConnectedAccounts({ accounts, leagues, onUnlink, onAdd }) {
+function ConnectedAccounts({ accounts, leagues, onUnlink, onAdd, onChoose, hiddenCount }) {
   const list = accounts || [];
   const conn = (leagues || []).filter((l) => {
     const c = (l && (l.connect || (l.cfg && l.cfg.connect))) || null;
@@ -23142,21 +23602,123 @@ function ConnectedAccounts({ accounts, leagues, onUnlink, onAdd }) {
           );
         })}
       </div>
-      {/* ⭐⭐⭐ "I want to be able to see 2 different usernames for Sleeper." Adding a second handle was
-          always possible — linking has been additive since b132 — but nothing on screen SAID so, and a
-          capability nobody can see is a capability nobody has. */}
-      <button className="btn btn-mini" data-connaddacct onClick={onAdd}
-        style={{ marginTop: 8, borderColor: "var(--gold)", color: "var(--gold)" }}>
-        <i className="ti ti-plus" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />
-        Add another username
-      </button>
+      <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+        {/* ⭐⭐⭐ "I want to be able to see 2 different usernames for Sleeper." Adding a second handle was
+            always possible — linking has been additive since b132 — but nothing on screen SAID so, and a
+            capability nobody can see is a capability nobody has. */}
+        <button className="btn btn-mini" data-connaddacct onClick={onAdd}
+          style={{ borderColor: "var(--gold)", color: "var(--gold)" }}>
+          <i className="ti ti-plus" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />
+          Add another username
+        </button>
+        {onChoose && (
+          <button className="btn btn-mini" data-connchoose onClick={onChoose}>
+            <i className="ti ti-eye" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />
+            Choose which leagues to show{hiddenCount > 0 ? ` (${hiddenCount} hidden)` : ""}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
 
-function ConnectLeagueModal({ onClose, onConnected, accounts, leagues, onUnlink, onLinked }) {
+/* ⭐⭐⭐⭐⭐ WHICH LEAGUES YOU ACTUALLY WANT TO SEE — 29r.
+   Trey: "there are leagues that either never drafted OR they were used as a placeholder. I would like to
+   remove them from what I see… but I still want the ability to add them later… I feel like in the 'connect
+   a league' tab it should allow you to select which leagues to show — defaults to select everyone, but you
+   can de select and save."
+
+   Exactly that, and the defaults matter as much as the control: everything is on until he turns it off, so
+   a new league appearing in Sleeper shows up here without him having to remember this screen exists.
+
+   ⚠ NOTHING IS DESTROYED AND THE WORDING SAYS SO. "Remove" is the word he used and the wrong word for what
+     should happen — a placeholder league he hides in September is a league he may want back in December,
+     with its draft and its history intact. Unticking hides; the row stays in this list forever.
+   ⚠ AND IT IS A DRAFT UNTIL YOU SAVE IT. Ticking ten boxes with each one re-rendering every screen behind
+     the dialog is both slow and alarming; the change applies on Save, and Cancel leaves it as it was. */
+function LeagueChooser({ leagues, hidden, onSave, onClose }) {
+  const [sel, setSel] = useState(() => new Set(leagues.filter((l) => !hidden.has(String(l.id))).map((l) => String(l.id))));
+  const toggle = (id) => setSel((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const shown = sel.size, total = leagues.length;
+  const platOf = (l) => (((l && (l.connect || (l.cfg && l.cfg.connect))) || {}).platform) || null;
+  const ownerOfL = (l) => { const c = (l && (l.connect || (l.cfg && l.cfg.connect))) || {}; return c.ownerUsername || c.username || null; };
+  /* A league with no picks has never drafted — which is exactly the kind Trey wants gone, so the list says
+     so rather than making him remember which of eleven similar names was the placeholder. */
+  const noteFor = (l) => {
+    const n = (l.picks || []).length;
+    if (!n) return "never drafted";
+    const tot = ((l.cfg && l.cfg.teams) || 12) * ((l.cfg && l.cfg.rounds) || 15);
+    return n >= tot ? "draft complete" : `draft in progress · ${n} picks`;
+  };
+  return (
+    <div data-leaguechooser={String(total)} onClick={onClose}
+      style={{ position: "fixed", inset: 0, zIndex: 95, background: "#000c", display: "flex",
+        alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
+      <div onClick={(e) => e.stopPropagation()} className="panel" style={{ width: "100%", maxWidth: 520, padding: 18 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 10 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="disp" style={{ fontSize: 18, fontWeight: 700 }}>Leagues to show</div>
+            <div className="mut" style={{ fontSize: 12, lineHeight: 1.5, marginTop: 3 }}>
+              Untick anything you don't want cluttering your week — placeholders, leagues that never drafted.
+              Nothing is deleted; tick it again whenever you like.
+            </div>
+          </div>
+          <button className="btn btn-mini" onClick={onClose} title="Close" style={{ flexShrink: 0 }}>
+            <i className="ti ti-x" style={{ fontSize: 13 }} aria-hidden="true" />
+          </button>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+          <button className="btn btn-mini" data-chooseall onClick={() => setSel(new Set(leagues.map((l) => String(l.id))))}>Select all</button>
+          <button className="btn btn-mini" data-choosedrafted
+            onClick={() => setSel(new Set(leagues.filter((l) => (l.picks || []).length).map((l) => String(l.id))))}>
+            Only ones that drafted
+          </button>
+          <span className="mut" style={{ fontSize: 11.5, marginLeft: "auto", alignSelf: "center" }}>
+            {shown} of {total} shown
+          </span>
+        </div>
+        <div className="panel" style={{ padding: 0, background: "var(--panel2)", maxHeight: "48vh", overflowY: "auto" }}>
+          {leagues.map((l, i) => {
+            const id = String(l.id);
+            const on = sel.has(id);
+            return (
+              <label key={id} data-chooserow={l.name}
+                style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 11px", cursor: "pointer",
+                  borderTop: i ? "1px solid var(--line)" : "none", opacity: on ? 1 : 0.55 }}>
+                <input type="checkbox" checked={on} onChange={() => toggle(id)} style={{ flexShrink: 0 }} />
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 700, display: "block", overflow: "hidden",
+                    textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.name}</span>
+                  <span className="mut" style={{ fontSize: 10.5 }}>
+                    {platOf(l) ? `${platOf(l)}${ownerOfL(l) ? ` · ${ownerOfL(l)}` : ""} · ` : ""}{noteFor(l)}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <button className="btn btn-gold btn-mini" data-choosesave
+            onClick={() => { onSave(leagues.filter((l) => !sel.has(String(l.id))).map((l) => String(l.id))); }}>
+            Save
+          </button>
+          <button className="btn btn-mini" onClick={onClose}>Cancel</button>
+          <span className="mut" style={{ fontSize: 10.5, flex: "1 1 100%", marginTop: 2 }}>
+            Hidden leagues stay connected and keep their history — they just stop appearing on your week,
+            Game Day and the review.
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConnectLeagueModal({ onClose, onConnected, accounts, leagues, allLeagues, hidden, onSaveHidden, onUnlink, onLinked }) {
   // Jumping straight to the Sleeper step from "Add another username" — see ConnectBox's `jumpTo`.
   const [jump, setJump] = useState(0);
+  const [choosing, setChoosing] = useState(false);
+  const all = allLeagues || leagues || [];
+  const hid = hidden || new Set();
   return (
     <div data-connectmodal onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 90, background: "#000c", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", overflowY: "auto" }}>
       <div onClick={(e) => e.stopPropagation()} className="panel" style={{ width: "100%", maxWidth: 610, padding: 18 }}>
@@ -23169,8 +23731,13 @@ function ConnectLeagueModal({ onClose, onConnected, accounts, leagues, onUnlink,
           </div>
           <button className="btn btn-mini" onClick={onClose} title="Close" style={{ flexShrink: 0 }}><i className="ti ti-x" style={{ fontSize: 13 }} aria-hidden="true" /></button>
         </div>
-        <ConnectedAccounts accounts={accounts} leagues={leagues} onUnlink={onUnlink}
-          onAdd={() => setJump((n) => n + 1)} />
+        <ConnectedAccounts accounts={accounts} leagues={all} onUnlink={onUnlink}
+          onAdd={() => setJump((n) => n + 1)} hiddenCount={hid.size}
+          onChoose={all.length ? () => setChoosing(true) : null} />
+        {choosing && (
+          <LeagueChooser leagues={all} hidden={hid} onClose={() => setChoosing(false)}
+            onSave={(ids) => { setChoosing(false); if (onSaveHidden) onSaveHidden(ids); }} />
+        )}
         <ConnectBox embedded connect={null} jumpTo={jump ? "sleeper" : null} jumpKey={jump}
           onConnect={(c) => { if (c) { if (onLinked) onLinked(); onConnected(c); } }} onClear={() => {}}
           onCancel={(how) => { onClose(how === "manual" ? "manual" : undefined); }} />

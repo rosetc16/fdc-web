@@ -87,7 +87,14 @@ function SeasonTrend({ weeks, selected, onPick }) {
     return () => ro.disconnect();
   }, []);
 
-  const pts = (weeks || []).filter((x) => x && x.me && Number.isFinite(x.me.pts));
+  /* ⚠ FINISHED WEEKS ONLY — 29s, and for two reasons that both matter.
+     A week still being played has a PARTIAL total: plotting 61.4 next to six full weeks around 120 draws a
+     cliff that says "you collapsed" about an afternoon that is half over. And it has no league median
+     either, which silently removed the median line from the WHOLE chart — `hasMedian` requires every point
+     to have one, so a single ungraded week took the reference series with it. Caught by a test that
+     asserted the chart draws both lines; it would otherwise have been a quiet loss of the comparison the
+     chart exists to make. */
+  const pts = (weeks || []).filter((x) => x && x.me && Number.isFinite(x.me.pts) && x.me.complete !== false);
   if (pts.length < 2) return null;
   const H = 74, PAD = 10, PADX = 8;
   const W = Math.max(160, w || 320);
@@ -227,11 +234,27 @@ function Fact({ label, value, tone, note }) {
   );
 }
 
-export default function WeeklyReview({ leagues, scope = "all" }) {
+export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
   const [raw, setRaw] = useState(null);
   const [week, setWeek] = useState(null);
   const [openMap, setOpenMap] = useState({});
   const [faWhy, setFaWhy] = useState(false);
+  /* The projected finish for the weeks still in play. Read from the SHARED live cache rather than computed
+     here — the home strip, Game Day and this page must agree about the same Sunday, and three independent
+     forecasts is three chances to disagree. */
+  const [outlook, setOutlook] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { cachedLive, loadLive } = await import("../livecache.js");
+        const lv = cachedLive(leagues) || await loadLive(leagues);
+        if (!alive || !lv || !lv.record) return;
+        setOutlook(lv.record);
+      } catch { /* no forecast: the settled record still stands on its own */ }
+    })();
+    return () => { alive = false; };
+  }, [leagues]);
   const [loading, setLoading] = useState(false);
   const ranFor = useRef(null);
   const wide = useWide(820);
@@ -252,8 +275,18 @@ export default function WeeklyReview({ leagues, scope = "all" }) {
       }));
       setRaw(mapped);
       /* Open on the most recent week ANY league has finished. Opening on week 1 in November would be
-         technically defensible and useless; the week you want to review is the one that just happened. */
-      const last = Math.max(0, ...mapped.map((r) => (r.data && r.data.lastCompletedWeek) || 0));
+         technically defensible and useless; the week you want to review is the one that just happened.
+         ⭐⭐⭐⭐ AND "FINISHED" MEANS FINISHED — 29s. `lastCompletedWeek` is the newest week the review
+         COVERS, which is not the same thing: Sleeper rolls `display_week` forward while the Monday night
+         game is still to play, so the newest covered week routinely has starters who have not kicked off.
+         That is the week Trey was looking at when he found the Kenneth Walker line. Landing there means
+         landing on a page whose entire purpose — second-guessing a finished result — does not apply yet,
+         with no verdict, no regret and no bench figure. So the default is the newest week that is actually
+         over; the live one is still one click away in the picker, and says what it is when you get there. */
+      const covered = Math.max(0, ...mapped.map((r) => (r.data && r.data.lastCompletedWeek) || 0));
+      const finished = Math.max(0, ...mapped.flatMap((r) => ((r.data && r.data.weeks) || [])
+        .filter((x) => x && x.me && x.me.complete !== false).map((x) => x.week)));
+      const last = finished || covered;
       setWeek((w) => (w == null && last ? last : w));
       /* At league scale there is one card and nothing to choose between, so it opens already expanded —
          clicking "Detail" on a list of one is a step that exists only because the macro view needed it. */
@@ -274,25 +307,47 @@ export default function WeeklyReview({ leagues, scope = "all" }) {
         field: w ? Object.values(w.pointsByRoster || {}) : [] };
     });
     const played = rows2.filter((r) => r.me);
+    /* ⭐⭐⭐⭐⭐ A WEEK STILL BEING PLAYED IS NOT A RESULT — 29r.
+       Trey: "At the top of the review… it shows I'm 8-2 across 10 leagues. This is what it is based on the
+       current scores, but again, I expect that to be closer to 5-5 with projections."
+
+       Third time this category error has surfaced, in a third place, which says something about how
+       naturally it creeps in: a scoreline is always AVAILABLE, so anything that counts wins will happily
+       count a game with eight players still to play. The server now marks those weeks `complete: false`
+       (see the Kenneth Walker note in connect.js) and refuses to grade them, and the headline splits in
+       two — what is settled, and where the rest is heading. */
+    const live = played.filter((r) => r.me.complete === false);
+    const settled = played.filter((r) => r.me.complete !== false);
     const sum = {
       leagues: played.length,
-      w: played.filter((r) => r.me.result === "W").length,
-      l: played.filter((r) => r.me.result === "L").length,
-      left: r1(played.reduce((s, r) => s + (r.me.left || 0), 0)),
-      blown: played.filter((r) => r.me.verdict && r.me.verdict.key === "blown").length,
-      robbed: played.filter((r) => r.me.verdict && r.me.verdict.key === "robbed").length,
-      lucky: played.filter((r) => r.me.verdict && r.me.verdict.key === "lucky").length,
+      settledN: settled.length,
+      liveN: live.length,
+      // The record, counted ONLY over weeks that have finished.
+      w: settled.filter((r) => r.me.result === "W").length,
+      l: settled.filter((r) => r.me.result === "L").length,
+      // What the unfinished ones are waiting on, so "3 still playing" can name names.
+      waiting: live.flatMap((r) => (r.me.waitingOn || []).map((n) => ({ n, league: r.league.name }))).slice(0, 8),
+      /* ⚠ ONLY FROM FINISHED WEEKS, and not only because of the record. Mid-week `left` is misleading in
+         a specific direction — the optimal lineup counts players who have scores while your own total is
+         missing the points your unplayed starter is about to add — so it reads as waste that has not
+         happened yet. See `pending` in lib/review.js. */
+      left: r1(settled.filter((r) => !r.me.pending).reduce((s, r) => s + (r.me.left || 0), 0)),
+      blown: settled.filter((r) => r.me.verdict && r.me.verdict.key === "blown").length,
+      robbed: settled.filter((r) => r.me.verdict && r.me.verdict.key === "robbed").length,
+      lucky: settled.filter((r) => r.me.verdict && r.me.verdict.key === "lucky").length,
       /* ⭐⭐⭐ THE HONEST VERSION OF "HOW DID I DO". A 0–3 week against three opponents is three data
          points; the same week against every team in all three leagues is thirty-odd, and that is the
          number that says whether you scored badly or drew badly. It was previously buried one sentence
          deep inside each league row, which is the least useful place for the figure that reframes the
          headline sitting directly above it. */
-      apW: played.reduce((s, r) => s + ((r.me.allPlay && r.me.allPlay.w) || 0), 0),
-      apL: played.reduce((s, r) => s + ((r.me.allPlay && r.me.allPlay.l) || 0), 0),
-      apAny: played.some((r) => r.me.allPlay),
+      apW: settled.reduce((s, r) => s + ((r.me.allPlay && r.me.allPlay.w) || 0), 0),
+      apL: settled.reduce((s, r) => s + ((r.me.allPlay && r.me.allPlay.l) || 0), 0),
+      apAny: settled.some((r) => r.me.allPlay),
     };
+    /* ⚠ AND THE WORST CALL COMES FROM FINISHED WEEKS ONLY. "Started Kenneth Walker 0 over Chubba Hubbard
+       22.2" was this line reading a regret out of a game that had not kicked off. */
     let worst = null;
-    played.forEach((r) => (r.me.misses || []).forEach((m) => {
+    settled.forEach((r) => (r.me.misses || []).forEach((m) => {
       if (!worst || m.gain > worst.gain) worst = { ...m, leagueName: r.league.name };
     }));
     const maxWeek = Math.max(0, ...raw.map((r) => (r.data && r.data.lastCompletedWeek) || 0));
@@ -373,9 +428,37 @@ export default function WeeklyReview({ leagues, scope = "all" }) {
                           {data.sum.w}–{data.sum.l}
                         </span>
                         <span className="mut" style={{ fontSize: 12 }}>
-                          across {data.sum.leagues} league{data.sum.leagues === 1 ? "" : "s"}
+                          {data.sum.liveN > 0
+                            ? `settled, across ${data.sum.settledN} of ${data.sum.leagues} league${data.sum.leagues === 1 ? "" : "s"}`
+                            : `across ${data.sum.leagues} league${data.sum.leagues === 1 ? "" : "s"}`}
                         </span>
+                        {/* ⭐⭐⭐⭐⭐ WHERE THE REST IS HEADING. The settled record is a fact and stays the
+                            headline; the unfinished games get the forecast the home strip already uses, so
+                            the two screens cannot tell him two different things about the same afternoon.
+                            `outlook` comes from the shared live read — see livecache.js. */}
+                        {data.sum.liveN > 0 && (
+                          <span data-wkoutlook={outlook ? `${outlook.projW}-${outlook.projL}` : "none"}
+                            style={{ fontSize: 12 }}>
+                            <span className="mut">· {data.sum.liveN} still playing</span>
+                            {outlook && (
+                              <>
+                                <span className="mut">, projected to finish </span>
+                                <b className="num" style={{ color: outlook.projW > outlook.projL ? "#5FD0A8" : outlook.projW < outlook.projL ? "#F2655C" : "var(--mut)" }}>
+                                  {outlook.projW}–{outlook.projL}
+                                </b>
+                              </>
+                            )}
+                          </span>
+                        )}
                       </div>
+                      {/* Who the unfinished weeks are actually waiting on — the reason the record is not
+                          final, named rather than implied. */}
+                      {data.sum.liveN > 0 && data.sum.waiting.length > 0 && (
+                        <div className="mut" data-wkwaiting={String(data.sum.waiting.length)}
+                          style={{ fontSize: 11, marginBottom: 9, lineHeight: 1.45 }}>
+                          Still to play: {data.sum.waiting.map((x) => x.n).join(", ")}
+                        </div>
+                      )}
                       {/* ⚠ A WRAPPING FLEX ROW OF UNEQUAL-HEIGHT TILES WRAPS RAGGED. Two of these carry a
                           sub-line and two do not, so at phone width the third tile dropped to a second row
                           that started below the TALLEST tile above it — a stray figure floating in white
@@ -429,14 +512,26 @@ export default function WeeklyReview({ leagues, scope = "all" }) {
                       const isOpen = !!openMap[R.league.id];
                       const V = me && me.verdict ? (VERDICT[me.verdict.key] || VERDICT.earned) : null;
                       const L = R.data && R.data.ledger;
-                      const verdictChip = V && (
+                      /* An unfinished week has no verdict, and the absence would read as a missing value
+                         rather than a deliberate one. It says what it is instead. */
+                      const liveChip = me && me.complete === false && (
+                        <span data-wkverdict="inprogress" style={{ fontSize: 10, fontWeight: 800,
+                          textTransform: "uppercase", letterSpacing: ".04em", border: "1px solid var(--gold)",
+                          color: "var(--gold)", borderRadius: 99, padding: "1px 8px", display: "inline-flex",
+                          alignItems: "center", gap: 4, whiteSpace: "nowrap" }}
+                          title={(me.waitingOn || []).length ? `Waiting on ${me.waitingOn.join(", ")}` : "Still being played"}>
+                          <i className="ti ti-clock" style={{ fontSize: 11 }} aria-hidden="true" />
+                          {me.yetToPlay ? `${me.yetToPlay} to play` : "in progress"}
+                        </span>
+                      );
+                      const verdictChip = liveChip || (V && (
                         <span data-wkverdict={me.verdict.key} style={{ fontSize: 10, fontWeight: 800,
                           textTransform: "uppercase", letterSpacing: ".04em", border: `1px solid ${V.tone}`,
                           color: V.tone, borderRadius: 99, padding: "1px 8px", display: "inline-flex",
                           alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <i className={`ti ${V.icon}`} style={{ fontSize: 11 }} aria-hidden="true" />{V.label}
                         </span>
-                      );
+                      ));
                       const score = me && (
                         <span className="num" style={{ fontSize: 13, fontWeight: 800, whiteSpace: "nowrap",
                           color: me.result === "W" ? "#5FD0A8" : me.result === "L" ? "#F2655C" : "var(--mut)" }}>
@@ -492,7 +587,7 @@ export default function WeeklyReview({ leagues, scope = "all" }) {
                                   gap: 8, flexWrap: "wrap", fontSize: 11.5 }}>
                                   {verdictChip}
                                   {me.allPlay && <span className="num mut">vs field {me.allPlay.w}–{me.allPlay.l}</span>}
-                                  {me.left > 0 && <span className="num" style={{ color: "var(--gold)" }}>−{me.left} bench</span>}
+                                  {me.left > 0 && !me.pending && <span className="num" style={{ color: "var(--gold)" }}>−{me.left} bench</span>}
                                 </span>
                               </>
                             ) : (
@@ -506,11 +601,34 @@ export default function WeeklyReview({ leagues, scope = "all" }) {
                             <div style={{ padding: wide ? "0 15px 14px" : "0 13px 14px" }}>
                               {/* The sentence lives HERE now — in the row you chose to open, where a
                                   sentence is worth reading, rather than repeated under every league. */}
-                              <div className="mut" style={{ fontSize: 12, lineHeight: 1.55, marginBottom: 10,
-                                paddingBottom: 10, borderBottom: "1px solid var(--line)" }}>
-                                {me.verdict ? me.verdict.text : null}
-                                {me.allPlay && <> <span style={{ color: "var(--ink)" }}>Against the field you were {me.allPlay.w}–{me.allPlay.l}
-                                  {me.allPlay.t ? `–${me.allPlay.t}` : ""}</span> ({me.allPlay.rank} of {me.allPlay.of} that week).</>}
+                              <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 10,
+                                paddingBottom: 10, borderBottom: "1px solid var(--line)", flexWrap: "wrap" }}>
+                                <div className="mut" style={{ fontSize: 12, lineHeight: 1.55, flex: "1 1 320px", minWidth: 0 }}>
+                                  {me.complete === false
+                                    ? <>This week isn't finished{me.yetToPlay ? ` — ${me.yetToPlay} of your starters ${me.yetToPlay === 1 ? "has" : "have"} yet to play` : ""}
+                                        {(me.waitingOn || []).length ? <> (<span style={{ color: "var(--ink)" }}>{me.waitingOn.join(", ")}</span>)</> : null}.
+                                        {" "}There's nothing to second-guess until it is.</>
+                                    : <>
+                                        {me.verdict ? me.verdict.text : null}
+                                        {me.allPlay && <> <span style={{ color: "var(--ink)" }}>Against the field you were {me.allPlay.w}–{me.allPlay.l}
+                                          {me.allPlay.t ? `–${me.allPlay.t}` : ""}</span> ({me.allPlay.rank} of {me.allPlay.of} that week).</>}
+                                      </>}
+                                </div>
+                                {/* ⭐⭐⭐⭐ INTO THE LEAGUE ITSELF — 29r. Trey: "I love the drop down that
+                                    summarizes the week. I also want you to be able to click a button to go
+                                    into the more detailed review of that specific league."
+                                    The macro row is the summary by design — it has to stay short enough
+                                    that ten of them are scannable. The full read (lineup, matchup, free
+                                    agents, the league's own review tab) is a whole screen, and this is the
+                                    door to it, from the row you were already looking at. */}
+                                {onOpenLeague && R.league && (
+                                  <button className="btn btn-mini" data-wkopenleague={R.league.name}
+                                    onClick={() => onOpenLeague(R.league)}
+                                    style={{ flexShrink: 0, borderColor: "var(--gold)", color: "var(--gold)" }}>
+                                    Full review for this league
+                                    <i className="ti ti-arrow-right" style={{ fontSize: 12, marginLeft: 5 }} aria-hidden="true" />
+                                  </button>
+                                )}
                               </div>
                               <FieldStrip field={R.field} mine={me.pts} median={me.median} />
 

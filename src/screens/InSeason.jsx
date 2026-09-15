@@ -72,7 +72,8 @@ export default function InSeason({ user, leagues, initialTab, onHome, onBack, ba
       )}
       {seen.review && (
         <div hidden={tab !== "review"} style={{ maxWidth: 1100, margin: "0 auto", padding: "16px 16px 40px" }}>
-          <WeeklyReview leagues={leagues} scope="all" />
+          <WeeklyReview leagues={leagues} scope="all"
+            onOpenLeague={(l) => onOpenHub && onOpenHub(l.id)} />
         </div>
       )}
     </div>
