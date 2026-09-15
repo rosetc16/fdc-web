@@ -97,7 +97,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29v";
+const BUILD_TAG = "2026.07.29w";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -479,6 +479,116 @@ const slotMapFromSleeperPicks = (picks) => {
 // Display surname: the last name word, but skipping a trailing generational suffix (Jr., Sr., II–V)
 // and keeping it attached — so "Marvin Harrison Jr." shows "Harrison Jr.", never just "Jr.".
 const SUFFIX_RE = /^(jr|sr|ii|iii|iv|v)\.?$/i;
+/* ⭐⭐⭐⭐⭐ HOW MUCH DID THAT BENCH COST — 29w.
+   Trey: "color code the bench numbers. For example, leaving 34 points on a bench is horrible, but leaving
+   -2.9 is just about nothing."
+
+   The old column was one shade of gold for every non-zero figure, which is the same failure as a status
+   colour applied to everything: a catastrophe and a rounding error rendered identically, so the eye learned
+   to skip the column entirely.
+
+   ⚠ THE BANDS ARE ABSOLUTE AND THAT IS A DELIBERATE CHOICE, not laziness. The obvious alternative — scale
+     by the week's margin, so "did it cost you the game" drives the colour — answers a better question and
+     is the wrong thing to PAINT, because it makes the same 30 points red in one league and grey in another
+     and the column stops being comparable down its own length. Absolute bands keep "34" looking the same
+     wherever it appears, which is what makes ten leagues scannable at once; the margin fact lives on the
+     hover, where it can be a sentence instead of a hue.
+   ⚠ AND ZERO IS NOT A SMALL NUMBER, IT IS A DIFFERENT ANSWER. An optimal lineup is a good week, not a
+     faint bad one, so it stays neutral rather than sitting at the pale end of the same ramp. */
+/* ⭐⭐⭐⭐⭐ POWER — WHAT A TEAM IS, NOT WHAT ITS ROSTER PROJECTS — 29w.
+   ==================================================================================================
+   Trey: "double check how we are determining 'Power' in the 'league' tab when you are looking at specific
+   teams... I don't think power should necessarily be a week to week thing, but more a macro overview of
+   what you're feeling the power of a team is based on what has happened and what is projected to happen."
+
+   He is describing something the column was not doing. Power was the sum of four positional quality scores
+   and NOTHING ELSE — a pure read on roster paper, identical in week 14 to what it was on draft night, and
+   completely deaf to a team that had been scoring 140 a week or one whose season had fallen apart. A team
+   could sit top of the power rankings having lost nine games, and the page had no way to notice.
+
+   So it is a blend of the two halves he named:
+     WHAT HAS HAPPENED       points scored per game, against the league's own average.
+     WHAT IS PROJECTED       the existing positional-quality score, which is the roster read.
+
+   ⚠ POINTS, NOT RECORD, CARRIES THE "WHAT HAPPENED" HALF. Win-loss in fantasy is famously schedule luck —
+     this app already says so out loud elsewhere, with "Robbed" and "Got away with it" verdicts for exactly
+     this phenomenon. A team that scores the second-most points in the league and sits 3-6 is strong and
+     unlucky, and a power rating that reads it as weak is repeating the mistake the review screen exists to
+     correct. Record is deliberately absent.
+
+   ⚠ AND THE WEIGHT MOVES WITH THE SAMPLE. After one week, results are noise and the roster is nearly all
+     we know; by week twelve the reverse is true. `games / (games + 5)` crosses 50/50 at five games, which
+     is about when a scoring average stops being an anecdote. Before any game is played it is 0 and Power
+     is exactly what it always was — so this changes nothing in the preseason, where there is nothing to
+     blend in.
+   ⚠ BOTH HALVES ARE NORMALISED WITHIN THE LEAGUE, because neither is meaningful as an absolute: a
+     12-team PPR league and a 10-team standard league produce completely different point totals and
+     quality sums, and a blend of two raw numbers on different scales is whichever one happens to be
+     bigger. */
+export function powerBlend(teams, { k = 5 } = {}) {
+  const list = (teams || []).filter(Boolean);
+  if (!list.length) return [];
+  const gamesOf = (t) => {
+    const r = t.record || {};
+    return (Number(r.wins) || 0) + (Number(r.losses) || 0) + (Number(r.ties) || 0);
+  };
+  const games = Math.max(0, ...list.map(gamesOf));
+  // Share of the blend given to results. Zero before kickoff, rising as the sample earns it.
+  const wResult = games > 0 ? games / (games + k) : 0;
+
+  // z-ish normalisation inside the league: where each team sits in its own field, on each half.
+  const norm = (vals) => {
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    const span = hi - lo;
+    return (v) => (span > 0 ? (v - lo) / span : 0.5);
+  };
+  const rosterVals = list.map((t) => Number(t.rosterScore) || 0);
+  const ppgOf = (t) => {
+    const g = gamesOf(t);
+    return g > 0 ? (Number(t.pointsFor) || 0) / g : 0;
+  };
+  const ppgVals = list.map(ppgOf);
+  const nRoster = norm(rosterVals);
+  const nPpg = norm(ppgVals);
+
+  return list.map((t) => {
+    const roster = nRoster(Number(t.rosterScore) || 0);
+    const scored = games > 0 ? nPpg(ppgOf(t)) : 0.5;
+    const blended = roster * (1 - wResult) + scored * wResult;
+    return {
+      ...t,
+      powerScore: Math.round(blended * 1000) / 1000,
+      powerParts: {
+        roster: Math.round(roster * 100) / 100,
+        scored: games > 0 ? Math.round(scored * 100) / 100 : null,
+        weightOnResults: Math.round(wResult * 100) / 100,
+        ppg: games > 0 ? Math.round(ppgOf(t) * 10) / 10 : null,
+        games,
+      },
+    };
+  }).sort((a, b) => b.powerScore - a.powerScore).map((t, i) => ({ ...t, powerRank: i + 1 }));
+}
+
+export const benchTone = (left) => {
+  const v = Number(left) || 0;
+  if (v <= 0) return "var(--mut)";
+  if (v < 3) return "var(--mut)";        // inside the noise of any projection — not worth a colour
+  if (v < 8) return "#C9A227";           // a real miss, but a normal one
+  if (v < 16) return "var(--gold)";      // the kind of week you remember
+  if (v < 25) return "#E8833A";
+  return "#F2655C";                      // a starter's week of points, left in a drawer
+};
+
+/* The four verdicts, with the tones the full Weekly Review already uses. Defined here so the home strip's
+   review table and the full screen cannot drift into disagreeing about what "Blown" looks like — the same
+   reasoning as COLS in WeeklyReview.jsx, where two "identical" grid strings were one edit from diverging. */
+export const REVIEW_VERDICT = {
+  blown:  { label: "Blown",  tone: "#F2655C", blurb: "your best lineup beats this opponent — this one was the lineup" },
+  earned: { label: "Earned", tone: "#5FD0A8", blurb: "the result the scores deserved" },
+  lucky:  { label: "Lucky",  tone: "var(--gold)", blurb: "you won with a below-median score — take it" },
+  robbed: { label: "Robbed", tone: "#6BA8E5", blurb: "a top-third score and you still lost" },
+};
+
 export const surname = (full) => {
   const parts = String(full || "").trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return String(full || "");
@@ -10361,7 +10471,7 @@ export default function App() {
         onOfficial={(id) => { setDraftTab(officialTabFor(leagues.find((l) => l.id === id))); setActiveId(id); setRoute("draft"); }} onMock={startMock} onQuickMock={() => setQuickMockOpen(true)}
         onTrends={() => setRoute("trends")} onHelp={() => { setHelpTab(null); setRoute("help"); }} onGuide={() => { setHelpTab("guide"); setRoute("help"); }} onAccount={() => setRoute("account")} onAdmin={() => setRoute("admin")} onSignOut={signOut}
         onUmbrella={(id) => { setActiveId(id); setRoute("leagueHub"); }} onRankings={() => setRoute("rankings")} onTrendsTime={() => setRoute("trendsTime")} onTradeTools={() => setRoute("tradeTools")} onAdpIntel={() => setRoute("adpIntel")} onDelete={deleteLeague} onUpdate={updateUser} onOpenHub={(sl) => { setHubLeagueId(sl.league_id); setRoute("teamHub"); }}
-        onDraftTrends={() => setRoute("draftTrends")} onAutoImportSleeper={autoImportSleeper} onMyWeek={() => setRoute("myweek")}
+        onDraftTrends={() => setRoute("draftTrends")} onAutoImportSleeper={autoImportSleeper} onMyWeek={() => { setMyWeekView("myweek"); setRoute("myweek"); }}
         onGameDay={() => { setMyWeekView("gameday"); setRoute("myweek"); }} onReview={() => { setMyWeekView("review"); setRoute("myweek"); }}
         onSettings={(id) => { setDraftTab("settings"); setActiveId(id); setRoute("draft"); }}
         onStrategy={(id) => { setOpenStrategyFor(id); setActiveId(id); setRoute("leagueHub"); }}
@@ -14231,17 +14341,29 @@ function findTrades(me, others, opts) {
   // is simply a roster body, and negative values would make lopsided ratios look reasonable.
   const worth = (p) => Math.max(0, (Number(p && p.pts) || 0) - (repl[String(p && p.pos).toUpperCase()] || 0));
 
+  /* ⭐⭐⭐⭐⭐ WHY THERE ARE NO TRADES — 29w, and this is the half that actually matters.
+     Trey reported the tab as broken. It may not have been: "nothing survived the filters" and "the
+     analytics threw and this list was never built" render IDENTICALLY, and the empty state confidently
+     asserted a reason it had no way of knowing ("your roster shape already matches what the rest of the
+     league has spare"). That sentence is a guess wearing a fact's clothes, and it is why an empty tab
+     reads as a bug rather than as an answer.
+     So the finder counts what it rejected and why, and the screen says it. A tab reading "1,669 pairs
+     considered, 1,211 too lopsided" is a tuning conversation; a tab reading "0 pairs considered" is a
+     data bug, and you can tell them apart at a glance. */
+  const diag = { pairs: 0, bothReplacement: 0, lopsided: 0, noGainForMe: 0, noGainForThem: 0, sameSpotWash: 0, teams: 0 };
   const out = [];
   (others || []).forEach((them) => {
     if (!them || !them.roster || !them.roster.length) return;
+    diag.teams++;
     const theirBase = lineupValue(them.roster, sf);
     const theirs = them.roster.slice().sort((a, b) => (b.pts || 0) - (a.pts || 0)).slice(0, depth);
     mine.forEach((give) => {
       const myRest = me.roster.filter((p) => p.sid !== give.sid);
       const wGive = worth(give);
       theirs.forEach((get) => {
+        diag.pairs++;
         // A same-position swap of near-equal players is a wash nobody accepts; skip the noise.
-        if (give.pos === get.pos && Math.abs((give.pts || 0) - (get.pts || 0)) < 6) return;
+        if (give.pos === get.pos && Math.abs((give.pts || 0) - (get.pts || 0)) < 6) { diag.sameSpotWash++; return; }
 
         /* ⭐⭐⭐⭐⭐ THE FAIRNESS GATE. Both directions, on purpose: a proposal that fleeces me is as
            useless as one that fleeces him — I would not send it either. The band is deliberately wide
@@ -14250,14 +14372,23 @@ function findTrades(me, others, opts) {
            this tab embarrassing. */
         const wGet = worth(get);
         const hi = Math.max(wGive, wGet), lo = Math.min(wGive, wGet);
-        if (hi <= 0) return;                     // two replacement-level bodies: not a trade, just churn
-        if (lo / hi < 0.65) return;              // one side is giving up far more than he is getting back
+        if (hi <= 0) { diag.bothReplacement++; return; }   // two replacement-level bodies: churn, not a trade
+        /* ⚠ 0.65 WAS TOO TIGHT AND IT WAS EMPTYING THE TAB — 29w. Trey: "no trade is showing up when I
+           click trades for my league."
+           The band is on SURPLUS over replacement, and surplus compresses hard: a genuine star sitting 40
+           points above replacement traded for a solid starter at 25 scores 0.625 and was REJECTED — which
+           is not a lopsided trade, it is the ordinary shape of every real one, where you give up the better
+           player and get back positional fit. Measured on a real roster, the ratio killed 1,211 of 1,669
+           candidate pairs before the lineup test even ran.
+           0.5 still refuses the robbery this gate was added for (a tight end at 3 for a quarterback at 60
+           scores 0.05) while allowing the trades people actually make. */
+        if (lo / hi < 0.5) { diag.lopsided++; return; }
 
         const myGain = Math.round((lineupValue(myRest.concat([get]), sf) - base) * 10) / 10;
-        if (myGain <= minGain) return;
+        if (myGain <= minGain) { diag.noGainForMe++; return; }
         const theirRest = them.roster.filter((p) => p.sid !== get.sid);
         const theirGain = Math.round((lineupValue(theirRest.concat([give]), sf) - theirBase) * 10) / 10;
-        if (theirGain <= minGain) return;
+        if (theirGain <= minGain) { diag.noGainForThem++; return; }
         out.push({ team: them, give, get, myGain, theirGain, fair: Math.min(myGain, theirGain),
           // Surfaced so the card can SHOW why this is a sane swap rather than asking to be trusted.
           giveWorth: Math.round(wGive), getWorth: Math.round(wGet),
@@ -14281,7 +14412,10 @@ function findTrades(me, others, opts) {
   // Flag the one the other manager is most likely to accept — the highest gain for the WORSE-off side.
   let bestFair = -Infinity, bestIdx = -1;
   top.forEach((t, i) => { if (t.fair > bestFair) { bestFair = t.fair; bestIdx = i; } });
-  return top.map((t, i) => ({ ...t, likeliest: i === bestIdx }));
+  const list = top.map((t, i) => ({ ...t, likeliest: i === bestIdx }));
+  // The working, carried on the array so an empty tab can say what happened instead of guessing.
+  Object.defineProperty(list, "diag", { value: diag, enumerable: false });
+  return list;
 }
 
 // Monte-Carlo the rest of the regular season. Everything else in the hub is measured in projected points;
@@ -14487,7 +14621,7 @@ function buildDigest(o) {
       note: "too close for the projection to decide — your read matters here",
     } : null);
 
-  push("waivers", "Waiver targets", (o.adds || []).map((a) => `${a.name} (${a.pos}${a.posRank || ""}) — ${a.bid}${a.rivals ? `, ${a.rivals} rival${a.rivals > 1 ? "s" : ""} also thin at ${a.pos}` : ", no competition"}.`), "neutral",
+  push("waivers", "Waiver targets", (o.adds || []).map((a) => `${a.name} (${a.pos}${a.posRank || ""})${a.up ? ` — +${a.up} a week on your lineup` : ""}${a.rivals ? `, ${a.rivals} rival${a.rivals > 1 ? "s" : ""} also thin at ${a.pos}` : ", no competition"}.`), "neutral",
     (() => {
       const adds = o.adds || [];
       if (!adds.length) return null;
@@ -14496,20 +14630,20 @@ function buildDigest(o) {
          "bid 7–11% of FAAB ($5–7 of your $68)" three times is most of what made this section look like
          block text. When they all agree it is said once, underneath; when they differ it is a column,
          because then it is genuinely per-player information. */
-      const bids = [...new Set(adds.map((a) => String(a.bid || "")))];
-      const oneBid = bids.length === 1 && bids[0];
+      /* The bid column is gone with the bid (29w). What replaces it is the figure the row was always
+         really about: how much better your lineup gets. */
       return {
-        cols: oneBid ? ["Player", "Pos", "Competition"] : ["Player", "Pos", "Bid", "Competition"],
-        tmpl: oneBid ? "minmax(0,1fr) 54px minmax(0,auto)" : "minmax(0,1fr) 54px minmax(0,auto) minmax(0,auto)",
+        cols: ["Player", "Pos", "Upgrade", "Competition"],
+        tmpl: "minmax(0,1fr) 54px minmax(0,auto) minmax(0,auto)",
         rows: adds.map((a) => [
           { t: a.name },
           { t: `${a.pos}${a.posRank || ""}`, mut: true, small: true },
-          ...(oneBid ? [] : [{ t: a.bid, small: true, tone: "gold" }]),
+          a.up ? { t: `+${a.up}/wk`, small: true, tone: "good" } : { t: "—", mut: true, small: true },
           a.rivals
             ? { t: `${a.rivals} rival${a.rivals > 1 ? "s" : ""} thin at ${a.pos}`, tone: "bad", small: true, right: true }
             : { t: "no competition", mut: true, small: true, right: true },
         ]),
-        note: oneBid ? `Suggested bid for ${adds.length === 1 ? "this one" : `all ${adds.length}`}: ${oneBid}` : null,
+        note: null,
       };
     })());
 
@@ -15132,9 +15266,15 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     leagueLive && ((p.adp != null && p.adp <= eliteAdpCut) ||
                    posRankOf(p) <= Math.max(1, Math.round(teamsN * (reqStart[p.pos] || 0) * 0.4)));
   // Your roster by position — ranked by SEASON value so a bye-week stud stays where he belongs.
-  const myByPos = { QB: [], RB: [], WR: [], TE: [] };
+  /* ⚠ KICKERS AND DEFENCES BELONG IN HERE TOO — 29w. `POS` is the four skill positions, and building
+     this map from it left K and DST with no roster list at all — so the free-agent upgrade for a kicker
+     was measured against NOTHING and every kicker on the wire read "+9 vs your K". That is the same
+     counterfactual error Trey reported for Brock Bowers, in the two positions nobody checks, and it is
+     why a kicker once outranked a real running back on this page. Any position the roster actually holds
+     gets a list. */
+  const myByPos = { QB: [], RB: [], WR: [], TE: [], K: [], DST: [], DEF: [] };
   myRoster.forEach((p) => { if (myByPos[p.pos]) myByPos[p.pos].push(p); });
-  POS.forEach((k) => myByPos[k].sort((a, b) => seasonOf(b) - seasonOf(a)));
+  Object.keys(myByPos).forEach((k) => myByPos[k].sort((a, b) => seasonOf(b) - seasonOf(a)));
   // Do you have enough startable bodies (by season value) to fill your effective demand at each position?
   /* ⚠ "SHORT AT A POSITION" MEANS YOU CANNOT FIELD THE SLOTS YOU MUST FIELD — nothing else. Measured against
      effDemand it meant "you don't have a spare", which for a one-TE league declared Brock Bowers' owner
@@ -15181,8 +15321,36 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
        rather than against nothing. */
     const slotN = Math.max(1, reqStart[p.pos] || 1);
     const myPosList = myByPos[p.pos] || [];
-    const myWorstStarter = myPosList.length ? (myPosList[Math.min(slotN, myPosList.length) - 1].pts || 0) : 0;
+    /* ⭐⭐⭐⭐⭐ YOU ARE NOT REPLACING A ZERO, YOU ARE REPLACING WHO YOU WOULD ACTUALLY START — 29w.
+       ==============================================================================================
+       Trey: "I would really check the 'pts/wk' being mentioned for FA. For example, it's showing Darren
+       Waller is 8.5+ vs. your TE... but that's because I'm starting Brock Bowers, who didn't play last
+       week (hurt) so technically he is putting up 0. This should probably compare to his projection (if
+       his projection is 0... then compare it to the bench option)."
+
+       He has found a counterfactual error, and it is the kind that makes a whole column untrustworthy.
+       The upgrade figure asks "how much better would my week be with this man in my lineup", and the
+       answer is the gap against WHOEVER WOULD OTHERWISE PLAY THE SLOT. When your starter is out, the
+       player who otherwise plays the slot is not your starter scoring nothing — it is the next man on
+       your bench. Comparing against the injured starter's zero credits the free agent with points you
+       would have had anyway from your own roster, and it does it at exactly the moment the page is most
+       likely to be read: the week somebody is hurt.
+
+       ⚠ THE EFFECT IS BIGGEST WHERE IT IS LEAST DESERVED. Every position with an out starter suddenly
+         shows the whole wire as an upgrade, so the page shouts loudest in the week its advice is worst.
+       ⚠ AND AN EMPTY SLOT IS STILL AN EMPTY SLOT. If there is genuinely nobody — no starter, no bench
+         body with a game — then zero is the honest baseline and the upgrade is real. */
+    const playable = (x) => x && !x.noGame && Number.isFinite(x.pts);
+    const slotHolder = myPosList.length ? myPosList[Math.min(slotN, myPosList.length) - 1] : null;
+    // The best man on the roster who can actually play this week — the true fallback for an empty slot.
+    const bestAvailable = myPosList.filter(playable).sort((a, b) => (b.pts || 0) - (a.pts || 0))[0] || null;
+    let baselineFor = slotHolder;
+    if (!playable(slotHolder) || (slotHolder.pts || 0) <= 0) baselineFor = bestAvailable;
+    const myWorstStarter = baselineFor ? (baselineFor.pts || 0) : 0;
     const upgrade = (p.noGame ? 0 : Math.max(0, (p.pts || 0) - myWorstStarter));
+    // Who the comparison is actually against, so the row can say so instead of asserting a bare number.
+    const upgradeVs = baselineFor || null;
+    const upgradeStandIn = !!(slotHolder && baselineFor && baselineFor !== slotHolder);
     const scarce = (p.pos === "QB" && isSuperflex) || (p.pos === "TE" && (cfg.tePremMult || 0) > 0);
     const needBoost = needByPos[p.pos] === 999 ? 40 : 0;
     const startableBoost = startable ? (scarce ? 30 : 15) : 0;
@@ -15348,7 +15516,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     }
     const trendBoost = tr ? 6 + Math.min(6, (tr.rank || 0) * 3) : 0;
     const score = base + upgrade * 2 + needBoost + startableBoost + assetBoost + trendBoost + (young && isDynasty ? 8 : 0);
-    return { p, score, upgrade, verdict, reason, worstOnRoster, startable, scarce, eliteAsset, implausible, trend: tr };
+    return { p, score, upgrade, verdict, reason, worstOnRoster, startable, scarce, eliteAsset, implausible, trend: tr, upgradeVs, upgradeStandIn };
   }).sort((a, b) => b.score - a.score);
   const topFA = faScored.slice(0, 15);
 
@@ -15463,7 +15631,11 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   });
   // Power rankings: overall ROSTER STRENGTH (quality × quantity across positions) — a different lens than
   // projected points, so it stays distinct from projected standings even before any games are played.
-  powerRanked = leagueTeams.slice().map((t) => ({ ...t, powerScore: t.posQuality.QB + t.posQuality.RB + t.posQuality.WR + t.posQuality.TE })).sort((a, b) => b.powerScore - a.powerScore).map((t, i) => ({ ...t, powerRank: i + 1 }));
+  /* ⭐⭐⭐⭐⭐ POWER IS A BLEND NOW — 29w, see powerBlend above. It used to be this line's `rosterScore`
+     alone: pure roster paper, deaf to everything that had actually happened in the season. */
+  powerRanked = powerBlend(leagueTeams.map((t) => ({
+    ...t, rosterScore: t.posQuality.QB + t.posQuality.RB + t.posQuality.WR + t.posQuality.TE,
+  })));
   powerRanked.forEach((t) => { powerRankById[t.rosterId] = t.powerRank; });
   // Projected final standings: blend current wins with power (a rough season-long strength signal).
   totalGames = (leagueTeams[0] && leagueTeams[0].record) ? (leagueTeams[0].record.wins + leagueTeams[0].record.losses + (leagueTeams[0].record.ties || 0)) : 0;
@@ -15575,21 +15747,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   const faabBudget = data.faabBudget != null ? data.faabBudget : null;
   const faabSpent = (data.faabSpent && data.faabSpent[data.myRosterId] != null) ? data.faabSpent[data.myRosterId] : null;
   const faabLeft = (faabBudget != null && faabSpent != null) ? Math.max(0, faabBudget - faabSpent) : faabBudget;
-  const bidFor = (f) => faabBid({
-    gainPerWeek: Math.max(f.upgrade || 0, f.verdict === "add" && !f.upgrade ? 1.2 : 0),
-    weeksLeft, teamsN: leagueSize,
-    // The league's own regular-season length, so the "keep some powder dry" ceiling knows how much of the
-    // year is still ahead rather than assuming a 14-week default for everybody.
-    seasonWeeks: data.regularSeasonWeeks || null,
-    need: needByPos[f.p.pos] === 999,
-    scarce: (f.p.pos === "QB" && isSuperflex) || (f.p.pos === "TE" && (cfg.tePremMult || 0) > 0),
-    startable: seasonOf(f.p) >= startableCut[f.p.pos] * 0.92,
-    elite: rosterableByAdp(f.p),
-    // A first-round asset on waivers is not a bid, it is a max bid — see the ceiling note in faabBid.
-    superElite: !!f.implausible,
-    rivals: rivalsThinAt[f.p.pos] || 0,
-    budgetLeft: faabLeft,
-  });
+  /* ⚠ `bidFor` LIVED HERE AND IS GONE — 29w, with the FAAB suggestion it computed. `faabBid` itself is
+     kept: it is a pure, tested function and deleting it would throw away the reasoning about auction
+     ceilings if the feature ever comes back with the data it needs (what rivals have left to spend).
+     Nothing calls it today, which is the honest state of it. */
 
   // ---- TRADE FINDER ----
   // Season value, not this week's points: a trade is a season decision, and a bye must never make a good
@@ -15708,10 +15869,16 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     oddsFromLineup,
     swaps: swapsIn.map((p, i) => ({ in: p.name, inPts: p.pts, out: swapsOut[i] ? swapsOut[i].name : "an empty slot", outPts: swapsOut[i] ? swapsOut[i].pts : 0 })),
     calls: calls.map((c) => ({ slot: c.slot, startName: c.start.name, altName: c.alt.name, win: c.win })),
-    adds: summaryFA.map(({ p, upgrade, verdict }) => {
-      const bid = bidFor({ p, upgrade, verdict });
-      return { name: p.name, pos: p.pos, posRank: p.posRank, bid: `bid ${bid.lo}–${bid.hi}% of FAAB${faabLeft != null ? ` ($${bid.loAbs}–${bid.hiAbs} of your $${faabLeft})` : ""}`, rivals: rivalsThinAt[p.pos] || 0 };
-    }),
+    /* ⚠ NO BID — 29w. The FAAB suggestion was removed from the free-agent list on Trey's instruction
+       ("get rid of the FAAB projections"), and a number retired from one surface must not live on in
+       another: the brief is the same claim in an email, and it rested on the same two things this app
+       cannot see (what rivals will spend, and what they have left). What IS ours to know — how many
+       teams are thin at the position — stays. */
+    adds: summaryFA.map(({ p, upgrade }) => ({
+      name: p.name, pos: p.pos, posRank: p.posRank,
+      up: Number.isFinite(upgrade) && upgrade > 1 ? Math.round(upgrade * 10) / 10 : null,
+      rivals: rivalsThinAt[p.pos] || 0,
+    })),
     byes: byeTrouble.map((b) => ({ week: b.week, starters: b.starters, out: b.out.map((p) => p.name), empty: b.empty, loss: b.loss })),
     injuries: injuredRoster.map((p) => ({ name: p.name, status: p.wkInj || p.inj })),
   });
@@ -16260,7 +16427,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
               })}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              {faFiltered.map(({ p, upgrade, verdict, reason, worstOnRoster, implausible, trend }) => {
+              {faFiltered.map(({ p, upgrade, verdict, reason, worstOnRoster, implausible, trend, upgradeVs, upgradeStandIn }) => {
                 /* ⚠ ONLY "ADD" IS GREEN, AND ONLY "ADD" IS FILLED. The tiers below it are things worth
                     knowing, not things to do, and giving them the same weight is what turned the whole
                     list green. "Squeeze" is the new middle: a player worth having whom you currently have
@@ -16308,52 +16475,37 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                     </div>
                     <div style={{ textAlign: "right", flexShrink: 0 }}>
                       <div className="num" style={{ fontWeight: 700, fontSize: 12.5 }}>{p.pts.toFixed(2)} pts/wk</div>
-                      {upgrade > 1 && <div style={{ fontSize: 10, color: "var(--green)" }}>+{(Math.round(upgrade * 10) / 10)} vs your {p.pos}</div>}
-                    </div>
-                    {/* WHAT TO BID. "Add" without a number leaves the actual decision to the user — and the
-                        competition read underneath it is the one thing a tool without league-wide rosters
-                        can never tell you. */}
-                    {verdict !== "hold" && (() => {
-                      // ⚠ `implausible` MUST travel with this — it is what lifts the ceiling to the whole
-                      //   budget, and this call site rebuilt the object by hand and dropped it once already.
-                      const bid = bidFor({ p, upgrade, verdict, implausible });
-                      const rivals = rivalsThinAt[p.pos] || 0;
-                      return (
-                        <div onMouseEnter={(e) => showTip(e, [
-                          { kind: "take", tone: implausible ? "good" : "neutral", x: implausible ? `Max bid — ${bid.lo}–${bid.hi}% of your FAAB budget` : `Suggested bid — ${bid.lo}–${bid.hi}% of your FAAB budget` },
-                          ...(implausible ? [{ t: "Why the whole budget", x: `${p.name} is a first-round-calibre asset, and there is no second place in a FAAB auction — a bid that loses buys nothing. The usual reason to hold budget back is the injury still to come, and that argument fails here: no claim left this season can be worth more than this one. Bid everything, minus a dollar.` },
-                                              { t: "But check the roster page first", x: `Players at this level are rostered in essentially every league. Either someone dropped him — in which case claim him — or your platform hasn't reported whose roster he's on and he was never available. Confirm in your league app before you commit the budget.` }] : []),
-                          /* ⚠ SHOW THE WHOLE SUM, not a conclusion. Trey: "We also just need to triple check
-                             we like this formula." A number nobody can audit is a number nobody should act
-                             on, and every input below is one he named. */
-                          { t: "The points", x: `He upgrades your ${p.pos} by about ${Math.round(Math.max(upgrade, 1.2) * 10) / 10} points a week, and there ${weeksLeft > 1 ? "are" : "is"} ${weeksLeft} week${weeksLeft > 1 ? "s" : ""} of regular season left — roughly ${Math.round(Math.max(upgrade, 1.2) * weeksLeft)} points between now and the playoffs. The first points of an upgrade are worth far more per point than the tenth, so the bid curve flattens as the gain grows.` },
-                          { t: "Your roster & league", x: `${needByPos[p.pos] === 999 ? `You cannot field ${p.pos} from startable players, which raises the bid. ` : `You can already field ${p.pos}, so this is an upgrade rather than a hole. `}${(p.pos === "QB" && isSuperflex) ? "Superflex makes quarterbacks scarce, which raises it again. " : (p.pos === "TE" && (cfg.tePremMult || 0) > 0) ? "TE-premium scoring makes tight ends scarce, which raises it again. " : ""}${leagueSize}-team league.` },
-                          ...(implausible ? [] : [{ t: "How much is left to play for", x: `Unspent budget is worth nothing in the final week, so the most worth committing to one claim rises as the season shortens — with ${weeksLeft} of ${data.regularSeasonWeeks || weeksLeft} weeks still to play, a single bid is capped well below your whole account.` }]),
-                          { t: "Competition", x: rivals ? `${rivals} of the other ${leagueSize - 1} teams can't field a full ${p.pos} group from startable players either — expect real bidding, and bid at the top of the range if you need him.` : `No other team in the league is short at ${p.pos} right now, so you're unlikely to be outbid. The low end of the range should be enough.` },
-                          ...(faabLeft != null
-                            ? [{ t: "Your budget", x: `$${faabLeft} of $${faabBudget} left, so that share is about $${bid.loAbs}–${bid.hiAbs}.` }]
-                            : [{ t: "Your budget", x: `Your league's FAAB budget hasn't come through from the platform, so the bid is given as a share — it holds whether your league runs $100, $1,000 or anything else. The dollar figure beside it assumes a $100 budget.` }]),
-                        ])} onMouseLeave={hideTip}
-                          style={{ flexShrink: 0, textAlign: "right", cursor: "help", minWidth: 96 }}>
-                          {/* ⭐⭐⭐ 29ah — THE PERCENTAGE IS THE ANSWER; THE DOLLARS ARE AN ILLUSTRATION.
-                              Trey: "I rather this be more about your % of your FAAB since we won't always be
-                              able to know if a league has 100 FAAB, 1000 FAAB, or even how much you have
-                              left. Actually, make it known that you are basing this off a $100 FAAB budget,
-                              but you can also put a % of your FAAB recommendation."
-                              The bid was always computed as a share and only ever printed as dollars — and
-                              in a $100 league those are the same digits, so "$45-71" was indistinguishable
-                              from a percentage and silently wrong in a $1,000 league. Lead with the share,
-                              which travels to any budget, and label the money as what it is. */}
-                          <div className="num" style={{ fontSize: 13, fontWeight: 800, color: "var(--gold)" }}>
-                            {bid.lo}–{bid.hi}%
-                          </div>
-                          <div className="mut" style={{ fontSize: 9 }}>
-                            {faabLeft != null ? `$${bid.loAbs}–${bid.hiAbs} of your $${faabLeft}` : `≈ $${bid.lo}–${bid.hi} per $100`}
-                          </div>
-                          <div className="mut" style={{ fontSize: 9.5 }}>{rivals ? `${rivals} rival${rivals > 1 ? "s" : ""} thin` : "no competition"}</div>
+                      {/* ⭐⭐⭐⭐ NAME WHO THE GAP IS AGAINST — 29w. "+8.5 vs your TE" is unauditable: the
+                          reader cannot tell whether it means his best tight end, his worst starter, or a
+                          man who is out this week, and Trey found it meaning the last of those. Naming
+                          the player turns a claim into something you can check at a glance, and the
+                          "(filling in)" makes the injured-starter case obvious rather than invisible. */}
+                      {upgrade > 1 && (
+                        <div style={{ fontSize: 10, color: "var(--green)" }}
+                          title={upgradeVs ? `Compared against ${upgradeVs.name}${upgradeStandIn ? ", who would start this week because your usual starter has no projection" : ""}` : undefined}>
+                          +{(Math.round(upgrade * 10) / 10)} vs {upgradeVs ? surname(upgradeVs.name) : `your ${p.pos}`}
+                          {upgradeStandIn && <span className="mut"> (filling in)</span>}
                         </div>
-                      );
-                    })()}
+                      )}
+                    </div>
+                    {/* ⭐⭐⭐⭐⭐ THE FAAB BID IS GONE — 29w. Trey: "Get rid of the FAAB projections for
+                        free agents."
+                        It was a percentage-of-budget suggestion with a long hover explaining its own
+                        arithmetic, and it rested on two things this app cannot see: what the other
+                        eleven managers are willing to spend, and how much of their budget they have
+                        left. A number that confident about a blind auction is a number that is wrong
+                        in public, and the reasoning underneath it made the row long enough that the
+                        parts which ARE knowable — who he beats in your lineup, and why he is trending
+                        — had to compete with it for attention.
+                        ⚠ THE COMPETITION READ SURVIVES, because it is the half that was actually ours
+                          to know: how many rival teams are thin at his position. It moved into the row
+                          reason rather than a hover on a bid that no longer exists. */}
+                    {verdict !== "hold" && (rivalsThinAt[p.pos] || 0) > 0 && (
+                      <span className="mut" data-fa-rivals={String(rivalsThinAt[p.pos] || 0)}
+                        style={{ flexShrink: 0, fontSize: 10, textAlign: "right", maxWidth: 108, lineHeight: 1.3 }}>
+                        {rivalsThinAt[p.pos]} rival{rivalsThinAt[p.pos] === 1 ? "" : "s"} thin at {p.pos}
+                      </span>
+                    )}
                     <span style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 700, color: vc.c, border: `1px solid ${vc.c}`, borderRadius: 99, padding: "2px 9px" }}>{vc.label}</span>
                   </div>
                 );
@@ -16361,7 +16513,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
               {!faFiltered.length && <div className="mut">{faPosFilter === "all" ? "No available players found — your league pool may be fully rostered." : `No available ${faPosFilter} found.`}</div>}
             </div>
             <div className="mut" style={{ fontSize: 10.5, marginTop: 10, lineHeight: 1.45 }}>
-              <b style={{ color: "var(--green)" }}>Add</b> = worth a roster move for your team{isDynasty ? ` in ${postureLabel[activePosture].toLowerCase()} mode` : ""}. <b style={{ color: "var(--gold)" }}>Stream</b> = only in a bye/injury pinch. <b>Hold</b> = not better than what you have. <b style={{ color: "var(--gold)" }}>Check first</b> = a player this good is rostered in almost every league, so confirm he's really free before you spend the budget — the bid beside him assumes he is.
+              <b style={{ color: "var(--green)" }}>Add</b> = worth a roster move for your team{isDynasty ? ` in ${postureLabel[activePosture].toLowerCase()} mode` : ""}. <b style={{ color: "var(--gold)" }}>Stream</b> = only in a bye/injury pinch. <b>Hold</b> = not better than what you have. <b style={{ color: "var(--gold)" }}>Check first</b> = a player this good is rostered in almost every league, so confirm he's really free before you put in a claim.
             </div>
           </div>
           );
@@ -16433,10 +16585,33 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 </div>
               </div>
             ) : (
+              /* ⭐⭐⭐⭐⭐ AN EMPTY TAB THAT SAYS WHY — 29w. Trey: "no trade is showing up when I click
+                 trades for my league." The old copy asserted a cause it could not know, and "nothing
+                 survived the filters" looked exactly like "this never ran", which is why an empty list
+                 reads as a bug. Now the two are distinguishable on sight. */
               <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55 }}>
-                No swap right now improves both lineups — usually that means your roster shape already matches
-                what the rest of the league has spare. It changes as byes, injuries and waiver moves reshape
-                the other teams, so it's worth another look each week.
+                {(() => {
+                  const d = (tradeIdeas && tradeIdeas.diag) || null;
+                  if (!d || !d.teams) {
+                    return <>Couldn't read the other rosters in this league, so there is nothing to compare
+                      yours against — this is a data problem rather than a verdict on your roster. Reopen the
+                      league, and if it persists the League tab will be thin too.</>;
+                  }
+                  if (!d.pairs) {
+                    return <>Your roster came through empty, so no swap could be considered.</>;
+                  }
+                  return (
+                    <>
+                      No swap right now improves both lineups. Out of <b>{d.pairs.toLocaleString("en-US")}</b> one-for-one
+                      combinations across {d.teams} other {d.teams === 1 ? "roster" : "rosters"},{" "}
+                      {d.lopsided > 0 && <>{d.lopsided.toLocaleString("en-US")} were too lopsided for anyone to accept, </>}
+                      {d.noGainForThem > 0 && <>{d.noGainForThem.toLocaleString("en-US")} helped you but not them, </>}
+                      {d.noGainForMe > 0 && <>{d.noGainForMe.toLocaleString("en-US")} did nothing for your lineup</>}
+                      . It changes as byes, injuries and waiver moves reshape the other teams, so it is worth
+                      another look each week.
+                    </>
+                  );
+                })()}
               </div>
             )}
           </div>
@@ -17797,19 +17972,56 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                           color: R.result === "W" ? "#5FD0A8" : R.result === "L" ? "#F2655C" : "var(--mut)" }}>
                           {R.result || "—"}
                           {/* ⭐⭐⭐ THE MEDIAN HALF OF THE WEEK, where the league plays one. A median league
-                              week is 2-0, 1-1 or 0-2 and showing only the head-to-head reports half of it. */}
+                              week is 2-0, 1-1 or 0-2 and showing only the head-to-head reports half of it.
+                              ⭐ AND IT IS THE SAME COLOUR AS THE OTHER HALF — 29w. Trey: "for the result, I
+                              also want you to highlight 'W' for a median in green and a 'L' in red." It was
+                              grey, which made half of a median week read as a footnote rather than as a
+                              result that counts exactly as much as the head-to-head one. */}
                           {R.medianResult && (
-                            <span className="mut" style={{ fontWeight: 600, fontSize: 10.5 }}> / {R.medianResult} med</span>
+                            <span data-homereviewmedian={R.medianResult}
+                              title={`The league median — in this league you play it as a second opponent every week, so this is the other half of your ${R.result === "W" ? "win" : "loss"}`}
+                              style={{ fontWeight: 800, fontSize: 10.5,
+                                color: R.medianResult === "W" ? "#5FD0A8" : R.medianResult === "L" ? "#F2655C" : "var(--mut)" }}>
+                              {" / "}{R.medianResult}<span className="mut" style={{ fontWeight: 600 }}> med</span>
+                            </span>
                           )}
                         </td>
-                        <td style={{ textAlign: "right", padding: "5px 8px",
-                          color: R.left > 0 ? "var(--gold)" : "var(--mut)" }}>
+                        {/* ⭐⭐⭐⭐⭐ THE BENCH NUMBER, SCALED BY HOW MUCH IT HURT — 29w.
+                            Trey: "color code the bench numbers. For example, leaving 34 points on a bench is
+                            horrible, but leaving -2.9 is just about nothing."
+                            It was one shade of gold for every non-zero value, so a catastrophe and a rounding
+                            error looked identical and the column taught you nothing at a glance.
+                            ⚠ THE BANDS ARE ABSOLUTE, WHICH IS WHAT HE ASKED FOR — but the fact that actually
+                              decides whether it mattered is on the hover: points left on the bench are only
+                              tragic if they would have CHANGED THE RESULT, and thirty in a game you won by
+                              fifty cost you nothing at all. Colour follows his instruction; the sentence
+                              carries the thing the colour cannot know. */}
+                        <td data-homereviewbench={R.left > 0 ? String(r1(R.left)) : "0"}
+                          title={(() => {
+                            if (!(R.left > 0)) return "Your lineup was optimal — nothing better was sitting on your bench";
+                            const margin = (R.pts != null && R.oppPts != null) ? R.oppPts - R.pts : null;
+                            if (margin != null && margin > 0 && R.left >= margin) {
+                              return `${r1(R.left)} points sat on your bench and you lost by ${r1(margin)} — this one was the lineup`;
+                            }
+                            if (margin != null && margin > 0) {
+                              return `${r1(R.left)} on the bench, but you lost by ${r1(margin)} — the best lineup still loses this`;
+                            }
+                            return `${r1(R.left)} points sat on your bench, though you won anyway`;
+                          })()}
+                          style={{ textAlign: "right", padding: "5px 8px", cursor: "help", fontWeight: R.left >= 10 ? 800 : 600,
+                            color: benchTone(R.left) }}>
                           {R.left > 0 ? `−${r1(R.left)}` : "0"}
                         </td>
                         <td style={{ textAlign: "right", padding: "3px 4px 3px 8px", whiteSpace: "nowrap" }}>
+                          {/* ⭐⭐⭐ "I also want to color code 'Blown, Earned, Lucky'." They were all grey, so the
+                              one word on the row that says what KIND of week it was carried no weight at
+                              all. Same four tones the full review uses, so the two screens agree. */}
                           {R.verdict && (
-                            <span style={{ fontSize: 9.5, fontWeight: 800, textTransform: "uppercase",
-                              letterSpacing: ".04em", color: "var(--mut)" }}>{R.verdict}</span>
+                            <span data-homereviewverdict={R.verdict}
+                              title={REVIEW_VERDICT[R.verdict] ? REVIEW_VERDICT[R.verdict].blurb : undefined}
+                              style={{ fontSize: 9.5, fontWeight: 800, textTransform: "uppercase",
+                                letterSpacing: ".04em",
+                                color: (REVIEW_VERDICT[R.verdict] || {}).tone || "var(--mut)" }}>{R.verdict}</span>
                           )}
                         </td>
                       </tr>
@@ -18317,10 +18529,13 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
             const items = seasonFirst
               ? [
                 ...(onMyWeek ? [{ k: "myweek", icon: "ti-first-aid-kit", label: "My Week", onClick: onMyWeek, primary: true,
+                  sub: "Availability · lineups · free agents · weather",
                   title: "Injuries, lineup changes, free agents and weather across every connected league, in one place" }] : []),
                 ...(onGameDay ? [{ k: "gameday", icon: "ti-activity-heartbeat", label: "Game Day", onClick: onGameDay,
+                  sub: "Live scores · who to root for",
                   title: "Live scores across every league, and who you have the most riding on — for and against" }] : []),
                 ...(onReview ? [{ k: "review", icon: "ti-history", label: "Weekly Review", onClick: onReview,
+                  sub: "What last week cost you",
                   title: "What you could have done better last week, across every league at once" }] : []),
               ]
               : [
@@ -18338,7 +18553,20 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
                     background: it.primary ? (seasonFirst ? "rgba(95,208,168,0.13)" : "rgba(214,170,75,0.13)") : "transparent",
                     padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
                   <i className={`ti ${it.icon}`} style={{ fontSize: 18, color: seasonFirst ? "#5FD0A8" : "var(--gold)" }} aria-hidden="true" />
-                  <span className="disp" style={{ fontSize: 15.5, fontWeight: it.primary ? 800 : 700, color: it.primary ? (seasonFirst ? "#5FD0A8" : "var(--gold)") : "var(--ink)" }}>{it.label}</span>
+                  <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", minWidth: 0 }}>
+                    <span className="disp" style={{ fontSize: 15.5, fontWeight: it.primary ? 800 : 700, color: it.primary ? (seasonFirst ? "#5FD0A8" : "var(--gold)") : "var(--ink)" }}>{it.label}</span>
+                    {/* ⭐⭐⭐⭐ A DOOR HAS TO LOOK LIKE A DOOR — 29w. Trey: "it's not clear where to get to
+                        the 'my week' details (summary, availability, lineup changes, free agents, weather)
+                        from the home page. It shows 'my week' as default highlighted, so it's not clear
+                        that there is actually more detail."
+                        The detail was always one click away; nothing on this button said so, and the tab
+                        it opens onto is highlighted by default, which reads as "you are already here".
+                        Naming the sections underneath costs one line and removes the whole question. */}
+                    {it.sub && (
+                      <span className="mut" style={{ fontSize: 10, lineHeight: 1.25, fontWeight: 600, letterSpacing: ".01em",
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{it.sub}</span>
+                    )}
+                  </span>
                 </button>
               </React.Fragment>
             ));

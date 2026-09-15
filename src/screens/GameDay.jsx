@@ -27,6 +27,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import { api } from "../api.js";
 import { Dot } from "../App.jsx";
 import { winTone } from "../livecache.js";
+import WeekStep from "../weekstep.jsx";
 
 const LIVE_MS = 45 * 1000;        // while games are on
 const IDLE_MS = 10 * 60 * 1000;   // when nothing has kicked off — the score cannot move, so neither do we
@@ -329,6 +330,13 @@ function RootRow({ p, wide }) {
 
 export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub, embedded }) {
   const [data, setData] = useState(null);
+  /* ⭐⭐⭐⭐ "For the 'game day' tab, we need to be able to toggle between different weeks." — 29w.
+     NULL means the backend's current week (which since b143 rolls forward once the week's games are done);
+     a number is the user driving the stepper and is passed through verbatim. */
+  const [weekSel, setWeekSel] = useState(null);
+  /* Same reasoning as My Week: the stepper's home is the week the backend picks when nothing is selected,
+     not the week currently on screen — otherwise stepping away also moves "home" and the reset vanishes. */
+  const [autoWeek, setAutoWeek] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
   const [side, setSide] = useState("all");     // all | for | against — the MOBILE control
@@ -355,17 +363,18 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
 
   useEffect(() => {
     const ids = connected.map(hubIdOf);
-    const sig = ids.join(",");
-    if (!sig) { setLoading(false); return; }
+    const sig = ids.join(",") + "@" + (weekSel == null ? "auto" : weekSel);
+    if (!ids.length) { setLoading(false); return; }
     let alive = true;
     let timer = null;
 
     const load = async (quiet) => {
       if (!quiet) setLoading(true);
       try {
-        const r = await api.sleeperLive(ids, undefined, connected.map(ownerOf));
+        const r = await api.sleeperLive(ids, weekSel == null ? undefined : weekSel, connected.map(ownerOf));
         if (!alive) return;
         setData(r); setAt(Date.now()); setErr(null);
+        if (weekSel == null && r && Number.isFinite(r.week)) setAutoWeek(r.week);
       } catch (e) {
         if (alive && !quiet) setErr(String((e && e.message) || e));
       } finally { if (alive) setLoading(false); }
@@ -385,7 +394,7 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
     if (ranFor.current !== sig) { ranFor.current = sig; load(false); }
     schedule();
     return () => { alive = false; if (timer) clearTimeout(timer); };
-  }, [connected, data && data.at]);
+  }, [connected, weekSel, data && data.at]);
 
   /* ⭐⭐⭐ "I also want to be able to toggle to players that haven't played vs. already played vs. all."
      Three different Sundays: before kickoff you are reading the slate, at 4pm you want only the men still
@@ -588,6 +597,23 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
               </div>
             </div>
           )}
+
+        {/* ⭐⭐⭐⭐⭐ THE WEEK TOGGLE — 29w. Trey: "For the 'game day' tab, we need to be able to toggle
+            between different weeks."
+            It sits here rather than in the header because the header only renders when this screen is
+            standalone, and Game Day is normally reached EMBEDDED inside the in-season shell — a control
+            placed there would have been invisible in the one place he actually uses it. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+          <WeekStep week={weekSel == null ? (data && data.week) : weekSel} current={autoWeek}
+            busy={loading} onPick={setWeekSel} label="NFL Week" />
+          {weekSel != null && data && (
+            <span className="mut" style={{ fontSize: 11 }}>
+              {/* A past week's board is a record, not a thing to root for — say so rather than letting a
+                  frozen page look like a stalled one. */}
+              looking at a week that isn't live — scores are final
+            </span>
+          )}
+        </div>
 
         {/* ⭐⭐⭐⭐ THE TOGGLE, ABOVE BOTH VIEWS. Big enough to be the page's main control, because it is. */}
         {data && (

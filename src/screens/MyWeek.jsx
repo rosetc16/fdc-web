@@ -55,6 +55,7 @@
      and a league we still cannot resolve is shown with the account it needs rather than omitted.
    ------------------------------------------------------------------------------------------------ */
 import React, { useState, useEffect, useMemo, useRef } from "react";
+import WeekStep from "../weekstep.jsx";
 import { api } from "../api.js";
 import { backendFormatKey, Dot } from "../App.jsx";
 import WeeklyReview from "./WeeklyReview.jsx";
@@ -141,6 +142,16 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
   const [pack, setPack] = useState(null);
   const [weather, setWeather] = useState(null);
   const [week, setWeek] = useState(null);
+  /* ⭐⭐⭐⭐⭐ THE WEEK YOU ASKED FOR — 29w. Trey: "I want a toggle + I want it to default to the next week
+     on Tuesdays." NULL means "whatever the backend decides is current", which since b143 rolls to the next
+     week once every game of the current one has finished. A number means the user drove the stepper and is
+     obeyed exactly — including stepping BACK to a finished week, which must not bounce forward again. */
+  const [weekSel, setWeekSel] = useState(null);
+  /* ⚠ THE STEPPER'S "CURRENT" IS THE AUTOMATIC WEEK, NOT THE ONE ON SCREEN. First cut passed `week`,
+     which is read back from whatever the hubs just returned — so stepping to week 10 also moved `current`
+     to 10, the control concluded it was already home, and the "↵ this week" reset never appeared. The
+     automatic week is whatever came back while nothing was selected; remember that separately. */
+  const [autoWeek, setAutoWeek] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshedAt, setRefreshedAt] = useState(null);
   const [err, setErr] = useState(null);
@@ -149,7 +160,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
   const unconnected = useMemo(() => (leagues || []).filter((l) => !hubIdOf(l)), [leagues]);
 
   useEffect(() => {
-    const sig = connected.map((l) => hubIdOf(l)).join(",");
+    const sig = connected.map((l) => hubIdOf(l)).join(",") + "@" + (weekSel == null ? "auto" : weekSel);
     if (!sig) { setLoading(false); setRows([]); return; }
     let alive = true;
     const load = async (quiet) => {
@@ -169,12 +180,16 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
         const anyIdp = connected.some((l) => { const st = (l.cfg && l.cfg.start) || {}; return (st.DL || 0) + (st.LB || 0) + (st.DB || 0) + (st.IDPFLEX || 0) > 0; });
         const [pk, hubs] = await Promise.all([
           api.playerPack(fmt, undefined, { k: true, dst: true, idp: anyIdp }).catch(() => null),
-          pool(connected, 4, (l) => api.sleeperTeamHub(hubIdOf(l), undefined, ownerOf(l))),
+          pool(connected, 4, (l) => api.sleeperTeamHub(hubIdOf(l), weekSel == null ? undefined : weekSel, ownerOf(l))),
         ]);
         if (!alive) return;
         if (pk) setPack(pk);
         const wk = hubs.map((h) => h && h.week).find((w) => Number.isFinite(w)) || null;
         setWeek(wk);
+        // The backend also reports the week it WOULD have chosen, which is the stepper's home.
+        const auto = hubs.map((h) => h && h.defaultWeek).find((w) => Number.isFinite(w));
+        if (Number.isFinite(auto)) setAutoWeek(auto);
+        else if (weekSel == null && Number.isFinite(wk)) setAutoWeek(wk);
         setRows(connected.map((l, i) => ({ league: l, hub: hubs[i] && !hubs[i].error ? hubs[i] : null, error: hubs[i] && hubs[i].error })));
         setRefreshedAt(Date.now());
         if (wk) api.weatherWeek(wk).then((w) => { if (alive) setWeather(w); }).catch(() => {});
@@ -191,7 +206,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
       load(true);
     }, REFRESH_MS);
     return () => { alive = false; clearInterval(t); };
-  }, [connected]);
+  }, [connected, weekSel]);
 
   const bySid = useMemo(() => {
     const m = new Map();
@@ -532,7 +547,14 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
               updated {new Date(refreshedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · re-checks every 5 min
             </span>
             <span>{connected.length} connected league{connected.length === 1 ? "" : "s"}</span>
-            {week && <span>NFL Week {week}</span>}
+            {/* ⭐⭐⭐⭐⭐ THE TOGGLE — 29w. Trey: "There are also no 'free agents' showing up for any of my
+                leagues in 'my week' — this probably because it's defaulted to week one, but again I want a
+                toggle + I want it to default to the next week on Tuesdays."
+                Both halves were real. The default is fixed on the server (b143 rolls once every game of the
+                week has been played); this is the other half, so a finished week is somewhere you can go
+                deliberately rather than somewhere you are stuck. */}
+            <WeekStep week={weekSel == null ? week : weekSel} current={autoWeek} busy={loading}
+              onPick={setWeekSel} label="NFL Week" />
           </div>
         )}
         <div data-wkviews className="filterchips" style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
@@ -573,13 +595,45 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <div className="panel" data-wksummary style={{ padding: "14px 16px" }}>
               <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
-                {[["Not expected to play", counts.urgent, "#F2655C"], ["Check before kickoff", counts.check, "var(--gold)"],
-                  ["Lineup gains", counts.lineup, "#5FD0A8"], ["Waiver ideas", counts.fa, "#6BA8E5"], ["Weather", counts.wx, "#6BA8E5"]].map(([lbl, n, tone]) => (
-                  <div key={lbl} style={{ minWidth: 118 }}>
-                    <div className="num" style={{ fontSize: 26, fontWeight: 800, color: n > 0 ? tone : "var(--mut)", lineHeight: 1.1 }}>{n}</div>
-                    <div className="mut" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 700 }}>{lbl}</div>
-                  </div>
-                ))}
+                {/* ⭐⭐⭐⭐⭐ THE TILE COUNTS PLAYERS; THE ROWS BELOW COUNT LEAGUES — 29w.
+                    Trey: "I'm also confused how it says '3 check before kickoff' but yet there are lots
+                    more checks listed (maybe it's the same player for different leagues?)"
+                    He is exactly right, and the page never said so. `availRows` groups by PLAYER — Ladd
+                    McConkey questionable is ONE man to check however many of your teams he is on — while
+                    each league row counts that league's own instances. Both numbers are correct and the
+                    pair is nonsense without a unit, which is the same category error as "8-2 across 10
+                    leagues" was for the record.
+                    So the tile says PLAYERS in its label, and the hover names them with the number of
+                    lineups each one is in — which makes 3 players across 7 lineups add up on sight. */}
+                {[["Not expected to play", counts.urgent, "#F2655C", "notplaying"],
+                  ["Players to check", counts.check, "var(--gold)", "check"],
+                  ["Lineup gains", counts.lineup, "#5FD0A8", null], ["Waiver ideas", counts.fa, "#6BA8E5", null],
+                  ["Weather", counts.wx, "#6BA8E5", null]].map(([lbl, n, tone, kind]) => {
+                  /* ⚠ "notplaying", NOT "urgent" — tools/icons-scan.mjs treats any quoted lowercase token
+                     that matches a Tabler icon name as an icon in use, and `urgent` is one of them. The
+                     literal would have failed the icon gate and, if forced through, shipped a glyph
+                     nothing renders. The scanner is deliberately over-broad because missing a REAL icon
+                     ships a blank square; the cost is that data keys must dodge the icon namespace. */
+                  const who = kind === "notplaying" ? availRows.filter((r) => r.rank >= 4)
+                    : kind === "check" ? availRows.filter((r) => r.rank === 3) : null;
+                  const lineups = who ? who.reduce((s2, r) => s2 + (r.inLeagues || []).length, 0) : 0;
+                  const tip = who && who.length
+                    ? `${who.length} player${who.length === 1 ? "" : "s"} across ${lineups} lineup${lineups === 1 ? "" : "s"}:\n`
+                      + who.map((r) => `• ${r.name}${r.des && r.des.label ? ` (${r.des.label})` : ""} — ${(r.inLeagues || []).length} league${(r.inLeagues || []).length === 1 ? "" : "s"}`).join("\n")
+                    : undefined;
+                  return (
+                    <div key={lbl} data-wktile={kind || lbl} data-wktilen={String(n)}
+                      data-wktilelineups={who ? String(lineups) : undefined}
+                      title={tip} style={{ minWidth: 118, cursor: tip ? "help" : "default" }}>
+                      <div className="num" style={{ fontSize: 26, fontWeight: 800, color: n > 0 ? tone : "var(--mut)", lineHeight: 1.1 }}>{n}</div>
+                      <div className="mut" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 700 }}>{lbl}</div>
+                      {/* The reconciliation, stated rather than left as an exercise. */}
+                      {who && who.length > 0 && lineups !== who.length && (
+                        <div className="mut" style={{ fontSize: 9.5, fontWeight: 600 }}>across {lineups} lineups</div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
               <div className="mut" style={{ fontSize: 12.5, marginTop: 11, lineHeight: 1.5 }}>
                 {counts.urgent > 0
@@ -615,8 +669,16 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                           {typeof L.needsAccount === "string" ? <> <b>{L.needsAccount}</b></> : null} under Settings
                         </span>
                       ) : L.error ? <span style={{ color: "var(--red)" }}>Couldn't read this league</span>
-                        : urgent ? <span style={{ color: "#F2655C" }}>{urgent} not expected to play</span>
-                        : check ? <span style={{ color: "var(--gold)" }}>{check} to check before kickoff</span>
+                        /* ⭐⭐⭐⭐ "when you hover that, can you show the details of what that means" — 29w.
+                           The row said how MANY without ever saying WHO, so the only way to act on it was
+                           to open the league and go looking. The names, their designations and what each
+                           one is projected for are all already on the row's own data. */
+                        : urgent ? <span data-wkrowdetail="notplaying" style={{ color: "#F2655C", cursor: "help" }}
+                            title={(L.avail || []).filter((r) => r.rank >= 4).map((r) => `• ${r.name}${r.des && r.des.label ? ` — ${r.des.label}` : ""}${r.starting ? " (in your lineup)" : " (on your bench)"}`).join("\n")}>
+                            {urgent} not expected to play</span>
+                        : check ? <span data-wkrowdetail="check" style={{ color: "var(--gold)", cursor: "help" }}
+                            title={(L.avail || []).filter((r) => r.rank === 3).map((r) => `• ${r.name}${r.des && r.des.label ? ` — ${r.des.label}` : ""}${r.starting ? " (in your lineup)" : " (on your bench)"}${Number.isFinite(r.proj) ? `, projected ${Math.round(r.proj * 10) / 10}` : ""}`).join("\n")}>
+                            {check} to check before kickoff</span>
                         : "No availability problems"}
                       {gain > 0 ? <span style={{ color: "#5FD0A8" }}> · +{r1(gain)} available from your bench</span> : null}
                       {(L.fa || []).length ? <span> · {(L.fa || []).length} waiver idea{(L.fa || []).length === 1 ? "" : "s"}</span> : null}

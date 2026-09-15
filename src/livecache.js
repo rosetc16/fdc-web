@@ -38,22 +38,28 @@ export const connectedOf = (leagues) => (leagues || []).filter((l) => hubIdOf(l)
 
 const ttlFor = (value) => (value && value.weekState && value.weekState.anyLive ? LIVE_TTL_MS : IDLE_TTL_MS);
 
-export function cachedLive(leagues) {
-  const sig = connectedOf(leagues).map(hubIdOf).join(",");
+export function cachedLive(leagues, opts = {}) {
+  const wk = Number.isFinite(opts.week) ? opts.week : null;
+  const sig = connectedOf(leagues).map(hubIdOf).join(",") + "@" + (wk == null ? "auto" : wk);
   if (cache && cache.sig === sig) return cache.value;
   return null;
 }
 
 export async function loadLive(leagues, opts = {}) {
   const connected = connectedOf(leagues);
-  const sig = connected.map(hubIdOf).join(",");
+  /* ⚠ THE WEEK IS PART OF THE CACHE KEY — 29w. Game Day gained a week toggle, and a cache keyed only on
+     the league list would hand week 3's board back to somebody who asked for week 5, or worse, poison the
+     home strip's "now" view with a week the user was browsing. Absent (the home strip, the review) means
+     the backend's own current week and keys as "auto", exactly as it did before this parameter existed. */
+  const wk = Number.isFinite(opts.week) ? opts.week : null;
+  const sig = connected.map(hubIdOf).join(",") + "@" + (wk == null ? "auto" : wk);
   if (!sig) return null;
   const fresh = cache && cache.sig === sig && Date.now() - cache.at < ttlFor(cache.value);
   if (fresh && !opts.force) return cache.value;
   if (inflight && inflight.sig === sig && !opts.force) return inflight.p;
 
   const p = (async () => {
-    const value = await api.sleeperLive(connected.map(hubIdOf), undefined, connected.map(ownerOf));
+    const value = await api.sleeperLive(connected.map(hubIdOf), wk == null ? undefined : wk, connected.map(ownerOf));
     cache = { sig, at: Date.now(), value };
     return value;
   })();
