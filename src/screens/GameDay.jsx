@@ -65,11 +65,44 @@ const STATE = {
      the band has to be wide enough that only a genuinely notable day lights up. */
 const BASE = { QB: 18, RB: 11, WR: 11, TE: 8, K: 8, DEF: 7, DST: 7, DL: 7, LB: 8, DB: 7 };
 const SPREAD = { QB: 7, RB: 6, WR: 6, TE: 5, K: 4, DEF: 5, DST: 5, DL: 4, LB: 4, DB: 4 };
-function impactOf(pos, pts, rootFor) {
+/* ⭐⭐⭐⭐⭐ A MAN IN THE SECOND QUARTER IS NOT HAVING A BAD WEEK — 29t.
+   ==================================================================================================
+   The impact score compared points on the board against a full NORMAL WEEK for the position, which is
+   right for a finished game and badly wrong for one still being played. Jared Goff, 7.4 points with
+   most of a game left, scored −1.5 against an 18-point quarterback baseline and was painted in the
+   "well below" red — the colour that means a bust. He was, in fact, exactly on pace.
+
+   This is the same error as the projected totals and "nobody left to play", in its last hiding place:
+   treating a partial score as a final one. Every live row on the board was tinted toward failure, and
+   the effect was strongest early in a game, when the colour is least earned and most misleading.
+
+   So the yardstick shrinks to the share of the game that has actually been played: a quarterback 40%
+   of the way through his game is measured against 40% of a quarterback's week. The SPREAD shrinks by
+   the square root of that share rather than in proportion, because variance accumulates with playing
+   time — halving the minutes does not halve the uncertainty, and dividing by a proportionally tiny
+   spread would send the first touchdown of the afternoon straight off the scale.
+   ⚠ AND THE SHARE IS FLOORED. Two minutes in, `elapsed` is nearly zero and every number divided by it
+     is enormous; below the floor there is no honest reading to give, so the row stays neutral. */
+const IMPACT_MIN_ELAPSED = 0.15;
+function impactOf(pos, pts, rootFor, elapsed) {
   if (!Number.isFinite(pts) || !pos) return { z: null, tone: null, label: null };
-  const base = BASE[String(pos).toUpperCase()] ?? 10;
-  const spread = SPREAD[String(pos).toUpperCase()] ?? 6;
+  const part = Number.isFinite(elapsed) ? Math.max(0, Math.min(1, elapsed)) : 1;
+  if (part < IMPACT_MIN_ELAPSED) return { z: null, tone: null, label: `${r1(pts)} — too early in the game to read` };
+  const full = BASE[String(pos).toUpperCase()] ?? 10;
+  const base = Math.round(full * part * 10) / 10;
+  const spread = (SPREAD[String(pos).toUpperCase()] ?? 6) * Math.sqrt(part);
   const z = (pts - base) / spread;
+  if (part < 1) {
+    /* Mid-game the sentence has to say what it is comparing against, or "an ordinary week" next to 7.4
+       points reads as a contradiction rather than as good news. */
+    const lbl = `${r1(pts)} — ${Math.abs(z) < 0.6 ? "about on pace for" : z > 0 ? "ahead of pace for" : "behind pace for"} a normal ${String(pos).toUpperCase()} week (~${base} by this point)`;
+    const g = rootFor ? z : -z;
+    if (g >= 1.2) return { z: r1(z), tone: "#5FD0A8", label: lbl };
+    if (g >= 0.6) return { z: r1(z), tone: "#2E8F6B", label: lbl };
+    if (g <= -1.2) return { z: r1(z), tone: "#F2655C", label: lbl };
+    if (g <= -0.6) return { z: r1(z), tone: "#B8453C", label: lbl };
+    return { z: r1(z), tone: "var(--ink)", label: lbl };
+  }
   /* A big day is GOOD if he is yours and BAD if he is theirs — the colour follows the consequence to you,
      which is the whole premise of this page, rather than following the size of the number. */
   const good = rootFor ? z : -z;
@@ -113,7 +146,10 @@ function MatchupDetail({ L, F, tone, bySid, wide, onOpenHub }) {
     return p ? p : { sid, name: `Player ${sid}`, pos: null, team: null, state: "unknown" };
   };
   const side = (s) => (s && s.players ? s.players : []);
-  const left = (s) => side(s).filter((pp) => !pp.played).map((pp) => ({ ...pp, ...nameOf(pp.sid) }))
+  /* ⚠ "STILL TO PLAY" INCLUDES MEN ON THE FIELD — 29t. `played` now means his game is OVER; a live player
+     has points on the board and more to come, which is exactly the row you most want to see here. */
+  const left = (s) => side(s).filter((pp) => pp.phase ? pp.phase !== "done" : !pp.played)
+    .map((pp) => ({ ...pp, ...nameOf(pp.sid) }))
     .sort((a, b) => (b.proj || 0) - (a.proj || 0));
   const mine = left(L.me), theirs = left(L.opp);
 
@@ -134,9 +170,17 @@ function MatchupDetail({ L, F, tone, bySid, wide, onOpenHub }) {
           <span style={{ flexShrink: 0 }}><Dot pos={pp.pos} /></span>
           <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pp.name}</span>
           <span className="mut" style={{ fontSize: 10, flexShrink: 0 }}>{pp.pos}{pp.team ? ` · ${pp.team}` : ""}</span>
-          <span className="num" style={{ fontSize: 12, fontWeight: 700, flexShrink: 0, minWidth: 34,
-            textAlign: "right", color: rootFor ? "#5FD0A8" : "#F2655C" }}>
-            {Number.isFinite(pp.proj) ? r1(pp.proj) : "—"}
+          {/* A live man shows what he HAS and what he is heading for; a man yet to start has only the
+              projection. Two numbers where there are two, one where there is one. */}
+          <span style={{ flexShrink: 0, minWidth: 64, textAlign: "right" }}>
+            {pp.phase === "live" && Number.isFinite(pp.pts) && (
+              <span className="num" style={{ fontSize: 12, fontWeight: 800, color: "var(--ink)", marginRight: 4 }}>{r1(pp.pts)}</span>
+            )}
+            <span className="num" style={{ fontSize: 12, fontWeight: 700,
+              color: rootFor ? "#5FD0A8" : "#F2655C" }}>
+              {pp.phase === "live" && Number.isFinite(pp.projFinal) ? `→${r1(pp.projFinal)}`
+                : Number.isFinite(pp.proj) ? r1(pp.proj) : "—"}
+            </span>
           </span>
         </div>
       )) : <div className="mut" style={{ fontSize: 11.5 }}>{empty}</div>}
@@ -350,7 +394,7 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
        to `forRows` further down, which left the `board` memo above referencing them before initialisation —
        a temporal-dead-zone error that BUILDS PERFECTLY and throws the instant the screen renders. The
        bundler cannot see it; only opening the page does. */
-  const [phase, setPhase] = useState("all");   // all | pre | done
+  const [phase, setPhase] = useState("all");   // all | live | pre | done
   /* ⭐⭐⭐⭐⭐ TWO WAYS TO READ A SUNDAY, AND YOU PICK ONE — 29q.
      Trey: "I want there to be a toggle to view it as a league or player level. That way you don't have to
      scroll all the way down."
@@ -363,10 +407,19 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
   const [view, setView] = useState("players");  // players | leagues
   // Which matchup rows are opened out. Keyed by league id, so a poll refresh does not close them.
   const [openMatch, setOpenMatch] = useState({});
+  /* ⚠ THE SHARE OF THE GAME PLAYED COMES OFF THE ROW, NOT OUT OF A DATE SUBTRACTION HERE — 29t.
+     The first cut computed it client-side from the payload's `at` stamp minus its kickoff map. That is
+     two fields which only share a clock when one machine produced both, and it failed the first time it
+     was looked at: the stub stamps `at` from the real clock while its games sit on a fixed timeline, so
+     every live player came back as 100% finished and the mid-game colouring below never ran. The server
+     now sends `elapsed` from the same function the forecast's `remain` comes from. Falling back to a half
+     for a live row keeps an older payload readable rather than uncoloured. */
+  const elapsedOf = (p) => (Number.isFinite(p.elapsed) ? p.elapsed
+    : p.state === "done" ? 1 : p.state === "live" ? 0.5 : null);
   const decorate = (p) => {
     const rootFor = p.net > 0;
     const pts = p.pts ? p.pts.median : null;
-    const im = impactOf(p.pos, pts, rootFor);
+    const im = impactOf(p.pos, pts, rootFor, elapsedOf(p));
     return { ...p, impact: im.z, impactTone: im.tone, impactLabel: im.label };
   };
   /* ⭐⭐⭐⭐⭐ "PLAYED" MEANS PLAYED, NOT "NOT YET TO PLAY" — 29q.
@@ -379,8 +432,13 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
      vanished from "yet to play", and the screen whose job is to tell you what is left told him nothing
      was. Three states, three meanings, and the unknown ones are surfaced below rather than absorbed into
      whichever bucket happens to be adjacent. */
-  const inPhase = (p) => (phase === "all" ? true : phase === "pre" ? p.state === "pre" : p.state === "done");
-  const phaseCount = (k) => ((data && data.rooting) || []).filter((p) => (k === "all" ? true : k === "pre" ? p.state === "pre" : p.state === "done")).length;
+  /* ⭐⭐⭐⭐ FOUR CHIPS, BECAUSE THERE ARE THREE PHASES — 29t. Trey: "The players that are still playing
+     should also still show up in 'left'." Playing now is its own answer to "what is left" and its own
+     answer to "who should I be watching", and folding it into either neighbour loses it. */
+  const inPhase = (p) => (phase === "all" ? true : phase === "pre" ? p.state === "pre"
+    : phase === "live" ? p.state === "live" : p.state === "done");
+  const phaseCount = (k) => ((data && data.rooting) || []).filter((p) => (k === "all" ? true
+    : k === "pre" ? p.state === "pre" : k === "live" ? p.state === "live" : p.state === "done")).length;
   /* Starters with no kickoff time at all. Named, not counted: "3 players" is a bug report, "Kelce, Mahomes
      and Rice have no kickoff time" is a diagnosis, and it points straight at the schedule job. */
   const untimed = useMemo(() => ((data && data.rooting) || []).filter((p) => p.state === "unknown"), [data]);
@@ -563,7 +621,7 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
                     or there is genuinely nobody left, which is precisely the confusion that made this a bug
                     report rather than a shrug. A chip that says "Yet to play 0" answers it before you
                     click, and one that says 4 while the list is empty is a visible contradiction. */}
-                {[["all", "All"], ["pre", "Yet to play"], ["done", "Played"]].map(([k, lbl]) => (
+                {[["all", "All"], ["live", "Playing now"], ["pre", "Yet to play"], ["done", "Played"]].map(([k, lbl]) => (
                   <button key={k} data-gdphase={k} data-gdphasen={String(phaseCount(k))}
                     onClick={() => setPhase(k)} aria-pressed={phase === k}
                     style={{ fontSize: 11, fontWeight: phase === k ? 800 : 600, padding: "2px 9px", borderRadius: 99,

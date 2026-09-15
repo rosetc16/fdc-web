@@ -323,8 +323,12 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
       settledN: settled.length,
       liveN: live.length,
       // The record, counted ONLY over weeks that have finished.
-      w: settled.filter((r) => r.me.result === "W").length,
-      l: settled.filter((r) => r.me.result === "L").length,
+      w: settled.filter((r) => r.me.result === "W").length
+        + settled.filter((r) => r.me.medianResult === "W").length,
+      l: settled.filter((r) => r.me.result === "L").length
+        + settled.filter((r) => r.me.medianResult === "L").length,
+      // How many of those came from the median half, so the headline can explain an odd-looking total.
+      medianGames: settled.filter((r) => r.me.medianResult).length,
       // What the unfinished ones are waiting on, so "3 still playing" can name names.
       waiting: live.flatMap((r) => (r.me.waitingOn || []).map((n) => ({ n, league: r.league.name }))).slice(0, 8),
       /* ⚠ ONLY FROM FINISHED WEEKS, and not only because of the record. Mid-week `left` is misleading in
@@ -427,6 +431,11 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                           color: data.sum.w > data.sum.l ? "#5FD0A8" : data.sum.l > data.sum.w ? "#F2655C" : "var(--mut)" }}>
                           {data.sum.w}–{data.sum.l}
                         </span>
+                        {data.sum.medianGames > 0 && (
+                          <span className="mut" style={{ fontSize: 11.5 }}>
+                            (incl. {data.sum.medianGames} median game{data.sum.medianGames === 1 ? "" : "s"})
+                          </span>
+                        )}
                         <span className="mut" style={{ fontSize: 12 }}>
                           {data.sum.liveN > 0
                             ? `settled, across ${data.sum.settledN} of ${data.sum.leagues} league${data.sum.leagues === 1 ? "" : "s"}`
@@ -532,10 +541,23 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                           <i className={`ti ${V.icon}`} style={{ fontSize: 11 }} aria-hidden="true" />{V.label}
                         </span>
                       ));
+                      /* ⭐⭐⭐⭐ THE MEDIAN HALF, where the league plays one — b140/29t.
+                         Trey: "if your league has median scoring, you need to show how we relate to that as
+                         well." In a median league the week is 2-0, 1-1 or 0-2, and a row showing only the
+                         head-to-head is reporting half the result. Absent entirely for leagues that do not
+                         play it, so the column never implies something that does not apply. */
                       const score = me && (
                         <span className="num" style={{ fontSize: 13, fontWeight: 800, whiteSpace: "nowrap",
                           color: me.result === "W" ? "#5FD0A8" : me.result === "L" ? "#F2655C" : "var(--mut)" }}>
                           {me.result || "—"} {r1(me.pts)}–{me.oppPts != null ? r1(me.oppPts) : "—"}
+                          {me.medianResult && (
+                            <span data-wkmedian={me.medianResult}
+                              title={`League median ${r1(me.medianPts)} — you ${me.medianMargin >= 0 ? "beat it by" : "missed it by"} ${r1(Math.abs(me.medianMargin))}`}
+                              style={{ fontWeight: 700, fontSize: 10.5, marginLeft: 5,
+                                color: me.medianResult === "W" ? "#5FD0A8" : me.medianResult === "L" ? "#F2655C" : "var(--mut)" }}>
+                              /{me.medianResult}&nbsp;med
+                            </span>
+                          )}
                         </span>
                       );
                       return (

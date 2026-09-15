@@ -72,8 +72,16 @@ export default function InSeason({ user, leagues, initialTab, onHome, onBack, ba
       )}
       {seen.review && (
         <div hidden={tab !== "review"} style={{ maxWidth: 1100, margin: "0 auto", padding: "16px 16px 40px" }}>
+          {/* ⚠ onOpenHub TAKES A SLEEPER-SHAPED OBJECT, NOT AN APP LEAGUE ID — 29t. This passed `l.id`, the
+              app's own internal id ("L0"), as a bare string; App.jsx reads `sl.league_id` off it, got
+              undefined, and the team-hub route fell through to "This team view needs to be reopened".
+              The hub is keyed on the SLEEPER league id, which is what hubIdOf returns. */}
           <WeeklyReview leagues={leagues} scope="all"
-            onOpenLeague={(l) => onOpenHub && onOpenHub(l.id)} />
+            onOpenLeague={(l) => {
+              const sleeperId = (l && ((l.connect && l.connect.leagueId)
+                || (l.cfg && l.cfg.connect && l.cfg.connect.leagueId) || l.sleeperLeagueId)) || null;
+              if (sleeperId && onOpenHub) onOpenHub({ league_id: sleeperId });
+            }} />
         </div>
       )}
     </div>

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from "react";
 import { api, hasBackend, getToken, setToken, syncHealth, authHealth } from "./api.js";
+import { useWide } from "./usewide.js";
 
 // Lightweight SECTION-level error boundary. The app has a full-page boundary at the root, but a render error
 // in one panel (e.g. a rare data edge case in the draft recap/superlatives) shouldn't take down the entire
@@ -96,7 +97,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29s";
+const BUILD_TAG = "2026.07.29t";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -14583,10 +14584,17 @@ function WeekHoverCard({ card, bySid, winTone }) {
               {nameOf(p.sid)}
               <span className="mut" style={{ fontSize: 9.5 }}> {posOf(p.sid)}{teamOf(p.sid) ? `·${teamOf(p.sid)}` : ""}</span>
             </span>
-            <span className="num" style={{ fontSize: 11.5, textAlign: "right", color: p.played ? "var(--ink)" : "var(--mut)" }}>
-              {p.played ? r1(p.pts) : "—"}
+            {/* ⚠ A LIVE PLAYER HAS BOTH NUMBERS. "Now" is what is on the board and "Proj" is what he is
+                heading for — for a man mid-game those are different, and showing only one of them is how
+                a live Monday night looked frozen. */}
+            <span className="num" style={{ fontSize: 11.5, textAlign: "right",
+              color: p.phase === "done" || p.played ? "var(--ink)" : p.phase === "live" ? "#5FD0A8" : "var(--mut)" }}>
+              {p.phase === "done" || p.played || p.phase === "live" ? r1(p.pts) : "—"}
             </span>
-            <span className="num mut" style={{ fontSize: 11.5, textAlign: "right" }}>{Number.isFinite(p.proj) ? r1(p.proj) : "—"}</span>
+            <span className="num mut" style={{ fontSize: 11.5, textAlign: "right" }}>
+              {p.phase === "live" && Number.isFinite(p.projFinal) ? r1(p.projFinal)
+                : Number.isFinite(p.proj) ? r1(p.proj) : "—"}
+            </span>
           </React.Fragment>
         ))}
       </div>
@@ -14610,8 +14618,9 @@ function WeekHoverCard({ card, bySid, winTone }) {
     );
   } else if (kind === "left") {
     title = "Still to play";
-    const mine = (L.me.players || []).filter((p) => !p.played);
-    const theirs = (L.opp.players || []).filter((p) => !p.played);
+    const stillGoing = (p) => (p.phase ? p.phase !== "done" : !p.played);
+    const mine = (L.me.players || []).filter(stillGoing);
+    const theirs = (L.opp.players || []).filter(stillGoing);
     body = (
       <div style={{ display: "grid", gap: 12, gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)" }}>
         <div>
@@ -16967,6 +16976,9 @@ function GetStartedPanel({ leagues, funMocks, dismissed, onDismiss, onConnectSle
      show the SAME scoreboard; two loaders a minute apart produce a home page that says 3-2 opening a page
      that says 2-3, and nobody would ever work out why.
    ------------------------------------------------------------------------------------------------ */
+/* The future-week table's column track — named once so the header and the rows cannot drift. */
+const AHEAD_COLS = "minmax(0,1.3fr) minmax(0,1fr) 108px 118px minmax(0,1.6fr)";
+
 function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, weekFlags }) {
   const r1 = (n) => (Number.isFinite(n) ? Math.round(n * 10) / 10 : n);
   const [live, setLive] = useState(null);
@@ -16983,6 +16995,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
      The expander STAYS — collapsing fifteen rows is still worth having once you have looked. */
   const [open, setOpen] = useState(true);
   // Looking ahead: null = this week (the live view), a number = that week's to-do list. See the stepper.
+  const wide = useWide(900);
   const [ahead, setAhead] = useState(null);
   /* ⚠ THIS BLOCK LIVES WITH THE OTHER HOOKS, ABOVE THE EARLY RETURN, AND THAT IS NOT TIDINESS. It was
      first written next to the code that uses it — below `if (!view || !view.show) return null` — which
@@ -17011,6 +17024,82 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
   };
   const hideCard = () => setCard(null);
   const [aheadData, setAheadData] = useState(null);   // { week, rows:[{name, flags, league}] } | "loading"
+  /* The finished week, loaded only when the Review tab is opened — most visits never open it, and this is
+     one season-review call per league. See the Review tab below for what it renders. */
+  const [reviewData, setReviewData] = useState(null);
+  const [reviewWeek, setReviewWeek] = useState(null);
+  /* ⭐⭐⭐⭐⭐ AN EFFECT THAT CANCELS ITSELF LOADS FOREVER — 29t.
+     ==========================================================================================
+     The first cut of this loader guarded re-entry with the state it was about to set, and listed that
+     same state in its own dependencies:
+
+         if (tab !== "review" || !hasBackend || reviewData) return;
+         setReviewData("loading");                    // ← changes reviewData…
+         ...
+       }, [tab, leagues, reviewData]);                // ← …which re-runs the effect
+
+     React then does exactly what it promises: the re-run tears down the previous effect first, the
+     cleanup flips `alive` to false on the request that is still in the air, and the new run hits the
+     `reviewData` guard and returns without starting another. The fetch comes back to a listener that
+     has been told to ignore it. The tab reads "Reading the last finished week…" until the page is
+     reloaded — not slowly, but permanently, and in EVERY week state.
+
+     ⚠ THE CLASS OF BUG, BECAUSE IT WILL BE WRITTEN AGAIN: a loading flag kept in state is fine, and an
+       `alive` cleanup is fine, but the flag must not be in the dependency array it guards. The
+       re-entry guard belongs in a ref, which does not re-render and therefore cannot re-trigger the
+       effect that reads it. `leagues` still re-fetches, because the key below changes with it.
+     ⚠ And it is invisible to the build, to the unit tests and to a screenshot of any OTHER tab — it
+       took a browser suite clicking the tab and reading what it said. */
+  const reviewKeyRef = useRef(null);
+  useEffect(() => {
+    if (tab !== "review" || !hasBackend) return;
+    const key = (leagues || []).map((l) => (l && l.id) || "?").join(",");
+    if (reviewKeyRef.current === key) return;   // already loaded, or loading, for exactly this set
+    reviewKeyRef.current = key;
+    let alive = true;
+    setReviewData("loading");
+    (async () => {
+      try {
+        const { connectedOf, hubIdOf: hid, ownerOf: own } = await import("./livecache.js");
+        const conn = connectedOf(leagues);
+        const out = await Promise.all(conn.map((l) => api.sleeperSeasonReview(hid(l), own(l)).catch(() => null)));
+        if (!alive) return;
+        /* The newest week that is FINISHED in every league we could read — reviewing a week one league has
+           not completed would mix a settled result with a live one in the same table. */
+        let wk = 0;
+        out.forEach((d) => {
+          ((d && d.weeks) || []).forEach((x) => {
+            if (x && x.me && x.me.complete !== false && x.week > wk) wk = x.week;
+          });
+        });
+        if (!wk) { setReviewData({ week: null, rows: [], w: 0, l: 0, left: 0, blown: 0 }); return; }
+        const rows = [];
+        out.forEach((d, i) => {
+          if (!d) return;
+          const x = (d.weeks || []).find((y) => y.week === wk && y.me && y.me.complete !== false);
+          if (!x) return;
+          const me = x.me;
+          rows.push({ id: conn[i].id, name: conn[i].name, league: conn[i],
+            pts: me.pts, oppPts: me.oppPts, result: me.result, left: me.left || 0,
+            verdict: me.verdict ? me.verdict.key : null,
+            /* A median league's week is two games. `medianRow` is only present where the league plays it. */
+            medianResult: Number.isFinite(me.medianMargin)
+              ? (me.medianMargin > 0 ? "W" : me.medianMargin < 0 ? "L" : "T") : null });
+        });
+        setReviewWeek(wk);
+        setReviewData({ week: wk, rows,
+          w: rows.filter((r) => r.result === "W").length,
+          l: rows.filter((r) => r.result === "L").length,
+          left: Math.round(rows.reduce((s2, r) => s2 + (r.left || 0), 0) * 10) / 10,
+          blown: rows.filter((r) => r.verdict === "blown").length });
+      } catch {
+        // A failed read must not be remembered as "loaded", or reopening the tab shows a permanent blank.
+        reviewKeyRef.current = null;
+        if (alive) setReviewData({ week: null, rows: [], w: 0, l: 0, left: 0, blown: 0 });
+      }
+    })();
+    return () => { alive = false; };
+  }, [tab, leagues]);
 
   useEffect(() => {
     if (!ahead || !hasBackend) { setAheadData(null); return; }
@@ -17067,6 +17156,8 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
   const rows = ((live && live.leagues) || []).filter((l) => l && l.me && l.opp);
   // Every starter by id, for the hover cards — the board already carries name, position, team and state.
   const bySid = new Map(((live && live.rooting) || []).map((p) => [String(p.sid), p]));
+  // Does ANY connected league play the median? Drives whether the column exists at all.
+  const anyMedian = rows.some((L) => L && L.medianGame && L.medianGame.on);
   const tabs = [["live", "Live", view.live]].concat(view.reviewable ? [["review", "Review", false]] : []);
   const showTab = tabs.some(([k]) => k === tab) ? tab : "live";
 
@@ -17174,55 +17265,101 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                   this one", which is the difference between reassurance and a silent gap. Every league
                   gets a row; the clean ones say they are clean and the flagged ones lead. */}
               <div style={{ display: "flex", flexDirection: "column" }}>
+                {/* ⭐⭐⭐⭐⭐ A FUTURE WEEK IS A TABLE TOO — 29t.
+                    Trey: "I'm not seeing every league with the checks… but I also want to see the projected
+                    scores and such. The future weeks also just don't look clear."
+
+                    It was a run-on line per league: a dot, a name, an opponent and then however many
+                    comma-separated names the flags produced, wrapping wherever it happened to wrap. Nothing
+                    lined up, so nothing could be compared — which is the same complaint he made about the
+                    live table, and it deserves the same answer. Same columns, same alignment, same shape;
+                    only the contents differ, because a week that has not been played has projections where
+                    the live one has scores. */}
+                {wide && (
+                  <div className="mut" style={{ display: "grid", gap: 10, padding: "0 4px 5px",
+                    gridTemplateColumns: AHEAD_COLS, fontSize: 9, textTransform: "uppercase",
+                    letterSpacing: ".05em", fontWeight: 800 }}>
+                    <span>League</span>
+                    <span>Opponent</span>
+                    <span style={{ textAlign: "right" }}>Projected</span>
+                    <span style={{ textAlign: "right" }}>vs median</span>
+                    <span>To sort out</span>
+                  </div>
+                )}
                 {aheadData.rows.slice().sort((a2, b2) => ((b2.flags && b2.flags.sev) || 0) - ((a2.flags && a2.flags.sev) || 0)).map((r) => {
                   const f = r.flags;
                   const sev = (f && f.sev) || 0;
                   const SEV = { 3: "#F2655C", 2: "var(--gold)", 1: "#6BA8E5", 0: "#5FD0A8" };
                   const h = r.hub || null;
-                  /* The matchup for that week, straight off the hub payload — which is where the team hub
-                     reads it from too, so the two cannot disagree about who you are playing.
-                     ⚠ THE OPPONENT IS REAL; A PROJECTED SCORE HERE WOULD NOT BE. `weekPoints` is 0 for a
-                       week that has not started, and the team hub's projected totals are computed on the
-                       CLIENT from the scored player pool — fifteen leagues' worth of that on the home page
-                       would be slow, and inventing a number to fill the column would be worse than leaving
-                       it out. So this shows who you play, and the score only once there is one. */
                   const m = (h && h.matchup) || null;
-                  const opp = m ? {
-                    oppName: (m.opp && m.opp.teamName) || null,
-                    mePts: m.me && Number(m.me.weekPoints) || 0,
-                    oppPts: m.opp && Number(m.opp.weekPoints) || 0,
-                  } : null;
-                  const hasScore = opp && (opp.mePts > 0 || opp.oppPts > 0);
+                  /* ⭐⭐⭐ THE PROJECTION IS REAL NOW — the hub payload carries a projected total per side
+                     from b140, summed from this league's own scoring. Before that this column could only
+                     have held an invented number, which is why it said so and showed nothing. */
+                  const meProj = m && m.meProj ? m.meProj.pts : null;
+                  const oppProj = m && m.oppProj ? m.oppProj.pts : null;
+                  const oppName = (m && m.opp && m.opp.teamName) || null;
+                  const medProj = h && Number.isFinite(h.medianProjected) ? h.medianProjected : null;
+                  /* ⚠ "COULDN'T READ" AND "NOTHING TO SORT OUT" WERE BOTH RENDERING. `sev` is 0 when there
+                     are no flags AND when there are no flags because the league failed to load, so an
+                     unreadable league printed "Nothing to sort outCouldn't read this league" — two
+                     contradictory claims, run together without even a space. The unreadable case is now
+                     its own branch and wins. */
+                  const unreadable = !f;
+                  const flagText = unreadable ? null : (
+                    <>
+                      {f.out.length > 0 && <span style={{ color: "#F2655C" }}>Out: {f.out.join(", ")}</span>}
+                      {f.out.length > 0 && (f.check.length || f.bye.length) ? <span> · </span> : null}
+                      {f.check.length > 0 && <span style={{ color: "var(--gold)" }}>Check: {f.check.join(", ")}</span>}
+                      {f.check.length > 0 && f.bye.length ? <span> · </span> : null}
+                      {f.bye.length > 0 && <span style={{ color: "#6BA8E5" }}>Bye: {f.bye.join(", ")}</span>}
+                      {sev === 0 && <span style={{ color: "#5FD0A8" }}>Nothing to sort out</span>}
+                    </>
+                  );
                   return (
-                    <div key={r.id} data-homeaheadrow={r.name} data-homeaheadsev={String(sev)}
-                      style={{ display: "flex", alignItems: "baseline", gap: 9, padding: "5px 2px",
-                        borderTop: "1px solid var(--line)", flexWrap: "wrap" }}>
-                      <span style={{ width: 7, height: 7, borderRadius: 99, background: SEV[sev] || "var(--mut)", flexShrink: 0 }} aria-hidden="true" />
-                      <button onClick={() => onOpenTeam && onOpenTeam(r.league)}
-                        style={{ cursor: "pointer", fontFamily: "inherit", background: "none", border: "none", padding: 0,
-                          color: "var(--ink)", fontSize: 12.5, fontWeight: 700, textAlign: "left", flex: "0 1 auto" }}>
-                        {r.name}
-                      </button>
-                      {/* Who you play and what the projection makes of it. A future week has no score, so
-                          the projected totals ARE the matchup. */}
-                      {opp && (
-                        <span className="num mut" data-homeaheadproj={r.name} style={{ fontSize: 11.5, flexShrink: 0 }}>
-                          {opp.oppName ? `vs ${opp.oppName}` : "no opponent set"}
-                          {hasScore && (
-                            <> <b style={{ color: opp.mePts >= opp.oppPts ? "#5FD0A8" : "#F2655C" }}>
-                              {Math.round(opp.mePts * 10) / 10}–{Math.round(opp.oppPts * 10) / 10}
-                            </b></>
-                          )}
-                        </span>
-                      )}
-                      <span className="mut" style={{ fontSize: 11.5, flex: "1 1 200px", minWidth: 0 }}>
-                        {sev === 0 ? <span style={{ color: "#5FD0A8" }}>Nothing to sort out</span> : null}
-                        {f && f.out.length > 0 && <span style={{ color: "#F2655C" }}>Out: {f.out.join(", ")}</span>}
-                        {f && f.out.length > 0 && (f.check.length || f.bye.length) ? <span> · </span> : null}
-                        {f && f.check.length > 0 && <span style={{ color: "var(--gold)" }}>Check: {f.check.join(", ")}</span>}
-                        {f && f.check.length > 0 && f.bye.length ? <span> · </span> : null}
-                        {f && f.bye.length > 0 && <span style={{ color: "#6BA8E5" }}>Bye: {f.bye.join(", ")}</span>}
-                        {!f && <span style={{ color: "var(--mut)" }}>Couldn't read this league</span>}
+                    <div key={r.id} data-homeaheadrow={r.name} data-homeaheadsev={String(unreadable ? -1 : sev)}
+                      style={{ display: "grid", alignItems: "center", gap: wide ? 10 : 5,
+                        gridTemplateColumns: wide ? AHEAD_COLS : "minmax(0,1fr)",
+                        padding: "6px 4px", borderTop: "1px solid var(--line)" }}>
+                      <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+                        <span style={{ width: 7, height: 7, borderRadius: 99, flexShrink: 0,
+                          background: unreadable ? "var(--mut)" : (SEV[sev] || "var(--mut)") }} aria-hidden="true" />
+                        <button onClick={() => onOpenTeam && onOpenTeam(r.league)}
+                          style={{ cursor: "pointer", fontFamily: "inherit", background: "none", border: "none", padding: 0,
+                            color: "var(--ink)", fontSize: 12.5, fontWeight: 700, textAlign: "left",
+                            minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {r.name}
+                        </button>
+                      </span>
+                      <span className="mut" style={{ fontSize: 11.5, minWidth: 0, overflow: "hidden",
+                        textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {oppName || (unreadable ? "—" : "no opponent set")}
+                      </span>
+                      <span className="num" data-homeaheadproj={r.name} style={{ fontSize: 12, textAlign: wide ? "right" : "left" }}>
+                        {Number.isFinite(meProj) ? (
+                          <>
+                            <b style={{ color: Number.isFinite(oppProj) ? (meProj >= oppProj ? "#5FD0A8" : "#F2655C") : "var(--ink)" }}>
+                              {meProj}
+                            </b>
+                            {Number.isFinite(oppProj) && <span className="mut"> – {oppProj}</span>}
+                          </>
+                        ) : <span className="mut">—</span>}
+                      </span>
+                      {/* ⭐⭐⭐⭐ "if your league has median scoring, you need to show how we relate to that as
+                          well (based on projected scoring and projected median)." Blank where the league
+                          does not play it — a dash in every row would imply the column applies everywhere. */}
+                      <span className="num" data-homeaheadmedian={medProj != null ? String(medProj) : ""}
+                        style={{ fontSize: 11.5, textAlign: wide ? "right" : "left" }}>
+                        {medProj != null && Number.isFinite(meProj) ? (
+                          <span style={{ color: meProj >= medProj ? "#5FD0A8" : "#F2655C" }}>
+                            {meProj >= medProj ? "+" : ""}{Math.round((meProj - medProj) * 10) / 10}
+                            <span className="mut" style={{ fontSize: 10 }}> vs {medProj}</span>
+                          </span>
+                        ) : <span className="mut" style={{ fontSize: 10.5 }}>{medProj != null ? "—" : ""}</span>}
+                      </span>
+                      <span className="mut" style={{ fontSize: 11.5, minWidth: 0 }}>
+                        {unreadable
+                          ? <span style={{ color: "var(--gold)" }}>Couldn't read this league</span>
+                          : flagText}
                       </span>
                     </div>
                   );
@@ -17318,7 +17455,12 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                     <th style={{ fontWeight: 600, padding: "4px 8px 6px" }} title="Your score now, and where it is heading">You</th>
                     <th style={{ fontWeight: 600, padding: "4px 8px 6px" }} title="Their score now, and where it is heading">Opponent</th>
                     <th style={{ fontWeight: 600, padding: "4px 8px 6px" }} title="Chance of winning, from the projected margin and how much is still to play">Win</th>
-                    <th style={{ fontWeight: 600, padding: "4px 4px 6px 8px" }} title="Your starters yet to play versus theirs">Left</th>
+                    {anyMedian && (
+                      /* ⭐⭐⭐⭐ Only rendered when at least one connected league plays median scoring —
+                          a column of blanks in a twelve-league table is worse than no column. */
+                      <th style={{ fontWeight: 600, padding: "4px 8px 6px" }} title="Your projected total against the league's projected median — the second game a median league plays each week">Median</th>
+                    )}
+                    <th style={{ fontWeight: 600, padding: "4px 4px 6px 8px" }} title="Your starters yet to play or still playing, versus theirs">Left</th>
                     <th style={{ padding: "4px 4px 6px 8px" }} />
                   </tr>
                 </thead>
@@ -17387,6 +17529,25 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                             in a neat tabular format." The count is the summary and the names are the
                             answer; a tooltip is the right place for the second because it is a question
                             you ask of one row at a time. */}
+                        {anyMedian && (
+                          <td data-homeweekmedian={L.medianGame && L.medianGame.on ? String(Math.round((L.medianGame.win || 0) * 100)) : ""}
+                            title={L.medianGame && L.medianGame.on
+                              ? `Projected ${r1(L.medianGame.myProjected)} against a projected median of ${r1(L.medianGame.projMedian)}`
+                              : "This league does not play the median"}
+                            style={{ textAlign: "right", padding: "5px 8px" }}>
+                            {L.medianGame && L.medianGame.on && Number.isFinite(L.medianGame.margin) ? (
+                              <>
+                                <span style={{ fontWeight: 800,
+                                  color: L.medianGame.margin >= 0 ? "#5FD0A8" : "#F2655C" }}>
+                                  {L.medianGame.margin >= 0 ? "+" : ""}{r1(L.medianGame.margin)}
+                                </span>
+                                {Number.isFinite(L.medianGame.win) && (
+                                  <span className="mut" style={{ fontSize: 10.5 }}> {Math.round(L.medianGame.win * 100)}%</span>
+                                )}
+                              </>
+                            ) : <span className="mut">—</span>}
+                          </td>
+                        )}
                         <td data-homeweekleft={`${L.me.yetToPlay}v${L.opp.yetToPlay}`}
                           onMouseEnter={(e) => showCard(e, L, "left")} onMouseLeave={hideCard}
                           style={{ textAlign: "right", padding: "5px 4px 5px 8px", color: "var(--mut)", cursor: "help" }}>
@@ -17420,38 +17581,103 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
           )}
         </>
       ) : (
-        <div style={{ fontSize: 12.5 }}>
-          {/* ⚠ THE TAB APPEARS ON THE FIRST FINAL WHISTLE; THE REVIEW ITSELF WAITS FOR THE LAST. A review
-              built while a game is still to come computes its best lineup out of players who have not
-              played and tells you to bench the man you are about to watch score thirty. So a half-finished
-              week says exactly that, rather than quietly reviewing the previous one and letting you think
-              it was this one. */}
-          {view.weekComplete ? (
-            <span className="mut">Every game in week {view.week} is final — the full review is ready.</span>
-          ) : (
-            <span className="mut">
-              Some of week {view.week} is final, but not all of it. The review opens when the last game ends —
-              scoring a lineup with players still to play would recommend benching them. Until then the
-              full review covers week {view.week - 1}.
-            </span>
-          )}
-          {!!rows.length && (
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
-              {rows.slice(0, 6).map((L, i) => {
-                const league = (leagues || []).find((c) => String(hubIdOfLeague(c)) === String(L.leagueId));
-                const up = L.me.pts > L.opp.pts;
-                return (
-                  <button key={L.leagueId || i} data-homereviewrow={(league && league.name) || L.leagueId}
-                    onClick={() => league && onOpenHub && onOpenHub(league.id)}
-                    style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, padding: "3px 9px",
-                      borderRadius: 99, border: "1px solid var(--line)", background: "var(--panel2)", color: "var(--ink)" }}>
-                    <b style={{ color: up ? "#5FD0A8" : "#F2655C" }}>{up ? "W" : "L"}</b>{" "}
-                    {(league && league.name) || L.leagueId}{" "}
-                    <span className="num mut">{r1(L.me.pts)}–{r1(L.opp.pts)}</span>
-                  </button>
-                );
-              })}
+        /* ⭐⭐⭐⭐⭐ THE REVIEW TAB, REBUILT — 29t.
+           Trey: "The 'review' section of this widget is not good at all. I'm not sure what you're trying to
+           do here, but it needs to be way better."
+
+           Fair. It was a paragraph of caveat followed by a row of pills reading "W Bucs 118–104" — and the
+           W came off the LIVE scoreline, so on a Sunday afternoon it announced results for games still
+           being played, which is the very error the rest of this strip was rebuilt to stop making. It also
+           looked nothing like the Live tab sitting beside it, so switching tabs threw away the layout your
+           eye had just learned.
+
+           Same table, same columns, different week: what you scored, what they scored, whether you won, and
+           the one number a review is actually for — what it cost you to leave points on the bench. Loaded
+           only when the tab is opened, because most visits never open it. */
+        <div data-homereview={String(view.week)} style={{ fontSize: 12.5 }}>
+          {!view.weekComplete && (
+            <div className="mut" style={{ fontSize: 11.5, marginBottom: 8, lineHeight: 1.5 }}>
+              {/* ⚠ "SO THIS IS WEEK 6" AFTER "WEEK 2 ISN'T FINISHED" READS AS A BUG, and the first version
+                  implied the gap was always one week by defaulting to `view.week - 1`. It isn't: the week
+                  shown is the newest one that finished in EVERY connected league, which a single league
+                  mid-week can hold several weeks back. Say which week it is and why it is that one, so a
+                  jump looks like the answer to a question rather than an off-by-four. */}
+              Week {view.week} isn't finished, so this is week {reviewWeek || view.week - 1}, the most recent
+              week that finished everywhere — a review of a week with players still to play would tell you to
+              bench the man you are about to watch score thirty.
             </div>
+          )}
+          {reviewData === "loading" || !reviewData ? (
+            <div className="mut" style={{ fontSize: 12 }}>Reading the last finished week…</div>
+          ) : !reviewData.rows.length ? (
+            <div className="mut" style={{ fontSize: 12 }}>No finished week to review yet.</div>
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 8, alignItems: "baseline" }}>
+                <span>
+                  <b className="num" style={{ fontSize: 15,
+                    color: reviewData.w > reviewData.l ? "#5FD0A8" : reviewData.l > reviewData.w ? "#F2655C" : "var(--mut)" }}>
+                    {reviewData.w}–{reviewData.l}
+                  </b>
+                  <span className="mut"> in week {reviewData.week}</span>
+                </span>
+                {reviewData.left > 0 && (
+                  <span><b className="num" style={{ color: "var(--gold)" }}>{reviewData.left}</b>
+                    <span className="mut"> points left on benches</span></span>
+                )}
+                {reviewData.blown > 0 && (
+                  <span><b className="num" style={{ color: "#F2655C" }}>{reviewData.blown}</b>
+                    <span className="mut"> lost with a winning lineup available</span></span>
+                )}
+              </div>
+              <div style={{ overflowX: "auto" }}>
+                <table className="num" style={{ width: "100%", minWidth: 460, borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ color: "var(--mut)", textAlign: "right" }}>
+                      <th style={{ textAlign: "left", fontWeight: 600, padding: "4px 8px 6px 4px" }}>League</th>
+                      <th style={{ fontWeight: 600, padding: "4px 8px 6px" }}>Final</th>
+                      <th style={{ fontWeight: 600, padding: "4px 8px 6px" }}>Result</th>
+                      <th style={{ fontWeight: 600, padding: "4px 8px 6px" }} title="Points your bench would have added">Bench</th>
+                      <th style={{ padding: "4px 4px 6px 8px" }} />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reviewData.rows.map((R) => (
+                      <tr key={R.id} data-homereviewrow={R.name} style={{ borderTop: "1px solid var(--line)" }}>
+                        <td style={{ textAlign: "left", padding: "5px 8px 5px 4px", maxWidth: 210, overflow: "hidden",
+                          textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <button onClick={() => R.league && onOpenTeam && onOpenTeam(R.league)}
+                            style={{ cursor: "pointer", fontFamily: "inherit", background: "none", border: "none",
+                              padding: 0, color: "var(--ink)", fontSize: 12.5, fontWeight: 700 }}>{R.name}</button>
+                        </td>
+                        <td style={{ textAlign: "right", padding: "5px 8px" }}>
+                          {R.pts != null ? `${r1(R.pts)}–${r1(R.oppPts)}` : "—"}
+                        </td>
+                        <td style={{ textAlign: "right", padding: "5px 8px", fontWeight: 800,
+                          color: R.result === "W" ? "#5FD0A8" : R.result === "L" ? "#F2655C" : "var(--mut)" }}>
+                          {R.result || "—"}
+                          {/* ⭐⭐⭐ THE MEDIAN HALF OF THE WEEK, where the league plays one. A median league
+                              week is 2-0, 1-1 or 0-2 and showing only the head-to-head reports half of it. */}
+                          {R.medianResult && (
+                            <span className="mut" style={{ fontWeight: 600, fontSize: 10.5 }}> / {R.medianResult} med</span>
+                          )}
+                        </td>
+                        <td style={{ textAlign: "right", padding: "5px 8px",
+                          color: R.left > 0 ? "var(--gold)" : "var(--mut)" }}>
+                          {R.left > 0 ? `−${r1(R.left)}` : "0"}
+                        </td>
+                        <td style={{ textAlign: "right", padding: "3px 4px 3px 8px", whiteSpace: "nowrap" }}>
+                          {R.verdict && (
+                            <span style={{ fontSize: 9.5, fontWeight: 800, textTransform: "uppercase",
+                              letterSpacing: ".04em", color: "var(--mut)" }}>{R.verdict}</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </div>
       )}
