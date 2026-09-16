@@ -97,7 +97,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29x";
+const BUILD_TAG = "2026.07.29aa";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -568,6 +568,150 @@ export function powerBlend(teams, { k = 5 } = {}) {
     };
   }).sort((a, b) => b.powerScore - a.powerScore).map((t, i) => ({ ...t, powerRank: i + 1 }));
 }
+
+/* ⭐⭐⭐⭐⭐ WHAT A PROPOSED TRADE DOES — the calculator's output — 29y.
+   Trey asked for two numbers, "power rankings and overall points in the season", and the honest answer
+   needs a third thing beside them: what it does to the OTHER side, because a deal nobody accepts is not a
+   deal. The layout follows that order — your side, their side, then the two league-level consequences.
+   ⚠ EVERY FIGURE IS A DIFFERENCE BETWEEN TWO OPTIMAL LINEUPS, never a sum of the players changing hands,
+     which is what makes a third man in a package correctly worth zero. See `tradeEval`. */
+const TradeVerdict = ({ r, weeks, games, oddsShift }) => {
+  const V = { good: "var(--green)", lopsided: "var(--gold)", flat: "var(--mut)", bad: "var(--red)" };
+  const me = r.sides.me, them = r.sides.them;
+  const perWeek = (v) => Math.round((v / (games || 17)) * 10) / 10;
+  const ros = (v) => Math.round(perWeek(v) * (weeks || 1) * 10) / 10;
+  const sign = (v) => (v > 0 ? `+${v}` : `${v}`);
+  const tone = (v) => (v > 0 ? "var(--green)" : v < 0 ? "var(--red)" : "var(--mut)");
+
+  const Side = ({ s, mine }) => (
+    <div data-tbside={mine ? "me" : "them"} style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "9px 11px", background: "var(--panel)", minWidth: 0 }}>
+      <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 5 }}>
+        {mine ? "Your team" : s.teamName}
+      </div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 7, flexWrap: "wrap" }}>
+        <b className="num" data-tbdelta={String(s.delta)} style={{ fontSize: 19, color: tone(s.delta) }}>{sign(perWeek(s.delta))}</b>
+        <span className="mut" style={{ fontSize: 11 }}>pts a week to the starting lineup</span>
+      </div>
+      <div className="mut" style={{ fontSize: 11, marginTop: 2 }}>
+        {sign(ros(s.delta))} over the {weeks} week{weeks === 1 ? "" : "s"} left · season total {Math.round(s.startBefore)} → <b className="num" style={{ color: "var(--ink)" }}>{Math.round(s.startAfter)}</b>
+      </div>
+      {/* ⭐⭐⭐⭐ THE ROSTER SPOT, WHICH IS THE PART A CALCULATOR USUALLY FORGETS. Three in and two out is a
+          deal you cannot execute until somebody is dropped, and naming him turns a number into an action. */}
+      {s.spotsNeeded > 0 && (
+        <div data-tbcut={String(s.spotsNeeded)} style={{ fontSize: 11, marginTop: 5, color: "var(--gold)" }}>
+          Needs {s.spotsNeeded} roster spot{s.spotsNeeded === 1 ? "" : "s"}
+          {s.likelyCut.length ? <span className="mut"> — likely cut: {s.likelyCut.map((p) => p.name).join(", ")}</span> : null}
+        </div>
+      )}
+      {/* ⭐⭐⭐⭐ THE COST THE HEADLINE CANNOT SEE. Starting-lineup points price depth at zero, correctly for
+          the week the trade is made and wrongly for the week a starter limps off. Stating the COUNT is a
+          fact; inventing a second score for it would not be. */}
+      {s.thinAfter.map((t) => (
+        <div key={t.pos} data-tbthin={t.pos} className="mut" style={{ fontSize: 11, marginTop: 4 }}>
+          Leaves you {t.now} startable {t.pos}{t.now === 1 ? "" : "s"} for {t.need} slot{t.need === 1 ? "" : "s"} — no cover if one goes down
+        </div>
+      ))}
+    </div>
+  );
+
+  return (
+    <div data-tbresult
+      /* The calculator's own PRE-TRADE ranking of the whole league, exposed so a suite can hold it against
+         the standings table. These two numbers are computed by the same `scoreRoster` and must agree; if
+         they ever drift, the calculator is reporting movement on a scale no other screen uses, which is
+         invisible on either screen alone. Carries no visual weight — it is here to be checkable. */
+      data-tbranks={JSON.stringify((r.power.before || []).reduce((acc, t) => {
+        acc[t.teamName] = t.powerRank; return acc;
+      }, {}))}>
+      {/* The horizon label only appears where there are two horizons; in redraft "right now" is the only
+          thing on screen and naming it would imply something else exists. */}
+      {r.long && (
+        <div className="mut" data-tbnowlabel style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 5 }}>Right now</div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+        <Side s={me} mine />
+        <Side s={them} />
+      </div>
+
+      <div data-tbverdict={r.verdict.key} style={{ border: `1px solid ${V[r.verdict.key]}`, background: "var(--panel)", borderRadius: 9, padding: "9px 11px", marginBottom: 10 }}>
+        <b style={{ color: V[r.verdict.key], fontSize: 12.5 }}>{r.verdict.label}</b>
+        <span className="mut" style={{ fontSize: 11.5 }}> — {r.verdict.why}</span>
+        {/* The value each way, shown rather than asserted, so the read above is auditable. Points above a
+            replacement starter is the only scale on which a QB and a TE are comparable at all (29r). */}
+        <div className="mut" style={{ fontSize: 11, marginTop: 4 }}>
+          Value out <b className="num">{me.assetsOut}</b> · value in <b className="num">{me.assetsIn}</b>
+          <span style={{ fontSize: 10.5 }}> (season points above a replacement starter, so positions compare)</span>
+        </div>
+      </div>
+
+      {/* ⭐⭐⭐⭐⭐ THE SECOND HORIZON — 29z, and it is ABSENT in a redraft league rather than empty.
+          Trey: "for a redraft league, that's all that needs to show. For a dynasty league or a keeper
+          league, it needs to show the right now value, and... almost like the long term value, taking into
+          account cost, control, etc."
+          Everything above this line is the "right now" half and is identical in every format. */}
+      {r.long && (
+        <div data-tblong style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "9px 11px", marginBottom: 10, background: "var(--panel)" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 5 }}>
+            <span className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".06em" }}>Long term</span>
+            <b className="num" data-tblongdelta={String(r.long.delta)} style={{ fontSize: 15, color: tone(r.long.delta) }}>{sign(r.long.delta)}</b>
+            <span className="mut" style={{ fontSize: 11 }}>asset value, age-adjusted</span>
+          </div>
+          {/* ⭐⭐⭐⭐ CONTROL, AS A FACT. Years of useful football left, read off the same age curve the
+              dynasty board ranks on — and stated per side, because "you get younger" is only half of it. */}
+          {r.long.youthSwing != null && (
+            <div data-tbyears style={{ fontSize: 11.5, marginBottom: 3 }}>
+              <span className="mut">you get </span>
+              <b style={{ color: r.long.youthSwing > 0 ? "var(--green)" : r.long.youthSwing < 0 ? "var(--gold)" : "var(--mut)" }}>
+                {Math.abs(r.long.youthSwing).toFixed(1)} years {r.long.youthSwing >= 0 ? "younger" : "older"}
+              </b>
+              {r.long.inProfile.years != null && r.long.outProfile.years != null && (
+                <span className="mut"> · {r.long.inProfile.years}y of useful football in, {r.long.outProfile.years}y out</span>
+              )}
+            </div>
+          )}
+          {/* ⭐⭐⭐⭐⭐ WHICH WAY THE DEAL POINTS AGAINST YOUR OWN WINDOW — the thing that makes the same
+              trade right for one team and wrong for another, and the reason this half is not just a
+              second number. */}
+          <div data-tbfit={r.long.fit.key} style={{ fontSize: 11.5 }}>
+            <span style={{ color: r.long.fit.key === "with" ? "var(--green)" : r.long.fit.key === "against" ? "var(--red)" : "var(--mut)" }}>
+              {r.long.fit.key === "with" ? "Fits your window" : r.long.fit.key === "against" ? "Against your window" : "Window-neutral"}
+            </span>
+            <span className="mut"> — {r.long.fit.why}</span>
+          </div>
+          {r.long.keeperNote.map((k) => (
+            <div key={k.name} data-tbkeeper={k.name} className="mut" style={{ fontSize: 11, marginTop: 3 }}>
+              {k.name} is already a keeper — he comes with a keeper slot committed, and what that slot costs
+              next year is a league rule we cannot read.
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 11.5 }}>
+        {/* ⭐⭐⭐ POWER, WHICH IS WHAT HE ASKED FOR FIRST — and it is deliberately muted late in a season,
+            because a trade changes your roster today and does not rewrite the games already played. */}
+        <span data-tbpower={`${r.power.myRank.from}->${r.power.myRank.to}`}>
+          <span className="mut">power </span>
+          <b className="num">{r.power.myRank.from}</b>
+          <span className="mut"> → </span>
+          <b className="num" style={{ color: r.power.myRank.to < r.power.myRank.from ? "var(--green)" : r.power.myRank.to > r.power.myRank.from ? "var(--red)" : "var(--ink)" }}>{r.power.myRank.to}</b>
+          {r.power.myRank.to === r.power.myRank.from && <span className="mut" style={{ fontSize: 10.5 }}> (no change in rank)</span>}
+        </span>
+        {(() => {
+          const d = oddsShift ? oddsShift(perWeek(me.delta)) : null;
+          return d != null && d !== 0
+            ? <span data-tbodds={String(d)}><span className="mut">playoff odds </span><b style={{ color: d > 0 ? "var(--green)" : "var(--red)" }}>{d > 0 ? "+" : ""}{d}%</b></span>
+            : null;
+        })()}
+        {r.power.moves.filter((m) => !m.isMe && String(m.rosterId) !== String(them.rosterId)).slice(0, 2).map((m) => (
+          <span key={m.rosterId} className="mut" data-tbmove={m.teamName} style={{ fontSize: 11 }}>
+            {m.teamName} {m.from} → {m.to}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 export const benchTone = (left) => {
   const v = Number(left) || 0;
@@ -3698,23 +3842,9 @@ export function buildPlayers(cfg) {
     // SF-dynasty value. QBs age especially well (real dynasty keeps them top-15 into their early 30s), and WRs
     // hold their prime longer than the old curve assumed. So: later peaks, gentler decline, higher floors —
     // while still rewarding genuine youth (young studs still lift) and still fading the truly old.
-    const AGE = {
-      RB: { peak: 24, decline: 0.20, floor: 0.07 },  // RBs still age worst, but a touch less brutal
-      WR: { peak: 26, decline: 0.10, floor: 0.14 },  // peak later, decline much gentler — prime WRs hold value
-      TE: { peak: 26, decline: 0.09, floor: 0.18 },
-      QB: { peak: 30, decline: 0.055, floor: 0.24 }, // QBs age best; prime runs to ~30, slow decline after
-    };
-    const youthBump = (pos, age) => {
-      const cfgA = AGE[pos]; if (!cfgA) return 1;
-      const yearsYoung = Math.max(0, cfgA.peak - age);
-      return 1 + Math.min(0.30, yearsYoung * (pos === "RB" ? 0.075 : 0.05));
-    };
-    const ageMult = (pos, age) => {
-      const a = AGE[pos]; if (!a || !age || age <= 0) return 1;
-      if (age <= a.peak) return youthBump(pos, age);
-      const yearsPast = age - a.peak;
-      return Math.max(a.floor, Math.pow(1 - a.decline, yearsPast));
-    };
+    /* The curve itself now lives at module level as `AGE_CURVE` / `ageMult` — see the note there. It was
+       local to this branch until 29z, when the trade calculator needed the identical arithmetic for KEEPER
+       leagues, which do not run this branch at all. */
     ps.forEach((p) => {
       if (!VBD_POS.includes(p.pos)) { p.value = p.vbd; return; }
       const m = ageMult(p.pos, p.age);
@@ -3763,7 +3893,7 @@ export function buildPlayers(cfg) {
           const impliedValue = valuesSortedDesc[Math.min(i, valuesSortedDesc.length - 1)];
           // Blend weight toward ADP. Heavy for dynasty (this is the request). Youth tilts it a bit more toward
           // ADP (upside is realer for the young); age tilts back toward projection (a vet's ADP is name value).
-          const a = AGE[p.pos];
+          const a = AGE_CURVE[p.pos];
           const young = a ? Math.max(0, a.peak - (p.age || a.peak)) : 0;
           const old = a ? Math.max(0, (p.age || a.peak) - a.peak) : 0;
           let wAdp = 0.68 + Math.min(0.18, young * 0.03) - Math.min(0.28, old * 0.04);
@@ -4889,7 +5019,70 @@ function setScarcityPrem(m) { SCARCITY_PREM = m || { QB: 0, RB: 0, WR: 0, TE: 0 
 let FLEX_BASE = null;
 // Rookie-only drafts are dynasty by definition (they only exist inside a dynasty/keeper league), so every
 // value/strength read should treat them with the age-aware dynasty model rather than raw this-year VBD.
+/* ⭐⭐⭐⭐⭐ THE DYNASTY AGE CURVE — ONE IMPLEMENTATION, THREE CALLERS — hoisted in 29z.
+   ==================================================================================================
+   Recalibrated against superflex-dynasty consensus (FantasyPros). The prior curve peaked too early and
+   declined too fast, which over-taxed PRIME elite players: a 27-yo elite WR (Jefferson/Lamb) was docked
+   ~28% and a 30-yo elite QB (Mahomes) ~16%, sinking them far below their real SF-dynasty value. QBs age
+   especially well (real dynasty keeps them top-15 into their early 30s), and WRs hold their prime longer
+   than the old curve assumed. So: later peaks, gentler decline, higher floors — while still rewarding
+   genuine youth and still fading the truly old.
+
+   ⚠ IT WAS LOCAL TO buildPlayers' DYNASTY BRANCH, AND THAT BRANCH DOES NOT RUN FOR KEEPER LEAGUES.
+     `p.value` is therefore just `p.vbd` in a keeper league — no age adjustment anywhere. That is fine for
+     a draft board where you keep two or three players, and useless to a trade calculator being asked what
+     a deal is worth over multiple seasons, which is a question keeper managers genuinely have. Rather than
+     change what keeper DRAFT BOARDS do (a much larger change, and not what was asked for), the calculator
+     applies this same curve on demand. Hoisting it is what keeps that from becoming a second copy of the
+     arithmetic that can drift from this one.
+   ================================================================================================== */
+export const AGE_CURVE = {
+  RB: { peak: 24, decline: 0.20, floor: 0.07 },  // RBs still age worst, but a touch less brutal
+  WR: { peak: 26, decline: 0.10, floor: 0.14 },  // peak later, decline much gentler — prime WRs hold value
+  TE: { peak: 26, decline: 0.09, floor: 0.18 },
+  QB: { peak: 30, decline: 0.055, floor: 0.24 }, // QBs age best; prime runs to ~30, slow decline after
+};
+export function ageMult(pos, age) {
+  const a = AGE_CURVE[pos];
+  if (!a || !age || age <= 0) return 1;
+  if (age <= a.peak) {
+    const yearsYoung = Math.max(0, a.peak - age);
+    return 1 + Math.min(0.30, yearsYoung * (pos === "RB" ? 0.075 : 0.05));
+  }
+  return Math.max(a.floor, Math.pow(1 - a.decline, age - a.peak));
+}
+/* Age-adjusted value for ONE player, the same arithmetic buildPlayers applies to the dynasty pool. Above
+   replacement we scale the surplus; below it we lift a young negative toward zero and push an old one
+   further down, because a young replacement-level body is a better asset than an old one at the same VBD. */
+export function longValueOf(p) {
+  if (!p) return 0;
+  const vbd = Number(p.vbd != null ? p.vbd : p.value);
+  if (!Number.isFinite(vbd)) return 0;
+  const m = ageMult(String(p.pos || "").toUpperCase(), Number(p.age) || 0);
+  return Math.round((vbd > 0 ? vbd * m : vbd * (2 - m)) * 10) / 10;
+}
+/* ⭐⭐⭐⭐ HOW MANY USEFUL YEARS ARE LEFT — "control", in Trey's words, expressed as a fact rather than a
+   score. It is read straight off the curve above: years until a player reaches his position's peak plus
+   the years his decline takes to reach the floor. A 23-year-old back and a 23-year-old quarterback do NOT
+   have the same runway and no single number about "youth" can say so; this does. */
+export function yearsOfUse(pos, age) {
+  const a = AGE_CURVE[String(pos || "").toUpperCase()];
+  if (!a || !age || age <= 0) return null;
+  const declineYears = Math.log(a.floor) / Math.log(1 - a.decline);   // years from peak to the floor
+  return Math.max(0, Math.round(((a.peak - age) + declineYears) * 10) / 10);
+}
+
 export function isDynastyCfg(cfg) { return !!(cfg && (cfg.type === "dynasty" || cfg.type === "rookie")); }
+/* ⭐⭐⭐⭐ DOES THIS LEAGUE CARRY PLAYERS INTO NEXT SEASON — 29z.
+   A WIDER question than `isDynastyCfg`, and the distinction is the whole point of it: a KEEPER league is
+   not dynasty (you retain two or three, not the roster) but it is emphatically not redraft either, and
+   Trey named both when he asked for a long-term read. The `cfg.keeper` flag catches a redraft-typed league
+   that has keepers turned on, which the league form allows.
+   ⚠ This is the ONLY switch between the calculator's one-horizon and two-horizon modes, so it has one
+     definition. A second copy of "is this dynasty-ish" is how one screen shows a column another hides. */
+export function leagueKeepsPlayers(cfg) {
+  return !!(cfg && (isDynastyCfg(cfg) || cfg.type === "keeper" || cfg.keeper));
+}
 // Small bye-stack penalty: if this candidate would land on a bye week where the team ALREADY has one or more
 // starters at his position, and the team already has real depth there, nudge his score down a touch. Talent
 // dominates — this is deliberately small and never applies to a position you still need to fill.
@@ -14101,15 +14294,54 @@ function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, onOp
 // Win now / Balanced / Rebuild — auto-suggested from the roster's age profile, because the right free-agent
 // and roster moves differ a lot depending on whether you're contending or building for the future.
 
-// Detect a dynasty roster's contention posture from the age of its projected starters (younger = rebuild).
-function detectPosture(starters) {
-  const ages = starters.map((p) => p && p.age).filter((a) => a != null);
-  if (ages.length < 3) return { posture: "balanced", avgAge: null, auto: true };
-  const avg = ages.reduce((a, b) => a + b, 0) / ages.length;
-  let posture = "balanced";
-  if (avg <= 24.5) posture = "rebuild";
-  else if (avg >= 27.5) posture = "winnow";
-  return { posture, avgAge: Math.round(avg * 10) / 10, auto: true };
+/* ⭐⭐⭐⭐⭐ ARE YOU BUILT TO WIN NOW OR LATER — ONE RULE, TWO SCREENS — unified in 29aa.
+   ==================================================================================================
+   This existed TWICE, and the two copies disagreed in ways that mattered.
+
+     • The draft app's `myWindow` weighted earlier picks more heavily (they define your core), required
+       four aged players before committing, used different cuts for dynasty and redraft, and — the part
+       that matters most — asked whether the team is actually CONTENDING before calling a young roster a
+       rebuild. That check exists because of a real complaint: "I was projected 1st, then got labeled
+       rebuild the moment my avg age looked young."
+     • The hub's `detectPosture` took a flat mean of the projected starters' ages against fixed cuts, with
+       no contender check at all. So the hub could read a young, WINNING team as rebuilding — the exact bug
+       the draft app had already fixed — and then steer its free-agent scoring, drop list and trade
+       calculator toward youth all season.
+
+   ⚠ TWO IMPLEMENTATIONS OF ONE IDEA DO NOT STAY IN SYNC; they drift until somebody notices the screens
+     disagree. The fix is not to copy the better one across — it is to have one.
+
+   ⭐ THE CALLER OWNS THE ORDERING, THIS OWNS THE RULE. `players` arrives MOST-DEFINING-FIRST, and the
+     weight decays down the list, so a bench stash counts as real evidence of a rebuild but a third as
+     much as your best player. The draft app passes its picks in pick order; the hub passes the roster by
+     season value. That is the same idea expressed in each screen's own terms, which is why the population
+     no longer has to differ.
+
+   ⭐ AND "ARE YOU CONTENDING" IS ANSWERED FROM THE BEST EVIDENCE EACH SCREEN HAS. On draft night there are
+     no results, so the draft app passes its projected finish. In week 9 there are nine weeks of them, so
+     the hub passes where the team actually sits. Same question, same threshold, different source — and a
+     null means no opinion rather than a guess, which leaves the age read alone exactly as it was before.
+   ================================================================================================== */
+export function teamWindow({ players, isDyn = false, finishRank = null, teams = 12, decideAt = 4 } = {}) {
+  const aged = (players || []).filter((p) => p && Number(p.age) > 0 && ["QB", "RB", "WR", "TE"].includes(p.pos));
+  let wsum = 0, asum = 0;
+  aged.forEach((p, i) => { const w = 1 / (1 + i * 0.25); wsum += w; asum += w * Number(p.age); });
+  const avgAge = wsum ? asum / wsum : null;
+  if (aged.length < decideAt || avgAge == null) {
+    return { lane: "undecided", label: "Reading your build…", avgAge: null, n: aged.length, confidence: 0, contender: null };
+  }
+  const youngCut = isDyn ? 24.5 : 25.0;
+  const oldCut = isDyn ? 27.5 : 28.0;
+  // Top ~45% of the league is competitive. Null finishRank = no opinion, so the age read stands alone.
+  const contender = finishRank != null ? finishRank <= Math.ceil((teams || 12) * 0.45) : null;
+  let lane, label;
+  if (avgAge <= youngCut) {
+    lane = contender ? "balanced" : "rebuild";
+    label = contender ? "Young core, competing" : "Young / rebuild window";
+  } else if (avgAge >= oldCut) { lane = "winnow"; label = "Win-now window"; }
+  else { lane = "balanced"; label = "Balanced window"; }
+  return { lane, label, avgAge: Math.round(avgAge * 10) / 10, n: aged.length, contender,
+    confidence: Math.min(1, (aged.length - decideAt + 1) / 6) };
 }
 
 // A player's "posture value" — how much this hub should like adding/holding him given the team's plan.
@@ -14429,6 +14661,292 @@ export function positionMarket(teams, opts) {
       sellers: read.filter((t) => !t.isMe && t.byPos[pos].surplus > 0).length,
       buyers: read.filter((t) => !t.isMe && t.byPos[pos].need > 0).length,
     })),
+  };
+}
+
+/* ⭐⭐⭐⭐⭐ THE TRADE CALCULATOR — price a deal you propose yourself — 29y.
+   ==================================================================================================
+   Trey: "I'd like to be able to go into that league and hit trade and be able to input players on each
+   side of a trade. And then basically you equate that to the output of the team in terms of power
+   rankings and overall points in the season. Obviously you have to take into account, like if I'm getting
+   three players and they're getting two players, like yes, you're getting three, but you need to make
+   sure that like you're only equating the points scored to the STARTING LINEUP points. So if one of those
+   players is just gonna be a bench option for you, then his wouldn't go towards that."
+
+   ⭐ THAT CONSTRAINT IS THE ENTIRE DESIGN, and he is right about it in a way that most trade calculators
+     are not. The naive version adds up the points coming in and the points going out, and under that
+     arithmetic a 3-for-2 is almost always a win — you received more football players, and football
+     players have points. But you field a fixed number of them. The third man in a package is worth
+     exactly what he adds to the eleven or so slots you actually start, which for most third men is
+     NOTHING, and a calculator that says otherwise is not merely imprecise, it systematically flatters
+     every package deal. Every figure below is therefore a difference between two OPTIMAL LINEUPS — the
+     same `lineupSlots` the roster views and the weekly review draw, so a bench body contributes zero here
+     by construction rather than by a rule somebody remembered to write.
+
+   ⚠ AND IT IS COMPUTED FOR BOTH SIDES, because the question behind the question is "would they do it".
+     A deal that improves your lineup and guts theirs is not a trade, it is a wish.
+
+   ⚠⚠ LINEUP GAIN ALONE CANNOT JUDGE A TRADE — 29r paid for this lesson and it applies here too. If I
+     already start a good quarterback, a better one adds almost nothing to my lineup, so "my lineup went
+     up" is satisfied by giving him away for a tight end. The finder now weighs ASSET VALUE (points above
+     this league's replacement level) alongside lineup gain, and so does this: `assets` travels with every
+     verdict so a lopsided deal is VISIBLE rather than blocked. Trey proposed it; the job is to price it
+     honestly, not to refuse it.
+
+   ⚠ THE SCORER IS INJECTED. `lineupSlots` reads the module-global SPEC and `posQualityScore` needs the
+     league's effective requirements, flex share and dynasty flag — all of which live in the hub's scope.
+     Passing `score` in keeps this function pure and testable while leaving exactly ONE implementation of
+     "what is this roster worth", which is what stops the calculator and the power table disagreeing.
+   ================================================================================================== */
+export function tradeEval(teams, opts) {
+  const o = opts || {};
+  const list = (teams || []).filter((t) => t && Array.isArray(t.roster));
+  const give = (o.give || []).map(String);      // sids leaving MY roster
+  const get = (o.get || []).map(String);        // sids arriving from THEIRS
+  const empty = { ok: false, sides: null, power: null, verdict: null };
+
+  const me = list.find((t) => String(t.rosterId) === String(o.myId));
+  const them = list.find((t) => String(t.rosterId) === String(o.theirId));
+  if (!me || !them) return { ...empty, error: 'pick two teams' };
+  if (!give.length && !get.length) return { ...empty, error: 'no players yet' };
+
+  const has = (t, sid) => (t.roster || []).some((p) => p && String(p.sid) === String(sid));
+  /* A player who is not on the roster he is being traded from is not a slip to route around — it means
+     the rosters moved underneath the panel (a waiver claim, a rival's own trade) and every number below
+     would be computed against a league that no longer exists. Say so and stop. */
+  const stray = give.filter((s) => !has(me, s)).concat(get.filter((s) => !has(them, s)));
+  if (stray.length) return { ...empty, error: 'rosters changed', stray };
+
+  const pick = (t, sids) => (t.roster || []).filter((p) => sids.includes(String(p.sid)));
+  const outMine = pick(me, give), inMine = pick(them, get);
+  const applied = (t, drop, add) => {
+    const gone = new Set(drop.map((p) => String(p.sid)));
+    return (t.roster || []).filter((p) => !gone.has(String(p.sid))).concat(add);
+  };
+  const myAfter = applied(me, outMine, inMine);
+  const theirAfter = applied(them, inMine, outMine);
+
+  const score = o.score || ((roster) => ({ start: 0, rosterScore: 0 }));
+  const repl = o.replacement || replacementByPos(list.map((t) => t.roster), o.sf, list.length);
+  const above = (p) => Math.max(0, (Number(p.pts) || 0) - (repl[String(p.pos).toUpperCase()] || 0));
+  const assetsOf = (ps) => Math.round(ps.reduce((s, p) => s + above(p), 0) * 10) / 10;
+
+  const sideOf = (team, after, out, inc) => {
+    const b = score(team.roster || []) || {};
+    const a = score(after) || {};
+    const startBefore = Number(b.start) || 0;
+    const startAfter = Number(a.start) || 0;
+    /* ⚠ ROSTER SPACE IS A REAL CONSTRAINT AND IT IS NOT FREE — a 3-for-2 needs a spot. It costs nothing in
+       STARTING points (the man you cut is your worst bench body, who was starting nowhere), which is
+       exactly why the lineup maths must not be the only thing on screen: the deal is still one you cannot
+       execute in Sleeper until you drop somebody, and naming him is the difference between a number and an
+       instruction. */
+    const spotsNeeded = Math.max(0, inc.length - out.length);
+    const benchAfter = (o.bench ? o.bench(after) : []) || [];
+    const likelyCut = spotsNeeded > 0
+      ? benchAfter.slice().sort((x, y) => (x.pts || 0) - (y.pts || 0)).slice(0, spotsNeeded)
+      : [];
+    return {
+      rosterId: team.rosterId, teamName: team.teamName, ownerName: team.ownerName, isMe: !!team.isMe,
+      out, in: inc,
+      startBefore: Math.round(startBefore * 10) / 10,
+      startAfter: Math.round(startAfter * 10) / 10,
+      delta: Math.round((startAfter - startBefore) * 10) / 10,
+      assetsOut: assetsOf(out), assetsIn: assetsOf(inc),
+      assetDelta: Math.round((assetsOf(inc) - assetsOf(out)) * 10) / 10,
+      rosterScoreBefore: Number(b.rosterScore) || 0,
+      rosterScoreAfter: Number(a.rosterScore) || 0,
+      spotsNeeded, likelyCut,
+      /* ⭐⭐⭐⭐ THE COST THE HEADLINE NUMBER CANNOT SEE. Starting-lineup points are the right measure of
+         a trade and they price DEPTH AT ZERO — correctly, for the week the trade is made, and wrongly for
+         the week your starter pulls a hamstring. Reporting it as a second score would be inventing
+         precision nobody has; reporting the COUNT is a fact: "you would be down to two startable backs".
+         Same `startable` definition the position market uses, so the two views cannot disagree. */
+      thinAfter: (o.positions || ["QB", "RB", "WR", "TE"]).map((pos) => {
+        const bar = repl[pos] || 0;
+        const cnt = (r) => r.filter((p) => p && String(p.pos).toUpperCase() === pos && (Number(p.pts) || 0) >= bar).length;
+        const need = (o.req && o.req[pos]) || 0;
+        const wasN = cnt(team.roster || []), nowN = cnt(after);
+        return nowN < wasN && nowN <= need ? { pos, was: wasN, now: nowN, need } : null;
+      }).filter(Boolean),
+    };
+  };
+
+  const mine = sideOf(me, myAfter, outMine, inMine);
+  const theirs = sideOf(them, theirAfter, inMine, outMine);
+
+  /* ⭐⭐⭐⭐⭐ POWER IS RE-RANKED FOR THE WHOLE LEAGUE, NOT JUST THE TWO OF YOU. `powerBlend` normalises
+     inside the field, so two rosters changing moves everybody's position on the scale a little — and a
+     trade that lifts you past a third team is a fact about that team too. Recomputing the whole table is
+     both more correct and more useful than patching two rows.
+     ⚠ THE HISTORY TERM IS LEFT ALONE ON PURPOSE. Power blends what a roster IS with what the team has
+     actually SCORED, weighted by games played. A trade changes the roster today; it does not retroactively
+     change eleven weeks of results, so `pointsFor` and `record` ride through untouched and the power move
+     is correctly MUTED late in a season. A calculator that swung power hard in week 13 would be lying. */
+  const scored = (t) => {
+    const after = String(t.rosterId) === String(me.rosterId) ? myAfter
+      : String(t.rosterId) === String(them.rosterId) ? theirAfter : (t.roster || []);
+    return { ...t, rosterScore: (score(after) || {}).rosterScore || 0 };
+  };
+  const powerBefore = powerBlend(list.map((t) => ({ ...t, rosterScore: (score(t.roster || []) || {}).rosterScore || 0 })), { k: o.k });
+  const powerAfter = powerBlend(list.map(scored), { k: o.k });
+  const rankOf = (tbl, id) => { const r = tbl.find((t) => String(t.rosterId) === String(id)); return r ? r.powerRank : null; };
+  const moves = list.map((t) => {
+    const from = rankOf(powerBefore, t.rosterId), to = rankOf(powerAfter, t.rosterId);
+    return from != null && to != null && from !== to
+      ? { rosterId: t.rosterId, teamName: t.teamName, from, to, isMe: !!t.isMe } : null;
+  }).filter(Boolean).sort((a, b) => (a.to - a.from) - (b.to - b.from));
+
+  /* WOULD THEY SAY YES. Two separate questions, deliberately kept apart rather than averaged into a
+     "fairness score": does the deal help their lineup, and is the value going each way comparable. A deal
+     can help both lineups and still be robbery (29r), and it can be perfectly balanced in value while
+     doing nothing for either starting eleven — those are different conversations and the row says which. */
+  const ratio = (() => {
+    const hi = Math.max(mine.assetsIn, mine.assetsOut), lo = Math.min(mine.assetsIn, mine.assetsOut);
+    return hi > 0 ? Math.round((lo / hi) * 100) / 100 : 1;
+  })();
+  /* ⭐⭐⭐⭐ DELIBERATELY STRICTER THAN THE FINDER'S BAND, AND THE REASON IS THAT THEY ARE DIFFERENT JOBS.
+     `findTrades` settled on 0.5 in 29w after measuring that 0.65 threw away 1,211 of 1,669 real candidate
+     pairs — that is a RECALL problem: it enumerates thousands of swaps and a band that rejects the ordinary
+     shape of a real trade leaves the tab empty. This function has the opposite job. One specific deal is on
+     screen and the question is whether a human being will click accept — a PRECISION problem, where the
+     cost of saying "worth asking" about a deal that is plainly one-way is that the next honest verdict gets
+     ignored too. A manager handing over 130 points of value for 75 notices, whatever the finder's band says
+     about candidate generation. 0.7 is the line; it is on screen with the numbers beside it, so the read is
+     auditable rather than authoritative. */
+  const FAIR = o.fair != null ? o.fair : 0.7;
+  /* ⭐⭐⭐⭐⭐ THE SECOND HORIZON — 29z, and it exists ONLY where the league keeps players.
+     ==================================================================================================
+     Trey: "I wanted to show both like a right now impact, aka like a redraft league, and that for a
+     redraft league, that's all that needs to show. For a dynasty league or a keeper league, it needs to
+     show the right now value, and it needs to show almost like the long term value, taking into account
+     cost, control, etc."
+
+     ⭐ THE REDRAFT CASE IS THE EASY HALF AND IT MATTERS MOST: `long` is NULL, and the panel renders
+       nothing for it. Not a zero, not a greyed-out block, not "n/a" — absent. In a redraft league every
+       player leaves your roster in five months and a second number about his 2029 value is noise on a
+       screen Trey is reading to decide something today. It is also literally uninformative: buildPlayers
+       sets `value = vbd` outside dynasty, so a long-term column in a redraft league would be a second copy
+       of the first one.
+
+     ⚠ AND THE KEEPER CASE IS WHY THE AGE CURVE HAD TO MOVE. `buildPlayers` only runs its dynasty branch
+       for dynasty/rookie, so in a KEEPER league `p.value` is plain VBD with no age adjustment at all — the
+       exact league type Trey named second. `longValueOf` applies the same shipped curve on demand rather
+       than changing what keeper draft boards rank, which is a much larger change than was asked for.
+
+     ⚠⚠ WHAT THIS DELIBERATELY DOES NOT DO: invent a keeper COST rule. In a keeper league acquiring a
+       player usually costs a future draft pick at some round determined by where he was taken, plus a
+       league-specific escalator — and the app does not know that rule. `keeperNote` reports only what the
+       league actually carries (that he is currently kept, and at which pick), and says nothing otherwise.
+       This is the FAAB decision from 29w applied again: a confident number resting on data we cannot see is
+       worse than no number, because it gets believed.
+     ================================================================================================== */
+  const keeps = !!o.keeps;
+  const long = !keeps ? null : (() => {
+    const lv = o.longValue || longValueOf;
+    const sum = (ps) => Math.round(ps.reduce((s2, p) => s2 + Math.max(0, lv(p)), 0) * 10) / 10;
+    const outL = sum(outMine), inL = sum(inMine);
+    const hi = Math.max(outL, inL), lo = Math.min(outL, inL);
+
+    /* CONTROL, AS A FACT RATHER THAN A SCORE. `yearsOfUse` reads the shipped age curve: how long until a
+       player at this position and age has declined to his floor. A 23-year-old back and a 23-year-old
+       quarterback have very different runways and no single "youth" number can say so. */
+    const profile = (ps) => {
+      const aged = ps.filter((p) => p && Number(p.age) > 0);
+      if (!aged.length) return { age: null, years: null, n: ps.length };
+      const yrs = aged.map((p) => yearsOfUse(p.pos, Number(p.age))).filter((y) => y != null);
+      return {
+        age: Math.round((aged.reduce((s2, p) => s2 + Number(p.age), 0) / aged.length) * 10) / 10,
+        years: yrs.length ? Math.round((yrs.reduce((a2, b2) => a2 + b2, 0) / yrs.length) * 10) / 10 : null,
+        n: ps.length,
+      };
+    };
+    const inProf = profile(inMine), outProf = profile(outMine);
+
+    /* ⭐⭐⭐⭐⭐ WHICH WAY THE DEAL POINTS, AGAINST THE WINDOW THE MANAGER IS ACTUALLY IN. This is the whole
+       reason the dynasty read is "more complicated": the SAME trade is right for one team and wrong for
+       another. Sending proven production for a 22-year-old is a rebuilding team doing its job and a
+       contender throwing away a season, and nothing in the now/long numbers alone can tell those apart.
+       ⚠ The posture comes from the HUB, where Trey can set it himself — it is not re-inferred here. A
+         calculator that quietly disagreed with the goal he had just set would be both wrong and baffling. */
+    const gettingYounger = inProf.age != null && outProf.age != null ? outProf.age - inProf.age : null;
+    const posture = o.posture || 'balanced';
+    const fit = (() => {
+      if (gettingYounger == null) return { key: 'unknown', why: 'ages are missing for these players, so there is nothing to say about the window' };
+      const youthward = gettingYounger > 1.0, vetward = gettingYounger < -1.0;
+      if (posture === 'rebuild') {
+        if (youthward) return { key: 'with', why: `you are rebuilding and getting ${gettingYounger.toFixed(1)} years younger — the right direction` };
+        if (vetward) return { key: 'against', why: `you are rebuilding but taking on ${Math.abs(gettingYounger).toFixed(1)} years of age` };
+        return { key: 'neutral', why: 'roughly age-neutral, so this is a straight talent question' };
+      }
+      if (posture === 'winnow') {
+        if (vetward && mine.delta > 0) return { key: 'with', why: `you are competing now and this adds ${mine.delta.toFixed(1)} a week — paying in youth is the trade you want` };
+        if (youthward && mine.delta <= 0) return { key: 'against', why: 'you are competing now and this trades production for players who help later' };
+        return { key: 'neutral', why: 'neither clearly win-now nor clearly future-facing' };
+      }
+      return { key: 'neutral', why: 'balanced window — take the better side of the value, either direction' };
+    })();
+
+    return {
+      out: outL, in: inL,
+      delta: Math.round((inL - outL) * 10) / 10,
+      ratio: hi > 0 ? Math.round((lo / hi) * 100) / 100 : 1,
+      inProfile: inProf, outProfile: outProf,
+      youthSwing: gettingYounger == null ? null : Math.round(gettingYounger * 10) / 10,
+      posture, fit,
+      /* Only what the league actually carries. `keeperOf` is supplied by the hub and returns the pick a
+         player is currently kept at, or null — which is the common case and prints nothing. */
+      keeperNote: o.keeperOf
+        ? inMine.map((p) => { const k = o.keeperOf(p); return k ? { name: p.name, ...k } : null; }).filter(Boolean)
+        : [],
+    };
+  })();
+
+  const verdict = (() => {
+    if (theirs.delta > 0 && ratio >= FAIR) {
+      return { key: 'good', label: 'Worth asking', why: `helps their lineup by ${theirs.delta.toFixed(1)} too, and the value each way is comparable` };
+    }
+    if (theirs.delta > 0) {
+      return { key: 'lopsided', label: 'They may still say no', why: `it helps their lineup, but you are getting ${mine.assetsIn.toFixed(0)} of value for ${mine.assetsOut.toFixed(0)} — lopsided enough to notice` };
+    }
+    if (theirs.delta === 0) {
+      return { key: 'flat', label: 'Nothing in it for them', why: 'their starting lineup is unchanged, so they need a reason beyond this week' };
+    }
+    return { key: 'bad', label: 'They would be worse off', why: `their starting lineup drops ${Math.abs(theirs.delta).toFixed(1)} — expect a no unless they are rebuilding` };
+  })();
+
+  /* ⭐⭐⭐⭐⭐ IN A LEAGUE THAT KEEPS PLAYERS, "THEY WOULD BE WORSE OFF" IS NOT A VERDICT ON ITS OWN.
+     The redraft verdict reads one horizon because one horizon is all there is. Where players carry over,
+     a deal that costs the other manager points this week and hands him two years of a 23-year-old is a
+     deal plenty of rebuilding managers take happily — and calling that "expect a no" would be confidently
+     wrong. So the dynasty verdict is allowed to OVERRIDE the lineup read when the long-term side clearly
+     compensates, and it says which horizon it is arguing from either way.
+     ⚠ EVERY CONDITION HERE IS FROM THEIR SIDE OF THE TABLE, because the question is whether THEY accept —
+       `long.delta` is signed from mine, so THEY gain long-term value when it is NEGATIVE. A deal they lose
+       on both horizons is never rescued; a deal that is merely bad for me is not the override's business. */
+  const verdictLong = !long ? null : (() => {
+    if (theirs.delta <= 0 && long.delta < 0 && Math.abs(long.delta) > 0) {
+      // They lose now and gain long-term — the classic rebuilder's trade, from their side.
+      return { key: 'future', label: 'A rebuilder might take it',
+        why: `it costs them ${Math.abs(theirs.delta).toFixed(1)} a week now, but sends them ${Math.abs(long.delta).toFixed(0)} of long-term value — worth asking a team that is building` };
+    }
+    if (theirs.delta > 0 && long.delta > 0 && ratio >= FAIR) {
+      return { key: 'good', label: 'Worth asking',
+        why: 'better for them now AND you come out ahead long term — check they are not simply the better judge of one of those' };
+    }
+    return null;
+  })();
+
+  return {
+    ok: true, error: null,
+    horizon: keeps ? 'both' : 'now',
+    sides: { me: mine, them: theirs },
+    power: { before: powerBefore, after: powerAfter, moves,
+      myRank: { from: rankOf(powerBefore, me.rosterId), to: rankOf(powerAfter, me.rosterId) },
+      theirRank: { from: rankOf(powerBefore, them.rosterId), to: rankOf(powerAfter, them.rosterId) } },
+    assets: { ratio, fair: FAIR },
+    long,
+    verdict: verdictLong || verdict,
   };
 }
 
@@ -15072,6 +15590,17 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   const [faShowAll, setFaShowAll] = useState(false);
   // 29x: which position's market is open in the Trades tab. null = the overview.
   const [mktPos, setMktPos] = useState(null);
+  /* 29y: the trade calculator. `tb` is one object rather than four useStates because every entry point
+     that opens it (the button, a market pathway, an auto-swap row) has to set the partner AND both sides
+     together — and a partial update that changed the partner while leaving the previous deal's player ids
+     in place would evaluate a trade against the wrong roster. One setter, one consistent state. */
+  const [tb, setTb] = useState({ open: false, partner: null, give: [], get: [] });
+  const tbOpen = (partner, give = [], get = []) => setTb({ open: true, partner, give, get });
+  const tbToggle = (side, sid) => setTb((v) => {
+    const cur = v[side] || [];
+    const has = cur.includes(String(sid));
+    return { ...v, [side]: has ? cur.filter((x) => x !== String(sid)) : cur.concat(String(sid)) };
+  });
   const [standSort, setStandSort] = useState({ key: "rank", dir: 1 }); // Standings table sort
   // Rich floating tooltip (same card the draft app uses) for player and positional hovers in this hub.
   const [tip, setTip] = useState(null);
@@ -15099,7 +15628,19 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
       const bySid = new Map();
       pool.forEach((p) => { if (p.sid != null) bySid.set(String(p.sid), p); });
       return { bySid, pool };
-    } catch (e) { return null; }
+    } catch (e) {
+      /* ⚠⚠⚠ THIS CATCH HID A WHOLE LEAGUE FORMAT FOR THE LENGTH OF ONE BUILD — 29z. Hoisting the dynasty
+         age curve left one orphaned reference to the old local `AGE`, 80 lines further down the same
+         branch. `buildPlayers` threw ReferenceError, this returned null, every roster in the hub resolved
+         to an empty array, and NOTHING said so: the tabs rendered, the headers were right, the rosters
+         were simply blank. Redraft and keeper never enter that branch, so two of the three formats were
+         perfect. ⭐ A pool that failed to build is not a state worth rendering silently — say it, loudly,
+         where a suite or a console can see it. (Same family as the 29q boundary-swallowed ReferenceError
+         and the 29o AGE-search-and-replace: deleting a local means checking every reference to it, not
+         every reference in the block you were looking at.) */
+      try { console.error("[FDC] hub player pool failed to build — every roster will read as empty:", e); } catch (_) {}
+      return null;
+    }
   }, [cfg && JSON.stringify(cfg.start), cfg && cfg.sf, cfg && cfg.tePremMult, cfg && cfg.teams, data && data.week]);
 
   React.useEffect(() => {
@@ -15192,13 +15733,34 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   const isDynasty = cfg && (isDynastyCfg(cfg));
   const myTeam = data && data.teams ? data.teams.find((t) => t.rosterId === data.myRosterId) : null;
   const myRoster = myTeam ? resolve(myTeam.players) : [];
+  /* ⭐⭐⭐⭐⭐ 29aa — THE HUB NOW READS ITS WINDOW THROUGH THE SAME `teamWindow` THE DRAFT APP USES, and
+     gains the contender check it never had. It used to take a flat mean of the projected starters' ages,
+     so a young team sitting 1st in its league read as REBUILDING — and that verdict then drove the
+     free-agent scoring, the drop list, the team plan and the trade calculator for the whole season.
+     ⚠ THE ROSTER IS ORDERED BY SEASON VALUE, BEST FIRST, because that is what "the players who define
+       your build" means on this screen — the draft app's equivalent is pick order. The weighting inside
+       `teamWindow` then makes a bench stash count, at about a third of a starter's weight.
+     ⚠ AND CONTENTION COMES FROM THE STANDINGS, not from a projection: in week 9 there are nine weeks of
+       evidence and a forecast is the weaker source. `data.standings` is raw payload, so it is available
+       here — which matters, because the projected finish is computed several hundred lines below this. */
   const autoPosture = React.useMemo(() => {
-    if (!isDynasty) return { posture: "winnow", avgAge: null };
-    // detect from my best projected starters
-    const opt = myRoster.length ? lineupSlots(myRoster, cfg.sf) : { slots: [] };
-    const starters = opt.slots.map((s) => s.p).filter(Boolean);
-    return detectPosture(starters);
-  }, [myRoster.length, isDynasty, cfg && cfg.sf]);
+    if (!isDynasty) return { posture: "winnow", avgAge: null, lane: "winnow" };
+    const byValue = myRoster.slice().sort((a, b) => {
+      const av = a.ptsSeason != null ? a.ptsSeason : (a.pts || 0);
+      const bv = b.ptsSeason != null ? b.ptsSeason : (b.pts || 0);
+      return bv - av;
+    });
+    const mine = (data.standings || []).find((st) => st.isMe);
+    const w = teamWindow({
+      players: byValue,
+      isDyn: true,
+      finishRank: mine && mine.rank != null ? mine.rank : null,
+      teams: (data.teams || []).length || (cfg && cfg.teams) || 12,
+    });
+    /* "undecided" is honest but this screen has three buttons and no fourth state; a roster too thin to
+       read falls back to balanced, which is what the old code did for the same case. */
+    return { ...w, posture: w.lane === "undecided" ? "balanced" : w.lane, auto: true };
+  }, [myRoster.length, isDynasty, cfg && cfg.sf, data && data.standings]);
   const activePosture = posture || (autoPosture && autoPosture.posture) || "winnow";
 
   if (loading) return <HubShell title="Team hub" onBack={onBack} onHome={onHome} onSignOut={onSignOut} user={user}><HubLoading /></HubShell>;
@@ -15670,39 +16232,75 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   // malformed team/roster/record from Sleeper (seen in the wild for some off-season dynasty leagues) could
   // throw deep inside and white-screen the whole hub. Compute them defensively: if anything throws, fall back
   // to empty analytics so the hub still renders (the Summary/League tabs just show less), rather than crashing.
+  /* ⭐⭐⭐ 29ag — THE FLEX GOES TO WHOEVER ACTUALLY WINS IT ON THIS ROSTER.
+     Reported: "look at the screenshot. This is a 10 team league and I find it hard to believe a team with
+     the RB 12, 13, 17, and an upside play would be ranked 9th out of 10."
+     He is right, and it is measurable. On a 10-team fixture built the same way — a balanced RB room against
+     nine ordinary drafted rosters — the team ranked 4th of 10 by the RB production it actually STARTS and
+     6th of 10 by this score. A rival holding RB4 and RB5 but flexing a receiver ranked 2nd by the score and
+     5th by production. The model was reading roster SHAPE where the manager reads OUTPUT.
+     One cause is fixable cleanly. `flexShareOf` hands every position the same league-average slice of the
+     flex — 42% RB, 42% WR, 16% TE — so a team that genuinely starts a third running back every week was
+     credited for 0.42 of him, while a team that flexes a receiver was charged for an RB slot it never
+     fields. The flex is one slot and its owner is knowable: the lineup has already been solved a line
+     above. Give it to the position that wins it.
+     ⚠ THE LEAGUE AVERAGE REMAINS THE FALLBACK, and it has to. An empty flex slot (a roster too thin to
+       fill it, which happens in the pre-season and after bye-week carnage) has no winner to attribute, and
+       guessing one would invent a starter the team does not have. */
+  const flexShareForRoster = (lu2) => {
+    const share = { QB: 0, RB: 0, WR: 0, TE: 0 };
+    let seen = 0, filled = 0;
+    ((lu2 && lu2.slots) || []).forEach((sl) => {
+      if (!/^(FLEX|SFLX)/.test(sl.slot || "")) return;
+      seen++;
+      const pos = sl.p && !sl.p.assumed ? sl.p.pos : null;
+      if (pos && share[pos] != null) { share[pos] += 1; filled++; }
+    });
+    if (!seen) return flexShLg;
+    // Any flex slot we could not attribute falls back to the league-average split for that slot alone.
+    const unfilled = seen - filled;
+    if (unfilled > 0) POS.forEach((pp) => { share[pp] += ((flexShLg[pp] || 0) / Math.max(1, seen)) * unfilled; });
+    return share;
+  };
+
+  /* ⭐⭐⭐⭐⭐ WHAT A ROSTER IS WORTH — ONE IMPLEMENTATION, TWO CALLERS — 29y.
+     The power table scores every roster as it stands; the trade calculator scores hypothetical rosters that
+     do not exist yet. Those must be the SAME arithmetic or the calculator will cheerfully report that a
+     trade moves you from 4th to 2nd on a scale the League tab has never heard of. This is why
+     `flexShareForRoster` moved out of the try block above rather than being copied: a second copy is how the
+     two views end up disagreeing about a number they both print.
+     ⚠ `posQualityScore` reads the SEASON valuation fields (vbd / value), not `pts`, so this is immune to a
+       bye week by construction — which is what makes it safe to hand it the season-value rosters the trade
+       calculator works in. The lineup total does read `pts`, so what the CALLER puts there decides whether
+       "starting points" means this week or a season; the power table passes weekly, the calculator passes
+       season, and each is right for its own question. */
+  const GAMES_IN_SEASON = 17;
+  /* ⭐⭐⭐⭐ ONE DEFINITION OF "THIS ROSTER, VALUED OVER A SEASON" — 29y. The trade calculator, the playoff
+     odds and now the power ranking all need it, and three copies of this line is how they end up
+     disagreeing about who a team's RB1 is. `ptsSeason` is what the hub resolver already carries; the
+     multiply is the fallback for a payload that only had a weekly number. */
+  const seasonRosterOf = (t) => ((t && t.roster) || []).map((p) => ({
+    ...p, pts: p.ptsSeason != null ? p.ptsSeason : (p.pts || 0) * GAMES_IN_SEASON,
+  }));
+  const scoreRoster = (roster) => {
+    const lu = lineupSlots(roster || [], cfg.sf);
+    const fShare = flexShareForRoster(lu);
+    let rosterScore = 0;
+    POS.forEach((pos) => {
+      const atPos = (roster || []).filter((p) => p && p.pos === pos).sort((a, b) => (b.pts || 0) - (a.pts || 0));
+      rosterScore += posQualityScore(atPos, effReqLg[pos] || 0,
+        { dynasty: dynastyLg, flexShare: fShare[pos] || 0, slotBaseline: replLg[pos] }) || 0;
+    });
+    return {
+      start: lu.slots.reduce((s, x) => s + (x.p ? (x.p.pts || 0) : 0), 0),
+      rosterScore,
+      bench: lu.bench,
+    };
+  };
+
   let leagueTeams = [], powerRanked = [], powerRankById = {}, projRanked = [], myPosRank = {}, strengths = [], weaknesses = [];
   let maxPower = 1, playoffSpots = 4, myProj = null, myPowerRank = null, leverage = null, totalGames = 0;
   try {
-    /* ⭐⭐⭐ 29ag — THE FLEX GOES TO WHOEVER ACTUALLY WINS IT ON THIS ROSTER.
-       Reported: "look at the screenshot. This is a 10 team league and I find it hard to believe a team with
-       the RB 12, 13, 17, and an upside play would be ranked 9th out of 10."
-       He is right, and it is measurable. On a 10-team fixture built the same way — a balanced RB room against
-       nine ordinary drafted rosters — the team ranked 4th of 10 by the RB production it actually STARTS and
-       6th of 10 by this score. A rival holding RB4 and RB5 but flexing a receiver ranked 2nd by the score and
-       5th by production. The model was reading roster SHAPE where the manager reads OUTPUT.
-       One cause is fixable cleanly. `flexShareOf` hands every position the same league-average slice of the
-       flex — 42% RB, 42% WR, 16% TE — so a team that genuinely starts a third running back every week was
-       credited for 0.42 of him, while a team that flexes a receiver was charged for an RB slot it never
-       fields. The flex is one slot and its owner is knowable: the lineup has already been solved a line
-       above. Give it to the position that wins it.
-       ⚠ THE LEAGUE AVERAGE REMAINS THE FALLBACK, and it has to. An empty flex slot (a roster too thin to
-         fill it, which happens in the pre-season and after bye-week carnage) has no winner to attribute, and
-         guessing one would invent a starter the team does not have. */
-    const flexShareForRoster = (lu2) => {
-      const share = { QB: 0, RB: 0, WR: 0, TE: 0 };
-      let seen = 0, filled = 0;
-      ((lu2 && lu2.slots) || []).forEach((sl) => {
-        if (!/^(FLEX|SFLX)/.test(sl.slot || "")) return;
-        seen++;
-        const pos = sl.p && !sl.p.assumed ? sl.p.pos : null;
-        if (pos && share[pos] != null) { share[pos] += 1; filled++; }
-      });
-      if (!seen) return flexShLg;
-      // Any flex slot we could not attribute falls back to the league-average split for that slot alone.
-      const unfilled = seen - filled;
-      if (unfilled > 0) POS.forEach((pp) => { share[pp] += ((flexShLg[pp] || 0) / Math.max(1, seen)) * unfilled; });
-      return share;
-    };
     leagueTeams = (data.teams || []).map((t) => {
     const roster = resolve(t.players);
     const lu = lineupSlots(roster, cfg.sf);
@@ -15741,9 +16339,34 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   // Power rankings: overall ROSTER STRENGTH (quality × quantity across positions) — a different lens than
   // projected points, so it stays distinct from projected standings even before any games are played.
   /* ⭐⭐⭐⭐⭐ POWER IS A BLEND NOW — 29w, see powerBlend above. It used to be this line's `rosterScore`
-     alone: pure roster paper, deaf to everything that had actually happened in the season. */
+     alone: pure roster paper, deaf to everything that had actually happened in the season.
+
+     ⭐⭐⭐⭐⭐ AND IT IS SCORED ON SEASON VALUE, NOT THIS WEEK'S POINTS — 29y, a real bug found by a test.
+     ================================================================================================
+     `posQuality` above is computed from `t.roster`, whose `pts` is THIS WEEK's projection, and while
+     `posQualityScore` reads the season valuation fields rather than points, it is handed each position
+     group ALREADY SORTED BY `pts` and takes the top N for the starting slots. So who counts as your RB1
+     was decided by this week — and in a bye week your actual RB1 sorts last on zero and the position is
+     scored as if he were the depth man. `flexShareForRoster` inherited the same basis: the flex went to
+     whoever wins it THIS WEEK.
+
+     That directly contradicts what this number is for. Trey, in 29w: "I don't think power should
+     necessarily be a week to week thing, but more a macro overview of what you're feeling the power of a
+     team is based on what has happened and what is projected to happen." A rating that moves because
+     somebody is on bye is a week-to-week rating wearing a macro label.
+
+     ⚠⚠ IT WAS INVISIBLE UNTIL TWO SCREENS HAD TO AGREE. The bye-week distortion is a quiet reordering in
+       the middle of a table nobody can check by eye, and it survived 29w and every suite since. What
+       surfaced it was the trade calculator — which works in season values by necessity — printing a power
+       rank beside this one: plan29bv holds all twelve ranks of the two against each other and two teams
+       came out swapped. ⭐ THE PORTABLE LESSON: a number with no second opinion is unfalsifiable in
+       practice, and the cheapest way to test one is to make something else compute it differently and
+       require the two to match.
+     ⚠ `posStrength` and `posStarted` stay WEEKLY on purpose — they answer "what does this position put in
+       my lineup this week", which is a different and legitimately week-bound question (see 29ah above).
+     ================================================================================================ */
   powerRanked = powerBlend(leagueTeams.map((t) => ({
-    ...t, rosterScore: t.posQuality.QB + t.posQuality.RB + t.posQuality.WR + t.posQuality.TE,
+    ...t, rosterScore: scoreRoster(seasonRosterOf(t)).rosterScore,
   })));
   powerRanked.forEach((t) => { powerRankById[t.rosterId] = t.powerRank; });
   // Projected final standings: blend current wins with power (a rough season-long strength signal).
@@ -15794,7 +16417,6 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   // ================= IN-SEASON DECISIONS =================
   // Everything below runs AFTER the hub's early returns, so React hooks aren't available here — and a
   // tooltip hover must never re-run a 1,200-season Monte Carlo. hubMemo is the stand-in.
-  const GAMES_IN_SEASON = 17;
   const regSeasonWeeks = data.regularSeasonWeeks || (data.playoffStartWeek ? data.playoffStartWeek - 1 : 14);
   const weeksLeft = Math.max(1, regSeasonWeeks - (data.week || 1) + 1);
   const playoffCut = data.playoffTeams || playoffSpots;
@@ -15864,7 +16486,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   // ---- TRADE FINDER ----
   // Season value, not this week's points: a trade is a season decision, and a bye must never make a good
   // player look expendable.
-  const tradeRoster = (t) => (t.roster || []).map((p) => ({ ...p, pts: p.ptsSeason != null ? p.ptsSeason : (p.pts || 0) * GAMES_IN_SEASON }));
+  const tradeRoster = seasonRosterOf;
   const myLT = leagueTeams.find((t) => t.rosterId === data.myRosterId);
   const tradeKey = `trades|${leagueId}|${data.week}|${(myLT ? myLT.roster : []).map((p) => p.sid).join(",")}`;
   /* ⭐⭐⭐⭐⭐ THE MARKET VIEW — 29x. Same rosters, same replacement level, a different question: not
@@ -15876,6 +16498,49 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     })),
     { req: reqStart, sf: cfg.sf },
   )) : null;
+  /* ⭐⭐⭐⭐⭐ THE CALCULATOR'S INPUT — 29y. Season-value rosters, for the same reason the finder uses them:
+     a trade is a season decision and a bye week must never make a good player look expendable. The teams
+     carry their record and points-for untouched so the power half of the blend keeps its history. */
+  const tbTeams = leagueTeams.map((t) => ({
+    rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName,
+    isMe: t.rosterId === data.myRosterId, roster: tradeRoster(t),
+    record: t.record, pointsFor: t.pointsFor || 0,
+  }));
+  const tbEval = (myLT && tb.partner != null && (tb.give.length || tb.get.length))
+    ? (() => { try {
+        return tradeEval(tbTeams, {
+          myId: data.myRosterId, theirId: tb.partner, give: tb.give, get: tb.get,
+          sf: cfg.sf, req: reqStart,
+          score: (r) => scoreRoster(r),
+          bench: (r) => scoreRoster(r).bench,
+          /* ⭐⭐⭐⭐⭐ THE FORMAT DECIDES HOW MANY HORIZONS THERE ARE — 29z. Trey: "for a redraft league,
+             that's all that needs to show. For a dynasty league or a keeper league... it needs to show the
+             right now value, and... the long term value." `keeps` is the whole switch; see tradeEval. */
+          keeps: leagueKeepsPlayers(cfg),
+          /* ⚠ THE POSTURE IS THE ONE HE SET IN THIS HUB, not a fresh inference. The header already says
+             "GOAL: Win now" or Rebuild, and a calculator quietly arguing from a different window than the
+             one on screen above it would be both wrong and baffling. */
+          posture: isDynasty ? activePosture : 'winnow',
+          /* Keeper cost, ONLY where the league actually carries it. `cfg.keepers` records who is kept and
+             at which pick; anything beyond that (a league's escalator rule, contract years) we do not know
+             and therefore do not claim — the FAAB decision from 29w, applied again. */
+          /* ⚠⚠ THIS READS `data.teams[].keepers` — THE BACKEND'S — AND THE FIRST VERSION READ `cfg.keepers`,
+             WHICH IS ALWAYS UNDEFINED HERE. The hub's `cfg` is `normalizeHubCfg(data.cfg)`, a fixed set of
+             about a dozen fields that has never included keepers, so the note could not fire for any league
+             — a code path that always returns null looks exactly like a league with no keepers, which is the
+             dead-code-launders-failure shape from 29n. Backend b145 now carries the real array.
+             ⚠ WHAT IT DELIBERATELY DOES NOT SAY: what keeping him costs next year. Sleeper does not expose
+               the league's escalator rule, so this states that he is committed and stops — 29w's FAAB
+               decision applied again. */
+          keeperOf: (pl) => {
+            if (!pl || pl.sid == null) return null;
+            const owner = ((data && data.teams) || []).find((t) => (t.keepers || []).some((k) => String(k) === String(pl.sid)));
+            return owner ? { kept: true, by: owner.teamName } : null;
+          },
+        });
+      } catch (e) { return { ok: false, error: 'failed' }; } })()
+    : null;
+
   const tradeIdeas = myLT ? hubMemo(tradeKey, () => findTrades(
     { rosterId: myLT.rosterId, teamName: myLT.teamName, roster: tradeRoster(myLT) },
     leagueTeams.filter((t) => t.rosterId !== data.myRosterId).map((t) => ({ rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName, roster: tradeRoster(t) })),
@@ -16022,7 +16687,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
             {/* Posture control */}
             <div>
               <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4, textAlign: "right" }}>
-                {isDynasty ? "Team plan" : "Goal"}{autoPosture && autoPosture.avgAge ? ` · starters avg ${autoPosture.avgAge}y` : ""}
+                {/* ⚠ "starters avg" was the old wording and it is no longer true: `teamWindow` reads the whole
+                    roster weighted by who defines the build, not the starting lineup. A caption that names
+                    the wrong population is how somebody later "fixes" a number that was right. */}
+                {isDynasty ? "Team plan" : "Goal"}{autoPosture && autoPosture.avgAge ? ` · roster avg ${autoPosture.avgAge}y` : ""}
               </div>
               {isDynasty ? (
                 <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden" }}>
@@ -16787,13 +17455,24 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                             </div>
                             {paths.length > 0 ? (
                               <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 3 }}>
+                                {/* ⭐⭐⭐⭐ A PATHWAY IS A STARTING POINT, NOT A VERDICT — 29y. Trey's own framing
+                                    was "see trades, but then click into a position to really dive into that
+                                    market", and the dive ends in a concrete swap. Clicking it loads that swap
+                                    into the calculator below, where he can add the third player, see what it
+                                    costs in roster spots and decide — which is what he was going to do next
+                                    anyway, by hand. */}
                                 {paths.slice(0, 3).map((x) => (
-                                  <div key={x.get.sid} data-mktpath={`${x.give.name}->${x.get.name}`} style={{ fontSize: 11.5 }}>
+                                  <button key={x.get.sid} data-mktpath={`${x.give.name}->${x.get.name}`}
+                                    onClick={() => { tbOpen(t.rosterId, [String(x.give.sid)], [String(x.get.sid)]);
+                                      try { const el = document.querySelector('[data-tb]'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {} }}
+                                    title="Load this swap into the trade calculator"
+                                    style={{ fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+                                      background: "none", border: 0, padding: 0, color: "var(--ink)" }}>
                                     <span style={{ color: "var(--red)" }}>{x.give.name}</span>
                                     <span className="mut"> for </span>
                                     <span style={{ color: "#5FD0A8" }}>{x.get.name}</span>
                                     <span className="mut" style={{ fontSize: 10 }}> · you +{x.myGain}, them +{x.theirGain}</span>
-                                  </div>
+                                  </button>
                                 ))}
                               </div>
                             ) : (
@@ -16812,6 +17491,94 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 })()}
               </div>
             )}
+
+            {/* ⭐⭐⭐⭐⭐ THE TRADE CALCULATOR — 29y.
+                Trey: "I'd like to be able to go into that league and hit trade and be able to input players
+                on each side of a trade. And then basically you equate that to the output of the team in
+                terms of power rankings and overall points in the season... you need to make sure that
+                you're only equating the points scored to the STARTING LINEUP points."
+                The two blocks above answer questions the app asks itself. This one answers HIS question —
+                the deal he has already got in mind, which no generator was ever going to propose. */}
+            {myLT && (
+              <div data-tb style={{ border: `1px solid ${tb.open ? "var(--line2)" : "var(--line)"}`, borderRadius: 10, marginBottom: 14, background: "var(--panel2)" }}>
+                <button data-tbtoggle={tb.open ? "1" : "0"}
+                  onClick={() => setTb((v) => ({ ...v, open: !v.open }))}
+                  style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "11px 12px", background: "none", border: 0, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", textAlign: "left" }}>
+                  <i className={`ti ti-${tb.open ? "chevron-down" : "chevron-right"}`} style={{ fontSize: 15, color: "var(--mut)" }} aria-hidden="true" />
+                  <span className="disp" style={{ fontSize: 13.5, fontWeight: 800 }}>Price a trade of your own</span>
+                  <span className="mut" style={{ fontSize: 11 }}>pick the players on each side</span>
+                </button>
+
+                {tb.open && (
+                  <div style={{ padding: "0 12px 12px" }}>
+                    {/* Who with. */}
+                    <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 11 }}>
+                      {leagueTeams.filter((t) => t.rosterId !== data.myRosterId).map((t) => {
+                        const on = String(tb.partner) === String(t.rosterId);
+                        return (
+                          <button key={t.rosterId} data-tbteam={t.teamName} data-tbteamon={on ? "1" : "0"}
+                            onClick={() => (on ? setTb({ open: true, partner: null, give: [], get: [] })
+                              : tbOpen(t.rosterId, tb.give, []))}
+                            style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 99, padding: "3px 10px", fontSize: 11, fontWeight: 700,
+                              border: `1px solid ${on ? "var(--gold)" : "var(--line)"}`, background: on ? "rgba(224,166,60,.12)" : "var(--panel)", color: on ? "var(--gold)" : "var(--mut)" }}>
+                            {t.teamName}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {tb.partner == null ? (
+                      <div className="mut" data-tbhint style={{ fontSize: 12, lineHeight: 1.5 }}>
+                        Pick the manager you want to deal with, then click players on either roster to build
+                        both sides. Anyone you take on who would not crack your starting lineup is counted at
+                        what he actually adds — nothing — which is the whole point of doing this properly.
+                      </div>
+                    ) : (() => {
+                      const them = leagueTeams.find((t) => String(t.rosterId) === String(tb.partner));
+                      if (!them) return null;
+                      const col = (team, side, label, sel) => (
+                        <div data-tbcol={side} style={{ minWidth: 0 }}>
+                          <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 5 }}>{label}</div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 250, overflowY: "auto" }}>
+                            {tradeRoster(team).slice().sort((a, b) => (b.pts || 0) - (a.pts || 0)).map((p) => {
+                              const on = sel.includes(String(p.sid));
+                              return (
+                                <button key={p.sid} data-tbplayer={p.name} data-tbon={on ? "1" : "0"}
+                                  onClick={() => tbToggle(side, p.sid)}
+                                  onMouseEnter={(e) => showPlayerTip(e, p)} onMouseLeave={hideTip}
+                                  style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 6,
+                                    border: `1px solid ${on ? "var(--gold)" : "var(--line)"}`, background: on ? "rgba(224,166,60,.10)" : "var(--panel)",
+                                    borderRadius: 7, padding: "4px 8px", fontSize: 11.5, color: "var(--ink)" }}>
+                                  <Dot pos={p.pos} />
+                                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: on ? 700 : 500 }}>{p.name}</span>
+                                  <span className="mut num" style={{ fontSize: 10.5 }}>{Math.round(p.pts || 0)}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                      return (
+                        <>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+                            {col(myLT, "give", "You send", tb.give)}
+                            {col(them, "get", `You get from ${them.teamName}`, tb.get)}
+                          </div>
+                          {tbEval && tbEval.ok ? <TradeVerdict r={tbEval} weeks={weeksLeft} games={GAMES_IN_SEASON} oddsShift={oddsIfMeanShifts} /> : (
+                            <div className="mut" data-tbempty style={{ fontSize: 12, lineHeight: 1.5 }}>
+                              {tbEval && tbEval.error === 'rosters changed'
+                                ? "One of those players isn't on that roster any more — the league has moved since this page loaded. Reopen the league and build it again."
+                                : "Click a player on each side to see what the deal does."}
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+            )}
+
             {tradeIdeas.length ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
                 {tradeIdeas.map((t, i) => (
@@ -16858,6 +17625,15 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                         const d = perWeek > 0 ? oddsIfMeanShifts(perWeek) : null;
                         return d != null && d > 0 ? <span><b style={{ color: "var(--gold)" }}>+{d}%</b> <span className="mut">playoff odds</span></span> : null;
                       })()}
+                      {/* Every suggestion is one-for-one; most real deals are not. This carries the swap into
+                          the calculator so he can build the rest of it around this core. */}
+                      <button data-tradebuild={`${t.give.name}->${t.get.name}`}
+                        onClick={() => { tbOpen(t.team.rosterId, [String(t.give.sid)], [String(t.get.sid)]);
+                          try { const el = document.querySelector('[data-tb]'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {} }}
+                        style={{ marginLeft: "auto", cursor: "pointer", fontFamily: "inherit", fontSize: 10.5, fontWeight: 700,
+                          border: "1px solid var(--line)", background: "var(--panel)", color: "var(--mut)", borderRadius: 99, padding: "2px 9px" }}>
+                        Build on this
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -16985,7 +17761,9 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 </div>
                 <div style={{ background: "var(--panel2)", borderRadius: 9, padding: "11px 13px" }}>
                   <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Power rank</div>
-                  <div className="num" style={{ fontSize: 22, fontWeight: 800, color: "var(--gold)" }}>{myPowerRank ? ordinal(myPowerRank) : "—"}</div>
+                  {/* data-mypowerrank: the trade calculator reports a power rank too, and the two are only
+                      trustworthy if they agree. plan29bv reads both and requires them equal. */}
+                  <div className="num" data-mypowerrank={myPowerRank ? String(myPowerRank) : ""} style={{ fontSize: 22, fontWeight: 800, color: "var(--gold)" }}>{myPowerRank ? ordinal(myPowerRank) : "—"}</div>
                   <div className="mut" style={{ fontSize: 11 }}>by roster strength</div>
                 </div>
                 <div style={{ background: "var(--panel2)", borderRadius: 9, padding: "11px 13px" }}>
@@ -17055,7 +17833,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       })();
                       const nameTip = rosterTipContent ? (e) => showTip(e, rosterTipContent) : undefined;
                       return (
-                        <tr key={st.rosterId} style={{ borderTop: "1px solid var(--line)", background: st.isMe ? "rgba(224,166,60,.07)" : "transparent" }}>
+                        <tr key={st.rosterId} data-standrow={st.teamName} data-standpower={pr ? String(pr) : ""} style={{ borderTop: "1px solid var(--line)", background: st.isMe ? "rgba(224,166,60,.07)" : "transparent" }}>
                           <td onMouseEnter={nameTip} onMouseLeave={nameTip ? hideTip : undefined} style={{ padding: "6px", fontWeight: st.isMe ? 700 : 500, color: st.isMe ? "var(--gold)" : "var(--ink)", cursor: nameTip ? "help" : "default" }}>
                             {st.rank}. {st.teamName}{st.isMe ? " ★" : ""}{st.ownerName ? <span className="mut" style={{ fontSize: 10, fontWeight: 400 }}> (@{st.ownerName})</span> : null}
                           </td>
@@ -30075,32 +30853,18 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   // applies in any league. Returns { lane, label, confidence, picksIn, tilt(pos,age)->multiplier }.
   const myWindow = useMemo(() => {
     const isDyn = isDynastyCfg(cfg);
-    // Weight earlier picks more (they define your core). Use only skill positions with a known age.
-    const aged = myCurrent.filter((p) => p.age && ["QB", "RB", "WR", "TE"].includes(p.pos));
-    let wsum = 0, asum = 0;
-    aged.forEach((p, i) => { const w = 1 / (1 + i * 0.25); wsum += w; asum += w * p.age; });
-    const avgAge = wsum ? asum / wsum : null;
-    // Don't pick a lane until round ~4 — before that you're just taking value, no window yet.
-    const DECIDE_AT = 4;
-    const decided = aged.length >= DECIDE_AT && avgAge != null;
-    let lane = "undecided", label = "Reading your build…";
-    if (decided) {
-      const youngCut = isDyn ? 24.5 : 25.0;
-      const oldCut = isDyn ? 27.5 : 28.0;
-      // A young roster isn't automatically a REBUILD — a young team full of studs is "win-now with a young
-      // core." Only call it a rebuild if it's young AND not projected to contend. Pull the projected finish (if
-      // available); a team projected in the top ~45% of the league is competitive, so a young-but-good team
-      // lands in BALANCED (take value, don't force the youth chase over a better proven player) rather than
-      // rebuild. This fixes "I was projected 1st, then got labeled rebuild the moment my avg age looked young."
-      const finishRk = (typeof proj !== "undefined" && proj && proj.rank && proj.rank[userIdx] != null) ? proj.rank[userIdx] : null;
-      const contender = finishRk != null && finishRk <= Math.ceil((TEAMS || 12) * 0.45);
-      if (avgAge <= youngCut) {
-        lane = contender ? "balanced" : "rebuild";
-        label = contender ? "Young core, competing" : "Young / rebuild window";
-      } else if (avgAge >= oldCut) { lane = "winnow"; label = "Win-now window"; }
-      else { lane = "balanced"; label = "Balanced window"; }
-    }
-    const confidence = decided ? Math.min(1, (aged.length - DECIDE_AT + 1) / 6) : 0;
+    /* The rule itself is `teamWindow` at module level — one implementation shared with the in-season hub
+       since 29aa. `myCurrent` is already in pick order, which is this screen's "most defining first", and
+       on draft night the only contention evidence available is the projected finish. */
+    const finishRk = (typeof proj !== "undefined" && proj && proj.rank && proj.rank[userIdx] != null) ? proj.rank[userIdx] : null;
+    const w = teamWindow({ players: myCurrent, isDyn, finishRank: finishRk, teams: TEAMS || 12 });
+    const { lane, label, confidence, avgAge } = w;
+    /* ⚠⚠ `decided` AND THE AGED COUNT ARE USED FURTHER DOWN THIS MEMO — the tilt block reads `decided` and
+       the return reads `aged.length`. Deleting the locals without re-providing them threw ReferenceError
+       inside the memo and took the whole draft room down, which is the SECOND time in this session that
+       hoisting a local left an orphaned reference below the part I was looking at (the first was `AGE` in
+       buildPlayers). Same lesson, same day: grep the WHOLE enclosing scope for every name you remove. */
+    const decided = w.lane !== "undecided";
 
     // POSITIONAL NEED: how many starters you still lack at each position vs your league's requirements.
     // This makes "Your build" reflect team NEEDS, not just age — a stacked position gets pushed down,
@@ -30153,7 +30917,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       m *= 1 + ns * 0.7; // need is a strong driver: a real starting hole clearly lifts the position
       return Math.max(0.2, Math.min(2.4, m));
     };
-    return { lane, label, confidence, picksIn: aged.length, avgAge, decided, tilt, have, req };
+    return { lane, label, confidence, picksIn: w.n, avgAge, decided, tilt, have, req };
   }, [myCurrent, cfg.type, cfg.sf, userIdx]);
   // Feed the detected contention lane to the advice engine's "My build" scorer (module global read by
   // userScore). Set synchronously during render so the next advice/path computation uses the right lane.
