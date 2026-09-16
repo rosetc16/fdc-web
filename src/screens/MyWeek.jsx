@@ -109,6 +109,82 @@ const SEV = {
   1: { label: "On your bench", tone: "var(--mut)", icon: "ti-dots" },
 };
 
+/* ⭐⭐⭐⭐⭐ THE SUMMARY HOVERS, AS REAL TABLES — 29ad.
+   ==================================================================================================
+   Trey: "when you hover on '2 to check before kickoff' it gives a prettier tabular format. When you hover
+   on '2.3 available from your bench' it shows who you are replacing for who."
+
+   Both were `title` attributes, which is the browser's tooltip: one typeface, no columns, no colour, and a
+   half-second delay before it deigns to appear. A list of players with a status and a projection each is
+   TABULAR data, and the native tooltip is the one place on this page that cannot draw a table.
+
+   ⚠ DECLARED AT MODULE LEVEL, NOT INSIDE THE SCREEN. A component defined in a render body is a NEW TYPE on
+     every render, so React unmounts and remounts it — which in 29d made tooltips vanish from under a moving
+     pointer, because the browser only fires mouseover on movement ONTO an element and the element kept
+     being replaced. Same trap, and it is exactly the kind of component that walks into it.
+   ⚠ AND IT IS POSITIONED FROM THE TRIGGER'S BOX, not the cursor: anchored below when there is room and
+     above when there is not, clamped to the viewport, so it never covers the row it describes (29p). */
+function HoverTable({ card }) {
+  if (!card) return null;
+  const { x, y, above, title, note, cols, rows } = card;
+  return (
+    <div data-wkcard={card.key} role="tooltip" style={{
+      position: "fixed", left: x, top: y, transform: above ? "translate(-50%,-100%)" : "translate(-50%,0)",
+      zIndex: 95, pointerEvents: "none", maxWidth: 460,
+      background: "var(--panel)", border: "1px solid var(--line2)", borderRadius: 10,
+      boxShadow: "0 10px 30px rgba(0,0,0,.45)", padding: "9px 11px" }}>
+      <div className="disp" style={{ fontSize: 11.5, fontWeight: 800, marginBottom: 6 }}>{title}</div>
+      <table style={{ borderCollapse: "collapse", fontSize: 11.5, width: "100%" }}>
+        <thead>
+          <tr className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>
+            {cols.map((c) => (
+              <th key={c.k} style={{ textAlign: c.right ? "right" : "left", fontWeight: 600, padding: "0 10px 3px 0" }}>{c.k}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} style={{ borderTop: "1px solid var(--line)" }}>
+              {cols.map((c) => (
+                <td key={c.k} style={{ textAlign: c.right ? "right" : "left", padding: "3px 10px 3px 0",
+                  whiteSpace: "nowrap", color: r.tone && c.tint ? r.tone : "var(--ink)",
+                  fontWeight: c.strong ? 700 : 400 }}>{r[c.k]}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {note ? <div className="mut" style={{ fontSize: 10, marginTop: 5, lineHeight: 1.4 }}>{note}</div> : null}
+    </div>
+  );
+}
+
+/* The per-league row's availability card. Module level so the two callers cannot drift apart, and so the
+   whole card — including the sentence at the bottom — can be unit-tested without a browser.
+   ⚠ THE NOTE IS THE POINT OF THE CARD, not decoration. "3 not expected to play" is alarming and often
+     means nothing: a ruled-out man on your BENCH needs no action at all. The count that decides whether
+     you open the app before kickoff is how many of them are in the lineup, and only the card can say it. */
+export function rowCard(L, kind) {
+  const who = (L.avail || []).filter((r) => (kind === "notplaying" ? r.rank >= 4 : r.rank === 3));
+  const starting = who.filter((r) => r.starting).length;
+  const out = kind === "notplaying";
+  return {
+    key: kind,
+    title: `${(L.league && L.league.name) || "This league"} — ${who.length} ${out ? "not expected to play" : "to check before kickoff"}`,
+    cols: [{ k: "Player", strong: true }, { k: "Status", tint: true }, { k: "Where" }, { k: "Proj", right: true }],
+    rows: who.map((r) => ({
+      Player: r.name,
+      Status: (r.des && r.des.label) || "—",
+      Where: r.starting ? "In your lineup" : "On your bench",
+      Proj: Number.isFinite(r.proj) ? Math.round(r.proj * 10) / 10 : "—",
+      tone: (r.des && r.des.tone) || "var(--mut)",
+    })),
+    note: starting === 0
+      ? `None of ${who.length === 1 ? "them is" : "them are"} in your lineup — nothing to do here before kickoff.`
+      : `${starting} of ${who.length} ${starting === 1 ? "is" : "are"} in your lineup${out ? " and will score you nothing if the ruling holds" : ""}.`,
+  };
+}
+
 const ago = (iso) => {
   if (!iso) return null;
   const d = (Date.now() - new Date(iso).getTime()) / 86400000;
@@ -154,6 +230,18 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
   const [autoWeek, setAutoWeek] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshedAt, setRefreshedAt] = useState(null);
+  /* The hover card's content and where to draw it. Null when nothing is hovered. */
+  const [card, setCard] = useState(null);
+  const showCard = (e, payload) => {
+    try {
+      const r = e.currentTarget.getBoundingClientRect();
+      const above = r.bottom + 220 > window.innerHeight && r.top > 240;
+      setCard({ ...payload,
+        x: Math.min(Math.max(r.left + r.width / 2, 180), Math.max(180, window.innerWidth - 180)),
+        y: above ? r.top - 8 : r.bottom + 8, above });
+    } catch (_) { /* a card that cannot be placed is simply not shown */ }
+  };
+  const hideCard = () => setCard(null);
   const [err, setErr] = useState(null);
   const ranFor = useRef(null);
   const connected = useMemo(() => (leagues || []).filter((l) => hubIdOf(l)), [leagues]);
@@ -647,14 +735,29 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                   const who = kind === "notplaying" ? availRows.filter((r) => r.rank >= 4)
                     : kind === "check" ? availRows.filter((r) => r.rank === 3) : null;
                   const lineups = who ? who.reduce((s2, r) => s2 + (r.inLeagues || []).length, 0) : 0;
-                  const tip = who && who.length
-                    ? `${who.length} player${who.length === 1 ? "" : "s"} across ${lineups} lineup${lineups === 1 ? "" : "s"}:\n`
-                      + who.map((r) => `• ${r.name}${r.des && r.des.label ? ` (${r.des.label})` : ""} — ${(r.inLeagues || []).length} league${(r.inLeagues || []).length === 1 ? "" : "s"}`).join("\n")
-                    : undefined;
+                  /* ⭐⭐⭐⭐ THE HOVER IS A TABLE NOW — 29ad. Player, what is wrong with him, how many of
+                     your lineups he is in, and what he is projected for: four columns, which is what the
+                     old newline-separated `title` string was pretending to be. */
+                  const tip = who && who.length ? {
+                    key: kind,
+                    title: `${who.length} player${who.length === 1 ? "" : "s"} across ${lineups} lineup${lineups === 1 ? "" : "s"}`,
+                    cols: [{ k: "Player", strong: true }, { k: "Status", tint: true }, { k: "Lineups", right: true }, { k: "Proj", right: true }],
+                    rows: who.map((r) => ({
+                      Player: r.name,
+                      Status: (r.des && r.des.label) || "—",
+                      Lineups: (r.inLeagues || []).length,
+                      Proj: Number.isFinite(r.proj) ? Math.round(r.proj * 10) / 10 : "—",
+                      tone: (r.des && r.des.tone) || "var(--mut)",
+                    })),
+                    note: lineups !== who.length
+                      ? "The tile counts PLAYERS — one questionable man is one man however many of your teams he is on. The league rows below count each league's own instances."
+                      : null,
+                  } : null;
                   return (
                     <div key={lbl} data-wktile={kind || lbl} data-wktilen={String(n)}
                       data-wktilelineups={who ? String(lineups) : undefined}
-                      title={tip} style={{ minWidth: 118, cursor: tip ? "help" : "default" }}>
+                      onMouseEnter={tip ? (e) => showCard(e, tip) : undefined} onMouseLeave={tip ? hideCard : undefined}
+                      style={{ minWidth: 118, cursor: tip ? "help" : "default" }}>
                       <div className="num" style={{ fontSize: 26, fontWeight: 800, color: n > 0 ? tone : "var(--mut)", lineHeight: 1.1 }}>{n}</div>
                       <div className="mut" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 700 }}>{lbl}</div>
                       {/* The reconciliation, stated rather than left as an exercise. */}
@@ -703,14 +806,35 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                            The row said how MANY without ever saying WHO, so the only way to act on it was
                            to open the league and go looking. The names, their designations and what each
                            one is projected for are all already on the row's own data. */
+                        /* ⚠⚠ THESE ARE THE SPANS TREY ACTUALLY POINTED AT. "when you hover on '2 to check
+                           before kickoff'" is THIS row, not the tile above it that happens to count the
+                           same thing — my first cut converted the tile and left the row on the native
+                           `title`, which would have shipped a change he could not see at the place he
+                           asked for it. Both row details are cards now; the tile keeps its own. */
                         : urgent ? <span data-wkrowdetail="notplaying" style={{ color: "#F2655C", cursor: "help" }}
-                            title={(L.avail || []).filter((r) => r.rank >= 4).map((r) => `• ${r.name}${r.des && r.des.label ? ` — ${r.des.label}` : ""}${r.starting ? " (in your lineup)" : " (on your bench)"}`).join("\n")}>
+                            onMouseEnter={(e) => showCard(e, rowCard(L, "notplaying"))} onMouseLeave={hideCard}>
                             {urgent} not expected to play</span>
                         : check ? <span data-wkrowdetail="check" style={{ color: "var(--gold)", cursor: "help" }}
-                            title={(L.avail || []).filter((r) => r.rank === 3).map((r) => `• ${r.name}${r.des && r.des.label ? ` — ${r.des.label}` : ""}${r.starting ? " (in your lineup)" : " (on your bench)"}${Number.isFinite(r.proj) ? `, projected ${Math.round(r.proj * 10) / 10}` : ""}`).join("\n")}>
+                            onMouseEnter={(e) => showCard(e, rowCard(L, "check"))} onMouseLeave={hideCard}>
                             {check} to check before kickoff</span>
                         : "No availability problems"}
-                      {gain > 0 ? <span style={{ color: "#5FD0A8" }}> · +{r1(gain)} available from your bench</span> : null}
+                      {/* ⭐⭐⭐⭐⭐ "when you hover on '2.3 available from your bench' it shows who you are
+                          replacing for who." The number was the CONCLUSION with the reasoning withheld —
+                          and the reasoning is the actionable part, because you cannot make a swap you
+                          cannot name. Slot, who comes out, who goes in, what it gains. */}
+                      {gain > 0 ? (
+                        <span data-wkrowdetail="bench" style={{ color: "#5FD0A8", cursor: "help" }}
+                          onMouseEnter={(e) => showCard(e, {
+                            key: "bench",
+                            title: `${L.league.name} — ${(L.swaps || []).length} change${(L.swaps || []).length === 1 ? "" : "s"} worth +${r1(gain)}`,
+                            cols: [{ k: "Slot" }, { k: "Out", strong: true }, { k: "In", strong: true }, { k: "Gain", right: true }],
+                            rows: (L.swaps || []).map((x) => ({
+                              Slot: x.pos, Out: `${x.out} (${r1(x.outPts)})`, In: `${x.in} (${r1(x.inPts)})`, Gain: `+${r1(x.gain)}`,
+                            })),
+                            note: "Projected points only — a swap you would not make for other reasons is still listed, because the page does not know your reasons.",
+                          })}
+                          onMouseLeave={hideCard}> · +{r1(gain)} available from your bench</span>
+                      ) : null}
                       {(L.fa || []).length ? <span> · {(L.fa || []).length} waiver idea{(L.fa || []).length === 1 ? "" : "s"}</span> : null}
                     </span>
                   </div>
@@ -934,6 +1058,8 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
           </div>
         )}
       </div>
+      {/* One card for the whole screen, drawn last so it sits above everything. */}
+      <HoverTable card={card} />
     </div>
   );
 }

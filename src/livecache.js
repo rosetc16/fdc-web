@@ -104,7 +104,20 @@ export function homeWeekView(live) {
   const ws = live.weekState || {};
   const T = live.totals || null;
   return {
-    show: !!(ws.anyLive || ws.anyDone),
+    /* ⭐⭐⭐⭐⭐ A WEEK THAT HAS NOT KICKED OFF YET IS STILL A WEEK — 29ab, and this was a real regression.
+       Trey: "The home screen no longer shows the summary of leagues for the current week… I don't know
+       what happened here."
+       ⚠ THE CAUSE WAS 29w, TWO BUILDS EARLIER, AND IT IS THE CLASSIC SECOND-ORDER MISS. The Tuesday roll
+       made the app point at the UPCOMING week the moment Monday night ends — which is what he asked for,
+       and right. But this gate was written when "the current week" always meant a week with football in
+       it, so from Tuesday until Thursday kickoff `anyLive` and `anyDone` are both false and the ENTIRE
+       strip returned null. Every week, for three days, on the home page. The stub even carries a `quiet`
+       variant for exactly this state; no suite had ever asserted the strip survives it.
+       ⭐ And the strip already knows what to render for a week with no scores — the look-ahead view is a
+       to-do list of byes and injury tags. The fix is to let it, rather than to hide the page. */
+    show: !!(ws.anyLive || ws.anyDone || (ws.known && (ws.games > 0 || ws.nextKickoff))),
+    // Nothing has kicked off: the strip is a to-do list this visit, not a scoreboard.
+    preGame: !ws.anyLive && !ws.anyDone,
     live: !!ws.anyLive,
     /* "once games have finished (I'm thinking any game that's finished)" — the tab APPEARS on the first
        final whistle. Whether the week can actually be REVIEWED is a stricter test the review itself makes

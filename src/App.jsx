@@ -97,7 +97,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29aa";
+const BUILD_TAG = "2026.07.29ad";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -6768,7 +6768,7 @@ function ordinalOf(n) { const s = ["th", "st", "nd", "rd"], v = n % 100; return 
    layout is already clean — a cache hit, not a reflow. work/perf.mjs measures hover cost either way and
    sim/tippos.js pins the placement rules; if this ever shows up in a trace, the fallback is the old
    cursor anchor, which is what happens automatically when no element is passed. */
-export function positionTip(cx, cy, content, el) {
+export function positionTip(cx, cy, content, el, opts) {
   const W = typeof window !== "undefined" ? window.innerWidth : 1200;
   const H = typeof window !== "undefined" ? window.innerHeight : 800;
   const TW = 572;  // tooltip width + margin
@@ -6786,8 +6786,23 @@ export function positionTip(cx, cy, content, el) {
   // Room on each side of the TRIGGER, not of the cursor. A row that spans the panel leaves nothing on the
   // right even when the cursor is at its left edge — which is exactly the recommendation row's shape.
   const roomRight = W - box.right, roomLeft = box.left;
-  if (roomRight >= TW + GAP) return { x: box.right + GAP, y: cy, anchorY: cy, content, side: "right" };
-  if (roomLeft >= TW + GAP) return { x: box.left - GAP, y: cy, anchorY: cy, content, side: "left", flip: true };
+  const R = { x: box.right + GAP, y: cy, anchorY: cy, content, side: "right" };
+  const L = { x: box.left - GAP, y: cy, anchorY: cy, content, side: "left", flip: true };
+  /* ⭐⭐⭐⭐ A CALLER MAY KNOW WHAT IS ON THE OTHER SIDE — 29ac. Preferring the right whenever it fits is
+     the correct default for a full-width row, and wrong for a two-column layout: in the trade calculator
+     there IS room to the right of the left-hand roster, and it is occupied by the OTHER roster, so the
+     card opened directly over the thing you were comparing against. Trey: "when you hover a name on the
+     left side, can you make sure the hover goes to the left and doesn't cover the other team."
+     ⚠ A PREFERENCE, NOT AN INSTRUCTION: if the favoured side has no room the other is still used, because
+       a tooltip off the edge of the screen is worse than one in the wrong place. */
+  const prefer = opts && opts.prefer;
+  if (prefer === "left") {
+    if (roomLeft >= TW + GAP) return L;
+    if (roomRight >= TW + GAP) return R;
+  } else {
+    if (roomRight >= TW + GAP) return R;
+    if (roomLeft >= TW + GAP) return L;
+  }
   // ⚠ NEITHER SIDE FITS — a full-width row, which is the common case in a modal. Go BELOW the trigger (or
   //   above it when the row sits low), pinned to the horizontal edge with the most room, so the row itself
   //   stays uncovered even though the tooltip is wider than the space beside it.
@@ -14592,8 +14607,46 @@ export function positionMarket(teams, opts) {
   const repl = o.replacement || replacementByPos(list.map((t) => t.roster), o.sf, list.length);
   const POSNS = o.positions || ["QB", "RB", "WR", "TE"];
 
+  /* ⭐⭐⭐⭐⭐ WHAT A PLAYER ACTUALLY COSTS THE TEAM THAT HOLDS HIM — 29ac, and it replaces the model that
+     produced Trey's complaint.
+     ==================================================================================================
+     Trey: "I also don't want it to just show their bottom depth… For example, it's showing Bhayshul Tuten
+     and Jonathon Brooks because they have good RBs ahead of them… but they might trade one of those
+     better RBs and replace with Tuten in their roster."
+
+     He is right and the old model was answering a narrower question than the one a manager asks. It
+     offered `startable.slice(required)` — the men BELOW a team's starters, the ones who could leave
+     without opening a hole. That is sound as far as it goes, and it goes almost nowhere: nobody wants the
+     fourth-best back on a deep roster, and the owner of that roster knows it. What he will actually move
+     is a GOOD back, because he has another one to slide up.
+
+     ⭐ THE HONEST MEASURE IS THE MARGINAL ONE: what does this team's optimal lineup lose if this player
+       leaves? For the fourth back that is zero — but for the SECOND back on a four-deep roster it is also
+       nearly zero, because the third back simply starts instead. The cost is the gap to the next man in,
+       not the player's own value, and that single change is what surfaces the tradeable good player the
+       old list hid behind him.
+     ⚠ COMPUTED THROUGH THE REAL `lineupValue`, one call per player, so flex slots, superflex and this
+       league's actual starting requirements are all honoured rather than approximated. A team whose flex
+       is already a receiver loses something different from one flexing a back, and only solving the
+       lineup knows that. */
+  const costMapOf = (t) => {
+    /* ⚠ CLEANED FIRST. `lineupSlots` reads `p.pos` without guarding, so one null in a roster throws — and
+       a real payload does contain them (a player id the pool no longer carries resolves to nothing). The
+       suite's malformed-roster case caught this the moment the marginal-cost model started solving real
+       lineups here; §4 of sim/market.js exists for exactly that. */
+    const roster = (t.roster || []).filter((p) => p && p.sid != null);
+    const base = lineupValue(roster, o.sf);
+    const m = new Map();
+    roster.forEach((p, i) => {
+      const without = roster.filter((_, j) => j !== i);
+      m.set(String(p.sid), Math.round((base - lineupValue(without, o.sf)) * 10) / 10);
+    });
+    return m;
+  };
+
   const readTeam = (t) => {
     const byPos = {};
+    const cost = costMapOf(t);
     POSNS.forEach((pos) => {
       const at = (t.roster || []).filter((p) => p && String(p.pos).toUpperCase() === pos)
         .sort((a, b) => (b.pts || 0) - (a.pts || 0));
@@ -14612,9 +14665,28 @@ export function positionMarket(teams, opts) {
         startable: startable.length,
         required: req[pos] || 0,
         players: at,
-        /* The men who could actually LEAVE without opening a hole — the surplus made concrete, because
-           "they have RB depth" is not actionable until you can see which back is the spare one. */
+        /* The men who could actually LEAVE without opening a hole. Kept because "nobody here is spare" is
+           still the right way to say a position has no sellers — but it is no longer what gets OFFERED,
+           because it is the bottom of the roster and nobody wants the bottom of a roster. */
         spare: surplus > 0 ? startable.slice(req[pos] || 0) : [],
+        /* ⭐⭐⭐⭐⭐ EVERY PLAYER THEY HOLD HERE WHO IS WORTH HAVING, EACH WITH WHAT HE COSTS THEM.
+           ⚠⚠ ORDERED BY WHAT HE IS WORTH TO ME, NOT BY A SYNTHETIC "surplus" SCORE. My first cut ranked by
+             `worth - cost`, on the theory that the best target is the one who is valuable to you and cheap
+             to them. It reads well and it does not separate: on a four-deep roster the first, second and
+             third backs all came out within a point of each other, because a player who is cheap to lose is
+             cheap precisely because he is not much better than the man behind him. That is the
+             one-number-for-everybody failure this project has produced in five different rankings, and a
+             list sorted by it is a list in arbitrary order.
+           ⭐ So the list is simply their players, best first, with the PRICE attached — which is the thing
+             Trey actually asked to see. The old `spare` list could only ever offer the bottom of a roster;
+             this offers the good back with "costs them 130" beside him, and lets a manager judge whether
+             that is a deal he can make. `cost` is what their optimal lineup loses without him: small where
+             they have cover, large where they do not. */
+        movable: at.map((p) => {
+          const worth = Math.max(0, (Number(p.pts) || 0) - bar);
+          const c = cost.has(String(p.sid)) ? Math.max(0, cost.get(String(p.sid))) : 0;
+          return { p, worth: Math.round(worth * 10) / 10, cost: c, gain: Math.round((worth - c) * 10) / 10 };
+        }).filter((x) => x.worth > 0).sort((a2, b2) => b2.worth - a2.worth),
         best: startable[0] || at[0] || null,
       };
     });
@@ -14642,9 +14714,34 @@ export function positionMarket(teams, opts) {
     const score = helps.reduce((n, h) => n + (h.urgent ? 2 : 1), 0)
       * (wants.length ? 1 : 0.35)
       + wants.reduce((n, w) => n + (w.urgent ? 2 : 1), 0) * 0.5;
-    return { ...t, helps, wants, fit: Math.round(score * 100) / 100 };
+    /* ⭐⭐⭐⭐⭐ WHAT THEY WOULD WANT BACK, BY NAME — 29ac.
+       Trey: "I also want to know who they might want from us if it's an area of strength for us — I
+       basically want to see where we line up with teams."
+       `wants` already knew the POSITIONS, which is half a conversation: you cannot open a trade talk with
+       "you need receivers". This names the receivers — MY cheapest-to-move men at the positions they are
+       thin at, priced by what losing them costs MY lineup, so the suggestion is one I can actually afford
+       to make. Symmetric with `movable` on their side, and deliberately the same arithmetic. */
+    const wantFromUs = wants.flatMap((w) => (me.byPos[w.pos].movable || []).slice(0, 2)
+      .map((x) => ({ ...x, pos: w.pos, urgent: w.urgent })))
+      .sort((a2, b2) => b2.gain - a2.gain).slice(0, 4);
+    return { ...t, helps, wants, wantFromUs, fit: Math.round(score * 100) / 100 };
   }).filter((t) => t.helps.length || t.wants.length)
     .sort((a, b) => b.fit - a.fit);
+
+  /* ⭐⭐⭐⭐ WHERE EACH OF MY POSITION GROUPS RANKS IN THE LEAGUE — Trey asked for this on the trade
+     screen, and it is the context that makes "thin" and "deep" mean something. Ranked on the total value
+     a team's startable players at that position carry ABOVE replacement, which is the same currency the
+     rest of this view trades in — not raw points, which would rank a quarterback room above every running
+     back room in the league and tell you nothing. */
+  const posRanks = {};
+  POSNS.forEach((pos) => {
+    const bar = repl[pos] || 0;
+    const scored = read.map((t) => ({
+      id: t.rosterId,
+      v: (t.byPos[pos].players || []).reduce((n2, p) => n2 + Math.max(0, (Number(p.pts) || 0) - bar), 0),
+    })).sort((a2, b2) => b2.v - a2.v);
+    scored.forEach((r, i) => { if (!posRanks[pos]) posRanks[pos] = {}; posRanks[pos][r.id] = i + 1; });
+  });
 
   return {
     teams: read,
@@ -14653,9 +14750,13 @@ export function positionMarket(teams, opts) {
     partners,
     /* One row per position, from MY point of view — the summary the tab opens on, so "where am I actually
        thin" is answered before you have clicked anything. */
+    posRanks,
     positions: !me ? [] : POSNS.map((pos) => ({
       pos,
       mine: me.byPos[pos],
+      // My standing at this position among the whole league, and the size of the field it is out of.
+      myRank: (posRanks[pos] || {})[me.rosterId] || null,
+      of: read.length,
       /* How many rivals could sell here. A position where nobody has a spare is not a market, and saying
          so up front saves the click. */
       sellers: read.filter((t) => !t.isMe && t.byPos[pos].surplus > 0).length,
@@ -15594,8 +15695,16 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
      that opens it (the button, a market pathway, an auto-swap row) has to set the partner AND both sides
      together — and a partial update that changed the partner while leaving the previous deal's player ids
      in place would evaluate a trade against the wrong roster. One setter, one consistent state. */
-  const [tb, setTb] = useState({ open: false, partner: null, give: [], get: [] });
-  const tbOpen = (partner, give = [], get = []) => setTb({ open: true, partner, give, get });
+  /* ⭐⭐⭐⭐⭐ TWO SIDES, EITHER OF WHICH MAY BE SOMEBODY ELSE — 29ac.
+     Trey: "I want it to default that you are one of the teams, but I also want to be able to select teams
+     that aren't yours in order to compare trades that just happened. There should be a drop down on each
+     side." So `a` and `b` are both team ids rather than "me and a partner": `a` starts as mine because
+     that is the common case, and neither is pinned there. `give` are A's players, `get` are B's.
+     ⚠ OPEN BY DEFAULT, also on his instruction. The panel is the reason to be on this tab. */
+  const [tb, setTb] = useState({ open: true, a: null, b: null, give: [], get: [] });
+  const tbOpen = (partner, give = [], get = []) => setTb((v) => ({ open: true, a: v.a, b: partner, give, get }));
+  /* `a` is null until the hub knows my roster id, so it resolves at use rather than at init. */
+  const tbA = tb.a != null ? tb.a : (data && data.myRosterId != null ? data.myRosterId : null);
   const tbToggle = (side, sid) => setTb((v) => {
     const cur = v[side] || [];
     const has = cur.includes(String(sid));
@@ -15604,8 +15713,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   const [standSort, setStandSort] = useState({ key: "rank", dir: 1 }); // Standings table sort
   // Rich floating tooltip (same card the draft app uses) for player and positional hovers in this hub.
   const [tip, setTip] = useState(null);
-  const showTip = (e, content) => { try { setTip(positionTip(e.clientX, e.clientY, content, e.currentTarget)); } catch (_) {} };
-  const showPlayerTip = (e, p) => { if (p) showTip(e, makeOutlook(p, null, false, { dynasty: cfg && (isDynastyCfg(cfg)) })); };
+  const showTip = (e, content, opts) => { try { setTip(positionTip(e.clientX, e.clientY, content, e.currentTarget, opts)); } catch (_) {} };
+  const showPlayerTip = (e, p, opts) => { if (p) showTip(e, makeOutlook(p, null, false, { dynasty: cfg && (isDynastyCfg(cfg)) }), opts); };
   const hideTip = () => setTip(null);
 
   // Build the enriched, projection-scored player pool for THIS league's cfg, keyed by Sleeper id.
@@ -16506,10 +16615,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     isMe: t.rosterId === data.myRosterId, roster: tradeRoster(t),
     record: t.record, pointsFor: t.pointsFor || 0,
   }));
-  const tbEval = (myLT && tb.partner != null && (tb.give.length || tb.get.length))
+  const tbEval = (tbA != null && tb.b != null && (tb.give.length || tb.get.length))
     ? (() => { try {
         return tradeEval(tbTeams, {
-          myId: data.myRosterId, theirId: tb.partner, give: tb.give, get: tb.get,
+          /* ⚠ "myId" IS SIDE A, WHICH IS USUALLY BUT NO LONGER ALWAYS MINE. Everything `tradeEval` reports
+             is from side A's point of view, which is exactly right when reading somebody else's trade too:
+             the question becomes "what did THAT manager gain", and the power table is recomputed for the
+             whole league either way. */
+          myId: tbA, theirId: tb.b, give: tb.give, get: tb.get,
           sf: cfg.sf, req: reqStart,
           score: (r) => scoreRoster(r),
           bench: (r) => scoreRoster(r).bench,
@@ -16520,7 +16633,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
           /* ⚠ THE POSTURE IS THE ONE HE SET IN THIS HUB, not a fresh inference. The header already says
              "GOAL: Win now" or Rebuild, and a calculator quietly arguing from a different window than the
              one on screen above it would be both wrong and baffling. */
-          posture: isDynasty ? activePosture : 'winnow',
+          /* ⚠ THE WINDOW IS MINE, so it only applies when side A is my team. Reading a trade between two
+             other managers through MY rebuild/win-now lens would be a confident answer to a question
+             nobody asked; with no posture the long-term read stays neutral and says so. */
+          posture: (isDynasty && String(tbA) === String(data.myRosterId)) ? activePosture : undefined,
           /* Keeper cost, ONLY where the league actually carries it. `cfg.keepers` records who is kept and
              at which pick; anything beyond that (a league's escalator rule, contract years) we do not know
              and therefore do not claim — the FAAB decision from 29w, applied again. */
@@ -17401,8 +17517,19 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                             {row.mine.need > 0 ? `short ${row.mine.need}` : row.mine.surplus > 0 ? `+${row.mine.surplus} spare` : "set"}
                           </span>
                         </div>
+                        {/* ⭐⭐⭐⭐ WHERE THIS GROUP RANKS IN THE LEAGUE — 29ac, asked for by name. "Short 1"
+                            is a fact about my own slots; 9th of 12 is a fact about the league, and it is
+                            the one that decides whether to trade or to live with it. Ranked on value above
+                            replacement, the same currency the rest of this view uses. */}
                         <div className="mut" style={{ fontSize: 9.5, marginTop: 2 }}>
-                          {row.sellers} can sell · {row.buyers} need
+                          {row.myRank ? (
+                            <span data-mktrank={`${row.pos}:${row.myRank}`} style={{
+                              color: row.myRank <= Math.ceil(row.of / 3) ? "#5FD0A8"
+                                : row.myRank > Math.ceil((row.of * 2) / 3) ? "#F2655C" : "var(--mut)", fontWeight: 700 }}>
+                              {ordinal(row.myRank)} of {row.of}
+                            </span>
+                          ) : null}
+                          {row.myRank ? " · " : ""}{row.sellers} can sell · {row.buyers} need
                         </div>
                       </button>
                     );
@@ -17411,22 +17538,29 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
 
                 {/* THE DRILL-IN: who has a spare at this position, what they are short of, and the swap. */}
                 {mktPos && (() => {
-                  const sellers = market.partners.filter((t) => t.byPos[mktPos] && t.byPos[mktPos].surplus > 0);
+                  /* ⚠ A SELLER IS ANYONE WHO HOLDS SOMEBODY WORTH HAVING, not only a team with a formal
+                     surplus. Requiring `surplus > 0` was the other half of the bottom-of-the-roster
+                     problem: a team with exactly two good backs has no surplus by the counting rule, and
+                     will still trade one of them for the receiver it desperately needs. The PRICE column
+                     is what keeps that honest — their cost is high, and it says so. */
+                  const sellers = market.partners.filter((t) => t.byPos[mktPos]
+                    && (t.byPos[mktPos].movable || []).length > 0);
                   if (!sellers.length) {
                     return (
                       <div className="mut" data-mktempty={mktPos} style={{ fontSize: 12, marginTop: 11, lineHeight: 1.5 }}>
-                        Nobody in the league has a spare {mktPos} — every roster needs the ones it has. That is
-                        a market with no sellers, so a trade here would have to overpay, and the free-agent
-                        tab is the better door.
+                        Nobody in the league holds a {mktPos} worth trading for — every roster here is
+                        fielding replacement-level bodies at the position. That is a market with nothing to
+                        buy, so the free-agent tab is the better door.
                       </div>
                     );
                   }
                   return (
                     <div style={{ marginTop: 11, display: "flex", flexDirection: "column", gap: 8 }}>
                       <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>
-                        {sellers.length} team{sellers.length === 1 ? "" : "s"} could spare a {mktPos}.
-                        {" "}Ranked by how well their shortages match yours — the manager who needs what you
-                        have spare is the one who says yes.
+                        {sellers.length} team{sellers.length === 1 ? "" : "s"} hold{sellers.length === 1 ? "s" : ""} a
+                        {" "}{mktPos} worth having. <b>Costs them</b> is what their own lineup loses if he
+                        leaves — small where they have someone behind him, which is where a deal lives.
+                        {" "}Ranked by how well their shortages match yours.
                       </div>
                       {sellers.slice(0, 6).map((t) => {
                         /* THE PATHWAY. Concrete swaps with THIS manager, drawn from the same finder the list
@@ -17443,15 +17577,51 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                               <span style={{ flex: 1 }} />
                               <span data-mktfit={String(t.fit)} className="mut" style={{ fontSize: 10 }}>fit {t.fit}</span>
                             </div>
-                            <div style={{ fontSize: 11.5, marginTop: 4, lineHeight: 1.5 }}>
-                              <span style={{ color: "#5FD0A8" }}>Can spare:</span>{" "}
-                              {t.byPos[mktPos].spare.slice(0, 3).map((p) => p.name).join(", ") || `a ${mktPos}`}
-                              {t.wants.length ? (
-                                <>
-                                  {" · "}<span style={{ color: "var(--gold)" }}>wants:</span>{" "}
-                                  {t.wants.map((w) => `${w.pos}${w.urgent ? " (badly)" : ""}`).join(", ")}
-                                </>
-                              ) : <span className="mut"> · no obvious hole — you would be paying up</span>}
+                            {/* ⭐⭐⭐⭐⭐ A TABLE, BECAUSE THIS IS TABULAR — 29ac. Trey: "I want it to look
+                                prettier in tabular format to show players that could be available by team."
+                                Three columns and no prose: who they hold here, what he is worth to me, and
+                                what losing him costs them. The third column is the one that makes the first
+                                actionable — a 280-point back at a cost of 130 is a conversation; the same
+                                back at a cost of 280 is not. */}
+                            <table data-mktgrid={t.teamName} style={{ width: "100%", borderCollapse: "collapse", marginTop: 6, fontSize: 11.5 }}>
+                              <thead>
+                                <tr className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>
+                                  <th style={{ textAlign: "left", fontWeight: 600, padding: "0 0 3px" }}>Their {mktPos}s</th>
+                                  <th style={{ textAlign: "right", fontWeight: 600, padding: "0 0 3px" }}>Worth to you</th>
+                                  <th style={{ textAlign: "right", fontWeight: 600, padding: "0 0 3px" }}>Costs them</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {t.byPos[mktPos].movable.slice(0, 4).map((x) => (
+                                  <tr key={x.p.sid} data-mktplayer={x.p.name} data-mktcost={String(x.cost)}
+                                    onMouseEnter={(e) => showPlayerTip(e, x.p)} onMouseLeave={hideTip}
+                                    style={{ borderTop: "1px solid var(--line)", cursor: "help" }}>
+                                    <td style={{ padding: "3px 0" }}>
+                                      <Dot pos={x.p.pos} />{x.p.name}
+                                      {x.p.age ? <span className="mut" style={{ fontSize: 10 }}> · {x.p.age}y</span> : null}
+                                    </td>
+                                    <td className="num" style={{ textAlign: "right", padding: "3px 0", fontWeight: 700 }}>{Math.round(x.worth)}</td>
+                                    {/* Green where their cover makes him cheap to lose; gold where it does not. */}
+                                    <td className="num" style={{ textAlign: "right", padding: "3px 0",
+                                      color: x.cost <= x.worth * 0.4 ? "#5FD0A8" : x.cost >= x.worth * 0.85 ? "var(--gold)" : "var(--ink)" }}>
+                                      {Math.round(x.cost)}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                            {/* ⭐⭐⭐⭐⭐ THE OTHER DIRECTION, WHICH IS THE HALF THAT MAKES IT A CONVERSATION.
+                                Trey: "I also want to know who they might want from us if it's an area of
+                                strength for us — I basically want to see where we line up with teams." */}
+                            <div style={{ fontSize: 11.5, marginTop: 5, lineHeight: 1.5 }}>
+                              {t.wantFromUs && t.wantFromUs.length ? (
+                                <span data-mktwant={t.teamName}>
+                                  <span style={{ color: "var(--gold)" }}>They would want:</span>{" "}
+                                  {t.wantFromUs.slice(0, 3).map((x) => `${x.p.name} (${x.pos}, costs you ${Math.round(x.cost)})`).join(", ")}
+                                </span>
+                              ) : t.wants.length ? (
+                                <span className="mut">Thin at {t.wants.map((w) => w.pos).join(", ")}, but nothing of yours there is spare.</span>
+                              ) : <span className="mut">No obvious hole on their roster — you would be paying up.</span>}
                             </div>
                             {paths.length > 0 ? (
                               <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 3 }}>
@@ -17511,31 +17681,43 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
 
                 {tb.open && (
                   <div style={{ padding: "0 12px 12px" }}>
-                    {/* Who with. */}
-                    <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 11 }}>
-                      {leagueTeams.filter((t) => t.rosterId !== data.myRosterId).map((t) => {
-                        const on = String(tb.partner) === String(t.rosterId);
-                        return (
-                          <button key={t.rosterId} data-tbteam={t.teamName} data-tbteamon={on ? "1" : "0"}
-                            onClick={() => (on ? setTb({ open: true, partner: null, give: [], get: [] })
-                              : tbOpen(t.rosterId, tb.give, []))}
-                            style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 99, padding: "3px 10px", fontSize: 11, fontWeight: 700,
-                              border: `1px solid ${on ? "var(--gold)" : "var(--line)"}`, background: on ? "rgba(224,166,60,.12)" : "var(--panel)", color: on ? "var(--gold)" : "var(--mut)" }}>
-                            {t.teamName}
-                          </button>
-                        );
-                      })}
+                    {/* ⭐⭐⭐⭐⭐ A DROPDOWN ON EACH SIDE — 29ac. Either seat can be any team, so the panel
+                        prices a deal you are proposing AND one two rivals just made. Side A defaults to
+                        your own team, because that is what you are usually here for. Changing either side
+                        clears the players, since a roster you no longer have selected cannot be in a deal
+                        (the calculator would refuse it as a stale roster, which is correct and unhelpful). */}
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 8, alignItems: "center", marginBottom: 11 }}>
+                      {[["a", tbA], ["b", tb.b]].map(([key, val], i) => (
+                        <React.Fragment key={key}>
+                          {i === 1 && <i className="ti ti-arrows-exchange" style={{ fontSize: 16, color: "var(--mut)" }} aria-hidden="true" />}
+                          <select data-tbside-select={key} value={val == null ? "" : String(val)}
+                            onChange={(e) => { const v = e.target.value === "" ? null : Number(e.target.value);
+                              setTb((prev) => ({ ...prev, [key]: v, give: [], get: [] })); }}
+                            style={{ width: "100%", fontFamily: "inherit", fontSize: 12, fontWeight: 700, padding: "5px 8px",
+                              borderRadius: 8, border: "1px solid var(--line)", background: "var(--panel)", color: "var(--ink)" }}>
+                            <option value="">{key === "a" ? "Pick a team…" : "Trading with…"}</option>
+                            {leagueTeams.map((t) => (
+                              <option key={t.rosterId} value={String(t.rosterId)}>
+                                {t.teamName}{t.rosterId === data.myRosterId ? " (you)" : ""}
+                              </option>
+                            ))}
+                          </select>
+                        </React.Fragment>
+                      ))}
                     </div>
 
-                    {tb.partner == null ? (
+                    {tbA == null || tb.b == null || String(tbA) === String(tb.b) ? (
                       <div className="mut" data-tbhint style={{ fontSize: 12, lineHeight: 1.5 }}>
-                        Pick the manager you want to deal with, then click players on either roster to build
-                        both sides. Anyone you take on who would not crack your starting lineup is counted at
-                        what he actually adds — nothing — which is the whole point of doing this properly.
+                        {String(tbA) === String(tb.b) && tbA != null
+                          ? "Pick two different teams — a trade needs two sides."
+                          : <>Pick the two teams, then click players on either roster to build both sides.
+                            Anyone taken on who would not crack that team's starting lineup is counted at what
+                            he actually adds — nothing — which is the whole point of doing this properly.</>}
                       </div>
                     ) : (() => {
-                      const them = leagueTeams.find((t) => String(t.rosterId) === String(tb.partner));
-                      if (!them) return null;
+                      const mineTeam = leagueTeams.find((t) => String(t.rosterId) === String(tbA));
+                      const them = leagueTeams.find((t) => String(t.rosterId) === String(tb.b));
+                      if (!them || !mineTeam) return null;
                       const col = (team, side, label, sel) => (
                         <div data-tbcol={side} style={{ minWidth: 0 }}>
                           <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 5 }}>{label}</div>
@@ -17545,7 +17727,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                               return (
                                 <button key={p.sid} data-tbplayer={p.name} data-tbon={on ? "1" : "0"}
                                   onClick={() => tbToggle(side, p.sid)}
-                                  onMouseEnter={(e) => showPlayerTip(e, p)} onMouseLeave={hideTip}
+                                  /* ⚠ THE LEFT COLUMN OPENS ITS CARD LEFTWARD. There is room to the right of
+                                     these rows and it is occupied by the other team's roster — the thing you
+                                     are comparing against. See positionTip's `prefer`. */
+                                  onMouseEnter={(e) => showPlayerTip(e, p, side === "give" ? { prefer: "left" } : undefined)} onMouseLeave={hideTip}
                                   style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 6,
                                     border: `1px solid ${on ? "var(--gold)" : "var(--line)"}`, background: on ? "rgba(224,166,60,.10)" : "var(--panel)",
                                     borderRadius: 7, padding: "4px 8px", fontSize: 11.5, color: "var(--ink)" }}>
@@ -17561,8 +17746,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       return (
                         <>
                           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-                            {col(myLT, "give", "You send", tb.give)}
-                            {col(them, "get", `You get from ${them.teamName}`, tb.get)}
+                            {/* Labels follow who is actually in the seat: "you" when it is your team,
+                                the manager's name when you are reading somebody else's deal. */}
+                            {col(mineTeam, "give", String(tbA) === String(data.myRosterId) ? "You send" : `${mineTeam.teamName} sends`, tb.give)}
+                            {col(them, "get", String(tbA) === String(data.myRosterId) ? `You get from ${them.teamName}` : `${them.teamName} sends`, tb.get)}
                           </div>
                           {tbEval && tbEval.ok ? <TradeVerdict r={tbEval} weeks={weeksLeft} games={GAMES_IN_SEASON} oddsShift={oddsIfMeanShifts} /> : (
                             <div className="mut" data-tbempty style={{ fontSize: 12, lineHeight: 1.5 }}>
@@ -18372,6 +18559,12 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
   // Looking ahead: null = this week (the live view), a number = that week's to-do list. See the stepper.
   const wide = useWide(900);
   const [ahead, setAhead] = useState(null);
+  /* ⭐⭐⭐⭐⭐ THE WEEK THIS STRIP IS A TO-DO LIST FOR — 29ab.
+     `ahead` is the stepper: a number means the user walked forward. `preGame` means the CURRENT week has
+     not kicked off, which since the 29w Tuesday roll is the normal state of a Tuesday, Wednesday and most
+     of a Thursday — and in that state the scoreboard has nothing to show but the to-do list does. Both
+     cases render the same view, so they resolve to one number here rather than being branched twice. */
+  const todoWeek = ahead || (view && view.preGame ? (view.week || 1) : null);
   /* ⚠ THIS BLOCK LIVES WITH THE OTHER HOOKS, ABOVE THE EARLY RETURN, AND THAT IS NOT TIDINESS. It was
      first written next to the code that uses it — below `if (!view || !view.show) return null` — which
      makes it a CONDITIONAL hook: on a quiet Wednesday the component returns before reaching it and calls
@@ -18477,13 +18670,13 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
   }, [tab, leagues]);
 
   useEffect(() => {
-    if (!ahead || !hasBackend) { setAheadData(null); return; }
+    if (!todoWeek || !hasBackend) { setAheadData(null); return; }
     let alive = true;
     setAheadData("loading");
     (async () => {
       try {
         const { loadWeek, leagueFlags, hubIdOf: hid } = await import("./weekcache.js");
-        const w = await loadWeek(leagues, { week: ahead });
+        const w = await loadWeek(leagues, { week: todoWeek });
         if (!alive || !w) return;
         const out = [];
         (w.connected || []).forEach((l, i) => {
@@ -18491,11 +18684,11 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
           const f = leagueFlags(h, w.pack);   // no playedOf: nothing in a future week has been played
           out.push({ league: l, id: hid(l), name: l.name, flags: f, hub: h });
         });
-        setAheadData({ week: w.week || ahead, rows: out });
-      } catch (e) { if (alive) setAheadData({ week: ahead, rows: [], error: true }); }
+        setAheadData({ week: w.week || todoWeek, rows: out });
+      } catch (e) { if (alive) setAheadData({ week: todoWeek, rows: [], error: true }); }
     })();
     return () => { alive = false; };
-  }, [ahead, leagues]);
+  }, [todoWeek, leagues]);
   const [winTone, setWinTone] = useState(() => () => ({ color: "var(--mut)", label: "—" }));
 
   useEffect(() => {
@@ -18582,7 +18775,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
         )}
         {/* Live and Review are both about the week that is happening; neither means anything for a week
             that has not. They come back when you step back. */}
-        <div className="filterchips" data-homeweektabs style={{ display: ahead ? "none" : "flex", gap: 5 }}>
+        <div className="filterchips" data-homeweektabs style={{ display: todoWeek ? "none" : "flex", gap: 5 }}>
           {tabs.map(([k, label]) => (
             <button key={k} data-homeweektab={k} onClick={() => setTab(k)} aria-pressed={showTab === k}
               style={{ fontSize: 11.5, fontWeight: showTab === k ? 800 : 600, padding: "2px 10px", borderRadius: 99,
@@ -18610,12 +18803,12 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
       {/* ⭐⭐⭐⭐ A FUTURE WEEK IS A TO-DO LIST, NOT A SCOREBOARD. Nothing has been played, so every score
           column would be a dash; what exists is the thing worth knowing in advance — who is questionable,
           who is on bye, and in which of your leagues. */}
-      {ahead ? (
-        <div data-homeahead={String(ahead)}>
+      {todoWeek ? (
+        <div data-homeahead={String(todoWeek)} data-homepregame={ahead ? "0" : "1"}>
           {aheadData === "loading" || !aheadData ? (
-            <div className="mut" style={{ fontSize: 12 }}>Reading week {ahead} across your leagues…</div>
+            <div className="mut" style={{ fontSize: 12 }}>Reading week {todoWeek} across your leagues…</div>
           ) : aheadData.error || !aheadData.rows.length ? (
-            <div className="mut" style={{ fontSize: 12 }}>Couldn't read week {ahead} yet.</div>
+            <div className="mut" style={{ fontSize: 12 }}>Couldn't read week {todoWeek} yet.</div>
           ) : (
             <>
               {(() => {
@@ -18624,8 +18817,8 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                   <div style={{ fontSize: 12.5, marginBottom: 8 }}>
                     {withWork.length
                       ? <><b style={{ color: "var(--gold)" }}>{withWork.length}</b>
-                          <span className="mut"> of {aheadData.rows.length} league{aheadData.rows.length === 1 ? "" : "s"} {withWork.length === 1 ? "has" : "have"} something to sort out in week {ahead}.</span></>
-                      : <span className="mut">Nothing flagged in any league for week {ahead} — no byes, no injury tags on your starters.</span>}
+                          <span className="mut"> of {aheadData.rows.length} league{aheadData.rows.length === 1 ? "" : "s"} {withWork.length === 1 ? "has" : "have"} something to sort out in week {todoWeek}.</span></>
+                      : <span className="mut">Nothing flagged in any league for week {todoWeek} — no byes, no injury tags on your starters.</span>}
                   </div>
                 );
               })()}
@@ -18741,8 +18934,13 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                 })}
               </div>
               <div className="mut" style={{ fontSize: 10.5, marginTop: 7, lineHeight: 1.45 }}>
-                Week {ahead} hasn't been played, so this is availability only — injury tags and byes read from
-                your live rosters. Scores appear once the week kicks off.
+                {ahead
+                  ? <>Week {todoWeek} hasn't been played, so this is availability only — injury tags and byes read from
+                      your live rosters. Scores appear once the week kicks off.</>
+                  /* The current week, before kickoff. Saying "hasn't been played" about THIS week reads as
+                     an error rather than a state, so it says when the football starts instead. */
+                  : <>Week {todoWeek} hasn't kicked off yet, so this is what to sort out before it does —
+                      injury tags and byes off your live rosters. Scores appear here as the games start.</>}
               </div>
             </>
           )}

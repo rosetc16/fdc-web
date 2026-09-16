@@ -66,6 +66,148 @@ const ord = (n) => {
      below it, with the same figures in text. The picture is for the shape of the season; the rows are
      for the values.
 ------------------------------------------------------------------------------------------------ */
+/* ⭐⭐⭐⭐⭐ WHAT THE WEEK ACTUALLY TELLS YOU — 29ad.
+   ==================================================================================================
+   Trey: "When I'm in my team page and click 'review' I want it to show more detail to basically show my
+   decision making, luck, compare to the league, should I be concerned going forward."
+
+   Four questions, and they are genuinely different — which is why the page answered none of them well by
+   showing one score and one verdict chip. A loss can be any of: you set a bad lineup, you scored fine and
+   drew the week's best team, or you are simply not good enough yet. Those call for three different
+   reactions and the scoreline cannot tell them apart.
+
+   ⭐ THE DECOMPOSITION IS THE WHOLE IDEA. A week's result is your SCORING (did you put up a number) and
+     your DRAW (what you were up against), and each is measured against the same league distribution so
+     they are comparable. Above your own average and beaten by a top-two score is a different week from
+     below your average against the worst team in the league, and both can read "L 112–118".
+
+   ⚠⚠ AND THE FORWARD-LOOKING HALF REFUSES TO OVERCLAIM. "Should I be concerned" is a question about a
+     TREND, and a trend needs a sample: with two or three weeks played there is no honest answer and this
+     says so rather than inventing one from noise. That is the 29p lesson — one measurement is not a
+     measurement — applied to what the product tells a person rather than to a benchmark.
+   ⚠ Everything here is computed from figures the review payload already carries. Nothing is fetched and
+     nothing is inferred about other managers' lineups, which the app cannot see. */
+/* ⚠ NO `week` PARAMETER, DELIBERATELY — it was in the first cut's signature and never read, which is worse
+   than either choice. The two halves are scoped differently ON PURPOSE: `mine` and `field` are the SELECTED
+   week (how that Sunday went, against that Sunday's field), while the season mean and the outlook read
+   EVERY finished week, because "should I be concerned going forward" is a question about now no matter
+   which week's panel you opened it from. The cell is labelled "Going forward" and its sentence names the
+   weeks it used, so the two scopes cannot be mistaken for each other on screen. An ignored parameter would
+   have quietly promised the filtering that neither half does. */
+export function reviewInsights({ weeks, field, mine }) {
+  const rows = (weeks || []).filter((w) => w && w.me && Number.isFinite(w.me.pts) && w.me.complete !== false);
+  const me = mine || null;
+  if (!me || !Number.isFinite(me.pts)) return null;
+  /* ⚠⚠ AN UNFINISHED WEEK GETS NO READ AT ALL. The fixture's week 7 has three starters yet to play, and
+     this block cheerfully called it "A loss about where you usually land" off a 61.4 that was still going
+     up — while the row three lines above it correctly wore a "3 TO PLAY" chip. Every number here is a
+     verdict (where you placed, what you left on the bench, whether your best lineup wins), and not one of
+     them is knowable until the last whistle. The row already explains the in-progress state in words, so
+     the honest thing is to stay off the page rather than to hedge a read nobody should act on. */
+  if (me.complete === false) return null;
+
+  const vals = (field || []).filter(Number.isFinite).slice().sort((a, b) => b - a);
+  const n = vals.length;
+  // Where a score lands in the week's field, as a rank and as a share of teams beaten.
+  const placeOf = (v) => {
+    if (!Number.isFinite(v) || !n) return null;
+    const beat = vals.filter((x) => x < v).length;
+    return { rank: vals.filter((x) => x > v).length + 1, of: n, beat, pct: Math.round((beat / Math.max(1, n - 1)) * 100) };
+  };
+
+  const myWeeks = rows.map((w) => w.me.pts);
+  const mean = myWeeks.length ? myWeeks.reduce((a, b) => a + b, 0) / myWeeks.length : null;
+  const sd = myWeeks.length > 1
+    ? Math.sqrt(myWeeks.reduce((a, b) => a + (b - mean) ** 2, 0) / (myWeeks.length - 1)) : null;
+
+  const scoring = {
+    pts: r1(me.pts),
+    place: placeOf(me.pts),
+    mean: mean == null ? null : r1(mean),
+    vsOwn: mean == null ? null : r1(me.pts - mean),
+    // Only meaningful with a real spread behind it; two weeks do not have one.
+    z: sd && sd > 0 && myWeeks.length >= 4 ? Math.round(((me.pts - mean) / sd) * 100) / 100 : null,
+  };
+  const draw = {
+    oppPts: Number.isFinite(me.oppPts) ? r1(me.oppPts) : null,
+    place: Number.isFinite(me.oppPts) ? placeOf(me.oppPts) : null,
+    median: Number.isFinite(me.medianPts) ? r1(me.medianPts) : null,
+  };
+
+  /* DECISIONS. `left` is what the best legal lineup would have added — the only part of a week that was
+     entirely inside your control. Ranked against your OWN season, because a league-wide comparison would
+     need every rival's bench and the app cannot see it; claiming otherwise would be inventing data. */
+  const lefts = rows.map((w) => (Number.isFinite(w.me.left) ? w.me.left : 0));
+  const leftMean = lefts.length ? lefts.reduce((a, b) => a + b, 0) / lefts.length : null;
+  const decisions = {
+    left: r1(Number.isFinite(me.left) ? me.left : 0),
+    mean: leftMean == null ? null : r1(leftMean),
+    // Would the best lineup have changed the result? The one question a regret figure exists to answer.
+    wouldHaveWon: !!(Number.isFinite(me.oppPts) && Number.isFinite(me.optimal)
+      && me.pts <= me.oppPts && me.optimal > me.oppPts),
+    worst: (me.misses || []).slice().sort((a, b) => (b.gain || 0) - (a.gain || 0))[0] || null,
+  };
+
+  /* OUTLOOK. Deliberately conservative: a trend is the last three weeks against everything before them,
+     and it is only reported at all once there are enough weeks for the comparison to mean something. */
+  const MIN_FOR_TREND = 5;
+  const outlook = (() => {
+    const sample = rows.length;
+    if (sample < MIN_FOR_TREND) {
+      return { sample, trend: null, level: "unknown",
+        why: `${sample} finished week${sample === 1 ? "" : "s"} is not enough to call a trend — check back around week ${MIN_FOR_TREND}.` };
+    }
+    const recent = myWeeks.slice(-3);
+    const earlier = myWeeks.slice(0, -3);
+    const rAvg = recent.reduce((a, b) => a + b, 0) / recent.length;
+    const eAvg = earlier.length ? earlier.reduce((a, b) => a + b, 0) / earlier.length : rAvg;
+    const delta = r1(rAvg - eAvg);
+    /* ⚠ THE BAR IS A REAL EFFECT, NOT A SIGN CHANGE. Week-to-week fantasy scoring swings by twenty points
+       on nothing at all, so "down 1.4" is noise wearing a minus sign. Half a standard deviation of this
+       team's own scoring is the smallest move worth mentioning, and where there is no usable spread the
+       answer is that there is nothing to say. */
+    const bar = sd && sd > 0 ? sd * 0.5 : 12;
+    if (Math.abs(delta) < bar) {
+      return { sample, trend: delta, level: "steady",
+        why: `Your last ${recent.length} weeks average ${r1(rAvg)} against ${r1(eAvg)} before them — inside normal week-to-week noise for your team.` };
+    }
+    if (delta < 0) {
+      return { sample, trend: delta, level: "concern",
+        why: `Your last ${recent.length} weeks average ${r1(rAvg)}, down ${r1(Math.abs(delta))} on the ${r1(eAvg)} before them. That is bigger than your usual week-to-week swing.` };
+    }
+    return { sample, trend: delta, level: "rising",
+      why: `Your last ${recent.length} weeks average ${r1(rAvg)}, up ${r1(delta)} on the ${r1(eAvg)} before them.` };
+  })();
+
+  /* THE ONE-LINE READ, built from the two halves rather than from the scoreline. This is what makes the
+     block worth having: it is allowed to say a win was lucky and a loss was nobody's fault. */
+  const headline = (() => {
+    const sp = scoring.place, dp = draw.place;
+    const scoredWell = sp && sp.rank <= Math.ceil(sp.of / 3);
+    const scoredBadly = sp && sp.rank > Math.ceil((sp.of * 2) / 3);
+    const hardDraw = dp && dp.rank <= Math.ceil(dp.of / 3);
+    const softDraw = dp && dp.rank > Math.ceil((dp.of * 2) / 3);
+    const won = me.result === "W";
+    /* ⚠⚠ `blown` IS NOT GATED ON A BAD SCORE, AND IT GOES FIRST. It was `!won && scoredBadly &&
+       wouldHaveWon`, which sounds reasonable and is wrong: the fixture's week 2 lost by 4.3 with 23.4
+       points on the bench and a best lineup that wins the game — but it scored 8th of 12, one place short
+       of "bottom third", so this fell through to `even` and the panel read "A loss about where you usually
+       land". Four lines above it, the row's own verdict chip said BLOWN. Two claims about the same week,
+       on the same panel, disagreeing — which is the failure this whole screen exists to avoid.
+       Having the points and not starting them is the most actionable thing a week can contain, so it
+       outranks every other read, including a hard draw: if your best lineup wins, the draw did not beat
+       you. That is also why it is now the FIRST test rather than the second. */
+    if (!won && decisions.wouldHaveWon) return { key: "blown", text: "Your best lineup wins this — the points were on your bench." };
+    if (!won && scoredWell && hardDraw) return { key: "robbed", text: `Top-third score, and you drew the week's ${ord(dp.rank)}-best. Nothing to fix here.` };
+    if (!won && scoredBadly) return { key: "outscored", text: "A bottom-third score. This one is about the roster, not the draw." };
+    if (won && scoredBadly && softDraw) return { key: "lucky", text: `You scored in the bottom third and still won — you drew the ${ord(dp.rank)}-best score of ${dp.of}.` };
+    if (won && scoredWell) return { key: "earned", text: "A top-third score and a win. Nothing to second-guess." };
+    return { key: "even", text: won ? "A win about where you usually land." : "A loss about where you usually land." };
+  })();
+
+  return { scoring, draw, decisions, outlook, headline };
+}
+
 function SeasonTrend({ weeks, selected, onPick }) {
   /* ⚠ MEASURED, NOT STRETCHED. The first version drew into a 100x34 viewBox with
      `preserveAspectRatio="none"` and let CSS stretch it to the panel width. Paths survive that; CIRCLES DO
@@ -653,6 +795,85 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                                 )}
                               </div>
                               <FieldStrip field={R.field} mine={me.pts} median={me.median} />
+
+                              {/* ⭐⭐⭐⭐⭐ THE FOUR QUESTIONS, ANSWERED SEPARATELY — 29ad. Trey: "show my
+                                  decision making, luck, compare to the league, should I be concerned going
+                                  forward." A scoreline cannot tell a bad lineup from a bad draw from a bad
+                                  roster, and those want three different reactions. See reviewInsights. */}
+                              {(() => {
+                                const ins = reviewInsights({ weeks: R.data && R.data.weeks, field: R.field, mine: me });
+                                if (!ins) return null;
+                                const H = { robbed: "#6BA8E5", blown: "#F2655C", outscored: "#F2655C",
+                                  lucky: "var(--gold)", earned: "#5FD0A8", even: "var(--mut)" };
+                                const OUT = { concern: "#F2655C", rising: "#5FD0A8", steady: "var(--mut)", unknown: "var(--mut)" };
+                                return (
+                                  <div data-wkinsight={ins.headline.key} style={{ marginTop: 10, border: "1px solid var(--line)",
+                                    borderRadius: 9, padding: "9px 11px", background: "var(--panel2)" }}>
+                                    <div style={{ fontSize: 12.5, fontWeight: 700, color: H[ins.headline.key] || "var(--ink)" }}>
+                                      {ins.headline.text}
+                                    </div>
+                                    <div style={{ display: "grid", gap: "8px 16px", marginTop: 8,
+                                      gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}>
+                                      {/* How you scored, placed in the week's field AND against your own baseline. */}
+                                      <div data-wkins="scoring">
+                                        <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Your score</div>
+                                        <div style={{ fontSize: 12.5 }}>
+                                          <b className="num">{ins.scoring.pts}</b>
+                                          {ins.scoring.place && <span className="mut"> · {ord(ins.scoring.place.rank)} of {ins.scoring.place.of}</span>}
+                                        </div>
+                                        {ins.scoring.vsOwn != null && (
+                                          <div className="mut" style={{ fontSize: 11 }}>
+                                            {ins.scoring.vsOwn >= 0 ? "+" : ""}{ins.scoring.vsOwn} vs your {ins.scoring.mean} average
+                                          </div>
+                                        )}
+                                      </div>
+                                      {/* What you were up against — the half a scoreline hides. */}
+                                      {ins.draw.place && (
+                                        <div data-wkins="draw">
+                                          <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>The draw</div>
+                                          <div style={{ fontSize: 12.5 }}>
+                                            <b className="num">{ins.draw.oppPts}</b>
+                                            <span className="mut"> · {ord(ins.draw.place.rank)} of {ins.draw.place.of} that week</span>
+                                          </div>
+                                          <div className="mut" style={{ fontSize: 11 }}>
+                                            {ins.draw.place.rank <= Math.ceil(ins.draw.place.of / 3) ? "One of the week's best — a hard draw."
+                                              : ins.draw.place.rank > Math.ceil((ins.draw.place.of * 2) / 3) ? "One of the week's worst — a soft draw."
+                                                : "A middling opponent score."}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {/* The only part that was inside your control. */}
+                                      <div data-wkins="decisions">
+                                        <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Your calls</div>
+                                        <div style={{ fontSize: 12.5 }}>
+                                          <b className="num" style={{ color: ins.decisions.left > 0 ? "var(--gold)" : "#5FD0A8" }}>{ins.decisions.left}</b>
+                                          <span className="mut"> left on the bench</span>
+                                        </div>
+                                        <div className="mut" style={{ fontSize: 11 }}>
+                                          {ins.decisions.wouldHaveWon ? <b style={{ color: "#F2655C" }}>Your best lineup wins this game.</b>
+                                            : ins.decisions.mean != null ? `Your season average is ${ins.decisions.mean}.` : ""}
+                                        </div>
+                                      </div>
+                                      {/* ⚠ AND THE FORWARD-LOOKING ONE, WHICH IS ALLOWED TO SAY IT DOES NOT KNOW. */}
+                                      {/* ⚠ NOT `data-wkoutlook` — that name is already taken, 270 lines up, by
+                                          the projected FINAL RECORD in the summary panel ("7-3"). Two
+                                          different meanings behind one selector is how a suite ends up
+                                          asserting confidently about the wrong element: `[data-wkoutlook]`
+                                          would match the record first and never equal a level name, which
+                                          reads as a broken feature rather than a naming clash. */}
+                                      <div data-wkins="outlook" data-wkinsoutlook={ins.outlook.level}>
+                                        <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Going forward</div>
+                                        <div style={{ fontSize: 12.5, fontWeight: 700, color: OUT[ins.outlook.level] }}>
+                                          {ins.outlook.level === "concern" ? "Worth watching"
+                                            : ins.outlook.level === "rising" ? "Trending up"
+                                              : ins.outlook.level === "steady" ? "Holding steady" : "Too early to say"}
+                                        </div>
+                                        <div className="mut" style={{ fontSize: 11, lineHeight: 1.4 }}>{ins.outlook.why}</div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })()}
 
                               {/* ⭐⭐⭐ TWO QUESTIONS, TWO COLUMNS. The detail answers "what should I have
                                   done on Sunday" and "what does that make my season" — related but not
