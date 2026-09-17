@@ -92,11 +92,11 @@ export async function loadLive(leagues, opts = {}) {
      as intensity and the grey midpoint reads as genuine uncertainty. */
 export function winTone(p) {
   if (!Number.isFinite(p)) return { color: "var(--mut)", label: "—" };
-  if (p >= 0.85) return { color: "#5FD0A8", label: "safe" };
-  if (p >= 0.65) return { color: "#2E8F6B", label: "likely" };
+  if (p >= 0.85) return { color: "var(--pos)", label: "safe" };
+  if (p >= 0.65) return { color: "var(--pos-soft)", label: "likely" };
   if (p > 0.35) return { color: "var(--mut)", label: "toss-up" };
-  if (p > 0.15) return { color: "#B8453C", label: "unlikely" };
-  return { color: "#F2655C", label: "long shot" };
+  if (p > 0.15) return { color: "var(--neg-soft)", label: "unlikely" };
+  return { color: "var(--neg)", label: "long shot" };
 }
 
 export function homeWeekView(live) {

@@ -76,8 +76,8 @@ const ownerOf = (l) => (l && (
    is visibly not "Bye hole". Ordered here the way they are ranked in the list. */
 const FA_KIND = {
   bye:     { label: "Bye hole",      tone: "var(--gold)" },
-  byeNext: { label: "Bye next week", tone: "#6BA8E5" },
-  upgrade: { label: "Upgrade",       tone: "#5FD0A8" },
+  byeNext: { label: "Bye next week", tone: "var(--info)" },
+  upgrade: { label: "Upgrade",       tone: "var(--pos)" },
   stream:  { label: "Thin spot",     tone: "var(--mut)" },
 };
 
@@ -98,9 +98,9 @@ const FA_KIND = {
 const SUM_COLS = "minmax(0,1.3fr) minmax(0,1fr) 108px 118px minmax(0,1.6fr)";
 
 const SEV = {
-  4: { label: "Not expected to play", tone: "#F2655C", icon: "ti-alert-octagon" },
+  4: { label: "Not expected to play", tone: "var(--neg)", icon: "ti-alert-octagon" },
   3: { label: "Check before kickoff", tone: "var(--gold)", icon: "ti-clock-exclamation" },
-  2: { label: "Carrying something", tone: "#6BA8E5", icon: "ti-first-aid-kit" },
+  2: { label: "Carrying something", tone: "var(--info)", icon: "ti-first-aid-kit" },
   1: { label: "On your bench", tone: "var(--mut)", icon: "ti-dots" },
 };
 
@@ -536,10 +536,10 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
       <span data-wkswap={inName} data-wkswapkind={better ? "gain" : "fallback"}
         style={{ display: "inline-flex", alignItems: "baseline", gap: 5, fontSize: 11.5, flexWrap: "wrap" }}>
         <span className="mut">{better ? "→ start" : "→ if he sits, best you have is"}</span>
-        <b style={{ color: better ? "#5FD0A8" : "var(--ink)" }}>{inName}</b>
+        <b style={{ color: better ? "var(--pos)" : "var(--ink)" }}>{inName}</b>
         {where ? <span className="mut" style={{ fontSize: 9.5 }}>({where})</span> : null}
         {inPts != null && outPts != null && <span className="num mut" style={{ fontSize: 10.5 }}>{r1(inPts)} vs {r1(outPts)}</span>}
-        {delta != null && <b className="num" style={{ fontSize: 11, color: better ? "#5FD0A8" : "#F2655C" }}>{delta >= 0 ? "+" : ""}{delta}</b>}
+        {delta != null && <b className="num" style={{ fontSize: 11, color: better ? "var(--pos)" : "var(--neg)" }}>{delta >= 0 ? "+" : ""}{delta}</b>}
       </span>
     );
   };
@@ -654,10 +654,10 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                     leagues" was for the record.
                     So the tile says PLAYERS in its label, and the hover names them with the number of
                     lineups each one is in — which makes 3 players across 7 lineups add up on sight. */}
-                {[["Not expected to play", counts.urgent, "#F2655C", "notplaying"],
+                {[["Not expected to play", counts.urgent, "var(--neg)", "notplaying"],
                   ["Players to check", counts.check, "var(--gold)", "check"],
-                  ["Lineup gains", counts.lineup, "#5FD0A8", null], ["Waiver ideas", counts.fa, "#6BA8E5", null],
-                  ["Weather", counts.wx, "#6BA8E5", null]].map(([lbl, n, tone, kind]) => {
+                  ["Lineup gains", counts.lineup, "var(--pos)", null], ["Waiver ideas", counts.fa, "var(--info)", null],
+                  ["Weather", counts.wx, "var(--info)", null]].map(([lbl, n, tone, kind]) => {
                   /* ⚠ "notplaying", NOT "urgent" — tools/icons-scan.mjs treats any quoted lowercase token
                      that matches a Tabler icon name as an icon in use, and `urgent` is one of them. The
                      literal would have failed the icon gate and, if forced through, shipped a glyph
@@ -701,7 +701,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
               </div>
               <div className="mut" style={{ fontSize: 12.5, marginTop: 11, lineHeight: 1.5 }}>
                 {counts.urgent > 0
-                  ? <>Start here: <b style={{ color: "#F2655C" }}>{counts.urgent} player{counts.urgent === 1 ? "" : "s"} you are starting {counts.urgent === 1 ? "is" : "are"} not expected to play.</b></>
+                  ? <>Start here: <b style={{ color: "var(--neg)" }}>{counts.urgent} player{counts.urgent === 1 ? "" : "s"} you are starting {counts.urgent === 1 ? "is" : "are"} not expected to play.</b></>
                   : counts.check > 0
                     ? <>Nothing is ruled out, but <b style={{ color: "var(--gold)" }}>{counts.check}</b> of your starters {counts.check === 1 ? "is" : "are"} a game-time call — worth another look before kickoff.</>
                     : <>No availability problems anywhere. {counts.lineup > 0 ? `${counts.lineup} lineup${counts.lineup === 1 ? "" : "s"} could still score more.` : "Your lineups are set."}</>}
@@ -736,7 +736,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                 const urgent = (L.avail || []).filter((r) => r.rank >= 4).length;
                 const check = (L.avail || []).filter((r) => r.rank === 3).length;
                 const gain = (L.swaps || []).reduce((s, x) => s + x.gain, 0);
-                const tone = L.error ? "var(--mut)" : urgent ? "#F2655C" : check ? "var(--gold)" : "#5FD0A8";
+                const tone = L.error ? "var(--mut)" : urgent ? "var(--neg)" : check ? "var(--gold)" : "var(--pos)";
                 const m = (L.hub && L.hub.matchup) || null;
                 const meProj = m && m.meProj ? m.meProj.pts : null;
                 const oppProj = m && m.oppProj ? m.oppProj.pts : null;
@@ -764,7 +764,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                       style={{ fontSize: 12, textAlign: wide ? "right" : "left" }}>
                       {Number.isFinite(meProj) ? (
                         <>
-                          <b style={{ color: Number.isFinite(oppProj) ? (meProj >= oppProj ? "#5FD0A8" : "#F2655C") : "var(--ink)" }}>{meProj}</b>
+                          <b style={{ color: Number.isFinite(oppProj) ? (meProj >= oppProj ? "var(--pos)" : "var(--neg)") : "var(--ink)" }}>{meProj}</b>
                           {Number.isFinite(oppProj) && <span className="mut"> – {oppProj}</span>}
                         </>
                       ) : <span className="mut">—</span>}
@@ -774,7 +774,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                     <span className="num" data-wksummedian={medProj != null ? String(medProj) : ""}
                       style={{ fontSize: 11.5, textAlign: wide ? "right" : "left" }}>
                       {medProj != null && Number.isFinite(meProj) ? (
-                        <span style={{ color: meProj >= medProj ? "#5FD0A8" : "#F2655C" }}>
+                        <span style={{ color: meProj >= medProj ? "var(--pos)" : "var(--neg)" }}>
                           {meProj >= medProj ? "+" : ""}{r1(meProj - medProj)}
                           <span className="mut" style={{ fontSize: 10 }}> vs {medProj}</span>
                         </span>
@@ -800,7 +800,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                            same thing — my first cut converted the tile and left the row on the native
                            `title`, which would have shipped a change he could not see at the place he
                            asked for it. Both row details are cards now; the tile keeps its own. */
-                        : urgent ? <span data-wkrowdetail="notplaying" style={{ color: "#F2655C", cursor: "help" }}
+                        : urgent ? <span data-wkrowdetail="notplaying" style={{ color: "var(--neg)", cursor: "help" }}
                             onMouseEnter={(e) => showCard(e, rowCard(L, "notplaying"))} onMouseLeave={hideCard}>
                             {urgent} not expected to play</span>
                         : check ? <span data-wkrowdetail="check" style={{ color: "var(--gold)", cursor: "help" }}
@@ -812,7 +812,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                           and the reasoning is the actionable part, because you cannot make a swap you
                           cannot name. Slot, who comes out, who goes in, what it gains. */}
                       {gain > 0 ? (
-                        <span data-wkrowdetail="bench" style={{ color: "#5FD0A8", cursor: "help" }}
+                        <span data-wkrowdetail="bench" style={{ color: "var(--pos)", cursor: "help" }}
                           onMouseEnter={(e) => showCard(e, {
                             key: "bench",
                             title: `${L.league.name} — ${(L.swaps || []).length} change${(L.swaps || []).length === 1 ? "" : "s"} worth +${r1(gain)}`,
@@ -837,7 +837,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
         {!loading && view === "avail" && !!connected.length && (
           availSorted.length === 0 ? (
             <div className="panel" data-wkempty="avail" style={{ padding: 18 }}>
-              <div className="disp" style={{ fontSize: 16, fontWeight: 700, color: "#5FD0A8", marginBottom: 4 }}>Nobody to worry about</div>
+              <div className="disp" style={{ fontSize: 16, fontWeight: 700, color: "var(--pos)", marginBottom: 4 }}>Nobody to worry about</div>
               <div className="mut" style={{ fontSize: 13 }}>No injury designation on anyone you roster, across all {connected.length} leagues.</div>
             </div>
           ) : (
@@ -862,7 +862,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
         {!loading && view === "lineup" && !!connected.length && (
           counts.lineup === 0 ? (
             <div className="panel" data-wkempty="lineup" style={{ padding: 18 }}>
-              <div className="disp" style={{ fontSize: 16, fontWeight: 700, color: "#5FD0A8", marginBottom: 4 }}>Your lineups are already the best you have</div>
+              <div className="disp" style={{ fontSize: 16, fontWeight: 700, color: "var(--pos)", marginBottom: 4 }}>Your lineups are already the best you have</div>
               <div className="mut" style={{ fontSize: 13 }}>No bench player projects more than the starter in front of him at the same position, in any league.</div>
             </div>
           ) : (
@@ -879,9 +879,9 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                         <span style={{ flexShrink: 0 }}><Dot pos={sw.pos} /></span>
                         <div style={{ flex: "1 1 320px", minWidth: 0, fontSize: 13 }}>
                           <span className="mut">Bench</span> <b>{sw.out}</b> <span className="num mut" style={{ fontSize: 11 }}>{r1(sw.outPts)}</span>
-                          {" "}<span className="mut">for</span> <b style={{ color: "#5FD0A8" }}>{sw.in}</b> <span className="num mut" style={{ fontSize: 11 }}>{r1(sw.inPts)}</span>
+                          {" "}<span className="mut">for</span> <b style={{ color: "var(--pos)" }}>{sw.in}</b> <span className="num mut" style={{ fontSize: 11 }}>{r1(sw.inPts)}</span>
                         </div>
-                        <b className="num" style={{ fontSize: 12.5, color: "#5FD0A8", flexShrink: 0 }}>+{sw.gain}</b>
+                        <b className="num" style={{ fontSize: 12.5, color: "var(--pos)", flexShrink: 0 }}>+{sw.gain}</b>
                       </div>
                     ))}
                   </div>
@@ -929,12 +929,12 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                             borderRadius: 99, padding: "2px 8px" }}>{FA_KIND[r.kind].label}</span>
                           <div style={{ flex: "1 1 300px", minWidth: 0 }}>
                             <div style={{ fontSize: 13.5, fontWeight: 700 }}>
-                              Add <span style={{ color: "#5FD0A8" }}>{r.inName}</span>
+                              Add <span style={{ color: "var(--pos)" }}>{r.inName}</span>
                               <span className="mut" style={{ fontSize: 10.5, fontWeight: 400 }}> {r.pos}{r.inTeam ? ` · ${r.inTeam}` : ""}</span>
                             </div>
                             <div className="mut" style={{ fontSize: 11.5, marginTop: 2 }}>{r.why}</div>
                           </div>
-                          <span className="num" style={{ fontSize: 12, fontWeight: 800, color: "#5FD0A8", flexShrink: 0 }}>+{r.gain}</span>
+                          <span className="num" style={{ fontSize: 12, fontWeight: 800, color: "var(--pos)", flexShrink: 0 }}>+{r.gain}</span>
                         </div>
                       ))}
                     </div>
@@ -964,7 +964,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                 </div>
               ) : wxRows.length === 0 ? (
                 <div className="panel" data-wkempty="weather" style={{ padding: 18 }}>
-                  <div className="disp" style={{ fontSize: 16, fontWeight: 700, color: "#5FD0A8", marginBottom: 4 }}>Nothing to play around</div>
+                  <div className="disp" style={{ fontSize: 16, fontWeight: 700, color: "var(--pos)", marginBottom: 4 }}>Nothing to play around</div>
                   <div className="mut" style={{ fontSize: 13, lineHeight: 1.55 }}>
                     Nobody you are starting is in a game with weather worth planning around
                     {weather.counts ? <> — {weather.counts.indoors} of this week's games are indoors, and the rest are forecast clear enough not to matter.</> : "."}
@@ -974,7 +974,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                 <div className="panel" style={{ padding: 6 }}>
                   {wxGames.map((G) => {
                     const sev = G.game.severity;
-                    const tone = sev >= 3 ? "#F2655C" : sev === 2 ? "var(--gold)" : "#6BA8E5";
+                    const tone = sev >= 3 ? "var(--neg)" : sev === 2 ? "var(--gold)" : "var(--info)";
                     return (
                       <div key={G.key} data-wkwxgame={G.key} data-wkwxsev={sev}
                         style={{ padding: "10px 10px 11px", borderTop: "1px solid var(--line)" }}>

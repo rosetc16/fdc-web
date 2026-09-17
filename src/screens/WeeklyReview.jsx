@@ -30,10 +30,10 @@ const ownerOf = (l) => (l && (
    without anybody having to read the sentence. `icon` matters as much as `tone`: these are status
    colours, and a status carried by colour alone is unreadable to a chunk of the people using it. */
 const VERDICT = {
-  robbed:  { label: "Robbed",      tone: "#6BA8E5",   icon: "ti-mood-annoyed",   blurb: "lost with a top-third score" },
+  robbed:  { label: "Robbed",      tone: "var(--info)",   icon: "ti-mood-annoyed",   blurb: "lost with a top-third score" },
   lucky:   { label: "Got away with it", tone: "var(--gold)", icon: "ti-clover", blurb: "won below the median" },
-  blown:   { label: "Blown",       tone: "#F2655C",   icon: "ti-alert-triangle", blurb: "your best lineup beats them" },
-  earned:  { label: "Earned",      tone: "#5FD0A8",   icon: "ti-check",          blurb: "the result the scores deserved" },
+  blown:   { label: "Blown",       tone: "var(--neg)",   icon: "ti-alert-triangle", blurb: "your best lineup beats them" },
+  earned:  { label: "Earned",      tone: "var(--pos)",   icon: "ti-check",          blurb: "the result the scores deserved" },
 };
 
 /* The table's column track. Named once so the header row and every body row cannot drift apart — two
@@ -72,7 +72,7 @@ const ord = (n) => {
    ⚠ RESULT IS ENCODED TWICE, ON PURPOSE. A win is a FILLED marker in green; a loss is a HOLLOW marker in
      red. Shape carries the whole message on its own, which is what makes the chart readable to a
      red-green colourblind reader and in a screenshot printed in grey. (Measured rather than assumed:
-     #57C79E against #E8635A is ΔE 10.1 under deuteranopia — comfortably separated — but the green also
+     #57C79E against var(--neg) is ΔE 10.1 under deuteranopia — comfortably separated — but the green also
      sits ΔE 14.8 from the grey median rule, which is under the safe floor. The shape difference is what
      makes that irrelevant instead of a problem.)
 
@@ -288,9 +288,9 @@ function SeasonTrend({ weeks, selected, onPick }) {
               {/* Filled = won, hollow = lost. Shape carries it; colour only reinforces. The 2px surface ring
                   keeps a marker legible where it sits on top of the line. */}
               <circle cx={x(i)} cy={y(p.me.pts)} r={4.5}
-                fill={won ? "#57C79E" : "var(--panel)"} stroke={won ? "var(--panel)" : "#E8635A"}
+                fill={won ? "var(--pos)" : "var(--panel)"} stroke={won ? "var(--panel)" : "var(--neg)"}
                 strokeWidth={won ? 2 : 2} style={{ pointerEvents: "none" }} />
-              {!won && <circle cx={x(i)} cy={y(p.me.pts)} r={4.5} fill="none" stroke="#E8635A" strokeWidth="2"
+              {!won && <circle cx={x(i)} cy={y(p.me.pts)} r={4.5} fill="none" stroke="var(--neg)" strokeWidth="2"
                 style={{ pointerEvents: "none" }} />}
               {/* Only the selected week is labelled. A number on every point is chaos and goes unread. */}
               {on && <text x={x(i)} y={y(p.me.pts) - 13} textAnchor="middle" fill="var(--ink)"
@@ -303,8 +303,8 @@ function SeasonTrend({ weeks, selected, onPick }) {
       <div className="mut" style={{ display: "flex", gap: 12, fontSize: 10, marginTop: 2, flexWrap: "wrap" }}>
         <span><span style={{ color: "var(--gold)", fontWeight: 800 }}>—</span> your points</span>
         {hasMedian && <span>— league median</span>}
-        <span><span style={{ color: "#57C79E" }}>●</span> won</span>
-        <span><span style={{ color: "#E8635A" }}>○</span> lost</span>
+        <span><span style={{ color: "var(--pos)" }}>●</span> won</span>
+        <span><span style={{ color: "var(--neg)" }}>○</span> lost</span>
         <span style={{ marginLeft: "auto" }}>wk {pts[0].week}–{pts[pts.length - 1].week}</span>
       </div>
     </div>
@@ -584,7 +584,7 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                       <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
                         <span className="disp" style={{ fontSize: 18, fontWeight: 800 }}>Week {week}</span>
                         <span className="num" style={{ fontSize: 18, fontWeight: 800,
-                          color: data.sum.w > data.sum.l ? "#5FD0A8" : data.sum.l > data.sum.w ? "#F2655C" : "var(--mut)" }}>
+                          color: data.sum.w > data.sum.l ? "var(--pos)" : data.sum.l > data.sum.w ? "var(--neg)" : "var(--mut)" }}>
                           {data.sum.w}–{data.sum.l}
                         </span>
                         {data.sum.medianGames > 0 && (
@@ -608,7 +608,7 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                             {outlook && (
                               <>
                                 <span className="mut">, projected to finish </span>
-                                <b className="num" style={{ color: outlook.projW > outlook.projL ? "#5FD0A8" : outlook.projW < outlook.projL ? "#F2655C" : "var(--mut)" }}>
+                                <b className="num" style={{ color: outlook.projW > outlook.projL ? "var(--pos)" : outlook.projW < outlook.projL ? "var(--neg)" : "var(--mut)" }}>
                                   {outlook.projW}–{outlook.projL}
                                 </b>
                               </>
@@ -635,8 +635,8 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                           <Tile n={`${data.sum.apW}–${data.sum.apL}`} label="Against the field"
                             sub="if you had played everyone" />
                         )}
-                        {data.sum.blown > 0 && <Tile n={data.sum.blown} label="Blown" tone="#F2655C" sub="your best lineup wins" />}
-                        {data.sum.robbed > 0 && <Tile n={data.sum.robbed} label="Robbed" tone="#6BA8E5" sub="good score, bad draw" />}
+                        {data.sum.blown > 0 && <Tile n={data.sum.blown} label="Blown" tone="var(--neg)" sub="your best lineup wins" />}
+                        {data.sum.robbed > 0 && <Tile n={data.sum.robbed} label="Robbed" tone="var(--info)" sub="good score, bad draw" />}
                         {data.sum.lucky > 0 && <Tile n={data.sum.lucky} label="Got away with it" tone="var(--gold)" sub="won below the median" />}
                       </div>
                     </div>
@@ -644,14 +644,14 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                         thing here you could have actually changed, so it gets the accent rail. */}
                     {data.worst && data.worst.gain > 0 && (
                       <div data-wkworst style={{ fontSize: 12, padding: "9px 15px", lineHeight: 1.55,
-                        borderTop: "1px solid var(--line)", borderLeft: "3px solid #F2655C",
+                        borderTop: "1px solid var(--line)", borderLeft: "3px solid var(--neg)",
                         background: "rgba(242,101,92,.055)" }}>
                         <span className="mut" style={{ textTransform: "uppercase", letterSpacing: ".05em",
                           fontSize: 9.5, fontWeight: 800, marginRight: 8 }}>Worst call</span>
                         <b>{data.worst.leagueName}</b> <span className="mut">— started</span> <b>{data.worst.out}</b>
                         {" "}<span className="num mut">{data.worst.outPts}</span> <span className="mut">over</span>
-                        {" "}<b style={{ color: "#5FD0A8" }}>{data.worst.in}</b> <span className="num mut">{data.worst.inPts}</span>
-                        {" "}<span className="num" style={{ color: "#F2655C", fontWeight: 800 }}>−{data.worst.gain}</span>
+                        {" "}<b style={{ color: "var(--pos)" }}>{data.worst.in}</b> <span className="num mut">{data.worst.inPts}</span>
+                        {" "}<span className="num" style={{ color: "var(--neg)", fontWeight: 800 }}>−{data.worst.gain}</span>
                       </div>
                     )}
 
@@ -705,7 +705,7 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                          play it, so the column never implies something that does not apply. */
                       const score = me && (
                         <span className="num" style={{ fontSize: 13, fontWeight: 800, whiteSpace: "nowrap",
-                          color: me.result === "W" ? "#5FD0A8" : me.result === "L" ? "#F2655C" : "var(--mut)" }}>
+                          color: me.result === "W" ? "var(--pos)" : me.result === "L" ? "var(--neg)" : "var(--mut)" }}>
                           {me.result || "—"} {r1(me.pts)}–{me.oppPts != null ? r1(me.oppPts) : "—"}
                         </span>
                       );
@@ -719,7 +719,7 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                       const medianCell = me && me.medianResult ? (
                         <span className="num" data-wkmedian={me.medianResult}
                           style={{ fontSize: 12, fontWeight: 800, whiteSpace: "nowrap",
-                            color: me.medianResult === "W" ? "#5FD0A8" : me.medianResult === "L" ? "#F2655C" : "var(--mut)" }}>
+                            color: me.medianResult === "W" ? "var(--pos)" : me.medianResult === "L" ? "var(--neg)" : "var(--mut)" }}>
                           {me.medianResult}
                           {Number.isFinite(me.medianMargin) && (
                             <span style={{ fontWeight: 700, fontSize: 10, opacity: .8 }}>
@@ -846,9 +846,9 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                               {(() => {
                                 const ins = reviewInsights({ weeks: R.data && R.data.weeks, field: R.field, mine: me });
                                 if (!ins) return null;
-                                const H = { robbed: "#6BA8E5", blown: "#F2655C", outscored: "#F2655C",
-                                  lucky: "var(--gold)", earned: "#5FD0A8", even: "var(--mut)" };
-                                const OUT = { concern: "#F2655C", rising: "#5FD0A8", steady: "var(--mut)", unknown: "var(--mut)" };
+                                const H = { robbed: "var(--info)", blown: "var(--neg)", outscored: "var(--neg)",
+                                  lucky: "var(--gold)", earned: "var(--pos)", even: "var(--mut)" };
+                                const OUT = { concern: "var(--neg)", rising: "var(--pos)", steady: "var(--mut)", unknown: "var(--mut)" };
                                 return (
                                   <div data-wkinsight={ins.headline.key} style={{ marginTop: 10, border: "1px solid var(--line)",
                                     borderRadius: 9, padding: "9px 11px", background: "var(--panel2)" }}>
@@ -889,11 +889,11 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                                       <div data-wkins="decisions">
                                         <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Your calls</div>
                                         <div style={{ fontSize: 12.5 }}>
-                                          <b className="num" style={{ color: ins.decisions.left > 0 ? "var(--gold)" : "#5FD0A8" }}>{ins.decisions.left}</b>
+                                          <b className="num" style={{ color: ins.decisions.left > 0 ? "var(--gold)" : "var(--pos)" }}>{ins.decisions.left}</b>
                                           <span className="mut"> left on the bench</span>
                                         </div>
                                         <div className="mut" style={{ fontSize: 11 }}>
-                                          {ins.decisions.wouldHaveWon ? <b style={{ color: "#F2655C" }}>Your best lineup wins this game.</b>
+                                          {ins.decisions.wouldHaveWon ? <b style={{ color: "var(--neg)" }}>Your best lineup wins this game.</b>
                                             : ins.decisions.mean != null ? `Your season average is ${ins.decisions.mean}.` : ""}
                                         </div>
                                       </div>
@@ -936,8 +936,8 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                                       <div key={i} data-wkmiss={m.in} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, flexWrap: "wrap" }}>
                                         <span className="mut" style={{ fontSize: 10, width: 42, flexShrink: 0 }}>{m.slot}</span>
                                         <span className="mut">started</span> <b>{m.out}</b> <span className="num mut">{m.outPts}</span>
-                                        <span className="mut">over</span> <b style={{ color: "#5FD0A8" }}>{m.in}</b> <span className="num mut">{m.inPts}</span>
-                                        <span className="num" style={{ color: "#F2655C", fontWeight: 800, marginLeft: "auto" }}>−{m.gain}</span>
+                                        <span className="mut">over</span> <b style={{ color: "var(--pos)" }}>{m.in}</b> <span className="num mut">{m.inPts}</span>
+                                        <span className="num" style={{ color: "var(--neg)", fontWeight: 800, marginLeft: "auto" }}>−{m.gain}</span>
                                       </div>
                                     ))}
                                   </div>
@@ -987,7 +987,7 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                                       /* ⚠ "−1 luck" is a number nobody can read. Say which way it went in words:
                                          the gap between the record he has and the record the scores earned him. */
                                       <Fact label="Deserved" value={`${L.deservedW}–${L.deservedL}`}
-                                        tone={L.luck === 0 ? null : L.luck > 0 ? "var(--gold)" : "#6BA8E5"}
+                                        tone={L.luck === 0 ? null : L.luck > 0 ? "var(--gold)" : "var(--info)"}
                                         note={L.luck === 0 ? "exactly what you earned"
                                           : `${Math.abs(L.luck)} win${Math.abs(L.luck) === 1 ? "" : "s"} ${L.luck > 0 ? "better than you earned" : "short"}`} />
                                     )}

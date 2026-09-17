@@ -408,3 +408,185 @@ export function marketSummary(reads, req) {
   const rankOf = (m) => (m.mySide === 'buy' ? 0 : m.mySide === 'sell' ? 1 : 2);
   return out.sort((a, b) => rankOf(a) - rankOf(b) || a.pos.localeCompare(b.pos));
 }
+
+/* ⭐⭐⭐⭐⭐ THE LEAGUE READ — 29ah, and the reason it exists is that the deal board was not answering
+ * the question.
+ * ==================================================================================================
+ * Trey, on the tab 29af shipped: "I like the calculator portion of it. I like the information that it
+ * shares back with you... it still isn't clear to me though that it is sharing information that's gonna
+ * like help you beat the league. Like identifying trends as to what teams might be the best partner for
+ * a trade, who is underutilizing the roster... or is there a certain team where like both sides just
+ * benefit so much that it makes sense? Do you have a depth in a certain area that you should definitely
+ * move? Basically, like what is it that's going to increase your playoff odds the most? That is also
+ * realistic. That's key."
+ *
+ * ⭐ HE IS ASKING FOR A DIFFERENT UNIT OF ANALYSIS, NOT MORE ROWS. 29af ranked INDIVIDUAL DEALS, and a
+ *   ranked list of deals is a list of moves; what he wants is a read on the LEAGUE — which of eleven
+ *   managers is worth opening a conversation with, and why that one. Those are not the same object.
+ *   Five deals with three managers tells you nothing about the other eight teams, and the eight might
+ *   include the one whose roster is the mirror image of yours.
+ *
+ * So this aggregates the SAME offers up to the partner, and answers per team:
+ *   • can we help each other AT ALL (a double coincidence of wants — see `complement`)
+ *   • how much do we BOTH gain (`mutual`, which is deliberately the MINIMUM of the two gains)
+ *   • is this manager motivated (the underperformer read from teamReads)
+ *   • what is the single best thing available with them, and is it realistic
+ *
+ * ⚠ `mutual` IS THE MINIMUM OF THE TWO GAINS, NOT THE SUM. "Both sides benefit so much that it makes
+ *   sense" is a statement about the WEAKER half: a deal worth +80 to me and +2 to them is not mutual, it
+ *   is a deal I want, and summing them (+82) would rank it above a genuine +30/+30 that any manager
+ *   would take on sight. The minimum is the only summary that cannot be gamed by one big side.
+ */
+
+/* ⭐⭐⭐⭐⭐ WHICH RACE IS ACTUALLY STILL LIVE — and this was a MEASURED finding, not a design choice.
+   He said the headline should be "what is going to increase your playoff odds the most". Ranking by that
+   was the plan until it was run against his own league: he is first at 99.5% to make the playoffs, so
+   EVERY trade on the board moved playoff odds by +0.0% and the ranking was a column of zeroes. The
+   honest headline is not playoff odds, it is THE TIGHTEST THING STILL IN PLAY — and saying so out loud
+   ("you are already in; this is what a bye is worth") is more useful than a number that cannot move.
+   ⚠ 92 RATHER THAN 100, because a 97% race is not a race: the remaining 3% is simulation noise around a
+     conclusion already reached, and ranking trades by it would sort on nothing. */
+export function raceCurrency(odds) {
+  const o = odds || {};
+  /* ⚠⚠ `Number(null)` IS 0 AND `Number.isFinite(0)` IS TRUE — this project's own oldest logged trap, and
+     I walked into it again here. A league with no first-round byes reports `byeOdds: null`, which this
+     turned into a live 0% race: the header read "ranked by a first-round bye — currently 0%" in a league
+     that has no byes at all, and every gain under it would have been +0.0%, which is the exact failure
+     raceCurrency exists to prevent. Reject null BEFORE converting, never after. */
+  const n = (v) => (v == null || v === '' ? null : (Number.isFinite(Number(v)) ? Number(v) : null));
+  const made = n(o.odds), bye = n(o.byeOdds), one = n(o.oneSeed);
+  if (made != null && made < 92) return { key: 'odds', label: 'playoff odds', at: made, locked: false };
+  if (bye != null && bye < 92) return { key: 'byeOdds', label: 'a first-round bye', at: bye, locked: true };
+  if (one != null && one < 92) return { key: 'oneSeed', label: 'the 1 seed', at: one, locked: true };
+  /* Everything is settled — which is a real answer and the screen says it rather than printing +0.0%
+     next to five recommendations and letting him work out why they are all the same. */
+  return { key: null, label: null, at: made, locked: true };
+}
+
+export function partnerBoard(input) {
+  const o = input || {};
+  const offers = Array.isArray(o.offers) ? o.offers : [];
+  const reads = new Map((o.reads || []).map((r) => [r.rosterId, r]));
+  const mine = o.myRead || null;
+  const req = o.req || {};
+
+  /* ── WHO CAN HELP WHOM, BEFORE ANY DEAL IS ENUMERATED ─────────────────────────────────────────────
+     ⚠ THIS IS COMPUTED FROM THE ROSTER SHAPES, NOT FROM THE OFFER LIST, and that is the whole point.
+       An offer list only contains teams a swap was FOUND with, so building the partner read out of it
+       would silently drop every manager whose fit is real but whose best deal happens to be a two-for-one
+       the finder does not enumerate. The complement is a fact about two rosters; the deals are evidence. */
+  const complementOf = (them) => {
+    const out = [];
+    if (!mine || !them) return out;
+    Object.keys(req).forEach((pos) => {
+      const iSpare = (mine.surplus || {})[pos] || 0;
+      const theyNeed = (them.need || {})[pos] || 0;
+      const theySpare = (them.surplus || {})[pos] || 0;
+      const iNeed = (mine.need || {})[pos] || 0;
+      if (iSpare > 0 && theyNeed > 0) out.push({ pos, dir: 'sell', n: Math.min(iSpare, theyNeed) });
+      if (theySpare > 0 && iNeed > 0) out.push({ pos, dir: 'buy', n: Math.min(theySpare, iNeed) });
+    });
+    return out;
+  };
+
+  const byTeam = new Map();
+  offers.forEach((t) => {
+    const id = t && t.team && t.team.rosterId;
+    if (id == null) return;
+    if (!byTeam.has(id)) byTeam.set(id, []);
+    byTeam.get(id).push(t);
+  });
+
+  const partners = (o.others || []).map((them) => {
+    const read = reads.get(them.rosterId) || null;
+    const list = (byTeam.get(them.rosterId) || []).slice()
+      /* Realistic first, then by what it does for me — the same ordering rule the cards use, so the
+         partner list and the deals inside it can never disagree about which idea is the best one. */
+      .sort((a, b) => (b.realism >= 45) - (a.realism >= 45) || (b.myGain - a.myGain));
+    const best = list[0] || null;
+    const realistic = list.filter((t) => t.realism >= 45);
+    const comp = complementOf(read);
+    const twoWay = comp.some((c) => c.dir === 'sell') && comp.some((c) => c.dir === 'buy');
+    const mutual = best ? r1(Math.min(best.myGain, best.theirGain)) : 0;
+
+    /* ⭐⭐⭐ ONE LINE SAYING WHY THIS MANAGER, ordered by which fact would actually change your mind.
+       A two-way fit outranks everything — it is the only situation where you are not asking for a
+       favour — then a motivated owner, then a plain one-way fit. */
+    let tone = 'none', why = null;
+    if (twoWay) {
+      /* ⚠ GUARDED even though `twoWay` guarantees both exist today: a falsification that loosened the
+         twoWay test turned this into a TypeError that took the whole partner list down, which is a much
+         worse failure than a vague sentence. The invariant is stated by the fallback, not assumed. */
+      const sell = comp.find((c) => c.dir === 'sell'), buy = comp.find((c) => c.dir === 'buy');
+      tone = 'mutual';
+      if (!sell || !buy) { why = 'Both sides have something the other is short at.'; return {
+        rosterId: them.rosterId, teamName: them.teamName, ownerName: them.ownerName,
+        read, best, deals: list, realisticN: realistic.length,
+        myGain: best ? best.myGain : 0, theirGain: best ? best.theirGain : 0, mutual,
+        realism: best ? best.realism : 0, complement: comp, twoWay, tone, why }; }
+      why = `Straight fit both ways — they are short at ${sell.pos} where you have spare, and deep at ${buy.pos} where you are short.`;
+    } else if (read && read.underperforming && realistic.length) {
+      tone = 'motivated';
+      why = read.ownerNote;
+    } else if (comp.length && realistic.length) {
+      const c = comp[0];
+      tone = 'fit';
+      why = c.dir === 'buy'
+        ? `They can spare a ${c.pos} and you are short one.`
+        : `They are short at ${c.pos} and you have one to spare.`;
+    } else if (realistic.length) {
+      tone = 'thin';
+      why = 'No obvious shape fit — the one idea here is a straight value swap.';
+    } else {
+      tone = 'none';
+      why = read && read.overperforming
+        ? `Nothing lines up — and they are getting the most out of their roster, so they have little reason to move.`
+        : 'Nothing lines up with this roster right now.';
+    }
+
+    return {
+      rosterId: them.rosterId, teamName: them.teamName, ownerName: them.ownerName,
+      read, best, deals: list, realisticN: realistic.length,
+      myGain: best ? best.myGain : 0, theirGain: best ? best.theirGain : 0, mutual,
+      realism: best ? best.realism : 0, complement: comp, twoWay, tone, why,
+    };
+  });
+
+  /* ⚠ RANKED BY WHAT IS REALISTICALLY AVAILABLE, NOT BY WHAT IS IMAGINABLE. A partner whose only idea is
+     a 20-realism long shot sorts below one with a modest deal they would actually take — which is the
+     "That is also realistic. That's key." half of what he asked for, applied to the partner list rather
+     than only to the individual cards. */
+  partners.sort((a, b) =>
+    (b.realisticN > 0) - (a.realisticN > 0)
+    || (b.twoWay - a.twoWay)
+    || (b.myGain - a.myGain)
+    || (b.realism - a.realism));
+
+  /* ── WHAT YOU SHOULD BE MOVING ───────────────────────────────────────────────────────────────────
+     "Do you have a depth in a certain area that you should definitely move?" — answered as a position
+     with spare STARTABLE bodies (the 29x definition: one star and three replacement men is not depth),
+     ranked by what moving it actually returns.
+     ⚠ `buyers` IS REPORTED, NOT A FILTER, and the fixture is why: my spare quarterback has ZERO teams
+       short at the position and still returns a real upgrade, because a manager who can already field a
+       QB will happily take a better one. "Short at" and "would take an upgrade" are different questions,
+       and gating on the first would have hidden a genuine deal. What the count IS good for is telling a
+       seller's market from a buyer's one — three teams that cannot field a running back is leverage, and
+       it belongs on screen next to the advice rather than silently inside it. */
+  const mySurplus = [];
+  if (mine) {
+    Object.keys(mine.surplus || {}).forEach((pos) => {
+      const spare = mine.surplus[pos] || 0;
+      if (spare <= 0) return;
+      const buyers = partners.filter((p) => ((p.read && p.read.need) || {})[pos] > 0);
+      const best = partners
+        .flatMap((p) => p.deals.filter((t) => t.give.pos === pos && t.realism >= 45).map((t) => ({ ...t, partner: p })))
+        .sort((a, b) => b.myGain - a.myGain)[0] || null;
+      mySurplus.push({ pos, spare, buyers: buyers.length, best,
+        buyerNames: buyers.slice(0, 3).map((p) => p.teamName || p.ownerName || 'a team') });
+    });
+    mySurplus.sort((a, b) => (b.best ? b.best.myGain : 0) - (a.best ? a.best.myGain : 0) || b.buyers - a.buyers);
+  }
+
+  return { partners, mySurplus, twoWayN: partners.filter((p) => p.twoWay).length,
+    motivated: partners.filter((p) => p.read && p.read.underperforming && p.realisticN > 0) };
+}

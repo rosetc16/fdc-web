@@ -25,7 +25,7 @@
    ================================================================================================ */
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { api } from "../api.js";
-import { Dot, WeekHoverCard } from "../App.jsx";
+import { Dot, WeekHoverCard, alpha } from "../App.jsx";
 import { HoverTable, useHoverCard } from "../hovercard.jsx";
 import { winTone } from "../livecache.js";
 import WeekStep from "../weekstep.jsx";
@@ -45,7 +45,7 @@ const r1 = (n) => (Number.isFinite(n) ? Math.round(n * 10) / 10 : n);
    wording leans on the certain one. */
 const STATE = {
   pre:  { label: "yet to play", tone: "var(--gold)", icon: "ti-clock" },
-  live: { label: "in progress", tone: "#5FD0A8", icon: "ti-player-play" },
+  live: { label: "in progress", tone: "var(--pos)", icon: "ti-player-play" },
   done: { label: "played",      tone: "var(--mut)", icon: "ti-check" },
   unknown: { label: "—",        tone: "var(--mut)", icon: "ti-help" },
 };
@@ -99,20 +99,20 @@ function impactOf(pos, pts, rootFor, elapsed) {
        points reads as a contradiction rather than as good news. */
     const lbl = `${r1(pts)} — ${Math.abs(z) < 0.6 ? "about on pace for" : z > 0 ? "ahead of pace for" : "behind pace for"} a normal ${String(pos).toUpperCase()} week (~${base} by this point)`;
     const g = rootFor ? z : -z;
-    if (g >= 1.2) return { z: r1(z), tone: "#5FD0A8", label: lbl };
-    if (g >= 0.6) return { z: r1(z), tone: "#2E8F6B", label: lbl };
-    if (g <= -1.2) return { z: r1(z), tone: "#F2655C", label: lbl };
-    if (g <= -0.6) return { z: r1(z), tone: "#B8453C", label: lbl };
+    if (g >= 1.2) return { z: r1(z), tone: "var(--pos)", label: lbl };
+    if (g >= 0.6) return { z: r1(z), tone: "var(--pos-soft)", label: lbl };
+    if (g <= -1.2) return { z: r1(z), tone: "var(--neg)", label: lbl };
+    if (g <= -0.6) return { z: r1(z), tone: "var(--neg-soft)", label: lbl };
     return { z: r1(z), tone: "var(--ink)", label: lbl };
   }
   /* A big day is GOOD if he is yours and BAD if he is theirs — the colour follows the consequence to you,
      which is the whole premise of this page, rather than following the size of the number. */
   const good = rootFor ? z : -z;
   const label = `${r1(pts)} — ${Math.abs(z) < 0.6 ? "an ordinary week" : z > 0 ? "well above" : "well below"} a normal ${String(pos).toUpperCase()} week (~${base})`;
-  if (good >= 1.2) return { z: r1(z), tone: "#5FD0A8", label };
-  if (good >= 0.6) return { z: r1(z), tone: "#2E8F6B", label };
-  if (good <= -1.2) return { z: r1(z), tone: "#F2655C", label };
-  if (good <= -0.6) return { z: r1(z), tone: "#B8453C", label };
+  if (good >= 1.2) return { z: r1(z), tone: "var(--pos)", label };
+  if (good >= 0.6) return { z: r1(z), tone: "var(--pos-soft)", label };
+  if (good <= -1.2) return { z: r1(z), tone: "var(--neg)", label };
+  if (good <= -0.6) return { z: r1(z), tone: "var(--neg-soft)", label };
   return { z: r1(z), tone: "var(--ink)", label };
 }
 
@@ -161,7 +161,7 @@ function MatchupDetail({ L, F, tone, bySid, wide, onOpenHub }) {
           "ROOT AGAINST — THEM PLAYERS STILL TO PLAY" the moment an opponent was called "Them", and
           plenty of real team names read no better in the possessive. */}
       <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800,
-        color: rootFor ? "#5FD0A8" : "#F2655C", marginBottom: 4 }}>
+        color: rootFor ? "var(--pos)" : "var(--neg)", marginBottom: 4 }}>
         <i className={`ti ${rootFor ? "ti-arrow-up" : "ti-arrow-down"}`} style={{ fontSize: 11, marginRight: 4 }} aria-hidden="true" />
         {label}
         {who ? <span className="mut" style={{ fontWeight: 600, letterSpacing: 0, textTransform: "none", marginLeft: 6 }}>{who}</span> : null}
@@ -179,7 +179,7 @@ function MatchupDetail({ L, F, tone, bySid, wide, onOpenHub }) {
               <span className="num" style={{ fontSize: 12, fontWeight: 800, color: "var(--ink)", marginRight: 4 }}>{r1(pp.pts)}</span>
             )}
             <span className="num" style={{ fontSize: 12, fontWeight: 700,
-              color: rootFor ? "#5FD0A8" : "#F2655C" }}>
+              color: rootFor ? "var(--pos)" : "var(--neg)" }}>
               {pp.phase === "live" && Number.isFinite(pp.projFinal) ? `→${r1(pp.projFinal)}`
                 : Number.isFinite(pp.proj) ? r1(pp.proj) : "—"}
             </span>
@@ -274,7 +274,7 @@ function RootRow({ p, wide, wx, onShow, onHide }) {
       League: l.leagueName || l.leagueId,
       Side: which,
       Pts: Number.isFinite(p.ptsByLeague && p.ptsByLeague[l.leagueId]) ? r1(p.ptsByLeague[l.leagueId]) : "—",
-      tone: which === "For you" ? "#5FD0A8" : "#F2655C",
+      tone: which === "For you" ? "var(--pos)" : "var(--neg)",
     }));
     const rows = side(p.forLeagues, "For you").concat(side(p.againstLeagues, "Against you"));
     if (!rows.length) return null;
@@ -298,7 +298,7 @@ function RootRow({ p, wide, wx, onShow, onHide }) {
       note: wx ? null : "No weather flagged for this game — it is indoors, or the forecast has nothing worth planning around.",
     };
   })();
-  const tone = p.net === 0 ? "var(--mut)" : rootFor ? "#5FD0A8" : "#F2655C";
+  const tone = p.net === 0 ? "var(--mut)" : rootFor ? "var(--pos)" : "var(--neg)";
   /* ⚠ DROP THE BLANKS. The live route did not put a name on its league rows until b136, so every tag came
      back undefined and this line rendered as ", , +2" — the "it's not clear what is going on below each
      player" in his screenshot. The server is fixed; this filter means a future gap degrades to showing
@@ -335,14 +335,14 @@ function RootRow({ p, wide, wx, onShow, onHide }) {
           {shown.length ? (
             <>{shown.join(", ")}{extra > 0 ? ` +${extra}` : ""}
               {/* Both sides only when he is genuinely on both — otherwise it is noise on every row. */}
-              {rootFor && p.against > 0 && <span style={{ color: "#F2655C" }}> · against you in {p.against}</span>}
-              {!rootFor && p.for > 0 && <span style={{ color: "#5FD0A8" }}> · starting in {p.for}</span>}
+              {rootFor && p.against > 0 && <span style={{ color: "var(--neg)" }}> · against you in {p.against}</span>}
+              {!rootFor && p.for > 0 && <span style={{ color: "var(--pos)" }}> · starting in {p.for}</span>}
             </>
           ) : (
             <>
-              {p.for > 0 && <span style={{ color: "#5FD0A8" }}>starting in {p.for}</span>}
+              {p.for > 0 && <span style={{ color: "var(--pos)" }}>starting in {p.for}</span>}
               {p.for > 0 && p.against > 0 && <span> · </span>}
-              {p.against > 0 && <span style={{ color: "#F2655C" }}>against you in {p.against}</span>}
+              {p.against > 0 && <span style={{ color: "var(--neg)" }}>against you in {p.against}</span>}
             </>
           )}
         </div>
@@ -498,7 +498,7 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
     if (!g) return null;
     // `label` and `text` are the route's own words (see routes/weather.js); nothing is re-worded here.
     return { label: [g.label, g.text].filter(Boolean).join(" — "),
-      tone: g.severity >= 2 ? "#F2655C" : "var(--gold)" };
+      tone: g.severity >= 2 ? "var(--neg)" : "var(--gold)" };
   };
   const [mcard, setMcard] = useState(null);
   const showMatchCard = (e, L, kind) => {
@@ -649,9 +649,9 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
               {/* ⭐⭐⭐ THE NUMBER THAT SAYS WHETHER A DEFICIT IS REAL. Down twenty with four still to play
                   is a different afternoon from down twenty with none, and the scoreline alone says the
                   opposite of the truth. */}
-              <span><b className="num" style={{ color: "#5FD0A8" }}>{T.yetToPlay}</b>
+              <span><b className="num" style={{ color: "var(--pos)" }}>{T.yetToPlay}</b>
                 <span className="mut"> of your starters yet to play</span></span>
-              <span><b className="num" style={{ color: "#F2655C" }}>{T.oppYetToPlay}</b>
+              <span><b className="num" style={{ color: "var(--neg)" }}>{T.oppYetToPlay}</b>
                 <span className="mut"> of theirs</span></span>
               <span className="mut">{r1(T.pointsFor)} for · {r1(T.pointsAgainst)} against</span>
             </div>
@@ -689,6 +689,38 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
             </div>
           )}
 
+          {/* ⭐⭐⭐⭐ THE OTHER WAY THE TWO SOURCES DISAGREE — 29ag / b148.
+              Trey, at 12:21 in the morning: "DJ Moore plays on Thursday, but his game hasn't started yet.
+              Because of that, he is showing up with a 0 projection AND he isn't listed as left to play."
+              The stats feed had a line for a man whose game was still twenty hours away, and the old rule
+              let that overrule the kickoff time — so a Thursday starter was filed as FINISHED, which drops
+              him out of "left to play" and multiplies his remaining projection by zero. The clock wins now.
+              ⚠ BUT THE DISAGREEMENT IS STILL WORTH SEEING, and it is the same reasoning as the panel above:
+                if the feed is publishing empty shells ahead of kickoff this is harmless noise, and if OUR
+                schedule is stale for those teams it is not — and the only way anyone can tell which is to
+                be able to read the number. Silently picking a winner is what hid this in the first place. */}
+          {!!(data && data.statBeforeKickoff && data.statBeforeKickoff.length) && (
+            <div className="panel" data-gdearlystat={String(data.statBeforeKickoff.length)}
+              style={{ padding: "9px 12px", marginBottom: 14, borderColor: "var(--gold)",
+                background: "rgba(224,166,60,.07)" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--gold)" }}>
+                <i className="ti ti-clock-exclamation" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />
+                {data.statBeforeKickoff.length} stat line{data.statBeforeKickoff.length === 1 ? "" : "s"} ahead of kickoff
+              </div>
+              <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.55, marginTop: 3 }}>
+                {data.statBeforeKickoff.slice(0, 6).map((sid) => {
+                  const p = ((data && data.rooting) || []).find((r) => String(r.sid) === String(sid));
+                  return p ? `${p.name}${p.team ? ` (${p.team})` : ""}` : `Player ${sid}`;
+                }).join(", ")}
+                {data.statBeforeKickoff.length > 6 ? `, +${data.statBeforeKickoff.length - 6} more` : ""}
+                {" — "}Sleeper reports stats for them, but the schedule says their game hasn't kicked off.
+                {" "}They're being counted as <b style={{ color: "var(--ink)" }}>still to play</b>, which is
+                right if those are empty pre-game rows. If their games really are underway, the schedule is
+                stale — run <b style={{ color: "var(--ink)" }}>Pull schedule</b> in Admin.
+              </div>
+            </div>
+          )}
+
         {/* ⭐⭐⭐⭐⭐ THE WEEK TOGGLE — 29w. Trey: "For the 'game day' tab, we need to be able to toggle
             between different weeks."
             It sits here rather than in the header because the header only renders when this screen is
@@ -717,9 +749,9 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
                   style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13,
                     fontWeight: on ? 800 : 600, padding: "7px 14px", borderRadius: 9, cursor: "pointer",
                     fontFamily: "inherit",
-                    border: `1px solid ${on ? "#5FD0A8" : "var(--line2)"}`,
+                    border: `1px solid ${on ? "var(--pos)" : "var(--line2)"}`,
                     color: on ? "#0d1210" : "var(--ink)",
-                    background: on ? "#5FD0A8" : "transparent" }}>
+                    background: on ? "var(--pos)" : "transparent" }}>
                   <i className={`ti ${icon}`} style={{ fontSize: 14 }} aria-hidden="true" />{lbl}
                 </button>
               );
@@ -743,9 +775,9 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
                     onClick={() => setPhase(k)} aria-pressed={phase === k}
                     style={{ fontSize: 11, fontWeight: phase === k ? 800 : 600, padding: "2px 9px", borderRadius: 99,
                       cursor: "pointer", fontFamily: "inherit",
-                      border: `1px solid ${phase === k ? "#5FD0A8" : "var(--line)"}`,
-                      color: phase === k ? "#5FD0A8" : "var(--mut)",
-                      background: phase === k ? "rgba(95,208,168,.12)" : "transparent" }}>
+                      border: `1px solid ${phase === k ? "var(--pos)" : "var(--line)"}`,
+                      color: phase === k ? "var(--pos)" : "var(--mut)",
+                      background: phase === k ? "var(--pos-wash)" : "transparent" }}>
                     {lbl} <span style={{ opacity: .7, fontWeight: 600 }}>{phaseCount(k)}</span>
                   </button>
                 ))}
@@ -771,15 +803,15 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
                  a sign, and putting the two signs side by side is the clearest possible statement of that:
                  the left column is every ball you want caught, the right is every ball you do not. */
               <div data-gdcolumns style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
-                {[["for", "Root for", "#5FD0A8", "ti-arrow-up", forRows],
-                  ["against", "Root against", "#F2655C", "ti-arrow-down", againstRows]].map(([k, label, tone, icon, list]) => (
+                {[["for", "Root for", "var(--pos)", "ti-arrow-up", forRows],
+                  ["against", "Root against", "var(--neg)", "ti-arrow-down", againstRows]].map(([k, label, tone, icon, list]) => (
                   <div key={k} data-gdcolumn={k} style={{ flex: "1 1 380px", minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
                       <i className={`ti ${icon}`} style={{ fontSize: 13, color: tone }} aria-hidden="true" />
                       <span className="disp" style={{ fontSize: 12.5, fontWeight: 800, color: tone, letterSpacing: ".03em" }}>{label}</span>
                       <span className="mut num" style={{ fontSize: 11 }}>{list.length}</span>
                     </div>
-                    <div className="panel" style={{ padding: 6, borderColor: `${tone}33` }}>
+                    <div className="panel" style={{ padding: 6, borderColor: `${alpha(tone, 20)}` }}>
                       {list.length
                         ? list.map((p) => <RootRow key={p.sid} p={p} wide wx={wxFor(p)} onShow={showPlayerCard} onHide={hidePlayerCard} />)
                         : <div className="mut" style={{ fontSize: 12, padding: "10px 4px" }}>
@@ -812,7 +844,7 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
                   gridTemplateColumns: wide ? "repeat(auto-fit, minmax(240px, 1fr))" : "minmax(0,1fr)" }}>
                   {windows.map((w) => {
                     const good = w.net > 0, flat = w.net === 0;
-                    const tone = flat ? "var(--mut)" : good ? "#5FD0A8" : "#F2655C";
+                    const tone = flat ? "var(--mut)" : good ? "var(--pos)" : "var(--neg)";
                     return (
                       <div key={w.iso} className="panel" data-gdwindow={w.iso} style={{ padding: "10px 12px" }}>
                         <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
@@ -835,7 +867,7 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
                           overflow: "hidden", textOverflow: "ellipsis" }}>
                           {w.players.slice(0, 4).map((p) => (
                             <span key={p.sid} style={{ marginRight: 9, whiteSpace: "nowrap" }}>
-                              <span style={{ color: p.net > 0 ? "#5FD0A8" : p.net < 0 ? "#F2655C" : "var(--mut)" }}>
+                              <span style={{ color: p.net > 0 ? "var(--pos)" : p.net < 0 ? "var(--neg)" : "var(--mut)" }}>
                                 {p.net > 0 ? "↑" : p.net < 0 ? "↓" : "—"}
                               </span>{" "}
                               <span style={{ color: "var(--ink)" }}>{p.name}</span>
@@ -922,12 +954,12 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
                       </button>
                       <span style={{ textAlign: wide ? "right" : "left" }}>
                         <span className="num" data-gdscore style={{ fontSize: 14, fontWeight: 800,
-                          color: margin == null ? "var(--mut)" : up ? "#5FD0A8" : margin === 0 ? "var(--mut)" : "#F2655C" }}>
+                          color: margin == null ? "var(--mut)" : up ? "var(--pos)" : margin === 0 ? "var(--mut)" : "var(--neg)" }}>
                           {r1(L.me.pts)}{L.opp ? ` – ${r1(L.opp.pts)}` : ""}
                         </span>
                         {margin != null && (
                           <span style={{ fontSize: 11, fontWeight: 700, marginLeft: 6,
-                            color: up ? "#5FD0A8" : margin === 0 ? "var(--mut)" : "#F2655C" }}>
+                            color: up ? "var(--pos)" : margin === 0 ? "var(--mut)" : "var(--neg)" }}>
                             {up ? "+" : ""}{margin}
                           </span>
                         )}

@@ -48,9 +48,9 @@ export default function InSeason({ user, leagues, initialTab, onHome, onBack, ba
                 style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5,
                   fontWeight: on ? 800 : 600, padding: "5px 12px", borderRadius: 99, cursor: "pointer",
                   fontFamily: "inherit",
-                  border: `1px solid ${on ? "#5FD0A8" : "var(--line)"}`,
+                  border: `1px solid ${on ? "var(--pos)" : "var(--line)"}`,
                   color: on ? "#0d1210" : "var(--mut)",
-                  background: on ? "#5FD0A8" : "transparent" }}>
+                  background: on ? "var(--pos)" : "transparent" }}>
                 <i className={`ti ${icon}`} style={{ fontSize: 13 }} aria-hidden="true" />{label}
               </button>
             );

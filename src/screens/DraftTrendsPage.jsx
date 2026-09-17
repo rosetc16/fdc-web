@@ -344,7 +344,7 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
                         <td className="num" style={{ textAlign: "right", padding: "5px 8px" }}>{r.median}</td>
                         <td className="num mut" style={{ textAlign: "right", padding: "5px 8px", fontSize: 11 }}>{r.min}–{r.max}</td>
                         <td className="num" style={{ textAlign: "right", padding: "5px 8px", fontSize: 11 }}>{r.p25}–{r.p75}</td>
-                        <td className="num" style={{ textAlign: "right", padding: "5px 8px", color: r.draftedRate >= 90 ? "#5FD0A8" : r.draftedRate >= 50 ? "var(--ink)" : "var(--mut)" }}>{r.draftedRate != null ? `${r.draftedRate}%` : "—"}</td>
+                        <td className="num" style={{ textAlign: "right", padding: "5px 8px", color: r.draftedRate >= 90 ? "var(--pos)" : r.draftedRate >= 50 ? "var(--ink)" : "var(--mut)" }}>{r.draftedRate != null ? `${r.draftedRate}%` : "—"}</td>
                         <td className="num mut" style={{ textAlign: "right", padding: "5px 0", fontSize: 11 }}>{r.n}</td>
                       </tr>
                     ))}
@@ -489,7 +489,7 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
                           <th className="num" style={{ textAlign: "right", padding: "0 8px 6px" }}>Avg</th>
                           {dcols.map((d, di) => (
                             <th key={di} className="num" style={{ textAlign: "center", padding: "0 6px 6px", whiteSpace: "nowrap" }} title={`${d.name}${d.at ? " · " + new Date(d.at).toLocaleDateString() : ""}`}>
-                              <i className={`ti ${d.kind === "official" ? "ti-clipboard-check" : d.kind === "sleeper" ? "ti-plug-connected" : "ti-dice-5"}`} style={{ fontSize: 12, color: d.kind === "official" ? "var(--gold)" : d.kind === "sleeper" ? "var(--blue)" : "#4FD1A1" }} aria-hidden="true" /><br />#{di + 1}
+                              <i className={`ti ${d.kind === "official" ? "ti-clipboard-check" : d.kind === "sleeper" ? "ti-plug-connected" : "ti-dice-5"}`} style={{ fontSize: 12, color: d.kind === "official" ? "var(--gold)" : d.kind === "sleeper" ? "var(--blue)" : "var(--p-rb)" }} aria-hidden="true" /><br />#{di + 1}
                             </th>
                           ))}
                         </tr>
@@ -586,7 +586,7 @@ function DraftTrendsPage({ user, leagues, funMocks, onBack, onHome, onSignOut, o
                     const c = d.cfg || {};
                     const fmtL = `${c.type === "dynasty" ? "Dynasty" : c.type === "rookie" ? "Rookie" : c.type === "bestball" ? "Best ball" : "Redraft"} · ${((c.start && c.start.SUPER > 0) || c.sf) ? "SF" : "1QB"}${c.tePremMult > 0 ? " · TE+" : ""} · ${c.teams || 12}T`;
                     const srcIcon = d.kind === "official" ? "ti-clipboard-check" : d.kind === "sleeper" ? "ti-plug-connected" : "ti-dice-5";
-                    const srcColor = d.kind === "official" ? "var(--gold)" : d.kind === "sleeper" ? "var(--blue)" : "#4FD1A1";
+                    const srcColor = d.kind === "official" ? "var(--gold)" : d.kind === "sleeper" ? "var(--blue)" : "var(--p-rb)";
                     return (
                       <button key={d.id} onClick={() => { setDraftListQ(""); setViewDraft(d); }} style={{ textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1px solid var(--line)", background: "var(--panel2)", borderRadius: 10, padding: "10px 12px", display: "flex", alignItems: "center", gap: 11 }}>
                         <div style={{ width: 32, height: 32, borderRadius: 8, background: srcColor + "1e", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className={`ti ${srcIcon}`} style={{ fontSize: 15, color: srcColor }} aria-hidden="true" /></div>

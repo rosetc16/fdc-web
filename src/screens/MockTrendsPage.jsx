@@ -10,7 +10,7 @@
    needs a value at module-evaluation time must NOT be imported this way — it would be in its temporal
    dead zone and the screen would throw on first render. */
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import { resolveMyRanks, readStrategy, surname, POS, cpos, bandOfRound, POS_COLOR, ORDER, ordinal, sample, positionTip, vbdColor, CheatSheetModal, PrintedStrategy, printElement, analyzeLeagueMockTrends, Section, TrendsShell } from "../App.jsx";
+import { alpha, resolveMyRanks, readStrategy, surname, POS, cpos, bandOfRound, POS_COLOR, ORDER, ordinal, sample, positionTip, vbdColor, CheatSheetModal, PrintedStrategy, printElement, analyzeLeagueMockTrends, Section, TrendsShell } from "../App.jsx";
 
 function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut, user, onRunMock, onEditStrategy }) {
   const t = useMemo(() => analyzeLeagueMockTrends(league.mocks || [], players, league.cfg), [league, players]);
@@ -133,7 +133,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
         <span style={{ textAlign: "right", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 4 }}>
           <span style={{ display: "inline-flex", gap: 1.5 }}>
             {Array.from({ length: Math.min(4, Math.max(0, gap)) }).map((_, k) => (
-              <span key={k} style={{ width: 4, height: 11 + k * 2, borderRadius: 1, background: good ? "#5FD0A8" : "#F2655C", opacity: 0.55 + k * 0.15 }} />
+              <span key={k} style={{ width: 4, height: 11 + k * 2, borderRadius: 1, background: good ? "var(--pos)" : "var(--neg)", opacity: 0.55 + k * 0.15 }} />
             ))}
           </span>
           <span className="num" style={{ fontSize: 11.5, fontWeight: gap >= 3 ? 800 : 600, borderRadius: 4, padding: "1px 5px",
@@ -193,7 +193,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
         <div className="disp" style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-.01em" }}>Your draft plan</div>
         <div className="mut" style={{ fontSize: 14, marginTop: 6, marginBottom: 20 }}>{league.name}</div>
         <div className="panel" style={{ padding: 26, textAlign: "center", background: "var(--panel2)" }}>
-          <i className="ti ti-chart-histogram" style={{ fontSize: 38, color: "#7ed6a5" }} aria-hidden="true" />
+          <i className="ti ti-chart-histogram" style={{ fontSize: 38, color: "var(--pos)" }} aria-hidden="true" />
           <div className="disp" style={{ fontSize: 19, fontWeight: 700, margin: "12px 0 8px" }}>
             {t.started ? "Nothing finished enough to read yet" : "Run a mock and this page writes itself"}
           </div>
@@ -208,9 +208,9 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
     );
   }
 
-  const conf = t.enough ? { t: "Solid sample", c: "#5FD0A8" } : t.n >= 3 ? { t: "Early read", c: "var(--gold)" } : { t: "Thin — treat as a hint", c: "#F2655C" };
+  const conf = t.enough ? { t: "Solid sample", c: "var(--pos)" } : t.n >= 3 ? { t: "Early read", c: "var(--gold)" } : { t: "Thin — treat as a hint", c: "var(--neg)" };
 
-  const rankColor = (r, of) => (r <= Math.max(1, Math.round(of * 0.25)) ? "#5FD0A8" : r <= Math.round(of * 0.6) ? "var(--gold)" : "#F2655C");
+  const rankColor = (r, of) => (r <= Math.max(1, Math.round(of * 0.25)) ? "var(--pos)" : r <= Math.round(of * 0.6) ? "var(--gold)" : "var(--neg)");
 
   return (
     <TrendsShell {...shellProps}>
@@ -264,7 +264,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
           draft (aka how you started), projected points of those teams, and such." A chip carried one number
           and hid the other six behind a hover; the space was there the whole time. */}
       {t.myRuns.length > 0 && (
-        <Section n={2} title="How you've been finishing" accent="#7ed6a5"
+        <Section n={2} title="How you've been finishing" accent="var(--pos)"
           sub={`One row per mock, out of ${teams}. Behind is how far off the winning team you finished; Room winner is what the team that beat you opened with. Hover any row for the full starting lineup you ended up with.`}>
           <div className="panel" style={{ padding: 14 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap", marginBottom: 12 }}>
@@ -277,7 +277,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                 <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginTop: 3 }}>average projected pts</div>
               </div>
               <div>
-                <div className="disp num" style={{ fontSize: 30, fontWeight: 800, lineHeight: 1, color: "#F2655C" }}>
+                <div className="disp num" style={{ fontSize: 30, fontWeight: 800, lineHeight: 1, color: "var(--neg)" }}>
                   {Math.round(t.myRuns.reduce((s2, r) => s2 + (r.gapToFirst || 0), 0) / t.myRuns.length)}
                 </div>
                 <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginTop: 3 }}>average pts behind first</div>
@@ -297,7 +297,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
               //   get a fixed width big enough for five pills and a number.
               const RUN_COLS = "26px 62px 56px 50px 144px 40px minmax(0,1fr) 128px 176px";
               const posPill = (pp, k, dim) => (
-                <b key={k} style={{ fontSize: 10, color: POS_COLOR[pp] || "var(--mut)", border: `1px solid ${POS_COLOR[pp] || "var(--line)"}44`, borderRadius: 4, padding: "1px 4px", opacity: dim ? 0.8 : 1 }}>{pp}</b>
+                <b key={k} style={{ fontSize: 10, color: POS_COLOR[pp] || "var(--mut)", border: `1px solid ${alpha(POS_COLOR[pp] || "var(--line)", 27)}`, borderRadius: 4, padding: "1px 4px", opacity: dim ? 0.8 : 1 }}>{pp}</b>
               );
               // ⭐⭐ SORTABLE, AND CAPPED AT TEN. Trey: "I want you to be able to sort mock drafts by recency
               //   and finish (best to last). It should default to show the top 10, but then you can click a
@@ -350,14 +350,14 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                       ])} onMouseLeave={hideTip}
                         className="rungrid" style={{ display: "grid", gridTemplateColumns: RUN_COLS, gap: 8, alignItems: "center", fontSize: 12.5, padding: "7px 8px", cursor: "help",
                           borderTop: "1px solid var(--line)", borderRadius: isBest || isWorst ? 7 : 0,
-                          background: isBest ? "rgba(95,208,168,.09)" : isWorst ? "rgba(242,101,92,.08)" : "transparent" }}>
+                          background: isBest ? "var(--pos-wash)" : isWorst ? "var(--neg-wash)" : "transparent" }}>
                         <span className="mut num" style={{ fontSize: 11.5 }}>{i + 1}</span>
                         <span style={{ display: "flex", alignItems: "baseline", gap: 3 }}>
                           <b className="num" style={{ fontSize: 14, color: rankColor(r.rank, r.of) }}>{ordinal(r.rank)}</b>
                           <span className="mut" style={{ fontSize: 9.5 }}>of {r.of}</span>
                         </span>
                         <span className="num" style={{ textAlign: "right", fontWeight: 700 }}>{r.pts}</span>
-                        <span className="num" style={{ textAlign: "right", fontSize: 11.5, color: r.gapToFirst ? "#F2655C" : "#5FD0A8" }}>{r.gapToFirst ? `−${r.gapToFirst}` : "won"}</span>
+                        <span className="num" style={{ textAlign: "right", fontSize: 11.5, color: r.gapToFirst ? "var(--neg)" : "var(--pos)" }}>{r.gapToFirst ? `−${r.gapToFirst}` : "won"}</span>
                         {/* ⭐ HOVER THE PILLS FOR THE NAMES. Trey: "when you hover on the position of 'your
                             first five' can you show who each person was." The pills answer "what shape",
                             the hover answers "which draft" — and stopping the event here means the row's own
@@ -428,9 +428,9 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
             })()}
             {t.myBest && t.myWorst && t.myBest.mock !== t.myWorst.mock && (
               <div style={{ fontSize: 12.5, lineHeight: 1.55, borderTop: "1px solid var(--line)", paddingTop: 10, marginTop: 10 }}>
-                <b style={{ color: "#5FD0A8" }}>Your best run</b> finished {ordinal(t.myBest.rank)} ({t.myBest.pts} pts) opening {t.myBest.open3 ? t.myBest.open3.replace(/-/g, " → ") : "—"}
+                <b style={{ color: "var(--pos)" }}>Your best run</b> finished {ordinal(t.myBest.rank)} ({t.myBest.pts} pts) opening {t.myBest.open3 ? t.myBest.open3.replace(/-/g, " → ") : "—"}
                 {t.myBest.qbRound < 99 ? ` and taking a quarterback in round ${t.myBest.qbRound}` : " without drafting a quarterback"}.{" "}
-                <b style={{ color: "#F2655C" }}>Your worst</b> finished {ordinal(t.myWorst.rank)} ({t.myWorst.pts} pts) opening {t.myWorst.open3 ? t.myWorst.open3.replace(/-/g, " → ") : "—"}
+                <b style={{ color: "var(--neg)" }}>Your worst</b> finished {ordinal(t.myWorst.rank)} ({t.myWorst.pts} pts) opening {t.myWorst.open3 ? t.myWorst.open3.replace(/-/g, " → ") : "—"}
                 {t.myWorst.qbRound < 99 ? ` with a round-${t.myWorst.qbRound} quarterback` : ""}.
               </div>
             )}
@@ -459,9 +459,9 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
               {/* ⭐ THE KEY. A four-colour scale needs one, and it doubles as the instruction: green is the
                   position to let come to you, red is the one to spend a pick on now. */}
               <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
-                {[["#5FD0A8", "cheap — let it come to you"], ["#E0A63C", "watch it"], ["#E39A6E", "act soon"], ["#FF8F86", "take one now"]].map(([c2, lbl]) => (
+                {[["var(--pos)", "cheap — let it come to you"], ["var(--warn)", "watch it"], ["#E39A6E", "act soon"], ["#FF8F86", "take one now"]].map(([c2, lbl]) => (
                   <span key={lbl} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10.5, color: "var(--mut)" }}>
-                    <span style={{ width: 12, height: 12, borderRadius: 3, background: `${c2}33`, border: `1px solid ${c2}88` }} />{lbl}
+                    <span style={{ width: 12, height: 12, borderRadius: 3, background: `${alpha(c2, 20)}`, border: `1px solid ${alpha(c2, 53)}` }} />{lbl}
                   </span>
                 ))}
               </div>
@@ -487,10 +487,10 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                       const gain = d != null && d < 0;
                       const TIER = sev < 0.25 ? 0 : sev < 0.5 ? 1 : sev < 0.75 ? 2 : 3;
                       const TIER_RGB = ["95,208,168", "224,166,60", "217,140,95", "242,101,92"];
-                      const TIER_FG = ["#5FD0A8", "#E0A63C", "#E39A6E", "#FF8F86"];
+                      const TIER_FG = ["var(--pos)", "var(--warn)", "#E39A6E", "#FF8F86"];
                       const rgb = gain ? "95,208,168" : TIER_RGB[TIER];
                       const bg = d == null ? "var(--panel2)" : `rgba(${rgb},${gain ? 0.16 : 0.10 + (sev - TIER * 0.25) * 0.6 + TIER * 0.04})`;
-                      const fg = d == null ? "var(--mut)" : gain ? "#5FD0A8" : TIER_FG[TIER];
+                      const fg = d == null ? "var(--mut)" : gain ? "var(--pos)" : TIER_FG[TIER];
                       return (
                         <span key={i} data-dropcell={`${c.pos}:${i}`} title={d == null ? "Your mocks haven't reached this phase at this position yet." : gain ? `${c.pos}s taken here averaged ${Math.abs(d)} points MORE than the phase before — your room reaches at this position.` : `Waiting from ${t.dropCols[i].replace(" to ", " to ")} costs about ${d} projected points at ${c.pos}.`}
                           style={{ textAlign: "center", padding: "7px 4px", borderRadius: 7, background: bg, border: `1px solid rgba(${d == null ? "120,130,145,.3" : `${rgb},${0.28 + sev * 0.4}`})`, cursor: "help" }}>
@@ -507,8 +507,8 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                 const best = t.posCurves.flatMap((c) => (c.steps || []).slice(1).map((d, i) => ({ pos: c.pos, d, i }))).filter((x) => x.d != null).sort((a, b) => a.d - b.d)[0];
                 if (!worst) return null;
                 return (
-                  <div style={{ fontSize: 12.5, lineHeight: 1.55, marginTop: 10, paddingLeft: 9, borderLeft: "2px solid #F2655C" }}>
-                    The most expensive wait on your board is <b style={{ color: POS_COLOR[worst.pos] }}>{worst.pos}</b> from {t.dropCols[worst.i].toLowerCase()} — about <b style={{ color: "#F2655C" }}>{worst.d} points</b>.
+                  <div style={{ fontSize: 12.5, lineHeight: 1.55, marginTop: 10, paddingLeft: 9, borderLeft: "2px solid var(--neg)" }}>
+                    The most expensive wait on your board is <b style={{ color: POS_COLOR[worst.pos] }}>{worst.pos}</b> from {t.dropCols[worst.i].toLowerCase()} — about <b style={{ color: "var(--neg)" }}>{worst.d} points</b>.
                     {best && best.pos !== worst.pos && <> The cheapest is <b style={{ color: POS_COLOR[best.pos] }}>{best.pos}</b> at {best.d <= 0 ? `+${Math.abs(best.d)}` : `−${best.d}`}, so that is the position to let come to you.</>}
                   </div>
                 );
@@ -521,7 +521,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                 top; a fixed order lets you go straight to the position you're deciding about. The verdict
                 is on every row anyway, so nothing is lost by not sorting by it. */}
             {t.posCurves.slice().sort((a, b) => POS.indexOf(a.pos) - POS.indexOf(b.pos)).map((c) => {
-              const vc = /wait/i.test(c.verdict || "") && !/anyway/i.test(c.verdict || "") ? "#5FD0A8" : /early/i.test(c.verdict || "") ? "#F2655C" : "var(--gold)";
+              const vc = /wait/i.test(c.verdict || "") && !/anyway/i.test(c.verdict || "") ? "var(--pos)" : /early/i.test(c.verdict || "") ? "var(--neg)" : "var(--gold)";
               const mx = Math.max(1, ...c.avg.filter((x) => x != null));
               return (
                 <div key={c.pos} data-poscurve={c.pos} style={{ padding: "11px 0", borderTop: "1px solid var(--line)" }}>
@@ -580,7 +580,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                             {c.run && c.run.share >= 50 && bandOfRound(c.run.round, c.bands) === i && (
                               <span data-bandrun={`${c.pos}:${c.run.round}`}
                                 title={`THE RUN. In ${c.run.seen} of your ${c.run.of} completed mocks the ${c.pos}s start going in a cluster around round ${c.run.round} — about ${c.run.n} of them inside ${c.run.window} picks, well above the rate they go at the rest of the draft. That is the window where the tier you were waiting on empties, and it is a different question from when the first or second one goes.`}
-                                style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 8, fontWeight: 800, color: "#F2655C", cursor: "help", whiteSpace: "nowrap", border: "1px solid #F2655C77", background: "rgba(242,101,92,.12)", borderRadius: 3, padding: "0 3px" }}>
+                                style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 8, fontWeight: 800, color: "var(--neg)", cursor: "help", whiteSpace: "nowrap", border: `1px solid ${alpha("var(--neg)", 47)}`, background: "var(--neg-wash)", borderRadius: 3, padding: "0 3px" }}>
                                 <i className="ti ti-flame" style={{ fontSize: 8 }} aria-hidden="true" />RUN
                               </span>
                             )}
@@ -600,11 +600,11 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                             const gain = drop < 0;
                             return (
                               <>
-                                <div className="num" style={{ fontSize: 18, fontWeight: 800, lineHeight: 1.2, marginTop: 1, color: gain ? "#5FD0A8" : sev > 0.5 ? "#F2655C" : sev > 0.22 ? "var(--gold)" : "var(--ink)" }}>
+                                <div className="num" style={{ fontSize: 18, fontWeight: 800, lineHeight: 1.2, marginTop: 1, color: gain ? "var(--pos)" : sev > 0.5 ? "var(--neg)" : sev > 0.22 ? "var(--gold)" : "var(--ink)" }}>
                                   {gain ? `+${Math.abs(drop)}` : `−${drop}`}
                                 </div>
                                 <div style={{ height: 4, background: "var(--panel)", borderRadius: 3, overflow: "hidden", margin: "3px 0 3px" }}>
-                                  <div style={{ height: "100%", width: `${Math.max(4, (Math.abs(drop) / Math.max(1, t.dropMax || 1)) * 100)}%`, background: gain ? "#5FD0A8" : sev > 0.5 ? "#F2655C" : sev > 0.22 ? "var(--gold)" : "var(--line2)" }} />
+                                  <div style={{ height: "100%", width: `${Math.max(4, (Math.abs(drop) / Math.max(1, t.dropMax || 1)) * 100)}%`, background: gain ? "var(--pos)" : sev > 0.5 ? "var(--neg)" : sev > 0.22 ? "var(--gold)" : "var(--line2)" }} />
                                 </div>
                                 <div className="mut" style={{ fontSize: 9 }}>vs {c.bands[i - 1].replace("Rounds ", "R")}</div>
                               </>
@@ -627,8 +627,8 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                       <div style={{ display: "grid", gridTemplateColumns: `92px repeat(${c.pace.length}, minmax(0,1fr))`, gap: 6, alignItems: "center" }}>
                         <span className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700 }}>{c.pos}s held by</span>
                         {c.pace.map((x) => <span key={x.byRound} className="mut num" style={{ fontSize: 10, textAlign: "center" }}>end of R{x.byRound}</span>)}
-                        <span style={{ fontSize: 10.5, fontWeight: 700, color: "#5FD0A8" }}>Best rosters</span>
-                        {c.pace.map((x) => <span key={x.byRound} className="num" style={{ fontSize: 13, fontWeight: 800, textAlign: "center", color: "#5FD0A8" }}>{x.top == null ? "—" : x.top}</span>)}
+                        <span style={{ fontSize: 10.5, fontWeight: 700, color: "var(--pos)" }}>Best rosters</span>
+                        {c.pace.map((x) => <span key={x.byRound} className="num" style={{ fontSize: 13, fontWeight: 800, textAlign: "center", color: "var(--pos)" }}>{x.top == null ? "—" : x.top}</span>)}
                         <span className="mut" style={{ fontSize: 10.5 }}>Worst rosters</span>
                         {c.pace.map((x) => <span key={x.byRound} className="num mut" style={{ fontSize: 13, textAlign: "center" }}>{x.bottom == null ? "—" : x.bottom}</span>)}
                       </div>
@@ -637,7 +637,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                           what it is and how reliable it is, which is what decides whether you move a pick. */}
                       {c.run && c.run.share >= 50 && (
                         <div data-runline={c.pos} style={{ fontSize: 12, lineHeight: 1.5, marginTop: 7, paddingTop: 7, borderTop: "1px solid var(--line)" }}>
-                          <b style={{ color: "#F2655C" }}>The run:</b> {c.pos}s come off in a cluster around <b>round {c.run.round}</b> — about <b>{c.run.n}</b> inside {c.run.window} picks, in {c.run.seen} of your {c.run.of} mocks.{" "}
+                          <b style={{ color: "var(--neg)" }}>The run:</b> {c.pos}s come off in a cluster around <b>round {c.run.round}</b> — about <b>{c.run.n}</b> inside {c.run.window} picks, in {c.run.seen} of your {c.run.of} mocks.{" "}
                           {c.firstAt != null && c.run.round > c.firstAt
                             ? `The first one goes in round ${c.firstAt}; the tier empties ${c.run.round - c.firstAt} round${c.run.round - c.firstAt === 1 ? "" : "s"} later, and that is the deadline that matters.`
                             : "It starts as soon as the position starts going at all — there is no quiet window here."}
@@ -664,7 +664,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                           { t: "What he's worth", x: `Priced like a round-${v.worthRound} pick on this board.` },
                           { kind: "playercard", p: v.p },
                         ])} onMouseLeave={hideTip}
-                          style={{ fontSize: 11, padding: "1px 7px", borderRadius: 999, border: `1px solid ${POS_COLOR[c.pos]}55`, background: "var(--panel2)", cursor: "help" }}>
+                          style={{ fontSize: 11, padding: "1px 7px", borderRadius: 999, border: `1px solid ${alpha(POS_COLOR[c.pos], 33)}`, background: "var(--panel2)", cursor: "help" }}>
                           {surname(v.name)} <span className="mut">R{v.goesRound}</span>
                         </span>
                       ))}
@@ -689,7 +689,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
             <div className="panel" style={{ padding: 14, marginTop: 12 }} data-earlyplan>
               <div className="disp" style={{ fontSize: 13, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--mut)", marginBottom: 3 }}>Worth taking early — who actually reaches your picks</div>
               <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5, marginBottom: 10, maxWidth: 860 }}>
-                From your seat, in your mocks: one row per pick you own, and the players still on the board when it came round. The <b style={{ color: "var(--gold)" }}>gold outline</b> is the route I'd take. Each name is coloured by how its market ADP compares with THAT pick number — <b style={{ color: "#5FD0A8" }}>green</b> means the room usually takes him earlier, so having him there is found money; <b style={{ color: "#E39A6E" }}>orange</b> means you'd be taking him ahead of the market. <b style={{ color: "#5FD0A8" }}>◦</b> marks a man who was still there at your NEXT pick too, so he can wait.
+                From your seat, in your mocks: one row per pick you own, and the players still on the board when it came round. The <b style={{ color: "var(--gold)" }}>gold outline</b> is the route I'd take. Each name is coloured by how its market ADP compares with THAT pick number — <b style={{ color: "var(--pos)" }}>green</b> means the room usually takes him earlier, so having him there is found money; <b style={{ color: "#E39A6E" }}>orange</b> means you'd be taking him ahead of the market. <b style={{ color: "var(--pos)" }}>◦</b> marks a man who was still there at your NEXT pick too, so he can wait.
               </div>
               {/* ⭐⭐⭐ 29o — THE ROUTES, COMPARED. Trey: "make the route a comparison, not a verdict."
                   One row per opening you could genuinely take at your first pick, each walked out with the
@@ -723,7 +723,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                           title={`${r.vor} points of value over replacement in the starting lineup this route fills — ${r.pts} projected points across those starters.\n\n${(r.slots || []).map((s) => `${s.slot}  ${s.name} (R${s.round})`).join("\n")}${r.bench ? `\n+ ${r.bench} on the bench` : ""}${r.holes.length ? `\n\nStill unfilled after round ${r.steps[r.steps.length - 1].round}: ${r.holes.join(", ")}.` : "\n\nEvery starting slot filled."}\n\nThese names were on the board at these picks in ${r.conf}% of your completed mocks on average.`}>
                           {r.vor}
                         </div>
-                        <div className="num" style={{ padding: "5px 0", borderTop: "1px solid var(--line2)", textAlign: "right", fontSize: 11.5, fontWeight: 700, color: r.cost === 0 ? "var(--mut)" : r.cost <= 12 ? "var(--gold)" : "#F2655C" }}
+                        <div className="num" style={{ padding: "5px 0", borderTop: "1px solid var(--line2)", textAlign: "right", fontSize: 11.5, fontWeight: 700, color: r.cost === 0 ? "var(--mut)" : r.cost <= 12 ? "var(--gold)" : "var(--neg)" }}
                           title={r.cost === 0 ? "The strongest starting lineup of the openings your board actually offers." : `Going ${r.open} instead costs ${r.cost} points of starting-lineup value over replacement by round ${r.steps[r.steps.length - 1].round}.`}>
                           {r.cost === 0 ? "—" : `−${r.cost}`}
                         </div>
@@ -746,7 +746,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                   <span className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700, alignSelf: "center", marginRight: 2 }}>The route</span>
                   {t.earlyRoute.map((st, i) => (
                     <span key={st.o} data-routestep={st.pos} title={`${st.label} — ${st.name}: ${st.why}. He was on the board here in ${st.seen} of your ${st.of} completed mocks${st.adp != null ? `, market ADP ${st.adp}` : ""}.`}
-                      style={{ display: "inline-flex", flexDirection: "column", gap: 1, border: `1px solid ${POS_COLOR[st.pos]}55`, background: `${POS_COLOR[st.pos]}14`, borderRadius: 7, padding: "4px 7px", cursor: "help", minWidth: 0 }}>
+                      style={{ display: "inline-flex", flexDirection: "column", gap: 1, border: `1px solid ${alpha(POS_COLOR[st.pos], 33)}`, background: `${alpha(POS_COLOR[st.pos], 8)}`, borderRadius: 7, padding: "4px 7px", cursor: "help", minWidth: 0 }}>
                       <span style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
                         <b className="num mut" style={{ fontSize: 8.5 }}>{st.label}</b>
                         <b style={{ fontSize: 10, color: POS_COLOR[st.pos] }}>{st.pos}</b>
@@ -777,7 +777,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                           // ⭐ ADP AGAINST THIS PICK. Under it = the market takes him earlier than you are,
                           //   which is the definition of value at this slot; over it = you are reaching.
                           const v = pk.vsPick;
-                          const col = v == null ? "var(--mut)" : v <= -8 ? "#5FD0A8" : v <= -2 ? "#8FD8BC" : v < 8 ? "var(--ink)" : v < 20 ? "#E39A6E" : "#F2655C";
+                          const col = v == null ? "var(--mut)" : v <= -8 ? "var(--pos)" : v <= -2 ? "#8FD8BC" : v < 8 ? "var(--ink)" : v < 20 ? "#E39A6E" : "var(--neg)";
                           return (
                             <span key={pk.name} data-planrow={pk.name} data-planroute={isRoute ? "1" : ""}
                               title={`${pk.name} — value ${pk.val > 0 ? "+" : ""}${pk.val}${pk.adp != null ? ` · market ADP ${pk.adp}, ${v === 0 ? "exactly this pick" : v < 0 ? `${Math.abs(v)} picks BEFORE this slot — value if he's here` : `${v} picks after this slot — you'd be taking him early`}` : ""}. On the board here in ${pk.seen} of ${pk.of} mocks${pk.waitable ? `, and still there at your next pick in ${pk.nextSeen}` : ""}.${isRoute ? ` ROUTE: ${chosen.why}.` : ""}`}
@@ -786,7 +786,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                               <span style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
                                 <b style={{ fontSize: 9, color: POS_COLOR[pk.pos], flexShrink: 0 }}>{pk.pos}</b>
                                 <span style={{ fontSize: 11.5, color: col, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: isRoute ? 700 : 400 }}>{pk.name}</span>
-                                {pk.waitable && <span data-planwait style={{ flexShrink: 0, fontSize: 11, color: "#5FD0A8", lineHeight: 1 }} title="Still there at your next pick in most mocks">◦</span>}
+                                {pk.waitable && <span data-planwait style={{ flexShrink: 0, fontSize: 11, color: "var(--pos)", lineHeight: 1 }} title="Still there at your next pick in most mocks">◦</span>}
                               </span>
                               <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
                                 <span className="mut num" data-planadp={pk.adp == null ? "" : pk.adp} style={{ fontSize: 8.5 }}>{pk.adp != null ? `ADP ${pk.adp}` : "ADP —"}</span>
@@ -809,7 +809,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
 
       {/* ---- 04 · BARGAINS ---- */}
       {t.valuePlayers && t.valuePlayers.length > 0 && (
-        <Section n={4} title="Going later than they're worth" accent="#5FD0A8"
+        <Section n={4} title="Going later than they're worth" accent="var(--pos)"
           sub={`Where a player's ${t.valueMetric === "value" ? "long-term value" : "value over replacement"} is higher than the pick he actually goes at in your room would ordinarily buy. Read it as "goes in round 6, plays like a round 3 pick". Kickers and defenses are left out — they're priced on a different basis entirely.`}>
           {pricePair("val",
             priceCol("val", `Rounds 1-${cut}`, "starters — a round of surplus here is the whole draft", t.valueEarly || [], "Rounds of value", "value"),
@@ -820,7 +820,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
 
       {/* ---- 05 · AVOID ---- */}
       {t.avoidPlayers && t.avoidPlayers.length > 0 && (
-        <Section n={5} title="Going earlier than they're worth" accent="#F2655C"
+        <Section n={5} title="Going earlier than they're worth" accent="var(--neg)"
           sub="The mirror image: your room reaches for these. Letting one come to you two rounds later costs nothing, and taking him at his going rate costs you the pick. Kickers and defenses are excluded here too.">
           {pricePair("avd",
             priceCol("avd", `Rounds 1-${cut}`, "the expensive mistakes — one of these costs you a starter", t.avoidEarly || [], "Rounds overpaid", "avoid"),
@@ -937,7 +937,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                       </div>
                     </div>
                     <div style={{ textAlign: "right" }}>
-                      <div className="num" style={{ fontSize: 17, fontWeight: 800, color: "#5FD0A8", lineHeight: 1.15 }}>+{spread}</div>
+                      <div className="num" style={{ fontSize: 17, fontWeight: 800, color: "var(--pos)", lineHeight: 1.15 }}>+{spread}</div>
                       <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em" }}>pts, best vs worst</div>
                       <div className="mut num" style={{ fontSize: 9.5, marginTop: 2 }}>{best.n} team-drafts{best.topShare != null ? ` · ${best.topShare}% top ${t.podium || 3}` : ""}</div>
                     </div>
@@ -952,7 +952,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
                         { kind: "take", tone: "good", x: `${w.name} — on ${w.onN} of the ${w.of} teams in this group` },
                         { t: "Why he's flagged", x: `Across all your mocks he shows up ${w.lift}% more often on teams that finished top ${t.podium || 3} in their room than on the ones that finished bottom ${t.podium || 3}.` },
                       ])} onMouseLeave={hideTip}
-                        style={{ fontSize: 11, padding: "1.5px 8px", borderRadius: 999, cursor: "help", border: `1px solid ${col}55`, background: "var(--panel2)" }}>
+                        style={{ fontSize: 11, padding: "1.5px 8px", borderRadius: 999, cursor: "help", border: `1px solid ${alpha(col, 33)}`, background: "var(--panel2)" }}>
                         {surname(w.name)} <span className="mut num">+{w.lift}%</span>
                       </span>
                     ))}
@@ -986,7 +986,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
 
       {/* ---- footer ---- */}
       <div style={{ marginTop: 28, padding: "14px 16px", borderRadius: 11, border: `1px solid ${t.enough ? "var(--line)" : "var(--gold)"}`, background: "var(--panel2)", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-        <i className={`ti ${t.enough ? "ti-circle-check" : "ti-alert-circle"}`} style={{ fontSize: 20, color: t.enough ? "#5FD0A8" : "var(--gold)" }} aria-hidden="true" />
+        <i className={`ti ${t.enough ? "ti-circle-check" : "ti-alert-circle"}`} style={{ fontSize: 20, color: t.enough ? "var(--pos)" : "var(--gold)" }} aria-hidden="true" />
         <div style={{ flex: 1, minWidth: 220, fontSize: 12.5, lineHeight: 1.55 }}>
           {t.enough
             ? `Read from ${t.n} mocks — enough that one unusual room can't swing a finding on its own. Every mock you add keeps it current as ADP moves.`

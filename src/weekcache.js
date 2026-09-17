@@ -139,13 +139,13 @@ async function loadWeekAt(connected, sig, week) {
    The strings come from two feeds and neither is tidy, so this matches PREFIXES; an unrecognised status
    still lands somewhere sane rather than vanishing. */
 export const DESIGNATIONS = [
-  { re: /^(ir|inj|injured)/i, key: "IR", label: "IR", sev: 6, rank: 4, tone: "#F2655C" },
-  { re: /^(pup|nfi|susp)/i, key: "PUP", label: "Not available", sev: 6, rank: 4, tone: "#F2655C" },
-  { re: /^(out|o)$/i, key: "OUT", label: "Out", sev: 5, rank: 4, tone: "#F2655C" },
+  { re: /^(ir|inj|injured)/i, key: "IR", label: "IR", sev: 6, rank: 4, tone: "var(--neg)" },
+  { re: /^(pup|nfi|susp)/i, key: "PUP", label: "Not available", sev: 6, rank: 4, tone: "var(--neg)" },
+  { re: /^(out|o)$/i, key: "OUT", label: "Out", sev: 5, rank: 4, tone: "var(--neg)" },
   { re: /^(d|doubt)/i, key: "D", label: "Doubtful", sev: 4, rank: 3, tone: "#E08A3C" },
   { re: /^(q|quest)/i, key: "Q", label: "Questionable", sev: 3, rank: 3, tone: "var(--gold)" },
   { re: /^(dtd|day)/i, key: "DTD", label: "Day-to-day", sev: 2, rank: 2, tone: "var(--gold)" },
-  { re: /^(p|prob)/i, key: "P", label: "Probable", sev: 1, rank: 2, tone: "#6BA8E5" },
+  { re: /^(p|prob)/i, key: "P", label: "Probable", sev: 1, rank: 2, tone: "var(--info)" },
 ];
 export function designationOf(raw) {
   const s = String(raw || "").trim();
@@ -267,7 +267,7 @@ export function leagueFlags(hub, pack, opts = {}) {
        (it comes from the SCHEDULE; see rosterRead), so it wins and the opponent is blanked.
        Projection is left alone on purpose: a bye player's projection is a real number the feed holds, and
        seeing 16.9 sitting next to "Bye week" is exactly the sting that makes you go and fix the lineup. */
-    if (bye) { out.bye.push(name); rows.push({ ...base, opp: null, kind: "bye", label: "Bye week", tone: "#6BA8E5" }); }
+    if (bye) { out.bye.push(name); rows.push({ ...base, opp: null, kind: "bye", label: "Bye week", tone: "var(--info)" }); }
     if (!raw || /^(act|active|healthy)$/i.test(raw)) return;
     const des = designationOf(raw);
     // His game is over. Whatever the tag says now, it is about next Sunday — see the note on this function.
@@ -279,7 +279,7 @@ export function leagueFlags(hub, pack, opts = {}) {
     }
     if (/^(ir|inj|out|o$|pup|nfi|susp)/i.test(raw)) {
       out.out.push(`${name} (${raw})`);
-      rows.push({ ...base, kind: "out", label: (des && des.label) || raw, tone: (des && des.tone) || "#F2655C" });
+      rows.push({ ...base, kind: "out", label: (des && des.label) || raw, tone: (des && des.tone) || "var(--neg)" });
     } else if (/^(d|doubt|q|quest)/i.test(raw)) {
       out.check.push(`${name} (${raw})`);
       rows.push({ ...base, kind: "check", label: (des && des.label) || raw, tone: (des && des.tone) || "var(--gold)" });

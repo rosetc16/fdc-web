@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from "re
 import { api, hasBackend, getToken, setToken, syncHealth, authHealth } from "./api.js";
 import { useWide } from "./usewide.js";
 import { HoverTable, useHoverCard } from "./hovercard.jsx";
-import { teamReads, tradeBoard, marketSummary } from "./trademarket.js";
+import { teamReads, tradeBoard, marketSummary, partnerBoard, raceCurrency } from "./trademarket.js";
 
 // Lightweight SECTION-level error boundary. The app has a full-page boundary at the root, but a render error
 // in one panel (e.g. a rare data edge case in the draft recap/superlatives) shouldn't take down the entire
@@ -99,7 +99,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29af";
+const BUILD_TAG = "2026.07.29ah";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -722,7 +722,7 @@ export const benchTone = (left) => {
   if (v < 8) return "#C9A227";           // a real miss, but a normal one
   if (v < 16) return "var(--gold)";      // the kind of week you remember
   if (v < 25) return "#E8833A";
-  return "#F2655C";                      // a starter's week of points, left in a drawer
+  return "var(--neg)";                      // a starter's week of points, left in a drawer
 };
 
 /* ⭐⭐⭐⭐ WHERE YOU STOOD AGAINST THE WHOLE LEAGUE, AS A COLOUR — 29ae.
@@ -740,8 +740,8 @@ export const fieldTone = (w, l) => {
   const n = (Number(w) || 0) + (Number(l) || 0);
   if (!n) return "var(--mut)";
   const share = (Number(w) || 0) / n;
-  if (share >= 2 / 3) return "#5FD0A8";
-  if (share <= 1 / 3) return "#F2655C";
+  if (share >= 2 / 3) return "var(--pos)";
+  if (share <= 1 / 3) return "var(--neg)";
   return "var(--mut)";
 };
 
@@ -749,10 +749,10 @@ export const fieldTone = (w, l) => {
    review table and the full screen cannot drift into disagreeing about what "Blown" looks like — the same
    reasoning as COLS in WeeklyReview.jsx, where two "identical" grid strings were one edit from diverging. */
 export const REVIEW_VERDICT = {
-  blown:  { label: "Blown",  tone: "#F2655C", blurb: "your best lineup beats this opponent — this one was the lineup" },
-  earned: { label: "Earned", tone: "#5FD0A8", blurb: "the result the scores deserved" },
+  blown:  { label: "Blown",  tone: "var(--neg)", blurb: "your best lineup beats this opponent — this one was the lineup" },
+  earned: { label: "Earned", tone: "var(--pos)", blurb: "the result the scores deserved" },
   lucky:  { label: "Lucky",  tone: "var(--gold)", blurb: "you won with a below-median score — take it" },
-  robbed: { label: "Robbed", tone: "#6BA8E5", blurb: "a top-third score and you still lost" },
+  robbed: { label: "Robbed", tone: "var(--info)", blurb: "a top-third score and you still lost" },
 };
 
 export const surname = (full) => {
@@ -860,7 +860,7 @@ function PerfReadout() {
       {rows.length === 0 ? <div className="mut">Draft a player…</div> : rows.map((r, i) => (
         <div key={r.at + "-" + i} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "1px 0" }}>
           <span style={{ color: "var(--mut)" }}>{r.source}</span>
-          <span style={{ fontWeight: 700, color: r.ms > 600 ? "#F2655C" : r.ms > 250 ? "var(--gold)" : "#5FD0A8" }}>{r.ms}ms</span>
+          <span style={{ fontWeight: 700, color: r.ms > 600 ? "var(--neg)" : r.ms > 250 ? "var(--gold)" : "var(--pos)" }}>{r.ms}ms</span>
         </div>
       ))}
       {rows.length > 1 && <div className="mut" style={{ marginTop: 4, borderTop: "1px solid var(--line2)", paddingTop: 3 }}>worst {worst}ms · newest first</div>}
@@ -2674,8 +2674,138 @@ export const bandOfRound = (round, bands) => {
   }
   return -1;
 };
-const BYE_HUES = ["#F2655C", "#E0A63C", "#5FD0A8", "#5BA8F5", "#B07CC6", "#5FB0B0", "#D98C5F"];
-export const POS_COLOR = { QB:"#EF6A6A", RB:"#4FD1A1", WR:"#5BA8F5", TE:"#F2A35C", DL:"#b07cc6", LB:"#7e9b59", DB:"#5fb0b0", K:"#D9A5C0", DST:"#8FA8BF" };
+const BYE_HUES = ["var(--neg)", "var(--warn)", "var(--pos)", "var(--p-wr)", "#B07CC6", "#5FB0B0", "#D98C5F"];
+/* ⭐⭐⭐ ONE MAP, TWO THEMES — 29ah. These were nine raw hex values tuned against a near-black ground;
+   on white, four of them (the RB green and the WR blue especially) dropped under 3:1 and the position
+   dots stopped being distinguishable from each other. Pointing at custom properties means the theme
+   swaps them and nothing that consumes this map has to know a theme exists.
+   ⚠ CONSUMERS MUST NOT CONCATENATE AN ALPHA SUFFIX ONTO THESE. `${alpha(POS_COLOR[p], 27)}` produced a valid
+     colour when the value was hex and produces `var(--p-rb)44`, which is not a colour at all, now.
+     Use `alpha()` below — and note that one call site was ALREADY emitting `var(--line)44` through its
+     own fallback, so this was a live bug before the theme work, not one the theme work introduced. */
+export const POS_COLOR = { QB:"var(--p-qb)", RB:"var(--p-rb)", WR:"var(--p-wr)", TE:"var(--p-te)", DL:"var(--p-dl)", LB:"var(--p-lb)", DB:"var(--p-db)", K:"var(--p-k)", DST:"var(--p-dst)" };
+
+/* ⭐⭐⭐⭐ FADE A COLOUR WITHOUT KNOWING WHAT KIND OF COLOUR IT IS — 29ah.
+   Twenty-five sites across this file build a translucent border or wash by gluing two hex digits onto a
+   colour string. That works for `#5FD0A8` and is meaningless for `var(--pos)`, so every one of them
+   would have started emitting invalid CSS the moment the palette became tokens — and invalid CSS does
+   not throw, it silently paints nothing, which is the failure mode this project keeps relearning.
+   `color-mix` handles a custom property natively; the hex path is kept so a literal still works. */
+/* ⭐⭐⭐⭐⭐ LIGHT OR DARK — 29ah.
+   ==================================================================================================
+   Trey: "I would like to have a light and a dark mode um, that you could toggle on and off."
+
+   Three states, not two, and the third is the one that matters: FOLLOW THE SYSTEM is the default, and
+   light/dark are overrides a person opts into. A two-state toggle has to pick a side for somebody who
+   has never touched it, and picking dark is wrong for the reader in a bright room while picking light
+   changes the app under everyone who has been using it all season. Following the OS asks nobody and is
+   right for both.
+   ⚠ AN OVERRIDE IS STORED, FOLLOWING IS THE ABSENCE OF ONE. `system` writes nothing and REMOVES the
+     key, so "go back to following my system" is a real state rather than a third value that drifts out
+     of sync with what the OS actually says. It also means the default survives a browser that cannot
+     write storage at all.
+   ⚠ AND THE OS PREFERENCE IS LIVE. Somebody whose laptop flips to dark at sunset expects the page in
+     front of them to flip too — a one-shot read at boot would only follow the system until the first
+     time it mattered. The listener carries the old addListener spelling because Safari needs it.
+   ⚠ colorScheme IS SET ON THE DOCUMENT, not just our own tokens: form controls, scrollbars and the
+     spaces our React tree does not paint are drawn by the browser, and a light page with a black
+     scrollbar down the side is the tell that a theme was applied to the app and not to the window. */
+const THEME_KEY = "fdc:theme";
+export const readThemePref = () => {
+  try { const v = localStorage.getItem(THEME_KEY); return v === "light" || v === "dark" ? v : "system"; }
+  catch { return "system"; }
+};
+export const osPrefersDark = () => {
+  try { return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches); }
+  catch { return true; }
+};
+export const resolveTheme = (pref, dark) => (pref === "light" || pref === "dark" ? pref : (dark ? "dark" : "light"));
+
+/* ⭐⭐⭐⭐ STAMPED ON THE DOCUMENT BEFORE REACT RENDERS A SINGLE FRAME. Doing this only in a component
+   means the boot splash — and the first paint of the shell behind it — draws in the DEFAULT theme and
+   then snaps, which on a light-mode machine is a full-screen flash of near-black every time the app
+   opens. The stylesheet matches on the document as well as on our own root for exactly this reason. */
+export function stampTheme(theme) {
+  try {
+    document.documentElement.setAttribute("data-theme", theme);
+    document.documentElement.style.colorScheme = theme;
+  } catch { /* no document (a test importing this module): the React path still stamps the root */ }
+}
+try { stampTheme(resolveTheme(readThemePref(), osPrefersDark())); } catch { /* best effort at module load */ }
+
+export function useTheme() {
+  const [pref, setPref] = useState(readThemePref);
+  const [dark, setDark] = useState(osPrefersDark);
+  useEffect(() => {
+    let mq = null;
+    try { mq = window.matchMedia("(prefers-color-scheme: dark)"); } catch { return undefined; }
+    if (!mq) return undefined;
+    const on = (e) => setDark(!!e.matches);
+    if (mq.addEventListener) mq.addEventListener("change", on);
+    else if (mq.addListener) mq.addListener(on);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", on);
+      else if (mq.removeListener) mq.removeListener(on);
+    };
+  }, []);
+  const theme = resolveTheme(pref, dark);
+  useEffect(() => { stampTheme(theme); }, [theme]);
+  const choose = (next) => {
+    setPref(next);
+    try {
+      if (next === "system") localStorage.removeItem(THEME_KEY);
+      else localStorage.setItem(THEME_KEY, next);
+    } catch { /* a private window still gets the theme, it just will not remember it */ }
+  };
+  return { theme, pref, choose, osDark: dark };
+}
+
+/* ⚠ ONE SOURCE, HOWEVER MANY TOGGLES. `useTheme` holds React state, so calling it in each of the four
+   headers would give each its own copy: clicking one would repaint the app correctly (the document is
+   stamped either way) and leave the others showing the wrong icon until something unrelated re-rendered
+   them. That is the 29n same-tick double-write bug in a different costume — correct where you looked,
+   wrong everywhere else. The shell owns the hook; everything below reads the context. */
+const ThemeCtx = React.createContext(null);
+export const useThemeCtx = () => React.useContext(ThemeCtx)
+  || { theme: "dark", pref: "system", choose: () => {}, osDark: true };
+
+/* ⭐⭐⭐ THE CONTROL SAYS WHICH OF THE THREE STATES IT IS IN, not just which colours you are looking at.
+   The icon carries the MODE (a monitor for "following your system"), not the resolved theme, because
+   "following the system, currently dark" and "pinned to dark" look identical on screen and behave
+   completely differently at sunset. The title spells out both halves and what the next click does —
+   a three-state cycle is only honest if it tells you where in the cycle you are. */
+const THEME_MODES = [
+  { key: "system", icon: "ti-device-desktop", label: "Following your system" },
+  { key: "light", icon: "ti-sun", label: "Light" },
+  { key: "dark", icon: "ti-moon", label: "Dark" },
+];
+export function ThemeToggle({ compact }) {
+  const { theme, pref, choose } = useThemeCtx();
+  const i = Math.max(0, THEME_MODES.findIndex((m) => m.key === pref));
+  const cur = THEME_MODES[i], next = THEME_MODES[(i + 1) % THEME_MODES.length];
+  const title = pref === "system"
+    ? `Following your system (${theme}) — click for ${next.label.toLowerCase()}`
+    : `${cur.label} mode — click for ${next.key === "system" ? "your system setting" : next.label.toLowerCase()}`;
+  return (
+    <button type="button" className="btn btn-mini" data-themetoggle={pref} data-themenow={theme}
+      aria-label={title} title={title} onClick={() => choose(next.key)}
+      style={{ display: "inline-flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
+      <i className={`ti ${cur.icon}`} style={{ fontSize: 14 }} aria-hidden="true" />
+      {!compact && <span style={{ fontSize: 11 }}>{cur.key === "system" ? "Auto" : cur.label}</span>}
+    </button>
+  );
+}
+
+export const alpha = (c, pct) => {
+  const v = String(c == null ? "" : c);
+  if (!v) return "transparent";
+  if (v.startsWith("var(") || v.startsWith("color-mix")) return `color-mix(in srgb, ${v} ${pct}%, transparent)`;
+  if (v.startsWith("#") && (v.length === 7 || v.length === 4)) {
+    const n = Math.max(0, Math.min(255, Math.round((pct / 100) * 255)));
+    return `${v}${n.toString(16).padStart(2, "0")}`;
+  }
+  return v;
+};
 // ---- Recent trends feed --------------------------------------------------------------
 // PLUGGABLE DATA LAYER. In production, getTrendsFeed() reads a nightly-synced blend of
 // public sources — ADP movement (Sleeper/FantasyPros/ESPN), transactions & signings,
@@ -5936,7 +6066,7 @@ function SimpleStrip({ players, picks, advice, sims, proj, userIdx, onClock, TEA
             <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700 }}>How you're doing</div>
             <div style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
               <span className="disp" style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.1,
-                color: finish <= 3 ? "#5FD0A8" : finish <= Math.ceil(TEAMS / 2) ? "var(--gold)" : "#F2655C" }}>{ordinal(finish)}</span>
+                color: finish <= 3 ? "var(--pos)" : finish <= Math.ceil(TEAMS / 2) ? "var(--gold)" : "var(--neg)" }}>{ordinal(finish)}</span>
               <span className="mut" style={{ fontSize: 10.5 }}>of {TEAMS} projected</span>
             </div>
           </div>
@@ -5988,7 +6118,7 @@ function ComboBuilder({ players, sortedAdp, picks, cfg, draftedSet, o1, o2, labe
   };
   const Pct = ({ v, suffix }) => (v == null ? null : (
     <span className="num" style={{ fontSize: 9.5, fontWeight: 800, marginLeft: 5,
-      color: v >= 0.55 ? "#5FD0A8" : v >= 0.3 ? "var(--gold)" : "#F2655C" }}>{Math.round(v * 100)}%{suffix ? ` ${suffix}` : ""}</span>
+      color: v >= 0.55 ? "var(--pos)" : v >= 0.3 ? "var(--gold)" : "var(--neg)" }}>{Math.round(v * 100)}%{suffix ? ` ${suffix}` : ""}</span>
   ));
 
   useEffect(() => {
@@ -6069,7 +6199,7 @@ function ComboBuilder({ players, sortedAdp, picks, cfg, draftedSet, o1, o2, labe
               {running || !odds
                 ? <span className="mut num" style={{ fontSize: 18, fontWeight: 800 }}>…</span>
                 : <span className="num" data-comboboth={odds.both} style={{ fontSize: 20, fontWeight: 800,
-                    color: odds.both >= 55 ? "#5FD0A8" : odds.both >= 25 ? "var(--gold)" : "#F2655C" }}>{odds.both}%</span>}
+                    color: odds.both >= 55 ? "var(--pos)" : odds.both >= 25 ? "var(--gold)" : "var(--neg)" }}>{odds.both}%</span>}
               <span className="mut" style={{ fontSize: 9.5, marginLeft: 4 }}>YOU GET BOTH</span>
             </span>
           </div>
@@ -7691,10 +7821,18 @@ const overallPick = (o) => o + 1;
 const heat = (pct) => `hsla(${Math.round(pct * 1.25)},60%,45%,0.22)`;
 // Shade scaled to the CAP, so a maxed-out pick is the strongest colour on the board rather than a washed-out
 // one — with the old /80 divisor nothing could ever reach full strength once values were clamped at 50.
-const valBg = (v) => (v === 0 ? "transparent" : v > 0 ? `rgba(124,217,178,${Math.min(0.5, Math.abs(v) / (PICK_VALUE_CAP * 1.1))})` : `rgba(242,101,92,${Math.min(0.5, Math.abs(v) / (PICK_VALUE_CAP * 1.1))})`);
+const valBg = (v) => {
+  /* ⚠ A COMPUTED ALPHA, WHICH IS WHY THIS ONE CANNOT BE A PLAIN TOKEN — the wash gets stronger the
+     further the pick is from fair value, so the opacity is data. `alpha()` takes the percentage and
+     handles the custom property; the old form built an rgba() string around a hard-coded dark-theme
+     green and red, and neither would have flipped. */
+  if (v === 0) return "transparent";
+  const pct = 100 * Math.min(0.5, Math.abs(v) / (PICK_VALUE_CAP * 1.1));
+  return alpha(v > 0 ? "var(--pos)" : "var(--neg)", pct);
+};
 // Shared green→yellow→red scale for VBD / Value (points above replacement): strong ≥40, solid ≥20, fringe
 // ≥5, replacement-ish ≥0, below replacement <0. Used across hovers so strong values pop and weak ones warn.
-export const vbdColor = (v) => v == null ? "var(--mut)" : v >= 40 ? "#5FD0A8" : v >= 20 ? "#9BD17E" : v >= 5 ? "#E7C24B" : v >= 0 ? "#C9A54B" : "#F2655C";
+export const vbdColor = (v) => v == null ? "var(--mut)" : v >= 40 ? "var(--pos)" : v >= 20 ? "#9BD17E" : v >= 5 ? "var(--warn)" : v >= 0 ? "#C9A54B" : "var(--neg)";
 // Format a VBD/value number for display as a WHOLE number with an explicit sign (e.g. "+29", "-4"). Kept as
 // a single helper so every value/VBD readout stays consistent. NOTE: display is intentionally whole-number;
 // the ranking must NOT depend on sub-integer differences the user can't see — ties are broken deterministically
@@ -7706,7 +7844,7 @@ const fmtVal = (v) => v == null ? "—" : (v > 0 ? "+" : "") + Math.round(v);
 const adpReadColor = (overallPickNum, adp) => {
   if (adp == null || overallPickNum == null) return "var(--mut)";
   const gap = overallPickNum - adp;
-  return gap >= 8 ? "#5FD0A8" : gap <= -8 ? "#F2655C" : "var(--mut)";
+  return gap >= 8 ? "var(--pos)" : gap <= -8 ? "var(--neg)" : "var(--mut)";
 };
 
 // Lowercase a phrase for mid-sentence use, but keep position abbreviations (QB/RB/WR/TE/DST/DL/LB/DB) and
@@ -7973,7 +8111,7 @@ function OutlookCard({ content }) {
                         </> : <span className="mut">— empty —</span>}
                       </span>
                       <span className="num" style={{ textAlign: "right", fontWeight: 700, color: vbdColor(r.val) }}>{r.val != null ? Math.round(r.val) : "—"}</span>
-                      <span className="num" style={{ textAlign: "right", fontWeight: 800, color: r.contrib > 0.5 ? "#5FD0A8" : r.contrib < -0.5 ? "#F2655C" : "var(--mut)" }}>{Math.abs(r.contrib) < 0.05 ? "0" : (r.contrib > 0 ? "+" : "") + r.contrib.toFixed(1)}</span>
+                      <span className="num" style={{ textAlign: "right", fontWeight: 800, color: r.contrib > 0.5 ? "var(--pos)" : r.contrib < -0.5 ? "var(--neg)" : "var(--mut)" }}>{Math.abs(r.contrib) < 0.05 ? "0" : (r.contrib > 0 ? "+" : "") + r.contrib.toFixed(1)}</span>
                     </div>
                   );
                 })}
@@ -8042,7 +8180,7 @@ function OutlookCard({ content }) {
                   if (c === "pos") return <div key={ri + "-" + ci} style={{ ...base, textAlign: "left", fontWeight: 700, color: POS_COLOR[p.pos] || "var(--ink)" }}><Dot pos={p.pos} />{p.pos}</div>;
                   if (c === "drafter") return <div key={ri + "-" + ci} style={{ ...base, color: p.rec ? "var(--gold)" : "var(--mut)", textAlign: "left", fontSize: 10.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: p.rec ? 700 : 400 }}>{p.drafter || "—"}</div>;
                   if (c === "valread") { const vr = p.valRead; return <div key={ri + "-" + ci} style={{ ...base, textAlign: "right", fontWeight: 800, fontSize: 10.5, color: vr ? vr.c : "var(--mut)" }}>{vr ? vr.t : "—"}</div>; }
-                  if (c === "score") { const sc = p.pickScore; return <div key={ri + "-" + ci} className="num" style={{ ...base, textAlign: "right", fontWeight: 800, color: sc == null ? "var(--mut)" : sc > 0 ? "#5FD0A8" : sc < 0 ? "#F2655C" : "var(--mut)" }}>{sc != null ? (sc > 0 ? "+" : "") + sc : "—"}</div>; }
+                  if (c === "score") { const sc = p.pickScore; return <div key={ri + "-" + ci} className="num" style={{ ...base, textAlign: "right", fontWeight: 800, color: sc == null ? "var(--mut)" : sc > 0 ? "var(--pos)" : sc < 0 ? "var(--neg)" : "var(--mut)" }}>{sc != null ? (sc > 0 ? "+" : "") + sc : "—"}</div>; }
                   // 29o — "when he is expected to go", as a round.pick label rather than a raw ordinal.
                   if (c === "exp") return <div key={ri + "-" + ci} className="num" style={{ ...base, textAlign: "right", fontWeight: p.rec ? 800 : 600, color: p.rec ? "var(--gold)" : "var(--mut)" }}>{p.exp || "—"}</div>;
                   return <div key={ri + "-" + ci} style={base} />;
@@ -8219,15 +8357,73 @@ const css = `
    so every card floated above a darker ground — and since nearly everything in this app is a card, the
    page read as a field of floating boxes rather than a document. Surfaces now sit close together and
    hairlines do the separating, which is how the data-heavy sites this is measured against are built.
-   --gold went from #E0A63C (a highlighter) to a deeper brass: it appears on borders, headings, icons,
+   --gold went from var(--warn) (a highlighter) to a deeper brass: it appears on borders, headings, icons,
    chips and buttons all at once, and at full saturation that made everything shout at the same volume.
    Same hue, same identity, lower voice. --gold-line exists for chrome that wants a HINT of the accent
    without claiming to be the most important thing on screen. */
-.gs-root{--bg:#0B0F14;--panel:#111823;--panel2:#0E141B;--panel3:#1A2230;--line:#212B37;--line2:#2E3B4A;--ink:#E9EEF3;--mut:#8896A5;--gold:#E0A63C;--gold2:#F5C878;--gold-line:rgba(224,166,60,.32);--red:#E8635A;--green:#57C79E;--blue:#5F9EDA;--mono:'DM Mono','SF Mono',ui-monospace,monospace;
+/* ⭐⭐⭐⭐⭐ TWO THEMES, ONE SET OF NAMES — 29ah.
+   Trey: "I would like to have a light and a dark mode um, that you could toggle on and off... Obviously,
+   this would be complicated given that there's a lot of conditional formatting and things. So we would
+   need to make sure that like everything kind of switches over appropriately."
+
+   He is pointing at the hard half. Surfaces and body text were already tokenised and flip for free; the
+   CONDITIONAL FORMATTING did not, because a good-news green and a bad-news red were written as raw hex
+   literals at 629 sites across the app, and a colour chosen to sit on a near-black ground is exactly the
+   colour that disappears on a white one. So the semantic tones are tokens now too (pos, neg,
+   warn, info and their soft steps), which is what makes "switches over appropriately" mechanical
+   rather than a promise.
+
+   ⚠ DARK IS UNCHANGED, TO THE BYTE. Every dark value below is the value that shipped in 29ag — he asked
+     for a light mode, not a redesign of the one he has been using all season, and a theming pass that
+     quietly retunes the familiar theme would make every "is this right?" question twice as hard.
+   ⚠ AND THE RAMPS KEEP THEIR ORDER, NOT THEIR BRIGHTNESS. In dark, "strong" is the BRIGHTER green
+     (var(--pos) over var(--pos-soft)) because brighter means further from the ground; on white the same rule makes
+     strong the DARKER one. Inverting lightness naively would have left the ramp reading backwards — a
+     safe win painted fainter than a toss-up. The tokens are named for MEANING (pos versus pos-soft),
+     so each theme picks its own lightness and the ordinal reading survives both.
+   ⚠ THE THEME IS ALWAYS STAMPED EXPLICITLY on .gs-root by JS, never left to the media query alone.
+     Following the OS is the DEFAULT, not the mechanism: the resolved theme has to be readable from JS as
+     well as CSS, because the share-card canvas cannot read a custom property and a few ramps are computed
+     in JS before they reach a style prop. One resolved value, two consumers. */
+.gs-root{--mono:'DM Mono','SF Mono',ui-monospace,monospace;
   /* A flat ground. The old radial "glow" behind the header is the single most recognisable stock-landing-
      page gesture there is, and it made the top of every screen slightly milky. */
   background:var(--bg);color:var(--ink);font-family:'Barlow',system-ui,sans-serif;min-height:100vh;font-size:14px;
   -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;font-feature-settings:'kern' 1;}
+/* DARK — byte for byte what shipped in 29ag. The bare .gs-root selector carries it so a root that has not
+   been stamped yet (the first paint, before the theme effect runs) is never unstyled. */
+.gs-root,.gs-root[data-theme=dark],html[data-theme=dark] .gs-root{
+  --bg:#0B0F14;--panel:#111823;--panel2:#0E141B;--panel3:#1A2230;--line:#212B37;--line2:#2E3B4A;
+  --ink:#E9EEF3;--mut:#8896A5;--gold:#E0A63C;--gold2:#F5C878;--gold-line:rgba(224,166,60,.32);
+  --red:#E8635A;--green:#57C79E;--blue:#5F9EDA;
+  /* The conditional-formatting set. pos and neg are the strong ends of every ramp on the site and
+     the soft pair is the near-neutral step in from them; warn is the "you need to look at this" gold and
+     and info the neutral blue. Named for what they MEAN, because that is the only thing both themes
+     agree on. */
+  --pos:#5FD0A8;--pos-soft:#2E8F6B;--neg:#F2655C;--neg-soft:#B8453C;--warn:#E0A63C;--info:#6BA8E5;
+  /* ⚠ THE WASH AND THE HAIRLINE ARE THEIR OWN TOKENS, NOT AN OPACITY OF THE ONE ABOVE. The app was
+     using eleven different alphas of the same green to mean one thing ("this cell is good news"), and
+     on a white ground a translucent tint needs a different recipe entirely — a 12%-opacity dark green
+     over white is a grey smear, so light picks its own tint rather than inheriting an opacity. */
+  --pos-wash:rgba(95,208,168,.13);--pos-line:rgba(95,208,168,.42);
+  --neg-wash:rgba(242,101,92,.13);--neg-line:rgba(242,101,92,.42);
+  /* Position identity. One map, so a dot, a chip and a table cell can never disagree about what a
+     running back looks like. */
+  --p-qb:#EF6A6A;--p-rb:#4FD1A1;--p-wr:#5BA8F5;--p-te:#F2A35C;--p-dl:#b07cc6;--p-lb:#7e9b59;
+  --p-db:#5fb0b0;--p-k:#D9A5C0;--p-dst:#8FA8BF;}
+/* LIGHT — a soft ground rather than paper white, because this app is mostly dense tables and a pure
+   #FFF field under a twelve-row board is the glare he already called "crowded" made worse. Panels stay
+   white so they still read as raised against it, which is the same figure/ground job the dark theme does
+   with #111823 over #0B0F14, in the other direction. */
+.gs-root[data-theme=light],html[data-theme=light] .gs-root{
+  --bg:#F4F6F8;--panel:#FFFFFF;--panel2:#F7F9FB;--panel3:#EBEFF3;--line:#D9DFE6;--line2:#C2CBD5;
+  --ink:#131A22;--mut:#5A6874;--gold:#8A6A12;--gold2:#6E5410;--gold-line:rgba(138,106,18,.34);
+  --red:#C0392B;--green:#0F7A57;--blue:#1F6FB8;
+  --pos:#0C7A57;--pos-soft:#2E7D5E;--neg:#C0392B;--neg-soft:#A34A40;--warn:#8A6A12;--info:#1F6FB8;
+  --pos-wash:rgba(12,122,87,.10);--pos-line:rgba(12,122,87,.38);
+  --neg-wash:rgba(192,57,43,.09);--neg-line:rgba(192,57,43,.34);
+  --p-qb:#C0392B;--p-rb:#0F7A57;--p-wr:#1F6FB8;--p-te:#A85A14;--p-dl:#6D3D8A;--p-lb:#4A6330;
+  --p-db:#2C6E6E;--p-k:#8E4B6B;--p-dst:#4A5F73;}
 .gs-root *{box-sizing:border-box}
 .disp{font-family:'Barlow Condensed','Barlow',sans-serif;letter-spacing:.02em}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px}
@@ -8287,7 +8483,7 @@ body.buybar-open .fbdock{bottom:76px!important}
 .tierbreak td{user-select:none}
 /* Keyboard-highlighted row. Distinct from the gold "recommended" row on purpose — this one is where
    YOUR cursor is, and pressing Enter drafts it. */
-.kbrow>td{background:rgba(107,168,229,.14)!important;box-shadow:inset 2px 0 0 #5BA8F5}
+.kbrow>td{background:rgba(107,168,229,.14)!important;box-shadow:inset 2px 0 0 var(--p-wr)}
 /* PRINTABLE CHEAT SHEET. Hiding "everything but one node" is unreliable with display:none once that node
    is nested deep in the app tree, so we flip visibility instead — the sheet and its descendants stay
    visible, everything else goes invisible but keeps its box, and the sheet is lifted to the page origin. */
@@ -8670,7 +8866,7 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 @keyframes liveBreath{0%,100%{opacity:1}50%{opacity:.35}}
 .livedot{animation:liveBreath 2.2s ease-in-out infinite}
 @media (prefers-reduced-motion: reduce){.livedot{animation:none}}
-@keyframes clockFlash{0%,100%{background:rgba(242,101,92,.10);box-shadow:none}50%{background:rgba(242,101,92,.34);box-shadow:0 0 20px rgba(242,101,92,.5),inset 0 0 26px rgba(242,101,92,.14)}}
+@keyframes clockFlash{0%,100%{background:var(--neg-wash);box-shadow:none}50%{background:var(--neg-line);box-shadow:0 0 20px var(--neg-line),inset 0 0 26px var(--neg-wash)}}
 .clock-urgent{animation:clockFlash 1s ease-in-out infinite}
 .glowline{background:linear-gradient(90deg,transparent,var(--gold),transparent);height:1px;opacity:.5}
 .hover-row{transition:background .12s}.hover-row:hover{background:#16160F}
@@ -8948,7 +9144,7 @@ export function Compass({ size = 40, heading = null, spin = false }) {
     const major = i % 3 === 0;
     ticks.push(
       <line key={i} x1="50" y1="4" x2="50" y2={cardinal ? 13 : major ? 10 : 8}
-        stroke={cardinal ? "var(--gold,#E0A63C)" : "var(--line2,#3A4757)"}
+        stroke={cardinal ? "var(--gold,var(--warn))" : "var(--line2,#3A4757)"}
         strokeWidth={cardinal ? 2 : major ? 1 : 0.7} opacity={cardinal ? 1 : major ? 0.65 : 0.45}
         transform={`rotate(${a} 50 50)`} strokeLinecap="round" />
     );
@@ -8959,21 +9155,21 @@ export function Compass({ size = 40, heading = null, spin = false }) {
           shape and laces; the compass is what the eye lands on. Does not rotate. */}
       <g transform="rotate(-38 50 50)" opacity="0.16">
         <path d="M50 33 C61 33 71 40 71 50 C71 60 61 67 50 67 C39 67 29 60 29 50 C29 40 39 33 50 33 Z"
-          fill="none" stroke="var(--gold,#E0A63C)" strokeWidth="1.6" strokeLinejoin="round" />
-        <line x1="42" y1="50" x2="58" y2="50" stroke="var(--gold,#E0A63C)" strokeWidth="1.2" />
+          fill="none" stroke="var(--gold,var(--warn))" strokeWidth="1.6" strokeLinejoin="round" />
+        <line x1="42" y1="50" x2="58" y2="50" stroke="var(--gold,var(--warn))" strokeWidth="1.2" />
         {[-4.5, -1.5, 1.5, 4.5].map((dx, i) => (
-          <line key={i} x1={50 + dx} y1="47.5" x2={50 + dx} y2="52.5" stroke="var(--gold,#E0A63C)" strokeWidth="1" strokeLinecap="round" />
+          <line key={i} x1={50 + dx} y1="47.5" x2={50 + dx} y2="52.5" stroke="var(--gold,var(--warn))" strokeWidth="1" strokeLinecap="round" />
         ))}
       </g>
 
       {/* THE COMPASS — the star. Bold, prominent, spins in place. */}
       <g className={spin ? "spin-slow" : ""}>
-        <circle cx="50" cy="50" r="47" fill="none" stroke="var(--gold,#E0A63C)" strokeWidth="2.2" opacity="0.95" />
+        <circle cx="50" cy="50" r="47" fill="none" stroke="var(--gold,var(--warn))" strokeWidth="2.2" opacity="0.95" />
         <circle cx="50" cy="50" r="42" fill="none" stroke="var(--line2,#3A4757)" strokeWidth="1" opacity="0.5" />
         {ticks}
         {/* four-point compass rose star — the dominant motif */}
         {[0, 90, 180, 270].map((a) => (
-          <polygon key={a} points="50,15 53,50 50,50" fill="var(--gold,#E0A63C)" transform={`rotate(${a} 50 50)`} />
+          <polygon key={a} points="50,15 53,50 50,50" fill="var(--gold,var(--warn))" transform={`rotate(${a} 50 50)`} />
         ))}
         {[0, 90, 180, 270].map((a) => (
           <polygon key={"b" + a} points="50,15 47,50 50,50" fill="var(--gold2,#F5C878)" opacity="0.8" transform={`rotate(${a} 50 50)`} />
@@ -8983,7 +9179,7 @@ export function Compass({ size = 40, heading = null, spin = false }) {
         ))}
       </g>
       {/* center hub cap (still) */}
-      <circle cx="50" cy="50" r="3" fill="var(--gold,#E0A63C)" />
+      <circle cx="50" cy="50" r="3" fill="var(--gold,var(--warn))" />
       <circle cx="50" cy="50" r="1.3" fill="var(--bg,#0E1217)" />
     </svg>
   );
@@ -9330,9 +9526,9 @@ function InjuryReport({ players, draftedSet, onClose, onAvoid, avoid, tierOf }) 
                       {/* ⭐ 29n — the value band, so "how much do I care about this note" is answerable
                           without cross-referencing the board. Same four words as Position scarcity. */}
                       {tier && (() => {
-                        const TC = { elite: "var(--gold)", above: "#5FD0A8", avg: "#8FA8BF", bench: "var(--mut)" };
+                        const TC = { elite: "var(--gold)", above: "var(--pos)", avg: "#8FA8BF", bench: "var(--mut)" };
                         const TL = { elite: "elite", above: "above avg.", avg: "avg. starter", bench: "bench" };
-                        return <span data-injrowtier={tier} style={{ fontSize: 8.5, fontWeight: 700, marginLeft: 6, textTransform: "uppercase", letterSpacing: ".03em", color: TC[tier], border: `1px solid ${TC[tier]}55`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>{TL[tier]}</span>;
+                        return <span data-injrowtier={tier} style={{ fontSize: 8.5, fontWeight: 700, marginLeft: 6, textTransform: "uppercase", letterSpacing: ".03em", color: TC[tier], border: `1px solid ${alpha(TC[tier], 33)}`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>{TL[tier]}</span>;
                       })()}
                       {gone && <span className="mut" style={{ fontSize: 10, marginLeft: 6 }}>· drafted</span>}
                     </div>
@@ -10669,10 +10865,16 @@ export default function App() {
     return () => { alive = false; };
   }, [activeFmt, packKey]);
 
+  /* The shell owns the theme for the whole tree — see ThemeCtx above for why it cannot live in the
+     headers. The document is already stamped at module load, so the splash below is drawn in the right
+     theme too rather than flashing the default. */
+  const themeApi = useTheme();
+
   if (!bootReady) return <BootSplash css={css} />;
 
   return (
-    <div ref={shellRef} className={`gs-root${noHoverAnim ? " no-hover-anim" : ""}`}>
+    <ThemeCtx.Provider value={themeApi}>
+    <div ref={shellRef} data-theme={themeApi.theme} className={`gs-root${noHoverAnim ? " no-hover-anim" : ""}`}>
       <style>{css}</style>
       {restoring && (
         <div style={{ maxWidth: 520, margin: "80px auto", padding: "0 20px", textAlign: "center" }}>
@@ -10952,6 +11154,7 @@ export default function App() {
         } catch (e) { /* error shown in modal */ }
       }} />}
     </div>
+    </ThemeCtx.Provider>
   );
 }
 
@@ -10987,7 +11190,7 @@ function GuideGraphic({ kind }) {
   );
   if (kind === "draft") return (
     <svg viewBox="0 0 240 96" style={box} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-      {[["#4FD1A1", 0, "Top pick"], ["#5BA8F5", 1, ""], ["#F2A35C", 2, ""]].map(([c, i, tag], k) => (<g key={k}><rect x="20" y={14 + i * 24} width="200" height="18" rx="5" fill="var(--panel2)" /><circle cx="32" cy={23 + i * 24} r="4" fill={c} />{tag ? <><rect x="150" y={17 + i * 24} width="44" height="12" rx="4" fill="none" stroke={g} strokeWidth="1" /><text x="172" y={26 + i * 24} fontSize="7" fill={g} textAnchor="middle">{tag}</text></> : null}<rect x="44" y={19 + i * 24} width={80} height="8" rx="4" fill="var(--line)" /></g>))}
+      {[["var(--p-rb)", 0, "Top pick"], ["var(--p-wr)", 1, ""], ["var(--p-te)", 2, ""]].map(([c, i, tag], k) => (<g key={k}><rect x="20" y={14 + i * 24} width="200" height="18" rx="5" fill="var(--panel2)" /><circle cx="32" cy={23 + i * 24} r="4" fill={c} />{tag ? <><rect x="150" y={17 + i * 24} width="44" height="12" rx="4" fill="none" stroke={g} strokeWidth="1" /><text x="172" y={26 + i * 24} fontSize="7" fill={g} textAnchor="middle">{tag}</text></> : null}<rect x="44" y={19 + i * 24} width={80} height="8" rx="4" fill="var(--line)" /></g>))}
       <circle cx="208" cy="78" r="11" fill="none" stroke={g} strokeWidth="2" /><polygon points="208,71 211,80 208,77 205,80" fill={g} />
     </svg>
   );
@@ -11607,8 +11810,8 @@ export function CheatSheetModal({ league, cfg, getRows, tierMetric, myRanks, que
   })();
   const sheetHi = (p) => {
     const l = sheetLean(p);
-    if (l > 0) return "rgba(95,208,168,.09)";
-    if (l < 0) return "rgba(242,101,92,.07)";
+    if (l > 0) return "var(--pos-wash)";
+    if (l < 0) return "var(--neg-wash)";
     if (queue && queue.has && queue.has(p.name)) return "rgba(224,166,60,.09)";
     return "transparent";
   };
@@ -11620,7 +11823,7 @@ export function CheatSheetModal({ league, cfg, getRows, tierMetric, myRanks, que
     }
     if (col === "My rank") {
       const l = sheetLean(p);
-      return { color: l > 0 ? "#5FD0A8" : l < 0 ? "#F2655C" : "var(--ink)", fontWeight: l ? 800 : 400 };
+      return { color: l > 0 ? "var(--pos)" : l < 0 ? "var(--neg)" : "var(--ink)", fontWeight: l ? 800 : 400 };
     }
     if (col === "Bye") {
       const bt = sheetByeDupes[p.bye];
@@ -11672,9 +11875,9 @@ export function CheatSheetModal({ league, cfg, getRows, tierMetric, myRanks, que
           <PrintedStrategy strategy={strategy} cfg={cfg} />
           {/* The key. A coloured sheet with no key is a decorated sheet. */}
           <div data-sheetkey style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", fontSize: 9.5, color: "var(--mut)", marginBottom: 8, paddingBottom: 6, borderBottom: "1px solid var(--line2)" }}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: "rgba(95,208,168,.22)", border: "1px solid #5FD0A855" }} />you rank him well above the market</span>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: "rgba(242,101,92,.2)", border: "1px solid #F2655C55" }} />the market ranks him well above you</span>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: "rgba(224,166,60,.22)", border: "1px solid #E0A63C55" }} />on your priority list</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: "var(--pos-wash)", border: "1px solid var(--pos-line)" }} />you rank him well above the market</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: "var(--neg-wash)", border: "1px solid var(--neg-line)" }} />the market ranks him well above you</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: "rgba(224,166,60,.22)", border: "1px solid var(--warn)55" }} />on your priority list</span>
             {Object.keys(sheetByeDupes).length > 0 && <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><b style={{ color: sheetByeDupes[Object.keys(sheetByeDupes)[0]] }}>bye</b>a week your own roster already doubles up on</span>}
           </div>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
@@ -12161,7 +12364,7 @@ function StrategyEditor({ league, user, allLeagues, taken, onSave, onSaveMaster,
             <button className="btn btn-mini" style={{ borderColor: tab === "players" ? "var(--gold)" : "var(--line)", color: tab === "players" ? "var(--gold)" : "var(--ink)" }} onClick={() => setTab("players")}>Players</button>
             <button className="btn btn-mini" style={{ borderColor: tab === "rules" ? "var(--gold)" : "var(--line)", color: tab === "rules" ? "var(--gold)" : "var(--ink)" }} onClick={() => setTab("rules")}>Rules {(strat.rules || []).length ? `(${strat.rules.length})` : ""}</button>
             <div style={{ flex: 1 }} />
-            {[["Targets", (strat.targets || []).length, "var(--gold)"], ["Priority", queue.size, "var(--gold)"], ["Never", avoid.size, "#F2655C"], ["Rules", (strat.rules || []).length, "var(--mut)"]].map(([lbl, n, col]) => (
+            {[["Targets", (strat.targets || []).length, "var(--gold)"], ["Priority", queue.size, "var(--gold)"], ["Never", avoid.size, "var(--neg)"], ["Rules", (strat.rules || []).length, "var(--mut)"]].map(([lbl, n, col]) => (
               <div key={lbl} data-stratstat={lbl} style={{ textAlign: "center", minWidth: 52, padding: "3px 8px", borderRadius: 7, border: "1px solid var(--line)", background: "var(--panel2)" }}>
                 <div className="num" style={{ fontSize: 15, fontWeight: 800, lineHeight: 1.1, color: n ? col : "var(--line2)" }}>{n}</div>
                 <div className="mut" style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em" }}>{lbl}</div>
@@ -12229,7 +12432,7 @@ function StrategyEditor({ league, user, allLeagues, taken, onSave, onSaveMaster,
                         onClick={() => toggle(setAvoid, p.name)}
                         style={{ width: "100%", padding: "3px 4px", fontSize: 10, letterSpacing: ".02em",
                           borderColor: isAvoid ? "var(--red)" : "var(--line)", color: isAvoid ? "var(--red)" : "var(--mut)",
-                          background: isAvoid ? "rgba(242,101,92,.12)" : "transparent" }}>
+                          background: isAvoid ? "var(--neg-wash)" : "transparent" }}>
                         {isAvoid ? "✓ DO NOT DRAFT" : "Do not draft"}
                       </button>
                     </span>
@@ -12263,7 +12466,7 @@ function StrategyEditor({ league, user, allLeagues, taken, onSave, onSaveMaster,
                             if (!t2) return "var(--line)";
                             const pc = t2.o != null ? oddsAt(t2.o, p.id) : null;
                             if (pc == null) return gone != null && t2.from > gone ? "var(--line2)" : "var(--gold)";
-                            return pc < 10 ? "var(--red)" : pc < 35 ? "#E0A63C88" : "var(--gold)";
+                            return pc < 10 ? "var(--red)" : pc < 35 ? "var(--warn)88" : "var(--gold)";
                           })(),
                           color: t2 ? "var(--ink)" : "var(--mut)" }}
                         data-stratround={p.name}
@@ -12561,7 +12764,7 @@ function MockRunTable({ rows, totalPicks, onOpen, onDelete, delId, setDelId, com
     ? "28px 96px 70px 52px 130px minmax(0,1fr) 96px"
     : "34px 116px 76px 60px 60px 162px minmax(0,1fr) 108px";
   const pill = (pp, k) => (
-    <b key={k} style={{ fontSize: 10, color: POS_COLOR[pp] || "var(--mut)", border: `1px solid ${POS_COLOR[pp] || "var(--line)"}44`, borderRadius: 4, padding: "1px 4px", whiteSpace: "nowrap" }}>{pp}</b>
+    <b key={k} style={{ fontSize: 10, color: POS_COLOR[pp] || "var(--mut)", border: `1px solid ${alpha(POS_COLOR[pp] || "var(--line)", 27)}`, borderRadius: 4, padding: "1px 4px", whiteSpace: "nowrap" }}>{pp}</b>
   );
   // ⭐ His bands, scaled so a 14-team league doesn't call 6th "yellow" when it is above median.
   const finBand = (r) => {
@@ -12570,7 +12773,7 @@ function MockRunTable({ rows, totalPicks, onOpen, onDelete, delId, setDelId, com
     const amber = Math.max(6, Math.round(r.of * 0.6));
     return r.rank <= green ? "good" : r.rank <= amber ? "warn" : "bad";
   };
-  const FIN_TONE = { good: ["#5FD0A8", "rgba(95,208,168,.14)"], warn: ["var(--gold)", "rgba(224,166,60,.14)"], bad: ["#F2655C", "rgba(242,101,92,.13)"] };
+  const FIN_TONE = { good: ["var(--pos)", "var(--pos-wash)"], warn: ["var(--gold)", "rgba(224,166,60,.14)"], bad: ["var(--neg)", "var(--neg-wash)"] };
   return (
     <>
       <div className="mocklisthead" style={{ display: "grid", gridTemplateColumns: COLS, gap: 8, fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, padding: "0 2px 5px" }}>
@@ -12597,7 +12800,7 @@ function MockRunTable({ rows, totalPicks, onOpen, onDelete, delId, setDelId, com
                   {made}<span style={{ fontWeight: 400, fontSize: 9.5, opacity: .8 }}> / {totalPicks}</span>
                 </b>
               ) : r ? (
-                <b style={{ display: "inline-block", fontSize: 12.5, fontWeight: 800, color: tone[0], background: tone[1], border: `1px solid ${tone[0]}55`, borderRadius: 6, padding: "3px 7px", whiteSpace: "nowrap" }}>
+                <b style={{ display: "inline-block", fontSize: 12.5, fontWeight: 800, color: tone[0], background: tone[1], border: `1px solid ${alpha(tone[0], 33)}`, borderRadius: 6, padding: "3px 7px", whiteSpace: "nowrap" }}>
                   {ordinal(r.rank)} <span style={{ fontWeight: 400, fontSize: 9.5, opacity: .8 }}>of {r.of}</span>
                 </b>
               ) : <span className="mut">—</span>}
@@ -12991,7 +13194,7 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
                           {isActive && <span className="chip" style={{ marginLeft: 5, borderColor: "var(--gold)", color: "var(--gold)", fontSize: 9 }}>IN USE</span>}
                         </div>
                         <div className="mut" style={{ fontSize: 11 }}>{rankSetLabel(setSettingsKey(set))} · {(set.list || []).length} ranked</div>
-                        {why && <div style={{ fontSize: 10.5, marginTop: 2, color: off ? "#F2655C" : "var(--gold)" }}>{off ? "Not usable here — " : "Heads up — "}{why}</div>}
+                        {why && <div style={{ fontSize: 10.5, marginTop: 2, color: off ? "var(--neg)" : "var(--gold)" }}>{off ? "Not usable here — " : "Heads up — "}{why}</div>}
                       </div>
                       <button className="btn btn-mini" data-rankedit={set.id} onClick={() => { setRanksOpen(false); if (onEditRankSet) onEditRankSet(set.id); else if (onRankings) onRankings(); }}>
                         <i className="ti ti-pencil" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Edit
@@ -13149,7 +13352,7 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
           const cs = league.cfg.connect && league.cfg.connect.status;
           if (cs === "drafting") return (
             <div className="panel" style={{ padding: "12px 14px", marginTop: 10, background: "rgba(224,166,60,.07)", borderColor: "var(--gold)", display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ display: "inline-flex", width: 9, height: 9, borderRadius: "50%", background: "#4FD1A1", boxShadow: "0 0 0 3px rgba(79,209,161,.2)" }} />
+              <span style={{ display: "inline-flex", width: 9, height: 9, borderRadius: "50%", background: "var(--p-rb)", boxShadow: "0 0 0 3px rgba(79,209,161,.2)" }} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--gold)" }}>Your draft is LIVE right now on Sleeper</div>
                 <div className="mut" style={{ fontSize: 11.5 }}>Jump into the official draft below — it's syncing your league's picks in real time. Don't run a mock for this; use “{st === "progress" ? "Resume" : "Start"} Official Draft”.</div>
@@ -13197,9 +13400,9 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
         )}
         {platformSyncNote && (
           <div data-platsync className="panel" style={{ padding: "9px 13px", marginTop: 10, background: "rgba(126,214,165,.08)", border: "1px solid rgba(126,214,165,.45)", display: "flex", alignItems: "center", gap: 9 }}>
-            <i className="ti ti-refresh" style={{ fontSize: 15, color: "#7ed6a5" }} aria-hidden="true" />
+            <i className="ti ti-refresh" style={{ fontSize: 15, color: "var(--pos)" }} aria-hidden="true" />
             <div style={{ fontSize: 12, lineHeight: 1.45, flex: 1 }}>
-              <b style={{ color: "#7ed6a5" }}>Updated from Sleeper: </b>{platformSyncNote}. Your board, strategy and prep now match your league.
+              <b style={{ color: "var(--pos)" }}>Updated from Sleeper: </b>{platformSyncNote}. Your board, strategy and prep now match your league.
             </div>
             <button className="btn btn-mini" onClick={() => setPlatformSyncNote(null)}>Got it</button>
           </div>
@@ -13264,7 +13467,7 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
             </button>
             <button className="hubtile" onClick={() => (onMockPlan ? onMockPlan(league.id) : setTrendsOpen((v) => !v))} style={{ flex: 1, textAlign: "left", background: trendsOpen ? "rgba(126,214,165,.09)" : "var(--panel)", border: `1px solid ${trendsOpen ? "var(--green)" : "var(--line)"}`, borderRadius: 12, padding: "12px 14px", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", display: "flex", flexDirection: "column", justifyContent: "center", minHeight: 0, overflow: "hidden" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <i className="ti ti-chart-histogram" style={{ fontSize: 19, color: "#7ed6a5" }} aria-hidden="true" />
+                <i className="ti ti-chart-histogram" style={{ fontSize: 19, color: "var(--pos)" }} aria-hidden="true" />
                 <div className="disp" style={{ fontSize: 15.5, fontWeight: 700 }}>Draft Plan and Trends</div>
                 <div style={{ flex: 1 }} />
                 <i className={`ti ti-${onMockPlan ? "arrow-right" : `chevron-${trendsOpen ? "up" : "down"}`}`} style={{ fontSize: 14, color: "var(--mut)" }} aria-hidden="true" />
@@ -13356,7 +13559,7 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
             {histOpen && (
               <div className="panel" style={{ padding: 14, marginTop: 10 }}>
                 {hist == null && <div className="mut" style={{ fontSize: 12.5 }}>Loading draft history from Sleeper…</div>}
-                {histErr && <div className="mut" style={{ fontSize: 12.5, color: "#F2655C" }}>{histErr}</div>}
+                {histErr && <div className="mut" style={{ fontSize: 12.5, color: "var(--neg)" }}>{histErr}</div>}
                 {hist != null && !histErr && hist.length === 0 && <div className="mut" style={{ fontSize: 12.5 }}>No past drafts found for this league chain yet.</div>}
                 {hist != null && hist.length > 0 && (
                   <div>
@@ -13478,7 +13681,7 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
               </div>
               <div style={{ padding: "12px 16px", maxHeight: "70vh", overflowY: "auto" }}>
                 {histBoard.loading && <div className="mut" style={{ fontSize: 13 }}>Pulling this draft from Sleeper…</div>}
-                {histBoard.error && <div className="mut" style={{ fontSize: 13, color: "#F2655C" }}>{histBoard.error}</div>}
+                {histBoard.error && <div className="mut" style={{ fontSize: 13, color: "var(--neg)" }}>{histBoard.error}</div>}
                 {!histBoard.loading && !histBoard.error && Array.isArray(histBoard.picks) && (
                   histBoard.picks.length === 0
                     ? <div className="mut" style={{ fontSize: 13 }}>No picks recorded for this draft.</div>
@@ -13571,9 +13774,9 @@ function ToolGraphic({ kind, color }) {
 function HeroShowcase() {
   const TOPICS = [
     { key: "board", icon: "ti-layout-board", label: "Live board", color: "#e0833a" },
-    { key: "predict", icon: "ti-target-arrow", label: "Predict the board", color: "#5BA8F5" },
-    { key: "trade", icon: "ti-arrows-exchange", label: "Trade intelligence", color: "#4FD1A1" },
-    { key: "ranks", icon: "ti-list-numbers", label: "Your rankings", color: "#d6aa4b" },
+    { key: "predict", icon: "ti-target-arrow", label: "Predict the board", color: "var(--p-wr)" },
+    { key: "trade", icon: "ti-arrows-exchange", label: "Trade intelligence", color: "var(--p-rb)" },
+    { key: "ranks", icon: "ti-list-numbers", label: "Your rankings", color: "var(--warn)" },
     { key: "grades", icon: "ti-trophy", label: "Live grades", color: "#c79cff" },
   ];
   const [active, setActive] = useState("board");
@@ -13601,10 +13804,10 @@ function HeroShowcase() {
   // ---- PREDICT: upcoming picks with survival % + why-tags (team need / run / value) ----
   const PredictDemo = () => {
     const rows = [
-      { name: "Bijan Robinson", pos: "RB", pct: 4, tag: "Positional run", tagColor: "#EF6A6A" },
-      { name: "CeeDee Lamb", pos: "WR", pct: 22, tag: "Best available", tagColor: "#5BA8F5" },
-      { name: "Puka Nacua", pos: "WR", pct: 51, tag: "Fills your WR need", tagColor: "#4FD1A1" },
-      { name: "Sam LaPorta", pos: "TE", pct: 78, tag: "Value vs ADP", tagColor: "#F2A35C" },
+      { name: "Bijan Robinson", pos: "RB", pct: 4, tag: "Positional run", tagColor: "var(--p-qb)" },
+      { name: "CeeDee Lamb", pos: "WR", pct: 22, tag: "Best available", tagColor: "var(--p-wr)" },
+      { name: "Puka Nacua", pos: "WR", pct: 51, tag: "Fills your WR need", tagColor: "var(--p-rb)" },
+      { name: "Sam LaPorta", pos: "TE", pct: 78, tag: "Value vs ADP", tagColor: "var(--p-te)" },
     ];
     return (
       <div>
@@ -13614,10 +13817,10 @@ function HeroShowcase() {
             <span className="posdot" style={{ background: POS_COLOR[r.pos] }} />
             <span style={{ fontSize: 12, width: 96, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</span>
             <div style={{ flex: 1, height: 9, borderRadius: 5, background: "var(--panel2)", overflow: "hidden" }}>
-              <div style={{ width: `${r.pct}%`, height: "100%", background: r.pct < 25 ? "#EF6A6A" : r.pct < 60 ? "#d6aa4b" : "#4FD1A1", borderRadius: 5, transition: "width .5s" }} />
+              <div style={{ width: `${r.pct}%`, height: "100%", background: r.pct < 25 ? "var(--p-qb)" : r.pct < 60 ? "var(--warn)" : "var(--p-rb)", borderRadius: 5, transition: "width .5s" }} />
             </div>
-            <span className="num" style={{ fontSize: 11, width: 30, textAlign: "right", color: r.pct < 25 ? "#EF6A6A" : "var(--ink)" }}>{r.pct}%</span>
-            <span style={{ fontSize: 9, color: r.tagColor, border: `1px solid ${r.tagColor}66`, borderRadius: 5, padding: "1px 5px", whiteSpace: "nowrap", width: 96, textAlign: "center" }}>{r.tag}</span>
+            <span className="num" style={{ fontSize: 11, width: 30, textAlign: "right", color: r.pct < 25 ? "var(--p-qb)" : "var(--ink)" }}>{r.pct}%</span>
+            <span style={{ fontSize: 9, color: r.tagColor, border: `1px solid ${alpha(r.tagColor, 40)}`, borderRadius: 5, padding: "1px 5px", whiteSpace: "nowrap", width: 96, textAlign: "center" }}>{r.tag}</span>
           </div>
         ))}
         <div className="mut" style={{ fontSize: 11, marginTop: 8, lineHeight: 1.45 }}>Live survival odds for every player before your pick — flagged by <b style={{ color: "var(--ink)" }}>team needs, positional runs, value vs ADP, and your strategy</b>.</div>
@@ -13645,7 +13848,7 @@ function HeroShowcase() {
       : accept >= 38 ? "Roughly even — a coin-flip either way"
       : accept >= 15 ? "Favors you — add a piece to get it done"
       : "Lopsided your way — they'll pass";
-    const vc = accept >= 60 ? "#4FD1A1" : accept >= 38 ? "#d6aa4b" : "#EF6A6A";
+    const vc = accept >= 60 ? "var(--p-rb)" : accept >= 38 ? "var(--warn)" : "var(--p-qb)";
     return (
       <div>
         <div className="mut" style={{ fontSize: 10.5, marginBottom: 6, letterSpacing: ".04em" }}>YOU GIVE <b style={{ color: "var(--ink)" }}>{GIVE.name}</b> <span className="num">({GIVE.val})</span> — PICK WHO YOU GET:</div>
@@ -13705,9 +13908,9 @@ function HeroShowcase() {
   // ---- GRADES: value tags (steal/reach), report card ----
   const GradesDemo = () => {
     const picks = [
-      { name: "Nico Collins", pos: "WR", tag: "STEAL", delta: "+18", tc: "#4FD1A1" },
-      { name: "Saquon Barkley", pos: "RB", tag: "VALUE", delta: "+6", tc: "#5BA8F5" },
-      { name: "Calvin Ridley", pos: "WR", tag: "REACH", delta: "−11", tc: "#EF6A6A" },
+      { name: "Nico Collins", pos: "WR", tag: "STEAL", delta: "+18", tc: "var(--p-rb)" },
+      { name: "Saquon Barkley", pos: "RB", tag: "VALUE", delta: "+6", tc: "var(--p-wr)" },
+      { name: "Calvin Ridley", pos: "WR", tag: "REACH", delta: "−11", tc: "var(--p-qb)" },
     ];
     return (
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
@@ -13724,7 +13927,7 @@ function HeroShowcase() {
               <span className="posdot" style={{ background: POS_COLOR[p.pos] }} />
               <span style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</span>
               <span className="num" style={{ fontSize: 10, color: p.tc }}>{p.delta}</span>
-              <span style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: ".04em", color: p.tc, border: `1px solid ${p.tc}66`, borderRadius: 5, padding: "1px 5px" }}>{p.tag}</span>
+              <span style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: ".04em", color: p.tc, border: `1px solid ${alpha(p.tc, 40)}`, borderRadius: 5, padding: "1px 5px" }}>{p.tag}</span>
             </div>
           ))}
           <div className="mut" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.45 }}>Live grades, biggest steals & reaches, and a projected finish — a full report card as you draft.</div>
@@ -13736,15 +13939,15 @@ function HeroShowcase() {
   // ---- BOARD: the real draft board — ADP, value, insight tags; tap to draft a player ----
   const BoardDemo = () => {
     const init = [
-      { name: "Ja'Marr Chase", pos: "WR", adp: "1.4", vbd: 92, posRank: 1, tier: 1, pts: 312, tag: "Top recommendation", tc: "#d6aa4b",
+      { name: "Ja'Marr Chase", pos: "WR", adp: "1.4", vbd: 92, posRank: 1, tier: 1, pts: 312, tag: "Top recommendation", tc: "var(--warn)",
         why: "Our #1 overall in this format — the rare every-week WR1 with target volume that doesn't dip.", surv: 2 },
-      { name: "Bijan Robinson", pos: "RB", adp: "2.1", vbd: 88, posRank: 1, tier: 1, pts: 305, tag: "RB run — act now", tc: "#EF6A6A",
+      { name: "Bijan Robinson", pos: "RB", adp: "2.1", vbd: 88, posRank: 1, tier: 1, pts: 305, tag: "RB run — act now", tc: "var(--p-qb)",
         why: "Two RBs went in the last three picks — the position is thinning fast. Best back on the board.", surv: 4 },
       { name: "Justin Jefferson", pos: "WR", adp: "3.8", vbd: 80, posRank: 2, tier: 1, pts: 298, tag: "Best WR available", tc: "var(--mut)",
         why: "Elite separation and a locked-in target share; safest floor among the remaining wideouts.", surv: 9 },
-      { name: "Saquon Barkley", pos: "RB", adp: "4.6", vbd: 78, posRank: 2, tier: 1, pts: 291, tag: "Fills your RB need", tc: "#4FD1A1",
+      { name: "Saquon Barkley", pos: "RB", adp: "4.6", vbd: 78, posRank: 2, tier: 1, pts: 291, tag: "Fills your RB need", tc: "var(--p-rb)",
         why: "You have zero RBs and the tier ends soon — he plugs your biggest hole with a workhorse role.", surv: 14 },
-      { name: "Brock Bowers", pos: "TE", adp: "9.2", vbd: 71, posRank: 1, tier: 2, pts: 248, tag: "Value vs ADP", tc: "#5BA8F5",
+      { name: "Brock Bowers", pos: "TE", adp: "9.2", vbd: 71, posRank: 1, tier: 2, pts: 248, tag: "Value vs ADP", tc: "var(--p-wr)",
         why: "Going ~3 picks later than his consensus — a positional cheat code at a discount.", surv: 38 },
       { name: "Malik Nabers", pos: "WR", adp: "6.5", vbd: 69, posRank: 3, tier: 2, pts: 276, tag: "Upside pick", tc: "#c79cff",
         why: "Ceiling well above his projection — the target hog in a pass-heavy offense with league-winner range.", surv: 21 },
@@ -13767,7 +13970,7 @@ function HeroShowcase() {
               </span>
               <span className="posdot" style={{ background: POS_COLOR[p.pos] }} />
               <span style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textDecoration: gone ? "line-through" : "none" }}>{p.name}</span>
-              {!gone && <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: ".02em", color: p.tc, border: `1px solid ${p.tc}66`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>{p.tag}</span>}
+              {!gone && <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: ".02em", color: p.tc, border: `1px solid ${alpha(p.tc, 40)}`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>{p.tag}</span>}
               <span className="num mut" style={{ width: 34, textAlign: "right", fontSize: 11 }}>{p.adp}</span>
               <span className="num" style={{ width: 34, textAlign: "right", color: t.color, fontWeight: 600 }}>+{p.vbd}</span>
             </div>
@@ -13778,18 +13981,18 @@ function HeroShowcase() {
         {hover != null && (() => {
           const p = init[hover];
           return (
-            <div style={{ marginTop: 9, border: `1px solid ${p.tc}66`, borderRadius: 10, background: "var(--panel2)", padding: "11px 13px" }}>
+            <div style={{ marginTop: 9, border: `1px solid ${alpha(p.tc, 40)}`, borderRadius: 10, background: "var(--panel2)", padding: "11px 13px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                 <span className="posdot" style={{ background: POS_COLOR[p.pos] }} />
                 <span className="disp" style={{ fontSize: 14.5, fontWeight: 700 }}>{p.name}</span>
                 <span className="mut" style={{ fontSize: 11 }}>{p.pos}{p.posRank} · Tier {p.tier}</span>
                 <div style={{ flex: 1 }} />
-                <span style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: ".02em", color: p.tc, border: `1px solid ${p.tc}66`, borderRadius: 4, padding: "1px 5px" }}>{p.tag}</span>
+                <span style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: ".02em", color: p.tc, border: `1px solid ${alpha(p.tc, 40)}`, borderRadius: 4, padding: "1px 5px" }}>{p.tag}</span>
               </div>
               <div style={{ display: "flex", gap: 14, marginBottom: 6 }}>
                 <div><div className="num disp" style={{ fontSize: 17, fontWeight: 700 }}>{p.pts}</div><div className="mut" style={{ fontSize: 9 }}>proj pts</div></div>
                 <div><div className="num disp" style={{ fontSize: 17, fontWeight: 700, color: t.color }}>+{p.vbd}</div><div className="mut" style={{ fontSize: 9 }}>value (VBD)</div></div>
-                <div><div className="num disp" style={{ fontSize: 17, fontWeight: 700, color: p.surv < 25 ? "#EF6A6A" : "var(--ink)" }}>{p.surv}%</div><div className="mut" style={{ fontSize: 9 }}>lasts to you</div></div>
+                <div><div className="num disp" style={{ fontSize: 17, fontWeight: 700, color: p.surv < 25 ? "var(--p-qb)" : "var(--ink)" }}>{p.surv}%</div><div className="mut" style={{ fontSize: 9 }}>lasts to you</div></div>
               </div>
               <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.45 }}>{p.why}</div>
             </div>
@@ -13823,7 +14026,7 @@ function HeroShowcase() {
         </div>
         <div className="mut" style={{ fontSize: 10.5, marginTop: 2, lineHeight: 1.4, padding: "0 2px" }}>{autoplay ? "A live tour of the tool — click any feature to explore it yourself." : "Try them — these are live, interactive samples of the real tool."}</div>
       </div>
-      <div style={{ flex: "2 1 320px", border: `1px solid ${t.color}44`, borderRadius: 12, background: `linear-gradient(160deg, ${t.color}12, var(--panel))`, padding: 16, minWidth: 280, transition: "border-color .4s, background .4s" }}>
+      <div style={{ flex: "2 1 320px", border: `1px solid ${alpha(t.color, 27)}`, borderRadius: 12, background: `linear-gradient(160deg, ${t.color}12, var(--panel))`, padding: 16, minWidth: 280, transition: "border-color .4s, background .4s" }}>
         <div style={{ opacity: fade ? 0 : 1, transform: fade ? "translateY(6px)" : "translateY(0)", transition: "opacity .26s ease, transform .26s ease" }}>
           <Preview />
         </div>
@@ -13914,7 +14117,7 @@ function QuickMockSetup({ onStart, onCancel }) {
       {/* prompt card */}
       <div className="panel" style={{ position: "relative", maxWidth: mode === "complex" ? 640 : 460, width: "100%", padding: 24, boxShadow: "0 24px 60px #000a", maxHeight: "88vh", overflowY: "auto" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-          <div style={{ width: 38, height: 38, borderRadius: 10, background: "#4FD1A122", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className="ti ti-dice-5" style={{ fontSize: 20, color: "#4FD1A1" }} aria-hidden="true" /></div>
+          <div style={{ width: 38, height: 38, borderRadius: 10, background: "var(--p-rb)22", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className="ti ti-dice-5" style={{ fontSize: 20, color: "var(--p-rb)" }} aria-hidden="true" /></div>
           <div style={{ flex: 1 }}>
             <div className="disp" style={{ fontSize: 20, fontWeight: 700 }}>Quick mock</div>
             <div className="mut" style={{ fontSize: 12 }}>{mode === "simple" ? "A fast practice draft — set it up and go." : "Dial in exact scoring, roster, and format."}</div>
@@ -14158,7 +14361,7 @@ function SleeperLinkControl({ link, unlink, linked, username, compact }) {
   if (linked) {
     return (
       <div style={{ display: "flex", alignItems: "center", gap: 8, border: "1px solid var(--line)", background: "var(--panel)", borderRadius: 12, padding: "9px 13px", minHeight: 56 }}>
-        <div style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(95,208,168,.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <div style={{ width: 30, height: 30, borderRadius: 8, background: "var(--pos-wash)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
           <i className="ti ti-plug-connected" style={{ fontSize: 16, color: "var(--green)" }} aria-hidden="true" />
         </div>
         <div style={{ minWidth: 0, flex: 1 }}>
@@ -15468,7 +15671,7 @@ export function WeekHoverCard({ card, bySid, winTone }) {
                 heading for — for a man mid-game those are different, and showing only one of them is how
                 a live Monday night looked frozen. */}
             <span className="num" style={{ fontSize: 11.5, textAlign: "right",
-              color: p.phase === "done" || p.played ? "var(--ink)" : p.phase === "live" ? "#5FD0A8" : "var(--mut)" }}>
+              color: p.phase === "done" || p.played ? "var(--ink)" : p.phase === "live" ? "var(--pos)" : "var(--mut)" }}>
               {p.phase === "done" || p.played || p.phase === "live" ? r1(p.pts) : "—"}
             </span>
             <span className="num mut" style={{ fontSize: 11.5, textAlign: "right" }}>
@@ -15484,7 +15687,7 @@ export function WeekHoverCard({ card, bySid, winTone }) {
   let body = null, title = "";
   if (kind === "me" || kind === "opp") {
     const side = kind === "me" ? L.me : L.opp;
-    const tone = kind === "me" ? "#5FD0A8" : "#F2655C";
+    const tone = kind === "me" ? "var(--pos)" : "var(--neg)";
     title = `${(side && side.teamName) || (kind === "me" ? "Your team" : "Opponent")}`;
     body = (
       <>
@@ -15508,16 +15711,16 @@ export function WeekHoverCard({ card, bySid, winTone }) {
     body = (
       <div style={{ display: "grid", gap: 12, gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)" }}>
         <div>
-          <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800, color: "#5FD0A8", marginBottom: 3 }}>
+          <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800, color: "var(--pos)", marginBottom: 3 }}>
             {(L.me && L.me.teamName) || "Yours"} · {total(L.me, F && F.me)}
           </div>
-          <Rows players={L.me && L.me.players} tone="#5FD0A8" empty="No starters recorded." />
+          <Rows players={L.me && L.me.players} tone="var(--pos)" empty="No starters recorded." />
         </div>
         <div>
-          <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800, color: "#F2655C", marginBottom: 3 }}>
+          <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800, color: "var(--neg)", marginBottom: 3 }}>
             {(L.opp && L.opp.teamName) || "Theirs"} · {total(L.opp, F && F.opp)}
           </div>
-          <Rows players={L.opp && L.opp.players} tone="#F2655C" empty="No starters recorded." />
+          <Rows players={L.opp && L.opp.players} tone="var(--neg)" empty="No starters recorded." />
         </div>
       </div>
     );
@@ -15529,16 +15732,16 @@ export function WeekHoverCard({ card, bySid, winTone }) {
     body = (
       <div style={{ display: "grid", gap: 12, gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)" }}>
         <div>
-          <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800, color: "#5FD0A8", marginBottom: 3 }}>
+          <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800, color: "var(--pos)", marginBottom: 3 }}>
             Yours ({mine.length})
           </div>
-          <Rows players={mine} tone="#5FD0A8" empty="All of yours have played." />
+          <Rows players={mine} tone="var(--pos)" empty="All of yours have played." />
         </div>
         <div>
-          <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800, color: "#F2655C", marginBottom: 3 }}>
+          <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800, color: "var(--neg)", marginBottom: 3 }}>
             Theirs ({theirs.length})
           </div>
-          <Rows players={theirs} tone="#F2655C" empty="All of theirs have played." />
+          <Rows players={theirs} tone="var(--neg)" empty="All of theirs have played." />
         </div>
       </div>
     );
@@ -15557,7 +15760,7 @@ export function WeekHoverCard({ card, bySid, winTone }) {
         <div className="mut" style={{ marginTop: 3 }}>
           Projections add <b className="num" style={{ color: "var(--ink)" }}>{r1(F.me.remaining)}</b> to you
           and <b className="num" style={{ color: "var(--ink)" }}>{r1(F.opp.remaining)}</b> to them
-          {Number.isFinite(F.margin) && <> — finishing <b className="num" style={{ color: F.margin >= 0 ? "#5FD0A8" : "#F2655C" }}>
+          {Number.isFinite(F.margin) && <> — finishing <b className="num" style={{ color: F.margin >= 0 ? "var(--pos)" : "var(--neg)" }}>
             {F.margin >= 0 ? "+" : ""}{r1(F.margin)}</b></>}.
         </div>
         {F.unknown > 0 && (
@@ -15595,7 +15798,7 @@ export function WeekHoverCard({ card, bySid, winTone }) {
    ⚠ COLOUR IS A TONE NAME, NOT A HEX, at the point of use. Every caller says what a value MEANS — good,
      bad, gold — and this decides what that looks like, so the palette lives in one place. */
 function BriefTable({ cols, rows, note, tmpl }) {
-  const toneOf = (t) => (t === "good" ? "#5FD0A8" : t === "bad" ? "#F2655C" : t === "gold" ? "var(--gold)" : null);
+  const toneOf = (t) => (t === "good" ? "var(--pos)" : t === "bad" ? "var(--neg)" : t === "gold" ? "var(--gold)" : null);
   /* ⚠ THE TRACKS ARE THE SECTION'S TO DECIDE. A single heuristic — first column flexible, the rest
      auto — is right for waivers (a long player name against short fields) and wrong for close calls,
      where the flexible column is a four-letter slot label and every real value ends up shoved against the
@@ -15747,6 +15950,9 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   const [mktPos, setMktPos] = useState(null);
   // The long-shot list starts folded — see the note where it renders.
   const [longOpen, setLongOpen] = useState(false);
+  /* Which partner's ideas are expanded. One at a time on purpose: the list exists to help him pick a
+     manager, and eleven open accordions is the wall of rows 29af was asked to fix. */
+  const [lrOpen, setLrOpen] = useState(null);
   /* 29y: the trade calculator. `tb` is one object rather than four useStates because every entry point
      that opens it (the button, a market pathway, an auto-swap row) has to set the partner AND both sides
      together — and a partial update that changed the partner while leaving the previous deal's player ids
@@ -16617,14 +16823,22 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   const myOdds = oddsById[data.myRosterId] || null;
   // What a decision is WORTH, in odds. Re-run the same seeded season with only my scoring mean moved, so
   // the difference is the decision and nothing else.
-  const oddsIfMeanShifts = (delta) => {
+  /* ⭐⭐⭐ THE SIM RETURNS FOUR NUMBERS AND THIS USED TO THROW THREE AWAY — 29ah. `simSeason` reports
+     playoff odds, average seed, bye odds and the 1 seed; the wrapper below read only `odds`, which is
+     fine while the playoff race is live and useless the moment it is settled. Drop-on-the-floor again,
+     in miniature. The rows are exposed and `oddsIfMeanShifts` stays as the one-line caller it always
+     was — one simulation, two readers, so they can never disagree about the same shifted season. */
+  const oddsRowsIfMeanShifts = (delta) => {
     if (!oddsRows || !delta) return null;
     const key = `odds|${oddsKey}|shift${Math.round(delta * 100)}`;
-    const rows = hubMemo(key, () => simSeason({
+    return hubMemo(key, () => simSeason({
       teams: oddsInput.map((t) => (t.rosterId === data.myRosterId ? { ...t, mean: t.mean + delta } : t)),
       schedule: data.schedule || null, fromWeek: data.week, toWeek: regSeasonWeeks,
       playoffSpots: playoffCut, byeSpots: data.playoffByes || 0, runs: 1500,
     }));
+  };
+  const oddsIfMeanShifts = (delta) => {
+    const rows = oddsRowsIfMeanShifts(delta);
     const mine = (rows || []).find((r) => r.rosterId === data.myRosterId);
     return mine && myOdds ? Math.round((mine.odds - myOdds.odds) * 10) / 10 : null;
   };
@@ -16704,6 +16918,35 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   })) : [];
   const mktSummary = myLT ? marketSummary(teamReadRows, reqStart) : [];
   const myRead = (teamReadRows || []).find((r) => r.isMe) || null;
+
+  /* ⭐⭐⭐⭐⭐ THE LEAGUE READ — 29ah. Trey, on the board 29af shipped: "it still isn't clear to me though
+     that it is sharing information that's gonna like help you beat the league. Like identifying trends as
+     to what teams might be the best partner for a trade, who is underutilizing the roster... is there a
+     certain team where like both sides just benefit so much that it makes sense? Do you have a depth in a
+     certain area that you should definitely move?"
+     ⭐ THE DEALS ARE THE SAME DEALS. What changes is the unit the page is ABOUT: eleven managers rather
+       than five swaps, so the eight teams no swap was found with still get a verdict instead of silence.
+       `board.all` rather than `board` on purpose — the top five are a shortlist, and a partner read built
+       from a shortlist would report "nothing here" for a manager whose idea placed sixth. */
+  const partners = myLT ? hubMemo(`partners|${tradeKey}`, () => partnerBoard({
+    me: { rosterId: myLT.rosterId },
+    others: leagueTeams.filter((t) => t.rosterId !== data.myRosterId)
+      .map((t) => ({ rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName })),
+    reads: teamReadRows, offers: board.all || board, req: reqStart, myRead,
+  })) : { partners: [], mySurplus: [], twoWayN: 0, motivated: [] };
+
+  /* ⭐⭐⭐⭐⭐ AND THE CURRENCY, WHICH WAS A MEASURED FINDING. He asked for "what is going to increase your
+     playoff odds the most" — and in his own league he is first at 99.5%, so every trade on the board moves
+     playoff odds by +0.0%. Ranking by a number that cannot move is worse than not ranking. `raceCurrency`
+     picks the tightest race still live and the header SAYS which one it is. */
+  const race = raceCurrency(myOdds);
+  const oddsForGain = (perWeekGain) => {
+    if (!race.key || !(perWeekGain > 0)) return null;
+    const rows = oddsRowsIfMeanShifts(perWeekGain);
+    const mine = (rows || []).find((r) => r.rosterId === data.myRosterId);
+    const before = myOdds ? myOdds[race.key] : null;
+    return mine && before != null ? Math.round((mine[race.key] - before) * 10) / 10 : null;
+  };
 
   /* ⭐⭐⭐⭐⭐ THE CALCULATOR'S INPUT — 29y. Season-value rosters, for the same reason the finder uses them:
      a trade is a season decision and a bye week must never make a good player look expendable. The teams
@@ -17144,7 +17387,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                         <div className="ccgrid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                           {pair.map(({ p, tag, win }) => (
                             <div key={p.sid} onMouseEnter={(e) => showPlayerTip(e, p)} onMouseLeave={hideTip}
-                              style={{ cursor: "help", padding: "8px 10px", borderRadius: 8, border: `1px solid ${win >= 50 ? "var(--green)" : "var(--line)"}`, background: win >= 50 ? "rgba(95,208,168,.07)" : "transparent" }}>
+                              style={{ cursor: "help", padding: "8px 10px", borderRadius: 8, border: `1px solid ${win >= 50 ? "var(--green)" : "var(--line)"}`, background: win >= 50 ? "var(--pos-wash)" : "transparent" }}>
                               <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 6 }}>
                                 <span style={{ fontWeight: 600, fontSize: 12.5, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={p.pos} />{p.name}</span>
                                 <b className="num" style={{ fontSize: 15, color: win >= 50 ? "var(--green)" : "var(--mut)" }}>{win}%</b>
@@ -17188,7 +17431,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
             {matchupView && ((leftOnBench > 0 && swapsIn.length > 0) || (matchupView.oppLeftOnBench > 0 && matchupView.oppSwapsIn.length > 0)) && (
               <div className="ccgrid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
                 {/* Your upgrades */}
-                <div style={{ background: (leftOnBench > 0 && swapsIn.length > 0) ? "rgba(242,101,92,.08)" : "var(--panel2)", border: `1px solid ${(leftOnBench > 0 && swapsIn.length > 0) ? "var(--red)" : "var(--line)"}`, borderRadius: 8, padding: "10px 12px" }}>
+                <div style={{ background: (leftOnBench > 0 && swapsIn.length > 0) ? "var(--neg-wash)" : "var(--panel2)", border: `1px solid ${(leftOnBench > 0 && swapsIn.length > 0) ? "var(--red)" : "var(--line)"}`, borderRadius: 8, padding: "10px 12px" }}>
                   {leftOnBench > 0 && swapsIn.length > 0 ? <>
                     <div style={{ fontWeight: 700, color: "var(--red)", fontSize: 11.5, marginBottom: 5 }}>You could gain {leftOnBench.toFixed(2)}</div>
                     {swapsIn.map((pin, i) => { const pout = swapsOut[i]; return (
@@ -17474,7 +17717,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                     list green. "Squeeze" is the new middle: a player worth having whom you currently have
                     no room for. */
                 const vc = verdict === "verify" ? { c: "var(--gold)", bg: "rgba(224,166,60,.14)", label: "Check first" }
-                  : verdict === "add" ? { c: "var(--green)", bg: "rgba(95,208,168,.10)", label: "Add" }
+                  : verdict === "add" ? { c: "var(--green)", bg: "var(--pos-wash)", label: "Add" }
                   : verdict === "squeeze" ? { c: "var(--mut)", bg: "transparent", label: "No room" }
                   : verdict === "stream" ? { c: "var(--gold)", bg: "rgba(224,166,60,.10)", label: "Stream" }
                   : { c: "var(--mut)", bg: "transparent", label: "Hold" };
@@ -17580,6 +17823,99 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
               yourself. Everything is season value, so a bye week never makes somebody look expendable.
             </div>
 
+            {/* ⭐⭐⭐⭐⭐ WHAT ACTUALLY MOVES YOUR SEASON — 29ah, and this block is the answer to the
+                thing he said was missing: "it still isn't clear to me though that it is sharing
+                information that's gonna like help you beat the league... what is it that's going to
+                increase your playoff odds the most? That is also realistic. That's key."
+                ⭐ THREE FACTS, IN THE ORDER A MANAGER WOULD ASK THEM: what is the single best move
+                  available, what have I got that I should be selling, and who do I ring. Everything
+                  below it — the cards, the market, the calculator — is detail under one of those three. */}
+            {myRead && partners.partners.length > 0 && (
+              <div data-leagueread style={{ marginBottom: 18, padding: "12px 14px", borderRadius: 10,
+                border: "1px solid var(--gold-line)", background: "var(--panel2)" }}>
+                <div className="disp" style={{ fontSize: 14, fontWeight: 800, marginBottom: 7 }}>What moves your season</div>
+
+                {/* ⚠ THE HEADLINE NAMES ITS OWN CURRENCY. At 99.5% to make the playoffs every trade is
+                    worth +0.0% and a "playoff odds" column would be a column of zeroes — so the race
+                    still in play is the one reported, and the fact that he is already in is stated as
+                    the good news it is rather than hidden behind a meaningless number. */}
+                <div data-lrrace={race.key || "settled"} className="mut" style={{ fontSize: 11.5, lineHeight: 1.55, marginBottom: 9 }}>
+                  {race.key === "odds"
+                    ? <>You are <b className="num" style={{ color: "var(--ink)" }}>{race.at}%</b> to make the playoffs — everything here is ranked by what it does to that.</>
+                    : race.key
+                      ? <>Your playoff place is all but settled at <b className="num" style={{ color: "var(--pos)" }}>{myOdds ? myOdds.odds : 99}%</b>, so these are ranked by <b style={{ color: "var(--ink)" }}>{race.label}</b> instead — currently <b className="num" style={{ color: "var(--ink)" }}>{race.at}%</b>.</>
+                      : <>Your seeding is settled every way the simulation can measure, so these are ranked by what they add to your lineup. A trade now is insurance, not a climb.</>}
+                </div>
+
+                {/* ── what to sell ────────────────────────────────────────────────────────────── */}
+                {partners.mySurplus.length > 0 && (
+                  <div data-lrsurplus={String(partners.mySurplus.length)} style={{ marginBottom: 9 }}>
+                    <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 800, marginBottom: 3 }}>Depth you can move</div>
+                    {partners.mySurplus.slice(0, 3).map((sp) => (
+                      <div key={sp.pos} data-lrsurpluspos={sp.pos} style={{ fontSize: 12, lineHeight: 1.6 }}>
+                        <b style={{ color: "var(--ink)" }}>{sp.pos}</b>
+                        <span className="mut"> — {sp.spare} spare starter{sp.spare === 1 ? "" : "s"} beyond what you field
+                          {sp.buyers > 0
+                            ? <>, and <b className="num" style={{ color: "var(--ink)" }}>{sp.buyers}</b> team{sp.buyers === 1 ? "" : "s"} can't even field it ({sp.buyerNames.join(", ")})</>
+                            : <>, though nobody in the league is short there — you'd be selling an upgrade, not a rescue</>}
+                          {sp.best && <> · best return: <b style={{ color: "var(--pos)" }}>{sp.best.get.name}</b> from {sp.best.partner.teamName} (+{sp.best.myGain})</>}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* ── who to call ─────────────────────────────────────────────────────────────── */}
+                <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 800, marginBottom: 3 }}>
+                  Who to call{partners.twoWayN > 0 ? ` — ${partners.twoWayN} straight fit${partners.twoWayN === 1 ? "" : "s"}` : ""}
+                </div>
+                <div data-lrpartners={String(partners.partners.length)} style={{ display: "grid", gap: 4 }}>
+                  {partners.partners.map((p) => {
+                    const open = lrOpen === p.rosterId;
+                    const gain = p.best ? oddsForGain(p.best.myGain / Math.max(1, regSeasonWeeks - data.week + 1)) : null;
+                    return (
+                      <div key={p.rosterId} data-lrpartner={p.teamName || String(p.rosterId)}
+                        data-lrtone={p.tone} data-lrtwoway={p.twoWay ? "1" : "0"} data-lrdeals={String(p.realisticN)}>
+                        <button type="button" onClick={() => setLrOpen(open ? null : p.rosterId)}
+                          style={{ width: "100%", textAlign: "left", background: "transparent", cursor: p.realisticN ? "pointer" : "default",
+                            border: "1px solid var(--line)", borderRadius: 8, padding: "6px 9px", color: "inherit", fontFamily: "inherit",
+                            display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                          <span style={{ fontWeight: 700, fontSize: 12.5, color: p.twoWay ? "var(--pos)" : "var(--ink)" }}>
+                            {p.twoWay && <i className="ti ti-arrows-exchange" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />}
+                            {p.teamName || p.ownerName}
+                          </span>
+                          {p.realisticN > 0 && (
+                            <span className="num" style={{ fontSize: 11.5, color: "var(--pos)" }} data-lrgain={String(p.myGain)}>
+                              +{p.myGain}{gain != null && gain > 0 ? ` · +${gain}% ${race.label}` : ""}
+                            </span>
+                          )}
+                          {/* ⚠ BOTH-SIDES IS ITS OWN NUMBER because it is his actual question — "is there a
+                              certain team where BOTH sides just benefit so much that it makes sense". It is
+                              the smaller of the two gains, so one fat side cannot manufacture it. */}
+                          {p.mutual > 0 && <span className="mut" style={{ fontSize: 10.5 }} data-lrmutual={String(p.mutual)}>both sides +{p.mutual} or better</span>}
+                          <span className="mut" style={{ marginLeft: "auto", fontSize: 10.5 }}>
+                            {p.realisticN > 0 ? `${p.realisticN} idea${p.realisticN === 1 ? "" : "s"}` : "nothing"}
+                            {p.realisticN > 0 && <i className={`ti ti-chevron-${open ? "up" : "down"}`} style={{ fontSize: 11, marginLeft: 4 }} aria-hidden="true" />}
+                          </span>
+                        </button>
+                        <div className="mut" data-lrwhy style={{ fontSize: 11, lineHeight: 1.5, padding: "3px 10px 2px" }}>{p.why}</div>
+                        {open && p.deals.filter((t) => t.realism >= 45).slice(0, 3).map((t, i) => (
+                          <div key={i} data-lrdeal style={{ fontSize: 11.5, padding: "2px 10px 2px 22px", lineHeight: 1.6 }}>
+                            <span className="mut">send </span><b>{t.give.name}</b>
+                            <span className="mut"> for </span><b style={{ color: "var(--pos)" }}>{t.get.name}</b>
+                            <span className="num mut" style={{ fontSize: 10.5 }}> +{t.myGain} you / +{t.theirGain} them · {t.band}</span>
+                            <button className="btn btn-mini" data-lrbuild style={{ marginLeft: 6, fontSize: 9.5, padding: "0 5px" }}
+                              onClick={() => { tbOpen(t.team.rosterId, [String(t.give.sid)], [String(t.get.sid)]);
+                                try { const el = document.querySelector('[data-tb]'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {} }}>Price it</button>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* ⭐⭐⭐⭐⭐ THE RECOMMENDATIONS LEAD, AND THEY SAY WHY — 29af.
                 Trey: "make very simple suggestions on things that you think are realistic and improve your
                 team dramatically… right now it's a little difficult to follow… make it clear what the
@@ -17630,7 +17966,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 })()}
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   {board.map((t) => {
-                    const BAND = { likely: "#5FD0A8", "worth asking": "var(--gold)", "long shot": "var(--mut)" };
+                    const BAND = { likely: "var(--pos)", "worth asking": "var(--gold)", "long shot": "var(--mut)" };
                     const tone = BAND[t.band] || "var(--mut)";
                     const perWeek = Math.round((t.myGain / GAMES_IN_SEASON) * 10) / 10;
                     const odds = perWeek > 0 ? oddsIfMeanShifts(perWeek) : null;
@@ -17769,7 +18105,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 {mktSummary.length > 0 && (
                   <div data-mktread={String(mktSummary.length)} style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 10 }}>
                     {mktSummary.map((m) => {
-                      const TONE = { sellers: "#F2655C", buyers: "#5FD0A8", none: "var(--gold)", balanced: "var(--mut)" };
+                      const TONE = { sellers: "var(--neg)", buyers: "var(--pos)", none: "var(--gold)", balanced: "var(--mut)" };
                       const SIDE = { buy: "you are short", sell: "you can sell", set: "you are set" };
                       return (
                         <div key={m.pos} data-mktreadpos={m.pos} data-mktreadtone={m.tone}
@@ -17777,7 +18113,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                           <span className="disp" style={{ fontSize: 11, fontWeight: 800, minWidth: 30, color: TONE[m.tone] }}>{m.pos}</span>
                           {m.mySide && (
                             <span className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em",
-                              fontWeight: 700, minWidth: 74, color: m.mySide === "buy" ? "var(--gold)" : m.mySide === "sell" ? "#5FD0A8" : "var(--mut)" }}>
+                              fontWeight: 700, minWidth: 74, color: m.mySide === "buy" ? "var(--gold)" : m.mySide === "sell" ? "var(--pos)" : "var(--mut)" }}>
                               {SIDE[m.mySide]}
                             </span>
                           )}
@@ -17792,7 +18128,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                     const on = mktPos === row.pos;
                     /* Thin, deep or settled — the three states, coloured, because "where am I short" should
                        be answerable without reading a number. */
-                    const tone = row.mine.need > 0 ? "#F2655C" : row.mine.surplus > 0 ? "#5FD0A8" : "var(--mut)";
+                    const tone = row.mine.need > 0 ? "var(--neg)" : row.mine.surplus > 0 ? "var(--pos)" : "var(--mut)";
                     return (
                       <button key={row.pos} data-mktpos={row.pos} data-mktposstate={row.mine.need > 0 ? "thin" : row.mine.surplus > 0 ? "deep" : "set"}
                         onClick={() => setMktPos(on ? null : row.pos)} aria-pressed={on}
@@ -17813,8 +18149,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                         <div className="mut" style={{ fontSize: 9.5, marginTop: 2 }}>
                           {row.myRank ? (
                             <span data-mktrank={`${row.pos}:${row.myRank}`} style={{
-                              color: row.myRank <= Math.ceil(row.of / 3) ? "#5FD0A8"
-                                : row.myRank > Math.ceil((row.of * 2) / 3) ? "#F2655C" : "var(--mut)", fontWeight: 700 }}>
+                              color: row.myRank <= Math.ceil(row.of / 3) ? "var(--pos)"
+                                : row.myRank > Math.ceil((row.of * 2) / 3) ? "var(--neg)" : "var(--mut)", fontWeight: 700 }}>
                               {ordinal(row.myRank)} of {row.of}
                             </span>
                           ) : null}
@@ -17892,7 +18228,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                                     <td className="num" style={{ textAlign: "right", padding: "3px 0", fontWeight: 700 }}>{Math.round(x.worth)}</td>
                                     {/* Green where their cover makes him cheap to lose; gold where it does not. */}
                                     <td className="num" style={{ textAlign: "right", padding: "3px 0",
-                                      color: x.cost <= x.worth * 0.4 ? "#5FD0A8" : x.cost >= x.worth * 0.85 ? "var(--gold)" : "var(--ink)" }}>
+                                      color: x.cost <= x.worth * 0.4 ? "var(--pos)" : x.cost >= x.worth * 0.85 ? "var(--gold)" : "var(--ink)" }}>
                                       {Math.round(x.cost)}
                                     </td>
                                   </tr>
@@ -17929,7 +18265,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                                       background: "none", border: 0, padding: 0, color: "var(--ink)" }}>
                                     <span style={{ color: "var(--red)" }}>{x.give.name}</span>
                                     <span className="mut"> for </span>
-                                    <span style={{ color: "#5FD0A8" }}>{x.get.name}</span>
+                                    <span style={{ color: "var(--pos)" }}>{x.get.name}</span>
                                     <span className="mut" style={{ fontSize: 10 }}> · you +{x.myGain}, them +{x.theirGain}</span>
                                   </button>
                                 ))}
@@ -18318,7 +18654,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                   rankByCol[col] = {}; sorted.forEach((t, i) => { rankByCol[col][t.rosterId] = i + 1; });
                 });
                 const cellColor = (rank) => rank <= Math.ceil(n / 3) ? "var(--green)" : rank <= Math.ceil((2 * n) / 3) ? "var(--gold)" : "var(--red)";
-                const cellBg = (rank) => rank <= Math.ceil(n / 3) ? "rgba(95,208,168,.14)" : rank <= Math.ceil((2 * n) / 3) ? "rgba(224,166,60,.12)" : "rgba(242,101,92,.14)";
+                const cellBg = (rank) => rank <= Math.ceil(n / 3) ? "var(--pos-wash)" : rank <= Math.ceil((2 * n) / 3) ? "rgba(224,166,60,.12)" : "var(--neg-wash)";
                 const overallVal = (t) => t.posQuality.QB + t.posQuality.RB + t.posQuality.WR + t.posQuality.TE;
                 const sortVal = (t) => posSortCol === "all" ? overallVal(t) : (t.posQuality[posSortCol] || 0);
                 const rowsSorted = leagueTeams.slice().sort((a, b) => sortVal(b) - sortVal(a));
@@ -18550,7 +18886,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                           { t: "Tip", x: "Click to jump the whole hub to that week and see the lineup you'd actually field." },
                         ])}
                         onMouseLeave={hideTip}
-                        style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left", minWidth: 74, border: `1px solid ${col}`, background: bad ? "rgba(242,101,92,.10)" : warn ? "rgba(224,166,60,.08)" : "var(--panel2)", borderRadius: 9, padding: "7px 10px" }}>
+                        style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left", minWidth: 74, border: `1px solid ${col}`, background: bad ? "var(--neg-wash)" : warn ? "rgba(224,166,60,.08)" : "var(--panel2)", borderRadius: 9, padding: "7px 10px" }}>
                         <div className="disp" style={{ fontSize: 10, letterSpacing: ".06em", color: "var(--mut)" }}>WK {b.week}</div>
                         <div className="num" style={{ fontSize: 17, fontWeight: 800, color: col === "var(--line2)" ? "var(--mut)" : col }}>{b.starters || "—"}</div>
                         <div className="mut" style={{ fontSize: 9.5 }}>{bad ? `${b.empty.length} slot${b.empty.length > 1 ? "s" : ""} empty` : b.starters ? `starter${b.starters > 1 ? "s" : ""} out` : "clear"}</div>
@@ -18656,6 +18992,7 @@ function HubShell({ title, onBack, onHome, onSignOut, user, children }) {
         <Wordmark size={18} />
         <div style={{ flex: 1 }} />
         <span className="chip" style={{ color: "var(--blue)" }}><i className="ti ti-plug-connected" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />In-season hub</span>
+        <ThemeToggle compact />
         <button className="btn btn-mini" onClick={onHome}>Home</button>
         <VersionBadge />
         <button className="btn btn-mini" onClick={onSignOut}>Sign out</button>
@@ -19007,7 +19344,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
 
   return (
     <div className="panel" data-homeweek={showTab} data-homeweeklive={String(!!view.live)}
-      style={{ padding: 12, marginBottom: 12, border: `1px solid ${view.live ? "rgba(95,208,168,.45)" : "var(--line2)"}` }}>
+      style={{ padding: 12, marginBottom: 12, border: `1px solid ${view.live ? "var(--pos-line)" : "var(--line2)"}` }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
         {/* ⭐⭐⭐⭐ THE BADGE. A dot that only exists while football is being played, so its presence is the
             message — and it is a word as well as a colour, because a green dot alone means nothing to a
@@ -19017,7 +19354,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
             precisely what you stopped looking at when you stepped forward. */}
         {view.live && !ahead && (
           <span data-homelivebadge style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10.5,
-            fontWeight: 800, letterSpacing: ".06em", color: "#0d1210", background: "#5FD0A8",
+            fontWeight: 800, letterSpacing: ".06em", color: "#0d1210", background: "var(--pos)",
             borderRadius: 99, padding: "2px 9px" }}>
             <span className="livedot" style={{ width: 6, height: 6, borderRadius: 99, background: "#0d1210" }} aria-hidden="true" />
             LIVE
@@ -19133,7 +19470,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                 {aheadData.rows.slice().sort((a2, b2) => ((b2.flags && b2.flags.sev) || 0) - ((a2.flags && a2.flags.sev) || 0)).map((r) => {
                   const f = r.flags;
                   const sev = (f && f.sev) || 0;
-                  const SEV = { 3: "#F2655C", 2: "var(--gold)", 1: "#6BA8E5", 0: "#5FD0A8" };
+                  const SEV = { 3: "var(--neg)", 2: "var(--gold)", 1: "var(--info)", 0: "var(--pos)" };
                   const h = r.hub || null;
                   const m = (h && h.matchup) || null;
                   /* ⭐⭐⭐ THE PROJECTION IS REAL NOW — the hub payload carries a projected total per side
@@ -19195,17 +19532,17 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                   const hasGain = !unreadable && f.gain > 0;
                   const flagText = unreadable ? null : (
                     <>
-                      {f.out.length > 0 && chip(`Out: ${f.out.join(", ")}`, "#F2655C", injCard("out", "not expected to play"))}
+                      {f.out.length > 0 && chip(`Out: ${f.out.join(", ")}`, "var(--neg)", injCard("out", "not expected to play"))}
                       {f.out.length > 0 && (f.check.length || f.bye.length) ? <span> · </span> : null}
                       {f.check.length > 0 && chip(`Check: ${f.check.join(", ")}`, "var(--gold)", injCard("check", "to check before kickoff"))}
                       {f.check.length > 0 && f.bye.length ? <span> · </span> : null}
-                      {f.bye.length > 0 && chip(`Bye: ${f.bye.join(", ")}`, "#6BA8E5", injCard("bye", "on bye"))}
+                      {f.bye.length > 0 && chip(`Bye: ${f.bye.join(", ")}`, "var(--info)", injCard("bye", "on bye"))}
                       {/* ⚠ "Nothing to sort out" NO LONGER MEANS "nothing here": a clean lineup can still
                           have points on the bench, so the green sentence only stands alone when there is
                           genuinely nothing on either count. */}
-                      {sev === 0 && !hasGain && <span style={{ color: "#5FD0A8" }}>Nothing to sort out</span>}
+                      {sev === 0 && !hasGain && <span style={{ color: "var(--pos)" }}>Nothing to sort out</span>}
                       {hasGain && (sev > 0 ? <span> · </span> : null)}
-                      {hasGain && chip(`+${f.gain} from your bench`, "#5FD0A8", benchCard)}
+                      {hasGain && chip(`+${f.gain} from your bench`, "var(--pos)", benchCard)}
                     </>
                   );
                   return (
@@ -19230,7 +19567,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                       <span className="num" data-homeaheadproj={r.name} style={{ fontSize: 12, textAlign: wide ? "right" : "left" }}>
                         {Number.isFinite(meProj) ? (
                           <>
-                            <b style={{ color: Number.isFinite(oppProj) ? (meProj >= oppProj ? "#5FD0A8" : "#F2655C") : "var(--ink)" }}>
+                            <b style={{ color: Number.isFinite(oppProj) ? (meProj >= oppProj ? "var(--pos)" : "var(--neg)") : "var(--ink)" }}>
                               {meProj}
                             </b>
                             {Number.isFinite(oppProj) && <span className="mut"> – {oppProj}</span>}
@@ -19243,7 +19580,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                       <span className="num" data-homeaheadmedian={medProj != null ? String(medProj) : ""}
                         style={{ fontSize: 11.5, textAlign: wide ? "right" : "left" }}>
                         {medProj != null && Number.isFinite(meProj) ? (
-                          <span style={{ color: meProj >= medProj ? "#5FD0A8" : "#F2655C" }}>
+                          <span style={{ color: meProj >= medProj ? "var(--pos)" : "var(--neg)" }}>
                             {meProj >= medProj ? "+" : ""}{Math.round((meProj - medProj) * 10) / 10}
                             <span className="mut" style={{ fontSize: 10 }}> vs {medProj}</span>
                           </span>
@@ -19295,7 +19632,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
               <span><b className="num" style={{ fontSize: 14 }}>{T.winning}–{T.losing}{T.tied ? `–${T.tied}` : ""}</b>
                 <span className="mut"> across {T.leagues}</span></span>
             )}
-            <span className="mut"><b className="num" style={{ color: "#5FD0A8" }}>{T.yetToPlay}</b> of yours yet to play</span>
+            <span className="mut"><b className="num" style={{ color: "var(--pos)" }}>{T.yetToPlay}</b> of yours yet to play</span>
             {!view.live && view.nextKickoff && (
               <span className="mut">next kickoff {new Date(view.nextKickoff).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}</span>
             )}
@@ -19311,8 +19648,8 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                   style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, padding: "3px 9px",
                     borderRadius: 99, border: "1px solid var(--line)", background: "var(--panel2)" }}>
                   <i className={`ti ${p.net > 0 ? "ti-arrow-up" : "ti-arrow-down"}`}
-                    style={{ fontSize: 11, color: p.net > 0 ? "#5FD0A8" : "#F2655C" }} aria-hidden="true" />
-                  <b style={{ color: p.net > 0 ? "#5FD0A8" : "#F2655C" }}>{Math.abs(p.net)}</b>
+                    style={{ fontSize: 11, color: p.net > 0 ? "var(--pos)" : "var(--neg)" }} aria-hidden="true" />
+                  <b style={{ color: p.net > 0 ? "var(--pos)" : "var(--neg)" }}>{Math.abs(p.net)}</b>
                   <span>{p.name}</span>
                   {p.pts && <span className="num mut">{p.pts.varies ? `${r1(p.pts.lo)}–${r1(p.pts.hi)}` : r1(p.pts.median)}</span>}
                 </span>
@@ -19373,7 +19710,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                     const f = L.forecast;
                     const tone = f ? winTone(f.win) : { color: "var(--mut)", label: "—" };
                     const flags = league ? (weekFlags || {})[hubIdOfLeague(league)] : null;
-                    const SEVTONE = { 3: "#F2655C", 2: "var(--gold)", 1: "#6BA8E5", 0: "#5FD0A8" };
+                    const SEVTONE = { 3: "var(--neg)", 2: "var(--gold)", 1: "var(--info)", 0: "var(--pos)" };
                     return (
                       <tr key={L.leagueId || i} data-homeweekrow={(league && league.name) || L.leagueName || L.leagueId}
                         style={{ borderTop: "1px solid var(--line)" }}>
@@ -19446,7 +19783,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                             {L.medianGame && L.medianGame.on && Number.isFinite(L.medianGame.margin) ? (
                               <>
                                 <span style={{ fontWeight: 800,
-                                  color: L.medianGame.margin >= 0 ? "#5FD0A8" : "#F2655C" }}>
+                                  color: L.medianGame.margin >= 0 ? "var(--pos)" : "var(--neg)" }}>
                                   {L.medianGame.margin >= 0 ? "+" : ""}{r1(L.medianGame.margin)}
                                 </span>
                                 {Number.isFinite(L.medianGame.win) && (
@@ -19459,9 +19796,9 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                         <td data-homeweekleft={`${L.me.yetToPlay}v${L.opp.yetToPlay}`}
                           onMouseEnter={(e) => showCard(e, L, "left")} onMouseLeave={hideCard}
                           style={{ textAlign: "right", padding: "5px 4px 5px 8px", color: "var(--mut)", cursor: "help" }}>
-                          <span style={{ color: L.me.yetToPlay ? "#5FD0A8" : "var(--mut)" }}>{L.me.yetToPlay}</span>
+                          <span style={{ color: L.me.yetToPlay ? "var(--pos)" : "var(--mut)" }}>{L.me.yetToPlay}</span>
                           <span style={{ opacity: .5 }}> v </span>
-                          <span style={{ color: L.opp.yetToPlay ? "#F2655C" : "var(--mut)" }}>{L.opp.yetToPlay}</span>
+                          <span style={{ color: L.opp.yetToPlay ? "var(--neg)" : "var(--mut)" }}>{L.opp.yetToPlay}</span>
                         </td>
                         <td style={{ textAlign: "right", padding: "3px 4px 3px 8px", whiteSpace: "nowrap" }}>
                           {league && (
@@ -19524,7 +19861,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
               <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 8, alignItems: "baseline" }}>
                 <span>
                   <b className="num" style={{ fontSize: 15,
-                    color: reviewData.w > reviewData.l ? "#5FD0A8" : reviewData.l > reviewData.w ? "#F2655C" : "var(--mut)" }}>
+                    color: reviewData.w > reviewData.l ? "var(--pos)" : reviewData.l > reviewData.w ? "var(--neg)" : "var(--mut)" }}>
                     {reviewData.w}–{reviewData.l}
                   </b>
                   <span className="mut"> in week {reviewData.week}</span>
@@ -19534,7 +19871,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                     <span className="mut"> points left on benches</span></span>
                 )}
                 {reviewData.blown > 0 && (
-                  <span><b className="num" style={{ color: "#F2655C" }}>{reviewData.blown}</b>
+                  <span><b className="num" style={{ color: "var(--neg)" }}>{reviewData.blown}</b>
                     <span className="mut"> lost with a winning lineup available</span></span>
                 )}
               </div>
@@ -19562,7 +19899,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                           {R.pts != null ? `${r1(R.pts)}–${r1(R.oppPts)}` : "—"}
                         </td>
                         <td style={{ textAlign: "right", padding: "5px 8px", fontWeight: 800,
-                          color: R.result === "W" ? "#5FD0A8" : R.result === "L" ? "#F2655C" : "var(--mut)" }}>
+                          color: R.result === "W" ? "var(--pos)" : R.result === "L" ? "var(--neg)" : "var(--mut)" }}>
                           {R.result || "—"}
                           {/* ⭐⭐⭐ THE MEDIAN HALF OF THE WEEK, where the league plays one. A median league
                               week is 2-0, 1-1 or 0-2 and showing only the head-to-head reports half of it.
@@ -19574,7 +19911,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                             <span data-homereviewmedian={R.medianResult}
                               title={`The league median — in this league you play it as a second opponent every week, so this is the other half of your ${R.result === "W" ? "win" : "loss"}`}
                               style={{ fontWeight: 800, fontSize: 10.5,
-                                color: R.medianResult === "W" ? "#5FD0A8" : R.medianResult === "L" ? "#F2655C" : "var(--mut)" }}>
+                                color: R.medianResult === "W" ? "var(--pos)" : R.medianResult === "L" ? "var(--neg)" : "var(--mut)" }}>
                               {" / "}{R.medianResult}<span className="mut" style={{ fontWeight: 600 }}> med</span>
                             </span>
                           )}
@@ -19876,13 +20213,13 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
 
   // Secondary tools as flip cards (front = title + graphic, back = explanation).
   const flipTools = [
-    { kind: "inseason", icon: "ti-calendar-stats", color: "#6BA8E5", title: "In-Season Team Hub", back: sleeperLink.linked ? "Your live Sleeper roster, all season: a lineup optimizer, free-agent finder, league standings & power rankings, and weekly strategy. Open it from “Your teams” above." : "Link your Sleeper account (top of this page) to unlock the in-season hub: lineup optimizer, waiver targets, standings, and weekly strategy from your live roster.", action: () => { const el = document.querySelector('[data-teams-anchor]'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" }); } },
+    { kind: "inseason", icon: "ti-calendar-stats", color: "var(--info)", title: "In-Season Team Hub", back: sleeperLink.linked ? "Your live Sleeper roster, all season: a lineup optimizer, free-agent finder, league standings & power rankings, and weekly strategy. Open it from “Your teams” above." : "Link your Sleeper account (top of this page) to unlock the in-season hub: lineup optimizer, waiver targets, standings, and weekly strategy from your live roster.", action: () => { const el = document.querySelector('[data-teams-anchor]'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" }); } },
     { kind: "rankings", icon: "ti-list-numbers", color: "#6aa9ff", title: "My Rankings", back: "Build your own personal player board — your opinions, independent of the platform. Attach it to a league and it powers the “My ADP” and “Blend” columns inside that draft. (This is separate from Platform Ranks, which you enter in the draft room to drive the Edge column.)", action: onRankings },
-    { kind: "mockinsights", icon: "ti-chart-line", color: "#7ed6a5", title: "My Mock Insights", back: totalMocks ? `Patterns across your own ${totalMocks} mock${totalMocks === 1 ? "" : "s"} — the spots where you find value and the players you keep landing.` : "After you run a few mock drafts, this reveals the patterns across them — your tendencies and best value spots.", action: onTrendsTime },
+    { kind: "mockinsights", icon: "ti-chart-line", color: "var(--pos)", title: "My Mock Insights", back: totalMocks ? `Patterns across your own ${totalMocks} mock${totalMocks === 1 ? "" : "s"} — the spots where you find value and the players you keep landing.` : "After you run a few mock drafts, this reveals the patterns across them — your tendencies and best value spots.", action: onTrendsTime },
     { kind: "news", icon: "ti-rss", color: "#ff9d6a", title: "League News & Movers", back: "The wider fantasy wire: ADP risers and fallers, signings, depth-chart changes, and injuries. Not tied to your leagues.", action: onTrends },
-    { kind: "trade", icon: "ti-arrows-exchange", color: "#4FD1A1", title: "Trade Tools", back: "Format-aware trade values and a quick evaluator — weigh any deal by format, even outside a draft. Inside a league it adds your roster, picks, and the trade finder.", action: onTradeTools },
-    { kind: "adp", icon: "ti-chart-dots", color: "#5BA8F5", title: "ADP Intelligence", back: "Every ADP consideration for a player: the consensus to follow, how it's trending across recent Sleeper drafts, the spread, sample size, and your blended number — all format-aware.", action: onAdpIntel },
-    { kind: "guide", icon: "ti-compass", color: "#d6aa4b", title: "Quick-Start Guide", back: "A short walkthrough of how every piece fits together. Start here if anything feels unclear.", action: onGuide },
+    { kind: "trade", icon: "ti-arrows-exchange", color: "var(--p-rb)", title: "Trade Tools", back: "Format-aware trade values and a quick evaluator — weigh any deal by format, even outside a draft. Inside a league it adds your roster, picks, and the trade finder.", action: onTradeTools },
+    { kind: "adp", icon: "ti-chart-dots", color: "var(--p-wr)", title: "ADP Intelligence", back: "Every ADP consideration for a player: the consensus to follow, how it's trending across recent Sleeper drafts, the spread, sample size, and your blended number — all format-aware.", action: onAdpIntel },
+    { kind: "guide", icon: "ti-compass", color: "var(--warn)", title: "Quick-Start Guide", back: "A short walkthrough of how every piece fits together. Start here if anything feels unclear.", action: onGuide },
   ];
 
   // Single guided flow — the order of operations AND the primary actions, merged. Each step
@@ -19913,6 +20250,7 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
         <span className="chip" style={{ color: "var(--green)" }}><i className="ti ti-circle-check" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Season pass active</span>
         {(user?.admin || isAdminEmail(user?.email)) && <button className="btn btn-mini" onClick={onAdmin || (() => navTo("admin"))}>Admin</button>}
         <button className="btn btn-mini" onClick={onHelp}><i className="ti ti-help-circle" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Help</button>
+        <ThemeToggle />
         <button className="btn btn-mini" onClick={onAccount}><i className="ti ti-user" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Account</button>
         <VersionBadge />
         <button className="btn btn-mini" onClick={onSignOut}>Sign out</button>
@@ -19934,11 +20272,11 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
             the compass, the eyebrow and the toggle itself. Colour is the fastest signal a person reads and
             it does not cost a pixel of layout, which is the other thing he asked for. */}
         <div data-homemode={seasonFirst ? "season" : "draft"} style={{ position: "relative", overflow: "hidden", borderRadius: 18,
-          border: `1px solid ${seasonFirst ? "rgba(95,208,168,0.38)" : "rgba(214,170,75,0.35)"}`,
+          border: `1px solid ${seasonFirst ? "var(--pos-line)" : "rgba(214,170,75,0.35)"}`,
           background: seasonFirst ? "linear-gradient(135deg, #0b1512 0%, #10201b 55%, #0e2a22 100%)" : "linear-gradient(135deg, #14100a 0%, #1b1710 55%, #241d0f 100%)",
           padding: "26px 26px 22px", boxShadow: "0 10px 40px -12px rgba(0,0,0,.6)" }}>
           {/* layered depth: a radial glow top-right in the mode's colour + faint yard-line rhythm */}
-          <div aria-hidden="true" style={{ position: "absolute", top: -80, right: -60, width: 320, height: 320, background: `radial-gradient(circle, ${seasonFirst ? "rgba(95,208,168,0.20)" : "rgba(224,166,60,0.18)"} 0%, transparent 68%)`, pointerEvents: "none" }} />
+          <div aria-hidden="true" style={{ position: "absolute", top: -80, right: -60, width: 320, height: 320, background: `radial-gradient(circle, ${seasonFirst ? "var(--pos-wash)" : "rgba(224,166,60,0.18)"} 0%, transparent 68%)`, pointerEvents: "none" }} />
           <div aria-hidden="true" style={{ position: "absolute", inset: 0, backgroundImage: "repeating-linear-gradient(90deg, transparent, transparent 58px, rgba(255,255,255,0.025) 58px, rgba(255,255,255,0.025) 59px)", pointerEvents: "none" }} />
           <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
             <div style={{ flexShrink: 0, filter: seasonFirst ? "hue-rotate(105deg) saturate(.85)" : "none" }}><Compass size={54} spin /></div>
@@ -19946,11 +20284,11 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
               {/* The mode, said out loud, above everything else on the page. */}
               <div data-homemodelabel={seasonFirst ? "season" : "draft"} style={{ display: "inline-flex", alignItems: "center", gap: 6, marginBottom: 6,
                 fontSize: 10.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".10em",
-                color: seasonFirst ? "#5FD0A8" : "var(--gold)" }}>
+                color: seasonFirst ? "var(--pos)" : "var(--gold)" }}>
                 <i className={`ti ${seasonFirst ? "ti-calendar-stats" : "ti-clipboard-text"}`} style={{ fontSize: 13 }} aria-hidden="true" />
                 {seasonFirst ? "Season mode" : "Draft mode"}
               </div>
-              <div className="disp" style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-.02em", lineHeight: 1.02, color: "var(--ink)" }}>{timeGreet}{greetName ? <>, <span style={{ color: seasonFirst ? "#5FD0A8" : "var(--gold2)" }}>{greetName}</span></> : ""}.</div>
+              <div className="disp" style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-.02em", lineHeight: 1.02, color: "var(--ink)" }}>{timeGreet}{greetName ? <>, <span style={{ color: seasonFirst ? "var(--pos)" : "var(--gold2)" }}>{greetName}</span></> : ""}.</div>
               <div className="mut" style={{ fontSize: 13.5, marginTop: 4 }}>{
                 seasonFirst ? (nflWk
                   ? <>NFL <b style={{ color: "var(--ink)" }}>Week {nflWk}</b> — your teams are live. Draft rooms and results are still right below.</>
@@ -19969,7 +20307,7 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
                   is just a decision somebody made for you. */}
               <div data-homemodepick={mode} style={{ display: "flex", alignItems: "stretch", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
                 {[
-                  ["season", "Season", "ti-calendar-stats", "#5FD0A8", "Live scores, lineups, injuries, waivers"],
+                  ["season", "Season", "ti-calendar-stats", "var(--pos)", "Live scores, lineups, injuries, waivers"],
                   ["draft", "Draft", "ti-clipboard-text", "var(--gold)", "Draft rooms, mocks, rankings, results"],
                 ].map(([v, label, icon, tone, blurb]) => {
                   const on = mode === v;
@@ -19978,7 +20316,7 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
                       style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left", flex: "1 1 210px", minWidth: 0,
                         borderRadius: 12, padding: "11px 14px", display: "flex", alignItems: "center", gap: 11,
                         border: `1px solid ${on ? tone : "var(--line2)"}`,
-                        background: on ? (v === "season" ? "rgba(95,208,168,.14)" : "rgba(224,166,60,.14)") : "rgba(0,0,0,.22)",
+                        background: on ? (v === "season" ? "var(--pos-wash)" : "rgba(224,166,60,.14)") : "rgba(0,0,0,.22)",
                         boxShadow: on ? `inset 0 0 0 1px ${tone}` : "none" }}>
                       <i className={`ti ${icon}`} style={{ fontSize: 21, color: on ? tone : "var(--mut)", flexShrink: 0 }} aria-hidden="true" />
                       <span style={{ minWidth: 0 }}>
@@ -20041,7 +20379,7 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
             <div style={{ display: "flex", gap: 22, flexShrink: 0, paddingLeft: 4 }}>
               {[[leagues.length, leagues.length === 1 ? "league" : "leagues"], [inProgress.length, "in progress"], [totalMocks, totalMocks === 1 ? "mock" : "mocks"]].map(([n, label], i) => (
                 <div key={i} style={{ textAlign: "center", minWidth: 46 }}>
-                  <div className="num" style={{ fontSize: 26, fontWeight: 800, lineHeight: 1, color: i === 1 && n > 0 ? (seasonFirst ? "#5FD0A8" : "var(--gold2)") : "var(--ink)" }}>{n}</div>
+                  <div className="num" style={{ fontSize: 26, fontWeight: 800, lineHeight: 1, color: i === 1 && n > 0 ? (seasonFirst ? "var(--pos)" : "var(--gold2)") : "var(--ink)" }}>{n}</div>
                   <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", marginTop: 3 }}>{label}</div>
                 </div>
               ))}
@@ -20088,7 +20426,7 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
         <div data-actionbarlabel={seasonFirst ? "season" : "draft"}
           style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 7, flexWrap: "wrap" }}>
           <span className="disp" style={{ fontSize: 11, fontWeight: 800, letterSpacing: ".09em", textTransform: "uppercase",
-            color: seasonFirst ? "#5FD0A8" : "var(--gold)" }}>
+            color: seasonFirst ? "var(--pos)" : "var(--gold)" }}>
             {seasonFirst ? "In season" : "Draft room"}
           </span>
           <span className="mut" style={{ fontSize: 11.5 }}>
@@ -20096,14 +20434,14 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
           </span>
           <button data-actionbarswitch onClick={() => setHomeView(seasonFirst ? "draft" : "season")}
             style={{ marginLeft: "auto", cursor: "pointer", fontFamily: "inherit", background: "none", border: "none",
-              padding: 0, fontSize: 11.5, color: seasonFirst ? "var(--gold)" : "#5FD0A8", fontWeight: 700 }}>
+              padding: 0, fontSize: 11.5, color: seasonFirst ? "var(--gold)" : "var(--pos)", fontWeight: 700 }}>
             {seasonFirst ? "Draft room" : "In season"} →
           </button>
         </div>
         {/* The bar wears the mode too — a gold action bar under a green hero would read as two pages
             stitched together, and the whole point of the colour is that one glance tells you where you are. */}
         <div className="actionbar" style={{ display: "flex", alignItems: "stretch", flexWrap: "wrap",
-          border: `1px solid ${seasonFirst ? "rgba(95,208,168,0.42)" : "rgba(214,170,75,0.45)"}`, borderRadius: 12, overflow: "hidden",
+          border: `1px solid ${seasonFirst ? "var(--pos-line)" : "rgba(214,170,75,0.45)"}`, borderRadius: 12, overflow: "hidden",
           background: seasonFirst ? "linear-gradient(180deg, rgba(16,34,28,0.98), rgba(18,28,24,0.98))" : "linear-gradient(180deg, rgba(38,32,18,0.98), rgba(28,26,20,0.98))",
           boxShadow: "0 6px 20px -6px rgba(0,0,0,.5)" }}>
           {(() => {
@@ -20142,14 +20480,14 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
               ];
             return items.map((it, i) => (
               <React.Fragment key={it.k}>
-                {i > 0 && <div style={{ width: 1, background: seasonFirst ? "rgba(95,208,168,0.28)" : "rgba(214,170,75,0.30)" }} />}
+                {i > 0 && <div style={{ width: 1, background: seasonFirst ? "var(--pos-wash)" : "rgba(214,170,75,0.30)" }} />}
                 <button onClick={it.onClick} className="menuitem" title={it.title || undefined}
                   style={{ flex: 1, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "none",
-                    background: it.primary ? (seasonFirst ? "rgba(95,208,168,0.13)" : "rgba(214,170,75,0.13)") : "transparent",
+                    background: it.primary ? (seasonFirst ? "var(--pos-wash)" : "rgba(214,170,75,0.13)") : "transparent",
                     padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}>
-                  <i className={`ti ${it.icon}`} style={{ fontSize: 18, color: seasonFirst ? "#5FD0A8" : "var(--gold)" }} aria-hidden="true" />
+                  <i className={`ti ${it.icon}`} style={{ fontSize: 18, color: seasonFirst ? "var(--pos)" : "var(--gold)" }} aria-hidden="true" />
                   <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", minWidth: 0 }}>
-                    <span className="disp" style={{ fontSize: 15.5, fontWeight: it.primary ? 800 : 700, color: it.primary ? (seasonFirst ? "#5FD0A8" : "var(--gold)") : "var(--ink)" }}>{it.label}</span>
+                    <span className="disp" style={{ fontSize: 15.5, fontWeight: it.primary ? 800 : 700, color: it.primary ? (seasonFirst ? "var(--pos)" : "var(--gold)") : "var(--ink)" }}>{it.label}</span>
                     {/* ⭐⭐⭐⭐ A DOOR HAS TO LOOK LIKE A DOOR — 29w. Trey: "it's not clear where to get to
                         the 'my week' details (summary, availability, lineup changes, free agents, weather)
                         from the home page. It shows 'my week' as default highlighted, so it's not clear
@@ -20594,13 +20932,13 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
           return (
         <div style={{ minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginBottom: 12, flexWrap: "wrap" }}>
-            <i className="ti ti-dice-5" style={{ fontSize: 18, color: "#4FD1A1", alignSelf: "center" }} aria-hidden="true" />
+            <i className="ti ti-dice-5" style={{ fontSize: 18, color: "var(--p-rb)", alignSelf: "center" }} aria-hidden="true" />
             <span className="disp" style={{ fontSize: 20, fontWeight: 800, color: "var(--ink)", letterSpacing: ".01em" }}>Quick mocks</span>
             <span className="mut" style={{ fontSize: 11.5, fontWeight: 700, background: "var(--panel2)", borderRadius: 99, padding: "1px 8px", alignSelf: "center" }}>{combinedCount}</span>
           </div>
           {onQuickMock && <button className="btn btn-gold" onClick={onQuickMock} style={{ width: "100%", fontWeight: 700, marginBottom: 8, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 }}><i className="ti ti-plus" style={{ fontSize: 13 }} aria-hidden="true" />Start a new mock</button>}
           <button onClick={() => setShowMocks((v) => !v)} style={{ width: "100%", cursor: "pointer", fontFamily: "inherit", background: "transparent", border: "1px solid var(--line)", borderRadius: 11, padding: "11px 14px", textAlign: "left", display: "flex", alignItems: "center", gap: 9, color: "var(--ink)" }}>
-            <i className="ti ti-history" style={{ fontSize: 16, color: "#4FD1A1" }} aria-hidden="true" />
+            <i className="ti ti-history" style={{ fontSize: 16, color: "var(--p-rb)" }} aria-hidden="true" />
             <span className="disp" style={{ fontSize: 14, fontWeight: 800, flex: 1 }}>{showMocks ? "Hide saved mocks" : "Browse saved mocks"}</span>
             <span className="mut" style={{ fontSize: 12 }}>{combinedCount} saved</span>
             <i className={`ti ti-chevron-${showMocks ? "up" : "down"}`} style={{ fontSize: 16, color: "var(--mut)" }} aria-hidden="true" />
@@ -20697,7 +21035,7 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
                 const openThis = () => m._src === "league" ? (onOpenMock && onOpenMock(m._leagueId, m)) : (onOpenFun && onOpenFun(m));
                 return (
                   <div key={`${m._src}-${m._leagueId || "s"}-${m.id}`} style={{ border: "1px solid var(--line)", background: "var(--panel)", borderRadius: 11, padding: "10px 13px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                    <div style={{ width: 34, height: 34, borderRadius: 9, background: "var(--panel3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className={`ti ${m._src === "league" ? "ti-clipboard-list" : "ti-dice-5"}`} style={{ fontSize: 15, color: m._src === "league" ? "var(--gold)" : "#4FD1A1" }} aria-hidden="true" /></div>
+                    <div style={{ width: 34, height: 34, borderRadius: 9, background: "var(--panel3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className={`ti ${m._src === "league" ? "ti-clipboard-list" : "ti-dice-5"}`} style={{ fontSize: 15, color: m._src === "league" ? "var(--gold)" : "var(--p-rb)" }} aria-hidden="true" /></div>
                     <div style={{ flex: "1 1 180px", minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <span className="disp" style={{ fontSize: 14, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{m.name || "Quick mock"}</span>
@@ -20729,7 +21067,7 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
            right half of the home page is just dead space to a new user. */
         <div style={{ minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginBottom: 2, flexWrap: "wrap" }}>
-            <i className="ti ti-dice-5" style={{ fontSize: 18, color: "#4FD1A1", alignSelf: "center" }} aria-hidden="true" />
+            <i className="ti ti-dice-5" style={{ fontSize: 18, color: "var(--p-rb)", alignSelf: "center" }} aria-hidden="true" />
             <span className="disp" style={{ fontSize: 20, fontWeight: 800, color: "var(--ink)", letterSpacing: ".01em" }}>Quick mocks</span>
           </div>
           <div className="mut" style={{ fontSize: 12, marginBottom: 12 }}>Practice reps that aren't tied to a league — test the board, try what-ifs.</div>
@@ -20849,15 +21187,15 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
         {mockPick && (
           <div style={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 12, padding: 14, marginTop: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-              <i className="ti ti-dice-5" style={{ fontSize: 16, color: "#4FD1A1" }} aria-hidden="true" />
+              <i className="ti ti-dice-5" style={{ fontSize: 16, color: "var(--p-rb)" }} aria-hidden="true" />
               <div className="disp" style={{ fontSize: 15, fontWeight: 700, flex: 1 }}>Run a mock</div>
               <button className="btn btn-mini" onClick={() => setMockPick(false)}>Close</button>
             </div>
             <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Practice with a quick mock, re-open a past mock, or mock a specific league's exact settings.</div>
-            <button className="hubtile" onClick={() => { setMockPick(false); onQuickMock(); }} style={{ width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1px solid #4FD1A155", background: "#4FD1A114", borderRadius: 11, padding: "11px 13px", display: "flex", alignItems: "center", gap: 11, marginBottom: 10 }}>
-              <div style={{ width: 32, height: 32, borderRadius: 9, background: "#4FD1A122", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className="ti ti-bolt" style={{ fontSize: 16, color: "#4FD1A1" }} aria-hidden="true" /></div>
+            <button className="hubtile" onClick={() => { setMockPick(false); onQuickMock(); }} style={{ width: "100%", textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", border: "1px solid var(--p-rb)55", background: "var(--p-rb)14", borderRadius: 11, padding: "11px 13px", display: "flex", alignItems: "center", gap: 11, marginBottom: 10 }}>
+              <div style={{ width: 32, height: 32, borderRadius: 9, background: "var(--p-rb)22", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><i className="ti ti-bolt" style={{ fontSize: 16, color: "var(--p-rb)" }} aria-hidden="true" /></div>
               <div style={{ flex: 1 }}><div className="disp" style={{ fontSize: 14, fontWeight: 700 }}>Quick mock</div><div className="mut" style={{ fontSize: 11 }}>Pick a format and go — no league needed.</div></div>
-              <span style={{ fontSize: 12, fontWeight: 600, color: "#4FD1A1" }}>Start →</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--p-rb)" }}>Start →</span>
             </button>
             {leagues.length > 0 && (
               <>
@@ -20969,7 +21307,7 @@ function AvailDemo() {
   // survival probability decays as more picks happen before your turn. Demo of the real idea.
   const [picks, setPicks] = useState(6);
   // a player with demand d ~ chance any given pick takes him; survival ≈ (1-d)^picks
-  const players = [["Breakout RB", 0.16, "var(--rb,#7CD9B2)"], ["WR3 value", 0.07, "var(--wr,#E0A63C)"]];
+  const players = [["Breakout RB", 0.16, "var(--rb,#7CD9B2)"], ["WR3 value", 0.07, "var(--wr,var(--warn))"]];
   const surv = (d) => Math.round(Math.pow(1 - d, picks) * 100);
   return (
     <div>
@@ -21325,7 +21663,7 @@ function FeatureTour({ onDemo, onBuy, price, paid }) {
     return rows.map((r) => ({ ...r, surv: survAt(r.p.id) }));
   }, [board, sims, field]);
 
-  const survColor = (s) => (s == null ? "var(--mut)" : s >= 70 ? "#5FD0A8" : s >= 35 ? "var(--gold)" : "#F2655C");
+  const survColor = (s) => (s == null ? "var(--mut)" : s >= 70 ? "var(--pos)" : s >= 35 ? "var(--gold)" : "var(--neg)");
   const survWord = (s) => (s == null ? "—" : s >= 70 ? "He'll be there" : s >= 35 ? "Coin flip" : "Gone before you pick");
 
   const TABS = [
@@ -21341,7 +21679,7 @@ function FeatureTour({ onDemo, onBuy, price, paid }) {
         <div style={{ padding: "18px 22px 0", background: "var(--panel2)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <span className="disp" style={{ fontSize: 11, letterSpacing: ".18em", color: "var(--gold)", fontWeight: 800 }}>TRY IT RIGHT HERE</span>
-            <span data-tour-live style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: "#5FD0A8", border: "1px solid rgba(95,208,168,.4)", borderRadius: 999, padding: "2px 8px" }}>live engine · not a screenshot</span>
+            <span data-tour-live style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--pos)", border: "1px solid var(--pos-line)", borderRadius: 999, padding: "2px 8px" }}>live engine · not a screenshot</span>
           </div>
           <div className="disp" style={{ fontSize: 25, fontWeight: 700, marginTop: 8, lineHeight: 1.15 }}>
             You're on the clock at <span className="gold">2.03</span>. You don't pick again until <span className="gold">3.10</span>.
@@ -21462,8 +21800,8 @@ function FeatureTour({ onDemo, onBuy, price, paid }) {
                       <div style={{ fontSize: 13, lineHeight: 1.55 }}>
                         <b>{engine.pick.name}</b>
                         {engine.waitOn ? (
-                          <> — not because he's the best name left, but because he <b style={{ color: "#F2655C" }}>won't come back</b>, and{" "}
-                            <b>{engine.waitOn.name}</b> <b style={{ color: "#5FD0A8" }}>will</b> ({engine.waitPct}% to reach 3.10). Take the one you can't get later.</>
+                          <> — not because he's the best name left, but because he <b style={{ color: "var(--neg)" }}>won't come back</b>, and{" "}
+                            <b>{engine.waitOn.name}</b> <b style={{ color: "var(--pos)" }}>will</b> ({engine.waitPct}% to reach 3.10). Take the one you can't get later.</>
                         ) : <> — the most valuable player here who won't survive to your next turn.</>}
                       </div>
                     </div>
@@ -21483,7 +21821,7 @@ function FeatureTour({ onDemo, onBuy, price, paid }) {
                       <div data-tour-dropoff style={{ borderRadius: 9, border: "1px solid var(--line)", padding: "10px 12px", marginBottom: 12, fontSize: 12.5, lineHeight: 1.55 }}>
                         <span className="mut">If you pass: </span>
                         the next {selP.pos} on the board is <b>{nxt.name}</b>
-                        {drop != null && drop > 0 && <> — <b style={{ color: "#F2655C" }}>{drop} points worse</b> across the season</>}
+                        {drop != null && drop > 0 && <> — <b style={{ color: "var(--neg)" }}>{drop} points worse</b> across the season</>}
                         {ns != null && <>, and he is <b style={{ color: survColor(ns) }}>{ns}%</b> to reach 3.10</>}.
                       </div>
                     );
@@ -21505,7 +21843,7 @@ function FeatureTour({ onDemo, onBuy, price, paid }) {
                             <div className="disp" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--mut)", fontWeight: 800, marginBottom: 4 }}>You took {tp && tp.name}</div>
                             <div style={{ fontSize: 13, lineHeight: 1.55 }}>
                               {gone.length > 0
-                                ? <><b style={{ color: "#F2655C" }}>{gone.length} of the {passed.length}</b> you passed on will be gone before 3.10. That pick was your only shot at {gone.length === 1 ? "him" : "them"}.</>
+                                ? <><b style={{ color: "var(--neg)" }}>{gone.length} of the {passed.length}</b> you passed on will be gone before 3.10. That pick was your only shot at {gone.length === 1 ? "him" : "them"}.</>
                                 : <>None of the players you passed on are likely to disappear before 3.10.</>}
                               {safe.length > 0 && <> <span className="mut">{safe.length === 1 ? `${safe[0].name} should still be there.` : `${safe.length} of them should still be there.`}</span></>}
                             </div>
@@ -21658,6 +21996,7 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
       <div className="hairline appheader" style={{ display: "flex", alignItems: "center", gap: 16, padding: "12px 20px" }}>
         <Wordmark size={20} />
         <div style={{ flex: 1 }} />
+        <ThemeToggle compact />
         <button className="btn" onClick={() => onHelp && onHelp("help")}><i className="ti ti-help-circle" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />Help & FAQ</button>
         {paid
           ? <button className="btn btn-gold" onClick={onApp}>Open App</button>
@@ -22386,6 +22725,7 @@ export function AppHeader({ user, onAdmin, onSignOut, onHome, onAccount, onApp, 
       {title && <div className="chip">{title}</div>}
       <div style={{ flex: 1 }} />
       {user?.paid ? <span className="chip" style={{ color: "var(--green)", cursor: "default" }} title="Your season pass is active"><i className="ti ti-circle-check" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Season pass active</span> : <span className="chip" style={{ cursor: "default" }} title="You're on the free demo">Free demo</span>}
+      <ThemeToggle compact />
       {onHome && <button className="btn btn-mini" onClick={onHome} title="Home, FAQ & guides">Home</button>}
       {onHelp && <button className="btn btn-mini" onClick={onHelp} title="Help, contact & terms">Help</button>}
       {(user?.admin || isAdminEmail(user?.email)) && <button className="btn" onClick={onAdmin || (() => navTo("admin"))}>Admin</button>}
@@ -23834,6 +24174,7 @@ export function TrendsShell({ onBack, backLabel, onHome, onSignOut, tip, onPrint
         <button className="btn btn-mini" onClick={onBack}>← {backLabel || "Back"}</button>
         <Wordmark size={18} />
         <div style={{ flex: 1 }} />
+        <ThemeToggle compact />
         {onCheatSheet && (
           <button className="btn btn-mini" data-plansheet onClick={onCheatSheet}
             title="Open the printable cheat sheet for this league — the full board, grouped by tier, with your own ranks marked.">
@@ -25403,13 +25744,13 @@ const DRAFT_ORDERS = [["snake","Snake"],["linear","Linear (same order each round
      many stay that way; "Manual" is a real answer and gets a real chip, not a blank space that reads as
      something failing to load. */
 const PLATFORM_META = {
-  sleeper: { name: "Sleeper", icon: "ti-moon", color: "#5FD0A8" },
-  espn: { name: "ESPN", icon: "ti-ball-football", color: "#F2655C" },
+  sleeper: { name: "Sleeper", icon: "ti-moon", color: "var(--pos)" },
+  espn: { name: "ESPN", icon: "ti-ball-football", color: "var(--neg)" },
   yahoo: { name: "Yahoo", icon: "ti-brand-yahoo", color: "#8E7CE0" },
   // `short` is what running copy uses ("MFL hasn't reported it yet"); `name` is for headings and menus,
   // where the full name is what a user scanning a list of platforms is looking for.
-  mfl: { name: "MyFantasyLeague", short: "MFL", icon: "ti-database", color: "#6BA8E5" },
-  fantrax: { name: "Fantrax", icon: "ti-key", color: "#E0A63C" },
+  mfl: { name: "MyFantasyLeague", short: "MFL", icon: "ti-database", color: "var(--info)" },
+  fantrax: { name: "Fantrax", icon: "ti-key", color: "var(--warn)" },
   cbs: { name: "CBS Sports", icon: "ti-alert-triangle", color: "var(--mut)" },
   nfl: { name: "NFL.com", icon: "ti-arrow-right", color: "var(--mut)" },
   manual: { name: "Manual", icon: "ti-pencil", color: "var(--mut)" },
@@ -26295,7 +26636,7 @@ function ConnectBox({ connect, onConnect, onClear, embedded, onCancel, jumpTo, j
                       <div style={{ maxHeight: 260, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
                         {sleeperLeagues.map((lg) => { const st = statusChip(lg.draft_status); const live = lg.draft_status === "drafting"; return (
                           <button key={lg.league_id} className="btn" disabled={busy}
-                            style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-start", padding: "10px 12px", textAlign: "left", borderColor: live ? "var(--green)" : "var(--line)", background: live ? "rgba(124,217,178,0.07)" : "transparent" }}
+                            style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-start", padding: "10px 12px", textAlign: "left", borderColor: live ? "var(--green)" : "var(--line)", background: live ? "var(--pos-wash)" : "transparent" }}
                             onClick={() => pickSleeperLeague(lg)}>
                             <i className="ti ti-trophy" style={{ fontSize: 16, color: live ? "var(--green)" : "var(--gold)" }} aria-hidden="true" />
                             <span style={{ flex: 1 }}><b>{lg.name}</b> <span className="mut" style={{ fontSize: 11 }}>· {lg.total_rosters} teams</span></span>
@@ -27716,7 +28057,7 @@ function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
             const tone = gain >= 12 ? "good" : gain <= -6 ? "bad" : "fair";
             return { gain: Math.round(gain), vGain, alt, tone, costPick };
           })();
-          const vColor = !verdict ? "var(--mut)" : verdict.tone === "good" ? "var(--green)" : verdict.tone === "bad" ? "#F2655C" : "var(--gold)";
+          const vColor = !verdict ? "var(--mut)" : verdict.tone === "good" ? "var(--green)" : verdict.tone === "bad" ? "var(--neg)" : "var(--gold)";
           return (
             <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, padding: "4px 8px", borderRadius: 6, marginBottom: 3, border: "1px solid var(--line)" }}>
               {p && <Dot pos={p.pos} />}
@@ -27730,7 +28071,7 @@ function KeepersEditor({ cfg, players, onSave, onChange, embedded, section }) {
                 <span
                   title={`Kept at ${pickLabel(k.o)} (overall ${verdict.costPick}). The market drafts him around ${p.adp.toFixed(0)}, so you're ${verdict.gain >= 0 ? `getting him ${verdict.gain} picks later than he normally goes` : `paying ${-verdict.gain} picks more than he normally costs`}.${verdict.alt ? `\n\nAt that pick you'd otherwise expect ${verdict.alt.name}${verdict.vGain != null ? `, so keeping him is worth about ${verdict.vGain >= 0 ? "+" : ""}${verdict.vGain} points of value above replacement` : ""}.` : ""}`}
                   className="num"
-                  style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".02em", padding: "1px 5px", borderRadius: 4, cursor: "help", color: vColor, border: `1px solid ${vColor}55`, whiteSpace: "nowrap" }}>
+                  style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".02em", padding: "1px 5px", borderRadius: 4, cursor: "help", color: vColor, border: `1px solid ${alpha(vColor, 33)}`, whiteSpace: "nowrap" }}>
                   {verdict.gain >= 0 ? "+" : ""}{verdict.gain} picks{verdict.vGain != null ? ` · ${verdict.vGain >= 0 ? "+" : ""}${verdict.vGain} val` : ""}
                 </span>
               )}
@@ -27934,7 +28275,7 @@ function InDraftTrends({ cfg, players, draftedSet, allLeagues, allFunMocks, onCl
             const wasRound = p.adp != null ? Math.max(1, Math.ceil((p.adp + p.trend) / (cfg.teams || 12))) : null;
             const crossed = round != null && wasRound != null && round !== wasRound;
             const tier = tierOf ? tierOf(p) : null;
-            const TC = { elite: "var(--gold)", above: "#5FD0A8", avg: "#8FA8BF", bench: "var(--mut)" };
+            const TC = { elite: "var(--gold)", above: "var(--pos)", avg: "#8FA8BF", bench: "var(--mut)" };
             return (
               <div key={p.id} data-mover={p.name} style={{ padding: "5px 0", fontSize: 12, borderBottom: "1px solid var(--line2)" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -27942,7 +28283,7 @@ function InDraftTrends({ cfg, players, draftedSet, allLeagues, allFunMocks, onCl
                   <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {p.name} <span className="mut" style={{ fontSize: 10.5 }}>{p.pos}{p.team ? ` · ${p.team}` : ""}</span>
                   </span>
-                  {tier && <span data-movertier={tier} style={{ flexShrink: 0, fontSize: 8, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".03em", color: TC[tier], border: `1px solid ${TC[tier]}55`, borderRadius: 3, padding: "0 3px" }}>{tier === "above" ? "above avg" : tier === "avg" ? "starter" : tier}</span>}
+                  {tier && <span data-movertier={tier} style={{ flexShrink: 0, fontSize: 8, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".03em", color: TC[tier], border: `1px solid ${alpha(TC[tier], 33)}`, borderRadius: 3, padding: "0 3px" }}>{tier === "above" ? "above avg" : tier === "avg" ? "starter" : tier}</span>}
                   <span className="num" style={{ fontSize: 11.5, fontWeight: 700, color: up ? "var(--green)" : "var(--red)", flexShrink: 0 }}>
                     {up ? "−" : "+"}{amt} {amt === 1 ? "pick" : "picks"}
                   </span>
@@ -30433,9 +30774,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const needAt = (pos) => adv.myCounts[pos] != null && (dem[pos] || 0) > 0 && adv.myCounts[pos] < (dem[pos] || 0);
 
     // 1) the model's single best pick right now
-    if (adv.verdict) add(adv.verdict.id, "Top pick", "#d6aa4b", 0);
+    if (adv.verdict) add(adv.verdict.id, "Top pick", "var(--warn)", 0);
     // 2) the model's next-best alternatives (these ARE the shortlist to consider)
-    (adv.alts || []).slice(0, 2).forEach((a) => add(a.id, "Consider", "#d6aa4b", 1));
+    (adv.alts || []).slice(0, 2).forEach((a) => add(a.id, "Consider", "var(--warn)", 1));
     // 3) a genuine positional run at a spot you still need to fill.
     //    The run tag must land on a player you'd ACTUALLY want. `bestNow` is picked by raw VBD, which routinely
     //    disagrees with the model's own shortlist — that's how a lesser RB ended up wearing a loud red
@@ -30454,7 +30795,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       const topIsRunPos = adv.verdict && adv.verdict.pos === runPos;
       // Colored like the rest of the shortlist (gold), NOT red. Red reads as "careful" — the wrong signal for a
       // player the model is telling you to take. The urgency is in the words ("act now"), not an alarm color.
-      if (runCand && !topIsRunPos) add(runCand.id, `${POS_LABEL[runPos]} run — act now`, "#d6aa4b", 0.5);
+      if (runCand && !topIsRunPos) add(runCand.id, `${POS_LABEL[runPos]} run — act now`, "var(--warn)", 0.5);
     }
     // 4) scarcity: a clearly-elite player at a need position who likely will NOT survive to your next pick.
     //    This is a real, useful warning even for someone off the shortlist ("he won't be here next time"), but
@@ -30463,7 +30804,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const shortlistIds = new Set([adv.verdict, ...(adv.alts || []).slice(0, 2)].filter(Boolean).map((c) => c.id));
     POS.forEach((pos) => {
       const b = adv.bestNow[pos];
-      if (b && needAt(pos) && !shortlistIds.has(b.id)) { const s = survOf(b.id); if (s != null && s <= 20 && b.adp <= pickNum + 6) add(b.id, "Won't last", "#EF6A6A", 0.7); }
+      if (b && needAt(pos) && !shortlistIds.has(b.id)) { const s = survOf(b.id); if (s != null && s <= 20 && b.adp <= pickNum + 6) add(b.id, "Won't last", "var(--p-qb)", 0.7); }
     });
     // 5) standout VALUE within reach. True value = a player whose actual value (VBD rank) is
     // meaningfully better than where he's going (ADP) AND who is a top option available around
@@ -30481,7 +30822,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       .sort((a, b) => b.val - a.val)
       .slice(0, 2)
       .map((x) => x.p);
-    valuePicks.forEach((p) => add(p.id, "Value", "#5BA8F5", 2));
+    valuePicks.forEach((p) => add(p.id, "Value", "var(--p-wr)", 2));
 
     // hard cap: keep only the top few by priority so the board stays clean and scannable
     const ranked = Object.entries(out).sort((a, b) => a[1].rank - b[1].rank).slice(0, 5);
@@ -31760,7 +32101,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           <span data-byecell={cl.week} data-byemark="1" data-byesevere={cl.severe ? "1" : ""}
             onMouseEnter={open} onMouseLeave={hideTip}
             style={{ display: "inline-block", minWidth: 20, padding: "0 4px", borderRadius: 4, fontWeight: 800, cursor: "help",
-              color: cl.severe ? "#0d0f12" : col, background: cl.severe ? col : `${col}22`, border: `1px solid ${col}${cl.severe ? "" : "66"}` }}>
+              color: cl.severe ? "#0d0f12" : col, background: cl.severe ? col : `${alpha(col, 13)}`, border: `1px solid ${col}${cl.severe ? "" : "66"}` }}>
             {p.bye}
           </span>
         );
@@ -32229,7 +32570,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     picks.forEach((pid, o) => { const pl = pid != null ? players[pid] : null; if (pl) takenNames.set(normName(pl.name), Math.floor(o / (cfg.teams || 12)) + 1); });
     const nowRound = Math.floor(picks.length / (cfg.teams || 12)) + 1;
     const ev = evalStrategy(strat, { roster: rostersByTeam[userIdx] || [], takenNames, round: nowRound, rounds: cfg.rounds || 15, myRoundOf });
-    const TONE = { done: "#5FD0A8", got: "#5FD0A8", pending: "var(--gold)", open: "var(--gold)", broken: "#F2655C", missed: "var(--mut)", gone: "#F2655C" };
+    const TONE = { done: "var(--pos)", got: "var(--pos)", pending: "var(--gold)", open: "var(--gold)", broken: "var(--neg)", missed: "var(--mut)", gone: "var(--neg)" };
     const WORD = { done: "done", got: "drafted", pending: "on track", open: "available", broken: "broken", missed: "missed", gone: "gone" };
     if (!ev.total) {
       return (
@@ -32398,10 +32739,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         exp: expOf(i), rec: i === at, sep: i === at,
       });
       for (let i = from; i < to; i++) {
-        if (myAt != null && i === myAt) rows.push({ ruleRow: true, label: myAt === 0 ? "you are on the clock" : `your next pick (${pickLabel(picks.length + myAt)})`, tone: "#5BA8F5" });
+        if (myAt != null && i === myAt) rows.push({ ruleRow: true, label: myAt === 0 ? "you are on the clock" : `your next pick (${pickLabel(picks.length + myAt)})`, tone: "var(--p-wr)" });
         rows.push(mk(q[i], i));
       }
-      if (myAt != null && myAt >= to) rows.push({ ruleRow: true, label: `your next pick is ${myAt - at} further down`, tone: "#5BA8F5" });
+      if (myAt != null && myAt >= to) rows.push({ ruleRow: true, label: `your next pick is ${myAt - at} further down`, tone: "var(--p-wr)" });
       const survives = myAt == null ? null : at >= myAt;
       return [
         { kind: "altheader", x: `${name} — ${at === 0 ? "next off the board on market order" : `${at} player${at === 1 ? "" : "s"} go first`}` },
@@ -32437,7 +32778,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       <div style={{ display: "flex", flexDirection: "column", gap: 15 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
           <div style={{ minWidth: 74 }}>
-            <div className="disp num" style={{ fontSize: 28, fontWeight: 800, color: ev.bad ? "#F2655C" : pct === 100 ? "#5FD0A8" : "var(--gold)", lineHeight: 1 }}>{ev.done}<span className="mut" style={{ fontSize: 15 }}>/{ev.total}</span></div>
+            <div className="disp num" style={{ fontSize: 28, fontWeight: 800, color: ev.bad ? "var(--neg)" : pct === 100 ? "var(--pos)" : "var(--gold)", lineHeight: 1 }}>{ev.done}<span className="mut" style={{ fontSize: 15 }}>/{ev.total}</span></div>
             <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".06em", marginTop: 3 }}>plan met</div>
           </div>
           <div style={{ flex: 1, minWidth: 220 }}>
@@ -32534,7 +32875,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                              ⚠ Only picks the simulation actually covers get a number — it runs three picks
                              deep, so a window in round 8 shows nothing rather than a made-up figure. */
                           const od = w.keeper || w.used ? null : stratOdds(playerNamed(t2.name), w.o);
-                          const oc = od == null ? "var(--mut)" : od >= 0.7 ? "#5FD0A8" : od >= 0.4 ? "var(--gold)" : "#F2655C";
+                          const oc = od == null ? "var(--mut)" : od >= 0.7 ? "var(--pos)" : od >= 0.4 ? "var(--gold)" : "var(--neg)";
                           return (
                             <span key={w.o} className="num" data-stratwinpick={w.label} data-stratwinodds={od == null ? "" : Math.round(od * 100)} style={{
                               fontSize: 11, fontWeight: w.keeper ? 400 : chosen ? 800 : 600,
@@ -32571,7 +32912,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     {ahead == null ? (
                       <span className="mut" style={{ fontSize: 10.5, lineHeight: 1.35 }}>
                         {t2.state === "gone"
-                          ? <>went in <b style={{ color: "#F2655C" }}>R{t2.wentRound}</b>{t2.wentRound < t2.from ? <> · {t2.from - t2.wentRound} round{t2.from - t2.wentRound === 1 ? "" : "s"} before your window</> : null}</>
+                          ? <>went in <b style={{ color: "var(--neg)" }}>R{t2.wentRound}</b>{t2.wentRound < t2.from ? <> · {t2.from - t2.wentRound} round{t2.from - t2.wentRound === 1 ? "" : "s"} before your window</> : null}</>
                           : t2.state === "missed" ? "your window passed — he was still there"
                           : t2.state === "got" ? "you got him"
                           : "—"}
@@ -32620,7 +32961,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         return (
                           <span style={{ display: "flex", flexDirection: "column", gap: 1, cursor: "help", minWidth: 0 }}>
                             <span style={{ display: "flex", alignItems: "baseline", gap: 4, flexWrap: "wrap" }}>
-                              <b className="num" style={{ fontSize: 13, color: risky ? "#F2655C" : tight ? "var(--gold)" : "#5FD0A8" }}>{ahead}</b>
+                              <b className="num" style={{ fontSize: 13, color: risky ? "var(--neg)" : tight ? "var(--gold)" : "var(--pos)" }}>{ahead}</b>
                               {/* ⭐ 29s — "I also don't get what it means where it says 'go first' next to each
                                   number." It meant "this many undrafted players have a better ADP than him",
                                   which the two words never said. Say it. */}
@@ -32631,7 +32972,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                 {expLabel || "undrafted"}
                               </b>
                             </span>
-                            <span data-stratverdict={t2.name} style={{ fontSize: 9.5, lineHeight: 1.35, color: missesWindow ? "#F2655C" : survives ? "#5FD0A8" : "var(--mut)" }}>
+                            <span data-stratverdict={t2.name} style={{ fontSize: 9.5, lineHeight: 1.35, color: missesWindow ? "var(--neg)" : survives ? "var(--pos)" : "var(--mut)" }}>
                               {missesWindow && firstWin != null
                                 ? <>unlikely to reach {pickLabel(firstWin)}{od != null ? ` (${Math.round(od * 100)}%)` : ""} — take him earlier</>
                                 : od != null && firstWin != null
@@ -32675,7 +33016,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   {picksUntilMine === 0
                     ? <>You're on the clock. <b style={{ color: "var(--gold)" }}>Who the market takes first</b> counts the undrafted players the room rates above each target — hover it to see exactly who they are and where your next pick falls among them.</>
                     : urgent.length
-                      ? <><b style={{ color: "#F2655C" }}>{urgent.map((t2) => t2.name).join(", ")}</b> {urgent.length === 1 ? "has" : "have"} fewer players ahead than the <b>{picksUntilMine}</b> picks before you're back — the room reaches {urgent.length === 1 ? "him" : "them"} first.</>
+                      ? <><b style={{ color: "var(--neg)" }}>{urgent.map((t2) => t2.name).join(", ")}</b> {urgent.length === 1 ? "has" : "have"} fewer players ahead than the <b>{picksUntilMine}</b> picks before you're back — the room reaches {urgent.length === 1 ? "him" : "them"} first.</>
                       : <>Every live target has more than <b>{picksUntilMine}</b> players ahead of him, so all of them should survive to your next pick.</>}
                 </div>
               );
@@ -32687,7 +33028,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <div className="mut" style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700, padding: "0 8px 4px" }}>Your rules</div>
             {ev.rules.map((r, i) => (
               <div key={i} data-stratrule={i} style={{ display: "grid", gridTemplateColumns: "18px minmax(0,1fr) minmax(0,170px) 84px", gap: 9, alignItems: "center", padding: "7px 8px", borderTop: "1px solid var(--line)",
-                background: r.state === "broken" ? "rgba(242,101,92,.07)" : "transparent", borderRadius: r.state === "broken" ? 6 : 0 }}>
+                background: r.state === "broken" ? "var(--neg-wash)" : "transparent", borderRadius: r.state === "broken" ? 6 : 0 }}>
                 <i className={`ti ${r.state === "done" ? "ti-circle-check" : r.state === "broken" ? "ti-alert-triangle" : r.state === "missed" ? "ti-circle-minus" : "ti-clock"}`} style={{ fontSize: 14, color: TONE[r.state] }} aria-hidden="true" />
                 <span style={{ fontSize: 13 }}>{r.phrase}</span>
                 <span className="mut" style={{ fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.detail}</span>
@@ -32700,7 +33041,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             pretending the plan is only its targets and rules. */}
         <div className="mut" style={{ fontSize: 11, borderTop: "1px solid var(--line)", paddingTop: 9, display: "flex", gap: 16, flexWrap: "wrap" }}>
           <span><b style={{ color: "var(--gold)" }}>{queue.size}</b> on your priority list</span>
-          <span><b style={{ color: "#F2655C" }}>{avoid.size}</b> you will not draft</span>
+          <span><b style={{ color: "var(--neg)" }}>{avoid.size}</b> you will not draft</span>
         </div>
       </div>
     );
@@ -32783,8 +33124,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   // Color by where you rank: top third green, bottom third red, middle grey. A real starter shortage
                   // always flags red regardless of quality rank.
                   const third = Math.max(1, Math.round(TEAMS / 3));
-                  let color = rank <= third ? "#5FD0A8" : rank > TEAMS - third ? "#F2655C" : "var(--gold)";
-                  if (short > 0) color = "#F2655C";
+                  let color = rank <= third ? "var(--pos)" : rank > TEAMS - third ? "var(--neg)" : "var(--gold)";
+                  if (short > 0) color = "var(--neg)";
                   return { pos, rank, of: TEAMS, haveN, short, color };
                 });
                 return (
@@ -32831,11 +33172,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               {(() => { const bt = p ? byeTint.color(p.bye) : null; return (
                             <span className="num" data-byedupe={bt ? p.bye : ""} title={bt ? `Bye week ${p.bye} — ${byeTint.count[p.bye]} of your starters are off that week.` : undefined}
                               style={{ fontSize: 9, textAlign: "right", color: bt || "var(--mut)", fontWeight: bt ? 800 : 400, cursor: bt ? "help" : "default",
-                                background: bt ? `${bt}1f` : "transparent", borderRadius: bt ? 3 : 0, padding: bt ? "0 2px" : 0 }}>{p && p.bye ? p.bye : "—"}</span>
+                                background: bt ? `${alpha(bt, 12)}` : "transparent", borderRadius: bt ? 3 : 0, padding: bt ? "0 2px" : 0 }}>{p && p.bye ? p.bye : "—"}</span>
                           ); })()}
                               <span className="num mut" style={{ fontSize: 9, textAlign: "right" }}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
                               <span className="num" style={{ fontSize: 10, fontWeight: 700, textAlign: "right", color: vbdColor(vShow) }}>{vShow != null ? (vShow > 0 ? "+" : "") + Math.round(vShow) : "—"}</span>
-                              <span className="num" style={{ fontSize: 10, fontWeight: 700, textAlign: "right", color: sc == null ? "var(--mut)" : sc > 0 ? "#5FD0A8" : sc < 0 ? "#F2655C" : "var(--mut)" }}>{sc != null ? (sc > 0 ? "+" : "") + sc : "—"}</span>
+                              <span className="num" style={{ fontSize: 10, fontWeight: 700, textAlign: "right", color: sc == null ? "var(--mut)" : sc > 0 ? "var(--pos)" : sc < 0 ? "var(--neg)" : "var(--mut)" }}>{sc != null ? (sc > 0 ? "+" : "") + sc : "—"}</span>
                               <span className="num" style={{ fontWeight: 700, fontSize: 11, textAlign: "right" }}>{Math.round(p.pts || 0)}</span>
                             </>
                           ) : <span className="mut" style={{ gridColumn: "2 / -1" }}>—</span>}
@@ -32865,7 +33206,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               ); })()}
                               <span className="num mut" style={{ fontSize: 8.5, textAlign: "right" }}>{b.adp != null ? b.adp.toFixed(0) : "—"}</span>
                               <span className="num" style={{ fontSize: 9.5, fontWeight: 700, textAlign: "right", color: vbdColor(vB) }}>{vB != null ? (vB > 0 ? "+" : "") + Math.round(vB) : "—"}</span>
-                              <span className="num" style={{ fontSize: 9.5, fontWeight: 700, textAlign: "right", color: scB == null ? "var(--mut)" : scB > 0 ? "#5FD0A8" : scB < 0 ? "#F2655C" : "var(--mut)" }}>{scB != null ? (scB > 0 ? "+" : "") + scB : "—"}</span>
+                              <span className="num" style={{ fontSize: 9.5, fontWeight: 700, textAlign: "right", color: scB == null ? "var(--mut)" : scB > 0 ? "var(--pos)" : scB < 0 ? "var(--neg)" : "var(--mut)" }}>{scB != null ? (scB > 0 ? "+" : "") + scB : "—"}</span>
                               <span className="num mut" style={{ fontSize: 10, textAlign: "right" }}>{Math.round(b.pts || 0)}</span>
                             </div>
                           );
@@ -32884,7 +33225,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           const col = byeTint.color(w);
                           return (
                             <span key={w} title={who.join(" · ")} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, cursor: "help" }}>
-                              <b className="num" style={{ color: col, background: `${col}1f`, border: `1px solid ${col}55`, borderRadius: 4, padding: "0 5px", fontSize: 10.5 }}>wk {w}</b>
+                              <b className="num" style={{ color: col, background: `${alpha(col, 12)}`, border: `1px solid ${alpha(col, 33)}`, borderRadius: 4, padding: "0 5px", fontSize: 10.5 }}>wk {w}</b>
                               <span className="mut" style={{ fontSize: 10.5 }}>{who.map((n) => surname(n)).join(", ")}</span>
                             </span>
                           );
@@ -33016,7 +33357,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         <td style={{ padding: "2px 4px 2px 0", color: i === userIdx ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 170 }}>{i === userIdx ? (n || "Your team") : n}</td>
                         <td className="num mut" style={{ padding: 2, textAlign: "right", fontSize: 11 }} title={`${drafted} drafted · ${remaining} pick${remaining === 1 ? "" : "s"} left`}>{drafted}<span style={{ opacity: 0.5 }}>/{ROUNDS}</span></td>
                         <td className="num" style={{ padding: "2px 4px 2px 2px", textAlign: "right", fontWeight: 700, fontSize: 11.5,
-                          color: projPts == null ? "var(--mut)" : projPts >= bestProj ? "#5FD0A8" : projPts <= worstProj ? "#F2655C" : "var(--ink)" }}>{projPts != null ? projPts : "—"}</td>
+                          color: projPts == null ? "var(--mut)" : projPts >= bestProj ? "var(--pos)" : projPts <= worstProj ? "var(--neg)" : "var(--ink)" }}>{projPts != null ? projPts : "—"}</td>
                         <td style={{ padding: 2, borderRight: "1px solid var(--line)", textAlign: "center" }}>
                           <span className="num" title={next === Infinity ? "No picks remaining" : `Next on the clock at overall pick ${next}`} style={{ fontSize: 11, fontWeight: 700, color: i === userIdx ? "var(--gold)" : "var(--mut)" }}>{next === Infinity ? "—" : next}</span>
                         </td>
@@ -33040,7 +33381,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             else { lvl = 2; tipTxt = `${short} short — running out of picks`; }
                             cellText = counts[pos];
                           }
-                          const bg = lvl === 0 ? "rgba(124,217,178,0.18)" : lvl === 1 ? "rgba(224,166,60,0.18)" : "rgba(242,101,92,0.22)";
+                          const bg = lvl === 0 ? "var(--pos-wash)" : lvl === 1 ? "rgba(224,166,60,0.18)" : "var(--neg-wash)";
                           const col = lvl === 0 ? "var(--green)" : lvl === 1 ? "var(--gold)" : "var(--red)";
                           const plist = posPlayersRow[pos] || [];
                           const cellTip = (e) => showTip(e, [
@@ -33053,9 +33394,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           let tCol, tBg, tTitle;
                           if (rank != null) {
                             const frac = (rank - 1) / Math.max(1, TEAMS - 1);
-                            if (frac <= 0.33) { tCol = "var(--green)"; tBg = "rgba(124,217,178,0.14)"; }
+                            if (frac <= 0.33) { tCol = "var(--green)"; tBg = "var(--pos-wash)"; }
                             else if (frac <= 0.66) { tCol = "var(--gold)"; tBg = "rgba(224,166,60,0.14)"; }
-                            else { tCol = "var(--red)"; tBg = "rgba(242,101,92,0.16)"; }
+                            else { tCol = "var(--red)"; tBg = "var(--neg-wash)"; }
                             tTitle = `Projected ${ordinal(rank)} of ${TEAMS} overall`;
                           } else {
                             tCol = "var(--mut)"; tBg = "rgba(255,255,255,.05)"; tTitle = `${totalN} players`;
@@ -33127,7 +33468,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 {tight
                   ? <>The whole league sits inside <b>{Math.round(spread)}</b> points, so this order is a lean, not a verdict — one good pick moves several places.</>
                   : <>Top to bottom the field spans <b>{Math.round(spread)}</b> points.</>}
-                {me ? <> You are <b style={{ color: me.rank <= 3 ? "#5FD0A8" : me.rank <= Math.ceil(TEAMS / 2) ? "var(--gold)" : "#F2655C" }}>{ordinal(me.rank)}</b>
+                {me ? <> You are <b style={{ color: me.rank <= 3 ? "var(--pos)" : me.rank <= Math.ceil(TEAMS / 2) ? "var(--gold)" : "var(--neg)" }}>{ordinal(me.rank)}</b>
                   {me.rank > 1 ? <>, {Math.round(top.pts - me.pts)} back of the lead</> : null}.</> : null}
               </div>
             </div>
@@ -33144,7 +33485,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       <span style={{ fontSize: 12.5, fontWeight: mine ? 800 : 600, color: mine ? "var(--gold)" : "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{nameOf(r.i)}</span>
                       <span style={{ height: 7, borderRadius: 99, background: "var(--panel3)", overflow: "hidden" }}>
                         <span style={{ display: "block", height: "100%", width: `${Math.max(3, Math.round(frac * 100))}%`, borderRadius: 99,
-                          background: mine ? "var(--gold)" : r.rank === 1 ? "#5FD0A8" : "var(--line2)" }} />
+                          background: mine ? "var(--gold)" : r.rank === 1 ? "var(--pos)" : "var(--line2)" }} />
                       </span>
                       <span className="num" style={{ fontSize: 11.5, fontWeight: 700, textAlign: "right" }}>{Math.round(r.pts)}</span>
                       <span className="mut" style={{ fontSize: 9.5, textAlign: "right", whiteSpace: "nowrap" }}>
@@ -33506,9 +33847,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               ])} onMouseLeave={hideTip}>
                               <span style={{ fontWeight: 800, fontSize: 11.5, color: POS_COLOR[pos], width: 26, flexShrink: 0 }}>{pos}</span>
                               <span style={{ flex: 1, minWidth: 0 }}>
-                                You still need {owe}. <b style={{ color: r.need === 0 ? "#5FD0A8" : "var(--ink)" }}>{r.need === 0 ? `None of the ${nTeams} teams` : `${r.need} of the ${nTeams} teams`}</b> ahead of you {r.need === 1 ? "does" : "do"}
+                                You still need {owe}. <b style={{ color: r.need === 0 ? "var(--pos)" : "var(--ink)" }}>{r.need === 0 ? `None of the ${nTeams} teams` : `${r.need} of the ${nTeams} teams`}</b> ahead of you {r.need === 1 ? "does" : "do"}
                                 {r.projected > 0 ? `, and ${r.projected} of the ${gap.length} picks in between project ${pos}` : `, and none of the ${gap.length} picks in between project ${pos}`}.
-                                {now && lasts != null && <> {now.name} is <b style={{ color: lasts >= 0.55 ? "#5FD0A8" : lasts >= 0.3 ? "var(--gold)" : "#F2655C" }}>{Math.round(lasts * 100)}%</b> to last to {pickLabel(endO)}.</>}
+                                {now && lasts != null && <> {now.name} is <b style={{ color: lasts >= 0.55 ? "var(--pos)" : lasts >= 0.3 ? "var(--gold)" : "var(--neg)" }}>{Math.round(lasts * 100)}%</b> to last to {pickLabel(endO)}.</>}
                               </span>
                               <span style={{ color: v.c, fontWeight: 800, fontSize: 11, flexShrink: 0 }}>{v.t === "Safe to wait" ? "WAIT" : v.t === "At risk" ? "AT RISK" : "TAKE NOW"}</span>
                             </div>
@@ -33715,14 +34056,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                 {/* ⭐ The number that answers "what happens if I pass on him" directly. */}
                                 {onClockNow && r.cOdds != null && (
                                   <span data-passodds={r.c.name} style={{ fontSize: 8.5, marginLeft: 5, fontWeight: 800,
-                                    color: r.cOdds >= 0.55 ? "var(--mut)" : "#F2655C" }}>
+                                    color: r.cOdds >= 0.55 ? "var(--mut)" : "var(--neg)" }}>
                                     {r.cOdds < 0.55 ? `gone if you wait · ${Math.round(r.cOdds * 100)}%` : `${Math.round(r.cOdds * 100)}% lasts`}
                                   </span>
                                 )}
                                 {/* Off the clock the honest first number is whether he even reaches you. */}
                                 {!onClockNow && r.cHere != null && (
                                   <span data-hereodds={r.c.name} className="num" style={{ fontSize: 8.5, marginLeft: 5, fontWeight: 800,
-                                    color: r.cHere >= 0.55 ? "#5FD0A8" : r.cHere >= 0.3 ? "var(--gold)" : "#F2655C" }}>
+                                    color: r.cHere >= 0.55 ? "var(--pos)" : r.cHere >= 0.3 ? "var(--gold)" : "var(--neg)" }}>
                                     {Math.round(r.cHere * 100)}% there
                                   </span>
                                 )}
@@ -33733,11 +34074,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                   <b style={{ color: POS_COLOR[cpos(r.next.pos)], fontSize: 9.5, marginRight: 4 }}>{cpos(r.next.pos)}</b>{r.next.name}
                                   {r.odds != null && (
                                     <span data-nextodds={r.next.name} className="num" style={{ fontSize: 8.5, marginLeft: 5, fontWeight: 800,
-                                      color: r.likely ? "#5FD0A8" : "#F2655C" }}>{Math.round(r.odds * 100)}%</span>
+                                      color: r.likely ? "var(--pos)" : "var(--neg)" }}>{Math.round(r.odds * 100)}%</span>
                                   )}
                                 </> : "—"}
                               </span>
-                              <span className="num" style={{ textAlign: "right", fontWeight: 800, color: isBest ? "#5FD0A8" : "var(--mut)" }}>
+                              <span className="num" style={{ textAlign: "right", fontWeight: 800, color: isBest ? "var(--pos)" : "var(--mut)" }}>
                                 {fmtVal(r.combined)}
                               </span>
                             </div>
@@ -33745,7 +34086,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         })}
                         <div className="mut" style={{ fontSize: 9.5, lineHeight: 1.45, marginTop: 6 }}>
                           "Together" is the two players' combined value over replacement. {onClockNow
-                            ? <>The percentage is the simulated chance that player is still on the board at {pickLabel(oThen)} — the second name is the best player who is odds-on to last, so a name in <b style={{ color: "#F2655C" }}>red</b> means nothing safe is left and you are looking at a gamble.</>
+                            ? <>The percentage is the simulated chance that player is still on the board at {pickLabel(oThen)} — the second name is the best player who is odds-on to last, so a name in <b style={{ color: "var(--neg)" }}>red</b> means nothing safe is left and you are looking at a gamble.</>
                             : <>You are not on the clock, so the first percentage is the chance that player is still there when you pick at {pickLabel(oNow)}, and the second is the chance the follow-up lasts to {pickLabel(oThen)}. Rows are ordered by value × odds — what you can realistically do, not what you would do if the room stopped drafting.</>}
                         </div>
                       </div>
@@ -33795,7 +34136,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       const tone = v.t === "Safe to wait" ? "good" : v.t === "At risk" ? "neutral" : "bad";
                       return (
                         <div key={r.pos} data-betweencard={r.pos}
-                          style={{ border: `1px solid ${v.c}44`, background: `${v.c}0e`, borderRadius: 9, padding: "8px 10px", cursor: "help", minWidth: 0 }}
+                          style={{ border: `1px solid ${alpha(v.c, 27)}`, background: `${alpha(v.c, 5)}`, borderRadius: 9, padding: "8px 10px", cursor: "help", minWidth: 0 }}
                           onMouseEnter={(e) => showTip(e, [
                             { kind: "take", tone, x: `${r.pos} — ${v.t.toLowerCase()}` },
                             { t: "Who still needs one", x: r.need ? [...teamInfo.entries()].filter(([, x]) => x.owed[r.pos] > 0 || (x.flexOpenN > 0 && ["RB", "WR", "TE"].includes(r.pos))).map(([t]) => shortName(t)).join(", ") : `None of the ${nTeams} teams before you` },
@@ -33924,6 +34265,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           sit behind one "Controls" button on narrow screens; `.dctl-open` on this bar reveals them, and above
           640px the class does nothing and every button is exactly where it was. */}
       <div ref={topBarRef} className={`hairline appheader droomhead${simple ? " simplehead" : ""}${ctlOpen ? " dctl-open" : ""}`} style={{ display: "flex", alignItems: "center", gap: 12, padding: "6px 16px", flexWrap: "wrap" }}>
+        <ThemeToggle compact />
         <button className="btn btn-mini" onClick={exit} title="Back to where you came from">← {exitLabel || (user ? (user.paid ? "Home" : "Library") : "Home")}</button>
         {/* ⭐⭐⭐ THE BUILD TAG RIDES WITH THE LEAGUE NAME NOW.
             Trey: "Can we find a way to fit the version on the top row… this would create more real estate."
@@ -34132,7 +34474,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         const broken = liveUnmatched.placed === 0;
         return (
           <div data-unmatched={broken ? "none" : "some"} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 16px", flexWrap: "wrap",
-            background: broken ? "rgba(242,101,92,.12)" : "rgba(224,166,60,.08)", borderBottom: `1px solid ${broken ? "var(--red)" : "var(--line)"}` }}>
+            background: broken ? "var(--neg-wash)" : "rgba(224,166,60,.08)", borderBottom: `1px solid ${broken ? "var(--red)" : "var(--line)"}` }}>
             <i className={`ti ${broken ? "ti-plug-connected-x" : "ti-help-circle"}`} style={{ fontSize: 15, color: broken ? "var(--red)" : "var(--gold)" }} aria-hidden="true" />
             <span style={{ fontSize: 12.5, color: broken ? "var(--ink)" : "var(--mut)", fontWeight: broken ? 600 : 400, flex: "1 1 300px" }}>
               {broken
@@ -34146,7 +34488,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         );
       })()}
       {!done && !hypoMode && liveConflict && (
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 16px", flexWrap: "wrap", background: "rgba(242,101,92,.12)", borderBottom: "1px solid var(--red)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 16px", flexWrap: "wrap", background: "var(--neg-wash)", borderBottom: "1px solid var(--red)" }}>
           <i className="ti ti-alert-triangle" style={{ fontSize: 15, color: "var(--red)" }} aria-hidden="true" />
           <span style={{ fontSize: 12.5, color: "var(--ink)", fontWeight: 600 }}>
             {livePlatformName} recorded <b>{liveConflict.liveName}</b> where you had entered <b>{liveConflict.localName}</b> — the board now matches the live draft.
@@ -34235,7 +34577,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                punctuation in it; a vertical rule reads as six separate things, which is what they are. */
             const dot = <span aria-hidden="true" style={{ flexShrink: 0, width: 1, alignSelf: "stretch", minHeight: 15, margin: "0 1px", background: "var(--line2)", borderRadius: 1 }} />;
             const fin = (proj && proj.rank && proj.rank[userIdx] != null) ? proj.rank[userIdx] : null;
-            const finColor = fin == null ? "var(--ink)" : fin <= 3 ? "#5FD0A8" : fin <= Math.ceil(TEAMS / 2) ? "var(--gold)" : "#F2655C";
+            const finColor = fin == null ? "var(--ink)" : fin <= 3 ? "var(--pos)" : fin <= Math.ceil(TEAMS / 2) ? "var(--gold)" : "var(--neg)";
             const last = picks.length ? players[picks[picks.length - 1]] : null;
             // Best left on the board, by VBD — the same anchor the pulse card's footer prints.
             let best = null;
@@ -34276,13 +34618,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <div data-tour="howdoing" className="decision-group-a" style={{ display: "grid", gridTemplateColumns: "minmax(232px,1fr) minmax(216px,1fr)", gap: 8, flex: "1.05 1 0", minWidth: 0, padding: "5px 7px", borderRadius: 10, border: "1px solid var(--line)", background: "rgba(255,255,255,.014)" }}>
             {/* ===== ZONE 1: HOW YOU'RE DOING (table) ===== */}
             {(() => {
-              const laneMap = { rebuild: { t: "Rebuild", c: "#5FD0A8", i: "ti-seedling" }, winnow: { t: "Win-now", c: "#F2655C", i: "ti-flame" }, balanced: { t: "Balanced", c: "var(--gold)", i: "ti-scale" }, undecided: { t: "Forming…", c: "var(--mut)", i: "ti-loader" } };
+              const laneMap = { rebuild: { t: "Rebuild", c: "var(--pos)", i: "ti-seedling" }, winnow: { t: "Win-now", c: "var(--neg)", i: "ti-flame" }, balanced: { t: "Balanced", c: "var(--gold)", i: "ti-scale" }, undecided: { t: "Forming…", c: "var(--mut)", i: "ti-loader" } };
               const isReDraft = !(isDynastyCfg(cfg));
               const laneKey = isReDraft ? "winnow" : (myWindow.decided ? myWindow.lane : "undecided");
               const lane = laneMap[laneKey] || laneMap.undecided;
               const showBuild = isReDraft || myWindow.decided;
               const finish = (proj && proj.rank && proj.rank[userIdx] != null) ? proj.rank[userIdx] : null;
-              const finishColor = finish == null ? "var(--mut)" : finish <= 3 ? "#5FD0A8" : finish <= Math.ceil(TEAMS / 2) ? "var(--gold)" : "#F2655C";
+              const finishColor = finish == null ? "var(--mut)" : finish <= 3 ? "var(--pos)" : finish <= Math.ceil(TEAMS / 2) ? "var(--gold)" : "var(--neg)";
               const req = myWindow.req || REQ_F(cfg.sf);
               const have = myWindow.have || { QB: 0, RB: 0, WR: 0, TE: 0 };
               const flexSlots = SPEC.FLEX || 0, superSlots = SPEC.SUPER || 0, kSlots = SPEC.K || 0, dstSlots = SPEC.DST || 0;
@@ -34341,7 +34683,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const list = gap.byPos[pos] || [];
                 const n = list.length;
                 const surv = survivorAt(pos, which);
-                const tone = n === 0 ? "var(--mut)" : n >= 3 ? "#F2655C" : n >= 2 ? "var(--gold)" : "var(--ink)";
+                const tone = n === 0 ? "var(--mut)" : n >= 3 ? "var(--neg)" : n >= 2 ? "var(--gold)" : "var(--ink)";
                 return (
                   <span style={{ textAlign: "center", fontSize: 10.5, fontWeight: n ? 800 : 400, color: tone, cursor: "help" }}
                     onMouseEnter={(e) => showTip(e, [
@@ -34378,9 +34720,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 let read;
                 if (has0 && boardStrong) read = { t: "Open", c: "var(--blue)" };
                 else if (frac == null) read = { t: "—", c: "var(--mut)" };
-                else if (frac <= 0.33) read = { t: "Strong", c: "#5FD0A8" };
+                else if (frac <= 0.33) read = { t: "Strong", c: "var(--pos)" };
                 else if (frac <= 0.66) read = { t: "Middle", c: "var(--gold)" };
-                else read = { t: "Thin", c: "#F2655C" };
+                else read = { t: "Thin", c: "var(--neg)" };
                 // focus pressure: unfilled need first (by deficit), then weakest league rank
                 const pressure = (deficit > 0 ? 100 + deficit * 10 : 0) + (frac != null ? frac * 40 : 0);
                 const bestAvail = (availByPos[pos] || [])[0] || null;
@@ -34451,10 +34793,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           <div key={d.pos} style={{ display: "grid", gridTemplateColumns: HYD_COLS, gap: "0 5px", alignItems: "center", padding: "1.5px 4px", margin: "0 -4px", borderRadius: 5 }}>
                             <span onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ fontSize: 11, fontWeight: 800, color: POS_COLOR[d.pos], cursor: "help" }}>{d.pos}</span>
                             <span onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ fontSize: 10.5, display: "inline-flex", alignItems: "baseline", gap: 1, whiteSpace: "nowrap", cursor: "help" }} title={myCapped[d.pos] != null ? `${d.pos} is FULL — league maximum of ${myCapped[d.pos]} reached. You can't draft another ${d.pos}.` : d.deficit > 0 ? `Need ${Math.round(d.deficit)} more starter${Math.round(d.deficit) === 1 ? "" : "s"} at ${d.pos}` : d.filled ? `${d.pos} starters filled` : ""}>
-                              <span style={{ fontWeight: 800, color: myCapped[d.pos] != null ? "#F2655C" : d.deficit > 0 ? "#F2655C" : "var(--ink)" }}>{d.has}</span>
+                              <span style={{ fontWeight: 800, color: myCapped[d.pos] != null ? "var(--neg)" : d.deficit > 0 ? "var(--neg)" : "var(--ink)" }}>{d.has}</span>
                               <span className="mut" style={{ fontSize: 9 }}>/{d.need || 0}</span>
-                              {myCapped[d.pos] != null ? <span style={{ fontSize: 7.5, fontWeight: 800, color: "#F2655C", background: "rgba(242,101,92,.16)", borderRadius: 3, padding: "0 3px", marginLeft: 3, letterSpacing: ".03em" }}>MAX</span>
-                                : d.filled ? <i className="ti ti-circle-check-filled" style={{ fontSize: 9.5, color: "#5FD0A8", marginLeft: 2 }} aria-hidden="true" /> : d.deficit > 0 ? <i className="ti ti-alert-circle-filled" style={{ fontSize: 9.5, color: "#F2655C", marginLeft: 2 }} aria-hidden="true" /> : null}
+                              {myCapped[d.pos] != null ? <span style={{ fontSize: 7.5, fontWeight: 800, color: "var(--neg)", background: "var(--neg-wash)", borderRadius: 3, padding: "0 3px", marginLeft: 3, letterSpacing: ".03em" }}>MAX</span>
+                                : d.filled ? <i className="ti ti-circle-check-filled" style={{ fontSize: 9.5, color: "var(--pos)", marginLeft: 2 }} aria-hidden="true" /> : d.deficit > 0 ? <i className="ti ti-alert-circle-filled" style={{ fontSize: 9.5, color: "var(--neg)", marginLeft: 2 }} aria-hidden="true" /> : null}
                             </span>
                             <span onMouseEnter={posTip(d)} onMouseLeave={hideTip} style={{ textAlign: "center", fontSize: 10.5, fontWeight: 700, color: d.rk ? d.read.c : "var(--mut)", cursor: "help" }}>{d.rk ? `${d.rk.rank}/${d.rk.of}` : "—"}</span>
                             {gapCell(gapA, d.pos, 1)}
@@ -34470,7 +34812,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   {(flexSlots > 0 || superSlots > 0 || kSlots > 0 || dstSlots > 0) && (
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 4, borderTop: "1px solid rgba(224,166,60,.22)", paddingTop: 5, marginTop: "auto" }}>
                       {[["FLX", flexFilled, flexSlots], ["SFL", superFilled, superSlots], ["K", kHave, kSlots], ["DST", dstHave, dstSlots]].map(([label, filled, total]) => total > 0 ? (
-                        <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9.5, fontWeight: 700, padding: "1px 5px", borderRadius: 4, background: filled >= total ? "rgba(95,208,168,.12)" : "rgba(242,101,92,.10)", color: filled >= total ? "#5FD0A8" : "#F2655C", border: `1px solid ${filled >= total ? "rgba(95,208,168,.35)" : "rgba(242,101,92,.3)"}` }}>
+                        <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9.5, fontWeight: 700, padding: "1px 5px", borderRadius: 4, background: filled >= total ? "var(--pos-wash)" : "var(--neg-wash)", color: filled >= total ? "var(--pos)" : "var(--neg)", border: `1px solid ${filled >= total ? "var(--pos-line)" : "var(--neg-line)"}` }}>
                           {label} {filled}/{total}{filled >= total ? " ✓" : ""}
                         </span>
                       ) : null)}
@@ -34508,7 +34850,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 // LATE lens: is the best guy clearly better than the next few (a "grab him" gap), or flat/interchangeable?
                 let supply;
                 if (!lateDraft) {
-                  const t = startersLeft == null ? { c: "var(--mut)", t: "—" } : startersLeft <= 2 ? { c: "#F2655C", t: "Scarce" } : startersLeft <= 5 ? { c: "var(--gold)", t: "Thinning" } : { c: "#5FD0A8", t: "Deep" };
+                  const t = startersLeft == null ? { c: "var(--mut)", t: "—" } : startersLeft <= 2 ? { c: "var(--neg)", t: "Scarce" } : startersLeft <= 5 ? { c: "var(--gold)", t: "Thinning" } : { c: "var(--pos)", t: "Deep" };
                   supply = { label: t.t, c: t.c, num: startersLeft, numTitle: `${startersLeft ?? 0} startable-tier ${pos}${startersLeft === 1 ? "" : "s"} still on the board`, metric: "starters" };
                 } else {
                   // gap from best to the average of the next 3 available at the position — measured on the
@@ -34521,9 +34863,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   const gap = Math.round(metric === "adp" ? (avgNext - bestVal) : (bestVal - avgNext));
                   let t;
                   if (metric !== "adp" && bestVal <= 0 && avgNext <= 0) t = { c: "var(--mut)", t: "Bare" };
-                  else if (gap >= 12) t = { c: "#F2655C", t: "Top guy" };   // one clear standout — grab him
+                  else if (gap >= 12) t = { c: "var(--neg)", t: "Top guy" };   // one clear standout — grab him
                   else if (gap >= 5) t = { c: "var(--gold)", t: "Slight edge" };
-                  else t = { c: "#5FD0A8", t: "Even" };                     // interchangeable — no rush
+                  else t = { c: "var(--pos)", t: "Even" };                     // interchangeable — no rush
                   supply = { label: t.t, c: t.c, num: t.t === "Bare" ? null : (gap > 0 ? "+" + gap : String(gap)), numTitle: `${metricLabel} gap: the best ${pos} is ${gap > 0 ? gap : 0} ahead of the next few`, metric: "gap" };
                 }
                 return { pos, best, startersLeft, supply, isRun, comps, runPicks, starterLine: scar ? scar.starterLine : null, drop: scar ? scar.drop : null };
@@ -34566,8 +34908,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           {dynasty && <span onMouseEnter={bestTip} onMouseLeave={hideTip} className="num" style={{ fontSize: 10, fontWeight: 700, textAlign: "right", cursor: "help", color: vbdColor(r.best.value ?? r.best.vbd) }}>{(() => { const v = r.best.value ?? r.best.vbd; return fmtVal(v); })()}</span>}
                           <span className="num" style={{ fontSize: 9.5, textAlign: "right", color: adpReadColor(picks.length + 1, r.best.adp) }} title={r.best.adp != null ? `ADP ${r.best.adp.toFixed(1)} vs current pick ${picks.length + 1} — ${(picks.length + 1) - r.best.adp >= 8 ? "steal (fell past his ADP)" : (picks.length + 1) - r.best.adp <= -8 ? "reach (earlier than ADP)" : "fair value"}` : ""}>{r.best.adp != null ? r.best.adp.toFixed(0) : "—"}</span>
                           <span onMouseEnter={supplyTip} onMouseLeave={hideTip} style={{ display: "inline-flex", alignItems: "center", justifyContent: "flex-end", gap: 3, cursor: "help" }}>
-                            {r.isRun && <i className="ti ti-flame" style={{ fontSize: 9, color: "#F2655C" }} aria-hidden="true" />}
-                            <span style={{ fontSize: 8.5, fontWeight: 800, color: r.isRun ? "#F2655C" : r.supply.c, whiteSpace: "nowrap" }}>{r.isRun ? "run" : r.supply.label}</span>
+                            {r.isRun && <i className="ti ti-flame" style={{ fontSize: 9, color: "var(--neg)" }} aria-hidden="true" />}
+                            <span style={{ fontSize: 8.5, fontWeight: 800, color: r.isRun ? "var(--neg)" : r.supply.c, whiteSpace: "nowrap" }}>{r.isRun ? "run" : r.supply.label}</span>
                             {r.supply.num != null && <span className="num" title={r.supply.numTitle} style={{ fontSize: 8, color: r.supply.c, background: r.supply.c + "1c", borderRadius: 3, padding: "0 3px", minWidth: 15, textAlign: "center" }}>{r.supply.num}</span>}
                           </span>
                         </div>
@@ -34617,7 +34959,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               const recent = picks.slice(-5).map((pk, i) => ({ pk, o: picks.length - Math.min(5, picks.length) + i })).reverse();
               const moreTip = (e) => showTip(e, [
                 { kind: "take", tone: "neutral", x: `Recent picks — draft Score (value vs. where he went)` },
-                { kind: "playertable", cols: ["pick", "pos", "name", "drafter", "adp", "score", "valread"], players: picks.slice(-22).map((pk, i) => { const oo = Math.max(0, picks.length - Math.min(22, picks.length)) + i; const pp = players[pk]; if (!pp) return null; const gap = pp.adp != null ? Math.round((oo + 1) - pp.adp) : 0; const vr = gap >= 8 ? { t: "steal", c: "#5FD0A8" } : gap <= -8 ? { t: "reach", c: "#F2655C" } : { t: "fair", c: "var(--mut)" }; const mine = teamAt(oo) === userIdx; return { ...pp, pickNo: oo + 1, pickScore: (graded[oo] ? graded[oo].val : pickValue(pp, oo, cfg)), drafter: mine ? "You" : teamFullLabel(teamAt(oo)), valRead: vr, rec: mine, star: mine }; }).filter(Boolean).reverse() },
+                { kind: "playertable", cols: ["pick", "pos", "name", "drafter", "adp", "score", "valread"], players: picks.slice(-22).map((pk, i) => { const oo = Math.max(0, picks.length - Math.min(22, picks.length)) + i; const pp = players[pk]; if (!pp) return null; const gap = pp.adp != null ? Math.round((oo + 1) - pp.adp) : 0; const vr = gap >= 8 ? { t: "steal", c: "var(--pos)" } : gap <= -8 ? { t: "reach", c: "var(--neg)" } : { t: "fair", c: "var(--mut)" }; const mine = teamAt(oo) === userIdx; return { ...pp, pickNo: oo + 1, pickScore: (graded[oo] ? graded[oo].val : pickValue(pp, oo, cfg)), drafter: mine ? "You" : teamFullLabel(teamAt(oo)), valRead: vr, rec: mine, star: mine }; }).filter(Boolean).reverse() },
                 { kind: "take", tone: "neutral", x: "Score = draft-capital value gained/lost vs. his market price (ADP), weighted by round — the same value the scorecard grades teams on. Positive = got him below cost; negative = paid up." },
               ], true);
               return (
@@ -34632,11 +34974,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       const spotGap = p.adp != null ? Math.round((o + 1) - p.adp) : null; // + = fell past ADP (value), − = taken early (reach)
                       // Graded value read, five tiers, so the hover answers "what was this pick worth?" at a glance.
                       const val = spotGap == null ? { t: "no ADP", grade: "fair", c: "var(--mut)" }
-                        : spotGap >= 20 ? { t: "big steal", grade: "steal", c: "#5FD0A8" }
-                        : spotGap >= 8 ? { t: "steal", grade: "steal", c: "#5FD0A8" }
-                        : spotGap <= -20 ? { t: "big reach", grade: "reach", c: "#F2655C" }
-                        : spotGap <= -8 ? { t: "reach", grade: "reach", c: "#F2655C" }
-                        : { t: "fair value", grade: "fair", c: "#E7C24B" };
+                        : spotGap >= 20 ? { t: "big steal", grade: "steal", c: "var(--pos)" }
+                        : spotGap >= 8 ? { t: "steal", grade: "steal", c: "var(--pos)" }
+                        : spotGap <= -20 ? { t: "big reach", grade: "reach", c: "var(--neg)" }
+                        : spotGap <= -8 ? { t: "reach", grade: "reach", c: "var(--neg)" }
+                        : { t: "fair value", grade: "fair", c: "var(--warn)" };
                       const forTeam = teamAt(o);
                       const mine = forTeam === userIdx;
                       const teamLabel = mine ? "You" : (TEAM_NAMES[forTeam] || `Team ${forTeam + 1}`);
@@ -34706,7 +35048,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     <span style={{ fontSize: isYou ? 10 : 9, textTransform: "uppercase", letterSpacing: ".05em", color: isYou ? "var(--gold)" : "var(--mut)", fontWeight: 800 }}>{isYou ? "You're on the clock" : "On the clock"} · {pickLabel(picks.length)} <span style={{ opacity: .7 }}>({picks.length + 1})</span></span>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                       <span title={isYou ? "Your team" : teamFullLabel(onClock)} style={{ fontSize: 11, fontWeight: 800, color: isYou ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 96, cursor: "help" }}>{isYou ? "YOU" : teamShort(TEAM_NAMES[onClock] || `Team ${onClock + 1}`)}</span>
-                      {(connected || (cfg && cfg.mockTimerSec > 0)) && (liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? <span className="num mut" style={{ fontSize: 13 }}>no timer</span> : (isTimedMock && !started) ? <span className="num mut" style={{ fontSize: 12 }}>{fmtClock(cfg.mockTimerSec)}</span> : clock <= 0 ? <span className="num" style={{ fontSize: 15, color: "var(--red)", fontWeight: 800, letterSpacing: ".02em", textTransform: "uppercase" }}>{isTimedMock ? "Time's up" : "overdue"}</span> : <span className="num" style={{ fontSize: 22, lineHeight: 1, color: clock <= 15 ? "var(--red)" : "var(--ink)", fontWeight: 800, letterSpacing: ".02em", background: clock <= 15 ? "rgba(242,101,92,.16)" : "rgba(255,255,255,.06)", padding: "3px 9px", borderRadius: 6, fontVariantNumeric: "tabular-nums" }}>{fmtClock(clock)}</span>)}
+                      {(connected || (cfg && cfg.mockTimerSec > 0)) && (liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? <span className="num mut" style={{ fontSize: 13 }}>no timer</span> : (isTimedMock && !started) ? <span className="num mut" style={{ fontSize: 12 }}>{fmtClock(cfg.mockTimerSec)}</span> : clock <= 0 ? <span className="num" style={{ fontSize: 15, color: "var(--red)", fontWeight: 800, letterSpacing: ".02em", textTransform: "uppercase" }}>{isTimedMock ? "Time's up" : "overdue"}</span> : <span className="num" style={{ fontSize: 22, lineHeight: 1, color: clock <= 15 ? "var(--red)" : "var(--ink)", fontWeight: 800, letterSpacing: ".02em", background: clock <= 15 ? "var(--neg-wash)" : "rgba(255,255,255,.06)", padding: "3px 9px", borderRadius: 6, fontVariantNumeric: "tabular-nums" }}>{fmtClock(clock)}</span>)}
                     </span>
                   </div>
                   {/* projected pick (with photo) + 3 alternatives */}
@@ -34740,7 +35082,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           <span data-clockplan={pl.name} data-clockplanstate={t.state}
                             title={`On your plan for ${t.from === t.to ? `round ${t.from}` : `rounds ${t.from}-${t.to}`}.`}
                             style={{ fontSize: big ? 8.5 : 8, fontWeight: 800, color: t.color, border: `1px solid ${t.color}`,
-                              background: `${t.color}26`, borderRadius: 4, padding: "0 3px", whiteSpace: "nowrap", flexShrink: 0 }}>
+                              background: `${alpha(t.color, 15)}`, borderRadius: 4, padding: "0 3px", whiteSpace: "nowrap", flexShrink: 0 }}>
                             {t.state === "late" ? `▼ ${t.label}` : `★ ${t.label}`}
                           </span>
                         );
@@ -34751,7 +35093,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         <>
                           {planHit.length > 0 && (
                             <div data-clockplanline style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 9.5, lineHeight: 1.35,
-                              border: `1px solid ${planHit[0].color}66`, background: `${planHit[0].color}14`, borderRadius: 6, padding: "3px 6px" }}>
+                              border: `1px solid ${alpha(planHit[0].color, 40)}`, background: `${alpha(planHit[0].color, 8)}`, borderRadius: 6, padding: "3px 6px" }}>
                               <i className="ti ti-checklist" style={{ fontSize: 11, color: planHit[0].color, flexShrink: 0 }} aria-hidden="true" />
                               <span style={{ minWidth: 0 }}>
                                 {planHit.some((t) => t.state === "now") ? <><b style={{ color: planHit[0].color }}>This is the round</b> you planned for {planHit.filter((t) => t.state === "now").length} of these.</>
@@ -34823,7 +35165,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               const upSource = path.slice(1).filter((s) => s && s.o > picks.length && s.p);
               const upcoming = upSource.slice(0, 5);
               const untilMine = myNextOverall != null ? Math.max(0, myNextOverall - picks.length) : null;
-              const untilColor = untilMine == null ? "var(--mut)" : untilMine <= 1 ? "#F2655C" : untilMine <= 3 ? "var(--gold)" : "#5FD0A8";
+              const untilColor = untilMine == null ? "var(--mut)" : untilMine <= 1 ? "var(--neg)" : untilMine <= 3 ? "var(--gold)" : "var(--pos)";
               // second upcoming user pick — "then N" — so you can see the full gap before you're back after your next
               const untilMine2 = myNext2Overall != null ? Math.max(0, myNext2Overall - picks.length) : null;
               const moreTip = (e) => showTip(e, [
@@ -34838,7 +35180,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
                         {/* TWO explicit tickers: picks until YOUR next pick, and picks until the one AFTER it —
                             so you can plan two selections ahead at a glance (the second counts from NOW too). */}
-                        <span title="Picks until your NEXT pick" style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 8.5, fontWeight: 800, color: untilColor, background: untilColor + "1e", border: `1px solid ${untilColor}55`, borderRadius: 20, padding: "1px 7px" }}>
+                        <span title="Picks until your NEXT pick" style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 8.5, fontWeight: 800, color: untilColor, background: untilColor + "1e", border: `1px solid ${alpha(untilColor, 33)}`, borderRadius: 20, padding: "1px 7px" }}>
                           <i className="ti ti-user-star" style={{ fontSize: 9 }} aria-hidden="true" />
                           {untilMine === 0 ? "you're up!" : untilMine === 1 ? "you're next" : `your pick: ${untilMine}`}
                         </span>
@@ -34901,7 +35243,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             {diagOpen && (
               <div style={{ overflowX: "auto" }}>
                 {(advice.dbgRows.lines || []).map((t, i) => (
-                  <div key={i} style={{ color: /MISMATCH/.test(t) ? "#F2655C" : "var(--mut)", fontWeight: /MISMATCH/.test(t) ? 800 : 400, whiteSpace: "normal", marginBottom: 1 }}>{t}</div>
+                  <div key={i} style={{ color: /MISMATCH/.test(t) ? "var(--neg)" : "var(--mut)", fontWeight: /MISMATCH/.test(t) ? 800 : 400, whiteSpace: "normal", marginBottom: 1 }}>{t}</div>
                 ))}
               </div>
             )}
@@ -35527,7 +35869,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         const poolLeft = bd && tierInfo.poolLeftInBand ? tierInfo.poolLeftInBand(bd) : left;
                         const thin = left > 0 && left <= 2;
                         const label = !bd ? "TIER" : bd.from === bd.to ? `TIER ${bd.from}` : `TIERS ${bd.from}–${bd.to}`;
-                        const countCol = left === 0 ? "var(--mut)" : left <= 2 ? "#F2655C" : left <= 5 ? "var(--gold)" : "var(--mut)";
+                        const countCol = left === 0 ? "var(--mut)" : left <= 2 ? "var(--neg)" : left <= 5 ? "var(--gold)" : "var(--mut)";
                         outRows.push(
                           <tr key={`tier-band-${lastTier}`} className="tierbreak">
                             <td colSpan={nCols} style={{ padding: 0 }}>
@@ -35547,7 +35889,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                 <span className="num" style={{ fontSize: 10.5, fontWeight: thin ? 800 : 600, color: countCol }}>
                                   {left === 0 ? "none left" : `${left} left`}
                                 </span>
-                                {thin && <span style={{ fontSize: 9.5, color: "#F2655C", opacity: .85 }}>about to break</span>}
+                                {thin && <span style={{ fontSize: 9.5, color: "var(--neg)", opacity: .85 }}>about to break</span>}
                               </div>
                             </td>
                           </tr>
@@ -35606,13 +35948,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               <button className="qplus" data-dqadd={p.name} onClick={() => toggleDqueue(p.name)}
                                 aria-label={inDqueue(p.name) ? `Remove ${p.name} from your draft queue` : `Add ${p.name} to your draft queue`}
                                 title={inDqueue(p.name) ? `${p.name} is in your draft queue — click to remove.` : `Add ${p.name} to your draft queue (your ordered shortlist for the next few picks).`}
-                                style={{ background: "none", border: "none", cursor: "pointer", padding: 8, margin: -8, flexShrink: 0, lineHeight: 1, color: inDqueue(p.name) ? "#5FD0A8" : "var(--mut)", opacity: inDqueue(p.name) ? 1 : 0.35 }}>
+                                style={{ background: "none", border: "none", cursor: "pointer", padding: 8, margin: -8, flexShrink: 0, lineHeight: 1, color: inDqueue(p.name) ? "var(--pos)" : "var(--mut)", opacity: inDqueue(p.name) ? 1 : 0.35 }}>
                                 <i className={`ti ${inDqueue(p.name) ? "ti-circle-check-filled" : "ti-circle-plus"}`} style={{ fontSize: 14 }} aria-hidden="true" />
                               </button>
                             )}
                             {!gone
                               ? (cappedPos[p.pos] != null
-                                  ? <button className="btn btn-mini" disabled title={`Roster maximum reached — ${onClock === userIdx ? "your team has" : "this team has"} the league limit of ${cappedPos[p.pos]} at ${p.pos}. You can't draft another.`} style={{ flexShrink: 0, border: "1.5px solid #F2655C", background: "rgba(242,101,92,.16)", color: "#F2655C", fontWeight: 800, cursor: "not-allowed" }}>Max</button>
+                                  ? <button className="btn btn-mini" disabled title={`Roster maximum reached — ${onClock === userIdx ? "your team has" : "this team has"} the league limit of ${cappedPos[p.pos]} at ${p.pos}. You can't draft another.`} style={{ flexShrink: 0, border: "1.5px solid var(--neg)", background: "var(--neg-wash)", color: "var(--neg)", fontWeight: 800, cursor: "not-allowed" }}>Max</button>
                                   : <button className={`btn btn-mini${(onClock === userIdx || isRec) ? " btn-gold" : ""}`} style={{ flexShrink: 0, border: (onClock === userIdx || isRec) ? "none" : "1.5px solid #fff", fontWeight: 700 }} onClick={() => draftPlayer(p.id, "board")}>{onClock === userIdx ? "Draft" : "Pick"}</button>)
                               : <span style={{ width: 38, flexShrink: 0 }} />}
                             <span onClick={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: isDynastyCfg(cfg), run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, gone, { pickNow: picks.length + 1, dynasty: isDynastyCfg(cfg), run: advice && advice.run, needShort: advice && advice.myCounts ? (REQ_F(cfg.sf)[p.pos] || 0) - (advice.myCounts[p.pos] || 0) : undefined, scarcity: gone ? null : scarcityFor(p) }))} onMouseLeave={hideTip} className="pnamewrap" style={{ cursor: "help", whiteSpace: "nowrap" }}>
@@ -35683,15 +36025,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             {!gone && !byeColOn && (() => {
                               const cl = byeClash(p);
                               if (!cl) return null;
-                              const col = cl.severe ? "#F2655C" : "var(--gold)";
+                              const col = cl.severe ? "var(--neg)" : "var(--gold)";
                               return (
                                 <span data-byeclash={cl.week} title={`Bye week ${cl.week} — same as your ${cl.with.join(" and ")}. ${cl.severe ? `You would have no ${cl.pos} to start that week.` : `You would still have another ${cl.pos} that week.`}`}
-                                  style={{ flexShrink: 0, fontSize: 8.5, fontWeight: 800, letterSpacing: ".02em", color: col, border: `1px solid ${col}66`, background: `${col}1a`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap", cursor: "help" }}>
+                                  style={{ flexShrink: 0, fontSize: 8.5, fontWeight: 800, letterSpacing: ".02em", color: col, border: `1px solid ${alpha(col, 40)}`, background: `${alpha(col, 10)}`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap", cursor: "help" }}>
                                   BYE {cl.week}
                                 </span>
                               );
                             })()}
-                            {!gone && (() => { const tag = insightTag(p); return tag ? <span className="itag" style={{ flexShrink: 0, fontSize: 8.5, fontWeight: 700, letterSpacing: ".02em", color: tag.color, border: `1px solid ${tag.color}66`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>{tag.label}</span> : null; })()}
+                            {!gone && (() => { const tag = insightTag(p); return tag ? <span className="itag" style={{ flexShrink: 0, fontSize: 8.5, fontWeight: 700, letterSpacing: ".02em", color: tag.color, border: `1px solid ${alpha(tag.color, 40)}`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>{tag.label}</span> : null; })()}
                           </div>
                         </td>
                         {activeCols.map((c) => <td key={c.key} className="num" style={sectionStart[c.key] ? { borderLeft: "2px solid var(--line)" } : undefined}>{cellFor(p, c.key, gone)}</td>)}
@@ -35705,12 +36047,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           outRows.push(
                             <tr key={`mark-${availSeen}`} className="pickmarker">
                               <td colSpan={nCols} style={{ padding: 0 }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 10px", background: "linear-gradient(90deg, rgba(91,168,245,.18), rgba(91,168,245,.03))", borderTop: "2px solid #5BA8F5", borderBottom: "1px solid rgba(91,168,245,.28)" }}>
-                                  <i className="ti ti-arrow-down-to-arc" style={{ fontSize: 13, color: "#5BA8F5" }} aria-hidden="true" />
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 10px", background: "linear-gradient(90deg, rgba(91,168,245,.18), rgba(91,168,245,.03))", borderTop: "2px solid var(--p-wr)", borderBottom: "1px solid rgba(91,168,245,.28)" }}>
+                                  <i className="ti ti-arrow-down-to-arc" style={{ fontSize: 13, color: "var(--p-wr)" }} aria-hidden="true" />
                                   {marks.map((m, mi) => (
                                     <span key={mi} style={{ display: "inline-flex", alignItems: "baseline", gap: 6 }}>
                                       {mi > 0 && <span className="mut" style={{ opacity: 0.5 }}>·</span>}
-                                      <b style={{ fontSize: 11.5, color: "#5BA8F5", letterSpacing: ".02em" }}>{m.label}</b>
+                                      <b style={{ fontSize: 11.5, color: "var(--p-wr)", letterSpacing: ".02em" }}>{m.label}</b>
                                       <span className="mut" style={{ fontSize: 10.5 }}>{m.sub}</span>
                                     </span>
                                   ))}
@@ -35804,7 +36146,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 // 0) ALWAYS-ON: your build mode, stated plainly so the lens behind every rec is explicit.
                 {
                   const isReDraftHere = !(isDynastyCfg(cfg));
-                  const laneMapD = { rebuild: { i: "ti-seedling", c: "#5FD0A8", t: "Rebuild" }, winnow: { i: "ti-flame", c: "#F2655C", t: "Win-now" }, balanced: { i: "ti-scale", c: "var(--gold)", t: "Balanced" } };
+                  const laneMapD = { rebuild: { i: "ti-seedling", c: "var(--pos)", t: "Rebuild" }, winnow: { i: "ti-flame", c: "var(--neg)", t: "Win-now" }, balanced: { i: "ti-scale", c: "var(--gold)", t: "Balanced" } };
                   const lk = isReDraftHere ? "winnow" : (myWindow.decided ? myWindow.lane : null);
                   const lmeta = lk ? laneMapD[lk] : { i: "ti-loader", c: "var(--mut)", t: "Forming" };
                   const why = isReDraftHere ? "redraft drafts for this season only"
@@ -35814,11 +36156,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     : `avg age ${myWindow.avgAge != null ? myWindow.avgAge.toFixed(1) : "—"}${myWindow.avgAge != null && myWindow.avgAge <= 25 ? ", young but competing" : ""} — taking pure value`;
                   summaryBits.push({ i: lmeta.i, c: lmeta.c, t: `Build mode: ${lmeta.t} — ${why}.` });
                 }
-                if (run && run.count >= 3) summaryBits.push({ i: "ti-flame", c: "#F2655C", t: `${run.pos} run underway — ${run.count} of the last 8 picks. That tier is thinning.` });
+                if (run && run.count >= 3) summaryBits.push({ i: "ti-flame", c: "var(--neg)", t: `${run.pos} run underway — ${run.count} of the last 8 picks. That tier is thinning.` });
                 // 2) A value cliff / last-of-tier at the recommended position.
                 const gapNote = (() => {
                   if (!topBal) return null; const scar = scarcityFor(topBal);
-                  if (scar && scar.isLastStarter) return { i: "ti-alert-triangle", c: "#F2655C", t: `${surname(topBal.name)} may be the last startable-tier ${topBal.pos} — steep drop after him.` };
+                  if (scar && scar.isLastStarter) return { i: "ti-alert-triangle", c: "var(--neg)", t: `${surname(topBal.name)} may be the last startable-tier ${topBal.pos} — steep drop after him.` };
                   if (scar && scar.drop != null && scar.drop >= 20) return { i: "ti-stairs-down", c: "var(--gold)", t: `Value cliff at ${topBal.pos}: ~${scar.drop} drop to the next one.` };
                   return null;
                 })();
@@ -35828,7 +36170,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   const cand = [topBal, topBld, ...((balAdv && balAdv.alts) || [])].filter(Boolean);
                   let best = null;
                   for (const p of cand) { if (p.adp != null) { const fall = Math.round((selOverall + 1) - p.adp); if (fall >= 20 && (!best || fall > best.fall)) best = { p, fall }; } }
-                  return best ? { i: "ti-trending-down", c: "#5FD0A8", t: `${surname(best.p.name)} is a value here — ~${best.fall} picks past his ADP (${best.p.adp.toFixed(0)}).` } : null;
+                  return best ? { i: "ti-trending-down", c: "var(--pos)", t: `${surname(best.p.name)} is a value here — ~${best.fall} picks past his ADP (${best.p.adp.toFixed(0)}).` } : null;
                 })();
                 if (fallerNote && summaryBits.length < 3) summaryBits.push(fallerNote);
                 // 4) Fallback if we somehow have room and nothing above fired: the biggest roster need.
@@ -35866,7 +36208,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     // RULES that are about to bind or have already broken. A rule quietly on track is not news.
                     ev2.rules.forEach((r2) => {
                       if (r2.state === "broken") {
-                        out.push({ urgent: true, icon: "ti-alert-triangle", color: "#F2655C", head: `Broken: ${r2.phrase}`, tail: `(${r2.detail})` });
+                        out.push({ urgent: true, icon: "ti-alert-triangle", color: "var(--neg)", head: `Broken: ${r2.phrase}`, tail: `(${r2.detail})` });
                       } else if (r2.state === "pending") {
                         // "about to bind" = this pick is inside the last round the rule can still be met in.
                         const deadline = Math.max(1, +r2.round || 1);
@@ -35911,7 +36253,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             const thin = left <= 3;
                             return (
                               <span title={`${left} undrafted ${p.pos}${left === 1 ? "" : "s"} are still in his tier — players the board treats as interchangeable with him. Once a tier empties, the drop to the next one is the real cost of waiting.`}
-                                style={{ fontSize: 8.5, fontWeight: 800, letterSpacing: ".02em", padding: "0 4px", borderRadius: 3, cursor: "help", color: thin ? "#F2655C" : "var(--mut)", background: thin ? "rgba(242,101,92,.15)" : "rgba(255,255,255,.06)" }}>
+                                style={{ fontSize: 8.5, fontWeight: 800, letterSpacing: ".02em", padding: "0 4px", borderRadius: 3, cursor: "help", color: thin ? "var(--neg)" : "var(--mut)", background: thin ? "var(--neg-wash)" : "rgba(255,255,255,.06)" }}>
                                 {left} {p.pos} left in tier
                               </span>
                             );
@@ -35961,7 +36303,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               </span>
                               <span className="num" style={{ fontWeight: 700, color: vbdColor(vShow), fontSize: 10.5, textAlign: "right" }}>{(vShow > 0 ? "+" : "") + Math.round(vShow)}</span>
                               <span className="num" style={{ fontSize: 9.5, textAlign: "right", color: adpReadColor(pickNowN, p.adp) }} title={p.adp != null ? `ADP ${p.adp.toFixed(1)} vs pick ${pickNowN} — ${pickNowN - p.adp >= 8 ? "steal" : pickNowN - p.adp <= -8 ? "reach" : "fair value"}` : ""}>{p.adp != null ? p.adp.toFixed(0) : "—"}</span>
-                              <span className="num" style={{ fontSize: 9.5, color: surv == null ? "var(--mut)" : surv >= 65 ? "#5FD0A8" : surv >= 35 ? "var(--gold)" : "#F2655C", textAlign: "right" }}>{surv != null ? `${surv}%` : "—"}</span>
+                              <span className="num" style={{ fontSize: 9.5, color: surv == null ? "var(--mut)" : surv >= 65 ? "var(--pos)" : surv >= 35 ? "var(--gold)" : "var(--neg)", textAlign: "right" }}>{surv != null ? `${surv}%` : "—"}</span>
                               {onClockNow && (!gated ? <button className="btn btn-mini" style={{ fontSize: 9, padding: "2px 6px", borderColor: accent, color: accent }} onClick={(e) => { e.stopPropagation(); draftPlayer(p.id); }}>Draft</button> : <span />)}
                             </div>
                           );
@@ -35987,9 +36329,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   const scar = scarcityFor(bestNow);
                   // ---- VALUE (VBD) read: how steep is the drop-off if you pass here? ----
                   let vbdRead, vbdColorR, vbdWhy;
-                  if (scar && scar.isLastStarter) { vbdRead = "Cliff"; vbdColorR = "#F2655C"; vbdWhy = `last startable-tier ${pos}`; }
+                  if (scar && scar.isLastStarter) { vbdRead = "Cliff"; vbdColorR = "var(--neg)"; vbdWhy = `last startable-tier ${pos}`; }
                   else if ((scar && scar.drop != null && scar.drop >= 20) || (wc != null && wc >= 15)) { vbdRead = "Steep"; vbdColorR = "var(--gold)"; vbdWhy = scar && scar.drop != null ? `~${scar.drop} VBD to next` : `~${wc} lost by waiting`; }
-                  else if (wc != null && wc <= 4 && (!scar || scar.drop == null || scar.drop < 10)) { vbdRead = "Flat"; vbdColorR = "#5FD0A8"; vbdWhy = "little drop-off"; }
+                  else if (wc != null && wc <= 4 && (!scar || scar.drop == null || scar.drop < 10)) { vbdRead = "Flat"; vbdColorR = "var(--pos)"; vbdWhy = "little drop-off"; }
                   else { vbdRead = "Mild"; vbdColorR = "var(--gold)"; vbdWhy = scar && scar.drop != null ? `~${scar.drop} VBD to next` : "modest drop"; }
                   // ---- MARKET (ADP) read: leads with real-world ADP, since that's the actual market signal.
                   // In dynasty especially, an older player can have high VBD (win-now value) yet a late ADP
@@ -35999,8 +36341,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   let adpRead, adpColorR, adpWhy;
                   if (adpGap != null) {
                     // primary signal = where his ADP sits relative to your next pick
-                    if (adpGap <= -2) { adpRead = "Going soon"; adpColorR = "#F2655C"; adpWhy = `ADP ${bestNow.adp.toFixed(0)} — likely gone before your next pick (${pickLabel(myNextO)})`; }
-                    else if (adpGap >= 8) { adpRead = "Will slide"; adpColorR = "#5FD0A8"; adpWhy = `ADP ${bestNow.adp.toFixed(0)} — market has him well after your next pick`; }
+                    if (adpGap <= -2) { adpRead = "Going soon"; adpColorR = "var(--neg)"; adpWhy = `ADP ${bestNow.adp.toFixed(0)} — likely gone before your next pick (${pickLabel(myNextO)})`; }
+                    else if (adpGap >= 8) { adpRead = "Will slide"; adpColorR = "var(--pos)"; adpWhy = `ADP ${bestNow.adp.toFixed(0)} — market has him well after your next pick`; }
                     else { adpRead = "Borderline"; adpColorR = "var(--gold)"; adpWhy = `ADP ${bestNow.adp.toFixed(0)} — near your next pick (${pickLabel(myNextO)})`; }
                     // secondary: if sims strongly disagree with ADP, soften toward the middle
                     if (surv != null) {
@@ -36008,8 +36350,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       if (adpRead === "Going soon" && surv >= 75) { adpRead = "Borderline"; adpColorR = "var(--gold)"; adpWhy = `ADP ${bestNow.adp.toFixed(0)} is early, but sims expect him to last (${surv}%)`; }
                     }
                   } else if (surv != null) {
-                    if (surv <= 30) { adpRead = "Going soon"; adpColorR = "#F2655C"; adpWhy = `${surv}% to reach your next pick (no ADP)`; }
-                    else if (surv >= 70) { adpRead = "Will slide"; adpColorR = "#5FD0A8"; adpWhy = `${surv}% still there next pick (no ADP)`; }
+                    if (surv <= 30) { adpRead = "Going soon"; adpColorR = "var(--neg)"; adpWhy = `${surv}% to reach your next pick (no ADP)`; }
+                    else if (surv >= 70) { adpRead = "Will slide"; adpColorR = "var(--pos)"; adpWhy = `${surv}% still there next pick (no ADP)`; }
                     else { adpRead = "Coin flip"; adpColorR = "var(--gold)"; adpWhy = `${surv}% to survive (no ADP)`; }
                   } else { adpRead = "—"; adpColorR = "var(--mut)"; adpWhy = "no ADP signal"; }
                   const adpUrgent = adpRead === "Going soon";
@@ -36017,12 +36359,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   const vbdUrgent = vbdRead === "Cliff" || vbdRead === "Steep";
                   // ---- Combined verdict ----
                   let verdict, vcolor, vwhy;
-                  if (vbdRead === "Cliff" && !adpSafe) { verdict = "Take now"; vcolor = "#F2655C"; vwhy = "value cliff and he won't slide"; }
-                  else if (vbdUrgent && adpUrgent) { verdict = "Take now"; vcolor = "#F2655C"; vwhy = "value drop + market pressure"; }
+                  if (vbdRead === "Cliff" && !adpSafe) { verdict = "Take now"; vcolor = "var(--neg)"; vwhy = "value cliff and he won't slide"; }
+                  else if (vbdUrgent && adpUrgent) { verdict = "Take now"; vcolor = "var(--neg)"; vwhy = "value drop + market pressure"; }
                   else if (!vbdUrgent && adpUrgent) { verdict = "Now or lose him"; vcolor = "#F59E42"; vwhy = "no big drop, but he's about to go"; }
                   else if (vbdUrgent && adpSafe) { verdict = "Wait — slides"; vcolor = "#4FA9E0"; vwhy = "value drops, but ADP says he slides — grab him later"; }
-                  else if (!vbdUrgent && adpSafe) { verdict = "Can wait"; vcolor = "#5FD0A8"; vwhy = "no urgency on either read"; }
-                  else { verdict = "Your call"; vcolor = "#E7C24B"; vwhy = "mixed signals"; }
+                  else if (!vbdUrgent && adpSafe) { verdict = "Can wait"; vcolor = "var(--pos)"; vwhy = "no urgency on either read"; }
+                  else { verdict = "Your call"; vcolor = "var(--warn)"; vwhy = "mixed signals"; }
                   return { pos, bestNow, wc, verdict, vcolor, vwhy, vbdRead, vbdColorR, vbdWhy, adpRead, adpColorR, adpWhy, surv, isNeed: need.includes(pos) };
                 }).filter(Boolean);
 
@@ -36099,7 +36441,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             everywhere" is a real answer to "how am I doing", and it is the answer that makes
                             the zero-QB fix visible; hiding it until the third round hides the fix too. */}
                         {(() => {
-                          const TONE3 = ["#5FD0A8", "var(--gold)", "#F2655C"];
+                          const TONE3 = ["var(--pos)", "var(--gold)", "var(--neg)"];
                           const WORD3 = ["strong", "middle", "thin"];
                           return (
                             <div data-rosterstrength style={{ display: "flex", gap: 5, marginBottom: 8 }}>
@@ -36108,7 +36450,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                 const col = lvl == null ? "var(--line2)" : TONE3[lvl];
                                 return (
                                   <div key={pos} data-strengthpos={pos} title={`${pos}: ${lvl == null ? "unrated" : WORD3[lvl]} for this league`}
-                                    style={{ flex: 1, minWidth: 0, border: `1px solid ${col}66`, background: `${lvl == null ? "transparent" : `${col}1a`}`, borderRadius: 5, padding: "3px 0", textAlign: "center" }}>
+                                    style={{ flex: 1, minWidth: 0, border: `1px solid ${alpha(col, 40)}`, background: `${lvl == null ? "transparent" : `${alpha(col, 10)}`}`, borderRadius: 5, padding: "3px 0", textAlign: "center" }}>
                                     <div className="num" style={{ fontSize: 9.5, fontWeight: 800, color: col, letterSpacing: ".04em" }}>{pos}</div>
                                     <div className="mut" style={{ fontSize: 8, marginTop: 1 }}>{lvl == null ? "—" : WORD3[lvl]}</div>
                                   </div>
@@ -36127,7 +36469,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           const byeTone = (p, starter) => {
                             if (!p || !p.bye) return "var(--mut)";
                             const n = startByes[p.bye] || 0;
-                            if (starter && n >= 3) return "#F2655C";
+                            if (starter && n >= 3) return "var(--neg)";
                             if (starter && n === 2) return "var(--gold)";
                             return "var(--mut)";
                           };
@@ -36333,7 +36675,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               return (
                                 <div key={w.pos} className="takewait" onMouseEnter={tip} onMouseLeave={hideTip} style={{ display: "grid", gridTemplateColumns: "58px 1fr 1fr 74px", gap: "0 8px", alignItems: "center", padding: "3px 0", borderBottom: "1px solid var(--line2)", cursor: "help" }}>
                                   <span style={{ minWidth: 0 }}>
-                                    <span style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 10.5, fontWeight: 800, color: POS_COLOR[w.pos] }}><Dot pos={w.pos} />{w.pos}{w.isNeed ? <i className="ti ti-alert-circle-filled" style={{ fontSize: 8, color: "#F2655C" }} title="roster need" aria-hidden="true" /> : null}</span>
+                                    <span style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 10.5, fontWeight: 800, color: POS_COLOR[w.pos] }}><Dot pos={w.pos} />{w.pos}{w.isNeed ? <i className="ti ti-alert-circle-filled" style={{ fontSize: 8, color: "var(--neg)" }} title="roster need" aria-hidden="true" /> : null}</span>
                                     <span className="mut whyline" style={{ fontSize: 8.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{w.bestNow.name}</span>
                                   </span>
                                   <span style={{ minWidth: 0 }}>
@@ -36692,8 +37034,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     <i className="ti ti-clipboard-text" style={{ fontSize: 16, color: "var(--gold)" }} aria-hidden="true" />
                     <span className="disp" style={{ fontSize: 16, fontWeight: 700 }}>Team summary</span>
                     <div style={{ flex: 1 }} />
-                    {chip(laneLabel, laneKey === "rebuild" ? "#4FA9E0" : laneKey === "winnow" ? "#F2655C" : "#E7C24B")}
-                    {finishRank != null && chip(`Proj ${ordinal(finishRank)}/${TEAMS}`, finishRank <= Math.ceil(TEAMS * 0.33) ? "#5FD0A8" : finishRank > Math.ceil(TEAMS * 0.66) ? "#F2655C" : "#E7C24B")}
+                    {chip(laneLabel, laneKey === "rebuild" ? "#4FA9E0" : laneKey === "winnow" ? "var(--neg)" : "var(--warn)")}
+                    {finishRank != null && chip(`Proj ${ordinal(finishRank)}/${TEAMS}`, finishRank <= Math.ceil(TEAMS * 0.33) ? "var(--pos)" : finishRank > Math.ceil(TEAMS * 0.66) ? "var(--neg)" : "var(--warn)")}
                     <span className="mut" style={{ fontSize: 11 }}>Round {rd}</span>
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 12 }}>
@@ -36702,9 +37044,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--blue)", fontWeight: 800, marginBottom: 4 }}>Where you stand</div>
                       <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--ink)" }}>
                         {strengths.length > 0 ? <>Strong at <b>{strengths.join(", ")}</b>. </> : null}
-                        {weaknesses.length > 0 ? <>Thin at <b style={{ color: "#F2655C" }}>{weaknesses.join(", ")}</b>. </> : null}
+                        {weaknesses.length > 0 ? <>Thin at <b style={{ color: "var(--neg)" }}>{weaknesses.join(", ")}</b>. </> : null}
                         {strengths.length === 0 && weaknesses.length === 0 ? <>Your roster is balanced across positions so far. </> : null}
-                        {needs.length > 0 ? <>You still need to fill starting <b style={{ color: "#F2655C" }}>{needs.join(", ")}</b>.</> : <>All starting slots are filled — you're onto depth and upside.</>}
+                        {needs.length > 0 ? <>You still need to fill starting <b style={{ color: "var(--neg)" }}>{needs.join(", ")}</b>.</> : <>All starting slots are filled — you're onto depth and upside.</>}
                       </div>
                     </div>
                     {/* Focus next */}
@@ -36721,7 +37063,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     </div>
                     {/* Strategy */}
                     <div>
-                      <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", color: "#5FD0A8", fontWeight: 800, marginBottom: 4 }}>How to think about it</div>
+                      <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--pos)", fontWeight: 800, marginBottom: 4 }}>How to think about it</div>
                       <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--ink)" }}>{stratLine}</div>
                     </div>
                     {/* Trends */}
@@ -36772,15 +37114,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 );
                 const row = (p, slotLabel, isProj, isBench, key, lastRow) => (
                   <div key={key} onClick={p ? (e) => showTip(e, makeOutlook(p, sims, true)) : undefined} onMouseEnter={p ? (e) => showTip(e, makeOutlook(p, sims, true)) : undefined} onMouseLeave={hideTip}
-                    style={{ display: "grid", gridTemplateColumns: LCOLS, gap: "0 6px", alignItems: "center", fontSize: 11, padding: "4px 4px", borderRadius: 5, cursor: p ? "help" : "default", opacity: isBench ? 0.92 : 1, background: p ? (isProj ? "rgba(224,166,60,.08)" : "transparent") : "rgba(242,101,92,.08)", borderBottom: !lastRow ? "1px solid var(--line2)" : "none" }}>
+                    style={{ display: "grid", gridTemplateColumns: LCOLS, gap: "0 6px", alignItems: "center", fontSize: 11, padding: "4px 4px", borderRadius: 5, cursor: p ? "help" : "default", opacity: isBench ? 0.92 : 1, background: p ? (isProj ? "rgba(224,166,60,.08)" : "transparent") : "var(--neg-wash)", borderBottom: !lastRow ? "1px solid var(--line2)" : "none" }}>
                     <span style={{ fontSize: 8.5, fontWeight: 700, color: "var(--mut)" }}>{slotLabel}</span>
                     {p ? <PlayerPhoto sid={p.sid} pos={p.pos} size={22} /> : <span />}
                     {p ? (
                       <span style={{ minWidth: 0, overflow: "hidden" }}>
                         <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           <b style={{ fontSize: 11.5 }}>{p.name}</b>
-                          {p.rookie ? <span style={{ fontSize: 7.5, fontWeight: 700, color: "#5FD0A8", marginLeft: 4 }}>R</span> : null}
-                          {p.inj ? <span style={{ fontSize: 7.5, fontWeight: 700, color: "#F2655C", marginLeft: 4 }}>{p.inj}</span> : null}
+                          {p.rookie ? <span style={{ fontSize: 7.5, fontWeight: 700, color: "var(--pos)", marginLeft: 4 }}>R</span> : null}
+                          {p.inj ? <span style={{ fontSize: 7.5, fontWeight: 700, color: "var(--neg)", marginLeft: 4 }}>{p.inj}</span> : null}
                           {isProj ? <span className="gold" style={{ fontSize: 7.5, fontWeight: 700, marginLeft: 4 }}>PROJ</span> : null}
                         </span>
                         {p.role && <span className="mut" style={{ fontSize: 8.5, display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lowerKeepPos(p.role)}</span>}
@@ -36854,7 +37196,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         const filled = !!s.p;
                         const tip = filled ? (e) => showTip(e, [{ kind: "take", tone: "good", x: `${s.slot} — filled` }, { t: s.p.pos + s.p.posRank, tc: rankTierColor(s.p.pos, s.p.posRank), x: `${s.p.name} — ${s.p.team || "FA"} · ${Math.round(s.p.pts)} pts` }]) : undefined;
                         return (
-                          <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 9px", borderRadius: 7, fontSize: 11, fontWeight: 700, cursor: tip ? "help" : "default", background: filled ? "rgba(95,208,168,.12)" : "rgba(242,101,92,.10)", border: `1px solid ${filled ? "rgba(95,208,168,.4)" : "rgba(242,101,92,.35)"}`, color: filled ? "var(--green)" : "var(--red)" }} onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
+                          <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 9px", borderRadius: 7, fontSize: 11, fontWeight: 700, cursor: tip ? "help" : "default", background: filled ? "var(--pos-wash)" : "var(--neg-wash)", border: `1px solid ${filled ? "var(--pos-line)" : "var(--neg-line)"}`, color: filled ? "var(--green)" : "var(--red)" }} onMouseEnter={tip} onMouseLeave={tip ? hideTip : undefined}>
                             <span style={{ color: "var(--mut)" }}>{s.slot}</span>{filled ? "✓" : "empty"}
                           </span>
                         );
@@ -36983,7 +37325,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 7, marginBottom: 10 }}>
                           {[
                             { lbl: "Best fit", v: bestFit, c: "var(--gold)", note: "your build" },
-                            { lbl: "Best value", v: bestValue, c: "#5FD0A8", note: dyn ? "age-adj" : "VBD" },
+                            { lbl: "Best value", v: bestValue, c: "var(--pos)", note: dyn ? "age-adj" : "VBD" },
                             { lbl: "Best ADP", v: bestAdp, c: "#4FA9E0", note: `ADP ${bestAdp && bestAdp.adp != null ? bestAdp.adp.toFixed(0) : "—"}` },
                             ...(bestFaller && bestFaller.gap >= 8 ? [{ lbl: "Faller", v: bestFaller.p, c: "#C99BF5", note: `${Math.round(bestFaller.gap)} past ADP` }] : []),
                           ].map((s, k) => s.v ? (
@@ -36994,7 +37336,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             </div>
                           ) : null)}
                         </div>
-                        {run && <div style={{ fontSize: 11, color: "#F2655C", marginBottom: 8, display: "flex", alignItems: "center", gap: 5 }}><i className="ti ti-flame" style={{ fontSize: 12 }} aria-hidden="true" /><b>{run.pos} run</b> — {run.count} of the last 8 picks; that tier is thinning before your pick.</div>}
+                        {run && <div style={{ fontSize: 11, color: "var(--neg)", marginBottom: 8, display: "flex", alignItems: "center", gap: 5 }}><i className="ti ti-flame" style={{ fontSize: 12 }} aria-hidden="true" /><b>{run.pos} run</b> — {run.count} of the last 8 picks; that tier is thinning before your pick.</div>}
                         {/* top 10 list — aligned columns */}
                         <div style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--gold)", marginBottom: 4 }}>Top 10 to consider</div>
                         {(() => {
@@ -37012,7 +37354,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                     <div key={p.id} onMouseEnter={openTip(p)} onMouseLeave={hideTip} onClick={openTip(p)}
                                       style={{ display: "grid", gridTemplateColumns: TCOLS, gap: "0 6px", alignItems: "center", cursor: "help", fontSize: 11, padding: "3.5px 4px", borderRadius: 4, background: i === 0 ? "rgba(224,166,60,.10)" : "transparent", borderBottom: i < list.length - 1 ? "1px solid var(--line2)" : "none" }}>
                                       <span className="num" style={{ fontWeight: 800, color: rankTierColor(p.pos, p.posRank), fontSize: 9.5 }}>{p.pos}{p.posRank}</span>
-                                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}><Dot pos={p.pos} /><b style={{ color: i === 0 ? "var(--gold)" : "var(--ink)", fontSize: 11.5 }}>{i === 0 ? "★ " : ""}{p.name}</b>{p.rookie ? <span style={{ fontSize: 7.5, fontWeight: 700, color: "#5FD0A8", marginLeft: 3 }}>R</span> : null}</span>
+                                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}><Dot pos={p.pos} /><b style={{ color: i === 0 ? "var(--gold)" : "var(--ink)", fontSize: 11.5 }}>{i === 0 ? "★ " : ""}{p.name}</b>{p.rookie ? <span style={{ fontSize: 7.5, fontWeight: 700, color: "var(--pos)", marginLeft: 3 }}>R</span> : null}</span>
                                       <span className="num mut" style={{ textAlign: "right", fontSize: 9.5 }}>{p.team || "FA"}</span>
                                       <span className="num mut" style={{ textAlign: "center", fontSize: 9.5 }}>{p.bye || "—"}</span>
                                       <span className="num mut" style={{ textAlign: "center", fontSize: 9.5 }}>{p.age || "—"}</span>
@@ -37020,7 +37362,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                       <span className="num" style={{ textAlign: "right", fontSize: 10, color: vbdColor(vShow) }}>{vShow != null ? (vShow > 0 ? "+" : "") + Math.round(vShow) : "—"}</span>
                                       <span className="num" style={{ textAlign: "right", fontWeight: 700, fontSize: 10.5 }}>{Math.round(p.pts || 0)}</span>
                                       <span className="num mut" style={{ textAlign: "center", fontSize: 8.5 }}>{p.floor != null && p.ceil != null ? `${Math.round(p.floor)}–${Math.round(p.ceil)}` : "—"}</span>
-                                      <span className="num" style={{ textAlign: "right", fontSize: 9.5, color: prob == null ? "var(--mut)" : prob >= 65 ? "#5FD0A8" : prob >= 35 ? "var(--gold)" : "#F2655C" }}>{prob != null ? `${prob}%` : "—"}</span>
+                                      <span className="num" style={{ textAlign: "right", fontSize: 9.5, color: prob == null ? "var(--mut)" : prob >= 65 ? "var(--pos)" : prob >= 35 ? "var(--gold)" : "var(--neg)" }}>{prob != null ? `${prob}%` : "—"}</span>
                                     </div>
                                   );
                                 })}
@@ -37256,15 +37598,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               return (
             <div style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--line)", borderRadius: 9, padding: "3px 5px" }}>
               <span className="mut" style={{ fontSize: 11, paddingLeft: 3 }}>Highlight</span>
-              <button className="btn btn-mini" style={{ fontSize: 11, padding: "3px 9px", borderColor: boardHi.steals ? "#5FD0A8" : "var(--line2)", background: boardHi.steals ? "rgba(95,208,168,.16)" : "transparent", color: boardHi.steals ? "#5FD0A8" : "var(--mut)", fontWeight: boardHi.steals ? 700 : 400 }} onClick={() => setBoardHi((h) => ({ ...h, steals: !h.steals }))} title={nSteal ? `${nSteal} pick${nSteal === 1 ? "" : "s"} on this board fell far enough past ADP to count as a steal.` : "Nobody has fallen far enough past ADP to count as a steal yet."}><i className="ti ti-diamond" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Steals ({nSteal})</button>
-              <button className="btn btn-mini" style={{ fontSize: 11, padding: "3px 9px", borderColor: boardHi.reaches ? "#F2655C" : "var(--line2)", background: boardHi.reaches ? "rgba(242,101,92,.16)" : "transparent", color: boardHi.reaches ? "#F2655C" : "var(--mut)", fontWeight: boardHi.reaches ? 700 : 400 }} onClick={() => setBoardHi((h) => ({ ...h, reaches: !h.reaches }))} title={nReach ? `${nReach} pick${nReach === 1 ? "" : "s"} on this board went far enough ahead of ADP to count as a reach.` : "Nothing has gone far enough ahead of ADP to count as a reach yet."}><i className="ti ti-flame" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Reaches ({nReach})</button>
+              <button className="btn btn-mini" style={{ fontSize: 11, padding: "3px 9px", borderColor: boardHi.steals ? "var(--pos)" : "var(--line2)", background: boardHi.steals ? "var(--pos-wash)" : "transparent", color: boardHi.steals ? "var(--pos)" : "var(--mut)", fontWeight: boardHi.steals ? 700 : 400 }} onClick={() => setBoardHi((h) => ({ ...h, steals: !h.steals }))} title={nSteal ? `${nSteal} pick${nSteal === 1 ? "" : "s"} on this board fell far enough past ADP to count as a steal.` : "Nobody has fallen far enough past ADP to count as a steal yet."}><i className="ti ti-diamond" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Steals ({nSteal})</button>
+              <button className="btn btn-mini" style={{ fontSize: 11, padding: "3px 9px", borderColor: boardHi.reaches ? "var(--neg)" : "var(--line2)", background: boardHi.reaches ? "var(--neg-wash)" : "transparent", color: boardHi.reaches ? "var(--neg)" : "var(--mut)", fontWeight: boardHi.reaches ? 700 : 400 }} onClick={() => setBoardHi((h) => ({ ...h, reaches: !h.reaches }))} title={nReach ? `${nReach} pick${nReach === 1 ? "" : "s"} on this board went far enough ahead of ADP to count as a reach.` : "Nothing has gone far enough ahead of ADP to count as a reach yet."}><i className="ti ti-flame" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Reaches ({nReach})</button>
             </div>
               );
             })()}
             <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — the board updates instantly to show picks in their new owners' columns."><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks</button>
             <span className="mut" style={{ fontSize: 11.5, marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: "var(--gold)", marginRight: 4, verticalAlign: "middle" }} />Your picks</span>
-              <span><i className="ti ti-arrows-exchange" style={{ fontSize: 11, color: "#4FD1A1", marginRight: 2 }} aria-hidden="true" />Traded</span>
+              <span><i className="ti ti-arrows-exchange" style={{ fontSize: 11, color: "var(--p-rb)", marginRight: 2 }} aria-hidden="true" />Traded</span>
               {boardProj && <span><span className="gold">italic</span> = projected</span>}
             </span>
           </div>
@@ -37361,17 +37703,17 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     if (showSteal || showReach) {
                       const mag = Math.abs(v);
                       const tier = mag >= 40 ? 2 : mag >= 20 ? 1 : 0; // 0=mild, 1=medium, 2=strong
-                      const green = ["rgba(95,208,168,.16)", "rgba(64,180,138,.34)", "rgba(46,150,112,.55)"];
-                      const red = ["rgba(242,101,92,.16)", "rgba(214,80,72,.34)", "rgba(180,54,48,.55)"];
-                      const ringG = ["rgba(95,208,168,.5)", "rgba(95,208,168,.75)", "rgba(95,208,168,.95)"];
-                      const ringR = ["rgba(242,101,92,.5)", "rgba(242,101,92,.75)", "rgba(242,101,92,.95)"];
+                      const green = ["var(--pos-wash)", "rgba(64,180,138,.34)", "rgba(46,150,112,.55)"];
+                      const red = ["var(--neg-wash)", "rgba(214,80,72,.34)", "rgba(180,54,48,.55)"];
+                      const ringG = ["var(--pos-line)", "var(--pos-line)", "var(--pos-line)"];
+                      const ringR = ["var(--neg-line)", "var(--neg-line)", "var(--neg-line)"];
                       const bg = showSteal ? green[tier] : red[tier];
                       const ring = showSteal ? ringG[tier] : ringR[tier];
                       // YOUR steal/reach pick: green/red fill + a bright gold border. We use an OUTLINE (not the
                       // inset shadow, which the 3px left position-color border can hide) so the border is fully
                       // visible on all four sides. Others get the value-tier ring in the steal/reach color.
                       hiStyle = ownedByYou
-                        ? { background: bg, backgroundColor: bg, outline: "2px solid #E0A63C", outlineOffset: "-2px", boxShadow: "inset 0 0 0 2px #E0A63C" }
+                        ? { background: bg, backgroundColor: bg, outline: "2px solid var(--warn)", outlineOffset: "-2px", boxShadow: "inset 0 0 0 2px var(--warn)" }
                         : { background: bg, boxShadow: `inset 0 0 0 ${tier + 1}px ${ring}` };
                     }
                     const cls2 = cls;
@@ -37411,7 +37753,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         <div className="lbl mut">
                           <span className="num">{pickLabel(o)}</span>
                           {isKeeper && <span className="gold" style={{ fontWeight: 800 }}>K</span>}
-                          {traded && <i className="ti ti-arrows-exchange" style={{ fontSize: 9, color: ownedByYou ? "var(--gold)" : "#4FD1A1" }} title={`Traded pick — drafted by ${ownedByYou ? "you" : drafterName}`} aria-hidden="true" />}
+                          {traded && <i className="ti ti-arrows-exchange" style={{ fontSize: 9, color: ownedByYou ? "var(--gold)" : "var(--p-rb)" }} title={`Traded pick — drafted by ${ownedByYou ? "you" : drafterName}`} aria-hidden="true" />}
                         </div>
                         {/* When a pick was traded, name who owns it now (esp. your acquired picks). */}
                         {/* Label the slot's OWNER. This used to be gated behind `traded`, so it only ever
@@ -37478,7 +37820,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       const lvl = posRel[i] ? posRel[i][pos] : 1; // league-relative tercile
                       const col = lvl === 0 ? "var(--green)" : lvl === 1 ? "var(--gold)" : "var(--red)";
                       const bdr = lvl === 0 ? "#2E5C49" : lvl === 1 ? "#5C4A1E" : "#5C2624";
-                      const bg = lvl === 0 ? "rgba(124,217,178,0.12)" : lvl === 1 ? "rgba(224,166,60,0.12)" : "rgba(242,101,92,0.14)";
+                      const bg = lvl === 0 ? "var(--pos-wash)" : lvl === 1 ? "rgba(224,166,60,0.12)" : "var(--neg-wash)";
                       const tip = lvl === 0 ? `${pos}: top third of the league here` : lvl === 1 ? `${pos}: middle of the league here` : `${pos}: bottom third of the league here`;
                       return <span key={pos} className="chip" title={tip} style={{ borderColor: bdr, color: col, background: bg, fontWeight: 600 }}>{pos} {counts[pos]}</span>;
                     })}
@@ -37522,8 +37864,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             <i className="ti ti-info-circle" style={{ fontSize: 14, color: "var(--gold)" }} aria-hidden="true" />
             <span className="mut" style={{ fontSize: 11.5, lineHeight: 1.45, flex: "1 1 220px" }}>Depth charts are ordered by projected fantasy points from current Sleeper data. Players with no projected value and free agents are hidden.</span>
             <label style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, cursor: "pointer", flexShrink: 0 }} title="Highlight the players still on the board who are good enough to start — top-tier at each spot, plus committee/depth pieces that clear a real starter threshold.">
-              <input type="checkbox" checked={depthHiStarters} onChange={(e) => setDepthHiStarters(e.target.checked)} style={{ accentColor: "#5FD0A8" }} />
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><i className="ti ti-user-check" style={{ fontSize: 13, color: "#5FD0A8" }} aria-hidden="true" />Highlight available starters</span>
+              <input type="checkbox" checked={depthHiStarters} onChange={(e) => setDepthHiStarters(e.target.checked)} style={{ accentColor: "var(--pos)" }} />
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><i className="ti ti-user-check" style={{ fontSize: 13, color: "var(--pos)" }} aria-hidden="true" />Highlight available starters</span>
             </label>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <span className="mut" style={{ fontSize: 11.5 }}>Show</span>
@@ -37582,14 +37924,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <div key={team} className="panel" style={{ padding: 10, alignSelf: "start" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
                   <div className="disp" style={{ fontSize: 15, fontWeight: 700 }}>{team}</div>
-                  <div className="mut" style={{ fontSize: 11 }}>{depthHiStarters && starterCount > 0 ? <span style={{ color: "#5FD0A8", fontWeight: 700 }}>{starterCount} startable</span> : `${avail} available`}</div>
+                  <div className="mut" style={{ fontSize: 11 }}>{depthHiStarters && starterCount > 0 ? <span style={{ color: "var(--pos)", fontWeight: 700 }}>{starterCount} startable</span> : `${avail} available`}</div>
                 </div>
                 {arr.map((p) => {
                   const isStarter = (depthHiStarters && !depthShowStarters) && startable(p);
                   return (
-                    <div key={p.id} className={draftedSet.has(p.id) ? "struck" : ""} style={{ fontSize: 12, padding: "1.5px 4px", borderRadius: 5, background: isStarter ? "rgba(95,208,168,.13)" : "transparent", boxShadow: isStarter ? "inset 2px 0 0 #5FD0A8" : "none", cursor: "help" }}
+                    <div key={p.id} className={draftedSet.has(p.id) ? "struck" : ""} style={{ fontSize: 12, padding: "1.5px 4px", borderRadius: 5, background: isStarter ? "var(--pos-wash)" : "transparent", boxShadow: isStarter ? "inset 2px 0 0 var(--pos)" : "none", cursor: "help" }}
                       onClick={(e) => showTip(e, makeOutlook(p, sims, draftedSet.has(p.id)))} onMouseEnter={(e) => showTip(e, makeOutlook(p, sims, draftedSet.has(p.id)))} onMouseLeave={hideTip}>
-                      <Dot pos={p.pos} /><span className="mut" style={{ fontSize: 11 }}>{p.pos}</span> <span style={{ fontWeight: isStarter ? 700 : 400, color: isStarter ? "#8FE3C4" : undefined }}>{p.name}</span> {isStarter && <i className="ti ti-user-check" style={{ fontSize: 10, color: "#5FD0A8" }} aria-hidden="true" />} <span className="mut num" style={{ fontSize: 11 }}>{p.pts}</span>
+                      <Dot pos={p.pos} /><span className="mut" style={{ fontSize: 11 }}>{p.pos}</span> <span style={{ fontWeight: isStarter ? 700 : 400, color: isStarter ? "#8FE3C4" : undefined }}>{p.name}</span> {isStarter && <i className="ti ti-user-check" style={{ fontSize: 10, color: "var(--pos)" }} aria-hidden="true" />} <span className="mut num" style={{ fontSize: 11 }}>{p.pts}</span>
                     </div>
                   );
                 })}
@@ -37809,7 +38151,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               const drafted = (rostersByTeam[ti] || []);
                               const mixOrder = ["QB", "RB", "WR", "TE", "K", "DST"];
                               const posMix = mixOrder.map((pos) => ({ pos, n: drafted.filter((p) => p && p.pos === pos).length })).filter((m) => m.n > 0);
-                              const gradeCol = (z) => (z >= 0.7 ? "#5FD0A8" : z >= 0.12 ? "#9BD17E" : z >= -0.45 ? "#E0A63C" : "#F2655C");
+                              const gradeCol = (z) => (z >= 0.7 ? "var(--pos)" : z >= 0.12 ? "#9BD17E" : z >= -0.45 ? "var(--warn)" : "var(--neg)");
                               const leagueRows = gradeOrder.map((i) => ({
                                 grade: grades[i].g, color: gradeCol(grades[i].z),
                                 name: i === userIdx ? (TEAM_NAMES[i] || "Your team") : (TEAM_NAMES[i] || `Team ${i + 1}`),
@@ -37820,9 +38162,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               const topSteal = best5[0];
                               const pickCard = (k, g, tone) => (g && g.p ? { k, tone, name: g.p.name, sub: `${g.p.pos}${g.p.posRank || ""} · ${label(g.o)}${k === "League's top steal" ? ` · ${nm(g.t)}` : ""}`, big: `${g.mval > 0 ? "+" : ""}${g.mval.toFixed(0)}` } : null);
                               const cards = [
-                                pickCard("Your best value", myBest, "#5FD0A8"),
-                                pickCard("Your biggest reach", myWorst, "#F2655C"),
-                                pickCard("League's top steal", topSteal, "#E0A63C"),
+                                pickCard("Your best value", myBest, "var(--pos)"),
+                                pickCard("Your biggest reach", myWorst, "var(--neg)"),
+                                pickCard("League's top steal", topSteal, "var(--warn)"),
                               ].filter(Boolean);
                               const scoring = (cfg.scoring && cfg.scoring.rec >= 1) ? "PPR" : (cfg.scoring && cfg.scoring.rec > 0) ? "Half-PPR" : "Standard";
                               const cv = drawRecapCard({
@@ -37831,9 +38173,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                 subline: `${TEAMS}-team ${scoring}${cfg.sf ? " superflex" : ""} · ${cfg.rounds} rounds · ${new Date().toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`,
                                 grade: myGrade,
                                 stats: [
-                                  { k: "Projected finish", v: `${myRank ? ordinal(myRank) : "—"} of ${TEAMS}`, c: myRank && myRank <= Math.ceil(TEAMS / 3) ? "#5FD0A8" : myRank && myRank <= Math.ceil((2 * TEAMS) / 3) ? "#E0A63C" : "#F2655C" },
+                                  { k: "Projected finish", v: `${myRank ? ordinal(myRank) : "—"} of ${TEAMS}`, c: myRank && myRank <= Math.ceil(TEAMS / 3) ? "var(--pos)" : myRank && myRank <= Math.ceil((2 * TEAMS) / 3) ? "var(--warn)" : "var(--neg)" },
                                   { k: "Projected points", v: myPts ? Number(myPts).toLocaleString() : "—" },
-                                  { k: "Draft value", v: `${myVal > 0 ? "+" : ""}${myVal} · ${ordinal(valRank)}`, c: myVal > 0 ? "#5FD0A8" : myVal < 0 ? "#F2655C" : "#EEF2F6" },
+                                  { k: "Draft value", v: `${myVal > 0 ? "+" : ""}${myVal} · ${ordinal(valRank)}`, c: myVal > 0 ? "var(--pos)" : myVal < 0 ? "var(--neg)" : "#EEF2F6" },
                                 ],
                                 starters, lineupPts: Math.round(lineupPts),
                                 benchNote: `${drafted.length} drafted · ${Math.max(0, drafted.length - starters.length)} on the bench`,
@@ -37963,9 +38305,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const short = Math.max(0, (reqF[pos] || 0) - haveN);
                 const lvl = relI[pos];
                 let tag, color;
-                if (short > 0) { tag = short >= 1 ? `Need ${short} starter${short >= 2 ? "s" : ""}` : "Thin"; color = "#F2655C"; }
+                if (short > 0) { tag = short >= 1 ? `Need ${short} starter${short >= 2 ? "s" : ""}` : "Thin"; color = "var(--neg)"; }
                 else if (lvl === 2) { tag = "Weak — upgrade"; color = "var(--gold)"; }
-                else if (lvl === 0) { tag = "Strength"; color = "#5FD0A8"; }
+                else if (lvl === 0) { tag = "Strength"; color = "var(--pos)"; }
                 else { tag = "Solid"; color = "var(--ink)"; }
                 return { pos, tag, color, haveN };
               });
@@ -37977,7 +38319,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   {/* position strength strip */}
                   <div style={{ display: "flex", gap: 5, marginBottom: 11, flexWrap: "wrap" }}>
                     {posAssess.map((a) => (
-                      <div key={a.pos} style={{ flex: "1 1 78px", background: a.color + "1c", border: `1px solid ${a.color}44`, borderRadius: 7, padding: "5px 7px" }}>
+                      <div key={a.pos} style={{ flex: "1 1 78px", background: a.color + "1c", border: `1px solid ${alpha(a.color, 27)}`, borderRadius: 7, padding: "5px 7px" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 4 }}><Dot pos={a.pos} /><span style={{ fontSize: 11, fontWeight: 700, color: POS_COLOR[a.pos] }}>{a.pos}</span><span className="mut" style={{ fontSize: 9, marginLeft: "auto" }}>{a.haveN}</span></div>
                         <div style={{ fontSize: 10, fontWeight: 600, color: a.color, marginTop: 1 }}>{a.tag}</div>
                       </div>
@@ -38111,13 +38453,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           <Dot pos={r.p.pos} />
                           <span style={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.p.name}</span>
                           <span className="num" style={{ fontSize: 10, color: rankTierColor(r.p.pos, r.p.posRank) }}>{r.p.pos}{r.p.posRank}</span>
-                          <span className="num" style={{ width: 44, textAlign: "right", fontWeight: 700, color: r.v > 2 ? "#5FD0A8" : r.v < -2 ? "#F2655C" : "var(--mut)" }}>{r.v > 0 ? `+${r.v}` : r.v}</span>
+                          <span className="num" style={{ width: 44, textAlign: "right", fontWeight: 700, color: r.v > 2 ? "var(--pos)" : r.v < -2 ? "var(--neg)" : "var(--mut)" }}>{r.v > 0 ? `+${r.v}` : r.v}</span>
                         </div>
                       ))}
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, paddingTop: 9, borderTop: "1px solid var(--line)" }}>
                       <span className="mut" style={{ fontSize: 11.5 }}>Net value vs. the field</span>
-                      <span className="num" style={{ fontSize: 16, fontWeight: 800, color: valByTeam[userIdx] > 0 ? "#5FD0A8" : valByTeam[userIdx] < 0 ? "#F2655C" : "var(--ink)" }}>{valByTeam[userIdx] > 0 ? `+${valByTeam[userIdx]}` : valByTeam[userIdx]}</span>
+                      <span className="num" style={{ fontSize: 16, fontWeight: 800, color: valByTeam[userIdx] > 0 ? "var(--pos)" : valByTeam[userIdx] < 0 ? "var(--neg)" : "var(--ink)" }}>{valByTeam[userIdx] > 0 ? `+${valByTeam[userIdx]}` : valByTeam[userIdx]}</span>
                     </div>
                   </>
                 );
@@ -38144,8 +38486,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       const isYou = i === userIdx;
                       // IMPORTANT: posQualityTiers assigns level 0 = TOP third (strongest), 1 = middle,
                       // 2 = BOTTOM third (weakest). This matches the Teams tab exactly — do not invert.
-                      const lvlColor = (lvl) => lvl === 0 ? "#5FD0A8" : lvl === 1 ? "var(--gold)" : "#F2655C";
-                      const lvlBg = (lvl) => lvl === 0 ? "rgba(95,208,168,.14)" : lvl === 1 ? "rgba(224,166,60,.12)" : "rgba(242,101,92,.14)";
+                      const lvlColor = (lvl) => lvl === 0 ? "var(--pos)" : lvl === 1 ? "var(--gold)" : "var(--neg)";
+                      const lvlBg = (lvl) => lvl === 0 ? "var(--pos-wash)" : lvl === 1 ? "rgba(224,166,60,.12)" : "var(--neg-wash)";
                       return (
                         <tr key={i} style={{ background: mine ? "rgba(224,166,60,.08)" : "transparent", outline: mine ? "1px solid rgba(224,166,60,.4)" : "none" }}>
                           <td style={{ padding: "4px 0", color: mine ? "var(--gold)" : "var(--ink)", fontWeight: mine ? 700 : 400, whiteSpace: "nowrap" }}>{isYou ? (TEAM_NAMES[i] || "Your team") : TEAM_NAMES[i]}{isYou && <span className="mut" style={{ fontSize: 9, marginLeft: 4 }}>YOU</span>}</td>
@@ -38400,7 +38742,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         }} title="View and edit this ranking set right here, over the draft">
                           <i className="ti ti-pencil" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />View / edit
                         </button>
-                        <button className="btn btn-mini" style={{ color: "var(--red)", borderColor: "rgba(242,101,92,.4)" }}
+                        <button className="btn btn-mini" style={{ color: "var(--red)", borderColor: "var(--neg-line)" }}
                           onClick={() => { if (window.confirm(`Delete "${set.name}"? This permanently removes the ranking set.`)) { onDeleteRankSet && onDeleteRankSet(set.id); } }}
                           title="Permanently delete this ranking set">
                           <i className="ti ti-trash" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Delete
@@ -38503,7 +38845,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 nothing retried, and the next reload pulled the older server copy over the top. That is how a
                 ranking disappears without a single error anywhere. */}
             {!RANKS_SYNC.ok && (
-              <div style={{ marginTop: 10, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--red)", background: "rgba(242,101,92,.10)", fontSize: 11.5, lineHeight: 1.45 }}>
+              <div style={{ marginTop: 10, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--red)", background: "var(--neg-wash)", fontSize: 11.5, lineHeight: 1.45 }}>
                 <b style={{ color: "var(--red)" }}>Last save didn't reach your account.</b> It's still on this device, but it may not survive a reload or follow you to another one. Check your connection and save again.
               </div>
             )}
@@ -38589,7 +38931,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 ))}
               </div>
               {isConnectedLive && (
-                <div style={{ marginTop: 14, padding: "10px 12px", borderRadius: 8, background: "rgba(95,208,168,.10)", border: "1px solid var(--green)", fontSize: 12.5, lineHeight: 1.45 }}>
+                <div style={{ marginTop: 14, padding: "10px 12px", borderRadius: 8, background: "var(--pos-wash)", border: "1px solid var(--green)", fontSize: 12.5, lineHeight: 1.45 }}>
                   <b style={{ color: "var(--green)" }}><i className="ti ti-bolt" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />You're connected live to Sleeper.</b> Picks sync automatically as they happen in your real draft — there's nothing to start, pause, or save. Just watch the recommendation on the Hub and draft your best player.
                 </div>
               )}
@@ -38688,10 +39030,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 <span className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700 }}>Went</span>
                 {POS.map((pos) => recap.posCounts[pos] > 0 && (
-                  <span key={pos} style={{ fontSize: 11.5, fontWeight: 700, color: POS_COLOR[pos] || "var(--ink)", border: `1px solid ${(POS_COLOR[pos] || "#888")}55`, borderRadius: 20, padding: "1px 8px" }}>{recap.posCounts[pos]} {pos}</span>
+                  <span key={pos} style={{ fontSize: 11.5, fontWeight: 700, color: POS_COLOR[pos] || "var(--ink)", border: `1px solid ${alpha((POS_COLOR[pos] || "#888"), 33)}`, borderRadius: 20, padding: "1px 8px" }}>{recap.posCounts[pos]} {pos}</span>
                 ))}
                 {recap.run && (
-                  <span style={{ fontSize: 11.5, fontWeight: 800, color: "#F2655C", border: "1px solid #F2655C66", background: "rgba(242,101,92,.10)", borderRadius: 20, padding: "1px 8px" }}>
+                  <span style={{ fontSize: 11.5, fontWeight: 800, color: "var(--neg)", border: "1px solid var(--neg-line)", background: "var(--neg-wash)", borderRadius: 20, padding: "1px 8px" }}>
                     <i className="ti ti-flame" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />{recap.run.pos} run — {recap.run.count} of the last 8
                   </span>
                 )}
@@ -38720,7 +39062,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 live.sort((a, b) => (rank[a.st.state] - rank[b.st.state]) || ((b.p.vbd || 0) - (a.p.vbd || 0)));
                 const head = live[0].st;
                 return (
-                  <div data-recapplan style={{ border: `1px solid ${head.color}66`, background: `${head.color}12`, borderRadius: 10, padding: "8px 11px" }}>
+                  <div data-recapplan style={{ border: `1px solid ${alpha(head.color, 40)}`, background: `${alpha(head.color, 7)}`, borderRadius: 10, padding: "8px 11px" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
                       <i className="ti ti-checklist" style={{ fontSize: 13, color: head.color }} aria-hidden="true" />
                       <span style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 800, color: head.color }}>Your plan</span>
@@ -38731,7 +39073,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                       {live.slice(0, 6).map(({ p, st }) => (
                         <div key={p.id} data-recapplanrow={p.name} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12 }}>
-                          <span style={{ fontSize: 8.5, fontWeight: 800, color: st.color, border: `1px solid ${st.color}`, background: `${st.color}26`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap", flexShrink: 0 }}>
+                          <span style={{ fontSize: 8.5, fontWeight: 800, color: st.color, border: `1px solid ${st.color}`, background: `${alpha(st.color, 15)}`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap", flexShrink: 0 }}>
                             {st.state === "late" ? `▼ +${st.over}` : st.state === "now" ? "★ now" : `★ ${st.away}R`}
                           </span>
                           <b style={{ color: POS_COLOR[cpos(p.pos)] || "var(--ink)", fontSize: 9.5 }}>{cpos(p.pos)}</b>
@@ -38789,7 +39131,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                   const st = tt ? targetState(tt.target) : null;
                                   if (!st) return null;
                                   return (
-                                    <span data-recapplantag={p.name} style={{ fontSize: 8.5, marginLeft: 6, fontWeight: 800, color: st.color, border: `1px solid ${st.color}`, background: `${st.color}26`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>
+                                    <span data-recapplantag={p.name} style={{ fontSize: 8.5, marginLeft: 6, fontWeight: 800, color: st.color, border: `1px solid ${st.color}`, background: `${alpha(st.color, 15)}`, borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>
                                       {st.state === "late" ? `▼ ${tt.label}` : `★ ${tt.label}`}
                                     </span>
                                   );
@@ -38831,7 +39173,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               <td style={td}>{sr.p.name} <span className="mut">{sr.p.team}</span></td>
                               <td style={{ ...td, maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis" }} className="mut">{sr.by}</td>
                               <td style={tdR}>{sr.p.adp != null ? Math.round(sr.p.adp * 10) / 10 : "—"}</td>
-                              <td style={{ ...tdR, fontWeight: 700, color: sr.delta >= 5 ? "var(--green)" : sr.delta <= -5 ? "#F2655C" : "var(--mut)" }}>{sr.delta > 0 ? `+${sr.delta}` : sr.delta}</td>
+                              <td style={{ ...tdR, fontWeight: 700, color: sr.delta >= 5 ? "var(--green)" : sr.delta <= -5 ? "var(--neg)" : "var(--mut)" }}>{sr.delta > 0 ? `+${sr.delta}` : sr.delta}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -39368,8 +39710,8 @@ function AdpIntel({ players, cfg, myRanks, compact, draftedSet }) {
           <div style={{ display: "flex", gap: 16, marginTop: 12, flexWrap: "wrap", fontSize: 12 }}>
             <div><span className="mut">Range </span><b className="num">{data.lo}–{data.hi}</b></div>
             <div><span className="mut">Trend </span><b style={{ color: trendColor }}>{trendLabel}</b></div>
-            {myAdp != null && <div><span className="mut">Your rank </span><b className="num" style={{ color: "#d6aa4b" }}>{myAdp.rank.toFixed(1)}</b></div>}
-            {blend != null && <div><span className="mut">Blend (65/35) </span><b className="num" style={{ color: "#d6aa4b" }}>{blend}</b></div>}
+            {myAdp != null && <div><span className="mut">Your rank </span><b className="num" style={{ color: "var(--warn)" }}>{myAdp.rank.toFixed(1)}</b></div>}
+            {blend != null && <div><span className="mut">Blend (65/35) </span><b className="num" style={{ color: "var(--warn)" }}>{blend}</b></div>}
           </div>
         </div>
 
