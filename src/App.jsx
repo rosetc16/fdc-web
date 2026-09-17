@@ -99,7 +99,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29ah";
+const BUILD_TAG = "2026.07.29ai";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -2769,29 +2769,30 @@ const ThemeCtx = React.createContext(null);
 export const useThemeCtx = () => React.useContext(ThemeCtx)
   || { theme: "dark", pref: "system", choose: () => {}, osDark: true };
 
-/* ⭐⭐⭐ THE CONTROL SAYS WHICH OF THE THREE STATES IT IS IN, not just which colours you are looking at.
-   The icon carries the MODE (a monitor for "following your system"), not the resolved theme, because
-   "following the system, currently dark" and "pinned to dark" look identical on screen and behave
-   completely differently at sunset. The title spells out both halves and what the next click does —
-   a three-state cycle is only honest if it tells you where in the cycle you are. */
-const THEME_MODES = [
-  { key: "system", icon: "ti-device-desktop", label: "Following your system" },
-  { key: "light", icon: "ti-sun", label: "Light" },
-  { key: "dark", icon: "ti-moon", label: "Dark" },
-];
+/* ⭐⭐⭐⭐ ONE BUTTON, TWO STATES — rewritten after 29ah shipped a three-state cycle.
+   Trey: "I also don't like that it says 'auto' at the top because no one knows what that means until you
+   click it for light or dark. I just want a toggle for either or."
+   ⭐ HE IS RIGHT, AND THE MISTAKE WAS PUTTING AN IMPLEMENTATION DETAIL ON THE BUTTON. Following the system
+   is the correct DEFAULT and a terrible LABEL: "Auto" describes where the value came from, which is the one
+   thing a person does not need to know, and it costs a click to find out what the control even does. The
+   three states still exist underneath — a first visit follows the OS, unchanged — but the control only
+   offers the two anybody wants, and the first press pins one.
+   ⚠ WHICH ALSO ANSWERS THE OTHER HALF: "if someone has their screen defaulted to light mode but they
+     switch it to dark mode, I want it to default there in the future." Pressing writes the choice, and a
+     written choice outranks the system from then on — the OS is consulted only while nobody has expressed
+     a preference, so there is no way to be dragged back to light at sunrise.
+   ⚠ AND THE LABEL NAMES WHERE THE CLICK GOES, not where you are. A button reading "Dark" on an already
+     dark screen is the same puzzle "Auto" was, one word further along. */
 export function ThemeToggle({ compact }) {
-  const { theme, pref, choose } = useThemeCtx();
-  const i = Math.max(0, THEME_MODES.findIndex((m) => m.key === pref));
-  const cur = THEME_MODES[i], next = THEME_MODES[(i + 1) % THEME_MODES.length];
-  const title = pref === "system"
-    ? `Following your system (${theme}) — click for ${next.label.toLowerCase()}`
-    : `${cur.label} mode — click for ${next.key === "system" ? "your system setting" : next.label.toLowerCase()}`;
+  const { theme, choose } = useThemeCtx();
+  const next = theme === "dark" ? "light" : "dark";
+  const title = `Switch to ${next} mode`;
   return (
-    <button type="button" className="btn btn-mini" data-themetoggle={pref} data-themenow={theme}
-      aria-label={title} title={title} onClick={() => choose(next.key)}
+    <button type="button" className="btn btn-mini" data-themetoggle={next} data-themenow={theme}
+      aria-label={title} title={title} onClick={() => choose(next)}
       style={{ display: "inline-flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
-      <i className={`ti ${cur.icon}`} style={{ fontSize: 14 }} aria-hidden="true" />
-      {!compact && <span style={{ fontSize: 11 }}>{cur.key === "system" ? "Auto" : cur.label}</span>}
+      <i className={`ti ${next === "dark" ? "ti-moon" : "ti-sun"}`} style={{ fontSize: 14 }} aria-hidden="true" />
+      {!compact && <span style={{ fontSize: 11 }}>{next === "dark" ? "Dark" : "Light"}</span>}
     </button>
   );
 }
@@ -7832,7 +7833,7 @@ const valBg = (v) => {
 };
 // Shared green→yellow→red scale for VBD / Value (points above replacement): strong ≥40, solid ≥20, fringe
 // ≥5, replacement-ish ≥0, below replacement <0. Used across hovers so strong values pop and weak ones warn.
-export const vbdColor = (v) => v == null ? "var(--mut)" : v >= 40 ? "var(--pos)" : v >= 20 ? "#9BD17E" : v >= 5 ? "var(--warn)" : v >= 0 ? "#C9A54B" : "var(--neg)";
+export const vbdColor = (v) => v == null ? "var(--mut)" : v >= 40 ? "var(--pos)" : v >= 20 ? "var(--pos-mid)" : v >= 5 ? "var(--warn)" : v >= 0 ? "#C9A54B" : "var(--neg)";
 // Format a VBD/value number for display as a WHOLE number with an explicit sign (e.g. "+29", "-4"). Kept as
 // a single helper so every value/VBD readout stays consistent. NOTE: display is intentionally whole-number;
 // the ranking must NOT depend on sub-integer differences the user can't see — ties are broken deterministically
@@ -8410,7 +8411,32 @@ const css = `
   /* Position identity. One map, so a dot, a chip and a table cell can never disagree about what a
      running back looks like. */
   --p-qb:#EF6A6A;--p-rb:#4FD1A1;--p-wr:#5BA8F5;--p-te:#F2A35C;--p-dl:#b07cc6;--p-lb:#7e9b59;
-  --p-db:#5fb0b0;--p-k:#D9A5C0;--p-dst:#8FA8BF;}
+  --p-db:#5fb0b0;--p-k:#D9A5C0;--p-dst:#8FA8BF;
+  /* ⭐⭐⭐⭐⭐ THE ELEVATED SURFACES — added after 29ah's light mode shipped broken. Tokenising the TEXT
+     colours and leaving the things text sits ON as literals is half a theme: the home hero kept its dark
+     green gradient and painted near-black type onto it, and the draft board's frozen column kept its dark
+     zebra stripe, so every other player name vanished. Trey: "The light mode is all jacked up for the home
+     page… The draft room is also all messed up."
+     ⚠ A GRADIENT IS background-IMAGE, NOT backgroundColor, WHICH IS WHY THE GATE MISSED IT — theme-sweep
+       walked up the ancestors looking for a background COLOUR, found none on the hero, and measured the
+       text against the page behind it. Both fixed here and in theme-sweep.mjs.
+     ⚠ AND the on-gold token IS ITS OWN TOKEN because the gold button is not a surface that flips: dark type on
+       a bright gold chip is right, and the same dark type on light mode's DEEP gold is unreadable. What
+       stays constant is the contrast, not the colour. */
+  --hero-season:linear-gradient(135deg,#0b1512 0%,#10201b 55%,#0e2a22 100%);
+  --hero-draft:linear-gradient(135deg,#14100a 0%,#1b1710 55%,#241d0f 100%);
+  --strip-season:linear-gradient(180deg,rgba(16,34,28,.98),rgba(18,28,24,.98));
+  --strip-draft:linear-gradient(180deg,rgba(38,32,18,.98),rgba(28,26,20,.98));
+  --raise:linear-gradient(160deg,rgba(46,40,22,1),rgba(24,31,40,1));
+  --raise2:linear-gradient(165deg,rgba(30,34,44,1),rgba(22,26,34,1));
+  --showcase:linear-gradient(165deg,#13130D,#0B0B08);--showcase-line:#2A2A20;
+  --topfade:linear-gradient(180deg,rgba(11,15,20,.86),var(--bg) 55%);
+  --fade-r:linear-gradient(90deg,rgba(11,15,20,0),var(--bg));
+  --hover:#2B3340;--hover-gold:#15140d;--hover-mini:#262017;--hover-row:#16160F;--hover-feature:#121210;
+  --zebra:#141A22;--zebra-hi:#1A2230;--tip-bg:#10151B;--clock-bg:#16243A;
+  --alert-bg:#2A1210;--alert-ink:#FFB4AC;--on-gold:#151002;
+  --pos-mid:#9BD17E;--urge:#F59E42;--heat-ink:#eafff5;
+  --shadow-lg:0 10px 40px -12px rgba(0,0,0,.6);}
 /* LIGHT — a soft ground rather than paper white, because this app is mostly dense tables and a pure
    #FFF field under a twelve-row board is the glare he already called "crowded" made worse. Panels stay
    white so they still read as raised against it, which is the same figure/ground job the dark theme does
@@ -8423,7 +8449,24 @@ const css = `
   --pos-wash:rgba(12,122,87,.10);--pos-line:rgba(12,122,87,.38);
   --neg-wash:rgba(192,57,43,.09);--neg-line:rgba(192,57,43,.34);
   --p-qb:#C0392B;--p-rb:#0F7A57;--p-wr:#1F6FB8;--p-te:#A85A14;--p-dl:#6D3D8A;--p-lb:#4A6330;
-  --p-db:#2C6E6E;--p-k:#8E4B6B;--p-dst:#4A5F73;}
+  --p-db:#2C6E6E;--p-k:#8E4B6B;--p-dst:#4A5F73;
+  /* The same surfaces, rebuilt rather than lightened. A dark gradient run through a filter comes out a
+     muddy grey; these are picked as light tints of the SAME hue, so season still reads green and draft
+     still reads gold — the mode signal 29m built survives the theme. */
+  --hero-season:linear-gradient(135deg,#E9F4EE 0%,#DEEDE5 55%,#D3E9DB 100%);
+  --hero-draft:linear-gradient(135deg,#FAF4E6 0%,#F4EBD7 55%,#EFE3C6 100%);
+  --strip-season:linear-gradient(180deg,#E5F1EA,#DDECE4);
+  --strip-draft:linear-gradient(180deg,#F6EDDC,#F0E7D3);
+  --raise:linear-gradient(160deg,#FCF7EA,#F1F5F9);
+  --raise2:linear-gradient(165deg,#F5F8FC,#EDF2F7);
+  --showcase:linear-gradient(165deg,#FFFFFF,#F4F7FA);--showcase-line:#DDE3EA;
+  --topfade:linear-gradient(180deg,rgba(226,231,237,.9),var(--bg) 55%);
+  --fade-r:linear-gradient(90deg,rgba(244,246,248,0),var(--bg));
+  --hover:#E7ECF2;--hover-gold:#F6EFDC;--hover-mini:#F3EADA;--hover-row:#F5F1E4;--hover-feature:#F2F5F9;
+  --zebra:#F1F4F8;--zebra-hi:#E6ECF3;--tip-bg:#FFFFFF;--clock-bg:#E6F0FA;
+  --alert-bg:#FCEAE7;--alert-ink:#8C2B20;--on-gold:#FFFFFF;
+  --pos-mid:#3F7A2E;--urge:#9A5410;--heat-ink:#0E5A3C;
+  --shadow-lg:0 10px 30px -14px rgba(20,30,45,.28);}
 .gs-root *{box-sizing:border-box}
 .disp{font-family:'Barlow Condensed','Barlow',sans-serif;letter-spacing:.02em}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px}
@@ -8474,7 +8517,7 @@ body.buybar-open .fbdock{bottom:76px!important}
 }
 .btn{background:var(--panel3);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer;font-family:'Barlow';font-size:13px}
 .btn:hover{transition:border-color .15s,background .15s,transform .1s,box-shadow .15s}
-.btn:hover,.btn-mini:hover{border-color:var(--gold);background:#2B3340}
+.btn:hover,.btn-mini:hover{border-color:var(--gold);background:var(--hover)}
 /* Toolbar toggle in its ON state — the board has several of these and none of them used to look pressed. */
 .btn.on,.btn-mini.on{border-color:var(--gold);color:var(--gold);background:rgba(224,166,60,.12)}
 /* Compact board density: same information, ~a third more rows on screen. */
@@ -8547,7 +8590,7 @@ body.buybar-open .fbdock{bottom:76px!important}
 }
 select.gs{cursor:pointer}
 select.gs:hover{border-color:var(--gold)}
-.btn:hover{border-color:var(--gold);background:#15140d;transform:translateY(-1px);box-shadow:0 2px 10px #0006}
+.btn:hover{border-color:var(--gold);background:var(--hover-gold);transform:translateY(-1px);box-shadow:0 2px 10px #0006}
 .btn:active{transform:translateY(0)}
 /* 29am - a disabled control must LOOK disabled. There was no rule for this anywhere, so a button that
    cannot be clicked still took the full hover treatment: gold border, a lift, a shadow, a pointer cursor.
@@ -8559,12 +8602,12 @@ select.gs:hover{border-color:var(--gold)}
 .btn:disabled:hover,.btn-mini:disabled:hover,.btn-gold:disabled:hover{transform:none;box-shadow:none;filter:none;border-color:var(--line);background:var(--panel2)}
 .btn-gold:disabled,.btn-gold:disabled:hover{background:var(--gold);filter:saturate(.45)}
 .btn:focus-visible{outline:2px solid var(--gold);outline-offset:1px}
-.btn-gold{background:var(--gold);color:#151002;border:none;font-weight:700}
+.btn-gold{background:var(--gold);color:var(--on-gold);border:none;font-weight:700}
 .btn-gold:hover{filter:brightness(1.08);border-color:transparent;background:var(--gold2);box-shadow:0 3px 16px rgba(224,166,60,.4)}
 .btn-mini{padding:3px 10px;font-size:11px;border-radius:6px;background:var(--panel3)}
-.btn-gold,.btn-mini.btn-gold{background:var(--gold);color:#151002;border:none;font-weight:700}
-.btn-mini:hover{transform:none;box-shadow:none;background:#262017;border-color:var(--gold)}
-.tab{padding:6px 14px;cursor:pointer;border:none;background:none;color:#AEB9C7;font-family:'Barlow Condensed';font-size:16px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;border-bottom:2px solid transparent}
+.btn-gold,.btn-mini.btn-gold{background:var(--gold);color:var(--on-gold);border:none;font-weight:700}
+.btn-mini:hover{transform:none;box-shadow:none;background:var(--hover-mini);border-color:var(--gold)}
+.tab{padding:6px 14px;cursor:pointer;border:none;background:none;color:var(--mut);font-family:'Barlow Condensed';font-size:16px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;border-bottom:2px solid transparent}
 .tab:hover{transition:color .15s,border-color .15s}
 .tab:hover{color:var(--ink);border-bottom-color:var(--line2)}
 .tab.on{color:var(--ink);border-bottom-color:var(--gold)}
@@ -8631,7 +8674,7 @@ select.gs:hover{border-color:var(--gold)}
 @media(max-width:760px){
   .scrollhint{position:relative}
   .scrollhint::after{content:"";position:absolute;top:0;right:0;bottom:0;width:26px;pointer-events:none;
-    background:linear-gradient(90deg,rgba(11,15,20,0),var(--bg));border-radius:0 8px 8px 0}
+    background:var(--fade-r);border-radius:0 8px 8px 0}
 }
 @media(max-width:640px){
   /* The hub-view modal's own chrome. Six switch buttons plus Close used to wrap onto four rows — ~400px of a
@@ -8761,7 +8804,7 @@ select.gs:hover{border-color:var(--gold)}
 .ticker{display:flex;gap:8px;overflow-x:auto;padding:10px 12px;scrollbar-width:thin;align-items:stretch}
 .tickcard{min-width:118px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-shrink:0}
 .tickcard.you{border-color:var(--gold);background:rgba(224,166,60,.10)}
-.tickcard.clock{border-color:var(--blue);background:#16243A}
+.tickcard.clock{border-color:var(--blue);background:var(--clock-bg)}
 .meter{height:3px;background:var(--line);border-radius:2px;margin-top:6px;overflow:hidden}.meter>div{height:100%;background:var(--gold)}
 table.board{width:max-content;min-width:100%;border-collapse:separate;border-spacing:0;font-size:13px;table-layout:auto}
 table.board th{font-family:'Barlow Condensed';text-transform:uppercase;letter-spacing:.06em;font-size:12px;color:var(--mut);text-align:left;padding:8px 9px;border-bottom:2px solid var(--line);position:sticky;top:0;background:linear-gradient(180deg,var(--panel),var(--panel2));cursor:pointer;white-space:nowrap;z-index:2}
@@ -8789,15 +8832,15 @@ table.board tr.recrow:hover>td.frz{background:linear-gradient(90deg,rgba(224,166
    SPECIFIC than these recrow rules, so on every even row it silently painted over the gold — which is exactly
    why the highlight looked like it "only worked on hover" (the hover rules happened to out-rank the stripe).
    !important ends the specificity fight for good: the recommended row is gold at rest, every row, always. */
-table.board tbody tr:nth-child(even) td.frz{background:#141A22}
-table.board tbody tr:hover td.frz{background:#1A2230}
+table.board tbody tr:nth-child(even) td.frz{background:var(--zebra)}
+table.board tbody tr:hover td.frz{background:var(--zebra-hi)}
 table.board th.frz{z-index:4;box-shadow:1px 0 0 var(--line)}
 table.board td.frz{box-shadow:1px 0 0 var(--line)}
 table.board tbody tr td.frz{border-left:3px solid transparent}
 .struck{opacity:.34;text-decoration:line-through}
 .num{font-variant-numeric:tabular-nums}
 .slotlbl{font-family:'Barlow Condensed';font-size:11px;letter-spacing:.08em;color:var(--mut);width:40px;display:inline-block}
-.alert{border:1px solid var(--red);background:#2A1210;border-radius:8px;padding:8px 10px;color:#FFB4AC;font-size:13px}
+.alert{border:1px solid var(--red);background:var(--alert-bg);border-radius:8px;padding:8px 10px;color:var(--alert-ink);font-size:13px}
 input.gs,select.gs,textarea.gs{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:8px 10px;font-family:'Barlow';font-size:13px}
 input.gs:focus,select.gs:focus,textarea.gs:focus{outline:2px solid var(--gold);outline-offset:0}
 textarea.gs::placeholder,input.gs::placeholder{color:var(--mut)}
@@ -8842,13 +8885,13 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .availpct .txt{position:relative;z-index:1}
 .availhead{display:grid;gap:10px;padding:6px 12px;font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);font-weight:700}
 .posbadge{display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:20px;border-radius:5px;font-size:9.5px;font-weight:800;color:#0a0a0a}
-.tooltip{position:fixed;z-index:90;width:560px;max-width:560px;max-height:92vh;overflow-y:auto;background:#10151B;border:1px solid var(--line2);border-radius:10px;padding:13px 16px;font-size:12.5px;line-height:1.5;pointer-events:none;box-shadow:0 12px 40px #000D}
+.tooltip{position:fixed;z-index:90;width:560px;max-width:560px;max-height:92vh;overflow-y:auto;background:var(--tip-bg);border:1px solid var(--line2);border-radius:10px;padding:13px 16px;font-size:12.5px;line-height:1.5;pointer-events:none;box-shadow:0 12px 40px #000D}
 .needcell{text-align:center;border-radius:5px;padding:3px 0;font-size:12px}
 .info{cursor:help;border-bottom:1px dotted var(--mut)}
 .hero-h{font-size:58px;font-weight:700;line-height:1.0}
 .feature{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;transition:border-color .18s, transform .18s, background .18s;cursor:default}
-.feature:hover{border-color:var(--gold);transform:translateY(-3px);background:#121210}
-.showcase{background:linear-gradient(165deg,#13130D,#0B0B08);border:1px solid #2A2A20;border-radius:14px;padding:18px;transition:border-color .2s,transform .2s,box-shadow .2s;cursor:default}
+.feature:hover{border-color:var(--gold);transform:translateY(-3px);background:var(--hover-feature)}
+.showcase{background:var(--showcase);border:1px solid var(--showcase-line);border-radius:14px;padding:18px;transition:border-color .2s,transform .2s,box-shadow .2s;cursor:default}
 .showcase:hover{border-color:var(--gold);transform:translateY(-4px);box-shadow:0 14px 40px rgba(224,166,60,.10)}
 .showcase-badge{display:inline-flex;align-items:center;gap:6px;font-family:'Barlow Condensed';text-transform:uppercase;letter-spacing:.1em;font-size:10.5px;font-weight:700;color:var(--gold);background:rgba(224,166,60,.10);border:1px solid #4A3A12;border-radius:99px;padding:4px 11px}
 .showcase-badge i{font-size:13px}
@@ -8869,7 +8912,7 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 @keyframes clockFlash{0%,100%{background:var(--neg-wash);box-shadow:none}50%{background:var(--neg-line);box-shadow:0 0 20px var(--neg-line),inset 0 0 26px var(--neg-wash)}}
 .clock-urgent{animation:clockFlash 1s ease-in-out infinite}
 .glowline{background:linear-gradient(90deg,transparent,var(--gold),transparent);height:1px;opacity:.5}
-.hover-row{transition:background .12s}.hover-row:hover{background:#16160F}
+.hover-row{transition:background .12s}.hover-row:hover{background:var(--hover-row)}
 .team-row:hover{transition:border-color .15s, background .15s, transform .1s, box-shadow .15s}
 .team-row:hover{border-color:var(--gold)!important;background:var(--panel3)!important;transform:translateX(2px);box-shadow:-3px 0 0 0 var(--gold)}
 .team-row:hover .team-arrow{opacity:1;transform:translateX(0)}
@@ -10889,12 +10932,12 @@ export default function App() {
         </div>
       )}
       {updateReady && (
-        <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 200, background: "var(--gold)", color: "#151002", padding: "9px 16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, flexWrap: "wrap", boxShadow: "0 2px 12px #0006", fontSize: 13.5 }}>
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 200, background: "var(--gold)", color: "var(--on-gold)", padding: "9px 16px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, flexWrap: "wrap", boxShadow: "0 2px 12px #0006", fontSize: 13.5 }}>
           <i className="ti ti-sparkles" style={{ fontSize: 16 }} aria-hidden="true" />
           <span style={{ fontWeight: 700 }}>A new version of Fantasy Draft Compass is available.</span>
           <span style={{ opacity: 0.85 }}>Refresh to get the latest features.</span>
           <button onClick={() => { try { if (typeof caches !== "undefined" && caches.keys) { caches.keys().then((ks) => Promise.all(ks.map((k) => caches.delete(k)))).finally(() => { const u = new URL(window.location.href); u.searchParams.set("_r", Date.now().toString()); window.location.replace(u.toString()); }); return; } } catch (e) {} const u = new URL(window.location.href); u.searchParams.set("_r", Date.now().toString()); window.location.replace(u.toString()); }} style={{ background: "#151002", color: "var(--gold)", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Refresh now</button>
-          <button onClick={() => setUpdateReady(false)} title="Dismiss — I'll refresh later" style={{ background: "transparent", border: "none", color: "#151002", cursor: "pointer", padding: 4, display: "flex", opacity: 0.7 }}><i className="ti ti-x" style={{ fontSize: 15 }} aria-hidden="true" /></button>
+          <button onClick={() => setUpdateReady(false)} title="Dismiss — I'll refresh later" style={{ background: "transparent", border: "none", color: "var(--on-gold)", cursor: "pointer", padding: 4, display: "flex", opacity: 0.7 }}><i className="ti ti-x" style={{ fontSize: 15 }} aria-hidden="true" /></button>
         </div>
       )}
       {route === "home" && user?.paid && <PaidHub user={user} leagues={visibleLeagues} allLeagues={leagues} funMocks={funMocks}
@@ -16928,12 +16971,23 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
        than five swaps, so the eight teams no swap was found with still get a verdict instead of silence.
        `board.all` rather than `board` on purpose — the top five are a shortlist, and a partner read built
        from a shortlist would report "nothing here" for a manager whose idea placed sixth. */
-  const partners = myLT ? hubMemo(`partners|${tradeKey}`, () => partnerBoard({
-    me: { rosterId: myLT.rosterId },
-    others: leagueTeams.filter((t) => t.rosterId !== data.myRosterId)
-      .map((t) => ({ rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName })),
-    reads: teamReadRows, offers: board.all || board, req: reqStart, myRead,
-  })) : { partners: [], mySurplus: [], twoWayN: 0, motivated: [] };
+  const partners = myLT ? hubMemo(`partners|${tradeKey}`, () => {
+    /* ⭐⭐⭐ WHAT A MAN COSTS MY OWN LINEUP, so "what can I trade from" is priced rather than counted —
+       29ai. Same marginal-cost model the position market has used since 29ac (`costMapOf`), pointed at my
+       roster instead of theirs; one implementation, two callers, so the two halves of the trade screen can
+       never disagree about what a player is worth to the team that holds him. */
+    const myRoster = tradeRoster(myLT);
+    const base = lineupValue(myRoster, cfg.sf);
+    const costOf = (p) => Math.round((base - lineupValue(myRoster.filter((x) => String(x.sid) !== String(p.sid)), cfg.sf)) * 10) / 10;
+    const worthOf = (p) => Math.max(0, (Number(p.pts) || 0) - (tradeRepl[String(p.pos).toUpperCase()] || 0));
+    return partnerBoard({
+      me: { rosterId: myLT.rosterId },
+      others: leagueTeams.filter((t) => t.rosterId !== data.myRosterId)
+        .map((t) => ({ rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName })),
+      reads: teamReadRows, offers: board.all || board, req: reqStart, myRead,
+      myRoster, costOf, worthOf,
+    });
+  }) : { partners: [], mySurplus: [], twoWayN: 0, motivated: [] };
 
   /* ⭐⭐⭐⭐⭐ AND THE CURRENCY, WHICH WAS A MEASURED FINDING. He asked for "what is going to increase your
      playoff odds the most" — and in his own league he is first at 99.5%, so every trade on the board moves
@@ -17819,8 +17873,9 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
           <div className="panel" style={{ padding: 16 }}>
             <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 3 }}>Trades</div>
             <div className="mut" style={{ fontSize: 12, marginBottom: 12, lineHeight: 1.5 }}>
-              Offers worth sending first, then the market they sit in, then a calculator for anything you want to price
-              yourself. Everything is season value, so a bye week never makes somebody look expendable.
+              A read on the league first — who to call and what you can trade from — then the deals worth sending, the
+              positional market they sit in, and a calculator for anything you want to price yourself. Everything is
+              season value, so a bye week never makes somebody look expendable.
             </div>
 
             {/* ⭐⭐⭐⭐⭐ WHAT ACTUALLY MOVES YOUR SEASON — 29ah, and this block is the answer to the
@@ -17833,7 +17888,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
             {myRead && partners.partners.length > 0 && (
               <div data-leagueread style={{ marginBottom: 18, padding: "12px 14px", borderRadius: 10,
                 border: "1px solid var(--gold-line)", background: "var(--panel2)" }}>
-                <div className="disp" style={{ fontSize: 14, fontWeight: 800, marginBottom: 7 }}>What moves your season</div>
+                <div className="disp" style={{ fontSize: 15, fontWeight: 800, letterSpacing: ".01em", marginBottom: 7 }}>What moves your season</div>
 
                 {/* ⚠ THE HEADLINE NAMES ITS OWN CURRENCY. At 99.5% to make the playoffs every trade is
                     worth +0.0% and a "playoff odds" column would be a column of zeroes — so the race
@@ -17847,27 +17902,55 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       : <>Your seeding is settled every way the simulation can measure, so these are ranked by what they add to your lineup. A trade now is insurance, not a climb.</>}
                 </div>
 
-                {/* ── what to sell ────────────────────────────────────────────────────────────── */}
+                {/* ── what you can trade from ────────────────────────────────────────────────── */}
                 {partners.mySurplus.length > 0 && (
-                  <div data-lrsurplus={String(partners.mySurplus.length)} style={{ marginBottom: 9 }}>
-                    <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 800, marginBottom: 3 }}>Depth you can move</div>
+                  <div data-lrsurplus={String(partners.mySurplus.length)} style={{ marginBottom: 11 }}>
+                    <div className="disp" style={{ fontSize: 12.5, fontWeight: 800, letterSpacing: ".02em", marginBottom: 4 }}>
+                      What you can trade from
+                      <span className="mut" style={{ fontSize: 10.5, fontWeight: 500, marginLeft: 7 }}>
+                        the man who costs your lineup least and is worth most to somebody else
+                      </span>
+                    </div>
                     {partners.mySurplus.slice(0, 3).map((sp) => (
-                      <div key={sp.pos} data-lrsurpluspos={sp.pos} style={{ fontSize: 12, lineHeight: 1.6 }}>
-                        <b style={{ color: "var(--ink)" }}>{sp.pos}</b>
-                        <span className="mut"> — {sp.spare} spare starter{sp.spare === 1 ? "" : "s"} beyond what you field
-                          {sp.buyers > 0
-                            ? <>, and <b className="num" style={{ color: "var(--ink)" }}>{sp.buyers}</b> team{sp.buyers === 1 ? "" : "s"} can't even field it ({sp.buyerNames.join(", ")})</>
-                            : <>, though nobody in the league is short there — you'd be selling an upgrade, not a rescue</>}
-                          {sp.best && <> · best return: <b style={{ color: "var(--pos)" }}>{sp.best.get.name}</b> from {sp.best.partner.teamName} (+{sp.best.myGain})</>}
+                      <div key={sp.pos} data-lrsurpluspos={sp.pos} style={{ fontSize: 12, lineHeight: 1.65 }}>
+                        {/* ⭐⭐⭐⭐ THE PLAYER IS THE HEADLINE, NOT THE POSITION — 29ai. "RB · 1 spare starter"
+                            was two abstractions in a row: Trey could not tell who it meant ("I also don't
+                            know what '1 spare starter' means") and it was wrong anyway at a position he
+                            ranks 10th in. A name is something you can go and offer somebody. */}
+                        <b style={{ color: "var(--ink)" }}>{sp.player ? sp.player.name : sp.pos}</b>
+                        <span className="mut"> ({sp.pos}{sp.myRank ? ` — you rank ${ordinal(sp.myRank)}${sp.teams ? ` of ${sp.teams}` : ""} here` : ""})</span>
+                        {" — "}
+                        <span data-lrsurplusedge={String(sp.edge)}
+                          title={`Moving him costs your starting lineup ${sp.cost} points of season value, and he is worth about ${sp.worth} to a roster that needs him — a difference of ${sp.edge}. That gap is what makes him tradeable, and it can be large at a position you are weak at.`}
+                          style={{ cursor: "help", borderBottom: "1px dotted var(--line2)" }}>
+                          <span className="mut">costs you </span><b className="num">{sp.cost}</b>
+                          <span className="mut">, worth </span><b className="num" style={{ color: "var(--pos)" }}>{sp.worth}</b>
+                          <span className="mut"> elsewhere</span>
                         </span>
+                        {sp.buyers > 0 && (
+                          <span className="mut" data-lrsurplusbuyers={String(sp.buyers)}
+                            title={sp.cantField > 0
+                              ? `${sp.cantFieldNames.join(", ")} cannot put a full ${sp.pos} lineup on the field at all. The wider count also includes teams ranked in the bottom third at ${sp.pos}, who would take an upgrade without being desperate.`
+                              : `Teams ranked in the bottom third of the league at ${sp.pos}: ${sp.buyerNames.join(", ")}. None of them is unable to field the position — they would be buying an upgrade, not a rescue.`}
+                            style={{ cursor: "help" }}>
+                            {" · "}<b className="num" style={{ color: "var(--ink)" }}>{sp.buyers}</b> buyer{sp.buyers === 1 ? "" : "s"}
+                            {sp.cantField > 0 ? ` (${sp.cantField} can't field it)` : ""}
+                          </span>
+                        )}
+                        {sp.best && <span className="mut"> · best return <b style={{ color: "var(--pos)" }}>{sp.best.get.name}</b> from {sp.best.partner.teamName}</span>}
                       </div>
                     ))}
                   </div>
                 )}
 
                 {/* ── who to call ─────────────────────────────────────────────────────────────── */}
-                <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 800, marginBottom: 3 }}>
-                  Who to call{partners.twoWayN > 0 ? ` — ${partners.twoWayN} straight fit${partners.twoWayN === 1 ? "" : "s"}` : ""}
+                <div className="disp" style={{ fontSize: 12.5, fontWeight: 800, letterSpacing: ".02em", marginBottom: 4 }}>
+                  Who to call
+                  <span className="mut" style={{ fontSize: 10.5, fontWeight: 500, marginLeft: 7 }}>
+                    {partners.twoWayN > 0
+                      ? `${partners.twoWayN} straight fit${partners.twoWayN === 1 ? "" : "s"} — a position each of you is strong and weak in, opposite ways round`
+                      : "ranked by what is realistically available with each manager"}
+                  </span>
                 </div>
                 <div data-lrpartners={String(partners.partners.length)} style={{ display: "grid", gap: 4 }}>
                   {partners.partners.map((p) => {
@@ -17894,7 +17977,12 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                               the smaller of the two gains, so one fat side cannot manufacture it. */}
                           {p.mutual > 0 && <span className="mut" style={{ fontSize: 10.5 }} data-lrmutual={String(p.mutual)}>both sides +{p.mutual} or better</span>}
                           <span className="mut" style={{ marginLeft: "auto", fontSize: 10.5 }}>
-                            {p.realisticN > 0 ? `${p.realisticN} idea${p.realisticN === 1 ? "" : "s"}` : "nothing"}
+                            {/* ⚠ "nothing" IS ONLY TRUE WHEN THERE IS NOTHING. A row reading "Straight fit
+                                both ways" on the left and "nothing" on the right is the screen arguing with
+                                itself — the count is about DEALS, and the absence of a clean one-for-one is
+                                not the absence of a reason to call. */}
+                            {p.realisticN > 0 ? `${p.realisticN} idea${p.realisticN === 1 ? "" : "s"}`
+                              : p.complement.length ? "no clean swap" : "nothing"}
                             {p.realisticN > 0 && <i className={`ti ti-chevron-${open ? "up" : "down"}`} style={{ fontSize: 11, marginLeft: 4 }} aria-hidden="true" />}
                           </span>
                         </button>
@@ -17928,7 +18016,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
             {board.length > 0 && (
               <div data-tboard={String(board.length)} style={{ marginBottom: 16 }}>
                 <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 9 }}>
-                  <span className="disp" style={{ fontSize: 14, fontWeight: 800 }}>Send these</span>
+                  <span className="disp" style={{ fontSize: 15, fontWeight: 800, letterSpacing: ".01em" }}>Deals worth sending</span>
                   <span className="mut" style={{ fontSize: 11 }}>
                     ranked by what they do for your lineup, and filtered to the ones the other manager has a reason to accept
                   </span>
@@ -17969,7 +18057,11 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                     const BAND = { likely: "var(--pos)", "worth asking": "var(--gold)", "long shot": "var(--mut)" };
                     const tone = BAND[t.band] || "var(--mut)";
                     const perWeek = Math.round((t.myGain / GAMES_IN_SEASON) * 10) / 10;
-                    const odds = perWeek > 0 ? oddsIfMeanShifts(perWeek) : null;
+                    /* ⚠ THE SAME CURRENCY AS THE HEADER — 29ai. The card printed "+1.2% playoff odds"
+                       directly under a header explaining that playoff odds are settled and everything is
+                       ranked by the 1 seed instead: two numbers for one trade, in two units, six lines
+                       apart. `oddsForGain` resolves the live race once for the whole tab. */
+                    const odds = oddsForGain(perWeek);
                     return (
                       <div key={`${t.team.rosterId}-${t.get.sid}-${t.give.sid}`} data-tbrec={String(t.rank)}
                         data-tbrecband={t.band}
@@ -18027,7 +18119,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                           {odds != null && odds > 0 && (
                             <span data-tbrecodds={String(odds)} title="The same seeded season simulation the hub runs, with your weekly scoring mean moved by this trade and nothing else changed.">
                               <b className="num" style={{ color: "var(--gold)", fontSize: 13 }}>+{odds}%</b>
-                              <span className="mut"> playoff odds</span>
+                              <span className="mut"> {race.label || "playoff odds"}</span>
                             </span>
                           )}
                           <span className="mut">they gain <b className="num" style={{ color: "var(--ink)" }}>+{t.theirGain}</b></span>
@@ -18088,7 +18180,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
             {market && market.positions.length > 0 && (
               <div data-mkt style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "11px 12px", marginBottom: 14, background: "var(--panel2)" }}>
                 <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 9 }}>
-                  <span className="disp" style={{ fontSize: 13.5, fontWeight: 800 }}>Where you stand, by position</span>
+                  <span className="disp" style={{ fontSize: 15, fontWeight: 800, letterSpacing: ".01em" }}>Potential Positional Trade Considerations</span>
                   <span className="mut" style={{ fontSize: 11 }}>click a position to see who can help</span>
                   {mktPos && (
                     <button className="btn btn-mini" data-mktback onClick={() => setMktPos(null)}
@@ -18300,7 +18392,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                   onClick={() => setTb((v) => ({ ...v, open: !v.open }))}
                   style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "11px 12px", background: "none", border: 0, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", textAlign: "left" }}>
                   <i className={`ti ti-${tb.open ? "chevron-down" : "chevron-right"}`} style={{ fontSize: 15, color: "var(--mut)" }} aria-hidden="true" />
-                  <span className="disp" style={{ fontSize: 13.5, fontWeight: 800 }}>Price a trade of your own</span>
+                  <span className="disp" style={{ fontSize: 15, fontWeight: 800, letterSpacing: ".01em" }}>Trade Calculator</span>
                   <span className="mut" style={{ fontSize: 11 }}>pick the players on each side</span>
                 </button>
 
@@ -19097,7 +19189,7 @@ function GetStartedPanel({ leagues, funMocks, dismissed, onDismiss, onConnectSle
               <span style={{ width: 21, height: 21, borderRadius: 99, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
                 background: st.done ? "var(--gold)" : "transparent", border: st.done ? "none" : "1.5px solid var(--mut)" }}>
                 {st.done
-                  ? <i className="ti ti-check" style={{ fontSize: 12, color: "#151002", fontWeight: 800 }} aria-hidden="true" />
+                  ? <i className="ti ti-check" style={{ fontSize: 12, color: "var(--on-gold)", fontWeight: 800 }} aria-hidden="true" />
                   : <span className="num" style={{ fontSize: 10.5, fontWeight: 800, color: "var(--mut)" }}>{i + 1}</span>}
               </span>
               <span className="disp" style={{ fontSize: 14.5, fontWeight: 700, textDecoration: st.done ? "none" : "none", color: st.done ? "var(--mut)" : "var(--ink)" }}>{st.title}</span>
@@ -20273,8 +20365,8 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
             it does not cost a pixel of layout, which is the other thing he asked for. */}
         <div data-homemode={seasonFirst ? "season" : "draft"} style={{ position: "relative", overflow: "hidden", borderRadius: 18,
           border: `1px solid ${seasonFirst ? "var(--pos-line)" : "rgba(214,170,75,0.35)"}`,
-          background: seasonFirst ? "linear-gradient(135deg, #0b1512 0%, #10201b 55%, #0e2a22 100%)" : "linear-gradient(135deg, #14100a 0%, #1b1710 55%, #241d0f 100%)",
-          padding: "26px 26px 22px", boxShadow: "0 10px 40px -12px rgba(0,0,0,.6)" }}>
+          background: seasonFirst ? "var(--hero-season)" : "var(--hero-draft)",
+          padding: "26px 26px 22px", boxShadow: "var(--shadow-lg)" }}>
           {/* layered depth: a radial glow top-right in the mode's colour + faint yard-line rhythm */}
           <div aria-hidden="true" style={{ position: "absolute", top: -80, right: -60, width: 320, height: 320, background: `radial-gradient(circle, ${seasonFirst ? "var(--pos-wash)" : "rgba(224,166,60,0.18)"} 0%, transparent 68%)`, pointerEvents: "none" }} />
           <div aria-hidden="true" style={{ position: "absolute", inset: 0, backgroundImage: "repeating-linear-gradient(90deg, transparent, transparent 58px, rgba(255,255,255,0.025) 58px, rgba(255,255,255,0.025) 59px)", pointerEvents: "none" }} />
@@ -20442,7 +20534,7 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
             stitched together, and the whole point of the colour is that one glance tells you where you are. */}
         <div className="actionbar" style={{ display: "flex", alignItems: "stretch", flexWrap: "wrap",
           border: `1px solid ${seasonFirst ? "var(--pos-line)" : "rgba(214,170,75,0.45)"}`, borderRadius: 12, overflow: "hidden",
-          background: seasonFirst ? "linear-gradient(180deg, rgba(16,34,28,0.98), rgba(18,28,24,0.98))" : "linear-gradient(180deg, rgba(38,32,18,0.98), rgba(28,26,20,0.98))",
+          background: seasonFirst ? "var(--strip-season)" : "var(--strip-draft)",
           boxShadow: "0 6px 20px -6px rgba(0,0,0,.5)" }}>
           {(() => {
             /* ⭐⭐⭐⭐⭐ ONE MODE'S TOOLS, NOT BOTH — 29o.
@@ -21362,7 +21454,7 @@ function StickyBuyBar({ price, onBuy, onDemo }) {
       position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 60,
       transform: show ? "translateY(0)" : "translateY(110%)",
       transition: "transform .28s cubic-bezier(.2,.7,.3,1)",
-      background: "linear-gradient(180deg, rgba(11,15,20,.86), var(--bg) 55%)",
+      background: "var(--topfade)",
       borderTop: "1px solid var(--line2)", backdropFilter: "blur(8px)",
       pointerEvents: show ? "auto" : "none",
     }}>
@@ -32031,7 +32123,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
           const light = [149, 213, 178], deep = [22, 120, 80];
           const mix = (a, b) => Math.round(a + (b - a) * t);
           const r = mix(light[0], deep[0]), g = mix(light[1], deep[1]), b = mix(light[2], deep[2]);
-          const txt = t > 0.45 ? "#eafff5" : `rgb(${mix(120, 230)},${mix(210, 255)},${mix(170, 235)})`;
+          /* ⚠ THE TEXT CANNOT BE COMPUTED FROM THE WASH. This interpolated a near-white mint, which reads
+             beautifully on a dark panel under a 20%-green tint and is invisible on a white one — the same
+             20% green over white is almost paper. The INTENSITY is already carried by the background and
+             the border, so the type only has to be legible, and that is a per-theme constant. */
+          const txt = "var(--heat-ink)";
           return <span title={`Value: ADP ${p.adp.toFixed(1)} is ${gap.toFixed(0)} pick${gap >= 2 ? "s" : ""} ahead of the current pick (#${curPick})`} style={{ display: "inline-block", padding: "1px 6px", borderRadius: 5, fontWeight: 700, background: `rgba(${r},${g},${b},0.20)`, color: txt, border: `1px solid rgba(${r},${g},${b},0.5)` }}>{p.adp.toFixed(1)}</span>;
         }
         return p.adp != null ? p.adp.toFixed(1) : "—";
@@ -34457,7 +34553,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               { t: "How to use it", x: "Click to start. Then draft players as if the next picks happened. The board, availability odds, and advice all update so you can test “what if I take X here?” scenarios." },
               { t: "Getting back", x: "Hit “Revert to live draft” to clear every what-if pick and snap back to the real draft. If real picks come in while you explore, you'll get a button to sync up to them." },
             ])} onMouseLeave={hideTip}
-            style={{ background: "var(--gold)", color: "#151002", border: "none", fontWeight: 700, fontSize: 12.5, padding: "6px 12px", borderRadius: 7, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5, boxShadow: "0 1px 6px rgba(224,166,60,.30)" }}>
+            style={{ background: "var(--gold)", color: "var(--on-gold)", border: "none", fontWeight: 700, fontSize: 12.5, padding: "6px 12px", borderRadius: 7, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5, boxShadow: "0 1px 6px rgba(224,166,60,.30)" }}>
             <i className="ti ti-flask" style={{ fontSize: 13 }} aria-hidden="true" />Scenario mode
           </button>
         )}
@@ -34741,7 +34837,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 ]);
               };
               return (
-                <div style={{ display: "flex", flexDirection: "column", gap: 4, padding: "6px 11px", borderRadius: 9, border: "1px solid var(--line)", background: "linear-gradient(160deg,rgba(46,40,22,1),rgba(24,31,40,1))", height: "100%", boxSizing: "border-box" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, padding: "6px 11px", borderRadius: 9, border: "1px solid var(--line)", background: "var(--raise)", height: "100%", boxSizing: "border-box" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="ti ti-gauge" style={{ fontSize: 11, color: "var(--mut)" }} aria-hidden="true" /><span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 800 }}>How you're doing</span><i className="ti ti-info-circle" style={{ fontSize: 10, color: "var(--mut)", cursor: "help" }} aria-hidden="true" onMouseEnter={(e) => showTip(e, [{ kind: "take", tone: "neutral", x: "How you're doing" }, { t: "What this shows", x: "A per-position read on your roster: how many starters you have vs. need (red = unfilled), where you rank at that position in the league, a quick strength Read, and the best player still available there. Up top: your build lane (win-now vs. rebuild) and projected finish." }, { t: "Tip", x: "Hover any position row for its full breakdown and your players there." }])} onMouseLeave={hideTip} /></div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -35185,7 +35281,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                           {untilMine === 0 ? "you're up!" : untilMine === 1 ? "you're next" : `your pick: ${untilMine}`}
                         </span>
                         {untilMine2 != null && (
-                          <span title="Picks until your pick AFTER the next one (also counted from right now)" style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 8.5, fontWeight: 800, color: "#8FB8E8", background: "rgba(143,184,232,.12)", border: "1px solid rgba(143,184,232,.4)", borderRadius: 20, padding: "1px 7px" }}>
+                          <span title="Picks until your pick AFTER the next one (also counted from right now)" style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 8.5, fontWeight: 800, color: "var(--info)", background: "rgba(143,184,232,.12)", border: "1px solid rgba(143,184,232,.4)", borderRadius: 20, padding: "1px 7px" }}>
                             <i className="ti ti-user-star" style={{ fontSize: 9, opacity: 0.7 }} aria-hidden="true" />
                             {`pick after: ${untilMine2}`}
                           </span>
@@ -36361,7 +36457,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                   let verdict, vcolor, vwhy;
                   if (vbdRead === "Cliff" && !adpSafe) { verdict = "Take now"; vcolor = "var(--neg)"; vwhy = "value cliff and he won't slide"; }
                   else if (vbdUrgent && adpUrgent) { verdict = "Take now"; vcolor = "var(--neg)"; vwhy = "value drop + market pressure"; }
-                  else if (!vbdUrgent && adpUrgent) { verdict = "Now or lose him"; vcolor = "#F59E42"; vwhy = "no big drop, but he's about to go"; }
+                  else if (!vbdUrgent && adpUrgent) { verdict = "Now or lose him"; vcolor = "var(--urge)"; vwhy = "no big drop, but he's about to go"; }
                   else if (vbdUrgent && adpSafe) { verdict = "Wait — slides"; vcolor = "#4FA9E0"; vwhy = "value drops, but ADP says he slides — grab him later"; }
                   else if (!vbdUrgent && adpSafe) { verdict = "Can wait"; vcolor = "var(--pos)"; vwhy = "no urgency on either read"; }
                   else { verdict = "Your call"; vcolor = "var(--warn)"; vwhy = "mixed signals"; }
@@ -36369,7 +36465,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 }).filter(Boolean);
 
                 return (
-                  <div data-tour="decision" className="tickcard" style={{ padding: "11px 13px", border: "1.5px solid var(--gold)", background: "linear-gradient(165deg,rgba(30,34,44,1),rgba(22,26,34,1))" }}>
+                  <div data-tour="decision" className="tickcard" style={{ padding: "11px 13px", border: "1.5px solid var(--gold)", background: "var(--raise2)" }}>
                     {/* ⭐⭐ TWO MODES IN ONE PANEL. Trey: "I think you should be able to toggle from 'your
                         decision' - keep the same look - and the queue that we will create." Same card, same
                         border, same place on the page — because it is the same job (what do I do with this
@@ -37232,7 +37328,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                         {rows.map((row) => {
                           const isSel = row.i === selTeam, isYou = row.i === userIdx;
-                          const gradeColor = row.z >= 0.7 ? "var(--green)" : row.z >= 0.12 ? "#9BD17E" : row.z >= -0.45 ? "var(--gold)" : "var(--red)";
+                          const gradeColor = row.z >= 0.7 ? "var(--green)" : row.z >= 0.12 ? "var(--pos-mid)" : row.z >= -0.45 ? "var(--gold)" : "var(--red)";
                           const powerRk = powerOrder.indexOf(row.i) + 1;
                           const activeRk = rankView === "power" ? powerRk : row.finish;
                           return (
@@ -37994,7 +38090,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 const award = (icon, label, who, detail, color, mine, tipContent) => (
                   <div style={{ flex: "1 1 200px", minWidth: 190, display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", borderRadius: 9, background: mine ? "rgba(224,166,60,.12)" : "var(--panel2)", border: `1px solid ${mine ? "var(--gold)" : "var(--line)"}`, boxShadow: mine ? "0 0 0 1px rgba(224,166,60,.3)" : "none", position: "relative", cursor: tipContent ? "help" : "default" }}
                     onMouseEnter={tipContent ? (e) => showTip(e, tipContent) : undefined} onMouseLeave={tipContent ? hideTip : undefined}>
-                    {mine && <span style={{ position: "absolute", top: 6, right: 8, fontSize: 8.5, fontWeight: 800, color: "#151002", background: "var(--gold)", borderRadius: 4, padding: "1px 5px", letterSpacing: ".04em" }}>YOU</span>}
+                    {mine && <span style={{ position: "absolute", top: 6, right: 8, fontSize: 8.5, fontWeight: 800, color: "var(--on-gold)", background: "var(--gold)", borderRadius: 4, padding: "1px 5px", letterSpacing: ".04em" }}>YOU</span>}
                     <i className={`ti ${icon}`} style={{ fontSize: 20, color, marginTop: 1 }} aria-hidden="true" />
                     <div style={{ minWidth: 0 }}>
                       <div className="disp" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)" }}>{label}</div>
@@ -38151,7 +38247,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               const drafted = (rostersByTeam[ti] || []);
                               const mixOrder = ["QB", "RB", "WR", "TE", "K", "DST"];
                               const posMix = mixOrder.map((pos) => ({ pos, n: drafted.filter((p) => p && p.pos === pos).length })).filter((m) => m.n > 0);
-                              const gradeCol = (z) => (z >= 0.7 ? "var(--pos)" : z >= 0.12 ? "#9BD17E" : z >= -0.45 ? "var(--warn)" : "var(--neg)");
+                              const gradeCol = (z) => (z >= 0.7 ? "var(--pos)" : z >= 0.12 ? "var(--pos-mid)" : z >= -0.45 ? "var(--warn)" : "var(--neg)");
                               const leagueRows = gradeOrder.map((i) => ({
                                 grade: grades[i].g, color: gradeCol(grades[i].z),
                                 name: i === userIdx ? (TEAM_NAMES[i] || "Your team") : (TEAM_NAMES[i] || `Team ${i + 1}`),

@@ -85,7 +85,7 @@ export function teamReads(input) {
   const byGrade = teams.filter((t) => Number.isFinite(t.rosterScore)).slice().sort((a, b) => b.rosterScore - a.rosterScore);
   const gradeRank = new Map(byGrade.map((t, i) => [t.rosterId, i + 1]));
 
-  return teams.map((t) => {
+  const out = teams.map((t) => {
     const roster = clean(t.roster);
     /* Startable bodies per position: men worth more than this league's replacement level. ⚠ The same
        definition `positionMarket` and the trade calculator use — "above replacement", not "above zero" —
@@ -104,6 +104,30 @@ export function teamReads(input) {
       const got = startable[pos] || 0;
       if (got > want) surplus[pos] = got - want;
       if (got < want) need[pos] = want - got;
+    });
+
+    /* ⭐⭐⭐⭐⭐ WHAT THE POSITION IS WORTH TO THIS TEAM, WHICH IS THE READ THAT ACTUALLY MATCHES — 29ai.
+       Trey: "I rank 10th of 12 in RBs... but it says I have +1 spare. Well, I suck at that position, so I
+       probably don't have a spare." And: "I have no good RBs, but my WR are legit. I should be matching up
+       with teams that have RB surplus and need WR."
+       ⭐ HE IS DESCRIBING RANK, AND `surplus` WAS COUNTING BODIES. Three backs over a replacement line is
+         "a spare" by headcount and can still be the worst running back room in the league — which is
+         exactly the situation he is in, and the app cheerfully told him to go and sell one. Counting is
+         the wrong question; where you sit against the other eleven is the right one, and it is the thing
+         he said out loud both times.
+       ⚠ AND IT IS THE ONLY MEASURE THAT SURVIVES WEEK 2. "Above replacement" is an absolute line, so two
+         weeks into a season every roster in the league reads thin and NOTHING lines up with anybody — his
+         other complaint, and the same cause. A RANK is relative: somebody is always first at running back
+         and somebody is always last, in week 2 exactly as in week 12.
+       `posValue` totals what a position PUTS IN THE LINEUP (the starters it fills, not the whole room —
+       a fourth back nobody starts is not strength), and the caller ranks them league-wide below. */
+    const posValue = {};
+    Object.keys(req).forEach((pos) => {
+      const want = req[pos] || 0;
+      if (!want) return;
+      const best = roster.filter((p) => String(p.pos || '').toUpperCase() === pos)
+        .map((p) => Number(p.pts) || 0).sort((a, b) => b - a).slice(0, want);
+      posValue[pos] = r1(best.reduce((x, y) => x + y, 0));
     });
 
     /* ⭐⭐⭐⭐ THE ROSTER-VS-RESULTS GAP. A team whose roster grades near the top and whose points sit near
@@ -133,7 +157,7 @@ export function teamReads(input) {
 
     return {
       rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName, isMe: !!t.isMe,
-      startable, have, surplus, need,
+      startable, have, surplus, need, posValue,
       pfRank: pf, gradeRank: gr, gap, benchWaste,
       /* The one-line read, written here so every card in the app says the same thing about this manager.
          ⚠ IT NEVER CALLS ANYBODY BAD AT FANTASY. We cannot see their injuries or their reasons; what we
@@ -146,6 +170,36 @@ export function teamReads(input) {
       overperforming: gap != null && gap <= -3,
     };
   });
+
+  /* ⭐⭐⭐⭐⭐ AND NOW RANK EVERY POSITION ACROSS THE LEAGUE, which is the number the whole fit read runs on.
+     `posRank[pos]` is 1 for the best room in the league at that position. `strongAt` / `thinAt` are the
+     top and bottom thirds — thirds rather than a fixed cut because a 10-team and a 14-team league have
+     to mean the same thing by the same rule (the 29x "rank is the only unit that means the same thing
+     next week" lesson, applied to a league instead of a feed).
+     ⚠ A ONE-TEAM LEAGUE HAS NO THIRDS. With fewer than four teams every rank is both top and bottom, so
+       the flags stay empty rather than declaring everybody strong and thin at once. */
+  const n = out.length;
+  const positions = new Set();
+  out.forEach((r) => Object.keys(r.posValue || {}).forEach((pos) => positions.add(pos)));
+  positions.forEach((pos) => {
+    const order = out.slice().sort((a, b) => (b.posValue[pos] || 0) - (a.posValue[pos] || 0));
+    order.forEach((r, i) => { r.posRank = r.posRank || {}; r.posRank[pos] = i + 1; });
+  });
+  if (n >= 4) {
+    const topCut = Math.max(1, Math.round(n / 3));
+    const botCut = n - topCut + 1;
+    out.forEach((r) => {
+      r.strongAt = {}; r.thinAt = {};
+      Object.keys(r.posRank || {}).forEach((pos) => {
+        if (r.posRank[pos] <= topCut) r.strongAt[pos] = r.posRank[pos];
+        if (r.posRank[pos] >= botCut) r.thinAt[pos] = r.posRank[pos];
+      });
+    });
+  } else {
+    out.forEach((r) => { r.strongAt = {}; r.thinAt = {}; });
+  }
+  out.forEach((r) => { r.teams = n; });
+  return out;
 }
 
 function ord(n) {
@@ -475,16 +529,38 @@ export function partnerBoard(input) {
        An offer list only contains teams a swap was FOUND with, so building the partner read out of it
        would silently drop every manager whose fit is real but whose best deal happens to be a two-for-one
        the finder does not enumerate. The complement is a fact about two rosters; the deals are evidence. */
+  /* ⭐⭐⭐⭐⭐ WHO FITS WHOM, READ OFF POSITIONAL RANK — rebuilt in 29ai.
+     Trey: "It's showing I don't line up with any team. This just can't be the case… I have no good RBs,
+     but my WR are legit. I should be matching up with teams that have RB surplus and need WR."
+     ⚠⚠ THE OLD VERSION COMPARED SPARE BODIES AGAINST UNFILLED SLOTS, both measured against an ABSOLUTE
+       replacement line — and two weeks into a season almost nobody clears an absolute line, so every team
+       in his league came back with no need and no surplus and the page told him, eleven times, that
+       nothing lined up. A rank cannot do that: somebody is always first at running back.
+     ⭐ SO A FIT IS NOW "I am in the bottom third where you are in the top third", which is the sentence he
+       used. The startable counts are still carried for the detail line, because "they cannot even field
+       two" is a sharper fact than "they rank 9th" when it happens to be true — but it is no longer what
+       decides whether two teams have anything to talk about. */
   const complementOf = (them) => {
     const out = [];
     if (!mine || !them) return out;
+    const seen = new Set();
+    const add = (pos, dir, why) => { const k = pos + dir; if (!seen.has(k)) { seen.add(k); out.push({ pos, dir, why }); } };
     Object.keys(req).forEach((pos) => {
-      const iSpare = (mine.surplus || {})[pos] || 0;
-      const theyNeed = (them.need || {})[pos] || 0;
-      const theySpare = (them.surplus || {})[pos] || 0;
-      const iNeed = (mine.need || {})[pos] || 0;
-      if (iSpare > 0 && theyNeed > 0) out.push({ pos, dir: 'sell', n: Math.min(iSpare, theyNeed) });
-      if (theySpare > 0 && iNeed > 0) out.push({ pos, dir: 'buy', n: Math.min(theySpare, iNeed) });
+      if (!(req[pos] > 0)) return;
+      const iRank = (mine.posRank || {})[pos], theirRank = (them.posRank || {})[pos];
+      const iStrong = (mine.strongAt || {})[pos] != null, iThin = (mine.thinAt || {})[pos] != null;
+      const theyStrong = (them.strongAt || {})[pos] != null, theyThin = (them.thinAt || {})[pos] != null;
+      // I can SELL here: strong for me, weak for them.
+      if (iStrong && theyThin) add(pos, 'sell', `you rank ${ord(iRank)} and they rank ${ord(theirRank)}`);
+      // I can BUY here: weak for me, strong for them.
+      if (iThin && theyStrong) add(pos, 'buy', `they rank ${ord(theirRank)} and you rank ${ord(iRank)}`);
+      /* ⚠ THE OLD SIGNAL IS KEPT AS A SECOND ROUTE, NOT DISCARDED. A team that literally cannot field a
+         position is a buyer whatever the ranking says, and that is the most actionable fact on the page
+         when it is true. It simply can no longer be the ONLY way to qualify. */
+      const iSpare = (mine.surplus || {})[pos] || 0, theyNeed = (them.need || {})[pos] || 0;
+      const theySpare = (them.surplus || {})[pos] || 0, iNeed = (mine.need || {})[pos] || 0;
+      if (iSpare > 0 && theyNeed > 0) add(pos, 'sell', `they cannot field ${req[pos]} and you have one spare`);
+      if (theySpare > 0 && iNeed > 0) add(pos, 'buy', `you cannot field ${req[pos]} and they have one spare`);
     });
     return out;
   };
@@ -512,36 +588,37 @@ export function partnerBoard(input) {
     /* ⭐⭐⭐ ONE LINE SAYING WHY THIS MANAGER, ordered by which fact would actually change your mind.
        A two-way fit outranks everything — it is the only situation where you are not asking for a
        favour — then a motivated owner, then a plain one-way fit. */
+    /* ⭐⭐⭐⭐⭐ THE FIT IS DESCRIBED WHETHER OR NOT A SWAP CAME OUT OF IT — 29ai, and the old version
+       getting this wrong is most of why he saw "nothing lines up" eleven times. Both the fit branches
+       used to require `realistic.length`, so a manager whose roster is the exact mirror of yours was
+       reported as having nothing to offer purely because the one-for-one finder came back empty. That is
+       the opposite of the design — sim/partners.js §3 even hands the function zero deals and requires the
+       read to survive — and the test missed it because it checked the complement and the flags and never
+       read the sentence. A shape fit is a fact about two rosters; a deal is a convenience. */
     let tone = 'none', why = null;
-    if (twoWay) {
-      /* ⚠ GUARDED even though `twoWay` guarantees both exist today: a falsification that loosened the
-         twoWay test turned this into a TypeError that took the whole partner list down, which is a much
-         worse failure than a vague sentence. The invariant is stated by the fallback, not assumed. */
-      const sell = comp.find((c) => c.dir === 'sell'), buy = comp.find((c) => c.dir === 'buy');
+    const sell = comp.find((c) => c.dir === 'sell'), buy = comp.find((c) => c.dir === 'buy');
+    const noDeal = realistic.length === 0
+      ? ' No clean one-for-one came out of it — worth a message anyway, or build one below.' : '';
+    if (sell && buy) {
       tone = 'mutual';
-      if (!sell || !buy) { why = 'Both sides have something the other is short at.'; return {
-        rosterId: them.rosterId, teamName: them.teamName, ownerName: them.ownerName,
-        read, best, deals: list, realisticN: realistic.length,
-        myGain: best ? best.myGain : 0, theirGain: best ? best.theirGain : 0, mutual,
-        realism: best ? best.realism : 0, complement: comp, twoWay, tone, why }; }
-      why = `Straight fit both ways — they are short at ${sell.pos} where you have spare, and deep at ${buy.pos} where you are short.`;
+      why = `Straight fit both ways — they are short at ${sell.pos} where you are strong (${sell.why}), and deep at ${buy.pos} where you are short.${noDeal}`;
+    } else if (buy) {
+      tone = 'fit';
+      why = `They can spare a ${buy.pos} and you are short one — ${buy.why}.${noDeal}`;
+    } else if (sell) {
+      tone = 'fit';
+      why = `They are short at ${sell.pos} and you are strong there — ${sell.why}.${noDeal}`;
     } else if (read && read.underperforming && realistic.length) {
       tone = 'motivated';
       why = read.ownerNote;
-    } else if (comp.length && realistic.length) {
-      const c = comp[0];
-      tone = 'fit';
-      why = c.dir === 'buy'
-        ? `They can spare a ${c.pos} and you are short one.`
-        : `They are short at ${c.pos} and you have one to spare.`;
     } else if (realistic.length) {
       tone = 'thin';
       why = 'No obvious shape fit — the one idea here is a straight value swap.';
     } else {
       tone = 'none';
       why = read && read.overperforming
-        ? `Nothing lines up — and they are getting the most out of their roster, so they have little reason to move.`
-        : 'Nothing lines up with this roster right now.';
+        ? 'Nothing lines up — and they are getting the most out of their roster, so they have little reason to move.'
+        : 'Your rosters are strong and weak in the same places, so neither of you has anything the other needs.';
     }
 
     return {
@@ -562,29 +639,54 @@ export function partnerBoard(input) {
     || (b.myGain - a.myGain)
     || (b.realism - a.realism));
 
-  /* ── WHAT YOU SHOULD BE MOVING ───────────────────────────────────────────────────────────────────
-     "Do you have a depth in a certain area that you should definitely move?" — answered as a position
-     with spare STARTABLE bodies (the 29x definition: one star and three replacement men is not depth),
-     ranked by what moving it actually returns.
-     ⚠ `buyers` IS REPORTED, NOT A FILTER, and the fixture is why: my spare quarterback has ZERO teams
-       short at the position and still returns a real upgrade, because a manager who can already field a
-       QB will happily take a better one. "Short at" and "would take an upgrade" are different questions,
-       and gating on the first would have hidden a genuine deal. What the count IS good for is telling a
-       seller's market from a buyer's one — three teams that cannot field a running back is leverage, and
-       it belongs on screen next to the advice rather than silently inside it. */
+  /* ── WHAT YOU CAN TRADE FROM ─────────────────────────────────────────────────────────────────────
+     ⭐⭐⭐⭐⭐ REBUILT IN 29ai ON WHAT HE SAID, WHICH WAS A BETTER IDEA THAN THE ONE IT REPLACES.
+     Trey: "I also rank 10th of 12 in RBs, but it says I have +1 spare. Well, I suck at that position, so
+     I probably don't have a spare. It's not always about having a spare, but rather having value that
+     you can move from there to reshape your team."
+     ⭐ THAT IS TWO SEPARATE CLAIMS AND BOTH ARE RIGHT. The first: a headcount over a replacement line is
+       not depth, and calling the 10th-best back room in a 12-team league "spare" is the kind of advice
+       that costs a tool its credibility. The second is the better model — a position is a place you can
+       TRADE FROM when moving your second man there costs your lineup little and is worth a lot to
+       somebody else, and that can be true at a position you are bad at and false at one you are good at.
+     ⭐ SO THE MEASURE IS `cost` — what my optimal lineup loses if this man leaves — AGAINST `worth`, what
+       he adds to a lineup that needs him. Low cost and real worth is a tradeable asset. That is the same
+       quantity 29ac introduced for the other side of the market (`costMapOf`), pointed at my own roster.
+     ⚠ AND THE HEADLINE IS THE PLAYER, NOT THE POSITION, because "RB" is not something you can offer
+       anybody. Every row names the man it is talking about, which is also what he asked for when he said
+       he could not tell what "1 spare starter" meant. */
   const mySurplus = [];
-  if (mine) {
-    Object.keys(mine.surplus || {}).forEach((pos) => {
-      const spare = mine.surplus[pos] || 0;
-      if (spare <= 0) return;
-      const buyers = partners.filter((p) => ((p.read && p.read.need) || {})[pos] > 0);
+  if (mine && typeof o.costOf === 'function') {
+    const byPos = new Map();
+    (o.myRoster || []).forEach((p) => {
+      const pos = String(p && p.pos || '').toUpperCase();
+      if (!pos || !(req[pos] > 0)) return;
+      if (!byPos.has(pos)) byPos.set(pos, []);
+      byPos.get(pos).push(p);
+    });
+    byPos.forEach((list, pos) => {
+      /* The candidate is the cheapest man to lose who is still worth something — not the worst player
+         at the position (nobody wants him) and not the best (you are not selling him). */
+      const priced = list.map((p) => ({ p, cost: o.costOf(p), worth: o.worthOf ? o.worthOf(p) : 0 }))
+        .filter((x) => x.worth > 0)
+        .sort((a, b) => (b.worth - b.cost) - (a.worth - a.cost));
+      const pick = priced[0];
+      if (!pick || pick.worth - pick.cost <= 0) return;
+      const buyers = partners.filter((p) => ((p.read && p.read.thinAt) || {})[pos] != null
+        || ((p.read && p.read.need) || {})[pos] > 0);
+      const cantField = partners.filter((p) => ((p.read && p.read.need) || {})[pos] > 0);
       const best = partners
         .flatMap((p) => p.deals.filter((t) => t.give.pos === pos && t.realism >= 45).map((t) => ({ ...t, partner: p })))
         .sort((a, b) => b.myGain - a.myGain)[0] || null;
-      mySurplus.push({ pos, spare, buyers: buyers.length, best,
-        buyerNames: buyers.slice(0, 3).map((p) => p.teamName || p.ownerName || 'a team') });
+      mySurplus.push({ pos, player: pick.p, cost: r1(pick.cost), worth: r1(pick.worth),
+        edge: r1(pick.worth - pick.cost),
+        myRank: (mine.posRank || {})[pos] || null, teams: mine.teams || null,
+        buyers: buyers.length, cantField: cantField.length, best,
+        buyerNames: buyers.slice(0, 3).map((p) => p.teamName || p.ownerName || 'a team'),
+        cantFieldNames: cantField.slice(0, 3).map((p) => p.teamName || p.ownerName || 'a team') });
     });
-    mySurplus.sort((a, b) => (b.best ? b.best.myGain : 0) - (a.best ? a.best.myGain : 0) || b.buyers - a.buyers);
+    /* Ranked by what the move is actually worth to somebody, then by how many of them there are. */
+    mySurplus.sort((a, b) => b.edge - a.edge || b.buyers - a.buyers);
   }
 
   return { partners, mySurplus, twoWayN: partners.filter((p) => p.twoWay).length,
