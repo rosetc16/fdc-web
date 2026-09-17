@@ -16,6 +16,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { api } from "../api.js";
 import { useWide } from "../usewide.js";
+import { benchTone, fieldTone } from "../App.jsx";
 
 const r1 = (n) => Math.round(n * 10) / 10;
 const hubIdOf = (l) => (l && ((l.connect && l.connect.leagueId) || (l.cfg && l.cfg.connect && l.cfg.connect.leagueId) || l.sleeperLeagueId)) || null;
@@ -39,7 +40,20 @@ const VERDICT = {
    grid-template strings that are "the same" until somebody widens one is the classic way a table stops
    lining up. `minmax(0, …)` on the name column so a long league name ellipses instead of shoving the
    numbers off the right edge. */
-const COLS = "minmax(0,1.5fr) 118px 132px 92px 72px 34px";
+/* ⭐⭐⭐⭐⭐ SIX COLUMNS, NOT FOUR WITH TWO OF THEM DOUBLED UP — 29ae.
+   Trey, with a screenshot: "can you make it not look so cluttered. Have it's own column for result, result
+   vs. median, verdict, etc. It's just tough to follow and there is empty space."
+   Both halves of that are one cause. RESULT was carrying two different facts in one cell — the head-to-head
+   scoreline AND the median result glued onto its end as "/W med" — so the eye had to parse a sentence in
+   the one place a table promises it will not have to. Meanwhile the LEAGUE column was `1.5fr`, which on a
+   1500px screen hands it every spare pixel and opens the canyon between the verdict chip and the numbers
+   that he is pointing at. Splitting the median out and capping the name column fixes both at once: the
+   name still ellipses gracefully, and the slack goes where there is something to read. */
+/* ⚠ THE VERDICT TRACK IS SIZED FOR "GOT AWAY WITH IT" — the longest chip — and its contents are RIGHT
+   aligned. Left-aligned in a track that wide, every shorter chip ("BLOWN", "EARNED") left a 70px hole
+   before the numbers, which is most of the "there is empty space" in his screenshot: the gap was not
+   between columns, it was inside one. */
+const COLS = "minmax(0,1fr) 116px 80px 152px 100px 76px 30px";
 
 // 1st / 2nd / 3rd / 11th — the English rule, including the teens exception that catches every naive version.
 const ord = (n) => {
@@ -650,7 +664,8 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                         fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700 }}>
                         <span>League</span>
                         <span style={{ textAlign: "right" }}>Result</span>
-                        <span>Verdict</span>
+                        <span style={{ textAlign: "right" }}>vs median</span>
+                        <span style={{ textAlign: "right" }}>Verdict</span>
                         <span style={{ textAlign: "right" }}>vs field</span>
                         <span style={{ textAlign: "right" }}>Bench</span>
                         <span />
@@ -692,16 +707,27 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                         <span className="num" style={{ fontSize: 13, fontWeight: 800, whiteSpace: "nowrap",
                           color: me.result === "W" ? "#5FD0A8" : me.result === "L" ? "#F2655C" : "var(--mut)" }}>
                           {me.result || "—"} {r1(me.pts)}–{me.oppPts != null ? r1(me.oppPts) : "—"}
-                          {me.medianResult && (
-                            <span data-wkmedian={me.medianResult}
-                              title={`League median ${r1(me.medianPts)} — you ${me.medianMargin >= 0 ? "beat it by" : "missed it by"} ${r1(Math.abs(me.medianMargin))}`}
-                              style={{ fontWeight: 700, fontSize: 10.5, marginLeft: 5,
-                                color: me.medianResult === "W" ? "#5FD0A8" : me.medianResult === "L" ? "#F2655C" : "var(--mut)" }}>
-                              /{me.medianResult}&nbsp;med
+                        </span>
+                      );
+                      /* ⭐⭐⭐ THE MEDIAN IS ITS OWN COLUMN NOW, AND IT CARRIES THE MARGIN. Glued to the end
+                         of the scoreline it could only be a letter; given a column it can be the letter AND
+                         by how much, which is the part that tells you whether it was close.
+                         ⚠ BLANK, NOT A DASH, IN A LEAGUE THAT DOES NOT PLAY MEDIAN SCORING. A dash down the
+                           whole column would say "this applies to you and has no value", which is a
+                           different and wrong claim — the same rule the projected-median column follows on
+                           the home strip. */
+                      const medianCell = me && me.medianResult ? (
+                        <span className="num" data-wkmedian={me.medianResult}
+                          style={{ fontSize: 12, fontWeight: 800, whiteSpace: "nowrap",
+                            color: me.medianResult === "W" ? "#5FD0A8" : me.medianResult === "L" ? "#F2655C" : "var(--mut)" }}>
+                          {me.medianResult}
+                          {Number.isFinite(me.medianMargin) && (
+                            <span style={{ fontWeight: 700, fontSize: 10, opacity: .8 }}>
+                              {" "}{me.medianMargin >= 0 ? "+" : "−"}{r1(Math.abs(me.medianMargin))}
                             </span>
                           )}
                         </span>
-                      );
+                      ) : null;
                       return (
                         <div key={R.league.id} data-wkreviewrow={R.league.name}
                           style={{ borderTop: "1px solid var(--line)",
@@ -725,13 +751,28 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                             {me && wide ? (
                               <>
                                 <span style={{ textAlign: "right" }}>{score}</span>
-                                <span>{verdictChip}</span>
-                                <span className="num mut" style={{ fontSize: 11.5, textAlign: "right" }}>
+                                <span style={{ textAlign: "right" }}>{medianCell}</span>
+                                <span style={{ textAlign: "right" }}>{verdictChip}</span>
+                                {/* ⭐⭐⭐⭐ COLOURED, BECAUSE THIS IS THE NUMBER THAT SAYS WHERE YOU STAND.
+                                    The all-play record is the week with the schedule's luck removed, and it
+                                    was plain grey — so a 11–0 and a 0–11 week looked the same until you
+                                    read the digits. `fieldTone` breaks at the same thirds the insight block
+                                    speaks in; see App.jsx. */}
+                                <span className="num" data-wkfieldtone={me.allPlay ? fieldTone(me.allPlay.w, me.allPlay.l) : ""}
+                                  style={{ fontSize: 11.5, textAlign: "right", fontWeight: 700,
+                                    color: me.allPlay ? fieldTone(me.allPlay.w, me.allPlay.l) : "var(--mut)" }}>
                                   {me.allPlay ? <>{me.allPlay.w}–{me.allPlay.l}
-                                    <span style={{ fontSize: 10, opacity: .75 }}> · {ord(me.allPlay.rank)}</span></> : "—"}
+                                    <span style={{ fontSize: 10, opacity: .75, fontWeight: 600 }}> · {ord(me.allPlay.rank)}</span></> : "—"}
                                 </span>
-                                <span className="num" style={{ fontSize: 11.5, textAlign: "right",
-                                  color: me.left > 0 ? "var(--gold)" : "var(--mut)" }}>
+                                {/* ⚠ `benchTone` FROM App.jsx, NOT A LOCAL GOLD. This cell was
+                                    `left > 0 ? gold : mut` — one shade for everything — while the home
+                                    page's review table has scaled it by how much it hurt since 29w. Two
+                                    surfaces showing the same figure in different colours is the drift the
+                                    shared REVIEW_VERDICT map was created to stop, and it had simply been
+                                    missed here. */}
+                                <span className="num" data-wkbenchtone={benchTone(me.left)}
+                                  style={{ fontSize: 11.5, textAlign: "right", fontWeight: 700,
+                                    color: benchTone(me.left) }}>
                                   {me.left > 0 ? `−${me.left}` : "0"}
                                 </span>
                                 <span className="mut" style={{ textAlign: "right" }}>
@@ -750,8 +791,10 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                                 <span style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center",
                                   gap: 8, flexWrap: "wrap", fontSize: 11.5 }}>
                                   {verdictChip}
-                                  {me.allPlay && <span className="num mut">vs field {me.allPlay.w}–{me.allPlay.l}</span>}
-                                  {me.left > 0 && !me.pending && <span className="num" style={{ color: "var(--gold)" }}>−{me.left} bench</span>}
+                                  {medianCell && <span className="num mut">median {medianCell}</span>}
+                                  {me.allPlay && <span className="num" style={{ color: fieldTone(me.allPlay.w, me.allPlay.l), fontWeight: 700 }}>
+                                    vs field {me.allPlay.w}–{me.allPlay.l}</span>}
+                                  {me.left > 0 && !me.pending && <span className="num" style={{ color: benchTone(me.left), fontWeight: 700 }}>−{me.left} bench</span>}
                                 </span>
                               </>
                             ) : (

@@ -58,6 +58,9 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import WeekStep from "../weekstep.jsx";
 import { api } from "../api.js";
 import { backendFormatKey, Dot } from "../App.jsx";
+import { HoverTable, useHoverCard } from "../hovercard.jsx";
+import { useWide } from "../usewide.js";
+import { designationOf, lineupSwaps } from "../weekcache.js";
 import WeeklyReview from "./WeeklyReview.jsx";
 
 const REFRESH_MS = 5 * 60 * 1000;   // his number, and about right: designations move in minutes, not seconds
@@ -87,20 +90,12 @@ const FA_KIND = {
    separate is what lets one list be sorted two honest ways.
    The strings come from two feeds and neither is tidy, so this matches prefixes; an unrecognised status
    still lands somewhere sane rather than vanishing. */
-const DESIGNATIONS = [
-  { re: /^(ir|inj|injured)/i, key: "IR", label: "IR", sev: 6, rank: 4, tone: "#F2655C" },
-  { re: /^(pup|nfi|susp)/i, key: "PUP", label: "Not available", sev: 6, rank: 4, tone: "#F2655C" },
-  { re: /^(out|o)$/i, key: "OUT", label: "Out", sev: 5, rank: 4, tone: "#F2655C" },
-  { re: /^(d|doubt)/i, key: "D", label: "Doubtful", sev: 4, rank: 3, tone: "#E08A3C" },
-  { re: /^(q|quest)/i, key: "Q", label: "Questionable", sev: 3, rank: 3, tone: "var(--gold)" },
-  { re: /^(dtd|day)/i, key: "DTD", label: "Day-to-day", sev: 2, rank: 2, tone: "var(--gold)" },
-  { re: /^(p|prob)/i, key: "P", label: "Probable", sev: 1, rank: 2, tone: "#6BA8E5" },
-];
-const designationOf = (raw) => {
-  const s = String(raw || "").trim();
-  if (!s || /^(act|active|healthy)$/i.test(s)) return null;
-  return DESIGNATIONS.find((d) => d.re.test(s)) || { key: "?", label: s.slice(0, 18), sev: 2, rank: 2, tone: "var(--mut)" };
-};
+/* ⚠ DESIGNATIONS / designationOf MOVED TO weekcache.js IN 29ae and are imported above. The home strip's
+   to-do list now reads designations too, and two tables of injury severities would drift without either
+   screen ever looking wrong. */
+/* Shared by the summary table's header and its body — see the note on the summary block. The shape
+   deliberately matches AHEAD_COLS on the home strip, because the two tables answer the same question. */
+const SUM_COLS = "minmax(0,1.3fr) minmax(0,1fr) 108px 118px minmax(0,1.6fr)";
 
 const SEV = {
   4: { label: "Not expected to play", tone: "#F2655C", icon: "ti-alert-octagon" },
@@ -109,55 +104,14 @@ const SEV = {
   1: { label: "On your bench", tone: "var(--mut)", icon: "ti-dots" },
 };
 
-/* ⭐⭐⭐⭐⭐ THE SUMMARY HOVERS, AS REAL TABLES — 29ad.
-   ==================================================================================================
+/* ⭐⭐⭐⭐⭐ THE SUMMARY HOVERS, AS REAL TABLES — 29ad, shared in 29ae.
    Trey: "when you hover on '2 to check before kickoff' it gives a prettier tabular format. When you hover
    on '2.3 available from your bench' it shows who you are replacing for who."
-
-   Both were `title` attributes, which is the browser's tooltip: one typeface, no columns, no colour, and a
+   Both were `title` attributes — the browser's own tooltip: one typeface, no columns, no colour, and a
    half-second delay before it deigns to appear. A list of players with a status and a projection each is
    TABULAR data, and the native tooltip is the one place on this page that cannot draw a table.
-
-   ⚠ DECLARED AT MODULE LEVEL, NOT INSIDE THE SCREEN. A component defined in a render body is a NEW TYPE on
-     every render, so React unmounts and remounts it — which in 29d made tooltips vanish from under a moving
-     pointer, because the browser only fires mouseover on movement ONTO an element and the element kept
-     being replaced. Same trap, and it is exactly the kind of component that walks into it.
-   ⚠ AND IT IS POSITIONED FROM THE TRIGGER'S BOX, not the cursor: anchored below when there is room and
-     above when there is not, clamped to the viewport, so it never covers the row it describes (29p). */
-function HoverTable({ card }) {
-  if (!card) return null;
-  const { x, y, above, title, note, cols, rows } = card;
-  return (
-    <div data-wkcard={card.key} role="tooltip" style={{
-      position: "fixed", left: x, top: y, transform: above ? "translate(-50%,-100%)" : "translate(-50%,0)",
-      zIndex: 95, pointerEvents: "none", maxWidth: 460,
-      background: "var(--panel)", border: "1px solid var(--line2)", borderRadius: 10,
-      boxShadow: "0 10px 30px rgba(0,0,0,.45)", padding: "9px 11px" }}>
-      <div className="disp" style={{ fontSize: 11.5, fontWeight: 800, marginBottom: 6 }}>{title}</div>
-      <table style={{ borderCollapse: "collapse", fontSize: 11.5, width: "100%" }}>
-        <thead>
-          <tr className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>
-            {cols.map((c) => (
-              <th key={c.k} style={{ textAlign: c.right ? "right" : "left", fontWeight: 600, padding: "0 10px 3px 0" }}>{c.k}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={i} style={{ borderTop: "1px solid var(--line)" }}>
-              {cols.map((c) => (
-                <td key={c.k} style={{ textAlign: c.right ? "right" : "left", padding: "3px 10px 3px 0",
-                  whiteSpace: "nowrap", color: r.tone && c.tint ? r.tone : "var(--ink)",
-                  fontWeight: c.strong ? 700 : 400 }}>{r[c.k]}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {note ? <div className="mut" style={{ fontSize: 10, marginTop: 5, lineHeight: 1.4 }}>{note}</div> : null}
-    </div>
-  );
-}
+   The component itself now lives in ../hovercard.jsx, because 29ae put the same card on the home strip and
+   in three places on Game Day; see that file for why it is at module level and anchored off the trigger. */
 
 /* The per-league row's availability card. Module level so the two callers cannot drift apart, and so the
    whole card — including the sentence at the bottom — can be unit-tested without a browser.
@@ -231,17 +185,8 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
   const [loading, setLoading] = useState(true);
   const [refreshedAt, setRefreshedAt] = useState(null);
   /* The hover card's content and where to draw it. Null when nothing is hovered. */
-  const [card, setCard] = useState(null);
-  const showCard = (e, payload) => {
-    try {
-      const r = e.currentTarget.getBoundingClientRect();
-      const above = r.bottom + 220 > window.innerHeight && r.top > 240;
-      setCard({ ...payload,
-        x: Math.min(Math.max(r.left + r.width / 2, 180), Math.max(180, window.innerWidth - 180)),
-        y: above ? r.top - 8 : r.bottom + 8, above });
-    } catch (_) { /* a card that cannot be placed is simply not shown */ }
-  };
-  const hideCard = () => setCard(null);
+  const { card, show: showCard, hide: hideCard } = useHoverCard();
+  const wide = useWide(900);
   const [err, setErr] = useState(null);
   const ranFor = useRef(null);
   const connected = useMemo(() => (leagues || []).filter((l) => hubIdOf(l)), [leagues]);
@@ -397,25 +342,11 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
 
       /* ⭐⭐⭐ LINEUP CHANGES — "are there better players that are projecting for more points to better
          optimize your lineup?" Nothing to do with injuries: a healthy bench player who simply projects
-         higher than the healthy starter in front of him. Same position only, because this page does not know
-         your league's flex rules well enough to promise a swap is legal, and a suggestion you cannot action
-         is worse than none. Anyone with an availability problem is left to that list rather than counted
-         twice here. */
-      const swaps = [];
-      starters.forEach((sid) => {
-        const cur = ptsOf(sid);
-        if (cur == null || onBye(sid)) return;
-        const d = injOf(sid);
-        if (d && d.rank >= 3) return;
-        const pos = posOf(sid);
-        const cand = bench.filter((b) => posOf(b) === pos && !onBye(b))
-          .map((b) => ({ sid: b, name: nameOf(b), pts: ptsOf(b), inj: injOf(b) }))
-          .filter((c) => c.pts != null && !(c.inj && c.inj.rank >= 3))
-          .sort((a, b) => b.pts - a.pts)[0];
-        if (!cand || cand.pts - cur < 1) return;      // under a point is inside the noise of a projection
-        swaps.push({ sid, out: nameOf(sid), outPts: cur, in: cand.name, inPts: cand.pts, pos, gain: r1(cand.pts - cur) });
-      });
-      swaps.sort((a, b) => b.gain - a.gain);
+         higher than the healthy starter in front of him.
+         ⚠ THE RULE ITSELF MOVED TO weekcache.js IN 29ae, because Trey asked for the same figure on the home
+           page ("+2.5 on your bench") and a second copy of it there would be the 29aa duplication bug with
+           smaller stakes. One implementation, two callers. */
+      const swaps = lineupSwaps(hub, pack);
 
       /* ⭐⭐⭐ FREE AGENTS, IN THREE FLAVOURS RATHER THAN ONE — see the header for why one was not enough.
          Each is labelled for exactly what it is, so the list never lets a streamer pass for an upgrade. */
@@ -777,21 +708,79 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
               </div>
             </div>
 
+            {/* ⭐⭐⭐⭐⭐ THE SUMMARY IS THE HOME TABLE NOW — 29ae.
+                Trey: "Can you actually make the summary on the 'my week' also a bit more detailed with
+                projections and such. Similar to the home page."
+                ⭐ AND "SIMILAR TO" IS THE SPECIFICATION, NOT A HINT. These two tables answer the same
+                  question about the same week — the home strip is the glance and this is the screen you
+                  open when the glance says something needs doing — so any column that exists on one and
+                  not the other is a thing he has to go and look up in the other place. Same columns, same
+                  order, same alignment, same hover cards; what differs is that this one sits above the
+                  four detail tabs the home strip links out to.
+                ⚠ THE COLUMN WIDTHS ARE SHARED WITH THE HEADER by a single constant, because a header that
+                  drifts from its body is worse than no header — it mislabels rather than fails. */}
             <div className="panel" style={{ padding: 6 }}>
+              {wide && (
+                <div className="mut" style={{ display: "grid", gap: 10, padding: "4px 10px 6px",
+                  gridTemplateColumns: SUM_COLS, fontSize: 9, textTransform: "uppercase",
+                  letterSpacing: ".05em", fontWeight: 800 }}>
+                  <span>League</span>
+                  <span>Opponent</span>
+                  <span style={{ textAlign: "right" }}>Projected</span>
+                  <span style={{ textAlign: "right" }}>vs median</span>
+                  <span>To sort out</span>
+                </div>
+              )}
               {perLeague.map((L) => {
                 if (!L) return null;
                 const urgent = (L.avail || []).filter((r) => r.rank >= 4).length;
                 const check = (L.avail || []).filter((r) => r.rank === 3).length;
                 const gain = (L.swaps || []).reduce((s, x) => s + x.gain, 0);
                 const tone = L.error ? "var(--mut)" : urgent ? "#F2655C" : check ? "var(--gold)" : "#5FD0A8";
+                const m = (L.hub && L.hub.matchup) || null;
+                const meProj = m && m.meProj ? m.meProj.pts : null;
+                const oppProj = m && m.oppProj ? m.oppProj.pts : null;
+                const oppName = (m && m.opp && m.opp.teamName) || null;
+                const medProj = L.hub && Number.isFinite(L.hub.medianProjected) ? L.hub.medianProjected : null;
                 return (
-                  <div key={L.league.id} data-wksumrow={L.league.name} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderTop: "1px solid var(--line)", flexWrap: "wrap" }}>
-                    <span style={{ width: 8, height: 8, borderRadius: 99, background: tone, flexShrink: 0 }} aria-hidden="true" />
-                    <button onClick={() => onUmbrella && onUmbrella(L.league.id)}
-                      style={{ cursor: "pointer", fontFamily: "inherit", background: "none", border: "none", color: "var(--ink)", fontSize: 13.5, fontWeight: 700, padding: 0, textAlign: "left", flex: "1 1 200px", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {L.league.name}
-                    </button>
-                    <span className="mut" style={{ fontSize: 11.5, flex: "2 1 320px", minWidth: 0 }}>
+                  <div key={L.league.id} data-wksumrow={L.league.name}
+                    style={{ display: "grid", alignItems: "center", gap: wide ? 10 : 5,
+                      gridTemplateColumns: wide ? SUM_COLS : "minmax(0,1fr)",
+                      padding: "8px 10px", borderTop: "1px solid var(--line)" }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 99, background: tone, flexShrink: 0 }} aria-hidden="true" />
+                      <button onClick={() => onUmbrella && onUmbrella(L.league.id)}
+                        style={{ cursor: "pointer", fontFamily: "inherit", background: "none", border: "none", color: "var(--ink)", fontSize: 13.5, fontWeight: 700, padding: 0, textAlign: "left", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {L.league.name}
+                      </button>
+                    </span>
+                    <span className="mut" data-wksumopp={oppName || ""} style={{ fontSize: 11.5, minWidth: 0,
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {oppName || (L.error ? "—" : "no opponent set")}
+                    </span>
+                    {/* The projected scoreline, coloured by which way it is going — the same read the home
+                        strip gives, from the same two fields on the same payload. */}
+                    <span className="num" data-wksumproj={Number.isFinite(meProj) ? String(meProj) : ""}
+                      style={{ fontSize: 12, textAlign: wide ? "right" : "left" }}>
+                      {Number.isFinite(meProj) ? (
+                        <>
+                          <b style={{ color: Number.isFinite(oppProj) ? (meProj >= oppProj ? "#5FD0A8" : "#F2655C") : "var(--ink)" }}>{meProj}</b>
+                          {Number.isFinite(oppProj) && <span className="mut"> – {oppProj}</span>}
+                        </>
+                      ) : <span className="mut">—</span>}
+                    </span>
+                    {/* ⚠ BLANK WHERE THE LEAGUE DOES NOT PLAY MEDIAN SCORING. A dash in every row would
+                        imply the column applies everywhere and merely has no value here. */}
+                    <span className="num" data-wksummedian={medProj != null ? String(medProj) : ""}
+                      style={{ fontSize: 11.5, textAlign: wide ? "right" : "left" }}>
+                      {medProj != null && Number.isFinite(meProj) ? (
+                        <span style={{ color: meProj >= medProj ? "#5FD0A8" : "#F2655C" }}>
+                          {meProj >= medProj ? "+" : ""}{r1(meProj - medProj)}
+                          <span className="mut" style={{ fontSize: 10 }}> vs {medProj}</span>
+                        </span>
+                      ) : <span className="mut" style={{ fontSize: 10.5 }}>{medProj != null ? "—" : ""}</span>}
+                    </span>
+                    <span className="mut" style={{ fontSize: 11.5, minWidth: 0 }}>
                       {/* ⭐⭐⭐ A LEAGUE WE CANNOT PLACE YOU IN GETS AN INSTRUCTION, NOT A SHRUG. There is
                           exactly one reason this happens and exactly one fix, so print both — and print the
                           username the league was imported under when we have it, because "link the account

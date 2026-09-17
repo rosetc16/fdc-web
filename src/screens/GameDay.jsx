@@ -25,7 +25,8 @@
    ================================================================================================ */
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { api } from "../api.js";
-import { Dot } from "../App.jsx";
+import { Dot, WeekHoverCard } from "../App.jsx";
+import { HoverTable, useHoverCard } from "../hovercard.jsx";
 import { winTone } from "../livecache.js";
 import WeekStep from "../weekstep.jsx";
 
@@ -257,9 +258,46 @@ function MatchupDetail({ L, F, tone, bySid, wide, onOpenHub }) {
    most of the gap by itself; and the space that IS left now carries the LEAGUE NAMES, which were previously
    hidden behind a hover icon. "Starting in 5" tells you the size of your stake; "Work League, Dynasty,
    Home League +2" tells you where it is, which is the thing you were going to hover to find out. */
-function RootRow({ p, wide }) {
+function RootRow({ p, wide, wx, onShow, onHide }) {
   const st = STATE[p.state] || STATE.unknown;
   const rootFor = p.net > 0;
+  /* ⭐⭐⭐⭐⭐ THE LEAGUE LINE IS A CARD NOW — 29ae.
+     Trey: "can you make it prettier when you hover a player and the leagues they are in… show the leagues
+     better, show the impact he has on that lineup, show who his opponent is, what the weather is, etc."
+     The row had a `title` attribute reading "For: A, B, C  |  Against: D" — a list of names with nothing
+     beside them, which is the least useful shape this particular fact has. ⭐ THE MISSING COLUMN IS THE
+     ONE HE NAMED FIRST: the same catch is worth 1.0 in PPR and 0 in standard, so "he is in five of your
+     leagues" understates the spread wildly in one direction or the other. `ptsByLeague` has been on this
+     payload since the board was built and nothing had ever drawn it. */
+  const tip = (() => {
+    const side = (arr, which) => (arr || []).filter(Boolean).map((l) => ({
+      League: l.leagueName || l.leagueId,
+      Side: which,
+      Pts: Number.isFinite(p.ptsByLeague && p.ptsByLeague[l.leagueId]) ? r1(p.ptsByLeague[l.leagueId]) : "—",
+      tone: which === "For you" ? "#5FD0A8" : "#F2655C",
+    }));
+    const rows = side(p.forLeagues, "For you").concat(side(p.againstLeagues, "Against you"));
+    if (!rows.length) return null;
+    const lines = [];
+    /* `opp` arrives pre-formatted as "@ KC" or "vs KC" — see connect.js `gameByTeam`. Composing it here
+       would mean this screen deciding home/away, which it cannot see. */
+    if (p.opp) lines.push({ k: "Game", v: `${p.team || "?"} ${p.opp}` });
+    lines.push({ k: "Status", v: st.label, tone: st.tone });
+    if (p.impactLabel) lines.push({ k: "Day", v: p.impactLabel, tone: p.impactTone });
+    /* ⚠ WEATHER ONLY WHEN THERE IS WEATHER, AND SAY WHAT SILENCE MEANS. The forecast route deliberately
+       returns ONLY games worth flagging — roofed stadiums never come back at all (29x, on his
+       instruction), and neither does a clear afternoon. So a missing line here means "nothing worth
+       planning around", not "we could not find out", and the note says which. */
+    if (wx) lines.push({ k: "Weather", v: wx.label, tone: wx.tone });
+    return {
+      key: "gdplayer", title: p.name,
+      subtitle: [p.pos, p.team].filter(Boolean).join(" · "),
+      lines,
+      cols: [{ k: "League", strong: true }, { k: "Side", tint: true }, { k: "Pts", right: true }],
+      rows,
+      note: wx ? null : "No weather flagged for this game — it is indoors, or the forecast has nothing worth planning around.",
+    };
+  })();
   const tone = p.net === 0 ? "var(--mut)" : rootFor ? "#5FD0A8" : "#F2655C";
   /* ⚠ DROP THE BLANKS. The live route did not put a name on its league rows until b136, so every tag came
      back undefined and this line rendered as ", , +2" — the "it's not clear what is going on below each
@@ -289,11 +327,11 @@ function RootRow({ p, wide }) {
             <i className={`ti ${st.icon}`} style={{ fontSize: 11 }} aria-hidden="true" />{st.label}
           </span>
         </div>
-        <div className="mut" style={{ fontSize: 11, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-          title={[
-            p.forLeagues.length ? `For: ${p.forLeagues.map((l) => l.leagueName).join(", ")}` : "",
-            p.againstLeagues.length ? `Against: ${p.againstLeagues.map((l) => l.leagueName).join(", ")}` : "",
-          ].filter(Boolean).join("  |  ")}>
+        <div className="mut" data-gdleagues={String((p.forLeagues || []).length + (p.againstLeagues || []).length)}
+          onMouseEnter={tip && onShow ? (e) => onShow(e, tip) : undefined}
+          onMouseLeave={tip && onHide ? onHide : undefined}
+          style={{ fontSize: 11, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis",
+            whiteSpace: "nowrap", cursor: tip ? "help" : "default" }}>
           {shown.length ? (
             <>{shown.join(", ")}{extra > 0 ? ` +${extra}` : ""}
               {/* Both sides only when he is genuinely on both — otherwise it is noise on every row. */}
@@ -416,6 +454,59 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
   const [view, setView] = useState("players");  // players | leagues
   // Which matchup rows are opened out. Keyed by league id, so a poll refresh does not close them.
   const [openMatch, setOpenMatch] = useState({});
+  /* ⭐⭐⭐⭐⭐ THE SAME HOVER PANEL THE HOME STRIP HAS USED SINCE 29r — 29ae.
+     Trey, about this table: "I want to be able to hover things like 'left to play' and see who is left…
+     'projected' and see the side by side lineups, etc."
+     ⭐ HE IS ASKING FOR A FEATURE THAT ALREADY EXISTS ONE SCREEN OVER, which is the whole reason to import
+       `WeekHoverCard` rather than write it again here. Both tables are fed by the SAME live payload
+       (`live.leagues` on home, `data.leagues` here — one route, one shape), so a second implementation
+       would have had nothing to do but drift. The 29ac/29aa lesson, applied before it could bite.
+     ⚠ NOT the generic HoverTable from hovercard.jsx: this one draws a matchup — two lineups, a forecast,
+       a win probability — and flattening it into a list card would lose the comparison that is the point. */
+  // The generic list card, for the player rows' league breakdown. See src/hovercard.jsx.
+  const { card: ptip, show: showPlayerCard, hide: hidePlayerCard } = useHoverCard();
+  /* ⭐⭐⭐ THE FORECAST, JOINED BY NFL TEAM. My Week already loads this for its own tab; Game Day is the
+     screen you sit on while the games happen, and "is he in the rain" belongs on the player you are
+     looking at rather than one tab away. One call, cached by the browser, and a failure is silent — a
+     missing forecast must never stop the board rendering. */
+  const [wx, setWx] = useState(null);
+  /* ⚠⚠ ITS OWN EFFECT, AND THAT IS NOT TIDINESS — IT IS THE ONLY WAY IT WORKS. The first cut fired this
+     inside the live loader, right after `setData(r)`. That loader lists `data && data.at` in its own
+     dependencies, so setting the data RE-RUNS THE EFFECT, React tears the previous one down first, and the
+     cleanup flips `alive` to false on the weather promise that is still in the air. The response came back
+     200 every time and `setWx` was never reached — the network tab showed a perfectly healthy request and
+     the hover showed "no weather flagged" for a game with heavy snow in it.
+     Same family as the 29t review-tab hang: AN EFFECT THAT SETS STATE IT ALSO DEPENDS ON CANCELS ANYTHING
+     ELSE IT STARTED. A second resource on a different cadence belongs in a second effect.
+     ⭐ Keyed on the resolved WEEK, so it fetches once per week rather than once per two-minute poll — a
+       forecast does not move on the cadence a live scoreboard does. */
+  useEffect(() => {
+    const wk = weekSel == null ? (data && data.week) : weekSel;
+    if (!Number.isFinite(wk)) return;
+    let alive = true;
+    // Swallowed on purpose: no forecast is a missing line on a hover, never a board that will not draw.
+    api.weatherWeek(wk).then((w) => { if (alive) setWx(w); }).catch(() => {});
+    return () => { alive = false; };
+  }, [weekSel, data && data.week]);
+  const wxByTeam = useMemo(() => {
+    const m = new Map();
+    ((wx && wx.games) || []).forEach((g) => (g.teams || []).forEach((t) => m.set(t, g)));
+    return m;
+  }, [wx]);
+  const wxFor = (p) => {
+    const g = p && p.team ? wxByTeam.get(p.team) : null;
+    if (!g) return null;
+    // `label` and `text` are the route's own words (see routes/weather.js); nothing is re-worded here.
+    return { label: [g.label, g.text].filter(Boolean).join(" — "),
+      tone: g.severity >= 2 ? "#F2655C" : "var(--gold)" };
+  };
+  const [mcard, setMcard] = useState(null);
+  const showMatchCard = (e, L, kind) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const w = kind === "both" || kind === "left" ? 520 : 340;
+    setMcard({ L, kind, x: Math.max(8, Math.min(r.left, window.innerWidth - w - 8)), y: r.bottom + 6 });
+  };
+  const hideMatchCard = () => setMcard(null);
   /* ⚠ THE SHARE OF THE GAME PLAYED COMES OFF THE ROW, NOT OUT OF A DATE SUBTRACTION HERE — 29t.
      The first cut computed it client-side from the payload's `at` stamp minus its kickoff map. That is
      two fields which only share a clock when one machine produced both, and it failed the first time it
@@ -690,7 +781,7 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
                     </div>
                     <div className="panel" style={{ padding: 6, borderColor: `${tone}33` }}>
                       {list.length
-                        ? list.map((p) => <RootRow key={p.sid} p={p} wide />)
+                        ? list.map((p) => <RootRow key={p.sid} p={p} wide wx={wxFor(p)} onShow={showPlayerCard} onHide={hidePlayerCard} />)
                         : <div className="mut" style={{ fontSize: 12, padding: "10px 4px" }}>
                             {k === "for" ? "Nobody you are net FOR yet." : "Nobody you are net against — a good place to be."}
                           </div>}
@@ -704,7 +795,7 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
               </div>
             ) : (
               <div className="panel" style={{ padding: 6, marginBottom: 16 }}>
-                {board.map((p) => <RootRow key={p.sid} p={p} wide={false} />)}
+                {board.map((p) => <RootRow key={p.sid} p={p} wide={false} wx={wxFor(p)} onShow={showPlayerCard} onHide={hidePlayerCard} />)}
               </div>
             )}
 
@@ -848,7 +939,9 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
                           column was simply blank while the win% beside it worked perfectly. Caught by
                           looking at the screen; no build or type error was ever going to say so. */}
                       {F && F.me && Number.isFinite(F.me.projected) ? (
-                        <span data-gdproj={String(r1(F.me.projected))} className="num mut" style={{ fontSize: 13, fontWeight: 700, textAlign: wide ? "right" : "left" }}>
+                        <span data-gdproj={String(r1(F.me.projected))} className="num mut"
+                          onMouseEnter={(e) => showMatchCard(e, L, "both")} onMouseLeave={hideMatchCard}
+                          style={{ fontSize: 13, fontWeight: 700, textAlign: wide ? "right" : "left", cursor: "help" }}>
                           {r1(F.me.projected)}{F.opp && Number.isFinite(F.opp.projected) ? ` – ${r1(F.opp.projected)}` : ""}
                           {!wide && <span className="mut" style={{ fontSize: 9.5, display: "block", textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700 }}>projected</span>}
                         </span>
@@ -857,15 +950,20 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
                         /* ⚠ THE PERCENTAGE IS ALWAYS PRINTED. Red and green are the one pair a colourblind
                            reader cannot separate, and this is the figure the whole row turns on — so the
                            colour reinforces a number and a word rather than carrying the meaning alone. */
-                        <span data-gdwin={String(Math.round(F.win * 100))} style={{ textAlign: wide ? "right" : "left" }}>
+                        <span data-gdwin={String(Math.round(F.win * 100))}
+                          onMouseEnter={(e) => showMatchCard(e, L, "win")} onMouseLeave={hideMatchCard}
+                          style={{ textAlign: wide ? "right" : "left", cursor: "help" }}>
                           <span className="num" style={{ fontSize: 14, fontWeight: 800, color: tone.color }}>
                             {Math.round(F.win * 100)}%
                           </span>
                           <span className="mut" style={{ fontSize: 10, marginLeft: 5 }}>{tone.label}</span>
                         </span>
                       ) : <span />}
-                      <span className="mut" style={{ fontSize: 11.5, textAlign: wide ? "right" : "left",
-                        gridColumn: wide ? "auto" : "1 / -1" }}>
+                      <span className="mut" data-gdleft={String(L.me.yetToPlay)}
+                        onMouseEnter={L.opp ? (e) => showMatchCard(e, L, "left") : undefined}
+                        onMouseLeave={L.opp ? hideMatchCard : undefined}
+                        style={{ fontSize: 11.5, textAlign: wide ? "right" : "left",
+                          cursor: L.opp ? "help" : "default", gridColumn: wide ? "auto" : "1 / -1" }}>
                         {L.me.yetToPlay} yet to play{L.opp ? ` · ${L.opp.yetToPlay} for ${L.opp.teamName || "them"}` : ""}
                       </span>
                     </div>
@@ -875,7 +973,8 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
                 );
               })}
             </div>
-
+            {/* One panel for the whole table — see the note on `showMatchCard`. */}
+            <WeekHoverCard card={mcard} bySid={bySid} winTone={winTone} />
           </>
         )}
 
@@ -889,6 +988,10 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
             </div>
         )}
       </div>
+      {/* One card for the whole screen. Mounted at the root rather than inside either layout, because the
+          player board renders in two different places depending on width and a card mounted inside one of
+          them would simply not exist on a phone. */}
+      <HoverTable card={ptip} />
     </div>
   );
 }
