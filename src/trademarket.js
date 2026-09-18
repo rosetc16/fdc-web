@@ -59,7 +59,33 @@ const r1 = (n) => Math.round((Number(n) || 0) * 10) / 10;
    ⚠ It filters rather than repairs: a player with no position cannot be placed in a lineup, and inventing
      one for him would put a phantom in a starting slot. Dropping him understates the roster, which is the
      safe direction — it can only make a trade look worse than it is. */
-const clean = (roster) => (roster || []).filter((p) => p && p.sid != null && p.pos);
+/* ⚠⚠⚠ AND IT DROPS A REPEATED ID — b153, and this is the answer to a question Trey asked rather than a
+   guess at one: "I don't think anything changed on my rankings process and no games happened.. but I went
+   from 1 of 12 for WR to 2 of 12 on that last update."
+   That is exactly what b152's duplicate fix had to do, and the arithmetic is worth writing down.
+   `posValue` for a position is the sum of the best `req[pos]` men at it — so a roster listing one receiver
+   TWICE (the "Deebo Samuel is listed twice" bug) counted his points in two of those slots. On a shape like
+   his, first at receiver by a handful of points, removing the phantom drops the total below the next team
+   and the rank moves by one. Nothing about the ranking changed; a number that had been too big since the
+   duplicate appeared became right.
+   ⭐ SO THE GUARD MOVES DOWN HERE AS WELL. b152 deduped in the hub, where the duplicated ROW was; this
+     module is where the duplicated VALUE did its damage, and it should not depend on every caller getting
+     it right. Two places, because they are two different failures with one cause. */
+/* ⚠ A `function` DECLARATION, NOT A `const` ARROW — deliberately. Every sim suite and the shape probe
+   lift named functions out of this file with a regex that matches `function name(`, and each of them had
+   its OWN one-line copy of `clean` in the eval preamble precisely because an arrow could not be sliced.
+   A hand-written copy of the thing under test is the 29v trap: it agrees with my expectations instead of
+   with the app, and it would have silently kept the old no-dedupe behaviour in every suite. */
+function clean(roster) {
+  const seen = new Set();
+  return (roster || []).filter((p) => {
+    if (!p || p.sid == null || !p.pos) return false;
+    const k = String(p.sid);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
 
 /* ────────────────────────────────────────────────────────────────────────────────────────────────
    HOW EACH TEAM IN THE LEAGUE IS DOING WITH WHAT IT HAS.
@@ -290,7 +316,41 @@ export function tradeBoard(input) {
   const reads = new Map((o.reads || []).map((r) => [r.rosterId, r]));
   const diag = { pairs: 0, lopsided: 0, noGainForMe: 0, noGainForThem: 0, wash: 0, teams: others.length,
     // b152 — the consolidation pass keeps its own counters, so "nothing came back" can name which pass.
-    consolPairs: 0, consolLopsided: 0, consolNoGainForMe: 0, consolNoGainForThem: 0, consolBothStarters: 0 };
+    consolPairs: 0, consolLopsided: 0, consolNoGainForMe: 0, consolNoGainForThem: 0, consolBothStarters: 0,
+    // b153 — ideas that survived only because the tilt band let them through, counted so the census adds up.
+    tilted: 0, consolTilted: 0,
+    /* ⚠ b153 — HOW MANY EACH PASS ACTUALLY PRODUCED, which is the one thing the counters above could not
+       say. Every existing counter is a REJECTION count, so "the consolidation pass is dead code" and "the
+       consolidation pass works and the variety cap dropped its offers" printed identically — and the
+       first of those was true for three builds. A rejection census with no numerator is half a census. */
+    offers: 0, consolOffers: 0 };
+
+  /* ⭐⭐⭐⭐⭐ A DEAL DOES NOT HAVE TO IMPROVE BOTH LINEUPS TO BE WORTH SENDING — b153.
+     ==================================================================================================
+     Trey, on the same three blank columns for the second time: "I wonder if it's the note on no one for
+     one or two for one that improves both lineups (which I find hard to believe). It doesn't have to be
+     a perfect swap. You can say that this slightly favors me or them... I really just want this to spark
+     ideas or starting points."
+
+     ⚠ `theirGain > 0.5` WAS A HARD GATE, AND IT IS THE WRONG QUESTION. What it asks is "does this raise
+       the other manager's OPTIMAL STARTING LINEUP, solved by us, on our projections, this season". Real
+       managers trade on value, on need, on a hunch about a schedule — and they take deals that cost their
+       current lineup a little all the time. Requiring a strict improvement on a number they have never
+       seen throws away the entire category Trey is asking for: the fair-on-value idea that tilts his way.
+     ⭐ SO THE BAND REPLACES THE GATE. The other side may give up a slice of its lineup — proportional to
+       the lineup, because 20 points means something different to a 900-point team and a 1,600-point one —
+       and the idea survives, carrying a `tilt` that says plainly which way it leans. What it must NOT do
+       is survive as a robbery: the tier-for-tier fairness band still applies, and now runs FIRST in both
+       passes, so nothing reaches the tilt band that was never a fair swap to begin with.
+     ⚠ MY OWN SIDE KEEPS ITS FLOOR. This is his screen, and an idea that does not improve his lineup is
+       not an idea he has any reason to send. The asymmetry is deliberate. */
+  /* ⚠ DEFINED INSIDE `tradeBoard` ON PURPOSE. Every sim suite and the shape probe slice this file with a
+     regex that lifts ONE named function at a time; a new module-level helper called from inside
+     `tradeBoard` is invisible to all of them and six suites go red at once (29aj, and it cost an hour). */
+  const TILT_FLOOR = (base) => -Math.max(5, Math.abs(Number(base) || 0) * 0.04);
+  const tiltNoteFor = (tilt, mine, theirs) => (tilt === 'both'
+    ? `Both lineups improve — you +${mine}, them +${theirs}.`
+    : `Fair on value, but it is your lineup that gains — you +${mine}, their own starting lineup ${theirs >= 0 ? `barely moves (+${theirs})` : `drops ${Math.abs(theirs)}`}. Worth asking, not a lock.`);
   if (!me || !me.roster || !me.roster.length || typeof lineupValue !== 'function') {
     return withDiag([], diag);
   }
@@ -394,7 +454,10 @@ export function tradeBoard(input) {
         if (myGain <= 0.5) { diag.noGainForMe++; return; }
         const theirAfter = lineupValue(theirRestNoGet.concat([give]), sf);
         const theirGain = r1(theirAfter - theirBase);
-        if (theirGain <= 0.5) { diag.noGainForThem++; return; }
+        // ⚠ b153 — a band, not a gate. See TILT_FLOOR. The fairness check above has already run.
+        if (theirGain <= TILT_FLOOR(theirBase)) { diag.noGainForThem++; return; }
+        const tilt = theirGain > 0.5 ? 'both' : 'you';
+        if (tilt !== 'both') diag.tilted++;
 
         // ── the reasons, each one a measured thing ──────────────────────────────────────────────
         const why = [];
@@ -460,7 +523,11 @@ export function tradeBoard(input) {
         let realism = 40;                                        // a deal that helps them at all starts here
         if (theirGain >= 10) { realism += 20; parts.push('big lineup gain for them'); }
         else if (theirGain >= 4) { realism += 12; parts.push('a real lineup gain for them'); }
-        else { realism += 4; parts.push('a small gain for them'); }
+        else if (theirGain > 0.5) { realism += 4; parts.push('a small gain for them'); }
+        /* ⚠ b153 — THE TILT IS PRICED, NOT HIDDEN. Letting these through the gate and then scoring them
+           as if both sides gained would be worse than the gate was: the list would fill with asks that
+           read as mutual. They come in low and say why. */
+        else { realism -= 12; parts.push('their own starting lineup does not improve, so it is an ask'); }
         if (theirNeedAt > 0) { realism += 20; parts.push(`fills their hole at ${gPos}`); }
         if (theirSurplusAt > 0 || affordable) { realism += 10; parts.push(`costs them depth rather than a starter`); }
         if (read && read.underperforming) { realism += 5; parts.push('a team with reason to shake things up'); }
@@ -483,9 +550,11 @@ export function tradeBoard(input) {
         }
         realism = Math.max(0, Math.min(99, realism));
 
+        diag.offers++;
         offers.push({
           team: { rosterId: them.rosterId, teamName: them.teamName, ownerName: them.ownerName },
           read, give, get, myGain, theirGain, fitEdge, myAdd, theirLoss, balance,
+          tilt, tiltNote: tiltNoteFor(tilt, myGain, theirGain),
           giveWorth: Math.round(wGive), getWorth: Math.round(wGet),
           why: why.sort((a, b) => b.weight - a.weight),
           realism, realismWhy: parts,
@@ -519,6 +588,7 @@ export function tradeBoard(input) {
        different (and usually bad) trade, and it is not what he is asking for.
      ⚠ AND IT COSTS A ROSTER SPOT ON THEIR SIDE, which is a real reason to say no and is priced as one. */
   const CONSOL_POOL = 7;
+  const CONSOL_SPARE = 4;
   if (typeof o.consolidate === 'undefined' || o.consolidate) {
     const myOptSids = new Set();
     const myLineup = typeof o.lineupSlots === 'function' ? o.lineupSlots(me.roster, sf) : null;
@@ -528,11 +598,26 @@ export function tradeBoard(input) {
     /* My tradeable men, best first — and `spare` marks the ones my own best lineup does not use, which is
        the half of the pair that makes this a consolidation. Without a lineup solve (a caller that did not
        pass `lineupSlots`) everyone counts as a candidate and the pair rule below falls back to worth. */
-    const myCand = me.roster
+    /* ⚠⚠⚠⚠ THE POOL HAS TO CONTAIN A SPARE OR THE WHOLE PASS IS DEAD CODE — b153, and it was.
+       The probe, rebuilt in Trey's exact shape, returned `consolBothStarters: 1596` out of 1596 pairs:
+       EVERY consolidation pair this finder considered was thrown away by the one rule that makes it a
+       consolidation, because the pool it drew from could not satisfy that rule. "Top 7 by worth" on a
+       roster that starts 8 is, by construction, eight-tenths starters — so `!a.spare && !b.spare` was
+       true for all 21 pairs per target, every target, every team, and b152 shipped a pass that has
+       never once produced an offer. The blank columns Trey has now reported twice were this.
+       ⭐ SO THE POOL IS BUILT IN TWO HALVES: the best men I own (what a package is anchored on) AND the
+         best men my own lineup does not use (what makes it a consolidation rather than a fire sale).
+       ⚠ AND THE SPARE HALF DOES NOT REQUIRE POSITIVE VALUE OVER REPLACEMENT. A bench flier is worth
+         nothing to my lineup and is still a real part of a real trade — "my WR3 and a dart for your
+         RB1" is the most ordinary package in fantasy football. The fairness gate below prices the pair
+         against what comes back, so a worthless throw-in cannot make a bad deal look fair. */
+    const scored = me.roster
       .map((p) => ({ p, w: worthOf(p), spare: myOptSids.size ? !myOptSids.has(String(p.sid)) : true }))
-      .filter((x) => x.w > 0)
-      .sort((a, b) => b.w - a.w)
-      .slice(0, CONSOL_POOL);
+      .sort((a, b) => b.w - a.w);
+    const topAny = scored.filter((x) => x.w > 0).slice(0, CONSOL_POOL);
+    const anySids = new Set(topAny.map((x) => String(x.p.sid)));
+    const myCand = topAny.concat(
+      scored.filter((x) => x.spare && !anySids.has(String(x.p.sid))).slice(0, CONSOL_SPARE));
 
     others.forEach((them) => {
       const read = reads.get(them.rosterId) || null;
@@ -558,27 +643,33 @@ export function tradeBoard(input) {
             if (!a.spare && !b.spare) { diag.consolBothStarters++; continue; }
             const giveSids = new Set([String(a.p.sid), String(b.p.sid)]);
 
-            const myAfter = lineupValue(me.roster.filter((x) => !giveSids.has(String(x.sid))).concat([get]), sf);
-            const myGain = r1(myAfter - myBase);
-            if (myGain <= 0.5) { diag.consolNoGainForMe++; continue; }
-            const theirAfter = lineupValue(restNoGet.concat([a.p, b.p]), sf);
-            const theirGain = r1(theirAfter - theirBase);
-            if (theirGain <= 0.5) { diag.consolNoGainForThem++; continue; }
-
             /* ⚠ FAIRNESS ON A PACKAGE IS NOT THE SUM OF ITS PARTS. Two men are worth less together than
                their values add up to — the second one is a body the other manager has to find a starting
                spot or a roster spot for — so the pair is discounted before it is compared, tier for tier,
-               against the man coming back. 0.75 is blunt and deliberately so; see the note on `realism`. */
+               against the man coming back. 0.75 is blunt and deliberately so; see the note on `realism`.
+               ⚠ b153 — THIS NOW RUNS BEFORE THE GAIN CHECKS, matching the one-for-one pass. With a band
+                 rather than a gate on their side, fairness is the thing standing between "an idea that
+                 tilts your way" and "a robbery", so it has to be the first question, not the last. */
             const pairShare = (tierShare(a.p) + tierShare(b.p)) * 0.75;
             const getShare = tierShare(get);
             const sHi2 = Math.max(pairShare, getShare), sLo2 = Math.min(pairShare, getShare);
             if (sHi2 <= 0 || sLo2 / sHi2 < 0.5) { diag.consolLopsided++; continue; }
 
+            const myAfter = lineupValue(me.roster.filter((x) => !giveSids.has(String(x.sid))).concat([get]), sf);
+            const myGain = r1(myAfter - myBase);
+            if (myGain <= 0.5) { diag.consolNoGainForMe++; continue; }
+            const theirAfter = lineupValue(restNoGet.concat([a.p, b.p]), sf);
+            const theirGain = r1(theirAfter - theirBase);
+            if (theirGain <= TILT_FLOOR(theirBase)) { diag.consolNoGainForThem++; continue; }
+            const tilt = theirGain > 0.5 ? 'both' : 'you';
+            if (tilt !== 'both') diag.consolTilted++;
+
             const parts = [];
             let realism = 40;
             if (theirGain >= 10) { realism += 20; parts.push('big lineup gain for them'); }
             else if (theirGain >= 4) { realism += 12; parts.push('a real lineup gain for them'); }
-            else { realism += 4; parts.push('a small gain for them'); }
+            else if (theirGain > 0.5) { realism += 4; parts.push('a small gain for them'); }
+            else { realism -= 12; parts.push('their own starting lineup does not improve, so it is an ask'); }
             const theirNeedA = (read && read.need) ? read.need[String(a.p.pos).toUpperCase()] || 0 : 0;
             const theirNeedB = (read && read.need) ? read.need[String(b.p.pos).toUpperCase()] || 0 : 0;
             if (theirNeedA > 0 || theirNeedB > 0) { realism += 15; parts.push('fills a hole they cannot field'); }
@@ -593,9 +684,11 @@ export function tradeBoard(input) {
             }
             realism = Math.max(0, Math.min(99, realism));
 
+            diag.consolOffers++;
             offers.push({
               team: { rosterId: them.rosterId, teamName: them.teamName, ownerName: them.ownerName },
               read, give: a.p, give2: b.p, get, myGain, theirGain,
+              tilt, tiltNote: tiltNoteFor(tilt, myGain, theirGain),
               fitEdge: r1(myGain), myAdd: r1(myGain), theirLoss, balance,
               giveWorth: Math.round(a.w + b.w), getWorth: Math.round(worthOf(get)),
               why: [{ key: 'consolidate', weight: 3,
@@ -615,7 +708,14 @@ export function tradeBoard(input) {
      what made the old list "difficult to follow". */
   const seen = new Set(), giveCount = {}, dedup = [];
   offers
-    .sort((a, b) => (b.myGain - a.myGain) || (b.realism - a.realism))
+    /* ⚠⚠⚠ THE CAPS ARE A BUDGET, AND A DEAL THEY WOULD ACTUALLY TAKE HAS TO SPEND IT FIRST — b153.
+       Letting the tilt band through without this line cost eight recommendations in the deep-league
+       probe: the biggest raw gains are, almost by definition, the ones the other manager likes least, so
+       sorting on `myGain` alone handed every per-player and per-team slot to asks and squeezed genuinely
+       mutual +26/+2 trades off the board entirely. The band was supposed to ADD ideas underneath the
+       recommendations, not outbid them. Realistic first, then by what it does for you — which is the
+       same two-key rule `partnerBoard` and the cards already sort by, so no two lists can disagree. */
+    .sort((a, b) => ((b.realism >= 45) - (a.realism >= 45)) || (b.myGain - a.myGain) || (b.realism - a.realism))
     .forEach((t) => {
       const k = `${t.team.rosterId}|${t.get.sid}`;
       if (seen.has(k)) return;
@@ -802,7 +902,10 @@ export function marketSummary(reads, req, opts) {
     const dealLine = getAt
       ? `Get ${getAt.get.name} from ${getAt.team.teamName} — it costs you ${getAt.give.name} (${String(getAt.give.pos).toUpperCase()}), and your lineup is +${getAt.myGain} for it.`
       : sendFrom
-        ? `Send ${sendFrom.give.name} to ${sendFrom.team.teamName} for ${sendFrom.get.name} (${String(sendFrom.get.pos).toUpperCase()}) — +${sendFrom.myGain} to your lineup, +${sendFrom.theirGain} to theirs.`
+        /* ⚠ b153 — THEIR SIDE CAN BE NEGATIVE NOW (see the tilt band in tradeBoard), and a hard-coded
+           plus renders "+-18 to theirs". Two characters, and it is the kind of thing that makes a reader
+           stop trusting every other number on the page. */
+        ? `Send ${sendFrom.give.name} to ${sendFrom.team.teamName} for ${sendFrom.get.name} (${String(sendFrom.get.pos).toUpperCase()}) — +${sendFrom.myGain} to your lineup, ${sendFrom.theirGain > 0 ? `+${sendFrom.theirGain} to theirs` : sendFrom.theirGain === 0 ? 'no change to theirs' : `${sendFrom.theirGain} to theirs, so it is an ask`}.`
         : null;
     /* ⭐⭐⭐⭐ WHO THIS ROW IS ABOUT, DECIDED ONCE — b151. The chip beside the position used to pick its own
        player from the same three candidates in its own order, and on a two-way row (a deal arriving AND a
@@ -1001,6 +1104,16 @@ export function partnerBoard(input) {
       .sort((a, b) => (b.realism >= 45) - (a.realism >= 45) || (b.myGain - a.myGain));
     const best = list[0] || null;
     const realistic = list.filter((t) => t.realism >= 45);
+    /* ⭐⭐⭐⭐⭐ WHAT THE ROW SHOWS IS `ideas`, NOT `realistic` — b153.
+       Trey: "I really just want this to spark ideas or starting points."
+       ⚠ A 45-REALISM BAR IS THE RIGHT FILTER FOR A RECOMMENDATION AND THE WRONG ONE FOR A PROMPT. The
+         cards at the top of the tab say "do this", and they should stay strict. This table answers "is
+         there anything here with this manager", and answering "no" because the one idea available is a
+         62% ask rather than a 70% one is how three columns end up blank on a screen that had seven
+         priced, fair, measured ideas sitting behind it — which is exactly what the probe found.
+       ⭐ SO: realistic ones when they exist, the best of the rest when they do not, and every row carries
+         its own `band` and `tilt` so nothing is dressed up as likelier than it is. */
+    const ideas = (realistic.length ? realistic : list).slice(0, 3);
     const comp = complementOf(read);
     const twoWay = comp.some((c) => c.dir === 'sell') && comp.some((c) => c.dir === 'buy');
     const mutual = best ? r1(Math.min(best.myGain, best.theirGain)) : 0;
@@ -1017,8 +1130,12 @@ export function partnerBoard(input) {
        read the sentence. A shape fit is a fact about two rosters; a deal is a convenience. */
     let tone = 'none', why = null;
     const sell = comp.find((c) => c.dir === 'sell'), buy = comp.find((c) => c.dir === 'buy');
-    const noDeal = realistic.length === 0
-      ? ' No clean one-for-one came out of it — worth a message anyway, or build one below.' : '';
+    /* ⚠ b153 — THREE STATES, NOT TWO. "No clean swap" was being printed at a manager the finder had
+       priced two fair ideas with, because neither cleared the recommendation bar. That sentence is only
+       true when there is genuinely nothing. */
+    const noDeal = realistic.length ? ''
+      : ideas.length ? ` Nothing here improves both starting lineups, but ${ideas.length === 1 ? 'one idea is' : `${ideas.length} ideas are`} fair on value and tilt your way — open the row.`
+        : ' No one-for-one or package came out of it — worth a message anyway, or build one below.';
     if (sell && buy) {
       tone = 'mutual';
       why = `Straight fit both ways — they are short at ${sell.pos} where you are strong (${sell.why}), and deep at ${buy.pos} where you are short.${noDeal}`;
@@ -1032,12 +1149,17 @@ export function partnerBoard(input) {
     } else if (sell) {
       tone = 'fit';
       why = `They are short at ${sell.pos} and you are strong there — ${sell.why}.${noDeal}`;
-    } else if (read && read.underperforming && realistic.length) {
+    } else if (read && read.underperforming && ideas.length) {
       tone = 'motivated';
       why = read.ownerNote;
-    } else if (realistic.length) {
+    } else if (ideas.length) {
+      /* ⚠ b153 — `ideas`, NOT `realistic`. A manager sitting on the single biggest gain available to you
+         was being filed under "not worth chasing" and folded away behind a button, because the one idea
+         with him was a 26-realism ask. The probe's top row was exactly this. */
       tone = 'thin';
-      why = 'No obvious shape fit — the one idea here is a straight value swap.';
+      why = ideas.length > 1
+        ? `No obvious shape fit — what is here is ${ideas.length} straight value swaps.`
+        : 'No obvious shape fit — the one idea here is a straight value swap.';
     } else {
       tone = 'none';
       why = read && read.overperforming
@@ -1051,12 +1173,19 @@ export function partnerBoard(input) {
        which is the table arguing with its own last column. Where there are deals, the positions in them
        ARE the answer; the rank-based complement fills in for a manager the finder came up empty on, which
        is the case it was built for. */
-    const dealSend = [...new Set(realistic.map((t) => String(t.give.pos).toUpperCase()))];
-    const dealGet = [...new Set(realistic.map((t) => String(t.get.pos).toUpperCase()))];
+    /* ⚠ b153 — DERIVED FROM `ideas`, THE SAME LIST THE ROW EXPANDS TO. Reading them off `realistic` while
+       the Ideas column counted something else is how b151's "You send —" beside "3 ideas" happened; the
+       fix then was to stop using the rank complement, and the fix now is to use the one list. */
+    const posOf = (t, dir) => String((dir === 'sell' ? t.give : t.get).pos).toUpperCase();
+    const dealSend = [...new Set(ideas.flatMap((t) => [String(t.give.pos).toUpperCase()]
+      .concat(t.give2 ? [String(t.give2.pos).toUpperCase()] : [])))];
+    const dealGet = [...new Set(ideas.map((t) => String(t.get.pos).toUpperCase()))];
     const merge = (fromDeals, dir) => {
       const out2 = fromDeals.map((pos) => {
         const c = comp.find((x) => x.dir === dir && x.pos === pos);
-        return { pos, dir, why: c ? c.why : `${realistic.filter((t) => String((dir === 'sell' ? t.give : t.get).pos).toUpperCase() === pos).length} of the ideas with them ${dir === 'sell' ? 'send' : 'bring back'} a ${pos}` };
+        const n = ideas.filter((t) => posOf(t, dir) === pos
+          || (dir === 'sell' && t.give2 && String(t.give2.pos).toUpperCase() === pos)).length;
+        return { pos, dir, why: c ? c.why : `${n} of the ideas with them ${dir === 'sell' ? 'send' : 'bring back'} a ${pos}` };
       });
       comp.filter((c) => c.dir === dir && !fromDeals.includes(c.pos)).forEach((c) => out2.push(c));
       return out2;
@@ -1066,6 +1195,8 @@ export function partnerBoard(input) {
     return {
       rosterId: them.rosterId, teamName: them.teamName, ownerName: them.ownerName,
       read, best, deals: list, realisticN: realistic.length,
+      // b153 — what the row actually offers to open, and how many. See `ideas` above.
+      ideas, ideaN: ideas.length, tilt: best ? best.tilt || 'both' : null,
       myGain: best ? best.myGain : 0, theirGain: best ? best.theirGain : 0, mutual,
       realism: best ? best.realism : 0, complement: comp, columns, twoWay, tone, why,
     };
@@ -1077,6 +1208,8 @@ export function partnerBoard(input) {
      than only to the individual cards. */
   partners.sort((a, b) =>
     (b.realisticN > 0) - (a.realisticN > 0)
+    // b153 — then "has anything at all", so a manager with a tilted idea outranks one with nothing.
+    || (b.ideaN > 0) - (a.ideaN > 0)
     || (b.twoWay - a.twoWay)
     || (b.myGain - a.myGain)
     || (b.realism - a.realism));

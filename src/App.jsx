@@ -99,7 +99,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29al";
+const BUILD_TAG = "2026.07.29am";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -9424,6 +9424,32 @@ function Wordmark({ size = 20 }) {
   );
 }
 export const Dot = ({ pos }) => <span className="posdot" title={pos} style={{ background: POS_COLOR[pos] }} />;
+
+/* ⭐⭐⭐⭐ START / SIT, ON THE PLAYER — b153. Trey asked for "an icon on a bench player that you believe
+   should be playing because of a higher projection (and an icon on the player you'd replace)".
+   ⚠ IT SAYS THE WORD. The last unlabelled arrow this app shipped came back as "I also don't know what the
+     arrows mean" (29ak), so the glyph is decoration beside a word rather than a substitute for one.
+   ⚠ AND IT CARRIES THE ARITHMETIC IN ITS TITLE — the two projections and the difference between them, so
+     the claim can be checked without opening anything, and a test can read it off the DOM. */
+export const SwapMark = ({ s, kind }) => {
+  if (!s || !s.in || !s.out) return null;
+  const up = kind === "start";
+  const d = Math.round(((s.in.pts || 0) - (s.out.pts || 0)) * 10) / 10;
+  return (
+    <span data-hubswap={`${kind}:${String(up ? s.in.sid : s.out.sid)}`} data-hubswapgain={String(d)}
+      title={up
+        ? `Start him — ${s.in.name} projects ${(s.in.pts || 0).toFixed(1)} against ${s.out.name}'s ${(s.out.pts || 0).toFixed(1)}, a gain of ${d.toFixed(1)}.`
+        : `Sit him — ${s.in.name} on the bench projects ${(s.in.pts || 0).toFixed(1)} against his ${(s.out.pts || 0).toFixed(1)}, a gain of ${d.toFixed(1)}.`}
+      style={{ fontSize: 8.5, fontWeight: 800, letterSpacing: ".05em", lineHeight: 1.6, whiteSpace: "nowrap",
+        padding: "0 4px", borderRadius: 4, cursor: "help", flexShrink: 0,
+        color: up ? "var(--green)" : "var(--red)",
+        border: `1px solid ${alpha(up ? "var(--green)" : "var(--red)", 55)}`,
+        background: alpha(up ? "var(--green)" : "var(--red)", 14) }}>
+      <i className={`ti ti-arrow-${up ? "up" : "down"}`} style={{ fontSize: 8.5, marginRight: 2 }} aria-hidden="true" />
+      {up ? "START" : "SIT"}
+    </span>
+  );
+};
 // Small round headshot from Sleeper's CDN. Hides itself if the image is missing (rookies/odd ids) so
 // the row never shows a broken-image icon. size in px.
 const PlayerPhoto = ({ sid, pos, size = 22 }) => {
@@ -17342,6 +17368,40 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     return rows;
   })();
 
+  /* ⭐⭐⭐⭐⭐ THE START/SIT CALL, MARKED ON THE PLAYERS THEMSELVES — b153.
+     Trey: "on the matchup tab... can you put an icon on a bench player that you believe should be playing
+     because of a higher projection (and an icon on the player you'd replace)."
+
+     ⚠ THE APP HAS KNOWN THIS SINCE 29a AND ONLY EVER SAID IT IN A PANEL. `swapsIn` / `swapsOut` feed a
+       "You could gain 12.4" box above the lineup; the lineup itself, which is where the eye actually is,
+       carried no mark at all. Reading the box, remembering two names, then finding them in two lists is
+       three steps to deliver one fact.
+     ⚠⚠ AND THE PAIRING HAS TO BE BY SLOT, NOT BY ARRAY INDEX. `swapsIn[i]` against `swapsOut[i]` is what
+       the panel does and it is only right by luck: the two arrays are built from different orderings (one
+       slot-ordered from the optimiser, one in the order the platform stores a set lineup), so a
+       two-swap week can pair a tight end against a running back and the hover then explains a swap that
+       is not the one the optimiser made. Same position first, anything left over after that — which is a
+       genuine flex swap and reads correctly as one.
+     ⚠ AND THE MARK IS A WORD, NOT A GLYPH. "I also don't know what the arrows mean" — 29ak, about a ↑ on
+       this same tab. START and SIT need no legend. */
+  const pairSwaps = (ins, outs) => {
+    const pool = (ins || []).filter(Boolean).slice(), pairs = [];
+    (outs || []).filter(Boolean).forEach((out) => {
+      let k = pool.findIndex((p) => String(p.pos).toUpperCase() === String(out.pos).toUpperCase());
+      if (k < 0) k = 0;
+      const inn = pool.splice(k, 1)[0];
+      // ⚠ A SWAP THE OPTIMISER MADE FOR SLOT REASONS IS NOT A "HIGHER PROJECTION" — he asked for the
+      //   second one, so a pair that does not gain points is not marked.
+      if (inn && (inn.pts || 0) > (out.pts || 0)) pairs.push({ in: inn, out });
+    });
+    return pairs;
+  };
+  const swapIndex = (pairs) => {
+    const inBy = {}, outBy = {};
+    (pairs || []).forEach((s) => { inBy[String(s.in.sid)] = s; outBy[String(s.out.sid)] = s; });
+    return { inBy, outBy };
+  };
+
   let matchupView = null;
   if (data.matchup && data.matchup.opp) {
     const oppTeam = data.teams.find((t) => t.rosterId === data.matchup.opp.rosterId);
@@ -17383,6 +17443,13 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     const meBench = myRoster.filter((p) => !meSetSids.has(String(p.sid)))
       .sort((a, b) => (b.pts || 0) - (a.pts || 0));
 
+    /* ⚠ ONLY WHEN THERE IS A LINEUP TO SECOND-GUESS. With no set starters `meSet` IS the optimal lineup,
+       so `swapsIn` is every starter on it and `swapsOut` is empty — marking that would put START on eight
+       men who are already starting. */
+    const meSwaps = (myTeam.starters && myTeam.starters.length) ? pairSwaps(swapsIn, swapsOut) : [];
+    const meSwapIdx = swapIndex(meSwaps);
+    const oppSwapIdx = swapIndex(oppSet.length ? pairSwaps(oppSwapsIn, oppSwapsOut) : []);
+
     matchupView = {
       isLive,
       meBench,
@@ -17399,6 +17466,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
       oppLeftOnBench,
       oppSwapsIn,
       oppSwapsOut,
+      meSwaps, meSwapIdx, oppSwapIdx,
     };
   }
 
@@ -17770,7 +17838,9 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                     <div onMouseEnter={(e) => showPlayerTip(e, p)} onMouseLeave={hideTip} style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: align === "right" ? "flex-end" : "flex-start", cursor: "help" }}>
                       <div style={{ fontWeight: 600, fontSize: 12.5, display: "flex", alignItems: "center", gap: 5, maxWidth: "100%" }}>
                         {align !== "right" && <Dot pos={p.pos} />}
+                        {align !== "right" && <SwapMark s={matchupView.meSwapIdx.outBy[String(p.sid)]} kind="sit" />}
                         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+                        {align === "right" && <SwapMark s={matchupView.oppSwapIdx.outBy[String(p.sid)]} kind="sit" />}
                         {align === "right" && <Dot pos={p.pos} />}
                       </div>
                       <div className="mut" style={{ fontSize: 10, whiteSpace: "nowrap" }}>{p.matchupStr || p.team}{p.bye === data.week ? " · BYE" : ""}{p.noGame ? " · no game" : ""}</div>
@@ -17899,12 +17969,19 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                   /* ⚠ `data-hubbenchsid` IS HERE FOR ONE CHECK — b152. "Deebo Samuel is listed twice on my
                      matchup": he was in the FLEX and on the bench at once, and the only way to assert that
                      never happens again is to be able to read both lists by id from the DOM. plan29ce §5e. */
+                  const idxOf = (align) => (matchupView
+                    ? (align === "right" ? matchupView.oppSwapIdx : matchupView.meSwapIdx)
+                    : { inBy: {}, outBy: {} });
                   const benchCell = (p, align) => p ? (
+                    /* ⚠ THE MARKED MAN IS BRIGHTER THAN THE REST OF THE BENCH. A 0.82 wash is right for
+                       "these are not playing" and wrong for the one row that says otherwise. */
                     <div data-hubbenchsid={align === "right" ? undefined : String(p.sid)}
-                      style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: align === "right" ? "flex-end" : "flex-start", opacity: 0.82 }}>
+                      style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: align === "right" ? "flex-end" : "flex-start", opacity: idxOf(align).inBy[String(p.sid)] ? 1 : 0.82 }}>
                       <div style={{ fontWeight: 600, fontSize: 12, display: "flex", alignItems: "center", gap: 5, maxWidth: "100%" }}>
                         {align !== "right" && <Dot pos={p.pos} />}
+                        {align !== "right" && <SwapMark s={idxOf(align).inBy[String(p.sid)]} kind="start" />}
                         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+                        {align === "right" && <SwapMark s={idxOf(align).inBy[String(p.sid)]} kind="start" />}
                         {align === "right" && <Dot pos={p.pos} />}
                       </div>
                       <div className="mut" style={{ fontSize: 10, whiteSpace: "nowrap" }}>{p.pos}{p.posRank} · {p.team}{p.bye === data.week ? " · BYE" : ""}{p.inj ? " · " + p.inj : ""}</div>
@@ -18339,20 +18416,39 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                     question never gets asked. ⚠ A DIAGNOSTIC BELONGS WHERE THE DOUBT IS. Moving it beside
                     the blank columns turns "this can't be true" into a number he can send me, which is
                     the difference between one round of feedback and three. */}
-                {partners.partners.every((p) => !p.realisticN) && board.diag && board.diag.pairs > 0 && (
-                  <div className="mut" data-lrnodeals={JSON.stringify(board.diag)}
+                {/* ⚠⚠ b153 — THE CENSUS HAS TO ADD UP, OR IT IS THE NEXT THING TO DISTRUST. The version
+                    Trey screenshotted accounted for 1,428 of 2,620 combinations and silently dropped the
+                    other 1,192 — every one of them a consolidation pair rejected by a counter this block
+                    did not print. Worse, that counter was the bug (see tradeBoard): the pass could not
+                    produce an offer at all. A diagnostic that cannot be checked is a diagnostic that
+                    cannot catch anything, so every counter is named and the remainder is stated. */}
+                {partners.partners.every((p) => !p.ideaN) && board.diag && board.diag.pairs > 0 && (() => {
+                  const d = board.diag;
+                  const total = d.pairs + (d.consolPairs || 0);
+                  const bits = [
+                    [d.lopsided + (d.consolLopsided || 0), "were too lopsided for anyone to accept"],
+                    [d.noGainForThem + (d.consolNoGainForThem || 0), "cost them far too much to be worth an ask"],
+                    [d.noGainForMe + (d.consolNoGainForMe || 0), "did nothing for your starting lineup"],
+                    [d.consolBothStarters || 0, "would have sent two of your own starters"],
+                    [d.wash || 0, "were a wash at the same position"],
+                  ].filter(([n]) => n > 0);
+                  const named = bits.reduce((s, [n]) => s + n, 0);
+                  return (
+                  <div className="mut" data-lrnodeals={JSON.stringify(d)} data-lrcensus={`${named}/${total}`}
                     style={{ fontSize: 11, lineHeight: 1.55, margin: "0 0 8px", padding: "6px 9px",
                       border: "1px dashed var(--line2)", borderRadius: 8 }}>
-                    <b style={{ color: "var(--gold)" }}>No one-for-one or two-for-one improves both lineups right now.</b>{" "}
-                    Out of <b className="num" style={{ color: "var(--ink)" }}>{(board.diag.pairs + (board.diag.consolPairs || 0)).toLocaleString("en-US")}</b> combinations
-                    across {board.diag.teams} rosters:{" "}
-                    {board.diag.lopsided + (board.diag.consolLopsided || 0) > 0 && <>{(board.diag.lopsided + (board.diag.consolLopsided || 0)).toLocaleString("en-US")} were too lopsided for anyone to accept, </>}
-                    {board.diag.noGainForThem + (board.diag.consolNoGainForThem || 0) > 0 && <>{(board.diag.noGainForThem + (board.diag.consolNoGainForThem || 0)).toLocaleString("en-US")} helped you but not them, </>}
-                    {board.diag.noGainForMe + (board.diag.consolNoGainForMe || 0) > 0 && <>{(board.diag.noGainForMe + (board.diag.consolNoGainForMe || 0)).toLocaleString("en-US")} did nothing for your starting lineup</>}
+                    <b style={{ color: "var(--gold)" }}>Nothing here is even fair on value right now.</b>{" "}
+                    Out of <b className="num" style={{ color: "var(--ink)" }}>{total.toLocaleString("en-US")}</b> combinations
+                    across {d.teams} rosters:{" "}
+                    {bits.map(([n, t], i) => (
+                      <React.Fragment key={t}>{i ? ", " : ""}{n.toLocaleString("en-US")} {t}</React.Fragment>
+                    ))}
+                    {named < total && <>, {(total - named).toLocaleString("en-US")} for other reasons</>}
                     . The shape fits below are still real — they are about rosters, not about a swap the
                     finder could price — so a message is still worth sending.
                   </div>
-                )}
+                  );
+                })()}
                 {/* ⭐⭐⭐⭐⭐ A TABLE, NOT ELEVEN PARAGRAPHS — b151.
                     Trey: "I want to get rid of the long sentences on each team (you can put this more in a
                     tabular form to track things across columns so it's easier to track). It's really hard
@@ -18461,8 +18557,9 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       <tr data-lrpartner={p.teamName || String(p.rosterId)}
                         data-lrtone={p.tone} data-lrtwoway={p.twoWay ? "1" : "0"} data-lrdeals={String(p.realisticN)}
                         data-lrfit={cols.map((c) => `${c.dir}:${c.pos}`).join(",")}
-                        onClick={() => p.realisticN && setLrOpen(open ? null : p.rosterId)}
-                        style={{ borderTop: "1px solid var(--line)", cursor: p.realisticN ? "pointer" : "default" }}>
+                        data-lrideas={String(p.ideaN || 0)} data-lrtilt={p.tilt || ""}
+                        onClick={() => p.ideaN && setLrOpen(open ? null : p.rosterId)}
+                        style={{ borderTop: "1px solid var(--line)", cursor: p.ideaN ? "pointer" : "default" }}>
                         {/* ⚠ THE REASONING IS NOT GONE — it is the row's own tooltip. Deleting it would answer
                             "too much text" by removing the answer to "why this manager", which is the
                             question the section exists for. */}
@@ -18484,9 +18581,16 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                           {p.myGain > 0 ? `+${p.myGain}` : "—"}
                           {gain != null && gain > 0 && <span className="mut" style={{ fontSize: 10, fontWeight: 600 }}> +{gain}%</span>}
                         </td>
-                        <td data-lrmutual={String(p.mutual)} style={{ padding: "5px 8px", textAlign: "right",
-                          color: p.theirGain > 0 ? "var(--ink)" : "var(--mut)" }}>
-                          {p.theirGain > 0 ? `+${p.theirGain}` : "—"}
+                        {/* ⭐⭐⭐⭐ "—" WAS NOT AN EMPTY CELL, IT WAS A MISSING ANSWER — b153.
+                            Trey, twice: "the 'you' 'them' and 'ideas' columns are completely empty (which
+                            I just don't think that can be true)". Half of that was the finder (see
+                            tradeBoard) and half was here: a deal that does not raise the other manager's
+                            own starting lineup printed a dash, which reads as "no number" rather than as
+                            the number it is. It is a real quantity and it has a sign. */}
+                        <td data-lrmutual={String(p.mutual)} title={p.best && p.best.tiltNote ? p.best.tiltNote : undefined}
+                          style={{ padding: "5px 8px", textAlign: "right",
+                            color: p.theirGain > 0 ? "var(--ink)" : p.ideaN ? "var(--mut)" : "var(--mut)" }}>
+                          {p.ideaN ? (p.theirGain > 0 ? `+${p.theirGain}` : String(p.theirGain)) : "—"}
                         </td>
                         {/* ⚠ A REAL BUTTON, NOT ONLY A CLICKABLE ROW. The row keeps its click as a
                             convenience, but a <tr> with an onClick is unreachable by keyboard and invisible
@@ -18494,23 +18598,43 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                             table broke two checks in plan29cd that had been finding `row.querySelector
                             ('button')` since 29ah. The affordance and the accessibility are the same fix. */}
                         <td className="mut" style={{ padding: "5px 4px 5px 8px", textAlign: "right", whiteSpace: "nowrap", fontSize: 11 }}>
-                          {p.realisticN > 0 ? (
+                          {/* ⚠ b153 — `ideaN`, and the count is the only thing that changes. A row whose
+                              ideas are asks rather than locks says so INSIDE, on each deal's own band and
+                              tilt, which keeps the column one number wide exactly as it is now: "I don't
+                              want to make this widget less clean by adding a ton of text. I like how it
+                              looks." A dot marks the rows where nothing cleared the recommendation bar. */}
+                          {p.ideaN > 0 ? (
                             <button type="button" aria-expanded={open}
+                              title={p.realisticN ? undefined : "Fair on value, but their own starting lineup does not improve — an ask, not a lock"}
                               onClick={(e) => { e.stopPropagation(); setLrOpen(open ? null : p.rosterId); }}
                               style={{ background: "none", border: "none", padding: 0, cursor: "pointer",
                                 font: "inherit", color: "inherit" }}>
-                              {p.realisticN}<i className={`ti ti-chevron-${open ? "up" : "down"}`} style={{ fontSize: 11, marginLeft: 3 }} aria-hidden="true" />
+                              {p.ideaN}
+                              {!p.realisticN && <span style={{ color: "var(--gold)", marginLeft: 2 }} aria-hidden="true">·</span>}
+                              <i className={`ti ti-chevron-${open ? "up" : "down"}`} style={{ fontSize: 11, marginLeft: 3 }} aria-hidden="true" />
                             </button>
                           ) : <span title={p.why || undefined}>—</span>}
                         </td>
                       </tr>
-                      {open && p.deals.filter((t) => t.realism >= 45).slice(0, 3).map((t, i) => (
-                        <tr key={i} data-lrdeal style={{ background: "var(--hover)" }}>
-                          <td colSpan={6} style={{ fontSize: 11.5, padding: "3px 10px 3px 22px", lineHeight: 1.6 }}>
+                      {open && (p.ideas || p.deals.filter((t) => t.realism >= 45).slice(0, 3)).map((t, i) => (
+                        <tr key={i} data-lrdeal data-lrdealtilt={t.tilt || "both"} style={{ background: "var(--hover)" }}>
+                          <td colSpan={6} title={t.tiltNote || undefined}
+                            style={{ fontSize: 11.5, padding: "3px 10px 3px 22px", lineHeight: 1.6 }}>
                             {/* ⚠ A PACKAGE HAS TWO NAMES ON THE GIVING SIDE — b152. */}
                             <span className="mut">send </span><b>{t.give.name}</b>{t.give2 ? <> <span className="mut">+</span> <b>{t.give2.name}</b></> : null}
                             <span className="mut"> for </span><b style={{ color: "var(--pos)" }}>{t.get.name}</b>
-                            <span className="num mut" style={{ fontSize: 10.5 }}> +{t.myGain} you / +{t.theirGain} them · {t.band}</span>
+                            {/* ⚠ b153 — SIGNED, NOT ALWAYS "+". A hard-coded plus in front of a negative
+                                number printed "+-46" in the probe's own output, and it would have printed
+                                it on his screen. The tilt word after it is what he asked for in his words:
+                                "You can say that this slightly favors me or them." */}
+                            <span className="num mut" style={{ fontSize: 10.5 }}> +{t.myGain} you / {t.theirGain > 0 ? `+${t.theirGain}` : t.theirGain} them · {t.band}</span>
+                            {t.tilt === "you" && (
+                              <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".03em", marginLeft: 5,
+                                padding: "1px 5px", borderRadius: 5, whiteSpace: "nowrap", color: "var(--gold)",
+                                border: `1px solid ${alpha("var(--gold)", 45)}`, background: alpha("var(--gold)", 12) }}>
+                                FAVORS YOU
+                              </span>
+                            )}
                             <button className="btn btn-mini" data-lrbuild style={{ marginLeft: 6, fontSize: 9.5, padding: "0 5px" }}
                               onClick={(e) => { e.stopPropagation(); tbOpen(t.team.rosterId, [String(t.give.sid)].concat(t.give2 ? [String(t.give2.sid)] : []), [String(t.get.sid)]);
                                 try { const el = document.querySelector('[data-tb]'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {} }}>Price it</button>
@@ -18669,7 +18793,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                               <span className="mut"> {race.label || "playoff odds"}</span>
                             </span>
                           )}
-                          <span className="mut">they gain <b className="num" style={{ color: "var(--ink)" }}>+{t.theirGain}</b></span>
+                          {/* ⚠ b153 — signed, and the verb changes with the sign. See the tilt band. */}
+                          <span className="mut">{t.theirGain > 0 ? "they gain " : "their lineup "}<b className="num" style={{ color: t.theirGain > 0 ? "var(--ink)" : "var(--mut)" }}>{t.theirGain > 0 ? `+${t.theirGain}` : t.theirGain}</b></span>
                           {/* ⭐⭐⭐⭐⭐ THE VALUE CHECK, SHOWN RATHER THAN ASSERTED — 29r, and it nearly did not
                               survive 29af's rewrite. The lineup gains say the swap helps both teams; they
                               do not say it is a swap anyone would accept, and that exact gap is what
@@ -18963,7 +19088,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                                     <span style={{ color: "var(--red)" }}>{x.give.name}</span>
                                     <span className="mut"> for </span>
                                     <span style={{ color: "var(--pos)" }}>{x.get.name}</span>
-                                    <span className="mut" style={{ fontSize: 10 }}> · you +{x.myGain}, them +{x.theirGain}</span>
+                                    <span className="mut" style={{ fontSize: 10 }}> · you +{x.myGain}, them {x.theirGain > 0 ? `+${x.theirGain}` : x.theirGain}</span>
                                   </button>
                                 ))}
                               </div>
