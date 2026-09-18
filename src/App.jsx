@@ -99,7 +99,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29am";
+const BUILD_TAG = "2026.07.29an";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -11201,7 +11201,16 @@ export default function App() {
           {msg ? <div className="mut" style={{ fontSize: 11, lineHeight: 1.5, marginBottom: 18, padding: "8px 10px", border: "1px solid var(--line)", borderRadius: 8, background: "var(--panel2)", fontFamily: "var(--mono)", wordBreak: "break-word" }}>Details (for support): {msg}</div> : null}
           <button className="btn btn-gold" onClick={() => setRoute("home")}>← Back to your leagues</button>
         </div>
-      )}><TeamHub user={user} leagues={visibleLeagues} leagueId={hubLeagueId} onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} onUpdate={updateUser} onGameDay={() => setRoute("gameday")} /></Boundary>}
+      )}><TeamHub user={user} leagues={visibleLeagues} leagueId={hubLeagueId} onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} onUpdate={updateUser} onGameDay={() => setRoute("gameday")}
+        /* ⭐⭐⭐⭐ b154 — THE DRAFT IS REACHABLE FROM THE LEAGUE IT BELONGS TO. Trey: "When you have clicked
+           into the league hub and looking at the summary, matchup, review, etc... I want a section to see
+           draft ... then a pop up that comes up to select draft board or draft summary."
+           ⚠ THE HUB AND THE DRAFT ROOM ARE KEYED DIFFERENTLY — the hub by the PLATFORM's league id, the
+             draft room by the app's own league record — so the hub resolves the local league itself (it
+             already holds `leagues` for exactly this kind of lookup) and hands the id back. Nothing here
+             invents a route the rest of the app does not already use: this is the same three calls
+             "View draft" makes from the home page. */
+        onOpenDraft={(localId, t) => { setDraftTab(t || null); setActiveId(localId); setRoute("draft"); }} /></Boundary>}
       {route === "teamHub" && hubLeagueId && !user && (
         <HubShell title="Team hub" onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} user={user}><HubLoading /></HubShell>
       )}
@@ -16141,7 +16150,7 @@ function HubLoading() {
     </div>
   );
 }
-function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate, onGameDay }) {
+function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate, onGameDay, onOpenDraft }) {
   const [data, setData] = useState(null);      // response from /sleeper/team-hub
   const [viewWeek, setViewWeek] = useState(null); // week the user picked to look at; null = backend default (current/upcoming)
   const [curWeek, setCurWeek] = useState(null);   // the backend's resolved current/upcoming week (toggle baseline)
@@ -16153,6 +16162,13 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   const [tab, setTab0] = useState("notes");    // notes(Summary) | lineup | freeagents | trades | roster | league
   const setTab = (t) => setTab0(t === "live" ? "lineup" : t);
   const [briefOpen, setBriefOpen] = useState(false); // the weekly brief modal
+  const [draftPick, setDraftPick] = useState(false); // b154 — the Draft chooser (board vs summary)
+  /* ⭐⭐⭐⭐ WHICH LOCAL LEAGUE IS THIS HUB LOOKING AT. The hub is addressed by the PLATFORM's league id;
+     the draft room is addressed by the app's own league record. `hubIdOfLeague` is the one function that
+     maps between them and has been since 29ai, so this is a lookup rather than a second convention. */
+  const draftLeague = React.useMemo(
+    () => (leagues || []).find((l) => String(hubIdOfLeague(l)) === String(leagueId)) || null,
+    [leagues, leagueId]);
   /* ⭐⭐⭐⭐⭐ MATCHUP AND LIVE ARE ONE SCREEN — 29r.
      Trey: "you can look at 'matchup' and 'live' — these should really be combined. You should be able to
      see the live points scored and then under would show the projected points to show how the expectation
@@ -16930,6 +16946,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   try {
     leagueTeams = (data.teams || []).map((t) => {
     const roster = resolve(t.players);
+    /* ⚠⚠ THE UNION IS A SEPARATE FIELD, NOT A WIDER `roster` — b154. Sleeper keeps IR and taxi men in
+       their own arrays and does not always mirror them back into `players`, so a card that wants to show
+       the WHOLE team has to ask for all three. It must not widen `roster` to do it: every power rating,
+       positional-strength score and projected standing on this screen is computed from `roster`, and
+       quietly folding injured-reserve bodies into them would move numbers all over the hub for a change
+       that was supposed to be a hover. `resolve` already drops ids the pool cannot name and dedupes, so
+       the concat is safe even when the platform DOES mirror them. */
+    const rosterAll = resolve([].concat(t.players || [], t.reserve || [], t.taxi || []));
     const lu = lineupSlots(roster, cfg.sf);
     const fShare = flexShareForRoster(lu);
     const power = Math.round(lu.slots.reduce((s, sl) => s + (sl.p ? sl.p.pts : 0), 0) * 10) / 10;
@@ -16961,11 +16985,28 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     });
     const wins = t.record ? t.record.wins : 0;
     const losses = t.record ? t.record.losses : 0;
-    return { rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName, isMe: t.rosterId === data.myRosterId, power, posStrength, posQuality, posPlayers, posStarted, roster, flexShare: fShare, wins, losses, pointsFor: t.pointsFor || 0, record: t.record,
+    return { rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName, isMe: t.rosterId === data.myRosterId, power, posStrength, posQuality, posPlayers, posStarted, roster, rosterAll, flexShare: fShare, wins, losses, pointsFor: t.pointsFor || 0, record: t.record,
       /* The lineup this manager ACTUALLY SET this week. 29af reads it two ways: a startable man they left on
          their bench is a player they do not rate, and the gap between what they set and what they could have
          is the most direct evidence there is about how closely somebody is paying attention. */
-      setStarters: Array.isArray(t.starters) ? t.starters.filter(Boolean).map(String) : null };
+      setStarters: Array.isArray(t.starters) ? t.starters.filter(Boolean).map(String) : null,
+      /* ⭐⭐⭐⭐⭐ THE SAME LIST WITH ITS HOLES LEFT IN — b154, and the hole is the whole point.
+         Sleeper stores a set lineup POSITIONALLY: index 0 is the QB slot, index 6 is the flex, and an
+         EMPTY slot is the string "0". `setStarters` above drops those, which is right for "who is this
+         manager starting" and quietly catastrophic for "which slot is he in" — every man after the gap
+         shifts up one, so a roster with no kicker named labels its DST "K", and one with an empty QB slot
+         labels a running back "QB". I found it by giving the fixture a genuinely empty slot for the first
+         time (the new IR knob nulls a starter out) and reading the card: "QB Kyren Williams". */
+      setStarterSlots: Array.isArray(t.starters)
+        ? t.starters.map((id) => (id != null && String(id) !== '0' ? String(id) : null)) : null,
+      /* ⭐⭐⭐ b154 — IR AND TAXI, CARRIED RATHER THAN INFERRED. The backend has sent `reserve` and `taxi`
+         per roster since b123 (they are separate Sleeper arrays and a roster mid-move does not always
+         mirror them back into `players`), and the hub had been throwing them away. Trey: "then the bench
+         and IR." A man on IR is NOT bench depth — he cannot play until his team activates him — so
+         subtracting the starters from the roster and calling the remainder "bench" would file him under
+         cover this manager does not actually have. */
+      reserveSids: Array.isArray(t.reserve) ? t.reserve.filter(Boolean).map(String) : [],
+      taxiSids: Array.isArray(t.taxi) ? t.taxi.filter(Boolean).map(String) : [] };
   });
   // Power rankings: overall ROSTER STRENGTH (quality × quantity across positions) — a different lens than
   // projected points, so it stays distinct from projected standings even before any games are played.
@@ -17405,12 +17446,37 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   let matchupView = null;
   if (data.matchup && data.matchup.opp) {
     const oppTeam = data.teams.find((t) => t.rosterId === data.matchup.opp.rosterId);
-    // Each side's ACTUAL set starters, IN SLOT ORDER (Sleeper stores them positionally). Fall back to the
-    // optimal lineup only if a team hasn't set one.
-    const meSet = (myTeam.starters && myTeam.starters.length) ? resolve(myTeam.starters.filter(Boolean)) : optimalStarters;
-    const oppSet = (oppTeam && oppTeam.starters && oppTeam.starters.length) ? resolve(oppTeam.starters.filter(Boolean)) : [];
+    /* Each side's ACTUAL set starters, IN SLOT ORDER (Sleeper stores them positionally). Fall back to the
+       optimal lineup only if a team hasn't set one.
+       ⚠⚠ AND THE HOLES STAY IN — b154. This read `starters.filter(Boolean)`, which is right for "who is
+         playing" and wrong for the very next line, which pairs the result against `slotTemplate` BY INDEX.
+         Sleeper writes an empty slot as "0", so a lineup with no kicker named shifted every man after it
+         up one and the row labels stopped describing the players beside them: I watched the card print
+         "QB Kyren Williams" the first time the fixture was given a genuinely empty slot. The rows have
+         handled a null on either side since they were written (`meSet[i] || null`), so keeping the gap
+         costs nothing and is the only version that can be read.
+       ⚠ A REPEATED ID STILL COLLAPSES TO ONE SLOT. `resolve` dedupes a roster (b152, the Deebo bug) and
+         a set lineup deserves the same: the same man drawn into two slots is the same double-count, and
+         `sumPts` below would add him twice. */
+    const slotsOf = (team) => {
+      const raw = (team && Array.isArray(team.starters)) ? team.starters : null;
+      if (!raw || !raw.length) return null;
+      const ids = raw.map((id) => (id != null && String(id) !== "0" ? String(id) : null));
+      const bySid = new Map(resolve(ids.filter(Boolean)).map((p) => [String(p.sid), p]));
+      const seen = new Set();
+      return ids.map((sid) => {
+        if (!sid || seen.has(sid)) return null;
+        seen.add(sid);
+        return bySid.get(sid) || null;
+      });
+    };
+    const meSet = slotsOf(myTeam) || optimalStarters;
+    const oppSet = slotsOf(oppTeam) || [];
     const oppRoster = oppTeam ? resolve(oppTeam.players) : [];
     const oppStartersFallback = oppSet.length ? oppSet : (oppRoster.length ? lineupSlots(oppRoster, cfg.sf).slots.map((s) => s.p).filter(Boolean) : []);
+    // ⚠ EVERY CONSUMER BELOW THAT WANTS PEOPLE RATHER THAN SLOTS TAKES THE COMPACTED LIST.
+    const meSetPlayers = meSet.filter(Boolean);
+    const oppSetPlayers = oppStartersFallback.filter(Boolean);
     const meLive = data.matchup.me.weekPoints;
     const oppLive = data.matchup.opp.weekPoints;
     const isLive = (meLive != null && meLive > 0) || (oppLive != null && oppLive > 0);
@@ -17418,7 +17484,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     const pairRows = slotTemplate.map((slot, i) => ({ slot, me: meSet[i] || null, opp: oppStartersFallback[i] || null }));
 
     // Opponent bench = their roster minus who they're starting.
-    const oppStarterSids = new Set(oppStartersFallback.map((p) => p.sid));
+    const oppStarterSids = new Set(oppSetPlayers.map((p) => p.sid));
     const oppBench = oppRoster.filter((p) => !oppStarterSids.has(p.sid)).sort((a, b) => (b.pts || 0) - (a.pts || 0));
 
     // Opponent lineup upgrades — same logic as ours: what would their OPTIMAL lineup be, and which of those
@@ -17426,12 +17492,12 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     const oppOpt = oppRoster.length ? lineupSlots(oppRoster, cfg.sf) : { slots: [], bench: [] };
     const oppOptimalStarters = oppOpt.slots.map((s) => s.p).filter(Boolean);
     const oppOptPts = sumPts(oppOptimalStarters);
-    const oppSetPts = sumPts(oppStartersFallback);
+    const oppSetPts = sumPts(oppSetPlayers);
     const oppLeftOnBench = Math.round(Math.max(0, oppOptPts - oppSetPts) * 10) / 10;
-    const oppSetSids = new Set(oppStartersFallback.map((p) => p.sid));
+    const oppSetSids = new Set(oppSetPlayers.map((p) => p.sid));
     const oppSwapsIn = oppOptimalStarters.filter((p) => !oppSetSids.has(p.sid));
     const oppOptSids = new Set(oppOptimalStarters.map((p) => p.sid));
-    const oppSwapsOut = oppStartersFallback.filter((p) => !oppOptSids.has(p.sid));
+    const oppSwapsOut = oppSetPlayers.filter((p) => !oppOptSids.has(p.sid));
 
     /* ⭐⭐⭐⭐ AND MY BENCH HAS TO BE THE BENCH OF THE LINEUP BEING SHOWN — b152.
        The rows above are the lineup Trey ACTUALLY SET; the bench underneath was `opt.bench`, the leftovers
@@ -17439,7 +17505,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
        bench appeared in both halves and the man it would start appeared in neither. The opponent's bench
        three lines up has been computed correctly from their SET starters since it was written, which is
        the tell — the same screen did it right on one side and wrong on the other. */
-    const meSetSids = new Set(meSet.filter(Boolean).map((p) => String(p.sid)));
+    const meSetSids = new Set(meSetPlayers.map((p) => String(p.sid)));
     const meBench = myRoster.filter((p) => !meSetSids.has(String(p.sid)))
       .sort((a, b) => (b.pts || 0) - (a.pts || 0));
 
@@ -17456,7 +17522,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
       meName: data.matchup.me.teamName,
       oppName: data.matchup.opp.teamName,
       oppOwnerName: (oppTeam && oppTeam.ownerName) || data.matchup.opp.ownerName || null,
-      mePts: isLive ? (meLive || 0) : sumPts(meSet),
+      mePts: isLive ? (meLive || 0) : sumPts(meSetPlayers),
       oppPts: isLive ? (oppLive || 0) : oppSetPts,
       meStarters: meSet,
       oppStarters: oppStartersFallback,
@@ -17617,12 +17683,86 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
               <i className={`ti ${icon}`} style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />{label}
             </button>
           ))}
+          {/* ⭐⭐⭐⭐ DRAFT IS A DOORWAY, NOT A TAB — b154. Trey asked for "a section to see draft ... then a
+              pop up that comes up to select draft board or draft summary", and the popup is the right shape
+              for a reason worth stating: both destinations are WHOLE SCREENS that replace the hub, so
+              rendering either one inside a tab would mean a third copy of the draft board living in a
+              component that knows nothing about drafting. The button sits in the tab row because that is
+              where a reader looks for "the other things this league has", and it leaves rather than
+              switches — which the popup is what makes obvious. */}
+          {onOpenDraft && (
+            <button className="btn btn-mini" data-hubdraftopen onClick={() => setDraftPick(true)}
+              title="Open this league's draft board or draft summary"
+              style={{ background: "transparent", color: "var(--ink)" }}>
+              <i className="ti ti-layout-board" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Draft
+            </button>
+          )}
           <div style={{ flex: 1, minWidth: 0 }} />
           <button className="btn btn-mini" onClick={() => { setBriefOpen(true); markWeekSeen(); }} title="Everything worth knowing about this week, in one card you can paste into the league chat"
             style={{ borderColor: "var(--gold)", color: "var(--gold)", flexShrink: 0 }}>
             <i className="ti ti-clipboard-text" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Weekly brief
           </button>
         </div>
+
+        {/* ===== THE DRAFT CHOOSER ===== */}
+        {draftPick && (() => {
+          const picksN = draftLeague ? ((draftLeague.picks || []).length) : 0;
+          const over = draftIsOver(draftLeague);
+          const choose = (t) => { setDraftPick(false); if (draftLeague) onOpenDraft(draftLeague.id, t); };
+          /* ⚠⚠ A DEAD BUTTON IS WORSE THAN A MISSING ONE, AND A MISSING ONE IS WORSE THAN AN EXPLAINED
+             ABSENCE. Two states can genuinely have nothing behind them — a hub league that was never
+             imported as a draft in this app, and one whose draft has no picks recorded — and 29r's rule
+             applies exactly: a thing that is ABSENT is indistinguishable from a thing that failed to load.
+             So the popup always opens and always says which of the three situations this league is in. */
+          const Choice = ({ k, icon, label, note, disabled }) => (
+            <button type="button" className="btn" data-hubdraftchoice={k} disabled={disabled}
+              onClick={disabled ? undefined : () => choose(k)}
+              style={{ display: "flex", alignItems: "center", gap: 11, width: "100%", textAlign: "left",
+                padding: "12px 14px", opacity: disabled ? 0.45 : 1, cursor: disabled ? "not-allowed" : "pointer" }}>
+              <i className={`ti ${icon}`} style={{ fontSize: 20, color: "var(--gold)", flexShrink: 0 }} aria-hidden="true" />
+              <span style={{ minWidth: 0 }}>
+                <span className="disp" style={{ display: "block", fontSize: 14.5, fontWeight: 700 }}>{label}</span>
+                <span className="mut" style={{ display: "block", fontSize: 11.5, lineHeight: 1.4, fontWeight: 400 }}>{note}</span>
+              </span>
+            </button>
+          );
+          return (
+            <div onClick={() => setDraftPick(false)} data-hubdraftmodal
+              style={{ position: "fixed", inset: 0, zIndex: 80, background: "#000b", display: "flex",
+                alignItems: "flex-start", justifyContent: "center", padding: "12vh 16px", overflow: "auto" }}>
+              <div className="panel" onClick={(e) => e.stopPropagation()}
+                style={{ maxWidth: 440, width: "100%", padding: 0, overflow: "hidden" }}>
+                <div style={{ padding: "13px 16px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "flex-start", gap: 10 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="disp" style={{ fontSize: 11, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--gold)" }}>{data.leagueName}</div>
+                    <div className="disp" style={{ fontSize: 18, fontWeight: 800, marginTop: 2 }}>Open the draft</div>
+                  </div>
+                  <button onClick={() => setDraftPick(false)} aria-label="Close"
+                    style={{ background: "transparent", border: "none", color: "var(--mut)", cursor: "pointer", padding: 4, flexShrink: 0 }}>
+                    <i className="ti ti-x" style={{ fontSize: 17 }} aria-hidden="true" />
+                  </button>
+                </div>
+                <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 9 }}>
+                  {!draftLeague ? (
+                    <div className="mut" data-hubdraftnone style={{ fontSize: 12.5, lineHeight: 1.55 }}>
+                      This league is connected for the in-season hub, but it hasn't been set up as a draft in
+                      Fantasy Draft Compass — so there is no board or summary to open. Import it from your
+                      home page and the draft screens will appear here.
+                    </div>
+                  ) : (
+                    <>
+                      <Choice k="board" icon="ti-layout-board" label="Draft board"
+                        note={picksN ? `Every team's picks, round by round — ${picksN} recorded${over ? ", draft complete" : ", still in progress"}.` : "Round by round, every team. No picks are recorded for this league yet."} />
+                      <Choice k="summary" icon="ti-clipboard-text" label="Draft summary"
+                        disabled={!picksN}
+                        note={picksN ? `How it went: value by team, steals, reaches and grades across all ${picksN} picks.` : "Nothing to summarise until the draft has picks in it."} />
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ===== THE WEEKLY BRIEF =====
              Built from the same buildDigest() that will feed the Sunday-morning email once the backend can
@@ -19352,13 +19492,71 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       });
                       return withMeta.map(({ st, lt, pj, pr }) => {
                       const inPlayoffs = pj && pj.projRank <= playoffSpots;
+                      /* ⭐⭐⭐⭐⭐ THE WHOLE TEAM, IN THE ORDER A MANAGER READS ONE — b154.
+                         Trey: "when you hover the name of the person, can you show the whole team starting
+                         with their current starting lineup... then a line separation... and then the bench
+                         and IR."
+
+                         ⚠⚠ "CURRENT" IS THE LINEUP THEY SET, NOT THE ONE WE WOULD SET. This card showed
+                           `lineupSlots(roster)` — the OPTIMAL lineup — which is a different team from the
+                           one that will actually play on Sunday, and the whole point of looking at a rival
+                           is to see what they are doing. The same distinction cost the matchup tab a bug in
+                           b152 (set starters above, optimal bench below), and it is the same fix: read
+                           `setStarters`, in slot order, and fall back to the optimal only when the platform
+                           has given us nothing — saying so in the header when that happens, because a
+                           lineup nobody set is not a claim about this manager.
+                         ⚠ ONE TABLE, NOT THREE. `playertable` already carries `ruleRow`, a labelled rule
+                           across the full width — so the columns stay aligned down the whole card and the
+                           separations are the ones he asked for rather than three tables that each start
+                           their own grid. */
                       const rosterTipContent = (() => {
-                        if (!lt.roster) return null;
-                        const lu = lineupSlots(lt.roster, cfg.sf);
-                        const starters = lu.slots.filter((sl) => sl.p).map((sl) => ({ ...sl.p, slot: sl.slot }));
+                        const full = (lt.rosterAll && lt.rosterAll.length) ? lt.rosterAll : lt.roster;
+                        if (!full || !full.length) return null;
+                        const bySidR = new Map(full.map((p) => [String(p.sid), p]));
+                        /* ⚠ `setStarterSlots`, WHICH KEEPS ITS HOLES — see leagueTeams. Pairing a
+                           hole-free list against a slot template mislabels everything after the hole. */
+                        const seenSet = new Set();
+                        const set = (lt.setStarterSlots || []).map((sid) => {
+                          if (!sid || seenSet.has(sid)) return null;
+                          seenSet.add(sid);
+                          return bySidR.get(String(sid)) || null;
+                        });
+                        const isSet = set.some(Boolean);
+                        /* ⚠⚠ AN EMPTY SLOT IS A FACT ABOUT THIS MANAGER, NOT A ROW TO SKIP. Dropping it
+                           was how the b154 label shift stayed invisible, and it is worth showing on its own
+                           merits: a rival fielding eight men where the league starts nine is the most
+                           actionable thing on this card, and a card that silently renders eight rows tells
+                           you nothing except that you cannot count on it. */
+                        const starters = isSet
+                          ? slotTemplate.map((sl, i) => (set[i]
+                            ? { ...set[i], slot: sl.label }
+                            : { slot: sl.label, name: "— empty —", empty: true, pts: 0, team: "—" }))
+                          /* ⚠ THE FALLBACK SOLVES THE PLAYABLE ROSTER, NOT THE UNION — an IR man cannot
+                             be started, and a "best lineup" that fields one would be fiction. */
+                          : lineupSlots(lt.roster, cfg.sf).slots.filter((sl) => sl.p).map((sl) => ({ ...sl.p, slot: sl.slot }));
+                        const startSids = new Set(starters.filter((p) => p.sid != null).map((p) => String(p.sid)));
+                        const irSids = new Set(lt.reserveSids || []);
+                        const taxiSids = new Set(lt.taxiSids || []);
+                        const byPts = (a, b) => (b.pts || 0) - (a.pts || 0);
+                        const rest = full.filter((p) => !startSids.has(String(p.sid)));
+                        const bench = rest.filter((p) => !irSids.has(String(p.sid)) && !taxiSids.has(String(p.sid))).sort(byPts);
+                        const ir = rest.filter((p) => irSids.has(String(p.sid))).sort(byPts);
+                        const taxi = rest.filter((p) => taxiSids.has(String(p.sid))).sort(byPts);
+                        /* ⚠ A SECTION WITH NOBODY IN IT GETS NO RULE. Most leagues never use the taxi squad
+                           and plenty of rosters have nobody on IR; a labelled divider over an empty run
+                           reads as data missing rather than as a section that does not apply. */
+                        const section = (label, list, slot, tone) => (list.length
+                          ? [{ ruleRow: true, label: `${label} (${list.length})`, tone }]
+                            .concat(list.map((p) => ({ ...p, slot })))
+                          : []);
                         return [
-                          { kind: "take", tone: "neutral", x: `${st.teamName}${st.ownerName ? ` · @${st.ownerName}` : ""} — starting lineup` },
-                          { kind: "playertable", cols: ["slot", "name", "team", "age", "pts", "vbd"], players: starters },
+                          { kind: "take", tone: "neutral",
+                            x: `${st.teamName}${st.ownerName ? ` · @${st.ownerName}` : ""} — ${isSet ? "current lineup" : "best lineup (none set)"}` },
+                          { kind: "playertable", cols: ["slot", "name", "team", "age", "pts", "vbd"],
+                            players: starters
+                              .concat(section("Bench", bench, "BN", "var(--line2)"))
+                              .concat(section("Injured reserve", ir, "IR", "var(--red)"))
+                              .concat(section("Taxi squad", taxi, "TX", "var(--mut)")) },
                         ];
                       })();
                       const nameTip = rosterTipContent ? (e) => showTip(e, rosterTipContent) : undefined;
