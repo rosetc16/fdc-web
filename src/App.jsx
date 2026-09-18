@@ -3,6 +3,7 @@ import { api, hasBackend, getToken, setToken, syncHealth, authHealth } from "./a
 import { useWide } from "./usewide.js";
 import { HoverTable, useHoverCard } from "./hovercard.jsx";
 import { teamReads, tradeBoard, marketSummary, partnerBoard, raceCurrency } from "./trademarket.js";
+import { GUIDE_TASKS, GUIDE_MAP, GUIDE_GLOSSARY, guideIndex, guideSearch } from "./guide.js";
 
 // Lightweight SECTION-level error boundary. The app has a full-page boundary at the root, but a render error
 // in one panel (e.g. a rare data edge case in the draft recap/superlatives) shouldn't take down the entire
@@ -99,7 +100,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29an";
+const BUILD_TAG = "2026.07.29ao";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -10043,7 +10044,18 @@ export default function App() {
   const [rankEditFromDraft, setRankEditFromDraft] = useState(null); // league id to return to if editing came from a draft
   // Wire the global navigation hook so shared chrome (AppHeader, etc.) can always route — this is what makes
   // the admin/account/home buttons work on every page without threading a handler through each component.
-  setGlobalNav(setRoute);
+  /* ⭐⭐⭐ b155 — THE GLOBAL HOOK CAN NAME A TAB NOW, so shared chrome can send somebody to a specific
+     place rather than to a screen's last-remembered state. `navTo("help:wherethings")` is the guide's
+     doorway from every header in the app; a bare route behaves exactly as it always has. */
+  setGlobalNav((r) => {
+    const s2 = String(r || "");
+    const i = s2.indexOf(":");
+    if (i > 0) {
+      const route = s2.slice(0, i), sub = s2.slice(i + 1);
+      if (route === "help") { setHelpTab(sub); setRoute("help"); return; }
+    }
+    setRoute(r);
+  });
   const [user, setUser] = useState(null); // {email, paid, admin}
   const [authOpen, setAuthOpen] = useState(false);
   // A password-reset link lands as /?reset=<token>. Read it ONCE at module-mount time and strip it from the
@@ -11514,6 +11526,175 @@ function WhyGraphic({ kind }) {
   );
   return null;
 }
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+   THE GUIDE — ONE COMPONENT, TWO SURFACES — b155.
+   Trey: "we likely need to create some guide or instructions on where things are located. It could be a
+   glossary of sorts. Sometimes the site can be hard to navigate."
+
+   ⚠⚠ IT RENDERS ON THE MARKETING PAGE AND INSIDE HELP, FROM ONE DATA FILE (src/guide.js). A stranger
+     deciding whether to pay and a member who cannot find the waiver screen want the same document; the
+     only difference is the doorway. Writing it twice would put the two a build apart within a month.
+   ⭐ THE SEARCH BOX IS THE FEATURE, not the section headings. "Sometimes the site can be hard to navigate"
+     is a search problem, and the vocabulary mismatch is most of it: people look for "waivers" on a screen
+     called Free agents and for "bench points" on one called Matchup. Every row carries extra search words
+     for exactly that, and the results lead with the ROUTE rather than with the explanation.
+   ⚠ `compact` is the marketing variant: same content, no in-app phrasing like "open a league", because a
+     reader who has not signed up has no leagues to open. It changes the framing line, not the answers —
+     hiding half the map from somebody deciding whether to buy would defeat the point of putting it there. */
+function GuideBook({ compact, onDemo }) {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(null);
+  const rows = useMemo(() => guideIndex(), []);
+  const hits = useMemo(() => guideSearch(rows, q), [rows, q]);
+  const searching = q.trim().length >= 2;
+
+  const Crumb = ({ children }) => (
+    <span className="num" style={{ fontSize: 11.5, color: "var(--gold)", fontWeight: 700, whiteSpace: "nowrap" }}>{children}</span>
+  );
+  return (
+    <div data-guidebook>
+      <div style={{ position: "relative", marginBottom: 16 }}>
+        <i className="ti ti-search" aria-hidden="true"
+          style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 15, color: "var(--mut)" }} />
+        <input value={q} onChange={(e) => setQ(e.target.value)} data-guidesearch
+          placeholder="Search — try “waivers”, “power rank”, “VBD”, “set my lineup”"
+          aria-label="Search the guide"
+          style={{ width: "100%", boxSizing: "border-box", padding: "11px 12px 11px 36px", fontSize: 14,
+            fontFamily: "inherit", color: "var(--ink)", background: "var(--panel2)",
+            border: "1px solid var(--line2)", borderRadius: 10 }} />
+        {q && (
+          <button onClick={() => setQ("")} aria-label="Clear search"
+            style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "transparent", border: "none", color: "var(--mut)", cursor: "pointer", padding: 4 }}>
+            <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true" />
+          </button>
+        )}
+      </div>
+
+      {searching ? (
+        <div data-guideresults={String(hits.length)}>
+          {hits.length === 0 ? (
+            /* ⚠ AN EMPTY RESULT STILL OWES AN ANSWER. "No matches" on a help page is the moment somebody
+               gives up, so it points at the one route that always reaches a person. */
+            <div className="panel" style={{ padding: 16 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Nothing matched “{q.trim()}”.</div>
+              <div className="mut" style={{ fontSize: 13, lineHeight: 1.55 }}>
+                Try a plainer word — “trade”, “lineup”, “waiver”, “draft”. If it is genuinely not here,
+                the Contact tab reaches a person and the reply comes back to your email.
+              </div>
+            </div>
+          ) : hits.map((h, i) => (
+            <div key={i} className="panel" data-guidehit={h.kind} style={{ padding: "12px 14px", marginBottom: 8 }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 3 }}>
+                <span className="disp" style={{ fontSize: 15, fontWeight: 700 }}>{h.title}</span>
+                <span className="chip" style={{ fontSize: 9.5 }}>{h.kind === "task" ? "how to" : h.kind === "term" ? "term" : "screen"}</span>
+              </div>
+              <div style={{ marginBottom: 4 }}><Crumb>{h.go}</Crumb></div>
+              <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55 }}>{h.note}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <>
+          {/* ── I WANT TO… ─────────────────────────────────────────────────────────────────────── */}
+          <div className="panel" style={{ padding: 16, marginBottom: 18 }}>
+            <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 2 }}>I want to…</div>
+            <div className="mut" style={{ fontSize: 12.5, marginBottom: 12 }}>
+              {compact
+                ? "The twelve things people open the app to do, and where each one lives."
+                : "The quickest route to the thing you are actually trying to do. Click one for the detail."}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              {GUIDE_TASKS.map((t, i) => {
+                const isOpen = open === `t${i}`;
+                return (
+                  <div key={i} data-guidetask={t.want} style={{ borderTop: i ? "1px solid var(--line)" : "none" }}>
+                    <button type="button" aria-expanded={isOpen}
+                      onClick={() => setOpen(isOpen ? null : `t${i}`)}
+                      style={{ width: "100%", textAlign: "left", background: "transparent", border: "none",
+                        padding: "9px 2px", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)",
+                        display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 13.5, fontWeight: 600, flex: "1 1 200px" }}>{t.want}</span>
+                      <Crumb>{t.go}</Crumb>
+                      <i className={`ti ti-chevron-${isOpen ? "up" : "down"}`} style={{ fontSize: 12, color: "var(--mut)" }} aria-hidden="true" />
+                    </button>
+                    {isOpen && <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, padding: "0 2px 10px" }}>{t.note}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* ── THE MAP ────────────────────────────────────────────────────────────────────────── */}
+          {GUIDE_MAP.map((sec) => (
+            <div key={sec.key} className="panel" data-guidesection={sec.key} style={{ padding: 16, marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 3 }}>
+                <i className={`ti ${sec.icon}`} style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
+                <div className="disp" style={{ fontSize: 17, fontWeight: 700 }}>{sec.title}</div>
+              </div>
+              <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 12 }}>{sec.blurb}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {sec.items.map((it) => (
+                  <div key={it.name} data-guideplace={it.name}
+                    style={{ borderLeft: "2px solid var(--line2)", paddingLeft: 12 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 9, flexWrap: "wrap" }}>
+                      <span className="disp" style={{ fontSize: 14.5, fontWeight: 700 }}>{it.name}</span>
+                      <Crumb>{it.find}</Crumb>
+                    </div>
+                    <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginTop: 2 }}>{it.does}</div>
+                    {it.tabs && (
+                      <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(230px,1fr))", gap: "5px 16px" }}>
+                        {it.tabs.map(([label, what]) => (
+                          <div key={label} data-guidetab={label} style={{ fontSize: 12, lineHeight: 1.5 }}>
+                            <b style={{ color: "var(--ink)" }}>{label}</b>
+                            <span className="mut"> — {what}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          {/* ── THE GLOSSARY ───────────────────────────────────────────────────────────────────── */}
+          <div className="panel" data-guideglossary style={{ padding: 16 }}>
+            <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 2 }}>Glossary</div>
+            <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 14 }}>
+              Every number on every screen is a measured thing rather than a vibe — but a measurement you
+              cannot name is indistinguishable from one. This is what each word means and where you meet it.
+            </div>
+            {GUIDE_GLOSSARY.map((g) => (
+              <div key={g.group} data-guidegroup={g.group} style={{ marginBottom: 16 }}>
+                <div className="disp" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--gold)", fontWeight: 800, marginBottom: 7 }}>{g.group}</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                  {g.terms.map((t) => (
+                    <div key={t.term} data-guideterm={t.term}>
+                      <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                        <b style={{ fontSize: 13.5 }}>{t.term}</b>
+                        <span className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em" }}>{t.where}</span>
+                      </div>
+                      <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55 }}>{t.say}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {compact && onDemo && (
+            <div style={{ textAlign: "center", marginTop: 20 }}>
+              <button className="btn btn-gold" style={{ padding: "12px 26px", fontSize: 15 }} onClick={onDemo}>
+                <i className="ti ti-player-play" style={{ fontSize: 14, marginRight: 7 }} aria-hidden="true" />Try it free — a real mock draft
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function HelpPage({ user, biz, onBack, onHome, onSignOut, onSubmit, initialTab }) {
   const [tab, setTab] = useState(initialTab || "help");
   const [email, setEmail] = useState(user?.email || "");
@@ -11547,10 +11728,26 @@ function HelpPage({ user, biz, onBack, onHome, onSignOut, onSubmit, initialTab }
         </div>
 
         <div className="hairline" style={{ display: "flex", gap: 4, marginBottom: 18, flexWrap: "wrap" }}>
-          {[["help","Help & FAQ"],["guide","Quick-start guide"],["contact","Contact us"],["legal","Terms & privacy"]].map(([k, l]) => (
+          {/* ⭐ b155 — "Where things live" sits SECOND, ahead of the quick-start. The five-step start flow
+              is for somebody's first day; the map and glossary are for every day after it, which is when
+              "sometimes the site can be hard to navigate" actually bites. */}
+          {[["help","Help & FAQ"],["wherethings","Where things live"],["guide","Quick-start guide"],["contact","Contact us"],["legal","Terms & privacy"]].map(([k, l]) => (
             <button key={k} onClick={() => setTab(k)} style={{ background: "transparent", border: "none", borderBottom: tab === k ? "2px solid var(--gold)" : "2px solid transparent", color: tab === k ? "var(--gold)" : "var(--mut)", fontWeight: 600, fontSize: 14, padding: "10px 14px", cursor: "pointer", fontFamily: "inherit" }}>{l}</button>
           ))}
         </div>
+
+        {tab === "wherethings" && (
+          <div>
+            <div className="panel" style={{ padding: 16, marginBottom: 14 }}>
+              <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Where everything lives</div>
+              <div className="mut" style={{ fontSize: 13, lineHeight: 1.55 }}>
+                Every screen in the app, what question each one answers, and how to get there — plus a
+                glossary of the words and numbers the screens use. Search it rather than scroll it.
+              </div>
+            </div>
+            <GuideBook />
+          </div>
+        )}
 
         {tab === "help" && (
           <div>
@@ -19932,6 +20129,10 @@ function HubShell({ title, onBack, onHome, onSignOut, user, children }) {
         <div style={{ flex: 1 }} />
         <span className="chip" style={{ color: "var(--blue)" }}><i className="ti ti-plug-connected" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />In-season hub</span>
         <ThemeToggle compact />
+        {/* b155 — the league hub has its own chrome rather than AppHeader's, so the guide's doorway has
+            to be added here too. This is the screen with the most tabs and therefore the most to get
+            lost in. */}
+        <button className="btn btn-mini" data-guidebtn onClick={() => navTo("help:wherethings")} title="Where everything lives, and what every term means"><i className="ti ti-compass" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Guide</button>
         <button className="btn btn-mini" onClick={onHome}>Home</button>
         <VersionBadge />
         <button className="btn btn-mini" onClick={onSignOut}>Sign out</button>
@@ -21261,6 +21462,10 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
         <div style={{ flex: 1 }} />
         <span className="chip" style={{ color: "var(--green)" }}><i className="ti ti-circle-check" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Season pass active</span>
         {(user?.admin || isAdminEmail(user?.email)) && <button className="btn btn-mini" onClick={onAdmin || (() => navTo("admin"))}>Admin</button>}
+        {/* ⚠ b155 — A DOORWAY, NOT A PAGE YOU HAVE TO KNOW ABOUT. "Sometimes the site can be hard to
+            navigate" is only solved by a guide you can reach FROM being lost, which means the shared
+            header rather than a tab inside Help that you have to already know exists. */}
+        <button className="btn btn-mini" data-guidebtn onClick={() => navTo("help:wherethings")} title="Where everything lives, and what every term means"><i className="ti ti-compass" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Guide</button>
         <button className="btn btn-mini" onClick={onHelp}><i className="ti ti-help-circle" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Help</button>
         <ThemeToggle />
         <button className="btn btn-mini" onClick={onAccount}><i className="ti ti-user" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Account</button>
@@ -23018,7 +23223,14 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
       </div>
 
       <div className="hairline" style={{ display: "flex", gap: 4, padding: "0 20px", justifyContent: "center", flexWrap: "wrap" }}>
-        {[["overview","Overview"],["how","How to Use It"],["value","Why It's Worth It"]].map(([k, l]) => (
+        {/* ⭐⭐⭐⭐ b155 — FIVE TABS, AND THE MIDDLE THREE ARE THE PRODUCT. Trey: "update the site
+            (especially the non-paid version) to appropriately inform the audience of what the site can do
+            (draft AND in-season)". The page had one tab called "How to Use It" that was five draft-night
+            steps and a three-line footnote about the rest of the season — so a visitor learned we are a
+            draft tool, which is half of what he has built. Draft Day and In-Season are peers now, and
+            "How to Use It" is renamed to what it actually covers rather than being widened into a tab
+            that tries to be both. ⚠ THE KEY STAYS "how" — `route === "learn"` opens this page on it. */}
+        {[["overview","Overview"],["how","Draft Day"],["season","In-Season"],["guide","Guide & Glossary"],["value","Why It's Worth It"]].map(([k, l]) => (
           <button key={k} onClick={() => setHtab(k)} style={{ background: "transparent", border: "none", borderBottom: htab === k ? "2px solid var(--gold)" : "2px solid transparent", color: htab === k ? "var(--gold)" : "var(--mut)", fontWeight: 600, fontSize: 14, padding: "13px 16px", cursor: "pointer", fontFamily: "inherit" }}>{l}</button>
         ))}
       </div>
@@ -23246,6 +23458,94 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
               ? <button className="btn btn-gold" style={{ padding: "12px 26px", fontSize: 15 }} onClick={onApp}>Back to Your Hub</button>
               : <button className="btn btn-gold" style={{ padding: "12px 26px", fontSize: 15 }} onClick={onDemo}>Try It Now — Free Demo Draft</button>}
           </div>
+        </div>
+      )}
+
+      {/* ═══ IN-SEASON — b155, and it is the half of the product the site never described ═══════════
+          Trey: "update the site (especially the non-paid version) to appropriately inform the audience of
+          what the site can do (draft and in-season)."
+          ⚠ THE OLD PAGE MENTIONED THE SEASON IN A THREE-LINE FOOTNOTE under "Beyond draft day", which is
+            how a tool that runs a whole fantasy season reads as a draft gadget you use once in August.
+            The structure below deliberately mirrors the Draft Day tab — a numbered walk through the week
+            in the order it actually happens — because the claim being made is that these are two equal
+            halves, and a page cannot make that claim in a sentence while its layout says otherwise. */}
+      {htab === "season" && (
+        <div style={{ maxWidth: 880, margin: "0 auto", padding: "34px 20px 50px" }}>
+          <div className="disp" style={{ fontSize: 28, fontWeight: 700, marginBottom: 6 }}>In-Season</div>
+          <div className="mut" style={{ fontSize: 14, marginBottom: 24, maxWidth: 660, lineHeight: 1.6 }}>
+            The draft is one day. The season is seventeen weeks of small decisions, and most leagues are
+            won and lost in them. Connect a league once and the same engine that priced your draft board
+            runs your week — across every league you own, not one at a time.
+          </div>
+
+          {/* The week, in the order it happens. */}
+          {[
+            ["ti-first-aid-kit", "Tuesday — the waiver wire",
+              "Free agents ranked by what they would add to YOUR starting lineup rather than by raw points, because the best available player is worthless if he sits behind two better ones. Where your league bids with FAAB, it suggests what to spend as a share of what you have left."],
+            ["ti-arrows-exchange", "Midweek — trades",
+              "A read on all eleven rivals: who is strong where you are thin, who can afford to lose the player you want, and what it would cost. It names the deal, prices it both ways, and says plainly whether the other manager would take it. There is a calculator for any deal you come up with yourself."],
+            ["ti-swords", "Sunday morning — the lineup",
+              "Your set lineup against your opponent's, slot by slot, with every bench player who out-projects a starter marked. One screen shows every league you own so a Sunday morning is one pass, not eighteen tabs."],
+            ["ti-activity-heartbeat", "Sunday afternoon — live",
+              "Live totals in every league, who you need to root for and against, and a projection that knows how much of each game is actually left rather than assuming a flat clock."],
+            ["ti-history", "Monday — the review",
+              "What you scored, what your best lineup would have scored, and which decisions cost you. Over a season that difference is usually bigger than any single trade."],
+          ].map(([icon, title, body], i) => (
+            <div key={i} className="panel" style={{ padding: 16, marginBottom: 10, display: "flex", gap: 14, alignItems: "flex-start" }}>
+              <div style={{ flexShrink: 0, width: 38, height: 38, borderRadius: 9, background: "rgba(224,166,60,.10)", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <i className={`ti ${icon}`} style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
+              </div>
+              <div>
+                <div className="disp" style={{ fontSize: 16, fontWeight: 700, marginBottom: 3 }}>{title}</div>
+                <div className="mut" style={{ fontSize: 13.5, lineHeight: 1.6 }}>{body}</div>
+              </div>
+            </div>
+          ))}
+
+          <div className="panel" style={{ padding: 16, marginTop: 4, marginBottom: 20, background: "var(--panel2)" }}>
+            <div className="disp" style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>And underneath all of it</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(230px,1fr))", gap: 11 }}>
+              {[
+                ["ti-trophy", "Standings that mean something", "Record, projected finish and a power rank that blends roster strength with what has actually happened — plus every rival's roster on a hover."],
+                ["ti-users", "Your roster, ranked", "Not “4 rostered, 2 starting”, which says nothing: where each position ranks against the other eleven teams in your league."],
+                ["ti-clipboard-text", "A weekly brief", "Everything worth knowing about the week in one card you can paste into the league chat."],
+                ["ti-layout-board", "The draft, still there", "Your board and your draft summary stay one click from the league all season — grades, steals and reaches included."],
+              ].map(([icon, t, b], i) => (
+                <div key={i} style={{ display: "flex", gap: 9, alignItems: "flex-start" }}>
+                  <i className={`ti ${icon}`} style={{ fontSize: 16, color: "var(--gold)", marginTop: 1, flexShrink: 0 }} aria-hidden="true" />
+                  <div><div style={{ fontSize: 12.5, fontWeight: 700 }}>{t}</div><div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5 }}>{b}</div></div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* ⚠ SAY WHICH PLATFORMS, AND SAY IT HERE. The in-season half needs a LIVE roster, which is a
+              real limit and the first question an honest reader has. Burying it would be the kind of
+              claim that gets found out on day one. */}
+          <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.6, marginBottom: 20, padding: "10px 12px", border: "1px dashed var(--line2)", borderRadius: 9 }}>
+            <b style={{ color: "var(--ink)" }}>What it needs:</b> the in-season side reads a live roster,
+            so it runs on leagues connected from Sleeper. The draft side works on any league, connected or
+            built by hand.
+          </div>
+
+          <div style={{ textAlign: "center" }}>
+            {paid
+              ? <button className="btn btn-gold" style={{ padding: "12px 26px", fontSize: 15 }} onClick={onApp}>Open your teams</button>
+              : <button className="btn btn-gold" style={{ padding: "12px 26px", fontSize: 15 }} onClick={onBuy}>Season Pass — ${biz.price.toFixed(2)}</button>}
+          </div>
+        </div>
+      )}
+
+      {/* ═══ THE GUIDE, ON THE PUBLIC SIDE TOO — one component, one data file. See GuideBook. ═══════ */}
+      {htab === "guide" && (
+        <div style={{ maxWidth: 880, margin: "0 auto", padding: "34px 20px 50px" }}>
+          <div className="disp" style={{ fontSize: 28, fontWeight: 700, marginBottom: 6 }}>Guide &amp; Glossary</div>
+          <div className="mut" style={{ fontSize: 14, marginBottom: 22, maxWidth: 660, lineHeight: 1.6 }}>
+            Every screen, what question it answers, and how to reach it — plus what each word on it means.
+            This is the same guide members get inside the app, published here so you can see exactly what
+            you would be buying before you buy it. Search it rather than scroll it.
+          </div>
+          <GuideBook compact onDemo={onDemo} />
         </div>
       )}
 
@@ -23739,6 +24039,11 @@ export function AppHeader({ user, onAdmin, onSignOut, onHome, onAccount, onApp, 
       {user?.paid ? <span className="chip" style={{ color: "var(--green)", cursor: "default" }} title="Your season pass is active"><i className="ti ti-circle-check" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Season pass active</span> : <span className="chip" style={{ cursor: "default" }} title="You're on the free demo">Free demo</span>}
       <ThemeToggle compact />
       {onHome && <button className="btn btn-mini" onClick={onHome} title="Home, FAQ & guides">Home</button>}
+      {/* ⚠ b155 — UNCONDITIONAL, unlike Help beside it. This is the header on the draft room, the league
+          hub, the library and every tool screen, and most of those never threaded an `onHelp` through —
+          so a conditional button would be absent from exactly the screens somebody gets lost on. It routes
+          through the global hook for the same reason the Admin button does. */}
+      <button className="btn btn-mini" data-guidebtn onClick={() => navTo("help:wherethings")} title="Where everything lives, and what every term means"><i className="ti ti-compass" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Guide</button>
       {onHelp && <button className="btn btn-mini" onClick={onHelp} title="Help, contact & terms">Help</button>}
       {(user?.admin || isAdminEmail(user?.email)) && <button className="btn" onClick={onAdmin || (() => navTo("admin"))}>Admin</button>}
       {onAccount && <button className="btn" onClick={onAccount} title="Account settings"><i className="ti ti-user" style={{ fontSize: 14 }} aria-hidden="true" /> Account</button>}
