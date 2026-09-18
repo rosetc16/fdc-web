@@ -99,7 +99,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29ak";
+const BUILD_TAG = "2026.07.29al";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -7181,19 +7181,37 @@ function Tooltip({ tip, children }) {
   // Grow DOWN from the cursor across the whole upper half of the screen (was only the top 25%):
   // centering (-50%) a tall tip anchored at ~30% height pushed its top clean off the page — the
   // "hover the top Last Picks row and the tip bleeds off" bug. Down-growth + maxHeight always fits.
-  const nearTop = anchorY < H * 0.48;
-  const nearBottom = anchorY > H * 0.75;
   const tx = side === "below" || side === "above"
     ? (tip.x > W * 0.6 ? "calc(-100% + 40px)" : "-40px")     // pinned near the pointer, kept on screen
     : flipX ? "-100%" : "0";
+  /* ⭐⭐⭐⭐⭐ THE CARD IS CAPPED BY THE ROOM IT ACTUALLY HAS — b152.
+     Trey: "when you hover on something, it doesn't put the hover further down the hover that you can't
+     see. I want the hover box to move so you can see it where the screen is at currently."
+
+     ⚠⚠ THE HORIZONTAL SIDE WAS CAREFULLY CHOSEN AND THE VERTICAL ONE WAS NOT. `maxHeight` was `H - 16`
+       — the whole viewport — no matter where the card started, so a card anchored at 47% of the screen
+       could be as tall as the screen and hang half of itself off the bottom. Three fixed thresholds
+       (`nearTop` at 48%, `nearBottom` at 75%) picked the growth direction from the anchor's position
+       rather than from how much room that direction had, and the middle band centred the card on the
+       cursor, which is the arrangement that overflows soonest.
+
+     ⭐ GROW INTO WHICHEVER GUTTER IS BIGGER, AND CAP TO IT. Two subtractions, no DOM reads — which
+       matters, because measuring the tooltip is what the 29e perf work removed from this component and it
+       cost 1.3 seconds of forced layout per hover. `overflowY: auto` was already here, so a card taller
+       than its gutter scrolls inside itself instead of leaving the screen.
+     ⚠ The centred option is gone on purpose: it looks tidiest for a short card and is the only one of the
+       three that can overflow in BOTH directions at once. */
+  const spaceBelow = H - anchorY - M;
+  const spaceAbove = anchorY - M;
+  const down = spaceBelow >= spaceAbove;
   const ty = tip.clearY
     ? (side === "above" ? "-100%" : "0")
-    : nearTop ? "0" : nearBottom ? "-100%" : "-50%";
+    : down ? "0" : "-100%";
   // When the tip sits above or below the row, cap its height to the gutter it was given so a tall panel
   // cannot grow back over the trigger.
   const maxH = tip.clearY
     ? (side === "above" ? Math.max(120, anchorY - M) : Math.max(120, H - anchorY - M))
-    : H - M * 2;
+    : Math.max(120, down ? spaceBelow : spaceAbove);
   return (
     <div
       className="tooltip"
@@ -8118,10 +8136,54 @@ export function makeOutlook(p, sims, drafted, ctx) {
 // then labeled rows. Used by every player-hover tooltip so the layout is identical everywhere.
 function OutlookCard({ content }) {
   const toneColor = { good: "var(--green)", bad: "var(--red)", warn: "var(--gold)", neutral: "var(--ink)" };
+  /* ⚠⚠ A BAD CARD MUST NOT TAKE THE SCREEN DOWN — b152. This read `content.map` on whatever it was
+     handed, so passing the WRONG SHAPE of card (an object of the kind the home page's HoverTable takes,
+     which is an easy mistake because both are "a hover card") threw inside render, and a throw in render
+     is the one thing an error boundary DOES catch — so the entire league hub was replaced by "Something
+     hiccuped" the instant the pointer crossed a chip. An unreadable tooltip is a small bug; an unreadable
+     tooltip that unmounts the page is not. Non-array content now renders nothing. */
+  const list = Array.isArray(content) ? content : [];
   return (
     <>
-      {content.map((l, i) => {
-        if (typeof l === "string") return <div key={i} style={{ fontSize: 12, marginBottom: i < content.length - 1 ? 6 : 0 }}>{l}</div>;
+      {list.map((l, i) => {
+        if (typeof l === "string") return <div key={i} style={{ fontSize: 12, marginBottom: i < list.length - 1 ? 6 : 0 }}>{l}</div>;
+        /* ⭐⭐⭐⭐ A TABLE INSIDE THE HUB'S OWN CARD — b152. Trey asked for the trade hovers "in tabular
+           form with players information on there (rankings, projections, current rank, etc.)", and the hub
+           has exactly one tooltip renderer. Adding the shape here keeps it that way: a SECOND overlay on
+           this screen is how 29o ended up with a suite that found the feedback dock instead of the
+           tooltip it was looking for. Deliberately the same markup as hovercard.jsx's table.
+           ⚠ THE KIND IS "ptable", NOT "table", AND THAT IS NOT FUSSINESS: tools/icons-scan.mjs treats any
+             quoted lowercase token that matches a Tabler icon name as an icon in use (a deliberately broad
+             net, so a dynamically-built icon name cannot slip through), and "table" is one. The literal
+             failed the icon gate and therefore the BUILD — which is the gate doing its job on a false
+             positive. Renaming the string is cheaper and safer than loosening the net. */
+        if (l.kind === "ptable") {
+          const cols = l.cols || [], rows = l.rows || [];
+          if (!cols.length || !rows.length) return null;
+          return (
+            <table key={i} data-outlooktable={l.k || "block"}
+              style={{ borderCollapse: "collapse", fontSize: 11.5, width: "100%", marginTop: i ? 6 : 0 }}>
+              <thead>
+                <tr className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>
+                  {cols.map((c) => (
+                    <th key={c.k} style={{ textAlign: c.right ? "right" : "left", fontWeight: 600, padding: "0 10px 3px 0" }}>{c.k}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, ri) => (
+                  <tr key={ri} style={{ borderTop: "1px solid var(--line)" }}>
+                    {cols.map((c) => (
+                      <td key={c.k} style={{ textAlign: c.right ? "right" : "left", padding: "3px 10px 3px 0",
+                        whiteSpace: "nowrap", color: r.tone && c.tint ? r.tone : "var(--ink)",
+                        fontWeight: c.strong ? 700 : 400 }}>{r[c.k]}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          );
+        }
         if (l.kind === "photo") {
           return (
             <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, paddingBottom: 10, borderBottom: "1px solid var(--line)" }}>
@@ -8370,7 +8432,7 @@ function OutlookCard({ content }) {
         }
         const isNote = l.t === "Note";
         return (
-          <div key={i} style={{ display: "flex", gap: 8, marginBottom: i < content.length - 1 ? 6 : 0 }}>
+          <div key={i} style={{ display: "flex", gap: 8, marginBottom: i < list.length - 1 ? 6 : 0 }}>
             <div className="disp" style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".07em", color: l.tc ? l.tc : (isNote ? "var(--mut)" : "var(--gold)"), width: 64, flexShrink: 0, textAlign: "right", paddingTop: 1, lineHeight: 1.3 }}>{l.t}</div>
             <div style={{ fontSize: isNote ? 10.5 : 12, color: isNote ? "var(--mut)" : "var(--ink)", lineHeight: 1.4, flex: 1 }}>{l.x}</div>
           </div>
@@ -16186,9 +16248,39 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   // the major sites use), computed on the backend. Show it when the backend has data (empty very early in
   // the season before any week has completed).
   const SHOW_MATCHUP_DIFF = true;
+  /* ⭐⭐⭐⭐⭐ ONE MAN, ONE ROW — b152, and this is the door every roster in the hub comes through.
+     Trey: "Deebo Samuel is listed twice on my 'matchup'." He was in the FLEX and on the bench at once.
+     ⚠⚠ A DUPLICATE HERE IS NOT A COSMETIC BUG. `lineupSlots` will happily place one copy in a slot and
+       leave the other on the bench — which is exactly what the screenshot shows — and `lineupValue` then
+       COUNTS HIM TWICE. Every number built on that lineup (the optimal-lineup gain, the power rating, the
+       trade calculator's before/after, `myGain` on every offer the trade finder scores) inherits the
+       error silently. One rendering artefact and a whole screen of quietly wrong arithmetic.
+     ⚠ TWO WAYS IT HAPPENS AND BOTH ARE GUARDED. A platform payload can list the same id twice (cheap to
+       reject: a roster cannot hold one id twice). And two DIFFERENT ids can resolve to the same person —
+       a player with a second record in our own players table — which the id check cannot see. Within a
+       SINGLE roster, two entries with the same name, position and team are the same man; that is safe to
+       collapse here and would not be safe league-wide, where two players can genuinely share a name.
+     ⚠ THE FIRST COPY WINS, so the one the platform ordered first is the one that survives — which for
+       Sleeper's `starters` array is the one occupying the slot. */
+  const dedupeRoster = (list) => {
+    const bySid = new Set(), byMan = new Set(), out = [];
+    let dropped = 0;
+    (list || []).forEach((p) => {
+      if (!p) return;
+      const sid = String(p.sid);
+      const man = `${String(p.name || '').toLowerCase()}|${p.pos || ''}|${p.team || ''}`;
+      if (bySid.has(sid) || (p.name && byMan.has(man))) { dropped++; return; }
+      bySid.add(sid); if (p.name) byMan.add(man);
+      out.push(p);
+    });
+    if (dropped) {
+      try { console.warn(`[FDC] dropped ${dropped} duplicate player row(s) from a roster — see dedupeRoster`); } catch (_) {}
+    }
+    return out;
+  };
   const resolve = (ids) => {
-    if (!poolBySid || !ids) return [];
-    return ids.map((id) => {
+    if (!poolBySid || !ids) return dedupeRoster([]);
+    return dedupeRoster(ids.map((id) => {
       const base = poolBySid.bySid.get(String(id));
       if (!base) return null;
       const wk = weeklyMap[String(id)];
@@ -16215,7 +16307,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
         floorWk: base.floor != null ? Math.round((base.floor / GAMES) * 10) / 10 : null,
         ceilWk: base.ceil != null ? Math.round((base.ceil / GAMES) * 10) / 10 : null,
       };
-    }).filter(Boolean);
+    }).filter(Boolean));
   };
   // A per-game view of the WHOLE pool (for free agents): real weekly where we have it, else season avg.
   const perGamePool = React.useMemo(() => {
@@ -17063,12 +17155,51 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
       rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName,
       roster: tradeRoster(t), setStarters: t.setStarters,
     })),
-    reads: teamReadRows, lineupValue, sf: cfg.sf, req: reqStart, repl: tradeRepl, max: 5,
+    /* ⚠ `lineupSlots` IS PASSED FOR THE CONSOLIDATION PASS — b152. It needs to know which of my men my own
+       best lineup already uses, because "two for one" is only a consolidation when at least one of the two
+       is somebody I am not starting. Same injection rule as `lineupValue`: the engine stays in App.jsx and
+       trademarket.js never grows its own opinion about what a lineup is. */
+    reads: teamReadRows, lineupValue, lineupSlots, sf: cfg.sf, req: reqStart, repl: tradeRepl, max: 5,
   })) : [];
   /* ⚠ `board.all`, NOT `board` — b151. The top five are a shortlist and the positional verdict is about
      the whole market, so scoping it to the shortlist would report "nothing to do at RB" whenever the best
      RB idea happened to place sixth. Same reasoning, and the same field, as the partner read. */
   const mktSummary = myLT ? marketSummary(teamReadRows, reqStart, { offers: board.all || board }) : [];
+  /* One team's read, by roster id — so a hover can print where THEIR rooms rank without recomputing a
+     ranking this tab has already done once. (b152) */
+  const myReadFor = (rosterId) => (teamReadRows || []).find((r) => r.rosterId === rosterId) || null;
+  /* ⭐⭐⭐⭐ ONE TEAM, WHOLE ROSTER, AS A HOVER CARD — b152, and ONE implementation because two places on
+     this tab want it: the manager column of "Who to call" and the team names under the positional market.
+     Grouped by position and marked starting/bench, because the useful read is the SHAPE of their team. */
+  const rosterCard = (rosterId, label) => {
+    const lt = leagueTeams.find((x) => x.rosterId === rosterId);
+    if (!lt) return null;
+    const roster = tradeRoster(lt);
+    if (!roster.length) return null;
+    const lu = lineupSlots(roster, cfg.sf);
+    const startSids = new Set((lu.slots || []).filter((x) => x && x.p).map((x) => String(x.p.sid)));
+    const rows = [];
+    POS.forEach((pp) => {
+      roster.filter((x) => String(x.pos).toUpperCase() === pp)
+        .sort((a2, b2) => (b2.pts || 0) - (a2.pts || 0))
+        .forEach((x) => rows.push({
+          Player: x.name, Pos: pp, Rank: x.posRank ? `${pp}${x.posRank}` : "—",
+          Role: startSids.has(String(x.sid)) ? "starting" : "bench",
+          Season: Math.round(x.pts || 0), tone: POS_COLOR[pp],
+        }));
+    });
+    if (!rows.length) return null;
+    const rk = (myReadFor(rosterId) || {}).posRank || {};
+    const ranks = POS.filter((pp) => rk[pp]).map((pp) => `${pp} ${ordinal(rk[pp])}`).join("  ·  ");
+    return [
+      { kind: "take", tone: "neutral", x: label || (lt.teamName || "Their roster") },
+    ].concat(ranks ? [`Their rooms rank: ${ranks}`] : []).concat([
+      { kind: "ptable", k: `roster-${rosterId}`,
+        cols: [{ k: "Player", strong: true }, { k: "Pos", tint: true }, { k: "Rank" }, { k: "Role" }, { k: "Season", right: true }],
+        rows },
+      "A man on their bench is the one they can actually move; a starter has to be paid for.",
+    ]);
+  };
   const myRead = (teamReadRows || []).find((r) => r.isMe) || null;
 
   /* ⭐⭐⭐⭐⭐ THE LEAGUE READ — 29ah. Trey, on the board 29af shipped: "it still isn't clear to me though
@@ -17242,8 +17373,19 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     const oppOptSids = new Set(oppOptimalStarters.map((p) => p.sid));
     const oppSwapsOut = oppStartersFallback.filter((p) => !oppOptSids.has(p.sid));
 
+    /* ⭐⭐⭐⭐ AND MY BENCH HAS TO BE THE BENCH OF THE LINEUP BEING SHOWN — b152.
+       The rows above are the lineup Trey ACTUALLY SET; the bench underneath was `opt.bench`, the leftovers
+       of the OPTIMAL lineup. Two different lineups stacked on one roster, so any man the optimiser would
+       bench appeared in both halves and the man it would start appeared in neither. The opponent's bench
+       three lines up has been computed correctly from their SET starters since it was written, which is
+       the tell — the same screen did it right on one side and wrong on the other. */
+    const meSetSids = new Set(meSet.filter(Boolean).map((p) => String(p.sid)));
+    const meBench = myRoster.filter((p) => !meSetSids.has(String(p.sid)))
+      .sort((a, b) => (b.pts || 0) - (a.pts || 0));
+
     matchupView = {
       isLive,
+      meBench,
       meName: data.matchup.me.teamName,
       oppName: data.matchup.opp.teamName,
       oppOwnerName: (oppTeam && oppTeam.ownerName) || data.matchup.opp.ownerName || null,
@@ -17743,18 +17885,23 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
             )}
 
             {/* Benches — side by side when there's an opponent, else just yours */}
-            {(opt.bench.length > 0 || (matchupView && matchupView.oppBench.length > 0)) && (
+            {(((matchupView ? matchupView.meBench : opt.bench).length > 0) || (matchupView && matchupView.oppBench.length > 0)) && (
               <>
                 <div style={{ display: "flex", margin: "14px 0 6px" }}>
-                  <div className="mut" style={{ flex: 1, fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em" }}>Your bench <span style={{ opacity: 0.7 }}>({opt.bench.length})</span></div>
+                  <div className="mut" style={{ flex: 1, fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em" }}>Your bench <span style={{ opacity: 0.7 }}>({(matchupView ? matchupView.meBench : opt.bench).length})</span></div>
                   {matchupView && <div className="mut" style={{ flex: 1, fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", textAlign: "right" }}>Their bench <span style={{ opacity: 0.7 }}>({matchupView.oppBench.length})</span></div>}
                 </div>
                 {(() => {
-                  const myBench = opt.bench;
+                  // ⚠ The bench of the lineup on screen — set when there is a matchup, optimal otherwise.
+                  const myBench = matchupView ? matchupView.meBench : opt.bench;
                   const oppBench = matchupView ? matchupView.oppBench : [];
                   const rowsN = Math.max(myBench.length, oppBench.length);
+                  /* ⚠ `data-hubbenchsid` IS HERE FOR ONE CHECK — b152. "Deebo Samuel is listed twice on my
+                     matchup": he was in the FLEX and on the bench at once, and the only way to assert that
+                     never happens again is to be able to read both lists by id from the DOM. plan29ce §5e. */
                   const benchCell = (p, align) => p ? (
-                    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: align === "right" ? "flex-end" : "flex-start", opacity: 0.82 }}>
+                    <div data-hubbenchsid={align === "right" ? undefined : String(p.sid)}
+                      style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: align === "right" ? "flex-end" : "flex-start", opacity: 0.82 }}>
                       <div style={{ fontWeight: 600, fontSize: 12, display: "flex", alignItems: "center", gap: 5, maxWidth: "100%" }}>
                         {align !== "right" && <Dot pos={p.pos} />}
                         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
@@ -18184,6 +18331,28 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       four teams" is a worse question than the one this fixes, and 29ai's whole point was
                       that a manager with no deal still gets a verdict. The verdict is now one line for all
                       of them together, with the individual reasons one click away. */}
+                {/* ⭐⭐⭐⭐⭐ AND WHEN THE DEAL COLUMNS ARE EMPTY, SAY WHY RIGHT HERE — b152.
+                    Trey: "the 'you' 'them' and 'ideas' columns are completely empty (which I just don't
+                    think that can be true)." He is right to distrust it, and the app HAD the answer: the
+                    finder has counted its own rejections by reason since 29w, and the explanation was
+                    rendered — at the very bottom of the tab, under three other sections, where the
+                    question never gets asked. ⚠ A DIAGNOSTIC BELONGS WHERE THE DOUBT IS. Moving it beside
+                    the blank columns turns "this can't be true" into a number he can send me, which is
+                    the difference between one round of feedback and three. */}
+                {partners.partners.every((p) => !p.realisticN) && board.diag && board.diag.pairs > 0 && (
+                  <div className="mut" data-lrnodeals={JSON.stringify(board.diag)}
+                    style={{ fontSize: 11, lineHeight: 1.55, margin: "0 0 8px", padding: "6px 9px",
+                      border: "1px dashed var(--line2)", borderRadius: 8 }}>
+                    <b style={{ color: "var(--gold)" }}>No one-for-one or two-for-one improves both lineups right now.</b>{" "}
+                    Out of <b className="num" style={{ color: "var(--ink)" }}>{(board.diag.pairs + (board.diag.consolPairs || 0)).toLocaleString("en-US")}</b> combinations
+                    across {board.diag.teams} rosters:{" "}
+                    {board.diag.lopsided + (board.diag.consolLopsided || 0) > 0 && <>{(board.diag.lopsided + (board.diag.consolLopsided || 0)).toLocaleString("en-US")} were too lopsided for anyone to accept, </>}
+                    {board.diag.noGainForThem + (board.diag.consolNoGainForThem || 0) > 0 && <>{(board.diag.noGainForThem + (board.diag.consolNoGainForThem || 0)).toLocaleString("en-US")} helped you but not them, </>}
+                    {board.diag.noGainForMe + (board.diag.consolNoGainForMe || 0) > 0 && <>{(board.diag.noGainForMe + (board.diag.consolNoGainForMe || 0)).toLocaleString("en-US")} did nothing for your starting lineup</>}
+                    . The shape fits below are still real — they are about rosters, not about a swap the
+                    finder could price — so a message is still worth sending.
+                  </div>
+                )}
                 {/* ⭐⭐⭐⭐⭐ A TABLE, NOT ELEVEN PARAGRAPHS — b151.
                     Trey: "I want to get rid of the long sentences on each team (you can put this more in a
                     tabular form to track things across columns so it's easier to track). It's really hard
@@ -18224,10 +18393,58 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                     const cols = p.columns || p.complement;
                     const sends = cols.filter((c) => c.dir === "sell");
                     const gets = cols.filter((c) => c.dir === "buy");
+                    /* ⭐⭐⭐⭐⭐ THE CHIP OPENS INTO THE ACTUAL PLAYERS — b152.
+                       Trey: "can you make it so that when you hover on the position that you send or you
+                       get that it shows what players would fit that. You can show it in tabular form with
+                       players information on there (rankings, projections, current rank, etc.)."
+                       ⚠ A POSITION IS NOT A TRADE. "You get: RB" tells you the shape and stops exactly
+                         where the decision starts — WHICH back, how good, and is he even someone they
+                         would move. Every one of those is already on the roster this row was built from.
+                       ⚠ STARTER OR BENCH IS THE COLUMN THAT DECIDES THE ASK, which is why it is here: a
+                         back sitting on their bench is a conversation and their RB1 is a favour. It is
+                         read from the same optimal-lineup solve the rest of the tab uses. */
+                    const fitRows = (pos, dir) => {
+                      const team = dir === "sell" ? myLT : leagueTeams.find((t) => t.rosterId === p.rosterId);
+                      if (!team) return null;
+                      const roster = tradeRoster(team);
+                      const lu = lineupSlots(roster, cfg.sf);
+                      const startSids = new Set((lu.slots || []).filter((x) => x && x.p).map((x) => String(x.p.sid)));
+                      const at = roster.filter((x) => String(x.pos).toUpperCase() === pos)
+                        .sort((a2, b2) => (b2.pts || 0) - (a2.pts || 0));
+                      if (!at.length) return null;
+                      /* ⚠ THE HUB'S TOOLTIP TAKES AN ARRAY of typed blocks (see OutlookCard), NOT the
+                         object shape the home page's HoverTable takes. Handing it the wrong one threw
+                         inside render and the error boundary swallowed the whole tab — see the guard in
+                         OutlookCard, which is now the backstop for the next person to mix them up. */
+                      return [
+                        { kind: "take", tone: dir === "sell" ? "neutral" : "good",
+                          x: `${dir === "sell" ? "You could send" : `${p.teamName || p.ownerName} can offer`} — ${pos}` },
+                        { kind: "ptable", k: `fit-${dir}-${pos}`,
+                          cols: [{ k: "Player", strong: true }, { k: "Rank" }, { k: "Role", tint: true }, { k: "Season", right: true }],
+                          rows: at.slice(0, 8).map((x) => ({
+                            Player: x.name,
+                            Rank: x.posRank ? `${pos}${x.posRank}` : "—",
+                            Role: startSids.has(String(x.sid)) ? "starting" : "bench",
+                            Season: Math.round(x.pts || 0),
+                            tone: startSids.has(String(x.sid)) ? "var(--gold)" : "var(--mut)",
+                          })) },
+                        dir === "sell"
+                          ? "Anyone on your bench costs your lineup nothing to move. A man who is starting costs you what the next one down would give back."
+                          : "A player on their bench is a conversation; one who is starting for them is a favour, and the deal has to pay for it.",
+                      ];
+                    };
                     const Chips = ({ list, kind }) => (
                       <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
-                        {list.length ? list.slice(0, 3).map((c) => (
-                          <span key={c.pos} title={`${kind === "send" ? "You send" : "You get"} a ${c.pos} — ${c.why}`}
+                        {list.length ? list.slice(0, 3).map((c) => {
+                          const card = fitRows(c.pos, c.dir);
+                          return (
+                          <span key={c.pos} data-lrchip={`${c.dir}:${c.pos}`}
+                            /* ⚠ THE TEXT REASON STAYS AS THE TITLE even though the card is richer: it is the
+                               keyboard/assistive path, and it is what a reader gets if the card cannot be
+                               built (a roster that failed to resolve). Belt and braces on a 10px chip. */
+                            title={`${kind === "send" ? "You send" : "You get"} a ${c.pos} — ${c.why}`}
+                            onMouseEnter={card ? (e) => { e.stopPropagation(); showTip(e, card); } : undefined}
+                            onMouseLeave={card ? hideTip : undefined}
                             style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".03em", cursor: "help",
                               padding: "1px 6px", borderRadius: 5, whiteSpace: "nowrap",
                               color: POS_COLOR[c.pos] || "var(--ink)",
@@ -18235,7 +18452,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                               background: alpha(POS_COLOR[c.pos] || "var(--line2)", 12) }}>
                             {c.pos}
                           </span>
-                        )) : <span className="mut" style={{ fontSize: 11 }}>—</span>}
+                          );
+                        }) : <span className="mut" style={{ fontSize: 11 }}>—</span>}
                       </span>
                     );
                     return (
@@ -18248,7 +18466,12 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                         {/* ⚠ THE REASONING IS NOT GONE — it is the row's own tooltip. Deleting it would answer
                             "too much text" by removing the answer to "why this manager", which is the
                             question the section exists for. */}
+                        {/* ⚠ SAME ROSTER CARD AS THE POSITIONAL SECTION — b152. He asked for it there; a
+                            manager's name meaning two different things on one tab would be worse than not
+                            having it in both. The `why` stays as the title, which is the text path. */}
                         <td data-lrwhy={p.why || ""} title={p.why || undefined}
+                          onMouseEnter={(e) => { const c = rosterCard(p.rosterId, p.teamName || p.ownerName); if (c) showTip(e, c); }}
+                          onMouseLeave={hideTip}
                           style={{ padding: "5px 8px 5px 4px", cursor: "help", maxWidth: 200, overflow: "hidden",
                             textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           {p.twoWay && <i className="ti ti-arrows-exchange" style={{ fontSize: 11, marginRight: 4, color: "var(--pos)" }} aria-hidden="true" />}
@@ -18284,11 +18507,12 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       {open && p.deals.filter((t) => t.realism >= 45).slice(0, 3).map((t, i) => (
                         <tr key={i} data-lrdeal style={{ background: "var(--hover)" }}>
                           <td colSpan={6} style={{ fontSize: 11.5, padding: "3px 10px 3px 22px", lineHeight: 1.6 }}>
-                            <span className="mut">send </span><b>{t.give.name}</b>
+                            {/* ⚠ A PACKAGE HAS TWO NAMES ON THE GIVING SIDE — b152. */}
+                            <span className="mut">send </span><b>{t.give.name}</b>{t.give2 ? <> <span className="mut">+</span> <b>{t.give2.name}</b></> : null}
                             <span className="mut"> for </span><b style={{ color: "var(--pos)" }}>{t.get.name}</b>
                             <span className="num mut" style={{ fontSize: 10.5 }}> +{t.myGain} you / +{t.theirGain} them · {t.band}</span>
                             <button className="btn btn-mini" data-lrbuild style={{ marginLeft: 6, fontSize: 9.5, padding: "0 5px" }}
-                              onClick={(e) => { e.stopPropagation(); tbOpen(t.team.rosterId, [String(t.give.sid)], [String(t.get.sid)]);
+                              onClick={(e) => { e.stopPropagation(); tbOpen(t.team.rosterId, [String(t.give.sid)].concat(t.give2 ? [String(t.give2.sid)] : []), [String(t.get.sid)]);
                                 try { const el = document.querySelector('[data-tb]'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {} }}>Price it</button>
                           </td>
                         </tr>
@@ -18410,6 +18634,9 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                           <div data-tbrecgive={t.give.name} onMouseEnter={(e) => showPlayerTip(e, t.give)} onMouseLeave={hideTip} style={{ cursor: "help", minWidth: 0 }}>
                             <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 2 }}>You send</div>
                             <div style={{ fontWeight: 700, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={t.give.pos} />{t.give.name}</div>
+                            {/* ⚠ THE SECOND MAN IN A PACKAGE GETS HIS OWN LINE — b152. A card that named one
+                                of the two players leaving would be describing a different trade. */}
+                            {t.give2 && <div data-tbrecgive2={t.give2.name} style={{ fontWeight: 700, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><Dot pos={t.give2.pos} />{t.give2.name}</div>}
                             <div className="mut" style={{ fontSize: 10.5 }}>{t.give.pos}{t.give.posRank} · {t.give.team}</div>
                           </div>
                           <i className="ti ti-arrows-exchange" style={{ fontSize: 18, color: "var(--mut)" }} aria-hidden="true" />
@@ -18459,8 +18686,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                               <b className="num" style={{ color: "var(--ink)" }}>{t.getWorth}</b> above replacement
                             </span>
                           )}
-                          <button data-tbrecbuild={`${t.give.name}->${t.get.name}`}
-                            onClick={() => { tbOpen(t.team.rosterId, [String(t.give.sid)], [String(t.get.sid)]);
+                          <button data-tbrecbuild={`${t.give.name}${t.give2 ? " + " + t.give2.name : ""}->${t.get.name}`}
+                            onClick={() => { tbOpen(t.team.rosterId, [String(t.give.sid)].concat(t.give2 ? [String(t.give2.sid)] : []), [String(t.get.sid)]);
                               try { const el = document.querySelector('[data-tb]'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {} }}
                             style={{ marginLeft: "auto", cursor: "pointer", fontFamily: "inherit", fontSize: 10.5, fontWeight: 700,
                               border: "1px solid var(--line)", background: "var(--panel)", color: "var(--mut)", borderRadius: 99, padding: "2px 9px" }}>
@@ -18656,7 +18883,18 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                           <div key={t.rosterId} data-mktteam={t.teamName}
                             style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "9px 11px", background: "var(--panel)" }}>
                             <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-                              <span style={{ fontSize: 12.5, fontWeight: 800 }}>{t.teamName}</span>
+                              {/* ⭐⭐⭐⭐⭐ THE TEAM NAME OPENS THEIR WHOLE ROSTER — b152, asked for directly: "can you
+                                  make it so you can hover their team name and it will show their full team".
+                                  ⚠ THE ROWS BELOW ARE ONLY THE ONE POSITION BEING EXPLORED, which is right for
+                                    "who can sell me a back" and useless for the question that comes straight
+                                    after it — what else have they got, and what would they want back. That is
+                                    a fact about the whole roster, and it is already in `leagueTeams`.
+                                  ⚠ GROUPED BY POSITION AND MARKED BY ROLE, not a flat list of fifteen names:
+                                    the useful read is the SHAPE of their team, which is what tells you where
+                                    they are deep and where they are desperate. */}
+                              <span data-mktteamhover={t.teamName} style={{ fontSize: 12.5, fontWeight: 800, cursor: "help" }}
+                                onMouseEnter={(e) => { const c = rosterCard(t.rosterId, t.teamName); if (c) showTip(e, c); }}
+                                onMouseLeave={hideTip}>{t.teamName}</span>
                               {t.ownerName && <span className="mut" style={{ fontSize: 10.5 }}>@{t.ownerName}</span>}
                               <span style={{ flex: 1 }} />
                               <span data-mktfit={String(t.fit)} className="mut" style={{ fontSize: 10 }}>fit {t.fit}</span>
@@ -18766,7 +19004,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       <div key={`ls-${t.team.rosterId}-${t.get.sid}`} data-tblongrow={t.get.name}
                         style={{ border: "1px dashed var(--line)", borderRadius: 9, padding: "9px 11px", fontSize: 11.5 }}>
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "baseline" }}>
-                          <span><b>{t.give.name}</b><span className="mut"> for </span><b style={{ color: "var(--green)" }}>{t.get.name}</b></span>
+                          <span><b>{t.give.name}</b>{t.give2 ? <> <span className="mut">+</span> <b>{t.give2.name}</b></> : null}<span className="mut"> for </span><b style={{ color: "var(--green)" }}>{t.get.name}</b></span>
                           <span className="mut">with {t.team.teamName}</span>
                           <span style={{ marginLeft: "auto" }}>
                             <b className="num" style={{ color: "var(--green)" }}>+{t.myGain}</b>
@@ -18843,9 +19081,30 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 const starterCount = at.filter((p) => starterSlotBySid[p.sid]).length;
                 return (
                   <div key={pos} style={{ background: "var(--panel2)", borderRadius: 10, padding: "10px 12px" }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 7 }}>
+                    {/* ⭐⭐⭐⭐⭐ WHERE THIS ROOM RANKS IN THE LEAGUE — b152, asked for by name: "On 'my roster'
+                        can you make it clear where each position ranks in the league."
+                        ⚠ "4 rostered · 2 starting" is a fact about YOUR OWN shelf and says nothing about
+                          whether the shelf is any good — four receivers is depth in one league and the
+                          worst room in another. The rank is the only number here that compares you to the
+                          eleven people you are actually playing.
+                        ⚠ AND IT IS THE SAME `myPosRank` THE SUMMARY TAB ALREADY PRINTS, not a second
+                          computation — two screens disagreeing about your RB rank is this project's most
+                          repeated failure and it is one import away every time. */}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 7, gap: 6 }}>
                       <span className="disp" style={{ fontSize: 12, fontWeight: 700, color: POS_COLOR[pos] }}>{pos}</span>
-                      <span className="mut" style={{ fontSize: 10.5 }}>{at.length} rostered · {starterCount} starting</span>
+                      {myPosRank[pos] && myPosRank[pos].rank ? (
+                        <span data-rosterposrank={`${pos}:${myPosRank[pos].rank}/${myPosRank[pos].of}`}
+                          title={`Your ${pos} room ranks ${ordinal(myPosRank[pos].rank)} of ${myPosRank[pos].of} in this league, on the same measure the League tab and the trade market use.`}
+                          className="num" style={{ fontSize: 11, fontWeight: 800, cursor: "help",
+                            padding: "1px 6px", borderRadius: 5,
+                            color: myPosRank[pos].rank <= Math.ceil(myPosRank[pos].of / 3) ? "var(--pos)"
+                              : myPosRank[pos].rank > Math.ceil((2 * myPosRank[pos].of) / 3) ? "var(--neg)" : "var(--mut)",
+                            background: alpha(myPosRank[pos].rank <= Math.ceil(myPosRank[pos].of / 3) ? "var(--pos)"
+                              : myPosRank[pos].rank > Math.ceil((2 * myPosRank[pos].of) / 3) ? "var(--neg)" : "var(--line2)", 12) }}>
+                          {ordinal(myPosRank[pos].rank)}<span style={{ fontWeight: 600, opacity: .75 }}> of {myPosRank[pos].of}</span>
+                        </span>
+                      ) : null}
+                      <span className="mut" style={{ fontSize: 10.5, marginLeft: "auto" }}>{at.length} rostered · {starterCount} starting</span>
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                       {at.map((p) => {
@@ -18870,7 +19129,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 );
               })}
             </div>
-            <div className="mut" style={{ fontSize: 10.5, marginTop: 10 }}>Gold dot = projected starter at the position. Faded rows are bench depth.</div>
+            <div className="mut" style={{ fontSize: 10.5, marginTop: 10 }}>Gold dot = projected starter at the position. Faded rows are bench depth. The rank beside each
+              position is where that room sits in this league — the same number the League tab and the trade market use.</div>
           </div>
         )}
 

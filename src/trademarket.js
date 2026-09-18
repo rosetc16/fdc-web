@@ -288,7 +288,9 @@ export function tradeBoard(input) {
   const repl = o.repl || {};
   const max = o.max || 6;
   const reads = new Map((o.reads || []).map((r) => [r.rosterId, r]));
-  const diag = { pairs: 0, lopsided: 0, noGainForMe: 0, noGainForThem: 0, wash: 0, teams: others.length };
+  const diag = { pairs: 0, lopsided: 0, noGainForMe: 0, noGainForThem: 0, wash: 0, teams: others.length,
+    // b152 — the consolidation pass keeps its own counters, so "nothing came back" can name which pass.
+    consolPairs: 0, consolLopsided: 0, consolNoGainForMe: 0, consolNoGainForThem: 0, consolBothStarters: 0 };
   if (!me || !me.roster || !me.roster.length || typeof lineupValue !== 'function') {
     return withDiag([], diag);
   }
@@ -493,6 +495,121 @@ export function tradeBoard(input) {
     });
   });
 
+  /* ⭐⭐⭐⭐⭐ TWO OF MINE FOR ONE OF THEIRS — b152, and it is the shape his roster actually needs.
+     ==================================================================================================
+     Trey, on a tab where every deal column came back blank: "the 'you' 'them' and 'ideas' columns are
+     completely empty (which I just don't think that can be true)."
+
+     ⚠⚠ THE FINDER ONLY EVER ENUMERATED ONE-FOR-ONE, AND HIS LEAGUE STARTS TWO FLEX. Rebuilding his shape
+       with FLEX: 2 reproduced the blank screen exactly — 0 offers out of 306 pairs, and `movable` empty
+       at every position. The reason is arithmetic, not a filter: with two flex slots a deep receiver room
+       has NO spare man, every receiver he owns is in the lineup, so ANY one-for-one that sends one costs
+       him a starter and cannot improve his lineup. The finder was right and the answer was still useless,
+       because "no one-for-one improves both teams" is not "there is nothing to do".
+
+     ⭐ WHAT A TEAM WITH QUALITY DEPTH AND A HOLE DOES IS CONSOLIDATE: send two good players for one better
+       one. That is the single most common real fantasy trade and the app could not express it. Two men
+       leave, one arrives, my lineup improves because the arriving player beats my worst starter by more
+       than the two departures cost, and THEIRS improves because two startable bodies beat one.
+
+     ⚠ THE ENUMERATION IS BOUNDED ON PURPOSE. Unrestricted it is every pair of my roster against every one
+       of theirs, eleven times over — so `give` pairs come from my most tradeable men only, `get` from
+       theirs, and the pair must include at least one man who is NOT in my optimal lineup. That last rule
+       is what keeps it a consolidation rather than a fire sale: sending two starters for one player is a
+       different (and usually bad) trade, and it is not what he is asking for.
+     ⚠ AND IT COSTS A ROSTER SPOT ON THEIR SIDE, which is a real reason to say no and is priced as one. */
+  const CONSOL_POOL = 7;
+  if (typeof o.consolidate === 'undefined' || o.consolidate) {
+    const myOptSids = new Set();
+    const myLineup = typeof o.lineupSlots === 'function' ? o.lineupSlots(me.roster, sf) : null;
+    if (myLineup && myLineup.slots) {
+      myLineup.slots.forEach((x) => { if (x && x.p) myOptSids.add(String(x.p.sid)); });
+    }
+    /* My tradeable men, best first — and `spare` marks the ones my own best lineup does not use, which is
+       the half of the pair that makes this a consolidation. Without a lineup solve (a caller that did not
+       pass `lineupSlots`) everyone counts as a candidate and the pair rule below falls back to worth. */
+    const myCand = me.roster
+      .map((p) => ({ p, w: worthOf(p), spare: myOptSids.size ? !myOptSids.has(String(p.sid)) : true }))
+      .filter((x) => x.w > 0)
+      .sort((a, b) => b.w - a.w)
+      .slice(0, CONSOL_POOL);
+
+    others.forEach((them) => {
+      const read = reads.get(them.rosterId) || null;
+      const theirBase = lineupValue(them.roster, sf);
+      let theirBest = null;
+      them.roster.forEach((p) => { if (!theirBest || worthOf(p) > worthOf(theirBest)) theirBest = p; });
+      const targets = them.roster
+        .map((p) => ({ p, w: worthOf(p) }))
+        .filter((x) => x.w > 0)
+        .sort((a, b) => b.w - a.w)
+        .slice(0, CONSOL_POOL);
+
+      targets.forEach(({ p: get }) => {
+        const gPos = String(get.pos || '').toUpperCase();
+        const restNoGet = them.roster.filter((p) => String(p.sid) !== String(get.sid));
+        const theirLoss = r1(theirBase - lineupValue(restNoGet, sf));
+
+        for (let i = 0; i < myCand.length; i++) {
+          for (let j = i + 1; j < myCand.length; j++) {
+            const a = myCand[i], b = myCand[j];
+            diag.consolPairs++;
+            // At least one departing man must be somebody my own best lineup does not use.
+            if (!a.spare && !b.spare) { diag.consolBothStarters++; continue; }
+            const giveSids = new Set([String(a.p.sid), String(b.p.sid)]);
+
+            const myAfter = lineupValue(me.roster.filter((x) => !giveSids.has(String(x.sid))).concat([get]), sf);
+            const myGain = r1(myAfter - myBase);
+            if (myGain <= 0.5) { diag.consolNoGainForMe++; continue; }
+            const theirAfter = lineupValue(restNoGet.concat([a.p, b.p]), sf);
+            const theirGain = r1(theirAfter - theirBase);
+            if (theirGain <= 0.5) { diag.consolNoGainForThem++; continue; }
+
+            /* ⚠ FAIRNESS ON A PACKAGE IS NOT THE SUM OF ITS PARTS. Two men are worth less together than
+               their values add up to — the second one is a body the other manager has to find a starting
+               spot or a roster spot for — so the pair is discounted before it is compared, tier for tier,
+               against the man coming back. 0.75 is blunt and deliberately so; see the note on `realism`. */
+            const pairShare = (tierShare(a.p) + tierShare(b.p)) * 0.75;
+            const getShare = tierShare(get);
+            const sHi2 = Math.max(pairShare, getShare), sLo2 = Math.min(pairShare, getShare);
+            if (sHi2 <= 0 || sLo2 / sHi2 < 0.5) { diag.consolLopsided++; continue; }
+
+            const parts = [];
+            let realism = 40;
+            if (theirGain >= 10) { realism += 20; parts.push('big lineup gain for them'); }
+            else if (theirGain >= 4) { realism += 12; parts.push('a real lineup gain for them'); }
+            else { realism += 4; parts.push('a small gain for them'); }
+            const theirNeedA = (read && read.need) ? read.need[String(a.p.pos).toUpperCase()] || 0 : 0;
+            const theirNeedB = (read && read.need) ? read.need[String(b.p.pos).toUpperCase()] || 0 : 0;
+            if (theirNeedA > 0 || theirNeedB > 0) { realism += 15; parts.push('fills a hole they cannot field'); }
+            /* ⚠ TWO IN, ONE OUT COSTS THEM A ROSTER SPOT — somebody on their bench has to be dropped, and
+               that is a real reason to decline that a one-for-one never carries. */
+            realism -= 8; parts.push('two-for-one, so it costs them a roster spot');
+            const balance = Math.round((sLo2 / sHi2) * 100);
+            if (balance >= 80) { realism += 10; parts.push('close on value'); }
+            else if (balance < 60) { realism -= 10; parts.push('lopsided on value'); }
+            if (theirBest && String(theirBest.sid) === String(get.sid)) {
+              realism -= 12; parts.push('the best player they own — but two starters is a real return');
+            }
+            realism = Math.max(0, Math.min(99, realism));
+
+            offers.push({
+              team: { rosterId: them.rosterId, teamName: them.teamName, ownerName: them.ownerName },
+              read, give: a.p, give2: b.p, get, myGain, theirGain,
+              fitEdge: r1(myGain), myAdd: r1(myGain), theirLoss, balance,
+              giveWorth: Math.round(a.w + b.w), getWorth: Math.round(worthOf(get)),
+              why: [{ key: 'consolidate', weight: 3,
+                text: `Two for one: ${a.p.name} and ${b.p.name} for ${get.name}. Your lineup is +${myGain} because ${get.name} beats what leaves, and they turn one ${gPos} into two startable players.` }]
+                .concat(read && read.underperforming ? [{ key: 'owner', weight: 1, text: read.ownerNote }] : []),
+              realism, realismWhy: parts,
+              band: realism >= 65 ? 'likely' : realism >= 45 ? 'worth asking' : 'long shot',
+            });
+          }
+        }
+      });
+    });
+  }
+
   /* ⭐⭐⭐⭐ ONE IDEA PER TARGET, AND AT MOST TWO INVOLVING ANY ONE OF MY PLAYERS. You can only trade a man
      once, and five variations on the same target is one idea wearing five rows — which is a large part of
      what made the old list "difficult to follow". */
@@ -502,9 +619,12 @@ export function tradeBoard(input) {
     .forEach((t) => {
       const k = `${t.team.rosterId}|${t.get.sid}`;
       if (seen.has(k)) return;
-      if ((giveCount[t.give.sid] || 0) >= 2) return;
+      // ⚠ b152 — a two-for-one spends BOTH men, so both count against the cap. Without this, one
+      //   player could headline four packages and the list would be one idea wearing four rows again.
+      const gives = [t.give, t.give2].filter(Boolean);
+      if (gives.some((g) => (giveCount[g.sid] || 0) >= 2)) return;
       seen.add(k);
-      giveCount[t.give.sid] = (giveCount[t.give.sid] || 0) + 1;
+      gives.forEach((g) => { giveCount[g.sid] = (giveCount[g.sid] || 0) + 1; });
       dedup.push(t);
     });
 
