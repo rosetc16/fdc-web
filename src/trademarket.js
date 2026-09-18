@@ -155,9 +155,62 @@ export function teamReads(input) {
       benchWaste = d > 1 ? d : 0;
     }
 
+    /* ⭐⭐⭐⭐⭐ WHAT THIS TEAM COULD ACTUALLY MOVE AT EACH POSITION — 29aj, and it retires "+1 spare".
+       ==================================================================================================
+       Trey, for the second time: "I'm still not sure the 'potential positional trade considerations' is
+       actually working the way it should. The +Spare just feels like not the best way to determine this...
+       especially since this league has a flex position."
+
+       ⚠⚠ THE FLEX IS NOT A DETAIL, IT IS THE WHOLE COUNTEREXAMPLE. `surplus` counts startable bodies above
+         the MUST-FIELD requirement, and `reqStart` deliberately excludes the flex slot — correctly, because
+         no single position is owed it. The consequence nobody followed through: in a league that starts
+         2 RB + 1 FLEX, a team with three startable backs has `surplus.RB = 1` and is told to go and sell
+         one, when the third back is the man filling the flex every week. The count is not just a crude
+         proxy for depth — in a flex league it is systematically off by one at RB and WR, in the direction
+         that invents spares.
+
+       ⭐ THE MEASURE THAT CANNOT MAKE THAT MISTAKE IS MARGINAL COST: solve the team's best lineup, take the
+         player out, solve it again. The difference is what he is actually worth to the roster that holds
+         him — and because the solve fills the flex from whoever is left, a third back who is starting in
+         the flex has a real cost and a fourth back who is not has ~none. The flex is handled by being
+         PLAYED rather than by being modelled.
+       ⭐ AND AGAINST THAT, WHAT HE IS WORTH TO SOMEBODY WHO NEEDS HIM (`worth`, value over replacement).
+         `edge = worth − cost` is Trey's own sentence from 29ai — "value that you can move from there to
+         reshape your team" — and it is the same quantity `mySurplus` already prices for MY roster. This
+         puts every team on it, which is what lets the position summary talk about a market instead of a
+         headcount.
+       ⚠ ONLY THE TOP FEW AT A POSITION ARE PRICED. The lineup solve is the expensive part and the fifth
+         receiver on a roster is never the answer to "what can you move" — he clears no replacement line, so
+         his edge is zero by construction and solving for him is pure cost. */
+    const movable = {};
+    Object.keys(req).forEach((pos) => {
+      if (!(req[pos] > 0)) return;
+      const atPos = roster.filter((p) => String(p.pos || '').toUpperCase() === pos)
+        .sort((a, b) => (Number(b.pts) || 0) - (Number(a.pts) || 0)).slice(0, 4);
+      if (!atPos.length) return;
+      const base = lineupValue(roster, sf);
+      let best = null;
+      atPos.forEach((p) => {
+        const worth = Math.max(0, (Number(p.pts) || 0) - (repl[pos] || 0));
+        if (worth <= 0) return;
+        const cost = Math.max(0, r1(base - lineupValue(roster.filter((x) => String(x.sid) !== String(p.sid)), sf)));
+        const edge = r1(worth - cost);
+        /* ⚠ TIES BREAK TOWARD THE CHEAPER MAN, and this was a real finding rather than a precaution. With
+           four elite receivers my WR1 and my WR4 came out on the SAME edge — the first costs 60 and is
+           worth 180, the fourth costs nothing and is worth 120 — and taking the first match offered my
+           best receiver. Same number, wildly different advice: the point of this whole measure is the man
+           you would actually part with, so when the edge cannot separate two players, the lower cost
+           does. (sim/posmarket.js §3 prints the pick, which is how it surfaced.) */
+        if (!best || edge > best.edge || (edge === best.edge && cost < best.cost)) {
+          best = { sid: p.sid, name: p.name || null, pos, cost, worth: r1(worth), edge };
+        }
+      });
+      if (best && best.edge > 0) movable[pos] = best;
+    });
+
     return {
       rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName, isMe: !!t.isMe,
-      startable, have, surplus, need, posValue,
+      startable, have, surplus, need, posValue, movable,
       pfRank: pf, gradeRank: gr, gap, benchWaste,
       /* The one-line read, written here so every card in the app says the same thing about this manager.
          ⚠ IT NEVER CALLS ANYBODY BAD AT FANTASY. We cannot see their injuries or their reasons; what we
@@ -294,6 +347,12 @@ export function tradeBoard(input) {
         const theirSurplusAt = (read && read.surplus) ? read.surplus[pos] || 0 : 0;
         const myNeedAt = (myRead && myRead.need) ? myRead.need[pos] || 0 : 0;
         const mySurplusAt = (myRead && myRead.surplus) ? myRead.surplus[gPos] || 0 : 0;
+        /* ⚠ 29aj — THE "CAN THEY AFFORD HIM" LINE IS PRICED NOW, NOT COUNTED. `theirLoss` is what their
+           own best lineup gives up by losing THIS man, which is the only version of the claim that is true
+           in a flex league: a third back who fills their flex every week is not somebody they can lose,
+           however many "startable" bodies a replacement line says they have. `theirSurplusAt` survives as
+           a gate only — it decides whether the sentence is worth making, never what it says. */
+        const affordable = theirLoss != null && theirLoss < Math.max(2, myAdd * 0.5);
 
         if (fitEdge >= 8) {
           why.push({ key: 'fit', weight: 3,
@@ -303,13 +362,16 @@ export function tradeBoard(input) {
                reader decides the whole page is approximate. */
             text: `He is worth ${r1(fitEdge)} more to you than to them — he adds ${myAdd} to your lineup and costs them ${theirLoss}.` });
         }
-        if (theirSurplusAt > 0) {
+        if (affordable) {
           why.push({ key: 'depth', weight: 2,
-            text: `They can spare him: ${theirStartable} startable ${pos}${theirStartable === 1 ? '' : 's'} for ${req[pos] || 0} slot${(req[pos] || 0) === 1 ? '' : 's'}.` });
+            text: `They can afford to lose him — their own best lineup only drops ${theirLoss}, because they have cover behind him.` });
         }
-        if (mySurplusAt > 0) {
+        /* And the mirror of it for the man I am sending: what MY lineup gives up, which is the number the
+           whole recommendation rests on and was previously stated as a body count at his position. */
+        const myCost = r1(myBase - lineupValue(me.roster.filter((p) => p.sid !== give.sid), sf));
+        if (myCost < Math.max(2, myGain * 0.5)) {
           why.push({ key: 'mydepth', weight: 1,
-            text: `And you can spare ${give.name || 'him'} — you are ${mySurplusAt} deep at ${gPos} beyond what you start.` });
+            text: `And ${give.name || 'he'} is cheap for you to lose — your lineup drops ${myCost} without him.` });
         }
         /* ⭐ UNDERVALUED BY HIS OWN OWNER. Their usage is the evidence: he clears this league's replacement
            bar and they are not starting him. ⚠ Only claimed when we actually HAVE their set lineup —
@@ -344,7 +406,7 @@ export function tradeBoard(input) {
         else if (theirGain >= 4) { realism += 12; parts.push('a real lineup gain for them'); }
         else { realism += 4; parts.push('a small gain for them'); }
         if (theirNeedAt > 0) { realism += 20; parts.push(`fills their hole at ${gPos}`); }
-        if (theirSurplusAt > 0) { realism += 10; parts.push(`costs them spare ${pos} depth`); }
+        if (theirSurplusAt > 0 || affordable) { realism += 10; parts.push(`costs them depth rather than a starter`); }
         if (read && read.underperforming) { realism += 5; parts.push('a team with reason to shake things up'); }
         const balance = Math.round((lo / hi) * 100);
         if (balance >= 80) { realism += 10; parts.push('close on value'); }
@@ -433,33 +495,111 @@ function withDiag(list, diag, longShots, all) {
    position where nine of twelve teams are short is not a market, it is a queue — and knowing that before
    you spend a week asking is the whole value.
    ──────────────────────────────────────────────────────────────────────────────────────────────── */
+/* ⭐⭐⭐⭐⭐ REBUILT IN 29aj ON RANK AND PRICED VALUE — the last place "+N spare" was still being printed.
+   ==================================================================================================
+   Trey: "I'm still not sure the 'Potential Positional Trade Considerations' is actually working the way
+   it should. The +Spare just feels like not the best way to determine this... especially since this
+   league has a flex position."
+
+   ⚠⚠ HE HAD ALREADY SAID THIS ONCE AND ONLY HALF OF IT GOT FIXED. 29ai moved the LEAGUE READ off spare
+     bodies and onto rank and marginal cost, and left this function — an older section on the same tab,
+     under a heading he had personally renamed — still counting startable bodies over an absolute line.
+     Two sections of one screen describing the same roster by two different rules, with the deprecated one
+     under the clearer heading. ⭐ THE PORTABLE LESSON: when feedback kills a MEASURE, grep for the measure,
+     not for the screen. `surplus`/`need` survive here only as the "cannot even field it" special case.
+
+   WHAT EACH POSITION NOW REPORTS:
+     • WHERE I RANK — 4th of 12 at running back. The only statement that means the same thing in week 2 as
+       in week 12, which is the failure that made the old read useless early (nobody clears an absolute
+       line yet, so every position read "no market").
+     • WHAT I COULD ACTUALLY MOVE — a named player, his marginal cost to my lineup and his worth to a team
+       that needs him. Flex-aware because the cost comes from re-solving the lineup; see `movable`.
+     • WHO IS SHORT AND WHO IS DEEP — counted from the same rank thirds, so this section and the partner
+       list cannot disagree about which teams are thin at a position.
+     • AND THE VERDICT IN ONE WORD, because a to-do list is what he asked this tab to be. */
 export function marketSummary(reads, req) {
   const R = (reads || []).filter(Boolean);
   if (!R.length) return [];
+  const me = R.find((t) => t.isMe) || null;
+  const teams = R.length;
   const out = [];
   Object.keys(req || {}).forEach((pos) => {
     if (!(req[pos] > 0)) return;
-    const buyers = R.filter((t) => (t.need && t.need[pos] > 0));
-    const sellers = R.filter((t) => (t.surplus && t.surplus[pos] > 0));
-    const me = R.find((t) => t.isMe) || null;
-    const mySide = me ? (me.need && me.need[pos] > 0 ? 'buy' : me.surplus && me.surplus[pos] > 0 ? 'sell' : 'set') : null;
-    /* ⚠ THE READ IS ABOUT THE RATIO, NOT THE COUNTS. "4 sellers" means nothing without knowing there are
-       9 buyers; a seller's market and a buyer's market look identical if you only print one side. */
-    const tone = sellers.length === 0 ? 'none'
-      : buyers.length > sellers.length * 2 ? 'sellers'
-        : sellers.length > buyers.length * 2 ? 'buyers' : 'balanced';
+
+    /* Deep and thin are the rank thirds `teamReads` already computed — NOT a second definition. The old
+       code's `buyers`/`sellers` were bodies over a line, which is how a position could report "nobody has
+       a spare" in a league where four teams were plainly deep there. */
+    const deep = R.filter((t) => !t.isMe && (t.strongAt || {})[pos] != null);
+    const thin = R.filter((t) => !t.isMe && (t.thinAt || {})[pos] != null);
+    // The sharper fact, kept because when it is true it beats any ranking: they cannot field the position.
+    const cantField = R.filter((t) => !t.isMe && (t.need || {})[pos] > 0);
+    // Teams that hold a genuinely movable asset here — priced, flex-aware, and named on their own cards.
+    const holders = R.filter((t) => !t.isMe && (t.movable || {})[pos]);
+
+    const myRank = me ? (me.posRank || {})[pos] || null : null;
+    const myMovable = me ? (me.movable || {})[pos] || null : null;
+    const iAmThin = !!(me && (me.thinAt || {})[pos] != null);
+    const iAmStrong = !!(me && (me.strongAt || {})[pos] != null);
+    const iCantField = !!(me && (me.need || {})[pos] > 0);
+
+    /* ⭐⭐⭐ THE VERDICT, AND IT IS DELIBERATELY ALLOWED TO SAY "SELL" AT A POSITION I RANK BADLY AT.
+       That is Trey's own correction from 29ai — "It's not always about having a spare, but rather having
+       value that you can move from there to reshape your team" — and it is the case the old rule could
+       not express at all: the 10th-best back room in the league can still contain one man worth more to
+       somebody else than he is to me. Being short comes first, because a hole you cannot field is the
+       only thing on this tab that costs you points every single week. */
+    let side = 'set';
+    if (iCantField || iAmThin) side = 'buy';
+    else if (myMovable && myMovable.edge > 0) side = 'sell';
+    // Both at once is the strongest row on the page: something to give and a reason to give it.
+    const twoWay = (iAmThin || iCantField) && !!(myMovable && myMovable.edge > 0);
+
+    /* ⚠ THE MARKET TONE IS STILL A RATIO — that part of the old function was right. What changed is what
+       the two sides are counted from. A position where eight of twelve are thin is a queue, not a market,
+       and that is worth knowing BEFORE you spend a week asking. */
+    const tone = !holders.length ? 'none'
+      : thin.length > holders.length * 2 ? 'sellers'
+        : holders.length > thin.length * 2 ? 'buyers' : 'balanced';
+
+    const marketNote = tone === 'none'
+      ? `Nothing movable at ${pos} anywhere in the league — whatever you get here, you will overpay for.`
+      : tone === 'sellers' ? `${thin.length} teams are short at ${pos} and only ${holders.length} hold anything movable — you would be bidding against the room.`
+        : tone === 'buyers' ? `${holders.length} teams hold a movable ${pos} and only ${thin.length} are short — this is where your value goes furthest.`
+          : `${holders.length} hold a movable ${pos}, ${thin.length} are short — an ordinary market.`;
+
+    /* The action line names a PLAYER wherever there is one to name. "You have depth at RB" is not
+       something you can send anybody; "Kenneth Walker costs your lineup 1.2 a week and is worth 9.4 to a
+       team that needs a back" is. */
+    const action = side === 'buy'
+      ? (iCantField
+        ? `You cannot field ${req[pos]} at ${pos}. ${holders.length ? `${holders.length} team${holders.length === 1 ? ' holds' : 's hold'} one they can move.` : 'Nobody has one to spare, so this is a waiver problem, not a trade one.'}`
+        : `You rank ${ord(myRank)} of ${teams} at ${pos}. ${deep.length ? `${deep.length} team${deep.length === 1 ? ' is' : 's are'} in the top third here.` : 'Nobody is notably deep, so expect to pay up.'}`)
+      : side === 'sell'
+        /* ⚠ "costs your lineup 0 a week" IS A SENTENCE NOBODY WRITES. It is also the most common case and
+           the best news on the row — a man your best lineup does not use at all — so it gets words rather
+           than a zero. (Caught by reading sim/posmarket.js §3's own output, which is what printing the
+           pick in the PASS line is for.) */
+        ? `${myMovable.name || pos} ${myMovable.cost > 0 ? `costs your lineup ${myMovable.cost} a week` : 'is not in your best lineup at all'} and is worth ${myMovable.worth} to a team that needs him`
+          + `${thin.length ? ` — ${thin.length} ${thin.length === 1 ? 'is' : 'are'} short at ${pos}${cantField.length ? `, ${cantField.length} cannot field it at all` : ''}.` : ', but nobody here is short there.'}`
+        : `You rank ${ord(myRank)} of ${teams} and nothing here is worth more to somebody else than it is to you. Leave it alone.`;
+
     out.push({
-      pos, buyers: buyers.length, sellers: sellers.length, tone, mySide,
-      buyerTeams: buyers.map((t) => t.teamName), sellerTeams: sellers.map((t) => t.teamName),
-      note: tone === 'none' ? `Nobody in this league has a spare ${pos}. Whatever you get here, you will overpay for.`
-        : tone === 'sellers' ? `${buyers.length} teams need a ${pos} and only ${sellers.length} can spare one — you will be bidding against the room.`
-          : tone === 'buyers' ? `${sellers.length} teams have spare ${pos}s and only ${buyers.length} need one — this is where your money goes furthest.`
-            : `${sellers.length} can spare a ${pos}, ${buyers.length} need one — an ordinary market.`,
+      pos, myRank, teams, side, twoWay, tone,
+      iAmThin, iAmStrong, iCantField,
+      movable: myMovable,
+      deep: deep.length, thin: thin.length, cantField: cantField.length, holders: holders.length,
+      deepTeams: deep.map((t) => t.teamName), thinTeams: thin.map((t) => t.teamName),
+      cantFieldTeams: cantField.map((t) => t.teamName),
+      holderTeams: holders.map((t) => ({ teamName: t.teamName, player: (t.movable[pos] || {}).name || null })),
+      action, marketNote,
+      /* ⚠ `note` IS KEPT UNDER ITS OLD NAME because two callers read it and renaming a field is not a
+         behaviour change worth risking in the same build as a rebuild of what it contains. */
+      note: marketNote,
     });
   });
-  /* Ordered by where HE can act: the positions he is short at first, then where he has something to sell,
-     then the rest. A market view sorted alphabetically is a reference table; this is a to-do list. */
-  const rankOf = (m) => (m.mySide === 'buy' ? 0 : m.mySide === 'sell' ? 1 : 2);
+  /* Ordered by where HE can act, which is what makes this a to-do list rather than a reference table:
+     a position that is both a hole and a source first, then holes, then things to sell, then the rest. */
+  const rankOf = (m) => (m.twoWay ? 0 : m.side === 'buy' ? 1 : m.side === 'sell' ? 2 : 3);
   return out.sort((a, b) => rankOf(a) - rankOf(b) || a.pos.localeCompare(b.pos));
 }
 
@@ -556,11 +696,19 @@ export function partnerBoard(input) {
       if (iThin && theyStrong) add(pos, 'buy', `they rank ${ord(theirRank)} and you rank ${ord(iRank)}`);
       /* ⚠ THE OLD SIGNAL IS KEPT AS A SECOND ROUTE, NOT DISCARDED. A team that literally cannot field a
          position is a buyer whatever the ranking says, and that is the most actionable fact on the page
-         when it is true. It simply can no longer be the ONLY way to qualify. */
-      const iSpare = (mine.surplus || {})[pos] || 0, theyNeed = (them.need || {})[pos] || 0;
-      const theySpare = (them.surplus || {})[pos] || 0, iNeed = (mine.need || {})[pos] || 0;
-      if (iSpare > 0 && theyNeed > 0) add(pos, 'sell', `they cannot field ${req[pos]} and you have one spare`);
-      if (theySpare > 0 && iNeed > 0) add(pos, 'buy', `you cannot field ${req[pos]} and they have one spare`);
+         when it is true. It simply can no longer be the ONLY way to qualify.
+         ⚠⚠ BUT THE OTHER HALF OF IT IS THE RETIRED MEASURE — 29aj. This said "…and you have one spare",
+           which is the exact phrase Trey has now objected to twice, reading a body count that a flex slot
+           makes wrong. "Cannot field it" is a real fact and stays; what I have to offer is `movable`,
+           which is priced against my own solved lineup and, better, has a NAME on it. */
+      const theyNeed = (them.need || {})[pos] || 0, iNeed = (mine.need || {})[pos] || 0;
+      const iCanMove = (mine.movable || {})[pos] || null, theyCanMove = (them.movable || {})[pos] || null;
+      if (iCanMove && theyNeed > 0) {
+        add(pos, 'sell', `they cannot field ${req[pos]} and you have ${iCanMove.name || `a ${pos}`} to move`);
+      }
+      if (theyCanMove && iNeed > 0) {
+        add(pos, 'buy', `you cannot field ${req[pos]} and they have ${theyCanMove.name || `a ${pos}`} to move`);
+      }
     });
     return out;
   };
@@ -604,7 +752,11 @@ export function partnerBoard(input) {
       why = `Straight fit both ways — they are short at ${sell.pos} where you are strong (${sell.why}), and deep at ${buy.pos} where you are short.${noDeal}`;
     } else if (buy) {
       tone = 'fit';
-      why = `They can spare a ${buy.pos} and you are short one — ${buy.why}.${noDeal}`;
+      /* ⚠ NOT "they can spare a TE" — 29aj. Grammatically it is the verb rather than the retired noun, but
+         it is the same idea and the same word Trey has objected to twice, and a screen that says "spare"
+         anywhere invites the reader to believe a body count is still behind one of these numbers. What
+         they have is something they can MOVE, which is a priced statement about their own lineup. */
+      why = `They have a ${buy.pos} to move and you are short one — ${buy.why}.${noDeal}`;
     } else if (sell) {
       tone = 'fit';
       why = `They are short at ${sell.pos} and you are strong there — ${sell.why}.${noDeal}`;
@@ -667,9 +819,13 @@ export function partnerBoard(input) {
     byPos.forEach((list, pos) => {
       /* The candidate is the cheapest man to lose who is still worth something — not the worst player
          at the position (nobody wants him) and not the best (you are not selling him). */
+      /* ⚠ AND THE TIE BREAKS ON COST — 29aj, the same correction `movable` needed. Four elite receivers
+         put my WR1 and my WR4 on an identical edge, and a sort with no tie-break hands back whichever the
+         comparator happened to leave first. "Offer your best receiver" and "offer your fourth" are the
+         same number and opposite advice. */
       const priced = list.map((p) => ({ p, cost: o.costOf(p), worth: o.worthOf ? o.worthOf(p) : 0 }))
         .filter((x) => x.worth > 0)
-        .sort((a, b) => (b.worth - b.cost) - (a.worth - a.cost));
+        .sort((a, b) => ((b.worth - b.cost) - (a.worth - a.cost)) || (a.cost - b.cost));
       const pick = priced[0];
       if (!pick || pick.worth - pick.cost <= 0) return;
       const buyers = partners.filter((p) => ((p.read && p.read.thinAt) || {})[pos] != null

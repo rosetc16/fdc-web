@@ -295,3 +295,36 @@ export function leagueFlags(hub, pack, opts = {}) {
   const gain = Math.round(swaps.reduce((s, x) => s + x.gain, 0) * 10) / 10;
   return { ...out, rows, sev, swaps, gain };
 }
+
+/* ⭐⭐⭐⭐ WHERE THIS LEAGUE STANDS, FOR THE HOME PAGE'S TWO NEW COLUMNS — 29aj.
+   Trey: "On the home page.. for 'this week' can you make a column for 'record' and 'power' ranking."
+
+   Both answers are already in the hub payload this module fetched for the injury badge, so neither column
+   costs a request. Record comes straight off the roster. Power is the LEAGUE'S OWN power table, computed
+   by the same `leaguePower` the hub screen's League tab now uses — see the note on that function for why
+   a second, cheaper power number would have been the wrong answer even though it would have been easier.
+
+   ⚠ IMPORTED LAZILY. This module is deliberately loadable without dragging App.jsx's evaluation order in
+     (see `loadWeek`), and that property is worth more than saving an await.
+   ⚠ AND A LEAGUE WHOSE POOL WILL NOT BUILD RETURNS `power: null`, which the column prints as a dash. A
+     rank invented for a roster we could not score is the kind of number that looks fine and is wrong. */
+export async function leagueStanding(hub) {
+  if (!hub || !Array.isArray(hub.teams) || !hub.teams.length) return null;
+  const me = hub.teams.find((t) => t.rosterId === hub.myRosterId);
+  const rec = (me && me.record) || null;
+  const out = {
+    teams: hub.teams.length,
+    record: rec ? { wins: rec.wins || 0, losses: rec.losses || 0, ties: rec.ties || 0 } : null,
+    pointsFor: me ? (me.pointsFor || 0) : null,
+    power: null, powerOf: hub.teams.length,
+  };
+  try {
+    const { leaguePower, hubPoolFor, normalizeHubCfg } = await import("./App.jsx");
+    const pool = hub.cfg ? hubPoolFor(normalizeHubCfg(hub.cfg)) : null;
+    if (!pool) return out;
+    const table = leaguePower(hub, pool);
+    const mine = table.find((t) => t.isMe);
+    if (mine) out.power = mine.powerRank;
+  } catch (e) { /* the column degrades to a dash; it is never worth failing the row over */ }
+  return out;
+}

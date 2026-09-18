@@ -99,7 +99,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29ai";
+const BUILD_TAG = "2026.07.29aj";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -569,6 +569,130 @@ export function powerBlend(teams, { k = 5 } = {}) {
       },
     };
   }).sort((a, b) => b.powerScore - a.powerScore).map((t, i) => ({ ...t, powerRank: i + 1 }));
+}
+
+/* ⭐⭐⭐⭐⭐ THE POWER TABLE FOR ONE LEAGUE, OUT OF THE HUB SCREEN AND INTO A FUNCTION — 29aj.
+   ==================================================================================================
+   Trey: "On the home page.. for 'this week' can you make a column for 'record' and 'power' ranking."
+
+   Record is free — the hub payload carries it. Power was not: it was ninety lines living inside the
+   TeamHub component, reachable only by rendering a league. So the home strip had three options and two of
+   them were bad. Print a DIFFERENT power number computed from what the home page happens to have (points
+   for, say) and you get the failure this codebase has hit twice: two screens printing the same word over
+   two different scales, and a user with no way to tell which one is lying. Or print nothing.
+
+   ⚠ THE THIRD OPTION IS THE ONLY ONE THAT SCALES: make it a function, and have the hub call it too. The
+     file already says this out loud about `scoreRoster` — "a second copy is how the two views end up
+     disagreeing about a number they both print" — and then kept the caller trapped inside a component
+     anyway. This is that note applied to the whole table.
+   ⚠ SEASON VALUE, NOT THIS WEEK'S. `powerBlend`'s own comment explains why; the practical consequence
+     here is that this function does NOT need the weekly projection map, the matchup-difficulty map or any
+     of the other per-week machinery the hub's `resolve` threads through — the season number is sitting on
+     the pool entry. That is what makes eighteen leagues affordable on a home page.
+   ⚠ AND THE POOL IS PASSED IN, not built, because `buildHubPool` resets module-global engine state and is
+     the expensive half. Leagues that share a format share a pool — see `hubPoolFor`. */
+/* ⭐⭐⭐⭐ THE SCORED PLAYER POOL FOR ONE LEAGUE FORMAT — lifted out of TeamHub in 29aj so the home page
+   can have one too. Body unchanged; see the catch below, which is load-bearing. */
+export function buildHubPool(cfg) {
+  if (!cfg) return null;
+  try {
+    // Reset ALL module-global engine state the scoring helpers read. The hub is NOT a draft, but it calls
+    // the same pure-ish helpers (buildPlayers, posQualityScore, etc.) that read globals like TEAMS, ORDER,
+    // LIVE_PICK_TEAM and PICK_OWNER. If a draft was opened before the hub, those globals were left set (e.g.
+    // LIVE_PICK_TEAM from a completed draft's slot map) and leaked in here, corrupting hub scoring and
+    // crashing on a stale index. Reset them the same way every other buildPlayers caller does.
+    setTeams(cfg.teams || 12);
+    setSpec(cfg.start);
+    setOrder("snake");
+    setPickTrades(null);
+    setLivePickTeams(null);
+    setKeeperAdds({});
+    const pool = buildPlayers(cfg);
+    const bySid = new Map();
+    pool.forEach((p) => { if (p.sid != null) bySid.set(String(p.sid), p); });
+    return { bySid, pool };
+  } catch (e) {
+    /* ⚠⚠⚠ THIS CATCH HID A WHOLE LEAGUE FORMAT FOR THE LENGTH OF ONE BUILD — 29z. Hoisting the dynasty
+       age curve left one orphaned reference to the old local `AGE`, 80 lines further down the same
+       branch. `buildPlayers` threw ReferenceError, this returned null, every roster in the hub resolved
+       to an empty array, and NOTHING said so: the tabs rendered, the headers were right, the rosters
+       were simply blank. Redraft and keeper never enter that branch, so two of the three formats were
+       perfect. ⭐ A pool that failed to build is not a state worth rendering silently — say it, loudly,
+       where a suite or a console can see it. (Same family as the 29q boundary-swallowed ReferenceError
+       and the 29o AGE-search-and-replace: deleting a local means checking every reference to it, not
+       every reference in the block you were looking at.) */
+    try { console.error("[FDC] hub player pool failed to build — every roster will read as empty:", e); } catch (_) {}
+    return null;
+  }
+}
+
+/* ⭐⭐⭐ ONE POOL PER FORMAT, NOT PER LEAGUE. Building a pool resets module globals and scores ~600 players;
+   doing it eighteen times to draw eighteen table rows is most of a second of main thread for a column.
+   Most of a person's leagues share a format, so the key is the format, and the cache is tiny and bounded. */
+const HUB_POOLS = new Map();
+export function hubPoolFor(cfg) {
+  if (!cfg) return null;
+  const key = JSON.stringify([cfg.start, cfg.sf, cfg.tePremMult, cfg.teams, cfg.type, cfg.scoring]);
+  if (HUB_POOLS.has(key)) return HUB_POOLS.get(key);
+  const pool = buildHubPool(cfg);
+  if (HUB_POOLS.size > 8) HUB_POOLS.clear();
+  HUB_POOLS.set(key, pool);
+  return pool;
+}
+
+export function leaguePower(data, pool) {
+  if (!data || !pool || !pool.bySid || !Array.isArray(data.teams) || !data.teams.length) return [];
+  const cfg = data.cfg ? normalizeHubCfg(data.cfg) : null;
+  if (!cfg) return [];
+  const dynastyLg = isDynastyCfg(cfg);
+  const effReqLg = EFF_REQ(cfg);
+  const flexShLg = flexShareOf(cfg);
+  const replLg = slotBaselines(pool.pool || [], cfg, data.teams.length || cfg.teams);
+
+  /* The flex is attributed to whoever actually wins it on THIS roster, with the league-average split as
+     the fallback for a slot too thin to fill — identical to the hub's `flexShareForRoster`, and it has to
+     be, because it feeds the same `posQualityScore`. */
+  const flexShareForRoster = (lu) => {
+    const share = { QB: 0, RB: 0, WR: 0, TE: 0 };
+    let seen = 0, filled = 0;
+    ((lu && lu.slots) || []).forEach((sl) => {
+      if (!/^(FLEX|SFLX)/.test(sl.slot || "")) return;
+      seen++;
+      const pos = sl.p && !sl.p.assumed ? sl.p.pos : null;
+      if (pos && share[pos] != null) { share[pos] += 1; filled++; }
+    });
+    if (!seen) return flexShLg;
+    const unfilled = seen - filled;
+    if (unfilled > 0) POS.forEach((pp) => { share[pp] += ((flexShLg[pp] || 0) / Math.max(1, seen)) * unfilled; });
+    return share;
+  };
+
+  const scoreOf = (roster) => {
+    const lu = lineupSlots(roster || [], cfg.sf);
+    const fShare = flexShareForRoster(lu);
+    let rosterScore = 0;
+    POS.forEach((pos) => {
+      const atPos = (roster || []).filter((p) => p && p.pos === pos).sort((a, b) => (b.pts || 0) - (a.pts || 0));
+      rosterScore += posQualityScore(atPos, effReqLg[pos] || 0,
+        { dynasty: dynastyLg, flexShare: fShare[pos] || 0, slotBaseline: replLg[pos] }) || 0;
+    });
+    return rosterScore;
+  };
+
+  const rows = data.teams.map((t) => {
+    /* ⚠ THE POOL ENTRY'S OWN `pts` IS ALREADY THE SEASON NUMBER. The hub gets here by resolving to weekly
+       points and then undoing it with `seasonRosterOf`; starting from the pool skips both steps and lands
+       on exactly the same value. A player the pool has never heard of is dropped, not zeroed — an invented
+       replacement-level body would flatter a roster with dead ids on it. */
+    const roster = (t.players || []).map((id) => pool.bySid.get(String(id))).filter(Boolean);
+    return {
+      rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName,
+      isMe: t.rosterId === data.myRosterId,
+      record: t.record, pointsFor: t.pointsFor || 0,
+      rosterScore: scoreOf(roster),
+    };
+  });
+  return powerBlend(rows);
 }
 
 /* ⭐⭐⭐⭐⭐ WHAT A PROPOSED TRADE DOES — the calculator's output — 29y.
@@ -15996,6 +16120,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   /* Which partner's ideas are expanded. One at a time on purpose: the list exists to help him pick a
      manager, and eleven open accordions is the wall of rows 29af was asked to fix. */
   const [lrOpen, setLrOpen] = useState(null);
+  const [lrSkip, setLrSkip] = useState(false);   // 29aj: show the managers there is no reason to chase
   /* 29y: the trade calculator. `tb` is one object rather than four useStates because every entry point
      that opens it (the button, a market pathway, an auto-swap row) has to set the partner AND both sides
      together — and a partial update that changed the partner while leaving the previous deal's player ids
@@ -16024,38 +16149,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
 
   // Build the enriched, projection-scored player pool for THIS league's cfg, keyed by Sleeper id.
   const cfg = data && data.cfg ? normalizeHubCfg(data.cfg) : null;
-  const poolBySid = React.useMemo(() => {
-    if (!cfg) return null;
-    try {
-      // Reset ALL module-global engine state the scoring helpers read. The hub is NOT a draft, but it calls
-      // the same pure-ish helpers (buildPlayers, posQualityScore, etc.) that read globals like TEAMS, ORDER,
-      // LIVE_PICK_TEAM and PICK_OWNER. If a draft was opened before the hub, those globals were left set (e.g.
-      // LIVE_PICK_TEAM from a completed draft's slot map) and leaked in here, corrupting hub scoring and
-      // crashing on a stale index. Reset them the same way every other buildPlayers caller does.
-      setTeams(cfg.teams || 12);
-      setSpec(cfg.start);
-      setOrder("snake");
-      setPickTrades(null);
-      setLivePickTeams(null);
-      setKeeperAdds({});
-      const pool = buildPlayers(cfg);
-      const bySid = new Map();
-      pool.forEach((p) => { if (p.sid != null) bySid.set(String(p.sid), p); });
-      return { bySid, pool };
-    } catch (e) {
-      /* ⚠⚠⚠ THIS CATCH HID A WHOLE LEAGUE FORMAT FOR THE LENGTH OF ONE BUILD — 29z. Hoisting the dynasty
-         age curve left one orphaned reference to the old local `AGE`, 80 lines further down the same
-         branch. `buildPlayers` threw ReferenceError, this returned null, every roster in the hub resolved
-         to an empty array, and NOTHING said so: the tabs rendered, the headers were right, the rosters
-         were simply blank. Redraft and keeper never enter that branch, so two of the three formats were
-         perfect. ⭐ A pool that failed to build is not a state worth rendering silently — say it, loudly,
-         where a suite or a console can see it. (Same family as the 29q boundary-swallowed ReferenceError
-         and the 29o AGE-search-and-replace: deleting a local means checking every reference to it, not
-         every reference in the block you were looking at.) */
-      try { console.error("[FDC] hub player pool failed to build — every roster will read as empty:", e); } catch (_) {}
-      return null;
-    }
-  }, [cfg && JSON.stringify(cfg.start), cfg && cfg.sf, cfg && cfg.tePremMult, cfg && cfg.teams, data && data.week]);
+  const poolBySid = React.useMemo(() => buildHubPool(cfg),
+    [cfg && JSON.stringify(cfg.start), cfg && cfg.sf, cfg && cfg.tePremMult, cfg && cfg.teams, data && data.week]);
 
   React.useEffect(() => {
     let alive = true;
@@ -16783,8 +16878,19 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
      ⚠ `posStrength` and `posStarted` stay WEEKLY on purpose — they answer "what does this position put in
        my lineup this week", which is a different and legitimately week-bound question (see 29ah above).
      ================================================================================================ */
+  /* ⭐⭐⭐⭐⭐ THE SCORE COMES FROM THE SHARED FUNCTION NOW — 29aj. `leaguePower` is what the home page's
+     Power column reads, and the one thing this codebase must never do is compute that number twice. The
+     hub still owns the PRESENTATION fields (posQuality, posPlayers, the hovers), so the shared scores are
+     merged onto its own rows rather than replacing them — same inputs into the same `powerBlend`, so the
+     two screens agree by construction rather than by coincidence.
+     ⚠ The local fallback stays for the case where the pool failed to build: a hub with no power column is
+       worse than a hub whose power column is computed the old way. */
+  const sharedScore = new Map(leaguePower(data, poolBySid).map((r) => [String(r.rosterId), r.rosterScore]));
   powerRanked = powerBlend(leagueTeams.map((t) => ({
-    ...t, rosterScore: scoreRoster(seasonRosterOf(t)).rosterScore,
+    ...t,
+    rosterScore: sharedScore.has(String(t.rosterId))
+      ? sharedScore.get(String(t.rosterId))
+      : scoreRoster(seasonRosterOf(t)).rosterScore,
   })));
   powerRanked.forEach((t) => { powerRankById[t.rosterId] = t.powerRank; });
   // Projected final standings: blend current wins with power (a rough season-long strength signal).
@@ -17923,7 +18029,11 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                         <span data-lrsurplusedge={String(sp.edge)}
                           title={`Moving him costs your starting lineup ${sp.cost} points of season value, and he is worth about ${sp.worth} to a roster that needs him — a difference of ${sp.edge}. That gap is what makes him tradeable, and it can be large at a position you are weak at.`}
                           style={{ cursor: "help", borderBottom: "1px dotted var(--line2)" }}>
-                          <span className="mut">costs you </span><b className="num">{sp.cost}</b>
+                          {/* ⚠ "costs you 0" IS NOT A SENTENCE — 29aj. It is also the best case on the row
+                              (a man your optimal lineup never uses), so it gets a word instead of a zero. */}
+                          {sp.cost > 0
+                            ? <><span className="mut">costs you </span><b className="num">{sp.cost}</b></>
+                            : <span className="mut">costs you <b style={{ color: "var(--ink)" }}>nothing</b></span>}
                           <span className="mut">, worth </span><b className="num" style={{ color: "var(--pos)" }}>{sp.worth}</b>
                           <span className="mut"> elsewhere</span>
                         </span>
@@ -17952,8 +18062,21 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       : "ranked by what is realistically available with each manager"}
                   </span>
                 </div>
-                <div data-lrpartners={String(partners.partners.length)} style={{ display: "grid", gap: 4 }}>
-                  {partners.partners.map((p) => {
+                {/* ⭐⭐⭐⭐⭐ THE MANAGERS WITH NOTHING FOR YOU ARE FOLDED AWAY — 29aj.
+                    Trey: "The trade market is better... but it's hard to follow all the text. Make it
+                    clear who we don't focus on."
+                    ⚠⚠ THE OLD LIST GAVE EVERY MANAGER THE SAME ROW AND THE SAME WEIGHT, so in a twelve-team
+                      league three teams worth calling arrived buried in eleven identical cards, each with
+                      its own two-line explanation of why it was or was not worth calling. The signal was
+                      there and the format destroyed it: a reader scanning eleven rows of grey prose is
+                      doing the ranking the page was supposed to have done.
+                    ⚠ FOLDED, NOT DELETED, and the count stays on screen. "Why is this league only showing
+                      four teams" is a worse question than the one this fixes, and 29ai's whole point was
+                      that a manager with no deal still gets a verdict. The verdict is now one line for all
+                      of them together, with the individual reasons one click away. */}
+                {(() => { const _f = partners.partners.filter((p) => p.tone !== "none"); return (
+                <div data-lrpartners={String(_f.length)} data-lrskipped={String(partners.partners.length - _f.length)} style={{ display: "grid", gap: 4 }}>
+                  {_f.map((p) => {
                     const open = lrOpen === p.rosterId;
                     const gain = p.best ? oddsForGain(p.best.myGain / Math.max(1, regSeasonWeeks - data.week + 1)) : null;
                     return (
@@ -17976,6 +18099,27 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                               certain team where BOTH sides just benefit so much that it makes sense". It is
                               the smaller of the two gains, so one fat side cannot manufacture it. */}
                           {p.mutual > 0 && <span className="mut" style={{ fontSize: 10.5 }} data-lrmutual={String(p.mutual)}>both sides +{p.mutual} or better</span>}
+                          {/* ⭐⭐⭐⭐ THE FIT AS CHIPS, NOT AS A SENTENCE — 29aj. "Make it clear what positions
+                              / players might fit (color code and such)." The prose line below still carries
+                              the reasoning, but the SHAPE of the deal — I give a receiver, I get a back —
+                              is the thing you scan eleven rows for, and it belongs in the row's own
+                              colours rather than in the middle of a clause. Each position keeps the colour
+                              it has everywhere else in the app (POS_COLOR), with an arrow for direction. */}
+                          {p.complement.length > 0 && (
+                            <span data-lrfit={p.complement.map((c) => `${c.dir}:${c.pos}`).join(",")}
+                              style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+                              {p.complement.slice(0, 3).map((c) => (
+                                <span key={c.dir + c.pos} title={`${c.dir === "sell" ? "You send" : "You get"} a ${c.pos} — ${c.why}`}
+                                  style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".04em", cursor: "help",
+                                    padding: "1px 5px", borderRadius: 5, whiteSpace: "nowrap",
+                                    color: POS_COLOR[c.pos] || "var(--ink)",
+                                    border: `1px solid ${alpha(POS_COLOR[c.pos] || "var(--line2)", 45)}`,
+                                    background: alpha(POS_COLOR[c.pos] || "var(--line2)", 12) }}>
+                                  {c.dir === "sell" ? "↑" : "↓"}{c.pos}
+                                </span>
+                              ))}
+                            </span>
+                          )}
                           <span className="mut" style={{ marginLeft: "auto", fontSize: 10.5 }}>
                             {/* ⚠ "nothing" IS ONLY TRUE WHEN THERE IS NOTHING. A row reading "Straight fit
                                 both ways" on the left and "nothing" on the right is the screen arguing with
@@ -18000,7 +18144,29 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       </div>
                     );
                   })}
+                  {/* The rest, in one line. A count and their names is the whole useful content of eleven
+                      cards that all say the same thing, and the reasons are one click away for anybody who
+                      wants to check the call rather than take it. */}
+                  {partners.partners.length > _f.length && (
+                    <div data-lrskip={String(partners.partners.length - _f.length)} style={{ marginTop: 3 }}>
+                      <button type="button" onClick={() => setLrSkip((v) => !v)}
+                        style={{ width: "100%", textAlign: "left", background: "transparent", cursor: "pointer",
+                          border: "1px dashed var(--line2)", borderRadius: 8, padding: "5px 9px", color: "var(--mut)",
+                          fontFamily: "inherit", fontSize: 11, display: "flex", alignItems: "baseline", gap: 7 }}>
+                        <b style={{ color: "var(--mut)" }}>Not worth chasing</b>
+                        <span>{partners.partners.length - _f.length} manager{partners.partners.length - _f.length === 1 ? "" : "s"} — your rosters are strong and weak in the same places</span>
+                        <i className={`ti ti-chevron-${lrSkip ? "up" : "down"}`} style={{ fontSize: 11, marginLeft: "auto" }} aria-hidden="true" />
+                      </button>
+                      {lrSkip && partners.partners.filter((p) => p.tone === "none").map((p) => (
+                        <div key={p.rosterId} data-lrskipteam={p.teamName || String(p.rosterId)} className="mut"
+                          style={{ fontSize: 11, lineHeight: 1.5, padding: "3px 10px 2px 18px" }}>
+                          <b style={{ color: "var(--ink)" }}>{p.teamName || p.ownerName}</b> — {p.why}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
+                ); })()}
               </div>
             )}
 
@@ -18194,22 +18360,34 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                     COUNT: "four teams can spare a receiver" means opposite things depending on whether two
                     or nine teams need one, and printing one side of it is how a queue gets mistaken for a
                     market. See marketSummary. */}
+                {/* ⭐⭐⭐⭐⭐ ONE ROW PER POSITION, VERDICT FIRST — 29aj.
+                    Trey: "it's hard to follow all the text. Make it clear who we don't focus on... make it
+                    clear what positions / players might fit (color code and such)."
+                    The old version printed a sentence per position in uniform grey and left the reader to
+                    find the verb. Now the verb is a coloured word in a fixed column, the position carries
+                    its own colour, and the sentence after it names a PLAYER wherever there is one to name.
+                    Same information, read in a glance instead of a paragraph. */}
                 {mktSummary.length > 0 && (
-                  <div data-mktread={String(mktSummary.length)} style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 10 }}>
+                  <div data-mktread={String(mktSummary.length)} style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 11 }}>
                     {mktSummary.map((m) => {
-                      const TONE = { sellers: "var(--neg)", buyers: "var(--pos)", none: "var(--gold)", balanced: "var(--mut)" };
-                      const SIDE = { buy: "you are short", sell: "you can sell", set: "you are set" };
+                      const VERB = m.twoWay ? "SWAP" : m.side === "buy" ? "GET" : m.side === "sell" ? "MOVE" : "HOLD";
+                      const VTONE = m.twoWay ? "var(--gold)" : m.side === "buy" ? "var(--neg)" : m.side === "sell" ? "var(--pos)" : "var(--mut)";
                       return (
-                        <div key={m.pos} data-mktreadpos={m.pos} data-mktreadtone={m.tone}
-                          style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 11.5, flexWrap: "wrap" }}>
-                          <span className="disp" style={{ fontSize: 11, fontWeight: 800, minWidth: 30, color: TONE[m.tone] }}>{m.pos}</span>
-                          {m.mySide && (
-                            <span className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em",
-                              fontWeight: 700, minWidth: 74, color: m.mySide === "buy" ? "var(--gold)" : m.mySide === "sell" ? "var(--pos)" : "var(--mut)" }}>
-                              {SIDE[m.mySide]}
+                        <div key={m.pos} data-mktreadpos={m.pos} data-mktreadtone={m.tone} data-mktreadside={m.twoWay ? "swap" : m.side}
+                          style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 11.5, flexWrap: "wrap",
+                            opacity: m.side === "set" ? .62 : 1 }}>
+                          {/* The position keeps its own colour everywhere in the app — see POS_COLOR. */}
+                          <span className="disp" style={{ fontSize: 11.5, fontWeight: 800, minWidth: 30,
+                            color: POS_COLOR[m.pos] || "var(--ink)" }}>{m.pos}</span>
+                          <span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".06em",
+                            fontWeight: 800, minWidth: 40, color: VTONE }}>{VERB}</span>
+                          {m.myRank && (
+                            <span data-mktreadrank={`${m.pos}:${m.myRank}`} className="num" style={{ fontSize: 10.5, fontWeight: 700, minWidth: 52,
+                              color: m.iAmStrong ? "var(--pos)" : m.iAmThin ? "var(--neg)" : "var(--mut)" }}>
+                              {ordinal(m.myRank)}/{m.teams}
                             </span>
                           )}
-                          <span className="mut" style={{ minWidth: 0, lineHeight: 1.45 }}>{m.note}</span>
+                          <span className="mut" style={{ minWidth: 0, lineHeight: 1.45, flex: 1 }}>{m.action}</span>
                         </div>
                       );
                     })}
@@ -18218,36 +18396,59 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
                   {market.positions.map((row) => {
                     const on = mktPos === row.pos;
-                    /* Thin, deep or settled — the three states, coloured, because "where am I short" should
-                       be answerable without reading a number. */
-                    const tone = row.mine.need > 0 ? "var(--neg)" : row.mine.surplus > 0 ? "var(--pos)" : "var(--mut)";
+                    /* ⭐⭐⭐⭐⭐ THE CHIP NO LONGER SAYS "+1 SPARE" — 29aj, and this is the label Trey was
+                       looking at when he wrote "The +Spare just feels like not the best way to determine
+                       this... especially since this league has a flex position."
+                       ⚠⚠ THE COUNT WAS WRONG BY CONSTRUCTION IN A FLEX LEAGUE, not merely crude: `surplus`
+                         is startable bodies above the MUST-FIELD requirement, and the must-field number
+                         excludes the flex slot on purpose. So in a 2RB+FLEX league a team with three
+                         startable backs has "+1 spare" while playing all three every week. The state now
+                         comes from `marketSummary`, which prices the best man you could move by what
+                         removing him actually costs your solved lineup — the flex is handled by being
+                         PLAYED rather than by being counted. */
+                    const sum = (mktSummary || []).find((m) => m.pos === row.pos) || null;
+                    const state = sum ? (sum.twoWay ? "swap" : sum.side) : (row.mine.need > 0 ? "buy" : "set");
+                    const tone = state === "swap" ? "var(--gold)" : state === "buy" ? "var(--neg)" : state === "sell" ? "var(--pos)" : "var(--mut)";
+                    const label = state === "swap" ? "both ways" : state === "buy" ? "short" : state === "sell" ? "can move" : "set";
                     return (
-                      <button key={row.pos} data-mktpos={row.pos} data-mktposstate={row.mine.need > 0 ? "thin" : row.mine.surplus > 0 ? "deep" : "set"}
+                      <button key={row.pos} data-mktpos={row.pos} data-mktposstate={state}
                         onClick={() => setMktPos(on ? null : row.pos)} aria-pressed={on}
-                        title={`You can field ${row.mine.startable} startable ${row.pos}${row.mine.startable === 1 ? "" : "s"} for ${row.mine.required} slot${row.mine.required === 1 ? "" : "s"}. ${row.sellers} rival${row.sellers === 1 ? " has" : "s have"} a spare; ${row.buyers} need one.`}
+                        title={sum ? sum.action : `${row.pos}`}
                         style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left",
-                          border: `1px solid ${on ? tone : "var(--line2)"}`, background: on ? "rgba(255,255,255,.04)" : "transparent",
-                          borderRadius: 9, padding: "6px 10px", minWidth: 96 }}>
-                        <div style={{ fontSize: 12.5, fontWeight: 800, color: tone }}>
+                          border: `1px solid ${on ? tone : "var(--line2)"}`, background: on ? "var(--hover)" : "transparent",
+                          borderRadius: 9, padding: "6px 10px", minWidth: 108, opacity: state === "set" ? .7 : 1 }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 800, color: POS_COLOR[row.pos] || "var(--ink)" }}>
                           {row.pos}{" "}
-                          <span style={{ fontSize: 10, fontWeight: 700 }}>
-                            {row.mine.need > 0 ? `short ${row.mine.need}` : row.mine.surplus > 0 ? `+${row.mine.surplus} spare` : "set"}
-                          </span>
+                          <span style={{ fontSize: 10, fontWeight: 700, color: tone }}>{label}</span>
                         </div>
-                        {/* ⭐⭐⭐⭐ WHERE THIS GROUP RANKS IN THE LEAGUE — 29ac, asked for by name. "Short 1"
-                            is a fact about my own slots; 9th of 12 is a fact about the league, and it is
-                            the one that decides whether to trade or to live with it. Ranked on value above
-                            replacement, the same currency the rest of this view uses. */}
+                        {/* ⭐⭐⭐⭐ WHERE THIS GROUP RANKS IN THE LEAGUE — 29ac, asked for by name, and since
+                            29ai the number the whole fit read runs on. "Short 1" is a fact about my own
+                            slots; 9th of 12 is a fact about the league, and it is the one that decides
+                            whether to trade or to live with it.
+                            ⚠⚠ AND IT COMES FROM `marketSummary`, NOT FROM `positionMarket` — 29aj, caught
+                              by looking at a screenshot of this very panel. The two functions rank a
+                              position differently (one on what it PUTS IN THE LINEUP, the other on value
+                              above replacement), so the read line above said "RB 6th/12" and the chip four
+                              pixels below it said "7th of 12". Two numbers, one word, one panel — the
+                              29y failure in miniature, and arguably worse because both were on screen at
+                              once. The chip defers; `positionMarket`'s own rank stays as the fallback for
+                              a position the summary has no row for. */}
+                        {(() => { const rk = sum && sum.myRank ? sum.myRank : row.myRank;
+                          const of = sum && sum.teams ? sum.teams : row.of; return (
                         <div className="mut" style={{ fontSize: 9.5, marginTop: 2 }}>
-                          {row.myRank ? (
-                            <span data-mktrank={`${row.pos}:${row.myRank}`} style={{
-                              color: row.myRank <= Math.ceil(row.of / 3) ? "var(--pos)"
-                                : row.myRank > Math.ceil((row.of * 2) / 3) ? "var(--neg)" : "var(--mut)", fontWeight: 700 }}>
-                              {ordinal(row.myRank)} of {row.of}
+                          {rk ? (
+                            <span data-mktrank={`${row.pos}:${rk}`} style={{
+                              color: rk <= Math.ceil(of / 3) ? "var(--pos)"
+                                : rk > Math.ceil((of * 2) / 3) ? "var(--neg)" : "var(--mut)", fontWeight: 700 }}>
+                              {ordinal(rk)} of {of}
                             </span>
                           ) : null}
-                          {row.myRank ? " · " : ""}{row.sellers} can sell · {row.buyers} need
+                          {/* The man you would actually be offering — the answer to "what does 'can move' mean". */}
+                          {sum && sum.movable && sum.movable.name ? (
+                            <> · <span data-mktmovable={`${row.pos}:${sum.movable.name}`} style={{ color: "var(--pos)" }}>{sum.movable.name}</span></>
+                          ) : (sum && sum.thin ? <> · {sum.thin} short</> : null)}
                         </div>
+                        ); })()}
                       </button>
                     );
                   })}
@@ -19058,7 +19259,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
 }
 
 // Normalize the cfg the backend derived from Sleeper into the shape the engine expects (start slots, flags).
-function normalizeHubCfg(c) {
+export function normalizeHubCfg(c) {
   const start = c.start || { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 1, SUPER: 0, DST: 0, K: 0 };
   return {
     name: "Sleeper league",
@@ -19236,7 +19437,18 @@ function GetStartedPanel({ leagues, funMocks, dismissed, onDismiss, onConnectSle
 /* The future-week table's column track — named once so the header and the rows cannot drift. */
 const AHEAD_COLS = "minmax(0,1.3fr) minmax(0,1fr) 108px 118px minmax(0,1.6fr)";
 
-function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, weekFlags }) {
+/* 29aj — a power RANK is only meaningful against the size of the field, so the colour is a share of it
+   rather than a threshold on the number. Top third and bottom third only; the middle is deliberately
+   uncoloured, because "6th of 12" is not news and painting it amber would imply it was. */
+function powTone(st) {
+  if (!st || !st.power || !st.powerOf) return "var(--mut)";
+  const share = (st.power - 1) / Math.max(1, st.powerOf - 1);
+  if (share <= 1 / 3) return "var(--pos)";
+  if (share >= 2 / 3) return "var(--neg)";
+  return "var(--ink)";
+}
+
+function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, weekFlags, weekStand }) {
   const r1 = (n) => (Number.isFinite(n) ? Math.round(n * 10) / 10 : n);
   /* ⚠ TWO HOVER CARDS ON THIS STRIP, DELIBERATELY, AND THEY ARE NOT THE SAME THING.
      `WeekHoverCard` (29r, below) is a bespoke LIVE-MATCHUP panel: two lineups, a forecast, a win
@@ -19779,6 +19991,16 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                       now left-to-right rather than a mental join across three columns. */}
                   <tr style={{ color: "var(--mut)", textAlign: "right" }}>
                     <th style={{ textAlign: "left", fontWeight: 600, padding: "4px 8px 6px 4px" }}>League</th>
+                    {/* ⭐⭐⭐⭐ THE TWO COLUMNS THAT SAY WHY THIS GAME MATTERS — 29aj.
+                        Trey: "On the home page.. for 'this week' can you make a column for 'record' and
+                        'power' ranking."
+                        Everything else on this row is about the next four hours. These two are the season
+                        the four hours belong to, and they are what turns "you're losing by nine" into
+                        either "and you're 1-4, so this one matters" or "and you're 4-1 with the best
+                        roster in the league, so it doesn't". They sit next to the league name rather than
+                        out at the end because they are context for the row, not another live number. */}
+                    <th style={{ fontWeight: 600, padding: "4px 8px 6px" }} title="Your win-loss record in this league">Rec</th>
+                    <th style={{ fontWeight: 600, padding: "4px 8px 6px" }} title="Your power ranking in this league — roster strength blended with what you have actually scored. The same number the league's Power table shows.">Pow</th>
                     <th style={{ fontWeight: 600, padding: "4px 8px 6px" }} title="Your score now, and where it is heading">You</th>
                     <th style={{ fontWeight: 600, padding: "4px 8px 6px" }} title="Their score now, and where it is heading">Opponent</th>
                     <th style={{ fontWeight: 600, padding: "4px 8px 6px" }} title="Chance of winning, from the projected margin and how much is still to play">Win</th>
@@ -19802,6 +20024,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                     const f = L.forecast;
                     const tone = f ? winTone(f.win) : { color: "var(--mut)", label: "—" };
                     const flags = league ? (weekFlags || {})[hubIdOfLeague(league)] : null;
+                    const st = league ? (weekStand || {})[hubIdOfLeague(league)] : null;
                     const SEVTONE = { 3: "var(--neg)", 2: "var(--gold)", 1: "var(--info)", 0: "var(--pos)" };
                     return (
                       <tr key={L.leagueId || i} data-homeweekrow={(league && league.name) || L.leagueName || L.leagueId}
@@ -19841,6 +20064,25 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                               color: "var(--ink)", fontSize: 12.5, fontWeight: 700 }}>
                             {(league && league.name) || L.leagueName || L.leagueId}
                           </button>
+                        </td>
+                        {/* 29aj — record and power. Both come from the hub read the injury badge already
+                            did (see `leagueStanding`), so they cost nothing; both print a dash rather than
+                            a guess when that read has not landed or a roster could not be scored. */}
+                        <td data-homeweekrec={st && st.record ? `${st.record.wins}-${st.record.losses}${st.record.ties ? `-${st.record.ties}` : ""}` : ""}
+                          style={{ textAlign: "right", padding: "5px 8px", fontWeight: 700 }}>
+                          {st && st.record
+                            ? `${st.record.wins}-${st.record.losses}${st.record.ties ? `-${st.record.ties}` : ""}`
+                            : <span className="mut">—</span>}
+                        </td>
+                        {/* ⭐⭐⭐ COLOURED BY WHERE YOU SIT IN THE FIELD, not by an absolute number: 4th of
+                            12 and 4th of 8 are different seasons. Top third green, bottom third red. */}
+                        <td data-homeweekpow={st && st.power ? `${st.power}/${st.powerOf}` : ""}
+                          title={st && st.power ? `Power ${st.power} of ${st.powerOf} in this league` : "Power ranking is still loading, or this roster could not be scored"}
+                          style={{ textAlign: "right", padding: "5px 8px", fontWeight: 800,
+                            color: powTone(st) }}>
+                          {st && st.power
+                            ? <>{st.power}<span className="mut" style={{ fontWeight: 600, fontSize: 10.5 }}>/{st.powerOf}</span></>
+                            : <span className="mut">—</span>}
                         </td>
                         {/* ⭐⭐⭐⭐ ONE CELL PER SIDE: the live score, and under it where it is going. The
                             arrow is doing real work — it says these two numbers are the same quantity at
@@ -19913,6 +20155,24 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                 Closest to a coin flip first. "Proj" is points on the board plus projections for everyone
                 still to play; "Win" is the chance of that holding up.
                 {live && live.projKnown === false && " ⚠ No projections available for this week, so Proj and Win are unavailable."}
+                {/* ⭐⭐⭐⭐⭐ THE "LEFT" COLUMN SAYS WHEN IT IS GUESSING — 29aj / b150.
+                    Trey reported "left to play" wrong three times running, and the cause each time was
+                    upstream of this table: first the stats feed overruling a kickoff, then a shell stat
+                    row, and finally — the real one — a schedule that stored the DAY of each game as if it
+                    were the hour, so every player read as finished before his game started (see
+                    nflSchedule.js, b150). What made it survive three rounds is that the column had no way
+                    to say "I could not time these men": it printed a confident number either way.
+                    ⚠ IT NAMES THE TEAMS rather than saying "some games". A person can tell at a glance
+                      whether four teams or thirty-two are missing, and those are completely different
+                      problems — one is a postponed game, the other is a schedule that did not load. */}
+                {live && Array.isArray(live.scheduleMissing) && live.scheduleMissing.length > 0 && (
+                  <div data-homeweeknoclock={String(live.scheduleMissing.length)} style={{ marginTop: 4, color: "var(--gold)" }}>
+                    ⚠ No kickoff time for {live.scheduleMissing.length} team{live.scheduleMissing.length === 1 ? "" : "s"}
+                    {" "}({live.scheduleMissing.slice(0, 8).join(", ")}{live.scheduleMissing.length > 8 ? "…" : ""}),
+                    {" "}so their players are counted as still to play until a stat line says otherwise.
+                    {" "}Game Day names them; <b style={{ color: "var(--ink)" }}>Pull schedule</b> in Admin fixes it.
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -20182,6 +20442,7 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
        this runs on a timeout and the rows show a quiet spinner glyph until it lands. If it never lands, the
        rows are exactly the rows — no badge, no error, nothing broken. */
   const [weekFlags, setWeekFlags] = useState({});
+  const [weekStand, setWeekStand] = useState({});   // 29aj: record + power rank per league, for the This Week table
   useEffect(() => {
     if (!seasonFirst || !seasonTeams.length || !hasBackend) return;
     let alive = true;
@@ -20215,6 +20476,19 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
         } catch (e) { /* no live read: flags stay as they were */ }
         (w.connected || []).forEach((l, i) => { const f = leagueFlags(w.hubs[i], w.pack, { playedOf }); if (f) out[hid(l)] = f; });
         setWeekFlags(out);
+        /* ⭐⭐⭐ RECORD AND POWER RIDE ALONG ON THE SAME READ — 29aj. Trey asked for two columns on the
+           "this week" table; the hub payloads that answer them are already in hand here, so the columns
+           cost no request. Computed AFTER the flags are published so the badge — which people look at
+           first — is never held up behind eighteen power tables. */
+        try {
+          const { leagueStanding } = await import("./weekcache.js");
+          const st = {};
+          for (let i = 0; i < (w.connected || []).length; i++) {
+            const s = await leagueStanding(w.hubs[i]);
+            if (s) st[hid(w.connected[i])] = s;
+          }
+          if (alive) setWeekStand(st);
+        } catch (e) { /* the two columns print dashes; the row is still useful */ }
       } catch (e) { /* the badge is a nicety; its absence is not an error state */ }
     }, 600);
     return () => { alive = false; clearTimeout(t); };
@@ -20626,7 +20900,7 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
               full of zeroes. See HomeWeekStrip and src/livecache.js. */}
           {seasonTeams.length > 0 && (
             <HomeWeekStrip leagues={leagues} onGameDay={onGameDay} onReview={onReview} onOpenHub={onUmbrella}
-              onOpenTeam={(l) => onOpenHub && onOpenHub({ league_id: hubIdOf(l) })} weekFlags={weekFlags} />
+              onOpenTeam={(l) => onOpenHub && onOpenHub({ league_id: hubIdOf(l) })} weekFlags={weekFlags} weekStand={weekStand} />
           )}
 
           {/* ⭐⭐⭐⭐ ONE ROW PER TEAM, NOT ONE CARD.
