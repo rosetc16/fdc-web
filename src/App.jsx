@@ -99,7 +99,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29aj";
+const BUILD_TAG = "2026.07.29ak";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -17065,7 +17065,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     })),
     reads: teamReadRows, lineupValue, sf: cfg.sf, req: reqStart, repl: tradeRepl, max: 5,
   })) : [];
-  const mktSummary = myLT ? marketSummary(teamReadRows, reqStart) : [];
+  /* ⚠ `board.all`, NOT `board` — b151. The top five are a shortlist and the positional verdict is about
+     the whole market, so scoping it to the shortlist would report "nothing to do at RB" whenever the best
+     RB idea happened to place sixth. Same reasoning, and the same field, as the partner read. */
+  const mktSummary = myLT ? marketSummary(teamReadRows, reqStart, { offers: board.all || board }) : [];
   const myRead = (teamReadRows || []).find((r) => r.isMe) || null;
 
   /* ⭐⭐⭐⭐⭐ THE LEAGUE READ — 29ah. Trey, on the board 29af shipped: "it still isn't clear to me though
@@ -17979,10 +17982,117 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
           <div className="panel" style={{ padding: 16 }}>
             <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 3 }}>Trades</div>
             <div className="mut" style={{ fontSize: 12, marginBottom: 12, lineHeight: 1.5 }}>
-              A read on the league first — who to call and what you can trade from — then the deals worth sending, the
-              positional market they sit in, and a calculator for anything you want to price yourself. Everything is
-              season value, so a bye week never makes somebody look expendable.
+              The calculator first, for the deal you already have in mind — then a read on the league, the deals worth
+              sending, and the positional market they sit in. Everything is season value, so a bye week never makes
+              somebody look expendable.
             </div>
+
+            {/* ⭐⭐⭐⭐⭐ THE TRADE CALCULATOR — 29y.
+                Trey: "I'd like to be able to go into that league and hit trade and be able to input players
+                on each side of a trade. And then basically you equate that to the output of the team in
+                terms of power rankings and overall points in the season... you need to make sure that
+                you're only equating the points scored to the STARTING LINEUP points."
+                Everything below answers a question the app asked itself. This one answers HIS question —
+                the deal he has already got in mind, which no generator was ever going to propose.
+                ⭐ AND IT LEADS THE TAB SINCE b151, on his instruction: "Move trade calculator to the top of
+                  the trade section." It had been third, which made three screens of generated analysis the
+                  price of admission for the one tool he arrives already wanting to use. */}
+            {myLT && (
+              <div data-tb style={{ border: `1px solid ${tb.open ? "var(--line2)" : "var(--line)"}`, borderRadius: 10, marginBottom: 14, background: "var(--panel2)" }}>
+                <button data-tbtoggle={tb.open ? "1" : "0"}
+                  onClick={() => setTb((v) => ({ ...v, open: !v.open }))}
+                  style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "11px 12px", background: "none", border: 0, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", textAlign: "left" }}>
+                  <i className={`ti ti-${tb.open ? "chevron-down" : "chevron-right"}`} style={{ fontSize: 15, color: "var(--mut)" }} aria-hidden="true" />
+                  <span className="disp" style={{ fontSize: 15, fontWeight: 800, letterSpacing: ".01em" }}>Trade Calculator</span>
+                  <span className="mut" style={{ fontSize: 11 }}>pick the players on each side</span>
+                </button>
+
+                {tb.open && (
+                  <div style={{ padding: "0 12px 12px" }}>
+                    {/* ⭐⭐⭐⭐⭐ A DROPDOWN ON EACH SIDE — 29ac. Either seat can be any team, so the panel
+                        prices a deal you are proposing AND one two rivals just made. Side A defaults to
+                        your own team, because that is what you are usually here for. Changing either side
+                        clears the players, since a roster you no longer have selected cannot be in a deal
+                        (the calculator would refuse it as a stale roster, which is correct and unhelpful). */}
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 8, alignItems: "center", marginBottom: 11 }}>
+                      {[["a", tbA], ["b", tb.b]].map(([key, val], i) => (
+                        <React.Fragment key={key}>
+                          {i === 1 && <i className="ti ti-arrows-exchange" style={{ fontSize: 16, color: "var(--mut)" }} aria-hidden="true" />}
+                          <select data-tbside-select={key} value={val == null ? "" : String(val)}
+                            onChange={(e) => { const v = e.target.value === "" ? null : Number(e.target.value);
+                              setTb((prev) => ({ ...prev, [key]: v, give: [], get: [] })); }}
+                            style={{ width: "100%", fontFamily: "inherit", fontSize: 12, fontWeight: 700, padding: "5px 8px",
+                              borderRadius: 8, border: "1px solid var(--line)", background: "var(--panel)", color: "var(--ink)" }}>
+                            <option value="">{key === "a" ? "Pick a team…" : "Trading with…"}</option>
+                            {leagueTeams.map((t) => (
+                              <option key={t.rosterId} value={String(t.rosterId)}>
+                                {t.teamName}{t.rosterId === data.myRosterId ? " (you)" : ""}
+                              </option>
+                            ))}
+                          </select>
+                        </React.Fragment>
+                      ))}
+                    </div>
+
+                    {tbA == null || tb.b == null || String(tbA) === String(tb.b) ? (
+                      <div className="mut" data-tbhint style={{ fontSize: 12, lineHeight: 1.5 }}>
+                        {String(tbA) === String(tb.b) && tbA != null
+                          ? "Pick two different teams — a trade needs two sides."
+                          : <>Pick the two teams, then click players on either roster to build both sides.
+                            Anyone taken on who would not crack that team's starting lineup is counted at what
+                            he actually adds — nothing — which is the whole point of doing this properly.</>}
+                      </div>
+                    ) : (() => {
+                      const mineTeam = leagueTeams.find((t) => String(t.rosterId) === String(tbA));
+                      const them = leagueTeams.find((t) => String(t.rosterId) === String(tb.b));
+                      if (!them || !mineTeam) return null;
+                      const col = (team, side, label, sel) => (
+                        <div data-tbcol={side} style={{ minWidth: 0 }}>
+                          <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 5 }}>{label}</div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 250, overflowY: "auto" }}>
+                            {tradeRoster(team).slice().sort((a, b) => (b.pts || 0) - (a.pts || 0)).map((p) => {
+                              const on = sel.includes(String(p.sid));
+                              return (
+                                <button key={p.sid} data-tbplayer={p.name} data-tbon={on ? "1" : "0"}
+                                  onClick={() => tbToggle(side, p.sid)}
+                                  /* ⚠ THE LEFT COLUMN OPENS ITS CARD LEFTWARD. There is room to the right of
+                                     these rows and it is occupied by the other team's roster — the thing you
+                                     are comparing against. See positionTip's `prefer`. */
+                                  onMouseEnter={(e) => showPlayerTip(e, p, side === "give" ? { prefer: "left" } : undefined)} onMouseLeave={hideTip}
+                                  style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 6,
+                                    border: `1px solid ${on ? "var(--gold)" : "var(--line)"}`, background: on ? "rgba(224,166,60,.10)" : "var(--panel)",
+                                    borderRadius: 7, padding: "4px 8px", fontSize: 11.5, color: "var(--ink)" }}>
+                                  <Dot pos={p.pos} />
+                                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: on ? 700 : 500 }}>{p.name}</span>
+                                  <span className="mut num" style={{ fontSize: 10.5 }}>{Math.round(p.pts || 0)}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                      return (
+                        <>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+                            {/* Labels follow who is actually in the seat: "you" when it is your team,
+                                the manager's name when you are reading somebody else's deal. */}
+                            {col(mineTeam, "give", String(tbA) === String(data.myRosterId) ? "You send" : `${mineTeam.teamName} sends`, tb.give)}
+                            {col(them, "get", String(tbA) === String(data.myRosterId) ? `You get from ${them.teamName}` : `${them.teamName} sends`, tb.get)}
+                          </div>
+                          {tbEval && tbEval.ok ? <TradeVerdict r={tbEval} weeks={weeksLeft} games={GAMES_IN_SEASON} oddsShift={oddsIfMeanShifts} /> : (
+                            <div className="mut" data-tbempty style={{ fontSize: 12, lineHeight: 1.5 }}>
+                              {tbEval && tbEval.error === 'rosters changed'
+                                ? "One of those players isn't on that roster any more — the league has moved since this page loaded. Reopen the league and build it again."
+                                : "Click a player on each side to see what the deal does."}
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* ⭐⭐⭐⭐⭐ WHAT ACTUALLY MOVES YOUR SEASON — 29ah, and this block is the answer to the
                 thing he said was missing: "it still isn't clear to me though that it is sharing
@@ -17990,7 +18100,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 increase your playoff odds the most? That is also realistic. That's key."
                 ⭐ THREE FACTS, IN THE ORDER A MANAGER WOULD ASK THEM: what is the single best move
                   available, what have I got that I should be selling, and who do I ring. Everything
-                  below it — the cards, the market, the calculator — is detail under one of those three. */}
+                  below it — the cards and the market — is detail under one of those three. */}
             {myRead && partners.partners.length > 0 && (
               <div data-leagueread style={{ marginBottom: 18, padding: "12px 14px", borderRadius: 10,
                 border: "1px solid var(--gold-line)", background: "var(--panel2)" }}>
@@ -18074,81 +18184,125 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       four teams" is a worse question than the one this fixes, and 29ai's whole point was
                       that a manager with no deal still gets a verdict. The verdict is now one line for all
                       of them together, with the individual reasons one click away. */}
+                {/* ⭐⭐⭐⭐⭐ A TABLE, NOT ELEVEN PARAGRAPHS — b151.
+                    Trey: "I want to get rid of the long sentences on each team (you can put this more in a
+                    tabular form to track things across columns so it's easier to track). It's really hard
+                    to see if there is an arrow up or down on the positional sections... I also don't know
+                    what the arrows mean."
+
+                    ⚠⚠ BOTH HALVES OF THAT ARE THE SAME MISTAKE, MADE TWICE. 29aj replaced a paragraph per
+                      manager with a paragraph per manager PLUS a chip — and the chip encoded its direction
+                      in a ↑/↓ glyph at 9.5px with no legend anywhere on the page. A symbol nobody has been
+                      taught is not a compression of the sentence, it is a second thing to decode; and
+                      leaving the sentence under it means the row now takes MORE reading, not less.
+                    ⭐ SO: SEND and GET in words, in their own columns, in the position's colour. The eye runs
+                      down a column instead of across eleven prose lines, which is the whole reason tabular
+                      form exists and exactly what he asked for. The reasoning is not deleted — it moves to
+                      the row's hover, where it is available to anyone who wants to check the call. */}
                 {(() => { const _f = partners.partners.filter((p) => p.tone !== "none"); return (
-                <div data-lrpartners={String(_f.length)} data-lrskipped={String(partners.partners.length - _f.length)} style={{ display: "grid", gap: 4 }}>
+                <div data-lrpartners={String(_f.length)} data-lrskipped={String(partners.partners.length - _f.length)}
+                  style={{ overflowX: "auto" }}>
+                  <table className="num" style={{ width: "100%", minWidth: 520, borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ color: "var(--mut)", textAlign: "left" }}>
+                        <th style={{ fontWeight: 600, padding: "3px 8px 5px 4px" }}>Manager</th>
+                        <th style={{ fontWeight: 600, padding: "3px 8px 5px" }} title="What you would send them">You send</th>
+                        <th style={{ fontWeight: 600, padding: "3px 8px 5px" }} title="What you would get back">You get</th>
+                        <th style={{ fontWeight: 600, padding: "3px 8px 5px", textAlign: "right" }} title="What the best idea with this manager adds to your starting lineup">You</th>
+                        <th style={{ fontWeight: 600, padding: "3px 8px 5px", textAlign: "right" }} title="What it adds to theirs — a deal they gain nothing from is not a deal">Them</th>
+                        <th style={{ fontWeight: 600, padding: "3px 4px 5px 8px", textAlign: "right" }}>Ideas</th>
+                      </tr>
+                    </thead>
+                    <tbody>
                   {_f.map((p) => {
                     const open = lrOpen === p.rosterId;
                     const gain = p.best ? oddsForGain(p.best.myGain / Math.max(1, regSeasonWeeks - data.week + 1)) : null;
+                    /* The two halves of the fit, split into their own columns. `complement` carries both
+                       directions in one array; a column needs them apart. */
+                    /* ⚠ `columns`, NOT `complement` — see partnerBoard. A row with three ideas and an
+                       empty "You send" column is the table contradicting its own last column. */
+                    const cols = p.columns || p.complement;
+                    const sends = cols.filter((c) => c.dir === "sell");
+                    const gets = cols.filter((c) => c.dir === "buy");
+                    const Chips = ({ list, kind }) => (
+                      <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
+                        {list.length ? list.slice(0, 3).map((c) => (
+                          <span key={c.pos} title={`${kind === "send" ? "You send" : "You get"} a ${c.pos} — ${c.why}`}
+                            style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".03em", cursor: "help",
+                              padding: "1px 6px", borderRadius: 5, whiteSpace: "nowrap",
+                              color: POS_COLOR[c.pos] || "var(--ink)",
+                              border: `1px solid ${alpha(POS_COLOR[c.pos] || "var(--line2)", 45)}`,
+                              background: alpha(POS_COLOR[c.pos] || "var(--line2)", 12) }}>
+                            {c.pos}
+                          </span>
+                        )) : <span className="mut" style={{ fontSize: 11 }}>—</span>}
+                      </span>
+                    );
                     return (
-                      <div key={p.rosterId} data-lrpartner={p.teamName || String(p.rosterId)}
-                        data-lrtone={p.tone} data-lrtwoway={p.twoWay ? "1" : "0"} data-lrdeals={String(p.realisticN)}>
-                        <button type="button" onClick={() => setLrOpen(open ? null : p.rosterId)}
-                          style={{ width: "100%", textAlign: "left", background: "transparent", cursor: p.realisticN ? "pointer" : "default",
-                            border: "1px solid var(--line)", borderRadius: 8, padding: "6px 9px", color: "inherit", fontFamily: "inherit",
-                            display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-                          <span style={{ fontWeight: 700, fontSize: 12.5, color: p.twoWay ? "var(--pos)" : "var(--ink)" }}>
-                            {p.twoWay && <i className="ti ti-arrows-exchange" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />}
-                            {p.teamName || p.ownerName}
-                          </span>
-                          {p.realisticN > 0 && (
-                            <span className="num" style={{ fontSize: 11.5, color: "var(--pos)" }} data-lrgain={String(p.myGain)}>
-                              +{p.myGain}{gain != null && gain > 0 ? ` · +${gain}% ${race.label}` : ""}
-                            </span>
-                          )}
-                          {/* ⚠ BOTH-SIDES IS ITS OWN NUMBER because it is his actual question — "is there a
-                              certain team where BOTH sides just benefit so much that it makes sense". It is
-                              the smaller of the two gains, so one fat side cannot manufacture it. */}
-                          {p.mutual > 0 && <span className="mut" style={{ fontSize: 10.5 }} data-lrmutual={String(p.mutual)}>both sides +{p.mutual} or better</span>}
-                          {/* ⭐⭐⭐⭐ THE FIT AS CHIPS, NOT AS A SENTENCE — 29aj. "Make it clear what positions
-                              / players might fit (color code and such)." The prose line below still carries
-                              the reasoning, but the SHAPE of the deal — I give a receiver, I get a back —
-                              is the thing you scan eleven rows for, and it belongs in the row's own
-                              colours rather than in the middle of a clause. Each position keeps the colour
-                              it has everywhere else in the app (POS_COLOR), with an arrow for direction. */}
-                          {p.complement.length > 0 && (
-                            <span data-lrfit={p.complement.map((c) => `${c.dir}:${c.pos}`).join(",")}
-                              style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
-                              {p.complement.slice(0, 3).map((c) => (
-                                <span key={c.dir + c.pos} title={`${c.dir === "sell" ? "You send" : "You get"} a ${c.pos} — ${c.why}`}
-                                  style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".04em", cursor: "help",
-                                    padding: "1px 5px", borderRadius: 5, whiteSpace: "nowrap",
-                                    color: POS_COLOR[c.pos] || "var(--ink)",
-                                    border: `1px solid ${alpha(POS_COLOR[c.pos] || "var(--line2)", 45)}`,
-                                    background: alpha(POS_COLOR[c.pos] || "var(--line2)", 12) }}>
-                                  {c.dir === "sell" ? "↑" : "↓"}{c.pos}
-                                </span>
-                              ))}
-                            </span>
-                          )}
-                          <span className="mut" style={{ marginLeft: "auto", fontSize: 10.5 }}>
-                            {/* ⚠ "nothing" IS ONLY TRUE WHEN THERE IS NOTHING. A row reading "Straight fit
-                                both ways" on the left and "nothing" on the right is the screen arguing with
-                                itself — the count is about DEALS, and the absence of a clean one-for-one is
-                                not the absence of a reason to call. */}
-                            {p.realisticN > 0 ? `${p.realisticN} idea${p.realisticN === 1 ? "" : "s"}`
-                              : p.complement.length ? "no clean swap" : "nothing"}
-                            {p.realisticN > 0 && <i className={`ti ti-chevron-${open ? "up" : "down"}`} style={{ fontSize: 11, marginLeft: 4 }} aria-hidden="true" />}
-                          </span>
-                        </button>
-                        <div className="mut" data-lrwhy style={{ fontSize: 11, lineHeight: 1.5, padding: "3px 10px 2px" }}>{p.why}</div>
-                        {open && p.deals.filter((t) => t.realism >= 45).slice(0, 3).map((t, i) => (
-                          <div key={i} data-lrdeal style={{ fontSize: 11.5, padding: "2px 10px 2px 22px", lineHeight: 1.6 }}>
+                      <React.Fragment key={p.rosterId}>
+                      <tr data-lrpartner={p.teamName || String(p.rosterId)}
+                        data-lrtone={p.tone} data-lrtwoway={p.twoWay ? "1" : "0"} data-lrdeals={String(p.realisticN)}
+                        data-lrfit={cols.map((c) => `${c.dir}:${c.pos}`).join(",")}
+                        onClick={() => p.realisticN && setLrOpen(open ? null : p.rosterId)}
+                        style={{ borderTop: "1px solid var(--line)", cursor: p.realisticN ? "pointer" : "default" }}>
+                        {/* ⚠ THE REASONING IS NOT GONE — it is the row's own tooltip. Deleting it would answer
+                            "too much text" by removing the answer to "why this manager", which is the
+                            question the section exists for. */}
+                        <td data-lrwhy={p.why || ""} title={p.why || undefined}
+                          style={{ padding: "5px 8px 5px 4px", cursor: "help", maxWidth: 200, overflow: "hidden",
+                            textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {p.twoWay && <i className="ti ti-arrows-exchange" style={{ fontSize: 11, marginRight: 4, color: "var(--pos)" }} aria-hidden="true" />}
+                          <b style={{ color: p.twoWay ? "var(--pos)" : "var(--ink)" }}>{p.teamName || p.ownerName}</b>
+                        </td>
+                        <td style={{ padding: "5px 8px" }}><Chips list={sends} kind="send" /></td>
+                        <td style={{ padding: "5px 8px" }}><Chips list={gets} kind="get" /></td>
+                        <td data-lrgain={String(p.myGain)} style={{ padding: "5px 8px", textAlign: "right",
+                          fontWeight: 800, color: p.myGain > 0 ? "var(--pos)" : "var(--mut)" }}>
+                          {p.myGain > 0 ? `+${p.myGain}` : "—"}
+                          {gain != null && gain > 0 && <span className="mut" style={{ fontSize: 10, fontWeight: 600 }}> +{gain}%</span>}
+                        </td>
+                        <td data-lrmutual={String(p.mutual)} style={{ padding: "5px 8px", textAlign: "right",
+                          color: p.theirGain > 0 ? "var(--ink)" : "var(--mut)" }}>
+                          {p.theirGain > 0 ? `+${p.theirGain}` : "—"}
+                        </td>
+                        {/* ⚠ A REAL BUTTON, NOT ONLY A CLICKABLE ROW. The row keeps its click as a
+                            convenience, but a <tr> with an onClick is unreachable by keyboard and invisible
+                            to anything looking for a control — which is also how turning the list into a
+                            table broke two checks in plan29cd that had been finding `row.querySelector
+                            ('button')` since 29ah. The affordance and the accessibility are the same fix. */}
+                        <td className="mut" style={{ padding: "5px 4px 5px 8px", textAlign: "right", whiteSpace: "nowrap", fontSize: 11 }}>
+                          {p.realisticN > 0 ? (
+                            <button type="button" aria-expanded={open}
+                              onClick={(e) => { e.stopPropagation(); setLrOpen(open ? null : p.rosterId); }}
+                              style={{ background: "none", border: "none", padding: 0, cursor: "pointer",
+                                font: "inherit", color: "inherit" }}>
+                              {p.realisticN}<i className={`ti ti-chevron-${open ? "up" : "down"}`} style={{ fontSize: 11, marginLeft: 3 }} aria-hidden="true" />
+                            </button>
+                          ) : <span title={p.why || undefined}>—</span>}
+                        </td>
+                      </tr>
+                      {open && p.deals.filter((t) => t.realism >= 45).slice(0, 3).map((t, i) => (
+                        <tr key={i} data-lrdeal style={{ background: "var(--hover)" }}>
+                          <td colSpan={6} style={{ fontSize: 11.5, padding: "3px 10px 3px 22px", lineHeight: 1.6 }}>
                             <span className="mut">send </span><b>{t.give.name}</b>
                             <span className="mut"> for </span><b style={{ color: "var(--pos)" }}>{t.get.name}</b>
                             <span className="num mut" style={{ fontSize: 10.5 }}> +{t.myGain} you / +{t.theirGain} them · {t.band}</span>
                             <button className="btn btn-mini" data-lrbuild style={{ marginLeft: 6, fontSize: 9.5, padding: "0 5px" }}
-                              onClick={() => { tbOpen(t.team.rosterId, [String(t.give.sid)], [String(t.get.sid)]);
+                              onClick={(e) => { e.stopPropagation(); tbOpen(t.team.rosterId, [String(t.give.sid)], [String(t.get.sid)]);
                                 try { const el = document.querySelector('[data-tb]'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {} }}>Price it</button>
-                          </div>
-                        ))}
-                      </div>
+                          </td>
+                        </tr>
+                      ))}
+                      </React.Fragment>
                     );
                   })}
+                    </tbody>
+                  </table>
                   {/* The rest, in one line. A count and their names is the whole useful content of eleven
                       cards that all say the same thing, and the reasons are one click away for anybody who
                       wants to check the call rather than take it. */}
                   {partners.partners.length > _f.length && (
-                    <div data-lrskip={String(partners.partners.length - _f.length)} style={{ marginTop: 3 }}>
+                    <div data-lrskip={String(partners.partners.length - _f.length)} style={{ marginTop: 5 }}>
                       <button type="button" onClick={() => setLrSkip((v) => !v)}
                         style={{ width: "100%", textAlign: "left", background: "transparent", cursor: "pointer",
                           border: "1px dashed var(--line2)", borderRadius: 8, padding: "5px 9px", color: "var(--mut)",
@@ -18409,7 +18563,12 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                     const sum = (mktSummary || []).find((m) => m.pos === row.pos) || null;
                     const state = sum ? (sum.twoWay ? "swap" : sum.side) : (row.mine.need > 0 ? "buy" : "set");
                     const tone = state === "swap" ? "var(--gold)" : state === "buy" ? "var(--neg)" : state === "sell" ? "var(--pos)" : "var(--mut)";
-                    const label = state === "swap" ? "both ways" : state === "buy" ? "short" : state === "sell" ? "can move" : "set";
+                    /* ⚠ THE CHIP'S WORD MIRRORS THE ROW'S VERDICT. A row reading GET above a chip reading
+                       "short" is two labels for one state — "short" is a fact about the roster, "can get"
+                       is the thing to do about it, and the row above has already picked the second. */
+                    const label = state === "swap" ? "both ways"
+                      : state === "buy" ? (sum && sum.getAt ? "can get" : "short")
+                        : state === "sell" ? "can move" : "set";
                     return (
                       <button key={row.pos} data-mktpos={row.pos} data-mktposstate={state}
                         onClick={() => setMktPos(on ? null : row.pos)} aria-pressed={on}
@@ -18443,10 +18602,17 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                               {ordinal(rk)} of {of}
                             </span>
                           ) : null}
-                          {/* The man you would actually be offering — the answer to "what does 'can move' mean". */}
-                          {sum && sum.movable && sum.movable.name ? (
-                            <> · <span data-mktmovable={`${row.pos}:${sum.movable.name}`} style={{ color: "var(--pos)" }}>{sum.movable.name}</span></>
-                          ) : (sum && sum.thin ? <> · {sum.thin} short</> : null)}
+                          {/* The man this row is about — the answer to "what does 'can move' mean".
+                              ⚠ IT IS THE DEAL'S PLAYER WHERE THERE IS A DEAL — b151. The read line above now
+                                leads with a concrete "send X / get Y", so a chip naming a DIFFERENT man
+                                (the one `movable` would have picked) is the same two-answers-in-one-panel
+                                fault §3h was written for, four pixels apart again. One player per row. */}
+                          {(() => {
+                            // ⚠ `subject` is chosen where the sentence is chosen — see trademarket.js.
+                            const who = sum && sum.subject;
+                            if (who) return <> · <span data-mktmovable={`${row.pos}:${who}`} style={{ color: "var(--pos)" }}>{who}</span></>;
+                            return sum && sum.thin ? <> · {sum.thin} short</> : null;
+                          })()}
                         </div>
                         ); })()}
                       </button>
@@ -18580,109 +18746,6 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
               </div>
             )}
 
-            {/* ⭐⭐⭐⭐⭐ THE TRADE CALCULATOR — 29y.
-                Trey: "I'd like to be able to go into that league and hit trade and be able to input players
-                on each side of a trade. And then basically you equate that to the output of the team in
-                terms of power rankings and overall points in the season... you need to make sure that
-                you're only equating the points scored to the STARTING LINEUP points."
-                The two blocks above answer questions the app asks itself. This one answers HIS question —
-                the deal he has already got in mind, which no generator was ever going to propose. */}
-            {myLT && (
-              <div data-tb style={{ border: `1px solid ${tb.open ? "var(--line2)" : "var(--line)"}`, borderRadius: 10, marginBottom: 14, background: "var(--panel2)" }}>
-                <button data-tbtoggle={tb.open ? "1" : "0"}
-                  onClick={() => setTb((v) => ({ ...v, open: !v.open }))}
-                  style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "11px 12px", background: "none", border: 0, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)", textAlign: "left" }}>
-                  <i className={`ti ti-${tb.open ? "chevron-down" : "chevron-right"}`} style={{ fontSize: 15, color: "var(--mut)" }} aria-hidden="true" />
-                  <span className="disp" style={{ fontSize: 15, fontWeight: 800, letterSpacing: ".01em" }}>Trade Calculator</span>
-                  <span className="mut" style={{ fontSize: 11 }}>pick the players on each side</span>
-                </button>
-
-                {tb.open && (
-                  <div style={{ padding: "0 12px 12px" }}>
-                    {/* ⭐⭐⭐⭐⭐ A DROPDOWN ON EACH SIDE — 29ac. Either seat can be any team, so the panel
-                        prices a deal you are proposing AND one two rivals just made. Side A defaults to
-                        your own team, because that is what you are usually here for. Changing either side
-                        clears the players, since a roster you no longer have selected cannot be in a deal
-                        (the calculator would refuse it as a stale roster, which is correct and unhelpful). */}
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 8, alignItems: "center", marginBottom: 11 }}>
-                      {[["a", tbA], ["b", tb.b]].map(([key, val], i) => (
-                        <React.Fragment key={key}>
-                          {i === 1 && <i className="ti ti-arrows-exchange" style={{ fontSize: 16, color: "var(--mut)" }} aria-hidden="true" />}
-                          <select data-tbside-select={key} value={val == null ? "" : String(val)}
-                            onChange={(e) => { const v = e.target.value === "" ? null : Number(e.target.value);
-                              setTb((prev) => ({ ...prev, [key]: v, give: [], get: [] })); }}
-                            style={{ width: "100%", fontFamily: "inherit", fontSize: 12, fontWeight: 700, padding: "5px 8px",
-                              borderRadius: 8, border: "1px solid var(--line)", background: "var(--panel)", color: "var(--ink)" }}>
-                            <option value="">{key === "a" ? "Pick a team…" : "Trading with…"}</option>
-                            {leagueTeams.map((t) => (
-                              <option key={t.rosterId} value={String(t.rosterId)}>
-                                {t.teamName}{t.rosterId === data.myRosterId ? " (you)" : ""}
-                              </option>
-                            ))}
-                          </select>
-                        </React.Fragment>
-                      ))}
-                    </div>
-
-                    {tbA == null || tb.b == null || String(tbA) === String(tb.b) ? (
-                      <div className="mut" data-tbhint style={{ fontSize: 12, lineHeight: 1.5 }}>
-                        {String(tbA) === String(tb.b) && tbA != null
-                          ? "Pick two different teams — a trade needs two sides."
-                          : <>Pick the two teams, then click players on either roster to build both sides.
-                            Anyone taken on who would not crack that team's starting lineup is counted at what
-                            he actually adds — nothing — which is the whole point of doing this properly.</>}
-                      </div>
-                    ) : (() => {
-                      const mineTeam = leagueTeams.find((t) => String(t.rosterId) === String(tbA));
-                      const them = leagueTeams.find((t) => String(t.rosterId) === String(tb.b));
-                      if (!them || !mineTeam) return null;
-                      const col = (team, side, label, sel) => (
-                        <div data-tbcol={side} style={{ minWidth: 0 }}>
-                          <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 5 }}>{label}</div>
-                          <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 250, overflowY: "auto" }}>
-                            {tradeRoster(team).slice().sort((a, b) => (b.pts || 0) - (a.pts || 0)).map((p) => {
-                              const on = sel.includes(String(p.sid));
-                              return (
-                                <button key={p.sid} data-tbplayer={p.name} data-tbon={on ? "1" : "0"}
-                                  onClick={() => tbToggle(side, p.sid)}
-                                  /* ⚠ THE LEFT COLUMN OPENS ITS CARD LEFTWARD. There is room to the right of
-                                     these rows and it is occupied by the other team's roster — the thing you
-                                     are comparing against. See positionTip's `prefer`. */
-                                  onMouseEnter={(e) => showPlayerTip(e, p, side === "give" ? { prefer: "left" } : undefined)} onMouseLeave={hideTip}
-                                  style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 6,
-                                    border: `1px solid ${on ? "var(--gold)" : "var(--line)"}`, background: on ? "rgba(224,166,60,.10)" : "var(--panel)",
-                                    borderRadius: 7, padding: "4px 8px", fontSize: 11.5, color: "var(--ink)" }}>
-                                  <Dot pos={p.pos} />
-                                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: on ? 700 : 500 }}>{p.name}</span>
-                                  <span className="mut num" style={{ fontSize: 10.5 }}>{Math.round(p.pts || 0)}</span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                      return (
-                        <>
-                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-                            {/* Labels follow who is actually in the seat: "you" when it is your team,
-                                the manager's name when you are reading somebody else's deal. */}
-                            {col(mineTeam, "give", String(tbA) === String(data.myRosterId) ? "You send" : `${mineTeam.teamName} sends`, tb.give)}
-                            {col(them, "get", String(tbA) === String(data.myRosterId) ? `You get from ${them.teamName}` : `${them.teamName} sends`, tb.get)}
-                          </div>
-                          {tbEval && tbEval.ok ? <TradeVerdict r={tbEval} weeks={weeksLeft} games={GAMES_IN_SEASON} oddsShift={oddsIfMeanShifts} /> : (
-                            <div className="mut" data-tbempty style={{ fontSize: 12, lineHeight: 1.5 }}>
-                              {tbEval && tbEval.error === 'rosters changed'
-                                ? "One of those players isn't on that roster any more — the league has moved since this page loaded. Reopen the league and build it again."
-                                : "Click a player on each side to see what the deal does."}
-                            </div>
-                          )}
-                        </>
-                      );
-                    })()}
-                  </div>
-                )}
-              </div>
-            )}
 
             {/* ⭐⭐⭐⭐⭐ THE LONG SHOTS ARE THEIR OWN LIST, AND THAT IS THE POINT — 29af.
                 A huge gain nobody would accept and a modest gain they would take today are not two points

@@ -173,13 +173,26 @@ function MatchupDetail({ L, F, tone, bySid, wide, onOpenHub }) {
           <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pp.name}</span>
           <span className="mut" style={{ fontSize: 10, flexShrink: 0 }}>{pp.pos}{pp.team ? ` · ${pp.team}` : ""}</span>
           {/* A live man shows what he HAS and what he is heading for; a man yet to start has only the
-              projection. Two numbers where there are two, one where there is one. */}
-          <span style={{ flexShrink: 0, minWidth: 64, textAlign: "right" }}>
+              projection. Two numbers where there are two, one where there is one.
+              ⭐⭐⭐⭐⭐ AND A LIVE ONE SHOWS ITS OWN ARITHMETIC — b151. Trey: "Both Sleeper and the website have
+              the same points currently (18.5). The projected points is way different though (Sleeper: 22 /
+              site: 27.4)." Two sites agreeing on the score and disagreeing on the finish can only differ in
+              two places — the full-game projection, or how much of the game each thinks is left — and the
+              screen showed NEITHER, so the only way to find out was for me to guess from a sandbox that
+              cannot reach his league. Now the row states the sum it performed. The fix to the clock is in
+              rooting.js; this is so the next disagreement takes one message instead of three. */}
+          <span title={pp.phase === "live" && Number.isFinite(pp.projFinal)
+            ? `${r1(pp.pts) || 0} on the board + ${Number.isFinite(pp.proj) ? r1(pp.proj) : "?"} projected for the full game × ${Math.round((pp.remain || 0) * 100)}% of his game still to play = ${r1(pp.projFinal)}`
+            : undefined}
+            style={{ flexShrink: 0, minWidth: 64, textAlign: "right",
+              cursor: pp.phase === "live" ? "help" : "default" }}>
             {pp.phase === "live" && Number.isFinite(pp.pts) && (
               <span className="num" style={{ fontSize: 12, fontWeight: 800, color: "var(--ink)", marginRight: 4 }}>{r1(pp.pts)}</span>
             )}
-            <span className="num" style={{ fontSize: 12, fontWeight: 700,
-              color: rootFor ? "var(--pos)" : "var(--neg)" }}>
+            <span className="num" data-gdlivemath={pp.phase === "live"
+              ? `${r1(pp.pts) || 0}|${Number.isFinite(pp.proj) ? r1(pp.proj) : ""}|${pp.remain != null ? pp.remain : ""}|${Number.isFinite(pp.projFinal) ? r1(pp.projFinal) : ""}` : undefined}
+              style={{ fontSize: 12, fontWeight: 700,
+                color: rootFor ? "var(--pos)" : "var(--neg)" }}>
               {pp.phase === "live" && Number.isFinite(pp.projFinal) ? `→${r1(pp.projFinal)}`
                 : Number.isFinite(pp.proj) ? r1(pp.proj) : "—"}
             </span>

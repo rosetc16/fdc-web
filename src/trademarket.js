@@ -182,7 +182,7 @@ export function teamReads(input) {
        ⚠ ONLY THE TOP FEW AT A POSITION ARE PRICED. The lineup solve is the expensive part and the fifth
          receiver on a roster is never the answer to "what can you move" — he clears no replacement line, so
          his edge is zero by construction and solving for him is pure cost. */
-    const movable = {};
+    const movable = {}, cheapest = {};
     Object.keys(req).forEach((pos) => {
       if (!(req[pos] > 0)) return;
       const atPos = roster.filter((p) => String(p.pos || '').toUpperCase() === pos)
@@ -205,12 +205,23 @@ export function teamReads(input) {
           best = { sid: p.sid, name: p.name || null, pos, cost, worth: r1(worth), edge };
         }
       });
-      if (best && best.edge > 0) movable[pos] = best;
+      /* ⚠ AND THE EDGE HAS TO BE WORTH SAYING OUT LOUD — b151. "Greater than zero" let a six-point edge
+         over a whole season (about a third of a point a week, which is inside the noise of any
+         projection) print a MOVE verdict on a player the reader would look at and say "why him". The
+         floor is a share of the position's own replacement level rather than a constant, because this
+         function is handed season values on one screen and weekly ones on another and must not silently
+         mean something different depending on which. */
+      const floor = Math.max(0, (repl[pos] || 0) * 0.1);
+      if (best && best.edge > floor) movable[pos] = best;
+      /* ⚠ AND THE BEST CANDIDATE IS KEPT EVEN WHEN THE ANSWER IS NO — b151. "Leave it alone" is a verdict
+         and a verdict needs its working; `cheapest` is the man the answer is about, so the row can say
+         what he is worth to this lineup instead of asserting that nothing is available. */
+      if (best) cheapest[pos] = best;
     });
 
     return {
       rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName, isMe: !!t.isMe,
-      startable, have, surplus, need, posValue, movable,
+      startable, have, surplus, need, posValue, movable, cheapest,
       pfRank: pf, gradeRank: gr, gap, benchWaste,
       /* The one-line read, written here so every card in the app says the same thing about this manager.
          ⚠ IT NEVER CALLS ANYBODY BAD AT FANTASY. We cannot see their injuries or their reasons; what we
@@ -299,6 +310,44 @@ export function tradeBoard(input) {
     withAdp.slice().sort((a, b) => a.adp - b.adp).forEach((p, i) => adpRank.set(String(p.sid), i + 1));
   });
 
+  /* ⭐⭐⭐⭐⭐ IS THIS A FAIR TRADE — MEASURED TIER FOR TIER, NOT IN RAW VALUE — b151.
+     ==================================================================================================
+     Trey: "I struggle to believe there are no clean swaps." Nine managers, nine "no clean swap", on a
+     roster that is first in the league at receiver and tenth at running back — the single most obviously
+     tradeable shape there is.
+
+     ⚠⚠ 73% OF EVERY PAIR THIS FINDER CONSIDERED WAS BEING THROWN AWAY BY ONE LINE, and a probe built in
+       his league's shape said so outright: of 132 "my receiver for their back" pairs, 132 died on the
+       fairness gate and ZERO died for want of a gain to either side. Deals worth +72 to him and +40 to
+       the other manager never reached the screen.
+
+     ⭐ THE CAUSE IS THAT VALUE-ABOVE-REPLACEMENT IS NOT COMPARABLE ACROSS POSITIONS. The gate was a ratio
+       of two VOR numbers, and VOR depends on how good the REPLACEMENT is — so in a year when nobody in
+       the league has a good running back, the best back available is worth 84 over replacement while an
+       ordinary receiver is worth 176, and swapping them reads as a 0.48 robbery. It is nothing of the
+       sort: it is the best back in the league for a good receiver, which is a trade both managers would
+       recognise as square. The measure was punishing him for the exact scarcity that made the trade
+       worth doing.
+
+     ⭐ SO FAIRNESS IS A SHARE OF THE POSITION'S OWN TOP. An RB worth 100% of the best back available and
+       a WR worth 92% of the best receiver available are a fair swap, whatever the raw numbers say —
+       which is how people actually talk about trades ("an RB1 for a WR1").
+     ⚠ AND THE DEGENERATE CASE IS GUARDED. If a position's best man is barely above replacement, every
+       share at that position is a ratio of two tiny numbers and therefore noise — worse, it would make
+       a worthless player look like a stud because he is the least bad one. Below `TIER_FLOOR` the raw
+       worth is used, which is the old behaviour, deliberately. */
+  const TIER_FLOOR = 25;            // season points over replacement; under this a position has no spread
+  const posTop = {};
+  ['QB', 'RB', 'WR', 'TE'].forEach((pos) => {
+    posTop[pos] = Math.max(0, ...everyone.filter((p) => String(p.pos).toUpperCase() === pos).map(worthOf));
+  });
+  const tierShare = (p) => {
+    const pos = String(p && p.pos).toUpperCase();
+    const top = posTop[pos] || 0;
+    const w = worthOf(p);
+    return top >= TIER_FLOOR ? w / top : w;
+  };
+
   const offers = [];
   others.forEach((them) => {
     const read = reads.get(them.rosterId) || null;
@@ -330,8 +379,13 @@ export function tradeBoard(input) {
         const wGive = worthOf(give), wGet = worthOf(get);
         const hi = Math.max(wGive, wGet), lo = Math.min(wGive, wGet);
         if (hi <= 0) return;
-        // The same 0.5 band the shipped finder settled on in 29w, for the same reason — see findTrades.
-        if (lo / hi < 0.5) { diag.lopsided++; return; }
+        /* ⚠⚠ THE BAND IS ON THE TIER SHARE NOW, NOT ON RAW VALUE — b151. See `tierShare` above for why
+           a raw cross-position ratio threw away three quarters of every pair in Trey's league. The 0.5
+           band itself is unchanged and is still the one the shipped finder settled on in 29w; what
+           changed is the scale it is applied to. */
+        const sGive = tierShare(give), sGet = tierShare(get);
+        const sHi = Math.max(sGive, sGet), sLo = Math.min(sGive, sGet);
+        if (sHi <= 0 || sLo / sHi < 0.5) { diag.lopsided++; return; }
 
         const myAfter = lineupValue(me.roster.filter((p) => p.sid !== give.sid).concat([get]), sf);
         const myGain = r1(myAfter - myBase);
@@ -408,12 +462,23 @@ export function tradeBoard(input) {
         if (theirNeedAt > 0) { realism += 20; parts.push(`fills their hole at ${gPos}`); }
         if (theirSurplusAt > 0 || affordable) { realism += 10; parts.push(`costs them depth rather than a starter`); }
         if (read && read.underperforming) { realism += 5; parts.push('a team with reason to shake things up'); }
-        const balance = Math.round((lo / hi) * 100);
+        // ⚠ Same change as the gate: balance is tier for tier, so a position's scarcity is not a penalty.
+        const balance = Math.round((sLo / sHi) * 100);
         if (balance >= 80) { realism += 10; parts.push('close on value'); }
         else if (balance < 60) { realism -= 10; parts.push('lopsided on value'); }
         /* ⚠⚠ THE BIG NEGATIVE, AND THE ONE THE OLD FINDER HAD NO WAY TO EXPRESS. Nobody trades the best
-           player they own for positional fit, however well the lineup maths works out. */
-        if (theirBest && theirBest.sid === get.sid) { realism -= 30; parts.push(`he is the best player they own`); }
+           player they own for positional fit, however well the lineup maths works out.
+           ⚠ b151 SOFTENED IT WHERE THEY HAVE COVER, and the probe is why: a manager with four startable
+             backs, giving up the best of them for an elite receiver, was carrying the full −30 — which
+             on its own pushed genuinely mutual deals (+72 him, +40 them) under the bar and produced the
+             nine blank rows Trey was looking at. "The best player they own" means something very
+             different when the man behind him also starts. */
+        if (theirBest && theirBest.sid === get.sid) {
+          const covered = affordable || theirSurplusAt > 0;
+          realism -= covered ? 12 : 30;
+          parts.push(covered ? 'the best player they own, though they have cover behind him'
+            : 'he is the best player they own');
+        }
         realism = Math.max(0, Math.min(99, realism));
 
         offers.push({
@@ -516,12 +581,39 @@ function withDiag(list, diag, longShots, all) {
        that needs him. Flex-aware because the cost comes from re-solving the lineup; see `movable`.
      • WHO IS SHORT AND WHO IS DEEP — counted from the same rank thirds, so this section and the partner
        list cannot disagree about which teams are thin at a position.
-     • AND THE VERDICT IN ONE WORD, because a to-do list is what he asked this tab to be. */
-export function marketSummary(reads, req) {
+     • AND THE VERDICT IN ONE WORD, because a to-do list is what he asked this tab to be.
+
+   ⭐⭐⭐⭐⭐ AND IN b151 IT LEARNED ABOUT THE DEALS, which is what it was missing.
+   ==================================================================================================
+   Trey: "I still think we need to dig into 'potential positional trade considerations' — for example,
+   it's saying not to move WR... but as you can see, my RB is brutal... my WR is strong and I have depth.
+   It's probably worth while to move a WR for RB if I have the depth and not just quality."
+
+   ⚠⚠ `movable` ASKS "CAN I LOSE HIM FOR FREE", AND THAT IS THE WRONG QUESTION FOR A RESHAPE. In a
+     2WR+FLEX league a man with four receivers starts three of them, so only the fourth can ever come out
+     for nothing — and if that fourth is below replacement he is worth nothing to anybody either. Both
+     tests fail, the position reads HOLD, and the screen tells a manager with the best receiver room in
+     the league and the third-worst backs to leave it alone. He is right and the measure was wrong: the
+     question is not "is he spare" but "does what he brings back exceed what he costs me".
+
+   ⭐ THAT QUANTITY ALREADY EXISTS — it is `myGain` on every offer the finder produced, which is the
+     difference between two solved lineups and therefore counts the cost of losing the man AND the gain
+     from the man arriving. So the verdict now reads the DEALS: a position you can send from is one an
+     actual offer sends from, and the row names that offer. ⚠ Which also makes this section and the deal
+     list agree by construction rather than by coincidence — the failure mode this file has hit twice.
+   ⚠ `offers` IS OPTIONAL. Without it the function behaves exactly as it did in 29aj, because a caller
+     that has not run the finder is not a caller that should get silence. */
+export function marketSummary(reads, req, opts) {
   const R = (reads || []).filter(Boolean);
   if (!R.length) return [];
   const me = R.find((t) => t.isMe) || null;
   const teams = R.length;
+  const offers = (opts && Array.isArray(opts.offers)) ? opts.offers : [];
+  /* The best REALISTIC offer that sends from / receives at each position. Realistic rather than merely
+     possible, because this section is a to-do list: an idea nobody would accept is not a thing to do. */
+  const bestBy = (pick, pos) => offers
+    .filter((t) => t && t.realism >= 45 && t.give && t.get && String(pick(t).pos).toUpperCase() === pos)
+    .sort((a, b) => b.myGain - a.myGain)[0] || null;
   const out = [];
   Object.keys(req || {}).forEach((pos) => {
     if (!(req[pos] > 0)) return;
@@ -548,11 +640,25 @@ export function marketSummary(reads, req) {
        not express at all: the 10th-best back room in the league can still contain one man worth more to
        somebody else than he is to me. Being short comes first, because a hole you cannot field is the
        only thing on this tab that costs you points every single week. */
+    /* ⭐⭐⭐⭐⭐ b151 — A REAL OFFER OUTRANKS EVERY READ ABOVE. `sendFrom` is the best realistic deal that
+       sends a player FROM this position, `getAt` the best one that brings a player TO it; both are
+       measured in `myGain`, which is the difference between two solved lineups and therefore already
+       counts what leaving costs me. That is the "does moving him buy more than he costs" test Trey
+       described, and it is the one `movable` could not express. */
+    const sendFrom = bestBy((t) => t.give, pos);
+    const getAt = bestBy((t) => t.get, pos);
+
+    /* ⚠ A DEAL, WHERE THERE IS ONE, DECIDES THE VERDICT — and each position gets exactly ONE role in it,
+       or the same swap prints twice in two rows saying the same sentence (which is what the first cut of
+       this did: RB and WR both read "Send WR4 for RB1"). The position a player ARRIVES at is a buy; the
+       position he LEAVES is a sell; a position doing both is the rare genuine two-way. */
     let side = 'set';
-    if (iCantField || iAmThin) side = 'buy';
+    if (getAt && sendFrom) side = 'buy';
+    else if (getAt) side = 'buy';
+    else if (sendFrom) side = 'sell';
+    else if (iCantField || iAmThin) side = 'buy';
     else if (myMovable && myMovable.edge > 0) side = 'sell';
-    // Both at once is the strongest row on the page: something to give and a reason to give it.
-    const twoWay = (iAmThin || iCantField) && !!(myMovable && myMovable.edge > 0);
+    const twoWay = !!(getAt && sendFrom);
 
     /* ⚠ THE MARKET TONE IS STILL A RATIO — that part of the old function was right. What changed is what
        the two sides are counted from. A position where eight of twelve are thin is a queue, not a market,
@@ -570,7 +676,25 @@ export function marketSummary(reads, req) {
     /* The action line names a PLAYER wherever there is one to name. "You have depth at RB" is not
        something you can send anybody; "Kenneth Walker costs your lineup 1.2 a week and is worth 9.4 to a
        team that needs a back" is. */
-    const action = side === 'buy'
+    /* ⭐⭐⭐⭐ THE LINE LEADS WITH THE DEAL WHEN THERE IS ONE. A concrete "send X to Y for Z" is worth more
+       than any amount of description of the market it sits in, and it is the thing he can act on in the
+       next five minutes. The market read survives underneath as `marketNote`. */
+    const dealLine = getAt
+      ? `Get ${getAt.get.name} from ${getAt.team.teamName} — it costs you ${getAt.give.name} (${String(getAt.give.pos).toUpperCase()}), and your lineup is +${getAt.myGain} for it.`
+      : sendFrom
+        ? `Send ${sendFrom.give.name} to ${sendFrom.team.teamName} for ${sendFrom.get.name} (${String(sendFrom.get.pos).toUpperCase()}) — +${sendFrom.myGain} to your lineup, +${sendFrom.theirGain} to theirs.`
+        : null;
+    /* ⭐⭐⭐⭐ WHO THIS ROW IS ABOUT, DECIDED ONCE — b151. The chip beside the position used to pick its own
+       player from the same three candidates in its own order, and on a two-way row (a deal arriving AND a
+       deal leaving) the two chose differently: the line said "Get Justin Jefferson" and the chip four
+       pixels below said "Travis Hunter". Found by a check written for exactly this fault one section
+       earlier, in a different column. The precedence lives here, with the sentence it has to match. */
+    const subject = getAt ? getAt.get.name
+      : sendFrom ? sendFrom.give.name
+        : (myMovable && myMovable.name) || null;
+
+    const action = dealLine ? dealLine
+      : side === 'buy'
       ? (iCantField
         ? `You cannot field ${req[pos]} at ${pos}. ${holders.length ? `${holders.length} team${holders.length === 1 ? ' holds' : 's hold'} one they can move.` : 'Nobody has one to spare, so this is a waiver problem, not a trade one.'}`
         : `You rank ${ord(myRank)} of ${teams} at ${pos}. ${deep.length ? `${deep.length} team${deep.length === 1 ? ' is' : 's are'} in the top third here.` : 'Nobody is notably deep, so expect to pay up.'}`)
@@ -579,14 +703,42 @@ export function marketSummary(reads, req) {
            the best news on the row — a man your best lineup does not use at all — so it gets words rather
            than a zero. (Caught by reading sim/posmarket.js §3's own output, which is what printing the
            pick in the PASS line is for.) */
-        ? `${myMovable.name || pos} ${myMovable.cost > 0 ? `costs your lineup ${myMovable.cost} a week` : 'is not in your best lineup at all'} and is worth ${myMovable.worth} to a team that needs him`
+        /* ⚠ "a week" WAS WRONG BY A FACTOR OF SEVENTEEN — b151. This screen works in SEASON value (the tab
+           says so in its own opening line, and `seasonRosterOf` is what feeds it), so a cost of 40 is
+           forty points across a season, not forty a week. Nobody would have noticed from the number; they
+           would simply have believed a much bigger claim than the app was making. */
+        ? `${myMovable.name || pos} ${myMovable.cost > 0 ? `costs your lineup ${myMovable.cost} in season value` : 'is not in your best lineup at all'} and is worth ${myMovable.worth} to a team that needs him`
           + `${thin.length ? ` — ${thin.length} ${thin.length === 1 ? 'is' : 'are'} short at ${pos}${cantField.length ? `, ${cantField.length} cannot field it at all` : ''}.` : ', but nobody here is short there.'}`
-        : `You rank ${ord(myRank)} of ${teams} and nothing here is worth more to somebody else than it is to you. Leave it alone.`;
+        /* ⭐⭐⭐⭐⭐ AND "LEAVE IT ALONE" HAS TO JUSTIFY ITSELF — b151. Trey, at a position he is first in the
+           league at: "it's saying not to move WR... but my RB is brutal... my WR is strong and I have
+           depth." Sometimes the maths genuinely disagrees with that instinct — three receivers in a
+           2WR+FLEX lineup all START, so the third is worth his full value in the flex and no back on the
+           market is worth more — and when it does, the answer is to SHOW THE ARITHMETIC rather than to
+           assert a verdict. A bare "nothing here is worth more to somebody else than it is to you" reads
+           as the app not having looked, which is exactly how he read it.
+           ⚠ The cheapest man to lose is named even when the answer is no, because "which one did you even
+             consider" is the first question anybody would ask of this row. */
+        : (() => {
+          const cheapest = me && (me.cheapest || {})[pos];
+          const where = iAmStrong ? `You rank ${ord(myRank)} of ${teams} at ${pos}` : `You rank ${ord(myRank)} of ${teams}`;
+          if (cheapest && cheapest.cost > 0) {
+            return `${where}, and the best candidate to move — ${cheapest.name} — is worth ${cheapest.cost} in season value to your OWN lineup, more than anything on the market would bring back. Leave it alone.`;
+          }
+          return `${where} and nothing here is worth more to somebody else than it is to you. Leave it alone.`;
+        })();
 
     out.push({
       pos, myRank, teams, side, twoWay, tone,
       iAmThin, iAmStrong, iCantField,
-      movable: myMovable,
+      movable: myMovable, subject,
+      /* The two offers this verdict was built from, so the row can link straight into the calculator and
+         a suite can hold the panel against the deal list. */
+      sendFrom: sendFrom ? { sid: sendFrom.give.sid, name: sendFrom.give.name, to: sendFrom.team.teamName,
+        getName: sendFrom.get.name, getPos: String(sendFrom.get.pos).toUpperCase(), getSid: sendFrom.get.sid,
+        rosterId: sendFrom.team.rosterId, myGain: sendFrom.myGain, theirGain: sendFrom.theirGain } : null,
+      getAt: getAt ? { sid: getAt.get.sid, name: getAt.get.name, from: getAt.team.teamName,
+        giveName: getAt.give.name, givePos: String(getAt.give.pos).toUpperCase(), giveSid: getAt.give.sid,
+        rosterId: getAt.team.rosterId, myGain: getAt.myGain, theirGain: getAt.theirGain } : null,
       deep: deep.length, thin: thin.length, cantField: cantField.length, holders: holders.length,
       deepTeams: deep.map((t) => t.teamName), thinTeams: thin.map((t) => t.teamName),
       cantFieldTeams: cantField.map((t) => t.teamName),
@@ -773,11 +925,29 @@ export function partnerBoard(input) {
         : 'Your rosters are strong and weak in the same places, so neither of you has anything the other needs.';
     }
 
+    /* ⭐⭐⭐⭐ THE TWO COLUMNS THE TABLE DRAWS — b151, and they come from the DEALS first.
+       `complement` is a shape read off positional ranks, and a manager can have three realistic ideas
+       without one: a screenshot of the new table showed a row reading "You send —" beside "3 ideas",
+       which is the table arguing with its own last column. Where there are deals, the positions in them
+       ARE the answer; the rank-based complement fills in for a manager the finder came up empty on, which
+       is the case it was built for. */
+    const dealSend = [...new Set(realistic.map((t) => String(t.give.pos).toUpperCase()))];
+    const dealGet = [...new Set(realistic.map((t) => String(t.get.pos).toUpperCase()))];
+    const merge = (fromDeals, dir) => {
+      const out2 = fromDeals.map((pos) => {
+        const c = comp.find((x) => x.dir === dir && x.pos === pos);
+        return { pos, dir, why: c ? c.why : `${realistic.filter((t) => String((dir === 'sell' ? t.give : t.get).pos).toUpperCase() === pos).length} of the ideas with them ${dir === 'sell' ? 'send' : 'bring back'} a ${pos}` };
+      });
+      comp.filter((c) => c.dir === dir && !fromDeals.includes(c.pos)).forEach((c) => out2.push(c));
+      return out2;
+    };
+    const columns = merge(dealSend, 'sell').concat(merge(dealGet, 'buy'));
+
     return {
       rosterId: them.rosterId, teamName: them.teamName, ownerName: them.ownerName,
       read, best, deals: list, realisticN: realistic.length,
       myGain: best ? best.myGain : 0, theirGain: best ? best.theirGain : 0, mutual,
-      realism: best ? best.realism : 0, complement: comp, twoWay, tone, why,
+      realism: best ? best.realism : 0, complement: comp, columns, twoWay, tone, why,
     };
   });
 
