@@ -100,7 +100,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29ap";
+const BUILD_TAG = "2026.07.29aq";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -11601,8 +11601,14 @@ function GuideBook({ compact, onDemo }) {
   /* ⚠ THE CRUMB IS A BUTTON IN THE APP AND TEXT ON THE PUBLIC SITE, and that is not an inconsistency: a
      signed-out reader has no leagues to be routed into, so a link would be a promise the page cannot
      keep. `navTo` is the same global hook the Admin and Guide buttons use. */
+  /* ⚠⚠ NOT `nowrap` — b157. "Your teams → open a league → Trades → What moves your season" is 400px of
+     unbreakable text, and on a 390px phone it pushed the whole PAGE sideways: a guide that breaks the
+     layout of the app it is explaining. It wraps at the arrows now, which is where a breadcrumb should
+     break anyway. I built and screenshotted this at 1450px all week, which is how it got through — the
+     phone-width sweep in plan29ci exists so the next one cannot. */
   const Crumb = ({ at, children }) => {
-    const style = { fontSize: 11.5, color: "var(--gold)", fontWeight: 700, whiteSpace: "nowrap" };
+    const style = { fontSize: 11.5, color: "var(--gold)", fontWeight: 700, textAlign: "left",
+      lineHeight: 1.45, wordBreak: "break-word" };
     if (compact || !at) return <span className="num" style={style}>{children}</span>;
     return (
       <button type="button" className="num" data-guidego={at}
@@ -11716,7 +11722,7 @@ function GuideBook({ compact, onDemo }) {
               const isOpen = open === `t${i}`;
               return (
                 <div key={i} data-guidetask={t.want} style={{ borderTop: i ? "1px solid var(--line)" : "none" }}>
-                  <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", padding: "9px 2px" }}>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", padding: "9px 2px", minWidth: 0 }}>
                     <button type="button" aria-expanded={isOpen}
                       onClick={() => setOpen(isOpen ? null : `t${i}`)}
                       style={{ flex: "1 1 200px", textAlign: "left", background: "transparent", border: "none",
@@ -19348,7 +19354,12 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
               <div data-mkt style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "11px 12px", marginBottom: 14, background: "var(--panel2)" }}>
                 <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 9 }}>
                   <span className="disp" style={{ fontSize: 15, fontWeight: 800, letterSpacing: ".01em" }}>Potential Positional Trade Considerations</span>
-                  <span className="mut" style={{ fontSize: 11 }}>click a position to see who can help</span>
+                  {/* ⚠ b157 — SAY WHICH RANK THIS IS. It is not the one on My roster or the League tab
+                      (see the note on the roster chip): those rank a room by quality and depth, this one
+                      ranks by what the position PUTS IN YOUR LINEUP, which is the right question when the
+                      decision is whether to trade from it. One clause, once, in the header rather than on
+                      every row — the alternative is a caveat beside eleven numbers. */}
+                  <span className="mut" style={{ fontSize: 11 }} title="Ranked by what each position actually puts in your starting lineup — not the same as the roster-strength rank on My roster and the League tab, which counts quality and depth.">click a position to see who can help · ranked by starting points</span>
                   {mktPos && (
                     <button className="btn btn-mini" data-mktback onClick={() => setMktPos(null)}
                       style={{ marginLeft: "auto", padding: "2px 9px", fontSize: 11 }}>← all positions</button>
@@ -19714,7 +19725,16 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       <span className="disp" style={{ fontSize: 12, fontWeight: 700, color: POS_COLOR[pos] }}>{pos}</span>
                       {myPosRank[pos] && myPosRank[pos].rank ? (
                         <span data-rosterposrank={`${pos}:${myPosRank[pos].rank}/${myPosRank[pos].of}`}
-                          title={`Your ${pos} room ranks ${ordinal(myPosRank[pos].rank)} of ${myPosRank[pos].of} in this league, on the same measure the League tab and the trade market use.`}
+                          /* ⚠⚠ THIS TITLE USED TO SAY "the same measure the League tab AND THE TRADE MARKET
+                             use", and half of that was false — b157. The League tab and this chip rank by
+                             posQuality (how good the room is, quality × depth, the draft app's measure);
+                             the trade market ranks by posValue (what the position actually puts in the
+                             lineup). Measured over 160 positions on random leagues the two disagree 40% of
+                             the time and by as much as five places — so the app was printing two different
+                             "Nth of 12" for one position and telling the reader they were the same number.
+                             Both measures are right for what they are for; the claim that they agree was
+                             the bug. Naming the basis costs a hover and no screen space. */
+                          title={`Your ${pos} room ranks ${ordinal(myPosRank[pos].rank)} of ${myPosRank[pos].of} in this league on ROSTER STRENGTH — quality and depth together, the same measure the League tab uses. The Trades tab ranks by the points your starters at this position actually put in the lineup, which is a different question and can come out a place or two apart.`}
                           className="num" style={{ fontSize: 11, fontWeight: 800, cursor: "help",
                             padding: "1px 6px", borderRadius: 5,
                             color: myPosRank[pos].rank <= Math.ceil(myPosRank[pos].of / 3) ? "var(--pos)"
@@ -30332,6 +30352,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
        highlight (steals and reaches), so this is a third highlight rather than a new mechanism — and it
        DIMS everything else, because a bright mark among 179 equally bright cells is not findable. */
   const [boardFind, setBoardFind] = useState("");
+  const [boardFindAt, setBoardFindAt] = useState(0);   // b157 — which match the arrows are parked on
   const [pastCount, setPastCount] = useState(2); // how many past picks to show; default 2, grows by 5
   const [futureBig, setFutureBig] = useState(false);
   // Recommendation hub: which of your upcoming picks the decision panel is focused on. null = your next pick.
@@ -32541,6 +32562,25 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     }
     return n;
   }, [boardFindQ, boardFindHit, picks, keeperByPick, players, projBoard, forcedAheadByPick, TOTAL]);
+
+  /* ⭐⭐⭐⭐ SCROLL TO THE MATCH — b157. Reset to the first hit whenever the query changes, then bring that
+     cell into view. Both live here rather than in the click handlers so the arrows, a new query and a
+     board that re-renders under you all land in the same place.
+     ⚠ THE DOM IS READ ON A FRAME DELAY. The cells carrying `data-boardhit` are rendered from the state
+       this effect depends on, so querying synchronously finds the PREVIOUS query's hits — one search
+       behind, forever, which looks like the feature working badly rather than not at all. */
+  useEffect(() => { setBoardFindAt(0); }, [boardFindQ]);
+  useEffect(() => {
+    if (!boardFindQ || !boardFindN) return;
+    const t = setTimeout(() => {
+      try {
+        const hits = document.querySelectorAll("[data-boardhit]");
+        const el = hits[Math.min(boardFindAt, hits.length - 1)];
+        if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+      } catch (_) {}
+    }, 60);
+    return () => clearTimeout(t);
+  }, [boardFindQ, boardFindN, boardFindAt]);
   // The user's next few upcoming pick indices — used for the player-list "you're up" marker lines (kept small
   // so the list isn't cluttered with a line for every remaining pick).
   const myUpcoming = useMemo(() => {
@@ -39149,6 +39189,25 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               <span className="num" data-boardfindn={String(boardFindN)}
                 style={{ fontSize: 11.5, fontWeight: 700, color: boardFindN ? "var(--info)" : "var(--mut)" }}>
                 {boardFindN ? `${boardFindN} on the board` : "not on the board"}
+              </span>
+            )}
+            {/* ⭐⭐⭐⭐ AND TAKE ME TO HIM — b157. A highlight you cannot see is the same as no highlight:
+                a 15-round board scrolls in both directions, so the lit cell is very often off-screen when
+                the search resolves. The first hit is scrolled to automatically; the arrows step through
+                the rest, which only appear when there IS a rest.
+                ⚠ `block: "center"` rather than "nearest": a cell flush against the sticky team-name header
+                  is technically in view and practically hidden underneath it. */}
+            {boardFindN > 1 && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 2 }}>
+                <button className="btn btn-mini" data-boardfindprev aria-label="Previous match"
+                  onClick={() => setBoardFindAt((i) => (i - 1 + boardFindN) % boardFindN)}
+                  style={{ fontSize: 11, padding: "2px 7px" }}>‹</button>
+                <span className="num mut" data-boardfindat={String(boardFindAt + 1)} style={{ fontSize: 11, minWidth: 30, textAlign: "center" }}>
+                  {boardFindAt + 1}/{boardFindN}
+                </span>
+                <button className="btn btn-mini" data-boardfindnext aria-label="Next match"
+                  onClick={() => setBoardFindAt((i) => (i + 1) % boardFindN)}
+                  style={{ fontSize: 11, padding: "2px 7px" }}>›</button>
               </span>
             )}
             <span className="mut" style={{ fontSize: 11.5, marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
