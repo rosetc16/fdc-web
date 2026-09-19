@@ -100,7 +100,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29aq";
+const BUILD_TAG = "2026.07.29as";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -18069,6 +18069,20 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
         {draftPick && (() => {
           const picksN = draftLeague ? ((draftLeague.picks || []).length) : 0;
           const over = draftIsOver(draftLeague);
+          /* ⭐⭐⭐⭐⭐ "NO PICKS RECORDED" IS A CLAIM THE SAVED LEAGUE CANNOT MAKE — b158, found by plan29ck.
+             A connected Sleeper draft does not keep its picks here: the room polls for them and converts
+             them IN MEMORY, deliberately ("we don't persist: DraftRoom's onUpdate writes to the user
+             object, not the league"). So a league that has never had its board opened in this app reads
+             as zero picks no matter how far along the real draft is — and this popup told the user there
+             was nothing there AND greyed the summary out entirely. That is the first thing anybody sees
+             through the doorway 29an added, on exactly the leagues it was added for: connect Sleeper,
+             open the hub, click Draft, get told your finished draft does not exist.
+             ⚠ THE FIX IS NOT TO GUESS A NUMBER. The hub genuinely does not know how many picks are in
+               that draft until the room asks. It knows whether this league SYNCS, which is the honest
+               thing to say — and it is enough to stop disabling a button that works. */
+          const draftConn = draftLeague ? ((draftLeague.cfg && draftLeague.cfg.connect) || draftLeague.connect || null) : null;
+          const syncs = !!(draftConn && draftConn.leagueId && platformIsLive(draftConn.platform));
+          const platName = draftConn ? ((PLATFORMS.find((x) => x.id === draftConn.platform) || {}).name || "your league host") : "";
           const choose = (t) => { setDraftPick(false); if (draftLeague) onOpenDraft(draftLeague.id, t); };
           /* ⚠⚠ A DEAD BUTTON IS WORSE THAN A MISSING ONE, AND A MISSING ONE IS WORSE THAN AN EXPLAINED
              ABSENCE. Two states can genuinely have nothing behind them — a hub league that was never
@@ -18113,10 +18127,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                   ) : (
                     <>
                       <Choice k="board" icon="ti-layout-board" label="Draft board"
-                        note={picksN ? `Every team's picks, round by round — ${picksN} recorded${over ? ", draft complete" : ", still in progress"}.` : "Round by round, every team. No picks are recorded for this league yet."} />
+                        note={picksN ? `Every team's picks, round by round — ${picksN} recorded${over ? ", draft complete" : ", still in progress"}.`
+                          : syncs ? `Round by round, every team. The picks load from ${platName} when you open it.`
+                          : "Round by round, every team. No picks are recorded for this league yet."} />
                       <Choice k="summary" icon="ti-clipboard-text" label="Draft summary"
-                        disabled={!picksN}
-                        note={picksN ? `How it went: value by team, steals, reaches and grades across all ${picksN} picks.` : "Nothing to summarise until the draft has picks in it."} />
+                        disabled={!picksN && !syncs}
+                        note={picksN ? `How it went: value by team, steals, reaches and grades across all ${picksN} picks.`
+                          : syncs ? `Value by team, steals, reaches and grades — it reads the draft from ${platName} first.`
+                          : "Nothing to summarise until the draft has picks in it."} />
                     </>
                   )}
                 </div>
@@ -39163,8 +39181,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               return (
             <div style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--line)", borderRadius: 9, padding: "3px 5px" }}>
               <span className="mut" style={{ fontSize: 11, paddingLeft: 3 }}>Highlight</span>
-              <button className="btn btn-mini" style={{ fontSize: 11, padding: "3px 9px", borderColor: boardHi.steals ? "var(--pos)" : "var(--line2)", background: boardHi.steals ? "var(--pos-wash)" : "transparent", color: boardHi.steals ? "var(--pos)" : "var(--mut)", fontWeight: boardHi.steals ? 700 : 400 }} onClick={() => setBoardHi((h) => ({ ...h, steals: !h.steals }))} title={nSteal ? `${nSteal} pick${nSteal === 1 ? "" : "s"} on this board fell far enough past ADP to count as a steal.` : "Nobody has fallen far enough past ADP to count as a steal yet."}><i className="ti ti-diamond" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Steals ({nSteal})</button>
-              <button className="btn btn-mini" style={{ fontSize: 11, padding: "3px 9px", borderColor: boardHi.reaches ? "var(--neg)" : "var(--line2)", background: boardHi.reaches ? "var(--neg-wash)" : "transparent", color: boardHi.reaches ? "var(--neg)" : "var(--mut)", fontWeight: boardHi.reaches ? 700 : 400 }} onClick={() => setBoardHi((h) => ({ ...h, reaches: !h.reaches }))} title={nReach ? `${nReach} pick${nReach === 1 ? "" : "s"} on this board went far enough ahead of ADP to count as a reach.` : "Nothing has gone far enough ahead of ADP to count as a reach yet."}><i className="ti ti-flame" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Reaches ({nReach})</button>
+              <button className="btn btn-mini" data-boardhi="steals" data-boardhin={String(nSteal)} data-boardhion={boardHi.steals ? "1" : "0"} style={{ fontSize: 11, padding: "3px 9px", borderColor: boardHi.steals ? "var(--pos)" : "var(--line2)", background: boardHi.steals ? "var(--pos-wash)" : "transparent", color: boardHi.steals ? "var(--pos)" : "var(--mut)", fontWeight: boardHi.steals ? 700 : 400 }} onClick={() => setBoardHi((h) => ({ ...h, steals: !h.steals }))} title={nSteal ? `${nSteal} pick${nSteal === 1 ? "" : "s"} on this board fell far enough past ADP to count as a steal.` : "Nobody has fallen far enough past ADP to count as a steal yet."}><i className="ti ti-diamond" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Steals ({nSteal})</button>
+              <button className="btn btn-mini" data-boardhi="reaches" data-boardhin={String(nReach)} data-boardhion={boardHi.reaches ? "1" : "0"} style={{ fontSize: 11, padding: "3px 9px", borderColor: boardHi.reaches ? "var(--neg)" : "var(--line2)", background: boardHi.reaches ? "var(--neg-wash)" : "transparent", color: boardHi.reaches ? "var(--neg)" : "var(--mut)", fontWeight: boardHi.reaches ? 700 : 400 }} onClick={() => setBoardHi((h) => ({ ...h, reaches: !h.reaches }))} title={nReach ? `${nReach} pick${nReach === 1 ? "" : "s"} on this board went far enough ahead of ADP to count as a reach.` : "Nothing has gone far enough ahead of ADP to count as a reach yet."}><i className="ti ti-flame" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Reaches ({nReach})</button>
             </div>
               );
             })()}
@@ -39341,10 +39359,21 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                            made the empty half of the board BRIGHTER during a search than it is at rest —
                            the opposite of the point. Both go below their own resting state. */
                         : { opacity: p ? 0.22 : 0.15 };
+                    /* ⭐⭐⭐⭐ THE CELL STATES ITS OWN MARK — b158 (`data-boardmark`). The toolbar prints
+                       "Steals (7)" counted off `graded`; this cell decides independently, from a
+                       `pickValue` it computes itself and against a different is-this-a-real-pick
+                       predicate. Two derivations of one quantity, on one screen, with nothing holding
+                       them together — the exact shape of 29y, 29af, 29aj, 29al, 29am and 29an, and until
+                       b158 nothing checked it. A suite can only hold them together if the cell says what
+                       it believes it is; inferring the mark from a computed background colour would make
+                       the check a test of the stylesheet instead. `data-boardproj` is there for the same
+                       reason on the projected-board toggle. */
                     const cls2 = cls;
                     return (
                       <div key={`${r}-${col}`} className={cls2}
                         data-boardhit={findHit ? (p && p.name) || "1" : undefined}
+                        data-boardmark={showSteal ? "steal" : showReach ? "reach" : undefined}
+                        data-boardproj={isProjected ? "1" : undefined}
                         style={{ borderLeft: p ? `3px solid ${POS_COLOR[p.pos]}` : undefined, opacity: p ? (isProjected ? 0.9 : 1) : undefined, ...hiStyle, ...findStyle }}
                         onMouseEnter={p ? (e) => showTip(e, isKeeper ? [
                           // ⭐ A KEEPER IS STILL A PICK. This used to be two lines — his name and the fact he

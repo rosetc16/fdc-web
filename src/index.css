@@ -2,9 +2,28 @@
 @tailwind components;
 @tailwind utilities;
 
-/* App fonts (the design uses Barlow Condensed for display + DM Mono for numbers). Loaded from
-   Google Fonts so they're available without bundling font files. */
-@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700&family=DM+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap');
+/* ⚠ THE GOOGLE FONTS @import THAT USED TO SIT HERE IS GONE — b158. It was a leftover: every family the
+   app actually uses has been self-hosted since fonts.css was written ("a CDN font blocks first paint on a
+   cold connection, and draft night is not the moment to be waiting on fonts.googleapis.com"), and the
+   bundler was dropping this line anyway. It survived only as a comment claiming the opposite of what the
+   build does, which is worse than no comment. */
 
-html, body, #root { height: 100%; margin: 0; background: #000; }
+/* ⭐⭐⭐⭐⭐ THE GROUND BEFORE REACT EXISTS — b158, and it was a HARDCODED BLACK.
+   This rule used to read `background: #000`, theme-blind, and it is the only thing painting the page for
+   the whole download-parse-execute of the bundle. So a LIGHT-mode user on a phone got a full-screen BLACK
+   flash and then a light app — 29ah's "the light mode is all jacked up" on the one surface that had no
+   theme logic to get wrong, and invisible to everybody who develops in dark mode, which is everybody.
+   ⚠ THREE STATES, NOT TWO, exactly as the app's own stylesheet does it: an explicit choice stamps
+     data-theme on <html> and must beat the OS in both directions; the unstamped default is the common
+     case and only prefers-color-scheme separates it.
+   ⚠ AND index.html CARRIES THE SAME TWO COLOURS INLINE, on purpose — this file is a separate request, so
+     the inline copy is what paints in the gap before it lands. Two places, two values, one job. */
+html, body, #root { height: 100%; margin: 0; background: #F4F6F8; }
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]),
+  html:not([data-theme="light"]) body,
+  html:not([data-theme="light"]) #root { background: #0B0F14; }
+}
+html[data-theme="dark"], html[data-theme="dark"] body, html[data-theme="dark"] #root { background: #0B0F14; }
+html[data-theme="light"], html[data-theme="light"] body, html[data-theme="light"] #root { background: #F4F6F8; }
 body { font-family: Inter, system-ui, -apple-system, sans-serif; }

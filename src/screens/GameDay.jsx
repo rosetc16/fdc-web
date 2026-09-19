@@ -150,8 +150,24 @@ function MatchupDetail({ L, F, tone, bySid, wide, onOpenHub }) {
   const side = (s) => (s && s.players ? s.players : []);
   /* ⚠ "STILL TO PLAY" INCLUDES MEN ON THE FIELD — 29t. `played` now means his game is OVER; a live player
      has points on the board and more to come, which is exactly the row you most want to see here. */
+  /* ⚠⚠⚠⚠ THE ORDER OF THESE TWO SPREADS IS THE WHOLE ROW — b158, and it was the wrong way round.
+     `nameOf` returns the entry from `data.rooting`, which exists to identify a player ACROSS leagues, and
+     its `pts` is deliberately an OBJECT — `{lo, hi, median, varies}` — because the same afternoon is worth
+     different points under different scoring. Spreading it SECOND overwrote this league's numeric `pts`
+     with that object, on every live row, on every matchup, for as long as this screen has existed.
+     ⭐ TWO THINGS BROKE AND BOTH WERE SILENT. React drops an object child without a word, so the
+       points-so-far figure beside every live player simply WAS NOT THERE — a blank where "30.2" belongs,
+       on the screen you sit on during the games. And the hover built in b151 to end the "Sleeper says 22,
+       the site says 27.4" arguments read "[object Object] on the board + 22.4 projected × 57% of his game
+       still to play" — the one instrument meant to make the next disagreement diagnosable in a single
+       screenshot, printing garbage in its first field.
+     ⚠ THIS IS THE SECOND TIME IN THIS FILE. The note by `F.me` twenty lines below records the identical
+       failure: "`forecast.me` IS A SIDE, NOT A NUMBER... React drops an object child silently, so the
+       column was simply blank while the win% beside it worked perfectly."
+     ⭐ THE RULE: rooting supplies IDENTITY (name, position, team, opponent); the per-league row is
+       authoritative for everything it measures. So identity goes down first and the row wins. */
   const left = (s) => side(s).filter((pp) => pp.phase ? pp.phase !== "done" : !pp.played)
-    .map((pp) => ({ ...pp, ...nameOf(pp.sid) }))
+    .map((pp) => ({ ...nameOf(pp.sid), ...pp }))
     .sort((a, b) => (b.proj || 0) - (a.proj || 0));
   const mine = left(L.me), theirs = left(L.opp);
 
