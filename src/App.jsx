@@ -100,7 +100,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29at";
+const BUILD_TAG = "2026.07.29au";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -6816,6 +6816,48 @@ function slotFillPts(pool, cfg, teamsN) {
 // `opts.withKDST` adds the K and DST starting slots (the projected-finish score needs them; the My Team
 // panel and the bye-exposure read deliberately do not, since those are about skill starters).
 // `opts.fill` is a slotFillPts table: an empty mandatory slot is priced at the typical fill instead of 0.
+/* ⭐⭐⭐⭐⭐ A LETTER GRADE FOR ONE PICK — b159.
+   ─────────────────────────────────────────────────────────────────────────────────────────────────
+   Trey: "I think I want something that looks like what Yahoo draft boards has when you draft your
+   players and it puts a grade on each draft pick."
+
+   It grades THE PICK, not the player — his choice when asked. An A+ means you got him far later than the
+   market says he goes; it says nothing about whether he is any good, which is what the League tab and the
+   roster chips are for. Two different questions, and 29aq is the whole story of what happens when one
+   number is quietly asked to answer both.
+
+   ⚠⚠ THE BANDS ARE ABSOLUTE, SCALED TO THIS BOARD'S OWN CUTS — never a z-score across your picks. A
+     relative grade is an AMPLIFIER: in a draft where you took everybody within a point of their ADP it
+     would still hand out an A+ and an F, because something has to come first. That exact fault has now
+     been fixed twice on this project — 29n's steal/reach percentile bar, which coloured a tenth of the
+     board no matter what happened on it, and the team grades above, where a chalk draft graded from A+
+     down to D over a spread that was rounding error. `stealCut` and `reachCut` are already calibrated
+     per board, so a quiet draft correctly grades as a column of Bs.
+   ⚠ AND THE SCALE IS ASYMMETRIC ON PURPOSE, matching pickValue's own rule that reaches sting about 15%
+     more than equal steals reward: the reach side of the scale is wider, so an ordinary miss reads as a
+     B− rather than a C.
+   ⚠ `null` IS A REAL ANSWER — a pick with no market price to grade against (no ADP, an unresolved name)
+     gets no letter rather than a confident middle grade. */
+function pickGradeFor(mval, stealCut, reachCut, minMark = 5) {
+  if (!Number.isFinite(mval)) return null;
+  const s = Math.max(Number(stealCut) || 0, minMark), r = Math.max(Number(reachCut) || 0, minMark);
+  if (mval >= s * 2) return "A+";
+  if (mval >= s) return "A";
+  if (mval >= s * 0.5) return "A−";
+  if (mval >= minMark) return "B+";
+  if (mval > -minMark) return "B";
+  if (mval >= -r * 0.6) return "B−";
+  if (mval >= -r) return "C+";
+  if (mval >= -r * 1.6) return "C";
+  if (mval >= -r * 2.4) return "C−";
+  if (mval >= -r * 3.5) return "D";
+  return "F";
+}
+/* The colour a grade carries. Deliberately NOT a ramp through every letter — three bands, because the
+   question the colour answers is "is this one worth looking at", and eleven shades answers nothing. */
+const GRADE_TONE = (g) => (g == null ? "var(--mut)"
+  : /^A/.test(g) ? "var(--pos)" : /^B/.test(g) ? "var(--ink)" : /^C/.test(g) ? "var(--gold)" : "var(--neg)");
+
 function lineupSlots(roster, sf, opts = {}) {
   const fill = opts.fill || null;
   const sorted = { QB: [], RB: [], WR: [], TE: [], K: [], DST: [] };
@@ -28435,7 +28477,13 @@ function ConnectBox({ connect, onConnect, onClear, embedded, onCancel, jumpTo, j
                             <span style={{ flex: 1 }}><b>{lg.name}</b>{lg.teams ? <span className="mut" style={{ fontSize: 11 }}> · {lg.teams} teams</span> : null}</span>
                           </button>
                         ))}
-                        {!(yLeagues || []).length && <div className="mut" style={{ fontSize: 12 }}>No NFL leagues on that Yahoo account for this season.</div>}
+                        {/* ⚠⚠ ONLY WHEN THE LOOKUP ACTUALLY SUCCEEDED — b159. This line used to print
+                            unconditionally whenever the list was empty, including when the request had
+                            FAILED, so a Yahoo refusal rendered as "No NFL leagues on that Yahoo account
+                            for this season" sitting directly above the real error. Two explanations, one
+                            plausible and wrong, one true and unreadable — and the plausible one wins every
+                            time. It cost Trey an evening looking for a league that was never missing. */}
+                        {!(yLeagues || []).length && !error && <div className="mut" style={{ fontSize: 12 }}>No NFL leagues on that Yahoo account for this season.</div>}
                       </div>
                       <div className="mut" style={{ fontSize: 10.5, marginTop: 8 }}>Fantasy data provided by Yahoo Fantasy.</div>
                     </div>
@@ -30532,6 +30580,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   //   highlight has to treat the two as the same place rather than silently un-lighting the button.
   const samePanel = (k) => (k === "needs" ? (hubPanel === "needs" || hubPanel === "ranks") : hubPanel === k);
   const [hubPanel, setHubPanel] = useState(null);   // null | "rosters" | "needs" | "ranks" | "scarcity" | "between" | "strategy"
+  /* Which FACE of the recommendation panel is showing — b159. "rec" is the advice, "team" is your roster
+     with a grade on each pick.
+     ⚠ NOT `recView` — that name is already taken twenty lines below for the recommendation LENS
+       ("best for you" vs "the engine's predicted market pick"), and declaring it twice in one component
+       is a build error, not a subtle bug. Two different questions about one panel: which face you are
+       looking at, and which model that face is using.
+     ⚠ Deliberately NOT persisted: on the clock you want the recommendation, and a panel that remembers
+       you were looking at your roster three picks ago costs you the one you need. */
+  const [recFace, setRecFace] = useState("rec");
   const [stratEditOpen, setStratEditOpen] = useState(false);   // the plan editor, opened from the checklist
   // The league whose PLAN applies here: a mock rehearses its parent league's blueprint (see planLeagueOf).
   const planLeague = useMemo(() => planLeagueOf(league, allLeagues), [league, allLeagues]);
@@ -33953,6 +34010,33 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     };
     return { stealCut: cut(vals.filter((v) => v > 0)), reachCut: cut(vals.filter((v) => v < 0).map((v) => -v)) };
   }, [graded]);
+  /* ⭐⭐⭐⭐⭐ YOUR ROSTER, IN SLOT ORDER, WITH A GRADE ON EACH PICK — b159. Feeds the My team face of the
+     recommendation panel; see `pickGradeFor`.
+     ⚠ IT READS `rostersByTeam`, WHICH IS THE ONE SOURCE OF TRUTH FOR A ROSTER (20aj): a team's players
+       arrive through FOUR channels — drafted picks, no-cost keepers, pick-cost keepers at future slots,
+       and existing platform holdings — and any new surface that re-derives a roster gets three of the four.
+     ⚠ AND THE SLOT LAYOUT COMES FROM `lineupSlots` WITHOUT `fill`, so an unfilled slot stays EMPTY rather
+       than being quietly papered over with an assumed replacement body. The empty K and DEF rows are half
+       the reason to look at this panel at all. */
+  const myTeamRows = useMemo(() => {
+    const roster = (rostersByTeam && rostersByTeam[userIdx]) || [];
+    const gradeById = new Map();
+    graded.forEach((g) => {
+      if (!g || !g.p || g.t !== userIdx || g.o == null) return;
+      gradeById.set(g.p.id, { g: pickGradeFor(g.mval, stealCut, reachCut, MIN_MARK), mval: g.mval, o: g.o, keeper: !!g.keeper });
+    });
+    const { slots, bench } = lineupSlots(roster, cfg.sf);
+    const rowOf = (p, slot, isBench) => {
+      const hit = p ? gradeById.get(p.id) : null;
+      return { p: p || null, slot, bench: isBench, keeper: !!(hit && hit.keeper), grade: hit ? hit.g : null,
+        why: hit && hit.g
+          ? `${p.name} graded ${hit.g} — taken at ${pickLabel(hit.o)}, worth ${hit.mval > 0 ? "+" : ""}${hit.mval.toFixed(0)} against the market price for that slot.${hit.keeper ? " Kept, so the price was set before the draft." : ""}`
+          : (p ? `${p.name} has no market price to grade against — no ADP we trust for him.` : null) };
+    };
+    const rows = slots.map((s) => rowOf(s.p, s.slot, false))
+      .concat((bench || []).map((p) => rowOf(p, "BN", true)));
+    return { rows, filled: rows.filter((r) => r.p).length, total: rows.length };
+  }, [rostersByTeam, userIdx, graded, stealCut, reachCut, cfg.sf]);
   const valByTeamRaw = useMemo(() => Array.from({ length: TEAMS }, (_, i) => graded.filter((g) => g.t === i).reduce((s, g) => s + g.val, 0)), [graded]);
   // The raw per-pick value model is intentionally asymmetric (reaches sting more) and early-weighted, so
   // its LEAGUE SUM skews negative — most teams would show a negative total even in a normal draft. For the
@@ -38301,8 +38385,77 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         ))}
                       </div>
                     )}
+                    {/* ⭐⭐⭐⭐⭐ RECOMMENDED ↔ MY TEAM — b159.
+                        Trey: "I want a toggle on the recommendation widget that lets you go from the
+                        recommendation to your team (and shows something like the screenshot)."
+                        ⭐ A TOGGLE RATHER THAN A SECOND PANEL, and that is his own rule applied (26b): he
+                          does not want the app to become "a site about tool kits", and the answer that
+                          satisfies him is to put the thing where the user already is. This is the most
+                          crowded real estate in the app and it is where your eyes are on the clock —
+                          "what do I still need" belongs in it, not behind a navigation. */}
+                    <div className="filterchips" data-recface={recFace} style={{ display: "flex", gap: 5, marginBottom: 9 }}>
+                      {[["rec", "ti-target-arrow", "Recommended"], ["team", "ti-users", `My team${myTeamRows ? ` (${myTeamRows.filled}/${myTeamRows.total})` : ""}`]].map(([k, icon, lbl]) => {
+                        const on = recFace === k;
+                        return (
+                          <button key={k} data-recfacebtn={k} aria-pressed={on} onClick={() => setRecFace(k)}
+                            style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: on ? 800 : 600,
+                              padding: "4px 9px", borderRadius: 7, cursor: "pointer", fontFamily: "inherit",
+                              border: `1px solid ${on ? "var(--gold)" : "var(--line2)"}`,
+                              color: on ? "var(--on-gold)" : "var(--mut)", background: on ? "var(--gold)" : "transparent" }}>
+                            <i className={`ti ${icon}`} style={{ fontSize: 11 }} aria-hidden="true" />{lbl}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {recFace === "team" && (
+                      <div data-myteampanel={String(myTeamRows ? myTeamRows.filled : 0)}>
+                        {!myTeamRows || !myTeamRows.rows.length ? (
+                          <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5, padding: "6px 0" }}>
+                            Nothing drafted yet. Your roster fills in here as you pick, with a grade on each one.
+                          </div>
+                        ) : (
+                          <>
+                            {myTeamRows.rows.map((row, i) => (
+                              <div key={i} data-myteamrow={row.p ? row.p.name : `empty-${row.slot}`}
+                                style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 0",
+                                  borderTop: i === 0 ? "none" : "1px solid var(--line)", opacity: row.p ? 1 : 0.45 }}>
+                                {/* The slot label is the point of the whole panel: it is what turns a list of
+                                    names into "I still have no kicker". */}
+                                <span className="num" style={{ width: 30, flexShrink: 0, fontSize: 9, fontWeight: 800,
+                                  textTransform: "uppercase", letterSpacing: ".03em",
+                                  color: row.bench ? "var(--mut)" : (POS_COLOR[row.slot] || "var(--mut)") }}>{row.bench ? "BN" : row.slot}</span>
+                                {row.p ? <PlayerPhoto sid={row.p.sid} pos={row.p.pos} size={22} /> : <span style={{ width: 22, flexShrink: 0 }} />}
+                                <span style={{ flex: 1, minWidth: 0 }}>
+                                  <span style={{ display: "block", fontSize: 11.5, fontWeight: 700, overflow: "hidden",
+                                    textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    {row.p ? row.p.name : "— empty —"}
+                                    {row.keeper && <span className="gold" style={{ fontWeight: 800, marginLeft: 4, fontSize: 9 }}>K</span>}
+                                  </span>
+                                  {row.p && (
+                                    <span className="mut" style={{ display: "block", fontSize: 9.5 }}>
+                                      {row.p.pos}{row.p.team ? ` · ${row.p.team}` : ""}{row.p.bye ? ` · Bye ${row.p.bye}` : ""}
+                                    </span>
+                                  )}
+                                </span>
+                                {/* ⚠ NO LETTER IS NOT A BLANK — a pick we cannot price says so on hover rather
+                                    than leaving a gap the reader fills in themselves. */}
+                                <span className="num" data-myteamgrade={row.grade || ""} title={row.why || undefined}
+                                  style={{ flexShrink: 0, width: 26, textAlign: "center", fontSize: 11, fontWeight: 800,
+                                    color: GRADE_TONE(row.grade), cursor: row.why ? "help" : "default" }}>
+                                  {row.grade || (row.p ? "·" : "")}
+                                </span>
+                              </div>
+                            ))}
+                            <div className="mut" style={{ fontSize: 9.5, lineHeight: 1.5, marginTop: 8, paddingTop: 6, borderTop: "1px solid var(--line2)" }}>
+                              The grade is on THE PICK — value against where he was taken, not how good he is.
+                              An A means he fell well past his price. Hover one for the arithmetic.
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
                     {/* recommendation — single unified model, headshot */}
-                    {topBal && (
+                    {recFace === "rec" && topBal && (
                       <div style={{ marginBottom: 10 }}>
                         <div style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, marginBottom: 4 }}>Recommended {onClockNow ? "— draft" : "for this pick"}</div>
                         <div style={{ display: "flex", gap: 7 }}>
@@ -38310,8 +38463,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         </div>
                       </div>
                     )}
-                    <div style={{ borderTop: "1px solid var(--line)", margin: "0 0 10px" }} />
+                    {recFace === "rec" && <div style={{ borderTop: "1px solid var(--line)", margin: "0 0 10px" }} />}
                     {/* single recommendation list — full top 10, market → build blended */}
+                    {recFace === "rec" && (
                     <div>
                       {recTable(balAdv, "var(--gold)", "For this pick", strategy === "adp" ? "strict ADP order" : strategy === "value" ? "max VBD" : strategy === "upside" ? "upside / breakout" : "smart · market early → your build by round 5")}
                       {isAdminUser && balAdv && balAdv.dbgRows && (balAdv.dbgRows.rows || []).length > 0 && (
@@ -38342,8 +38496,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         </Boundary>
                       )}
                     </div>
+                    )}
                     {/* take now vs wait — per position (below My build): two reads side by side */}
-                    {waitByPos.length > 0 && (
+                    {recFace === "rec" && waitByPos.length > 0 && (
                       <>
                         <div style={{ borderTop: "1px solid var(--line)", margin: "11px 0 10px" }} />
                         <div>
