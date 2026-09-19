@@ -3,7 +3,7 @@ import { api, hasBackend, getToken, setToken, syncHealth, authHealth } from "./a
 import { useWide } from "./usewide.js";
 import { HoverTable, useHoverCard } from "./hovercard.jsx";
 import { teamReads, tradeBoard, marketSummary, partnerBoard, raceCurrency } from "./trademarket.js";
-import { GUIDE_TASKS, GUIDE_MAP, GUIDE_GLOSSARY, guideIndex, guideSearch } from "./guide.js";
+import { GUIDE_TASKS, GUIDE_MAP, GUIDE_GLOSSARY, SEASON_STEPS, guideIndex, guideSearch } from "./guide.js";
 
 // Lightweight SECTION-level error boundary. The app has a full-page boundary at the root, but a render error
 // in one panel (e.g. a rare data edge case in the draft recap/superlatives) shouldn't take down the entire
@@ -100,7 +100,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29ao";
+const BUILD_TAG = "2026.07.29ap";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -9424,6 +9424,33 @@ function Wordmark({ size = 20 }) {
     </span>
   );
 }
+/* ⭐⭐⭐⭐ DOES THIS PLAYER MATCH WHAT SOMEBODY TYPED ON THE DRAFT BOARD — b156.
+   ⚠⚠ MODULE SCOPE, AND DELIBERATELY. It started as an inline arrow inside DraftRoom, where no unit test
+     can reach it — and the browser suite turned out to be unable to exercise it either, because the test
+     fixture's board has no resolvable picks in it. A rule nothing can test is a rule that quietly rots,
+     so the rule moved out here where sim/boardfind.js slices it by name.
+   ⭐ THE RULE IS "STARTS A WORD", NOT "APPEARS ANYWHERE", and that is the whole difference between a
+     search and a second thing to scan. A substring match lights up Freeman, Coleman, Pittman and Newman
+     for "man" — on a 180-cell board that has replaced one scan with another. Matching only at a word
+     boundary means "chase" finds Ja'Marr Chase, "mccaffrey" finds Christian McCaffrey, "christian mc"
+     and "ra st" still work because they begin at one, and "man" finds nobody.
+   ⚠ HYPHENS, APOSTROPHES AND PERIODS COUNT AS WORD BOUNDARIES, because Amon-Ra St. Brown and Ja'Marr
+     Chase are how these names are actually written and a space-only rule would refuse half of them.
+   ⚠ AND ACCENTS FOLD ON BOTH SIDES, so the keyboard somebody happens to have does not decide the result. */
+const fold = (x) => String(x || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+export function boardNameHit(name, q) {
+  const needle = fold(q).trim();
+  if (needle.length < 2 || !name) return false;
+  const n = fold(name);
+  const isEdge = (c) => !c || /[\s\-'’.,]/.test(c);
+  let i = n.indexOf(needle);
+  while (i >= 0) {
+    if (i === 0 || isEdge(n[i - 1])) return true;
+    i = n.indexOf(needle, i + 1);
+  }
+  return false;
+}
+
 export const Dot = ({ pos }) => <span className="posdot" title={pos} style={{ background: POS_COLOR[pos] }} />;
 
 /* ⭐⭐⭐⭐ START / SIT, ON THE PLAYER — b153. Trey asked for "an icon on a bench player that you believe
@@ -10053,6 +10080,21 @@ export default function App() {
     if (i > 0) {
       const route = s2.slice(0, i), sub = s2.slice(i + 1);
       if (route === "help") { setHelpTab(sub); setRoute("help"); return; }
+      /* ⚠ b156 — MY WEEK, GAME DAY AND REVIEW ARE ONE SCREEN WITH THREE DOORS. `InSeason` takes its tab
+         from `myWeekView`, so routing without setting it lands somebody on whichever of the three they
+         last looked at — which for a link that says "Game Day" is exactly the sort of quiet wrongness a
+         guide cannot afford. */
+      if (route === "week") { setMyWeekView(sub); setRoute(sub === "gameday" ? "gameday" : "myweek"); return; }
+      /* ⚠ THE TEAMS LIST IS THE STEP PEOPLE CANNOT FIND, and it is an anchor on the home page rather than
+         a route of its own. The scroll waits a beat because the home page mounts first; `data-teams-anchor`
+         has existed since the in-season tile needed it, so this is a second caller rather than a new idea. */
+      if (route === "home" && sub === "teams") {
+        setRoute("home");
+        setTimeout(() => {
+          try { const el = document.querySelector("[data-teams-anchor]"); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (_) {}
+        }, 400);
+        return;
+      }
     }
     setRoute(r);
   });
@@ -11544,16 +11586,63 @@ function WhyGraphic({ kind }) {
 function GuideBook({ compact, onDemo }) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(null);
+  /* ⭐⭐⭐⭐⭐ ONE SUBJECT AT A TIME — b156. Trey: "The 'where things live' is long and confusing... It
+     might just be helpful to have some macro subjects that you can toggle to to make it easier."
+     ⚠⚠ THE FIRST CUT PUT EVERYTHING ON ONE PAGE — twelve tasks, sixteen places with their tabs, and
+       twenty-seven glossary terms — on the theory that a search box made length free. It does not: a page
+       you have to search to use is a page that has failed everyone who does not already know the word to
+       type, and scrolling past four sections to reach the glossary is the same "hard to navigate" problem
+       this screen exists to fix, reproduced inside the fix. Each view is now one short list. */
+  const [view, setView] = useState("tasks");
   const rows = useMemo(() => guideIndex(), []);
   const hits = useMemo(() => guideSearch(rows, q), [rows, q]);
   const searching = q.trim().length >= 2;
 
-  const Crumb = ({ children }) => (
-    <span className="num" style={{ fontSize: 11.5, color: "var(--gold)", fontWeight: 700, whiteSpace: "nowrap" }}>{children}</span>
+  /* ⚠ THE CRUMB IS A BUTTON IN THE APP AND TEXT ON THE PUBLIC SITE, and that is not an inconsistency: a
+     signed-out reader has no leagues to be routed into, so a link would be a promise the page cannot
+     keep. `navTo` is the same global hook the Admin and Guide buttons use. */
+  const Crumb = ({ at, children }) => {
+    const style = { fontSize: 11.5, color: "var(--gold)", fontWeight: 700, whiteSpace: "nowrap" };
+    if (compact || !at) return <span className="num" style={style}>{children}</span>;
+    return (
+      <button type="button" className="num" data-guidego={at}
+        onClick={(e) => { e.stopPropagation(); navTo(at); }}
+        title={`Go there — ${children}`}
+        style={{ ...style, background: "transparent", border: "none", padding: 0, cursor: "pointer",
+          fontFamily: "inherit", textDecoration: "underline", textDecorationStyle: "dotted",
+          textUnderlineOffset: 3 }}>
+        {children}<i className="ti ti-arrow-right" style={{ fontSize: 11, marginLeft: 4 }} aria-hidden="true" />
+      </button>
+    );
+  };
+
+  const SUBJECTS = [{ k: "tasks", label: "I want to…", icon: "ti-help-circle" }]
+    .concat(GUIDE_MAP.map((s) => ({ k: s.key, label: s.title, icon: s.icon })))
+    .concat([{ k: "glossary", label: "Glossary", icon: "ti-book" }]);
+
+  const Place = ({ it }) => (
+    <div data-guideplace={it.name} style={{ borderLeft: "2px solid var(--line2)", paddingLeft: 12 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 9, flexWrap: "wrap" }}>
+        <span className="disp" style={{ fontSize: 14.5, fontWeight: 700 }}>{it.name}</span>
+        <Crumb at={it.at}>{it.find}</Crumb>
+      </div>
+      <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginTop: 2 }}>{it.does}</div>
+      {it.tabs && (
+        <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(230px,1fr))", gap: "5px 16px" }}>
+          {it.tabs.map(([label, what]) => (
+            <div key={label} data-guidetab={label} style={{ fontSize: 12, lineHeight: 1.5 }}>
+              <b style={{ color: "var(--ink)" }}>{label}</b>
+              <span className="mut"> — {what}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
+
   return (
     <div data-guidebook>
-      <div style={{ position: "relative", marginBottom: 16 }}>
+      <div style={{ position: "relative", marginBottom: 12 }}>
         <i className="ti ti-search" aria-hidden="true"
           style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 15, color: "var(--mut)" }} />
         <input value={q} onChange={(e) => setQ(e.target.value)} data-guidesearch
@@ -11569,6 +11658,27 @@ function GuideBook({ compact, onDemo }) {
           </button>
         )}
       </div>
+
+      {/* The subject toggles. Hidden while searching — a filter and a search fighting over one list is
+          the classic way to show somebody an empty page and no reason for it. */}
+      {!searching && (
+        <div data-guidesubjects className="filterchips" style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
+          {SUBJECTS.map((s) => {
+            const on = view === s.k;
+            return (
+              <button key={s.k} type="button" data-guidesubject={s.k} aria-pressed={on}
+                onClick={() => { setView(s.k); setOpen(null); }}
+                style={{ fontSize: 12, fontWeight: on ? 800 : 600, padding: "5px 12px", borderRadius: 99,
+                  cursor: "pointer", fontFamily: "inherit",
+                  border: `1px solid ${on ? "var(--gold)" : "var(--line2)"}`,
+                  color: on ? "var(--gold)" : "var(--mut)",
+                  background: on ? "rgba(224,166,60,.12)" : "transparent" }}>
+                <i className={`ti ${s.icon}`} style={{ fontSize: 12, marginRight: 5 }} aria-hidden="true" />{s.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {searching ? (
         <div data-guideresults={String(hits.length)}>
@@ -11588,115 +11698,98 @@ function GuideBook({ compact, onDemo }) {
                 <span className="disp" style={{ fontSize: 15, fontWeight: 700 }}>{h.title}</span>
                 <span className="chip" style={{ fontSize: 9.5 }}>{h.kind === "task" ? "how to" : h.kind === "term" ? "term" : "screen"}</span>
               </div>
-              <div style={{ marginBottom: 4 }}><Crumb>{h.go}</Crumb></div>
+              <div style={{ marginBottom: 4 }}><Crumb at={h.at}>{h.go}</Crumb></div>
               <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55 }}>{h.note}</div>
             </div>
           ))}
         </div>
-      ) : (
-        <>
-          {/* ── I WANT TO… ─────────────────────────────────────────────────────────────────────── */}
-          <div className="panel" style={{ padding: 16, marginBottom: 18 }}>
-            <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 2 }}>I want to…</div>
-            <div className="mut" style={{ fontSize: 12.5, marginBottom: 12 }}>
-              {compact
-                ? "The twelve things people open the app to do, and where each one lives."
-                : "The quickest route to the thing you are actually trying to do. Click one for the detail."}
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              {GUIDE_TASKS.map((t, i) => {
-                const isOpen = open === `t${i}`;
-                return (
-                  <div key={i} data-guidetask={t.want} style={{ borderTop: i ? "1px solid var(--line)" : "none" }}>
+      ) : view === "tasks" ? (
+        <div className="panel" data-guideview="tasks" style={{ padding: 16 }}>
+          <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 2 }}>I want to…</div>
+          <div className="mut" style={{ fontSize: 12.5, marginBottom: 12 }}>
+            {compact
+              ? "The twelve things people open the app to do, and where each one lives."
+              : "The quickest route to the thing you are actually trying to do. Click the gold route to go there; click the row for the detail."}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            {GUIDE_TASKS.map((t, i) => {
+              const isOpen = open === `t${i}`;
+              return (
+                <div key={i} data-guidetask={t.want} style={{ borderTop: i ? "1px solid var(--line)" : "none" }}>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", padding: "9px 2px" }}>
                     <button type="button" aria-expanded={isOpen}
                       onClick={() => setOpen(isOpen ? null : `t${i}`)}
-                      style={{ width: "100%", textAlign: "left", background: "transparent", border: "none",
-                        padding: "9px 2px", cursor: "pointer", fontFamily: "inherit", color: "var(--ink)",
-                        display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 13.5, fontWeight: 600, flex: "1 1 200px" }}>{t.want}</span>
-                      <Crumb>{t.go}</Crumb>
-                      <i className={`ti ti-chevron-${isOpen ? "up" : "down"}`} style={{ fontSize: 12, color: "var(--mut)" }} aria-hidden="true" />
+                      style={{ flex: "1 1 200px", textAlign: "left", background: "transparent", border: "none",
+                        padding: 0, cursor: "pointer", fontFamily: "inherit", color: "var(--ink)",
+                        fontSize: 13.5, fontWeight: 600 }}>
+                      {t.want}
+                      <i className={`ti ti-chevron-${isOpen ? "up" : "down"}`} style={{ fontSize: 12, color: "var(--mut)", marginLeft: 6 }} aria-hidden="true" />
                     </button>
-                    {isOpen && <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, padding: "0 2px 10px" }}>{t.note}</div>}
+                    <Crumb at={t.at}>{t.go}</Crumb>
                   </div>
-                );
-              })}
-            </div>
+                  {isOpen && <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, padding: "0 2px 10px" }}>{t.note}</div>}
+                </div>
+              );
+            })}
           </div>
-
-          {/* ── THE MAP ────────────────────────────────────────────────────────────────────────── */}
-          {GUIDE_MAP.map((sec) => (
-            <div key={sec.key} className="panel" data-guidesection={sec.key} style={{ padding: 16, marginBottom: 14 }}>
+        </div>
+      ) : view === "glossary" ? (
+        <div className="panel" data-guideglossary data-guideview="glossary" style={{ padding: 16 }}>
+          <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 2 }}>Glossary</div>
+          <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 14 }}>
+            Every number on every screen is a measured thing rather than a vibe — but a measurement you
+            cannot name is indistinguishable from one. This is what each word means and where you meet it.
+          </div>
+          {GUIDE_GLOSSARY.map((g) => (
+            <div key={g.group} data-guidegroup={g.group} style={{ marginBottom: 16 }}>
+              <div className="disp" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--gold)", fontWeight: 800, marginBottom: 7 }}>{g.group}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                {g.terms.map((t) => (
+                  <div key={t.term} data-guideterm={t.term}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                      <b style={{ fontSize: 13.5 }}>{t.term}</b>
+                      <span className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em" }}>{t.where}</span>
+                    </div>
+                    <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55 }}>{t.say}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        (() => {
+          const sec = GUIDE_MAP.find((x) => x.key === view) || GUIDE_MAP[0];
+          return (
+            <div className="panel" data-guidesection={sec.key} data-guideview={sec.key} style={{ padding: 16 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 3 }}>
                 <i className={`ti ${sec.icon}`} style={{ fontSize: 18, color: "var(--gold)" }} aria-hidden="true" />
                 <div className="disp" style={{ fontSize: 17, fontWeight: 700 }}>{sec.title}</div>
               </div>
               <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 12 }}>{sec.blurb}</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                {sec.items.map((it) => (
-                  <div key={it.name} data-guideplace={it.name}
-                    style={{ borderLeft: "2px solid var(--line2)", paddingLeft: 12 }}>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 9, flexWrap: "wrap" }}>
-                      <span className="disp" style={{ fontSize: 14.5, fontWeight: 700 }}>{it.name}</span>
-                      <Crumb>{it.find}</Crumb>
-                    </div>
-                    <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginTop: 2 }}>{it.does}</div>
-                    {it.tabs && (
-                      <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(230px,1fr))", gap: "5px 16px" }}>
-                        {it.tabs.map(([label, what]) => (
-                          <div key={label} data-guidetab={label} style={{ fontSize: 12, lineHeight: 1.5 }}>
-                            <b style={{ color: "var(--ink)" }}>{label}</b>
-                            <span className="mut"> — {what}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
+                {sec.items.map((it) => <Place key={it.name} it={it} />)}
               </div>
             </div>
-          ))}
+          );
+        })()
+      )}
 
-          {/* ── THE GLOSSARY ───────────────────────────────────────────────────────────────────── */}
-          <div className="panel" data-guideglossary style={{ padding: 16 }}>
-            <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 2 }}>Glossary</div>
-            <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 14 }}>
-              Every number on every screen is a measured thing rather than a vibe — but a measurement you
-              cannot name is indistinguishable from one. This is what each word means and where you meet it.
-            </div>
-            {GUIDE_GLOSSARY.map((g) => (
-              <div key={g.group} data-guidegroup={g.group} style={{ marginBottom: 16 }}>
-                <div className="disp" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--gold)", fontWeight: 800, marginBottom: 7 }}>{g.group}</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-                  {g.terms.map((t) => (
-                    <div key={t.term} data-guideterm={t.term}>
-                      <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-                        <b style={{ fontSize: 13.5 }}>{t.term}</b>
-                        <span className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em" }}>{t.where}</span>
-                      </div>
-                      <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55 }}>{t.say}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {compact && onDemo && (
-            <div style={{ textAlign: "center", marginTop: 20 }}>
-              <button className="btn btn-gold" style={{ padding: "12px 26px", fontSize: 15 }} onClick={onDemo}>
-                <i className="ti ti-player-play" style={{ fontSize: 14, marginRight: 7 }} aria-hidden="true" />Try it free — a real mock draft
-              </button>
-            </div>
-          )}
-        </>
+      {compact && onDemo && !searching && (
+        <div style={{ textAlign: "center", marginTop: 20 }}>
+          <button className="btn btn-gold" style={{ padding: "12px 26px", fontSize: 15 }} onClick={onDemo}>
+            <i className="ti ti-player-play" style={{ fontSize: 14, marginRight: 7 }} aria-hidden="true" />Try it free — a real mock draft
+          </button>
+        </div>
       )}
     </div>
   );
 }
 
+
 function HelpPage({ user, biz, onBack, onHome, onSignOut, onSubmit, initialTab }) {
   const [tab, setTab] = useState(initialTab || "help");
+  const [track, setTrack] = useState("draft");   // b156 — quick start: drafting, or already in a season
   const [email, setEmail] = useState(user?.email || "");
   const [topic, setTopic] = useState("General");
   const [msg, setMsg] = useState("");
@@ -11765,6 +11858,69 @@ function HelpPage({ user, biz, onBack, onHome, onSignOut, onSubmit, initialTab }
 
         {tab === "guide" && (
           <div>
+            {/* ⭐⭐⭐⭐⭐ TWO WAYS IN — b156. Trey: "someone might also be starting just to look at their
+                team in season (doesn't touch on that)." The draft flow assumed every new arrival was about
+                to draft, which is true in August and wrong from September on: somebody who signs up in
+                week 6 to sort out a lineup was being handed five steps about writing a draft plan for a
+                draft that already happened. Both tracks exist; the reader says which they are. */}
+            <div className="panel" style={{ padding: 18, marginBottom: 14, background: "var(--panel2)" }}>
+              <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Where are you starting?</div>
+              <div className="mut" style={{ fontSize: 13, lineHeight: 1.55, marginBottom: 12 }}>The app does two jobs and they have different first steps. Pick the one you are here for.</div>
+              <div className="filterchips" data-guidetracks style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                {[["draft", "ti-target-arrow", "I'm getting ready to draft"], ["season", "ti-calendar-stats", "I'm mid-season, here for my team"]].map(([k, icon, label]) => {
+                  const on = track === k;
+                  return (
+                    <button key={k} type="button" data-guidetrack={k} aria-pressed={on} onClick={() => setTrack(k)}
+                      style={{ fontSize: 12.5, fontWeight: on ? 800 : 600, padding: "7px 14px", borderRadius: 99,
+                        cursor: "pointer", fontFamily: "inherit",
+                        border: `1px solid ${on ? "var(--gold)" : "var(--line2)"}`,
+                        color: on ? "var(--gold)" : "var(--mut)",
+                        background: on ? "rgba(224,166,60,.12)" : "transparent" }}>
+                      <i className={`ti ${icon}`} style={{ fontSize: 13, marginRight: 6 }} aria-hidden="true" />{label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {track === "season" ? (
+              <>
+                <div className="panel" style={{ padding: 16, marginBottom: 12 }}>
+                  <div className="mut" style={{ fontSize: 13, lineHeight: 1.6 }}>
+                    Nothing here needs a draft to have happened in Fantasy Draft Compass. Link the account
+                    that owns your teams and the in-season side reads your live rosters from there.
+                  </div>
+                </div>
+                {SEASON_STEPS.map(([icon, title, at, body], i) => (
+                  <div key={i} className="panel" style={{ padding: 16, marginBottom: 12, display: "flex", gap: 14, alignItems: "flex-start" }}>
+                    <div style={{ flexShrink: 0, width: 38, height: 38, borderRadius: 9, background: "rgba(224,166,60,.10)", border: "1px solid var(--gold)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <span className="disp gold" style={{ fontSize: 18, fontWeight: 700 }}>{i + 1}</span>
+                    </div>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="disp" style={{ fontSize: 15.5, fontWeight: 700, marginBottom: 3, display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                        <i className={`ti ${icon}`} style={{ fontSize: 16, color: "var(--gold)" }} aria-hidden="true" />{title}
+                        {/* ⚠ b156 — EVERY STEP IS A LINK. A numbered list that tells you where to go and
+                            then makes you go and find it is the complaint this build is answering. */}
+                        <button type="button" className="num" data-guidego={at} onClick={() => navTo(at)}
+                          style={{ fontSize: 11, color: "var(--gold)", fontWeight: 700, background: "transparent",
+                            border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit",
+                            textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }}>
+                          take me there<i className="ti ti-arrow-right" style={{ fontSize: 11, marginLeft: 3 }} aria-hidden="true" />
+                        </button>
+                      </div>
+                      <div className="mut" style={{ fontSize: 13, lineHeight: 1.55 }}>{body}</div>
+                    </div>
+                  </div>
+                ))}
+                <div className="panel" style={{ padding: 16, marginTop: 4, background: "var(--panel2)" }}>
+                  <div style={{ fontSize: 13, lineHeight: 1.6 }}>
+                    <b>Every screen and every term is in</b>{" "}
+                    <button className="btn btn-mini" onClick={() => setTab("wherethings")}>Where things live →</button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
             <div className="panel" style={{ padding: 18, marginBottom: 14, background: "var(--panel2)" }}>
               <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Get the most out of Fantasy Draft Compass</div>
               <div className="mut" style={{ fontSize: 13, lineHeight: 1.55 }}>These are the same five steps as the “Get started” flow on your home screen — here with a bit more on the why behind each. Do them in order and you'll walk into draft night more prepared than anyone in your league.</div>
@@ -11802,6 +11958,8 @@ function HelpPage({ user, biz, onBack, onHome, onSignOut, onSubmit, initialTab }
                 ))}
               </div>
             </div>
+              </>
+            )}
           </div>
         )}
 
@@ -29819,6 +29977,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     return byRound;
   }, [TOTAL, ROUNDS, cfg]);
   const boardExtraCols = useMemo(() => boardRoundPicks.reduce((m, xs) => Math.max(m, xs.length - TEAMS), 0), [boardRoundPicks]);
+
   const [syncedSlot, setSyncedSlot] = useState(null); // user's real slot pulled from Sleeper (yourSlot) when cfg.slot is missing
   // ⭐ Ask the platform which seat this is, on entry, every time. This USED to happen only when the user
   // pressed "Pull latest from Sleeper" — so a stale imported slot quietly became userIdx and every
@@ -30166,6 +30325,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   const [boardProj, setBoardProj] = useState(false);
   const [showBoardVal, setShowBoardVal] = useState(false); // toggle pick-value under each name
   const [boardHi, setBoardHi] = useState({ steals: true, reaches: true }); // highlight steals/reaches on board (on by default)
+  /* ⭐⭐⭐⭐ FIND A PLAYER ON THE BOARD — b156. Trey: "Can you put a search bar on the draft board so it's
+     easier to find a player (you can just bright highlight them so we can find them)."
+     ⚠ A 15-ROUND, 12-TEAM BOARD IS 180 CELLS and it scrolls in both directions, so "did somebody take
+       him, and who" is a question you answer by reading the whole grid. The board already knows how to
+       highlight (steals and reaches), so this is a third highlight rather than a new mechanism — and it
+       DIMS everything else, because a bright mark among 179 equally bright cells is not findable. */
+  const [boardFind, setBoardFind] = useState("");
   const [pastCount, setPastCount] = useState(2); // how many past picks to show; default 2, grows by 5
   const [futureBig, setFutureBig] = useState(false);
   // Recommendation hub: which of your upcoming picks the decision panel is focused on. null = your next pick.
@@ -30685,6 +30851,25 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   setPickKeeperAt(keeperByPick);
   // Stable signature of the pick-cost keeper map, declared HERE so memos between this point and `keeperSig`
   // (≈300 lines below) can depend on keeper identity without tripping its temporal dead zone. See draftedSet.
+
+  /* ⭐⭐⭐⭐ THE BOARD'S PLAYER SEARCH — b156.
+     ⚠⚠ DECLARED HERE, NOT BESIDE THE OTHER BOARD DERIVATIONS 900 LINES ABOVE, and that is a bug I shipped
+       to the test rig before catching: `players` and `keeperByPick` are `const`s declared further down
+       this component, so reading them earlier is a temporal-dead-zone ReferenceError — which throws
+       inside RENDER, which is the one thing an error boundary DOES catch, so the whole draft room became
+       "Something hiccuped" and `page.on('pageerror')` saw nothing at all. Third time on this project
+       (29r, 29al, here). The suite caught it because it asserts the board RENDERED, not just that a
+       selector is absent. Trey: "put a search bar on the draft board so it's easier to
+     find a player (you can just bright highlight them so we can find them)."
+     ⚠ SURNAME AS WELL AS FULL NAME, because mid-draft nobody types "Christian McCaffrey" — and the
+       surname alone is what gets shouted across a room. Accents are folded for the same reason.
+     ⚠ AND IT MATCHES EVERY OCCURRENCE, not the first. A player can appear twice on one board (a keeper
+       cell and a projected cell), and a count that says 1 while two cells glow is the screen arguing with
+       itself — so the toolbar's number and the cells' highlight come from ONE predicate. */
+  const boardFindQ = boardFind.trim();
+  const boardFindHit = React.useCallback((p) => boardNameHit(p && p.name, boardFindQ), [boardFindQ]);
+
+
   const pickKeeperSig = JSON.stringify(keeperByPick);
 
   const pickConvertDone = useRef(false);
@@ -32337,6 +32522,25 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     return m;
   }, [players, picks, cfg, teamsProj, proj, userIdx, liveSlots]);
   const projBoard = useMemo(() => (boardProj ? projectBoard(players, sortedAdp, picks, userIdx, cfg, strategy, advice?.verdict?.id ?? null) : null), [boardProj, players, sortedAdp, picks, userIdx, cfg, strategy, advice]);
+
+  /* ⚠⚠ COUNTED OVER WHAT THE BOARD IS ACTUALLY DRAWING — b156, and the alternative was worse. Counting
+     only real picks while the HIGHLIGHT also lit projected cells would put a "not on the board" label
+     beside a cell that was visibly glowing, which is the screen arguing with itself — this project's most
+     repeated bug in miniature. Projected mode is opt-in and clearly labelled, so when it is on, a
+     projected cell IS what the board is showing and it counts. Declared here because `projBoard` is a
+     const further down the component and reading it earlier throws inside render (see boardFindHit). */
+  const boardFindN = useMemo(() => {
+    if (!boardFindQ) return 0;
+    let n = 0;
+    for (let o = 0; o < TOTAL; o++) {
+      const real = picks[o] != null ? picks[o] : (forcedAheadByPick && forcedAheadByPick[o] != null ? forcedAheadByPick[o] : null);
+      const keeper = real == null && keeperByPick && keeperByPick[o] != null ? keeperByPick[o] : null;
+      const proj = real == null && keeper == null && projBoard && projBoard[o] != null ? projBoard[o] : null;
+      const pk = real != null ? real : keeper != null ? keeper : proj;
+      if (pk != null && boardFindHit(players[pk])) n++;
+    }
+    return n;
+  }, [boardFindQ, boardFindHit, picks, keeperByPick, players, projBoard, forcedAheadByPick, TOTAL]);
   // The user's next few upcoming pick indices — used for the player-list "you're up" marker lines (kept small
   // so the list isn't cluttered with a line for every remaining pick).
   const myUpcoming = useMemo(() => {
@@ -38925,12 +39129,37 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               );
             })()}
             <button className="btn btn-mini" onClick={() => setTradeModalOpen(true)} title="Record a draft-pick trade — the board updates instantly to show picks in their new owners' columns."><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 3 }} aria-hidden="true" /> Trade picks</button>
+            {/* ⭐⭐⭐⭐ FIND A PLAYER — b156. See `boardFind`. It matches on the surname as well as the full
+                name, because that is what people type mid-draft, and it says how many it found so an empty
+                board is distinguishable from a name nobody has taken. */}
+            <span style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+              <i className="ti ti-search" aria-hidden="true" style={{ position: "absolute", left: 8, fontSize: 12, color: "var(--mut)", pointerEvents: "none" }} />
+              <input value={boardFind} onChange={(e) => setBoardFind(e.target.value)} data-boardfind
+                placeholder="Find a player…" aria-label="Find a player on the board"
+                style={{ width: 150, padding: "4px 22px 4px 25px", fontSize: 12, fontFamily: "inherit",
+                  color: "var(--ink)", background: "var(--panel2)", border: `1px solid ${boardFindQ ? "var(--info)" : "var(--line)"}`, borderRadius: 9 }} />
+              {boardFind && (
+                <button onClick={() => setBoardFind("")} aria-label="Clear"
+                  style={{ position: "absolute", right: 4, background: "transparent", border: "none", color: "var(--mut)", cursor: "pointer", padding: 2, lineHeight: 1 }}>
+                  <i className="ti ti-x" style={{ fontSize: 11 }} aria-hidden="true" />
+                </button>
+              )}
+            </span>
+            {boardFindQ && (
+              <span className="num" data-boardfindn={String(boardFindN)}
+                style={{ fontSize: 11.5, fontWeight: 700, color: boardFindN ? "var(--info)" : "var(--mut)" }}>
+                {boardFindN ? `${boardFindN} on the board` : "not on the board"}
+              </span>
+            )}
             <span className="mut" style={{ fontSize: 11.5, marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <span><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: "var(--gold)", marginRight: 4, verticalAlign: "middle" }} />Your picks</span>
               <span><i className="ti ti-arrows-exchange" style={{ fontSize: 11, color: "var(--p-rb)", marginRight: 2 }} aria-hidden="true" />Traded</span>
               {boardProj && <span><span className="gold">italic</span> = projected</span>}
             </span>
           </div>
+          {/* ⚠ COUNTED ONCE, HERE, rather than inside the 180-cell loop. The cells below ask `boardFindHit`
+              per player; the toolbar above needs the total, and deriving it twice is how two numbers on one
+              screen start disagreeing. */}
           <div className="boardwrap" data-tour="draftboardtab">
             {/* sticky team-name header */}
             <div className="bhead" style={{ gridTemplateColumns: `40px repeat(${TEAMS + boardExtraCols}, minmax(112px,1fr))`, minWidth: 60 + (TEAMS + boardExtraCols) * 116 }}>
@@ -39037,10 +39266,27 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         ? { background: bg, backgroundColor: bg, outline: "2px solid var(--warn)", outlineOffset: "-2px", boxShadow: "inset 0 0 0 2px var(--warn)" }
                         : { background: bg, boxShadow: `inset 0 0 0 ${tier + 1}px ${ring}` };
                     }
+                    /* ⭐⭐⭐⭐ THE SEARCH HIGHLIGHT — b156, and it is applied LAST so it wins. A match is the
+                       thing the reader is looking at right now; a steal tint is context. Everything else
+                       on the board dims, because a bright mark among 179 equally bright cells is not
+                       findable — the dimming IS the feature, the colour is just the label.
+                       ⚠ IT DIMS RATHER THAN HIDES. A board with holes punched in it stops being a draft
+                         board: where a man went matters as much as that he went, and you read that from
+                         the round and the column he is sitting in. */
+                    const findHit = p ? boardFindHit(p) : false;
+                    const findStyle = !boardFindQ ? {}
+                      : findHit
+                        ? { background: alpha("var(--info)", 26), outline: "2px solid var(--info)",
+                            outlineOffset: "-2px", boxShadow: `0 0 0 3px ${alpha("var(--info)", 30)}`, opacity: 1, zIndex: 2 }
+                        /* ⚠ AN EMPTY CELL IS ALREADY FAINT (.bcell.empty is 0.4), so a flat "dim to 0.5"
+                           made the empty half of the board BRIGHTER during a search than it is at rest —
+                           the opposite of the point. Both go below their own resting state. */
+                        : { opacity: p ? 0.22 : 0.15 };
                     const cls2 = cls;
                     return (
                       <div key={`${r}-${col}`} className={cls2}
-                        style={{ borderLeft: p ? `3px solid ${POS_COLOR[p.pos]}` : undefined, opacity: p ? (isProjected ? 0.9 : 1) : undefined, ...hiStyle }}
+                        data-boardhit={findHit ? (p && p.name) || "1" : undefined}
+                        style={{ borderLeft: p ? `3px solid ${POS_COLOR[p.pos]}` : undefined, opacity: p ? (isProjected ? 0.9 : 1) : undefined, ...hiStyle, ...findStyle }}
                         onMouseEnter={p ? (e) => showTip(e, isKeeper ? [
                           // ⭐ A KEEPER IS STILL A PICK. This used to be two lines — his name and the fact he
                           // was kept — while the identical-looking cell beside it produced photo, ADP, VBD,

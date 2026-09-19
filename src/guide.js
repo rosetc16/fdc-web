@@ -29,56 +29,100 @@
 
 /* ⭐ "I WANT TO…" — THE ANSWER IN ONE LINE. `go` is a breadcrumb in the app's own words; anything in
    `words` is extra search vocabulary, because people search for "waiver" on a screen labelled
-   "Free agents" and for "bench points" on one labelled "Matchup". */
+   "Free agents" and for "bench points" on one labelled "Matchup".
+
+   ⭐⭐⭐⭐ `at` IS WHERE THE BREADCRUMB ACTUALLY GOES — b156. Trey: "doesn't have any hyperlinks to
+   anything." A route printed as text is a route you then have to go and find, which on a screen whose
+   whole job is "I cannot find things" is close to useless.
+   ⚠⚠ IT IS THE FURTHEST UNAMBIGUOUS STEP, NOT THE LAST STEP. Half of these end inside a specific league
+     and this file cannot know WHICH league — guessing one would drop somebody into the wrong team's
+     Matchup tab, which is worse than not linking at all. So anything league-scoped is `home:teams`: it
+     lands on the home page with the teams list scrolled into view, which is the step that is genuinely
+     hard to find, and the breadcrumb still names the tab to click once a league is open.
+   ⚠ AND IT IS INERT ON THE PUBLIC SITE. A signed-out reader has no leagues and no app to be routed
+     into, so the marketing copy of this guide renders the same crumbs as plain text. */
 export const GUIDE_TASKS = [
   { want: 'Set my lineup this week',
     go: 'Your teams → open a league → Matchup',
+    at: 'home:teams',
     note: 'Bench players who out-project a starter are marked START, and the man they would replace is marked SIT. Hover either one for the two projections.',
     words: 'start sit bench lineup optimizer swap who should I play' },
   { want: 'See every league at once before kickoff',
     go: 'Home → My Week',
+    at: 'week:myweek',
     note: 'One row per league: who is questionable, who is on a bye, and which lineups still need a decision.',
     words: 'all leagues sunday morning check injuries byes' },
   { want: 'Watch scores while games are on',
     go: 'Home → Game Day',
+    at: 'week:gameday',
     note: 'Live totals across every league, who you need to root for, and how much of each game is still to play.',
     words: 'live scores sunday redzone rooting watching' },
   { want: 'Find a waiver pickup',
     go: 'Your teams → open a league → Free agents',
+    at: 'home:teams',
     note: 'Ranked by what they would add to YOUR lineup, not by raw points — with FAAB guidance where the league uses it.',
     words: 'waivers free agent pickup add drop streamer FAAB' },
   { want: 'Work out whether a trade is fair',
     go: 'Your teams → open a league → Trades → Trade Calculator',
+    at: 'home:teams',
     note: 'Put players on both sides and it prices the deal for your format, right now and long term.',
     words: 'trade calculator evaluate offer value fair' },
   { want: 'Find a trade to propose',
     go: 'Your teams → open a league → Trades → What moves your season',
+    at: 'home:teams',
     note: 'One row per manager: what you would send, what you would get, and what it does to each lineup. Open a row for the actual names.',
     words: 'trade finder partner who to call ideas deals' },
   { want: 'See how my roster stacks up',
     go: 'Your teams → open a league → League',
+    at: 'home:teams',
     note: 'Standings, projected finish and power rank in one table, plus positional strength for every team. Hover a manager for their whole roster.',
     words: 'standings power rank projections rivals other teams' },
   { want: 'Look back at my draft',
     go: 'Your teams → open a league → Draft → Draft board or Draft summary',
+    at: 'home:teams',
     note: 'The board is every pick round by round; the summary is the grades, the steals and the reaches.',
     words: 'draft results recap grades who I picked board summary' },
   { want: 'Practise before draft night',
     go: 'Home → Run a mock draft',
+    at: 'home',
     note: 'Your exact league settings against the real engine. Run as many as you like.',
     words: 'mock practice test rehearse' },
   { want: 'Write a plan before I draft',
     go: 'Home → open a league → Draft plan & trends',
+    at: 'home',
     note: 'Targets and rules you set in advance. The draft room holds you to them while you are on the clock.',
     words: 'strategy targets rules plan prepare' },
   { want: 'Change my scoring, roster slots or keepers',
     go: 'Home → open a league → Settings',
+    at: 'home',
     note: 'Every number in the app is priced off these, so it is worth getting right first.',
     words: 'settings scoring roster slots keepers league setup format' },
   { want: 'Add my own player rankings',
     go: 'Home → My Rankings',
+    at: 'rankings',
     note: 'Your own board, independent of the platform. Attach it to a league and it drives the My ADP and Blend columns in that draft.',
     words: 'rankings my ranks personal board cheat sheet' },
+];
+
+/* ⭐⭐⭐⭐⭐ THE OTHER WAY IN — b156. Trey: "it looks like you only hit on the draft (keep that), but
+   someone might also be starting just to look at their team in season (doesn't touch on that)."
+
+   ⚠⚠ THE QUICK-START FLOW ASSUMED EVERY NEW ARRIVAL WAS ABOUT TO DRAFT, which is true in August and
+     wrong from September onwards — and somebody who signs up in week 6 to sort out a lineup was being
+     handed five steps about writing a draft plan for a draft that already happened. The draft track is
+     right and stays exactly as it is; this is the second track beside it.
+   ⚠ IT IS SHORTER ON PURPOSE. The draft flow is preparation, so it earns five steps; this one is "link
+     the account, open the team, here is what the tabs do", and padding it out to five to look symmetrical
+     would be making somebody read three steps they do not need. */
+export const SEASON_STEPS = [
+  ['ti-plug-connected', 'Link your Sleeper account', 'home',
+    'One username, once, at the top of your home page. Every league on that account appears under “Your teams” — you do not add them one at a time, and nothing has to have been drafted here for the in-season side to work.'],
+  ['ti-calendar-stats', 'Open a team', 'home:teams',
+    'That is the league hub: eight tabs covering your week in one league. Summary is the short version of what needs doing; Matchup, Free agents and Trades are where you do it.'],
+  ['ti-first-aid-kit', 'Check every league at once', 'week:myweek',
+    'My Week is the across-all-leagues view — the lineups still needing a decision, who is questionable, who is on a bye. On a Sunday morning it replaces opening eighteen tabs.'],
+  ['ti-activity-heartbeat', 'Follow it live, then look back', 'week:gameday',
+    'Game Day is live scores and who to root for while the games are on. Review, on Monday, is what you scored against what your best lineup would have — which over a season is usually a bigger number than any trade.'],
 ];
 
 /* ⭐ THE MAP. One entry per place you can end up. `find` is the literal route in the app's own labels;
@@ -89,12 +133,16 @@ export const GUIDE_MAP = [
     blurb: 'Do these once. Everything else is priced off what the app learns here, so a league with the wrong scoring gives confidently wrong advice.',
     items: [
       { name: 'Connect a league', find: 'Home → Create or connect a league',
+        at: 'home',
         does: 'Import from Sleeper, MyFantasyLeague or Fantrax and the settings, keepers and your draft slot come with it. ESPN, Yahoo, CBS and NFL.com can be built by hand, and a hand-built league is a first-class path rather than a fallback.' },
       { name: 'Settings', find: 'Home → open a league → Settings',
+        at: 'home',
         does: 'Teams, rounds, roster slots, scoring, draft order, keepers and traded picks. Change one and every valuation on every screen re-prices.' },
       { name: 'My Rankings', find: 'Home → My Rankings',
+        at: 'rankings',
         does: 'Your own player board, separate from the platform. Attached to a league it powers the My ADP and Blend columns in that draft room.' },
       { name: 'Account', find: 'Any screen → Account',
+        at: 'account',
         does: 'Your season pass, linked Sleeper account, email preferences and theme.' },
     ],
   },
@@ -103,10 +151,13 @@ export const GUIDE_MAP = [
     blurb: 'The draft room is one screen with tabs across the top. You live on the first two while you are on the clock; the rest are for the gaps between picks.',
     items: [
       { name: 'Draft plan & trends', find: 'Home → open a league → Draft plan & trends',
+        at: 'home',
         does: 'Written before draft night: the players you are targeting, the rules you want held to, and what your mock drafts say about how your seat behaves.' },
       { name: 'Mock draft', find: 'Home → Run a mock draft',
+        at: 'home',
         does: 'The real engine against simulated opponents in your exact settings. Unlimited, and every one feeds My Mock Insights.' },
       { name: 'The draft room', find: 'Home → open a league → Start the draft',
+        at: 'home',
         does: 'Where you actually draft. Picks sync live on Sleeper, MyFantasyLeague and Fantrax; everywhere else you type each pick as it is announced and the advice updates the same way.',
         tabs: [
           ['Hub', 'On the clock: who to take, what waiting costs, and what is about to run.'],
@@ -125,12 +176,16 @@ export const GUIDE_MAP = [
     blurb: 'Two entry points. My Week and Game Day look ACROSS every league you own; the league hub looks INSIDE one of them.',
     items: [
       { name: 'My Week', find: 'Home → My Week',
+        at: 'week:myweek',
         does: 'Every league in one list before kickoff: the lineups that still need a decision, who is questionable, who is on a bye, and what it would cost you to leave it.' },
       { name: 'Game Day', find: 'Home → Game Day',
+        at: 'week:gameday',
         does: 'While games are on: live totals in every league, who you need to root for and against, and how much of each game is still to play.' },
       { name: 'Review', find: 'Home → My Week → Review',
+        at: 'week:review',
         does: 'After the week: what you scored, what your best lineup would have scored, and the decisions that cost you.' },
       { name: 'The league hub', find: 'Home → Your teams → open a league',
+        at: 'home:teams',
         does: 'Everything about one league, all season. Tabs across the top.',
         tabs: [
           ['Summary', 'The week in one card: what needs sorting out, and what to do about it.'],
@@ -149,14 +204,19 @@ export const GUIDE_MAP = [
     blurb: 'These are not tied to a week or a draft. Reach them from the home page.',
     items: [
       { name: 'Trade Tools', find: 'Home → Trade Tools',
+        at: 'tradeTools',
         does: 'Format-aware player and pick values plus a quick evaluator, usable outside any league. Inside a league it adds your roster and the trade finder.' },
       { name: 'ADP Intelligence', find: 'Home → ADP Intelligence',
+        at: 'adpIntel',
         does: 'Everything about where a player is going: the consensus, how it is moving across recent drafts, the spread, the sample size, and your own blended number.' },
       { name: 'League News & Movers', find: 'Home → League News & Movers',
+        at: 'trends',
         does: 'The wider wire — ADP risers and fallers, signings, depth-chart changes and injuries. Not tied to your leagues.' },
       { name: 'My Mock Insights', find: 'Home → My Mock Insights',
+        at: 'trendsTime',
         does: 'Patterns across your own mocks: the rounds where you find value, and the players you keep ending up with.' },
       { name: 'Help & support', find: 'Any screen → Help',
+        at: 'help',
         does: 'This guide, the FAQ, the terms, and a form that reaches a person.' },
     ],
   },
@@ -207,12 +267,14 @@ export const GUIDE_GLOSSARY = [
 export function guideIndex() {
   const rows = [];
   GUIDE_TASKS.forEach((t) => rows.push({
-    kind: 'task', title: t.want, body: `${t.go} ${t.note} ${t.words || ''}`, go: t.go, note: t.note }));
+    kind: 'task', title: t.want, body: `${t.go} ${t.note} ${t.words || ''}`, go: t.go, at: t.at, note: t.note }));
   GUIDE_MAP.forEach((sec) => sec.items.forEach((it) => {
-    rows.push({ kind: 'place', section: sec.title, title: it.name, body: `${it.find} ${it.does}`, go: it.find, note: it.does });
+    rows.push({ kind: 'place', section: sec.title, title: it.name, body: `${it.find} ${it.does}`, go: it.find, at: it.at, note: it.does });
+    /* ⚠ b156 — A TAB INHERITS ITS SCREEN'S LINK TARGET, not one of its own. The furthest this file can
+       honestly route is the screen; which tab to click is what the crumb says. */
     (it.tabs || []).forEach(([label, what]) => rows.push({
       kind: 'place', section: it.name, title: label, body: `${it.find} ${label} ${what}`,
-      go: `${it.find} → ${label}`, note: what }));
+      go: `${it.find} → ${label}`, at: it.at, note: what }));
   }));
   GUIDE_GLOSSARY.forEach((g) => g.terms.forEach((t) => rows.push({
     kind: 'term', section: g.group, title: t.term, body: `${t.where} ${t.say}`, go: t.where, note: t.say })));
