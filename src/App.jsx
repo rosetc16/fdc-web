@@ -100,7 +100,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29as";
+const BUILD_TAG = "2026.07.29at";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -2836,6 +2836,13 @@ export const POS_COLOR = { QB:"var(--p-qb)", RB:"var(--p-rb)", WR:"var(--p-wr)",
      spaces our React tree does not paint are drawn by the browser, and a light page with a black
      scrollbar down the side is the tell that a theme was applied to the app and not to the window. */
 const THEME_KEY = "fdc:theme";
+/* Written the moment a Yahoo sign-in is started and required when the browser comes back — see the
+   `yahooReturn` note in App. It is the only thing standing between a signed-in user and somebody else's
+   authorization code, so it lives here rather than inline in two places. */
+const YAHOO_START_KEY = "fdc:yahooAuthAt";
+/* One authorization code per page load, and it is redeemable exactly once at Yahoo's end — so the latch
+   has to outlive every re-render and re-mount React performs. See the effect in App. */
+let YAHOO_EXCHANGED = false;
 export const readThemePref = () => {
   try { const v = localStorage.getItem(THEME_KEY); return v === "light" || v === "dark" ? v : "system"; }
   catch { return "system"; }
@@ -10109,6 +10116,77 @@ export default function App() {
       return t || null;
     } catch { return null; }
   });
+  /* ⭐⭐⭐⭐⭐ COMING BACK FROM YAHOO — b159.
+     ═════════════════════════════════════════════════════════════════════════════════════════════════
+     The Yahoo connector was written around Yahoo's documented out-of-band flow: redirect_uri `oob`, a
+     code printed on Yahoo's own page, and the user pastes it into a box. Yahoo's developer console no
+     longer ACCEPTS `oob` in the Redirect URI field — "invalid URI" — so the paste flow cannot be
+     configured any more, whatever the docs still say. This is the ordinary web flow instead: Yahoo sends
+     the browser back to the site root with `?code=…&state=…` on it, and the app finishes the exchange.
+
+     ⚠ THE CODE IS STRIPPED FROM THE ADDRESS BAR BEFORE ANYTHING ELSE HAPPENS, for the same reason the
+       reset token above is: an authorization code sitting in a URL gets bookmarked, copied into a chat
+       and handed to whoever reads it next. It is single-use and short-lived, but "short-lived" is not a
+       security model.
+
+     ⚠⚠ AND IT ONLY RUNS IF THIS BROWSER ACTUALLY STARTED A YAHOO SIGN-IN. Without that, anyone could
+       send a signed-in user a link carrying THEIR authorization code and silently bind their own Yahoo
+       account to the victim's Compass account — the classic login-CSRF shape. The backend sets `state` to
+       the user id, which identifies but does not authenticate, so the guard lives here: `yahooSignIn`
+       writes a timestamp before it leaves, and a code arriving without a fresh one is dropped.
+       ⚠ IT IS localStorage, NOT sessionStorage, ON PURPOSE. If Yahoo ever lands the return in a new tab
+         a session-scoped marker is simply not there, and the flow would fail for a reason nobody could
+         see. Ten minutes, cleared on use. */
+  const [yahooReturn, setYahooReturn] = useState(() => {
+    try {
+      /* ⚠ READ AS PROPERTIES, NOT `q.get("code")` — and do not "tidy" it back. `tools/icons-scan.mjs`
+         treats ANY quoted lowercase token as an icon name, so the string "code" makes the build fail
+         demanding a ti-code glyph that nothing renders. Fourth time this trap has bitten (29al's
+         `kind: "table"`, 29ao's `["map", …]`, here) — and unlike those two the literal cannot just be
+         renamed, because Yahoo decides what the parameter is called. Property access sidesteps it
+         honestly rather than padding the icon subset with a glyph the app never draws. */
+      const q = Object.fromEntries(new URLSearchParams(window.location.search));
+      const code = q.code;
+      if (!code) return null;
+      window.history.replaceState({}, "", window.location.pathname);
+      const started = Number(localStorage.getItem(YAHOO_START_KEY) || 0);
+      localStorage.removeItem(YAHOO_START_KEY);
+      if (!started || Date.now() - started > 10 * 60 * 1000) return null;
+      return { code, state: q.state || null };
+    } catch { return null; }
+  });
+  const [yahooLinkMsg, setYahooLinkMsg] = useState(null);
+  /* The exchange itself. It waits for `user` because the call is authenticated as them — the backend
+     stores the tokens against the signed-in account, so firing this before boot has resolved the session
+     would 401 and burn the code, which is single-use.
+     ⚠ THE CODE IS CLEARED BEFORE THE AWAIT, not after. A re-render while the request is in flight would
+       otherwise fire it a second time, and Yahoo rejects a code it has already honoured — so the retry
+       fails, the user is told Yahoo refused them, and the link that actually worked looks broken. */
+  useEffect(() => {
+    if (!yahooReturn || !user || !hasBackend || YAHOO_EXCHANGED) return;
+    /* ⚠⚠ THE LATCH IS A MODULE FLAG, NOT STATE, AND THE `alive` CLEANUP IS DELIBERATELY ABSENT.
+       Both halves of that were bugs in the first version. React's StrictMode mounts twice and `user` is a
+       fresh object on every boot merge, so this effect runs several times per load — and clearing the
+       code through `setYahooReturn(null)` does not stop a run that has already been scheduled with the
+       old value. Result: THREE exchange requests for one return. Yahoo honours a code once, so the first
+       succeeded and the next two were refused, and the user would have been told their sign-in failed
+       while it had in fact worked.
+       And the usual `let alive = true` cleanup made it worse rather than safer: the re-render that
+       cancelled the in-flight request also cancelled the `setYahooLinkMsg` that follows it, so the link
+       completed and the page said nothing at all. A flag outside the component is the only thing that
+       survives both, and there is exactly one return to handle per page load. */
+    YAHOO_EXCHANGED = true;
+    const { code } = yahooReturn;
+    setYahooReturn(null);
+    (async () => {
+      try {
+        await api.yahooExchange(code);
+        setYahooLinkMsg({ ok: true, text: "Yahoo is connected. Open Connect a league and choose Yahoo to import one." });
+      } catch (e) {
+        setYahooLinkMsg({ ok: false, text: `Yahoo sign-in didn't complete: ${(e && (e.data?.error || e.message)) || "the code was rejected"}. Try Connect a league → Yahoo again.` });
+      }
+    })();
+  }, [yahooReturn, user]);
   const [authError, setAuthError] = useState(null);
   const [authCode, setAuthCode] = useState(null);   // machine-readable reason, so the modal can offer a way out
   const [leagues, setLeagues] = useState([]);
@@ -11458,6 +11536,24 @@ export default function App() {
           onReport={submitFeedback}
           onClose={() => setFreeNoticeOpen(false)}
         />
+      )}
+      {/* ⭐⭐⭐⭐ THE RETURN FROM YAHOO SAYS WHAT HAPPENED — b159. Coming back from a third-party consent
+          screen to a page that looks exactly as you left it is the worst possible outcome: the user has no
+          idea whether it worked, and the natural response is to do it again. This states the result, both
+          ways, and names the next step rather than leaving them to find it. */}
+      {yahooLinkMsg && (
+        <div data-yahoolink={yahooLinkMsg.ok ? "ok" : "fail"}
+          style={{ position: "fixed", left: 16, right: 16, top: 12, zIndex: 95, display: "flex",
+            justifyContent: "center", pointerEvents: "none" }}>
+          <div className="panel" style={{ pointerEvents: "auto", maxWidth: 560, padding: "11px 14px",
+            display: "flex", alignItems: "flex-start", gap: 10,
+            borderColor: yahooLinkMsg.ok ? "var(--pos)" : "var(--neg)" }}>
+            <i className={`ti ${yahooLinkMsg.ok ? "ti-circle-check" : "ti-alert-triangle"}`}
+              style={{ fontSize: 17, flexShrink: 0, color: yahooLinkMsg.ok ? "var(--pos)" : "var(--neg)" }} aria-hidden="true" />
+            <div style={{ flex: 1, minWidth: 0, fontSize: 12.5, lineHeight: 1.5 }}>{yahooLinkMsg.text}</div>
+            <button className="btn btn-mini" onClick={() => setYahooLinkMsg(null)}>Dismiss</button>
+          </div>
+        </div>
       )}
       {resetToken && <ResetPasswordModal token={resetToken} onClose={() => setResetToken(null)} onDone={(u) => {
         const admin = isAdminEmail(u.email);
@@ -27977,12 +28073,24 @@ function ConnectBox({ connect, onConnect, onClear, embedded, onCancel, jumpTo, j
     } catch (e) { setError(e.data?.error || e.message || "Couldn't reach Yahoo."); }
     finally { setBusy(false); }
   };
+  /* ⚠⚠ THIS LEAVES THE PAGE RATHER THAN OPENING A TAB — b159. It used to `window.open(url, "_blank")`,
+     which suited the old paste-the-code flow: Yahoo showed a code in the new tab and you came back here
+     to type it. Now Yahoo REDIRECTS, and a redirect that lands in a background tab is a return the user
+     never sees — so the sign-in happens in this tab, the way every other OAuth flow on the web does.
+     ⚠ THE MARKER IS WRITTEN BEFORE NAVIGATING, not after: once `assign` fires nothing else on this page
+       runs. See YAHOO_START_KEY — a code that comes back without it is refused. */
   const yahooSignIn = async () => {
     setError(null); setBusy(true);
-    try { const { url } = await api.yahooAuthUrl(); window.open(url, "_blank", "noopener"); }
-    catch (e) { setError(e.data?.error || e.message || "Yahoo sign-in isn't available yet."); }
-    finally { setBusy(false); }
+    try {
+      const { url } = await api.yahooAuthUrl();
+      try { localStorage.setItem(YAHOO_START_KEY, String(Date.now())); } catch {}
+      window.location.assign(url);
+    }
+    catch (e) { setError(e.data?.error || e.message || "Yahoo sign-in isn't available yet."); setBusy(false); }
   };
+  /* ⚠ THE PASTE BOX IS KEPT AS A FALLBACK, not as the main road. If the redirect is ever blocked — a
+     locked-down browser, an extension eating the query string, a Yahoo app misconfigured back to `oob` —
+     the user still has a way through, and it is the same exchange call either way. */
   const yahooFinish = async () => {
     setError(null); setBusy(true);
     try { await api.yahooExchange(yCode.trim()); setYCode(""); await loadYahoo(); }

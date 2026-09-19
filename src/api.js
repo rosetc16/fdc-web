@@ -385,7 +385,13 @@ export const api = {
   },
   async yahooStatus() { return call('/api/connect/yahoo/status'); },
   async yahooAuthUrl() { return call('/api/connect/yahoo/auth-url'); },
-  async yahooExchange(code) { return call('/api/connect/yahoo/exchange', { method: 'POST', body: { code } }); },
+  /* ⚠⚠ retries: 0 — AN AUTHORIZATION CODE IS SINGLE-USE, which is exactly the case the `retries` note at
+     the top of this file says to turn them off for. The default of 2 meant a failed exchange fired THREE
+     requests at Yahoo for one code (found by plan29cn, which counted them). Two of those are guaranteed
+     to fail, and the dangerous shape is the other way round: if the FIRST attempt succeeds but its
+     response is lost to a blip, the retry asks Yahoo to redeem a code it has already honoured, Yahoo
+     refuses, and the user is told their sign-in failed when their account was in fact linked. */
+  async yahooExchange(code) { return call('/api/connect/yahoo/exchange', { method: 'POST', body: { code }, retries: 0 }); },
   async yahooMyLeagues() { return call('/api/connect/yahoo/my-leagues'); },
   async yahooLeague(leagueKey) { return call(`/api/connect/yahoo/league?league_key=${encodeURIComponent(leagueKey)}`); },
   async platformStatus(which) { return call(`/api/connect/${which}/status`); },
