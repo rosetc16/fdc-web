@@ -201,10 +201,70 @@ export function applyInjuryToEntry(base, entry, ctx) {
   out.injShort = f.short;
   out.injProd = f.prod;
   out.injWeek = f.week;
+  /* ⭐⭐⭐⭐ THE PHASES, for `phasedLineupValue` below. `pts` above is the AVERAGE over the window, which is
+     right for "how much will he produce" and wrong for "what does my lineup lose" — see that function.
+     A lineup is chosen week by week, so the loss depends on WHEN he is out, not only how much. */
+  const L = Math.max(1, Number((ctx && ctx.weeksLeft) || 1));
+  out.injHealthyPts = pts;
+  out.injOutWeeks = f.status === INJ_LIMITED ? 0
+    : f.status === INJ_SEASON ? L
+    : Math.min(L, Math.max(0, f.out == null ? L : f.out));
+  out.injBackRate = f.status === INJ_LIMITED ? LIMITED_RATE : f.status === INJ_SEASON ? 0 : 1;
   /* What the discount actually cost him, in the units the screen he lands on is printing. Kept so a
      tooltip can say "−48.2 season points" instead of asking the reader to trust that something moved. */
   out.injDropPts = r1(drop);
   return out;
+}
+
+/**
+ * ⭐⭐⭐⭐⭐ WHAT A LINEUP SCORES OVER THE REST OF THE SEASON WHEN SOMEBODY IN IT IS HURT — 29bb.
+ *
+ * ⚠⚠⚠⚠ THE AVERAGE LIES, AND IT LIES TOWARD PANIC. The obvious model gives an injured man his average
+ *   over the window ("out 3 of 9 weeks" → two-thirds of his production) and solves ONE lineup for the
+ *   season. That decides the whole season at once: a star at two-thirds averages below a decent backup,
+ *   so the solver benches him for ALL nine weeks — and "out three weeks" comes out costing exactly as much
+ *   as "out for the year". The suite caught it on a real pool: 5.3 a week for both. In reality he misses
+ *   three weeks and then starts again, so the true cost is three weeks of (star − backup), about a third
+ *   of what the average reported. An error that makes a short injury look season-ending is the one that
+ *   sends a manager out to overpay for a replacement he did not need.
+ * ⭐ SO THE WINDOW IS SPLIT AT EVERY RETURN DATE and a lineup solved for each piece: out-weeks with him at
+ *   zero, back-weeks with him restored (at the limited rate if that is his status), weighted by length.
+ *   With several injured players the cut points merge, so two men returning in different weeks produce
+ *   three phases rather than an approximation of them.
+ *
+ * ⚠ UNITS. `lineupValue` is used on season-total rosters AND on this-week rosters by the same callers,
+ *   and only the first is a rest-of-season question. A player is treated in phases only when his object
+ *   carries `phaseUnit` — the multiplier that turns his healthy SEASON value into this roster's units (1
+ *   for season totals, 1/17 for per-game). The function that builds season rosters stamps it; a weekly
+ *   roster never has it and falls straight through to the plain solver. With no phased player this is
+ *   EXACTLY `lineupValue(roster, sf)`, so every screen with no injuries behaves as it did before.
+ *
+ * @param roster       players; injured ones carry injStatus/injOutWeeks/injBackRate/injHealthyPts/phaseUnit
+ * @param sf           superflex flag, passed through
+ * @param weeksLeft    the length of the window the phases are cut from
+ * @param lineupValue  the app's own solver, injected — this file must not grow its own idea of a lineup
+ */
+export function phasedLineupValue(roster, sf, weeksLeft, lineupValue) {
+  const list = roster || [];
+  const inj = list.filter((p) => p && p.injStatus && p.phaseUnit != null && p.injHealthyPts != null);
+  if (!inj.length) return lineupValue(list, sf);
+  const L = Math.max(1, Number(weeksLeft) || 1);
+  const cuts = new Set([0, L]);
+  inj.forEach((p) => cuts.add(Math.max(0, Math.min(L, Number(p.injOutWeeks) || 0))));
+  const edges = Array.from(cuts).sort((a, b) => a - b);
+  const injSet = new Set(inj);
+  let total = 0;
+  for (let i = 0; i < edges.length - 1; i++) {
+    const a = edges[i], b = edges[i + 1];
+    if (b <= a) continue;
+    const phase = list.map((p) => {
+      if (!injSet.has(p)) return p;
+      const out = a < (Number(p.injOutWeeks) || 0);
+      return { ...p, pts: out ? 0 : p.injHealthyPts * p.phaseUnit * (p.injBackRate == null ? 1 : p.injBackRate) };
+    });
+    total += (b - a) * lineupValue(phase, sf);
+  }
+  return Math.round((total / L) * 10) / 10;
 }
 
 /* A map keyed by Sleeper sid → normalized entry, dropping anything stale or malformed. The stored blob
@@ -327,6 +387,33 @@ export function injTest() {
     "3": { status: "junk" },
   }, { weeksLeft: 8, week: 6 });
   ok(Object.keys(map).length === 1 && map["1"], "the map keeps only what is still biting");
+
+  /* ---- phasedLineupValue, against a one-slot toy solver where the answer is obvious by hand ----
+     Star 300/season, backup 250. One slot. Nine weeks left. */
+  const oneSlot = (r) => Math.max(0, ...r.map((p) => Number(p.pts) || 0));
+  const P9 = { weeksLeft: 9, week: 6, dynasty: false };
+  const starE = { name: "S", pos: "QB", pts: 300, vbd: 60 };
+  const bkE = { name: "B", pos: "QB", pts: 250, vbd: 10 };
+  const seasonOf = (e, inj) => { const x = inj ? applyInjuryToEntry(e, inj, P9) : e; return { ...x, phaseUnit: 1 }; };
+  const healthyV = phasedLineupValue([seasonOf(starE), seasonOf(bkE)], false, 9, oneSlot);
+  ok(healthyV === 300, "healthy: the star fills the slot (300)");
+  const out3 = phasedLineupValue([seasonOf(starE, { status: INJ_WEEKS, weeks: 3, setWeek: 6 }), seasonOf(bkE)], false, 9, oneSlot);
+  /* 3/9 of the season at the backup's 250, 6/9 at the star's 300 = 283.3 */
+  near(out3, 283.3, 0.05, "out three of nine: 3 weeks of backup then 6 of the star, not a season of backup");
+  const avgModel = oneSlot([{ pts: 300 * (6 / 9) }, { pts: 250 }]);
+  ok(out3 > avgModel + 20, `the averaged model would have said ${avgModel} — benching him all season`);
+  const outYr = phasedLineupValue([seasonOf(starE, { status: INJ_SEASON }), seasonOf(bkE)], false, 9, oneSlot);
+  ok(outYr === 250, "out for the year: the backup, all season (250)");
+  const lim = phasedLineupValue([seasonOf(starE, { status: INJ_LIMITED }), seasonOf(bkE)], false, 9, oneSlot);
+  ok(lim === 250, "limited at 70% (210) loses the slot to a 250 backup for the whole window");
+  ok(out3 < healthyV && outYr < out3, "and the ladder holds: healthy > three weeks > season");
+  /* ⚠ UNIT SAFETY. A weekly roster never carries `phaseUnit` and must go straight to the plain solver —
+     otherwise the healthy SEASON value (300) would be dropped into a roster of weekly numbers. */
+  const wkStar = { ...applyInjuryToEntry(starE, { status: INJ_WEEKS, weeks: 3, setWeek: 6 }, P9), pts: 0 };
+  ok(phasedLineupValue([wkStar, { ...bkE, pts: 14 }], false, 9, oneSlot) === 14, "a roster with no phaseUnit is solved as-is (weekly units untouched)");
+  /* Per-game units: the same answer divided by 17. */
+  const pg = (e, inj) => { const x = inj ? applyInjuryToEntry(e, inj, P9) : e; return { ...x, pts: x.pts / 17, phaseUnit: 1 / 17 }; };
+  near(phasedLineupValue([pg(starE, { status: INJ_WEEKS, weeks: 3, setWeek: 6 }), pg(bkE)], false, 9, oneSlot), 283.3 / 17, 0.06, "and in per-game units it is the same answer over 17");
 
   // ---- no mutation ----
   const before = JSON.stringify(star);

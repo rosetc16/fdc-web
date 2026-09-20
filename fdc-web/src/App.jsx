@@ -5,7 +5,7 @@ import { useCoarsePointer, tipShouldOpen, tipShouldClose } from "./tipsheet.js";
 import { HoverTable, useHoverCard } from "./hovercard.jsx";
 import { teamReads, tradeBoard, marketSummary, partnerBoard, raceCurrency } from "./trademarket.js";
 import { GUIDE_TASKS, GUIDE_MAP, GUIDE_GLOSSARY, SEASON_STEPS, guideIndex, guideSearch } from "./guide.js";
-import { INJ_SEASON, INJ_WEEKS, INJ_LIMITED, INJ_CHOICES, applyInjuryToEntry, injuryFactors, injuryLabel, activeInjuryMap, activeInjuryCount, normalizeInjury } from "./injuries.js";
+import { INJ_SEASON, INJ_WEEKS, INJ_LIMITED, INJ_CHOICES, applyInjuryToEntry, injuryFactors, injuryLabel, activeInjuryMap, activeInjuryCount, normalizeInjury, phasedLineupValue } from "./injuries.js";
 
 // Lightweight SECTION-level error boundary. The app has a full-page boundary at the root, but a render error
 // in one panel (e.g. a rare data edge case in the draft recap/superlatives) shouldn't take down the entire
@@ -102,7 +102,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29bb";
+const BUILD_TAG = "2026.07.29bc";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -15939,6 +15939,110 @@ function lineupValue(roster, sf) {
   const l = lineupSlots(roster || [], sf);
   return Math.round(l.slots.reduce((s, x) => s + (x.p ? (x.p.pts || 0) : 0), 0) * 10) / 10;
 }
+
+/* ⭐ THIS WEEK'S NUMBER FOR ONE PLAYER, WITH AN INJURY — 29bb. Pulled out of `resolve` for the same reason
+   as `injuryImpact`: it had a double-discount bug on its fallback path that no screen check would see,
+   and the fix needs a test that can call it directly.
+   @param rawBase   the player's HEALTHY pool entry
+   @param base      the same entry after `applyInjuryToEntry` (carries `injWeek` when he is marked)
+   @param wk        the platform's weekly entry for him, or undefined
+   @param haveWeeklyData  whether the platform published a slate at all this week
+   The platform's weekly figure is undiscounted (it has not heard of the injury), and the healthy season
+   average is too — so exactly ONE factor, `injWeek`, is applied to whichever of them is used. */
+export function hubWeekPts(rawBase, base, wk, haveWeeklyData, games = 17) {
+  const healthyAvg = Math.round((((rawBase && rawBase.pts) || 0) / games) * 10) / 10;
+  const w0 = wk && wk.pts != null ? wk.pts : (haveWeeklyData ? 0 : healthyAvg);
+  return base && base.injWeek != null ? Math.round(w0 * base.injWeek * 10) / 10 : w0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+   WHAT AN INJURY DOES TO ONE TEAM — 29bb. The Injuries tab's "what it does to your team" block.
+   ───────────────────────────────────────────────────────────────────────────────────────────────────
+   Trey: "take Jayden Daniels' projection for the rest of the year, make it a zero, and the replacement
+   becomes whoever your backup quarterback is. So you basically want to see, like, what are the
+   ramifications of that injury?"
+
+   ⭐⭐⭐⭐⭐ EVERY FIGURE IS A DIFFERENCE BETWEEN TWO SOLVED LINEUPS, never the injured man's own points.
+     "You lose Daniels' 21 a week" is false when a backup plays and scores 13 — the true cost is 8, and
+     the naive number is wrong in the alarming direction, which is the direction that sends a manager to
+     overpay for a replacement he did not need. The difference of two optimal lineups gets this right by
+     construction, and also gets right the cases a subtraction cannot: an injured BENCH player (costs 0),
+     a flex reshuffle where the backup is a different position entirely, and an empty slot.
+   ⭐ MODULE LEVEL AND EXPORTED so a node suite can run the exact function the tab runs — the lesson of
+     this same build (see `vite.lib.config.js`): arithmetic that decides what a screen advises belongs
+     where a test can reach it without a browser.
+   ⚠ BOTH ROSTERS MUST COME FROM THE SAME RESOLVER, one with injuries and one without. Handing this a
+     roster resolved by some other path would measure two code paths rather than one injury.
+
+   @param now        roster as resolved WITH injuries   (each player: sid, pos, pts, ptsSeason, injStatus)
+   @param healthy    the same roster resolved WITHOUT them
+   @param sf         superflex flag, as lineupSlots takes it
+   @param games      games in a season, to turn season value into a per-game mean (default 17)
+   @param weeksLeft  the rest-of-season window, which the phased mean is cut from
+   ══════════════════════════════════════════════════════════════════════════════════════════════════ */
+export function injuryImpact(now, healthy, sf, games = 17, weeksLeft = 1) {
+  const nowR = now || [], healthyR = healthy || nowR;
+  const injured = nowR.filter((p) => p && p.injStatus).map((p) => String(p.sid));
+  const r1 = (v) => Math.round(v * 10) / 10;
+  const sum = (lu) => r1((lu.slots || []).reduce((s, x) => s + (x.p ? (x.p.pts || 0) : 0), 0));
+  const luNow = lineupSlots(nowR, sf);
+  const luHealthy = injured.length ? lineupSlots(healthyR, sf) : luNow;
+  const wkNow = sum(luNow), wkHealthy = sum(luHealthy);
+  /* The per-game mean is what the playoff sim runs on, so the odds shift the tab prints is driven by the
+     number printed beside it rather than by a second estimate of the same thing. */
+  const perGame = (roster) => roster.map((p) => ({
+    ...p, pts: (p.ptsSeason != null ? p.ptsSeason : (p.pts || 0) * games) / games,
+    ...(p.injStatus ? { phaseUnit: 1 / games } : null),
+  }));
+  /* ⚠⚠ PHASED, NOT AVERAGED — the bug plan29bb-team §6 caught: averaged, "out three weeks" cost exactly
+     what "out for the year" cost, because a two-thirds star averages below a decent backup and the
+     solver benches him for the whole window. See `phasedLineupValue`. */
+  const meanNow = injured.length ? phasedLineupValue(perGame(nowR), sf, weeksLeft, lineupValue) : null;
+  const meanHealthy = injured.length ? lineupValue(perGame(healthyR), sf) : null;
+  const slotOf = (lu, sid) => {
+    const hit = (lu.slots || []).find((s) => s.p && String(s.p.sid) === String(sid));
+    return hit ? hit.slot : null;
+  };
+  const rows = injured.map((sid) => {
+    const p = nowR.find((x) => String(x.sid) === sid) || null;
+    const was = slotOf(luHealthy, sid);
+    /* ⚠ THE SLOT IS MATCHED BY NAME AND BY OCCURRENCE, NOT BY FIRST MATCH. A lineup with two "RB" slots
+       would otherwise report the RB1's replacement for an injured RB2 — the right position, the wrong man,
+       and a sentence that reads perfectly. Count which RB slot he was in and read the same one back. */
+    let nowIn = null;
+    if (was) {
+      const idx = (luHealthy.slots || []).filter((s) => s.slot === was).findIndex((s) => s.p && String(s.p.sid) === sid);
+      const same = (luNow.slots || []).filter((s) => s.slot === was);
+      nowIn = (same[idx] || same[0] || {}).p || null;
+    }
+    const hp = (healthyR.find((x) => String(x.sid) === sid) || {}).pts;
+    /* ⚠⚠ HE CAN STILL BE "IN" THE SLOT AT ZERO. With nobody else eligible, the solver leaves an out-for-
+       the-year quarterback in the QB slot at 0.0 rather than leave it blank — and the first cut read that
+       as "still your best option, at reduced value", about a man who will not play again. A slot held by
+       a zero is an EMPTY slot, and that is the most urgent thing this block can say. */
+    const selfAtZero = !!(nowIn && String(nowIn.sid) === sid && !((nowIn.pts || 0) > 0));
+    return {
+      sid, p, wasStarting: was,
+      replacedBy: nowIn && String(nowIn.sid) !== sid ? nowIn : null,
+      stillStarting: !!(nowIn && String(nowIn.sid) === sid && !selfAtZero),
+      emptyNow: !!(was && (!nowIn || selfAtZero)),
+      healthyPts: hp != null ? hp : null,
+    };
+  });
+  return {
+    injuredCount: injured.length,
+    luNow, luHealthy, wkNow, wkHealthy,
+    weekCost: r1(Math.max(0, wkHealthy - wkNow)),
+    meanNow, meanHealthy,
+    meanCost: meanNow != null && meanHealthy != null ? r1(Math.max(0, meanHealthy - meanNow)) : 0,
+    rows,
+    /* The positions this team is now short at — only where he actually started, because an injured
+       bench player opens no hole and sending somebody shopping for one would be bad advice. */
+    /* ⚠ A LIMITED MAN WHO STILL STARTS IS INCLUDED: he is worth less, so an upgrade may exist. The two
+       lists this feeds only ever show a genuine improvement, so including the position costs nothing. */
+    needPos: Array.from(new Set(rows.filter((r) => r.p && r.wasStarting).map((r) => r.p.pos))),
+  };
+}
 // Two-sided trade finder. Everyone ships a trade ANALYZER — you propose, it grades. This mines all N
 // rosters for swaps that raise BOTH teams' starting lineups, which is only possible because the hub scores
 // every roster in the league on one engine. Players carry SEASON value here, not this week's points: a
@@ -17443,22 +17547,32 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
        the trade finder's every scored offer, the partner board, the positional market, playoff odds,
        close calls and the lineup, without any of them being edited or even knowing injuries exist. */
   const ictx = React.useMemo(() => injCtxFor(data, injuries), [data && data.week, data && data.regularSeasonWeeks, data && data.playoffStartWeek, cfg && cfg.type, injuries]);
-  const resolve = (ids) => {
+  /* ⚠ THE SECOND ARGUMENT IS THE COUNTERFACTUAL, AND IT EXISTS FOR ONE CALLER. Passing `null` resolves
+     the roster AS IF NOBODY WERE HURT — which is what the Injuries tab needs to answer Trey's actual
+     question ("where does it take me right now?"): the before and the after have to come from the SAME
+     resolver, or the comparison is measuring two code paths rather than one injury. Everything else
+     calls `resolve(ids)` and gets the injured league, which is the one the app lives in. */
+  const resolve = (ids, ctxOverride) => {
+    const rctx = ctxOverride === undefined ? ictx : ctxOverride;
     if (!poolBySid || !ids) return dedupeRoster([]);
     return dedupeRoster(ids.map((id) => {
-      const base = injResolve(poolBySid, id, ictx);
+      const base = injResolve(poolBySid, id, rctx);
       if (!base) return null;
       const wk = weeklyMap[String(id)];
       // Real weekly number if present; else 0 when we have this week's data (player has no game) or the
-      // season-average estimate when there's no weekly data at all.
-      const seasonAvg = Math.round((base.pts / GAMES) * 10) / 10;
+      // season-average estimate when there's no weekly data at all — see `hubWeekPts`.
       /* ⚠ THE WEEKLY FIGURE IS THE PLATFORM'S AND KNOWS NOTHING ABOUT THIS. Sleeper will happily project
          18 points for a man Trey has just told us is on IR, because Sleeper has not heard yet — that lag
          is the entire reason this feature exists ("in real time"). `base.pts` above is already
          discounted; this number has to be discounted separately or the Matchup tab would start a player
          the rest of the app has written off. */
-      const wkPts0 = wk && wk.pts != null ? wk.pts : (haveWeeklyData ? 0 : seasonAvg);
-      const wkPts = base.injWeek != null ? Math.round(wkPts0 * base.injWeek * 10) / 10 : wkPts0;
+      /* ⚠⚠ THE FALLBACK MUST START FROM THE HEALTHY AVERAGE, NOT `seasonAvg`. `seasonAvg` is built from
+         `base.pts`, which the injury has ALREADY discounted by its season factor — so multiplying it by
+         the week factor as well charged a "limited" player twice: 0.7 × 0.7 = 49% of a game instead of
+         70%. It only bit when the platform had no weekly slate (off-season, early week), which is why a
+         screen check in the normal case would never have seen it. Found while writing the test for
+         `injuryImpact`, by tracing which number each path multiplies. */
+      const wkPts = hubWeekPts(poolBySid.bySid.get(String(id)) || base, base, wk, haveWeeklyData, GAMES);
       const hasWk = !!(wk && wk.pts != null);
       // Difficulty of the defense this player faces, at his position.
       const opp = wk ? wk.opp : null;
@@ -18053,7 +18167,17 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
      multiply is the fallback for a payload that only had a weekly number. */
   const seasonRosterOf = (t) => ((t && t.roster) || []).map((p) => ({
     ...p, pts: p.ptsSeason != null ? p.ptsSeason : (p.pts || 0) * GAMES_IN_SEASON,
+    /* ⚠ 29bb — THE ONE PLACE A SEASON ROSTER IS MADE, SO THE ONE PLACE ITS UNIT IS DECLARED. An injured
+       man carries `phaseUnit: 1` here, which is what lets `phasedLineupValue` value him week by week
+       (out, then back) instead of at his window average. A weekly roster never passes through this
+       function and so never carries it — see the units note on phasedLineupValue. */
+    ...(p.injStatus ? { phaseUnit: 1 } : null),
   }));
+  /* ⭐⭐⭐⭐ THE REST-OF-SEASON LINEUP, PHASED — 29bb. Injected wherever a season roster's lineup is
+     valued (trade finder, league read, partner costs, the calculator), so a man out three weeks is
+     priced as three weeks out and not as a season-long bench player. Identical to `lineupValue` for any
+     roster with nobody marked. */
+  const lvPhased = (roster, sf) => phasedLineupValue(roster, sf, ictx.weeksLeft, lineupValue);
   const scoreRoster = (roster) => {
     const lu = lineupSlots(roster || [], cfg.sf);
     const fShare = flexShareForRoster(lu);
@@ -18064,7 +18188,15 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
         { dynasty: dynastyLg, flexShare: fShare[pos] || 0, slotBaseline: replLg[pos] }) || 0;
     });
     return {
-      start: lu.slots.reduce((s, x) => s + (x.p ? (x.p.pts || 0) : 0), 0),
+      /* ⚠ 29bb — PHASED, because this is the calculator's "starting points" and a trade for a man who
+         is back in two weeks must not be scored as if he never plays again. `rosterScore` below is the
+         power index and deliberately stays on the averaged values the power table has always used. */
+      /* ⚠ ONLY WHEN SOMEBODY IS MARKED. `lineupValue` rounds to a tenth and this sum never did, so
+         routing every roster through it would nudge the calculator's numbers by 0.1 on leagues with no
+         injuries at all — a change nobody asked for, in a screen that has been corrected by hand. */
+      start: (roster || []).some((p) => p && p.phaseUnit != null && p.injStatus)
+        ? lvPhased(roster || [], cfg.sf)
+        : lu.slots.reduce((s, x) => s + (x.p ? (x.p.pts || 0) : 0), 0),
       rosterScore,
       bench: lu.bench,
     };
@@ -18283,10 +18415,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   // Each team's weekly scoring mean is its best lineup in SEASON-average per-game terms (this week's
   // numbers would let a bye week masquerade as a bad team). Then simulate the rest of the schedule.
   const oddsInput = leagueTeams.map((t) => {
-    const seasonRoster = t.roster.map((p) => ({ ...p, pts: (p.ptsSeason != null ? p.ptsSeason : p.pts * GAMES_IN_SEASON) / GAMES_IN_SEASON }));
+    const seasonRoster = t.roster.map((p) => ({ ...p, pts: (p.ptsSeason != null ? p.ptsSeason : p.pts * GAMES_IN_SEASON) / GAMES_IN_SEASON,
+      ...(p.injStatus ? { phaseUnit: 1 / GAMES_IN_SEASON } : null) }));
     return {
       rosterId: t.rosterId,
-      mean: lineupValue(seasonRoster, cfg.sf),
+      /* ⚠ 29bb — PHASED, for every team, so a rival with a man back in two weeks is not simulated as
+         weaker for the whole season — and so my own mean here is the identical number `injuryImpact`
+         prints, which the odds shift beside it depends on. */
+      mean: phasedLineupValue(seasonRoster, cfg.sf, weeksLeft, lineupValue),
       wins: t.wins || 0, losses: t.losses || 0,
       pointsFor: t.pointsFor || 0,
       sd: 22,
@@ -18323,6 +18459,48 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   };
   // Setting the optimal lineup is worth this much, every week — the single most concrete number in the hub.
   const oddsFromLineup = leftOnBench > 0 ? oddsIfMeanShifts(leftOnBench) : null;
+
+  /* ═══════════════════════════════════════════════════════════════════════════════════════════════
+     WHAT THE INJURY DOES TO *THIS* TEAM — 29bb, the second half of the feature
+     ───────────────────────────────────────────────────────────────────────────────────────────────
+     Trey, after seeing the first cut: "Ultimately, I want this entry to show what does it do to my team
+     organically? Like, where does it take me right now on a projection basis? ... take Jayden Daniels'
+     projection for the rest of the year, make it a zero, and the replacement becomes whoever your backup
+     quarterback is. So you basically want to see, like, what are the ramifications of that injury? Then
+     what are replacements that we could seek for that injury, essentially?"
+
+     ⭐⭐⭐⭐⭐ HE IS DESCRIBING A COUNTERFACTUAL, AND THE ONLY HONEST WAY TO PRICE ONE IS TO RUN THE SAME
+       MACHINERY TWICE. The first cut answered "what happened to the league table", which is a real
+       question and not his. What he wants is the arithmetic of the hole: the man is a zero, somebody on
+       your bench inherits the slot, and the difference between those two lineups IS the injury. So every
+       number below is a DIFFERENCE BETWEEN TWO SOLVED LINEUPS — never a subtraction of the injured man's
+       own points, which would be wrong by exactly the backup's production and wrong in the alarming
+       direction. "You lost Daniels' 21 a week" is false if Huntley plays and scores 13.
+     ⭐ THE BASELINE IS `resolve(ids, null)` — the identical resolver with the injuries switched off — so
+       a bug in the optimizer moves both sides and cannot manufacture a difference.
+     ⚠ IT IS SCOPED TO MY OWN INJURIES ON PURPOSE. A rival's injury shows up in the power table and the
+       trade ideas, where it belongs; folding it into "what this does to your lineup" would answer a
+       question nobody asked with a number that looks like one he did.
+     ══════════════════════════════════════════════════════════════════════════════════════════════ */
+  /* ⭐ ONE FUNCTION, `injuryImpact` AT MODULE LEVEL — the tab reads it and the node suite tests it, so
+     the two cannot drift. The only thing done HERE is building the healthy roster, because that needs
+     `resolve`, which only exists inside this component. */
+  const injMineCount = myRoster.filter((p) => p.injStatus).length;
+  const myRosterHealthy = injMineCount ? resolve(myTeam.players, null) : myRoster;
+  const injImpact = injuryImpact(myRoster, myRosterHealthy, cfg.sf, GAMES_IN_SEASON, weeksLeft);
+  const injMine = injImpact.injuredCount;
+  const wkNow = injImpact.wkNow, wkHealthy = injImpact.wkHealthy;
+  const injWeekCost = injImpact.weekCost;
+  const injMeanCost = injImpact.meanCost;
+  const injSeasonCost = Math.round(injMeanCost * weeksLeft * 10) / 10;
+  /* ⚠ THE ODDS ARE ASKED THE ONLY WAY THIS SIM CAN HONESTLY BE ASKED. `myOdds` is ALREADY the injured
+     number — `oddsInput` is built from `leagueTeams`, which came through the injured resolver — so the
+     healthy figure is "my odds if my mean were `injMeanCost` higher", which is exactly what
+     `oddsIfMeanShifts` computes, on the SAME seeded season. Simulating a second whole season would give
+     a different answer for reasons that have nothing to do with the injury. */
+  const injOddsGap = injMeanCost > 0 ? oddsIfMeanShifts(injMeanCost) : null;
+  const injMyRows = injImpact.rows;
+  const injNeedPos = injImpact.needPos;
 
   // ---- FAAB: who else in the league actually needs this position ----
   // The read no tool without league-wide rosters can give you.
@@ -18381,7 +18559,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
          two callers: the 29y rule, and the reason the owner read can never disagree with the League tab. */
       rosterScore: scoreRoster(seasonRosterOf(t)).rosterScore,
     })),
-    sf: cfg.sf, req: reqStart, repl: tradeRepl, lineupValue,
+    sf: cfg.sf, req: reqStart, repl: tradeRepl, lineupValue: lvPhased,
     /* ⚠ THE BENCH READ USES THE WEEK'S OWN POINTS, NOT SEASON VALUE — `t.roster` is already resolved to
        this week. Scoring a manager on season value would call him wasteful for correctly benching a man
        on bye, which is the opposite of the truth. See teamReads. */
@@ -18397,12 +18575,32 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
        best lineup already uses, because "two for one" is only a consolidation when at least one of the two
        is somebody I am not starting. Same injection rule as `lineupValue`: the engine stays in App.jsx and
        trademarket.js never grows its own opinion about what a lineup is. */
-    reads: teamReadRows, lineupValue, lineupSlots, sf: cfg.sf, req: reqStart, repl: tradeRepl, max: 5,
+    reads: teamReadRows, lineupValue: lvPhased, lineupSlots, sf: cfg.sf, req: reqStart, repl: tradeRepl, max: 5,
   })) : [];
   /* ⚠ `board.all`, NOT `board` — b151. The top five are a shortlist and the positional verdict is about
      the whole market, so scoping it to the shortlist would report "nothing to do at RB" whenever the best
      RB idea happened to place sixth. Same reasoning, and the same field, as the partner read. */
   const mktSummary = myLT ? marketSummary(teamReadRows, reqStart, { offers: board.all || board }) : [];
+
+  /* ⭐⭐⭐⭐ "THEN WHAT ARE REPLACEMENTS THAT WE COULD SEEK" — 29bb.
+     Two places a replacement can come from, and the app already ranks both; this only FILTERS them to the
+     position the injury opened. ⚠ NO NEW SCORING, deliberately: the free-agent list and the trade finder
+     have each been corrected against Trey's own screenshots several times, and a third ranking of the same
+     players on this tab would be the next thing to disagree with them.
+     ⭐ BOTH LISTS ALREADY SEE THE INJURY. The free-agent upgrade compares against whoever would actually
+       play the slot (29w's rule — "you are not replacing a zero"), and the injured starter now projects
+       zero, so every FA is measured against the BACKUP, which is the comparison he asked for in so many
+       words. The trade finder reads season value through the injured resolver, so it already knows the
+       hole is there and is already pricing deals to fill it. */
+  const injFAsFor = (pos) => faScored
+    .filter((f) => f.p && f.p.pos === pos && !f.implausible && f.verdict !== "hold")
+    .slice(0, 4);
+  const injTradesFor = (pos) => ((board && (board.all || board)) || [])
+    .filter((o) => o && o.get && o.get.pos === pos && (o.myGain || 0) > 0)
+    /* Realistic first, then by what it does for me — the same order the finder uses for its own cards,
+       for the reason 29am found the hard way: sorting on gain alone surfaces the asks. */
+    .slice().sort((a, b) => (b.realism || 0) - (a.realism || 0) || (b.myGain || 0) - (a.myGain || 0))
+    .slice(0, 4);
   /* One team's read, by roster id — so a hover can print where THEIR rooms rank without recomputing a
      ranking this tab has already done once. (b152) */
   const myReadFor = (rosterId) => (teamReadRows || []).find((r) => r.rosterId === rosterId) || null;
@@ -18594,8 +18792,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
        roster instead of theirs; one implementation, two callers, so the two halves of the trade screen can
        never disagree about what a player is worth to the team that holds him. */
     const myRoster = tradeRoster(myLT);
-    const base = lineupValue(myRoster, cfg.sf);
-    const costOf = (p) => Math.round((base - lineupValue(myRoster.filter((x) => String(x.sid) !== String(p.sid)), cfg.sf)) * 10) / 10;
+    const base = lvPhased(myRoster, cfg.sf);
+    const costOf = (p) => Math.round((base - lvPhased(myRoster.filter((x) => String(x.sid) !== String(p.sid)), cfg.sf)) * 10) / 10;
     const worthOf = (p) => Math.max(0, (Number(p.pts) || 0) - (tradeRepl[String(p.pos).toUpperCase()] || 0));
     return partnerBoard({
       me: { rosterId: myLT.rosterId },
@@ -19881,8 +20079,168 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                   })}
                 </div>
 
-                {/* What actually moved. */}
-                <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 7 }}>What this changed</div>
+                {/* ═══════════════════════════════════════════════════════════════════════════════
+                    ---- 2. WHAT IT DOES TO YOUR TEAM ----
+                    Trey: "where does it take me right now on a projection basis? ... take Jayden
+                    Daniels' projection for the rest of the year, make it a zero, and the replacement
+                    becomes whoever your backup quarterback is."
+                    ⭐ SO IT LEADS WITH THE SLOT, NOT THE TOTAL. "Daniels → Huntley" is the fact a manager
+                      reasons from; the points and the odds are consequences of it and read as such.
+                    ════════════════════════════════════════════════════════════════════════════ */}
+                <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 7 }}>What it does to your team</div>
+                {injMine === 0 ? (
+                  <div className="mut" data-injnotmine style={{ fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
+                    None of the players you have marked are on your roster, so your lineup is untouched.
+                    The injuries still matter to you — they weaken the teams that hold them, which is
+                    reflected in the league table below and in the trade ideas, where a rival with a new
+                    hole is priced as a buyer.
+                  </div>
+                ) : (
+                  <div data-injmine={injMine} style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "12px 13px", background: "var(--panel2)", marginBottom: 14 }}>
+                    {/* The slot, man by man. */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 7, marginBottom: 12 }}>
+                      {injMyRows.map((r) => {
+                        const nm = r.p ? r.p.name : `Player ${r.sid}`;
+                        return (
+                          <div key={r.sid} data-injslot={r.sid} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 12.5 }}>
+                            {r.wasStarting ? <span className="mut" style={{ fontSize: 10, fontWeight: 700, minWidth: 38, fontVariantNumeric: "tabular-nums" }}>{r.wasStarting}</span> : null}
+                            <span style={{ textDecoration: r.stillStarting ? "none" : "line-through", color: "var(--mut)" }}
+                              onMouseEnter={(e) => r.p && showPlayerTip(e, r.p)} onMouseLeave={hideTip}>{nm}</span>
+                            {r.healthyPts != null ? <span className="mut num" style={{ fontSize: 10.5 }}>{r.healthyPts.toFixed(1)}</span> : null}
+                            <i className="ti ti-arrow-right" style={{ fontSize: 13, color: "var(--mut)" }} aria-hidden="true" />
+                            {/* ⚠ FOUR CASES, EACH ITS OWN SENTENCE, because they call for four different
+                                reactions: a replacement you already own, a slot nobody on your roster can
+                                fill, a man still worth starting at reduced value, and a bench player whose
+                                absence costs your lineup nothing at all. Collapsing them would make the
+                                calm case and the urgent one look alike. */}
+                            {r.replacedBy ? (
+                              <span data-injrepl={r.replacedBy.sid} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                                onMouseEnter={(e) => showPlayerTip(e, r.replacedBy)} onMouseLeave={hideTip}>
+                                <Dot pos={r.replacedBy.pos} /><b>{r.replacedBy.name}</b>
+                                <span className="mut num" style={{ fontSize: 10.5 }}>{(r.replacedBy.pts || 0).toFixed(1)}</span>
+                                <span className="mut" style={{ fontSize: 10.5 }}>steps in</span>
+                              </span>
+                            ) : r.emptyNow ? (
+                              <b data-injempty-slot style={{ color: "var(--red)" }}>nobody on your roster can fill {r.wasStarting} — the slot is empty</b>
+                            ) : r.stillStarting ? (
+                              <span className="mut">still your best option at {r.wasStarting}, at reduced value</span>
+                            ) : (
+                              <span className="mut">he was not in your best lineup, so it costs you nothing this week</span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* The consequences, in the three units he thinks in. */}
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(128px, 1fr))", gap: 8 }}>
+                      <div data-injcost-week={injWeekCost} style={{ background: "var(--panel)", borderRadius: 8, padding: "8px 10px" }}>
+                        <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>This week</div>
+                        <div className="num" style={{ fontSize: 18, fontWeight: 800, color: injWeekCost > 0 ? "var(--red)" : "var(--ink)" }}>{injWeekCost > 0 ? `−${injWeekCost}` : "0.0"}</div>
+                        <div className="mut" style={{ fontSize: 10.5 }}>{wkHealthy.toFixed(1)} → {wkNow.toFixed(1)} projected</div>
+                      </div>
+                      <div data-injcost-season={injSeasonCost} style={{ background: "var(--panel)", borderRadius: 8, padding: "8px 10px" }}>
+                        <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Rest of season</div>
+                        <div className="num" style={{ fontSize: 18, fontWeight: 800, color: injSeasonCost > 0 ? "var(--red)" : "var(--ink)" }}>{injSeasonCost > 0 ? `−${injSeasonCost}` : "0"}</div>
+                        {/* ⚠ "AVERAGED", because since the phased model a three-week absence puts all of its cost into those
+                            three weeks — "−1.8 a week" read literally would understate the next three
+                            Sundays and overstate the six after them. */}
+                        <div className="mut" style={{ fontSize: 10.5 }}>{injMyRows.every((r) => r.p && r.p.injStatus === INJ_SEASON)
+                          ? `−${injMeanCost}/wk for all ${weeksLeft} ${weeksLeft === 1 ? "week" : "weeks"} left`
+                          : `averaged over the ${weeksLeft} ${weeksLeft === 1 ? "week" : "weeks"} left — most of it while he is out`}</div>
+                      </div>
+                      {/* ⚠ ONLY PRINTED WHEN THE SIM RAN. A league with no schedule or too few teams has no
+                          odds, and a dash is truer than a zero that reads as "no effect". */}
+                      {myOdds && injOddsGap != null ? (
+                        <div data-injcost-odds={injOddsGap} style={{ background: "var(--panel)", borderRadius: 8, padding: "8px 10px" }}>
+                          <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Playoff odds</div>
+                          <div className="num" style={{ fontSize: 18, fontWeight: 800, color: injOddsGap > 0.5 ? "var(--red)" : "var(--ink)" }}>{injOddsGap > 0 ? `−${injOddsGap}` : "0"}<span style={{ fontSize: 12 }}> pts</span></div>
+                          <div className="mut" style={{ fontSize: 10.5 }}>{Math.round(myOdds.odds + injOddsGap)}% → {Math.round(myOdds.odds)}%</div>
+                        </div>
+                      ) : null}
+                      {injHealthyRankById[data.myRosterId] != null && myPowerRank != null ? (
+                        <div data-injcost-power style={{ background: "var(--panel)", borderRadius: 8, padding: "8px 10px" }}>
+                          <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Power rank</div>
+                          <div className="num" style={{ fontSize: 18, fontWeight: 800, color: myPowerRank > injHealthyRankById[data.myRosterId] ? "var(--red)" : "var(--ink)" }}>{ordinal(myPowerRank)}</div>
+                          <div className="mut" style={{ fontSize: 10.5 }}>was {ordinal(injHealthyRankById[data.myRosterId])}</div>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                )}
+
+                {/* ═══════════════════════════════════════════════════════════════════════════════
+                    ---- 3. WHERE TO FIND A REPLACEMENT ----
+                    "Then what are replacements that we could seek for that injury, essentially?"
+                    Two sources, side by side, and the app already ranks both — see `injFAsFor` and
+                    `injTradesFor`. The free agents are measured against the BACKUP, not the injured
+                    man's zero, which is the comparison he described.
+                    ════════════════════════════════════════════════════════════════════════════ */}
+                {injNeedPos.map((pos) => {
+                  const fas = injFAsFor(pos);
+                  const trades = injTradesFor(pos);
+                  const backup = (injMyRows.find((r) => r.p && r.p.pos === pos && r.replacedBy) || {}).replacedBy || null;
+                  return (
+                    <div key={pos} data-injneed={pos} style={{ marginBottom: 14 }}>
+                      <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 7 }}>
+                        Replacing him at {pos}{backup ? <span style={{ textTransform: "none", letterSpacing: 0 }}> — anything below beats {backup.name} by the margin shown</span> : null}
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 10 }}>
+                        {/* Free agents: costs a roster spot, not a player. */}
+                        <div data-injfas={fas.length} style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "9px 11px" }}>
+                          <div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 6 }}><i className="ti ti-user-plus" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />On the wire</div>
+                          {fas.length === 0 ? (
+                            <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.45 }}>No free-agent {pos} worth a claim — the wire has nobody better than what you already have. A trade is the route.</div>
+                          ) : fas.map((f) => (
+                            <div key={f.p.sid} data-injfa={f.p.sid} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, padding: "3px 0" }}
+                              onMouseEnter={(e) => showPlayerTip(e, f.p)} onMouseLeave={hideTip}>
+                              <Dot pos={f.p.pos} />
+                              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }}>{f.p.name}</span>
+                              {/* ⚠ THE MARGIN IS PER WEEK AGAINST THE MAN WHO WOULD OTHERWISE PLAY, and says so
+                                  in the header above — a bare "+4.2" invites the reader to compare it to
+                                  the injured star, which is the exact comparison 29w retired. */}
+                              <span className="num" style={{ fontSize: 11, fontWeight: 700, color: (f.upgrade || 0) > 0 ? "var(--green)" : "var(--mut)" }}>{(f.upgrade || 0) > 0 ? `+${(Math.round(f.upgrade * 10) / 10).toFixed(1)}/wk` : "depth"}</span>
+                            </div>
+                          ))}
+                          {fas.length > 0 && (
+                            <button className="btn btn-mini" data-injgofa style={{ marginTop: 6 }} onClick={() => setTab("freeagents")}>All free agents</button>
+                          )}
+                        </div>
+
+                        {/* Trades: costs a player, and the finder has already priced what. */}
+                        <div data-injtrades={trades.length} style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "9px 11px" }}>
+                          <div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 6 }}><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />By trade</div>
+                          {trades.length === 0 ? (
+                            <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.45 }}>No trade for a {pos} improves your lineup at a fair price right now. The full finder may still have ideas elsewhere on your roster.</div>
+                          ) : trades.map((o, i) => (
+                            <div key={i} data-injtrade={o.get.sid} style={{ fontSize: 12, padding: "4px 0", borderTop: i ? "1px solid var(--line)" : "none" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                <span onMouseEnter={(e) => showPlayerTip(e, o.get)} onMouseLeave={hideTip} style={{ display: "inline-flex", alignItems: "center", gap: 5, minWidth: 0, flex: 1 }}>
+                                  <Dot pos={o.get.pos} /><b style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.get.name}</b>
+                                </span>
+                                <span className="num" style={{ fontSize: 11, fontWeight: 700, color: "var(--green)" }}>+{o.myGain}</span>
+                                <button className="btn btn-mini" data-injprice={o.get.sid} title="Open this deal in the trade calculator"
+                                  /* ⚠ `setTab` AS WELL AS `tbOpen`. Every existing caller of tbOpen already lives on the
+                                     Trades tab, so it only switches the SECTION; from here it would fill a
+                                     calculator on a tab nobody is looking at — the exact 29aw bug, one tab over. */
+                                  onClick={() => { tbOpen(o.team.rosterId, [String(o.give.sid)].concat(o.give2 ? [String(o.give2.sid)] : []), [String(o.get.sid)]); setTab("trades"); }}>Price it</button>
+                              </div>
+                              <div className="mut" style={{ fontSize: 10.5, marginTop: 1 }}>
+                                from {o.team.teamName || o.team.ownerName} for {o.give.name}{o.give2 ? ` + ${o.give2.name}` : ""} · {o.band}
+                              </div>
+                            </div>
+                          ))}
+                          {/* ⚠ THE FIGURE IS SEASON LINEUP POINTS, the finder's own unit. Saying so here stops
+                              it being read against the per-week numbers in the free-agent column beside it. */}
+                          {trades.length > 0 && <div className="mut" style={{ fontSize: 10, marginTop: 5 }}>+ = season points added to your best lineup.</div>}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {/* ---- 4. THE LEAGUE ---- */}
+                <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 7 }}>Across the league</div>
                 {injMoved.length === 0 ? (
                   <div className="mut" data-injnomove style={{ fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
                     Not enough to reorder the power rankings — the values moved, but no team changed
@@ -19907,17 +20265,15 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                   </div>
                 )}
 
-                {/* ---- 3. GO TRADE ---- */}
+
                 <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
                   <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5, marginBottom: 9 }}>
-                    {/* The whole reason he asked for this. The finder is already re-scored; it needs
-                        pointing at, not rebuilding here. */}
-                    The trade finder, the calculator and the positional market are all re-scored against
-                    these injuries now — so the deals it suggests are the ones that make sense with this
-                    news in, and the rival whose season just broke is priced accordingly.
+                    The full trade finder, the calculator and the positional market are all re-scored
+                    against these injuries — including the rival whose season just broke, who is now
+                    priced as a buyer.
                   </div>
                   <button className="btn btn-gold btn-mini" data-injgotrades onClick={() => setTab("trades")}>
-                    <i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Find trades around this
+                    <i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Open the trade finder
                   </button>
                 </div>
               </>
