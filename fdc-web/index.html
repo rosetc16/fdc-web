@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Fantasy Draft Compass</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <meta name="description" content="Live draft intelligence for fantasy football — your format, every pick." />
+    <!-- Tabler icons are bundled locally (imported in main.jsx), so they ship with the app and render
+         instantly instead of waiting on a CDN font download. -->
+    <!--
+      ⭐⭐⭐⭐ THE FIRST SECOND — b158.
+      Until now this page was <div id="root"></div> and nothing else, so between the HTML arriving and
+      React mounting there was a BLANK WHITE PAGE. On a desktop that is a blink. On a phone on cell
+      service it is the app's whole first impression: ~440 KB of gzipped JS to fetch, decompress, parse
+      and execute before a single pixel of Fantasy Draft Compass exists.
+
+      ⚠ AND IT WAS WHITE EVEN IN DARK MODE, which is the worse half. A dark-mode user got a full-screen
+        white flash and then a dark app — the exact "light mode is all jacked up" class of complaint, on
+        the one screen that had no CSS at all to get wrong.
+
+      This shell costs nothing to deliver: it is in the HTML the browser has already downloaded, it
+      matches the app's own --bg tokens in both themes, and it honours a saved theme choice over the OS
+      the same way the app does (a written choice outranks the system — 29ai). React replaces it on
+      mount. It does not make the bundle smaller; it makes the wait legible instead of broken-looking.
+      ⚠ THE COLOURS ARE DUPLICATED FROM THE STYLESHEET ON PURPOSE. Importing a token here would mean a
+        second network round trip, which defeats the entire point of a shell that paints immediately.
+        They are the two --bg values and nothing else, so there is one number to keep in step, not a
+        palette; if they ever drift the worst case is a slightly-off ground for half a second.
+    -->
+    <style>
+      :root { color-scheme: light dark; }
+      html, body { margin: 0; background: #F4F6F8; }
+      @media (prefers-color-scheme: dark) { html:not([data-theme="light"]), html:not([data-theme="light"]) body { background: #0B0F14; } }
+      html[data-theme="dark"], html[data-theme="dark"] body { background: #0B0F14; }
+      html[data-theme="light"], html[data-theme="light"] body { background: #F4F6F8; }
+      #boot { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+              flex-direction: column; gap: 14px; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+      #boot .m { font-size: 12.5px; letter-spacing: .08em; text-transform: uppercase; color: #8A97A6; }
+      #boot .r { width: 132px; height: 3px; border-radius: 3px; background: #8A97A633; overflow: hidden; }
+      #boot .r i { display: block; width: 40%; height: 100%; border-radius: 3px; background: #E0A63C;
+                   animation: bootslide 1.15s ease-in-out infinite; }
+      @keyframes bootslide { 0% { transform: translateX(-110%); } 100% { transform: translateX(360%); } }
+      /* ⚠ A MOVING BAR IS A COURTESY, NOT A REQUIREMENT. Somebody who has asked for less motion still
+         needs to know the page is loading, so the bar stays and only the animation goes. */
+      @media (prefers-reduced-motion: reduce) { #boot .r i { animation: none; width: 100%; opacity: .5; } }
+    </style>
+    <script>
+      /* The saved choice, applied before first paint so the shell and the app agree from the start.
+         Wrapped because a private window can throw on localStorage — and a boot script that throws
+         leaves the page blank, which is the thing this whole block exists to prevent. */
+      try { var t = localStorage.getItem('fdc:theme');
+        if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t); } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root">
+      <div id="boot"><div class="m">Fantasy Draft Compass</div><div class="r"><i></i></div></div>
+    </div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

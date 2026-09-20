@@ -1,0 +1,26 @@
+/* TYPEFACES — self-hosted, not a CDN link.
+ *
+ * The stylesheet has always asked for Barlow, Barlow Condensed and DM Mono, and none of them were ever
+ * loaded. Every one of those families silently fell through to system-ui, so the "display" face used for
+ * every heading rendered as the same font as body text — which is a large part of why the site read as
+ * generic. Barlow is a squarish grotesque built for signage and sports graphics; the condensed cut is what
+ * gives headings their broadcast feel; DM Mono keeps columns of numbers honest.
+ *
+ * Self-hosted for the same reason the Tabler icons are (see icons.css): a CDN font blocks first paint on
+ * a cold connection, and draft night is not the moment to be waiting on fonts.googleapis.com.
+ *
+ * ONLY the weights the app actually uses, latin only. Barlow 400/500/600/700/800 (700 and 800 dominate),
+ * Barlow Condensed 700/800 for `.disp`, DM Mono 400/500 for `.num` and the mono chrome. woff2 only —
+ * every browser that can run this app supports it. `display:swap` so text is readable immediately and
+ * reflows to Barlow rather than hiding behind an invisible-text flash.
+ */
+@import '@fontsource/barlow/latin-400.css';
+@import '@fontsource/barlow/latin-500.css';
+@import '@fontsource/barlow/latin-600.css';
+@import '@fontsource/barlow/latin-700.css';
+@import '@fontsource/barlow/latin-800.css';
+@import '@fontsource/barlow-condensed/latin-600.css';
+@import '@fontsource/barlow-condensed/latin-700.css';
+@import '@fontsource/barlow-condensed/latin-800.css';
+@import '@fontsource/dm-mono/latin-400.css';
+@import '@fontsource/dm-mono/latin-500.css';

@@ -1,0 +1,18 @@
+import { chromium } from 'playwright';
+const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const page = await (await b.newContext({viewport:{width:1400,height:900}})).newPage();
+const CFG={name:'S',teams:12,rounds:16,type:'redraft',order:'snake',slot:5,sf:false,tePremMult:0,start:{QB:1,RB:2,WR:2,TE:1,FLEX:1,SUPER:0,K:0,DST:0},scoring:{rec:1},caps:{},keepers:[],pickTrades:[]};
+const lg={id:'S1',name:'S',created:'x',cfg:CFG,picks:[5,6,7],preds:[],pickNames:['jamarr chase','bijan robinson','jahmyr gibbs'],predNames:[],mocks:[],strategy:{targets:[],rules:[]},priorityQueue:[],avoidList:[],listsAt:Date.now()};
+await page.goto('http://localhost:4174/',{waitUntil:'domcontentloaded'});
+await page.evaluate(()=>{localStorage.clear();sessionStorage.clear();});
+await fetch('http://localhost:5055/api/state',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({state:{leagues:[lg],funMocks:[],feedback:[]}})}).catch(()=>{});
+await page.evaluate(({lg})=>{localStorage.setItem('fdc:token','t');localStorage.setItem('fdcTourSeen','1');localStorage.setItem('fdcGetStartedDone','1');
+ localStorage.setItem('fdc:gs-state',JSON.stringify({user:{email:'t@x.com',paid:true,rankSets:[]},leagues:[lg],funMocks:[]}));
+ sessionStorage.setItem('gs-nav',JSON.stringify({route:'draft',activeId:lg.id,hubLeagueId:null}));},{lg});
+await page.reload({waitUntil:'domcontentloaded'});
+await page.waitForSelector('table.board tbody tr [data-dqadd]',{timeout:60000});
+await page.waitForTimeout(4500);
+console.log('remap runs:', JSON.stringify(await page.evaluate(()=>window.__FDCREMAP||null)));
+console.log('lookup    :', JSON.stringify(await page.evaluate(()=>window.__FDCREMAP2||null)));
+console.log('stored    :', JSON.stringify(await page.evaluate(()=>{const b=JSON.parse(localStorage.getItem('fdc:gs-state')||'{}');const l=(b.leagues||[])[0]||{};return {picks:l.picks,names:l.pickNames};})));
+await b.close();
