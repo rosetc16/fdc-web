@@ -100,7 +100,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29au";
+const BUILD_TAG = "2026.07.29av";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -7520,6 +7520,10 @@ function posQualityTiers(rostersByTeam, cfg, userIdx) {
   const repl = slotBaselines(allRostered, cfg, n);
   const level = {}; for (let i = 0; i < n; i++) level[i] = {};
   const scoreByTeam = {}; for (let i = 0; i < n; i++) scoreByTeam[i] = {};
+  /* b159 — see the note at the foot of this function. `rank`/`count` are additive; `level` is untouched. */
+  const rank = {}; for (let i = 0; i < n; i++) rank[i] = {};
+  const count = {}; for (let i = 0; i < n; i++) count[i] = {};
+  const ofHeld = {};
   ["QB", "RB", "WR", "TE"].forEach((pos) => {
     for (let i = 0; i < n; i++) {
       const atPos = (rostersByTeam[i] || []).filter((p) => p && p.pos === pos);
@@ -7548,19 +7552,30 @@ function posQualityTiers(rostersByTeam, cfg, userIdx) {
       const cnt = (rostersByTeam[i] || []).filter((p) => p && p.pos === pos).length;
       (cnt > 0 ? held : empty).push(i);
     }
-    empty.forEach((teamIdx) => { level[teamIdx][pos] = 2; });
+    empty.forEach((teamIdx) => { level[teamIdx][pos] = 2; count[teamIdx][pos] = 0; rank[teamIdx][pos] = null; });
     held.sort((a, b) => {
       const diff = scoreByTeam[b][pos] - scoreByTeam[a][pos];
       if (Math.abs(diff) > 0.5) return diff;              // clear difference → by score
       if (userIdx != null) { if (a === userIdx) return -1; if (b === userIdx) return 1; } // tie → user wins
       return a - b;                                        // otherwise deterministic by index
     });
-    held.forEach((teamIdx, rank) => {
-      const frac = rank / Math.max(1, held.length - 1);
+    held.forEach((teamIdx, ix) => {
+      const frac = ix / Math.max(1, held.length - 1);
       level[teamIdx][pos] = frac <= 0.33 ? 0 : frac <= 0.66 ? 1 : 2;
+      /* ⭐⭐⭐⭐ THE RANK ITSELF, AND HOW MANY HE HOLDS — b159. Trey: "I also want to show the actual rank",
+         and separately "if you haven't drafted anyone, it shouldn't default to thin."
+         ⚠ `level` IS DELIBERATELY UNCHANGED. Every existing consumer — the League needs grid, the outlook
+           colours — is built on the tercile, and a team holding nobody genuinely IS bottom-third by it.
+           The flaw is not the arithmetic, it is the WORD: "thin" is a verdict on a room, and at pick 3.04
+           with no quarterback you do not have a bad room, you have no room yet. So the tercile stays and
+           the caller gets `count` to tell the two apart, plus the rank to print instead of a bare word.
+           Same shape as the "+spare" retirement in 29aj: the number was right, the question was wrong. */
+      rank[teamIdx][pos] = ix + 1;
+      count[teamIdx][pos] = (rostersByTeam[teamIdx] || []).filter((p) => p && p.pos === pos).length;
     });
+    ofHeld[pos] = held.length;
   });
-  return { level, score: scoreByTeam };
+  return { level, score: scoreByTeam, rank, count, ofHeld };
 }
 // ABSOLUTE positional tiers (0 strong / 1 middle / 2 thin) for the League Needs grid coloring. Unlike
 // posQualityTiers (which ranks teams against each other into forced terciles), this judges each team's
@@ -8670,6 +8685,8 @@ const css = `
   --fade-r:linear-gradient(90deg,rgba(11,15,20,0),var(--bg));
   --hover:#2B3340;--hover-gold:#15140d;--hover-mini:#262017;--hover-row:#16160F;--hover-feature:#121210;
   --zebra:#141A22;--zebra-hi:#1A2230;--tip-bg:#10151B;--clock-bg:#16243A;
+  /* YOUR on-the-clock card. Was a hardcoded gradient inline b159 -- see the note at the tickcard. */
+  --clock-you:linear-gradient(165deg,rgba(224,166,60,.22),rgba(31,36,26,1) 62%);--clock-chip:rgba(255,255,255,.06);
   --alert-bg:#2A1210;--alert-ink:#FFB4AC;--on-gold:#151002;
   --pos-mid:#9BD17E;--urge:#F59E42;--heat-ink:#eafff5;
   --shadow-lg:0 10px 40px -12px rgba(0,0,0,.6);}
@@ -8700,6 +8717,7 @@ const css = `
   --fade-r:linear-gradient(90deg,rgba(244,246,248,0),var(--bg));
   --hover:#E7ECF2;--hover-gold:#F6EFDC;--hover-mini:#F3EADA;--hover-row:#F5F1E4;--hover-feature:#F2F5F9;
   --zebra:#F1F4F8;--zebra-hi:#E6ECF3;--tip-bg:#FFFFFF;--clock-bg:#E6F0FA;
+  --clock-you:linear-gradient(165deg,rgba(224,166,60,.30),#FFFBF0 62%);--clock-chip:rgba(11,15,20,.06);
   --alert-bg:#FCEAE7;--alert-ink:#8C2B20;--on-gold:#FFFFFF;
   --pos-mid:#3F7A2E;--urge:#9A5410;--heat-ink:#0E5A3C;
   --shadow-lg:0 10px 30px -14px rgba(20,30,45,.28);}
@@ -30580,15 +30598,6 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
   //   highlight has to treat the two as the same place rather than silently un-lighting the button.
   const samePanel = (k) => (k === "needs" ? (hubPanel === "needs" || hubPanel === "ranks") : hubPanel === k);
   const [hubPanel, setHubPanel] = useState(null);   // null | "rosters" | "needs" | "ranks" | "scarcity" | "between" | "strategy"
-  /* Which FACE of the recommendation panel is showing — b159. "rec" is the advice, "team" is your roster
-     with a grade on each pick.
-     ⚠ NOT `recView` — that name is already taken twenty lines below for the recommendation LENS
-       ("best for you" vs "the engine's predicted market pick"), and declaring it twice in one component
-       is a build error, not a subtle bug. Two different questions about one panel: which face you are
-       looking at, and which model that face is using.
-     ⚠ Deliberately NOT persisted: on the clock you want the recommendation, and a panel that remembers
-       you were looking at your roster three picks ago costs you the one you need. */
-  const [recFace, setRecFace] = useState("rec");
   const [stratEditOpen, setStratEditOpen] = useState(false);   // the plan editor, opened from the checklist
   // The league whose PLAN applies here: a mock rehearses its parent league's blueprint (see planLeagueOf).
   const planLeague = useMemo(() => planLeagueOf(league, allLeagues), [league, allLeagues]);
@@ -32656,6 +32665,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     for (let i = 0; i < TEAMS; i++) rosters.push(rostersByTeam[i] || []);
     return posQualityTiers(rosters, cfg, userIdx).level;
   }, [players, picks, cfg, userIdx, liveSlots, rostersByTeam]);
+  /* b159 — the SAME call, kept whole, so the roster panel can print a rank and tell an empty slot from a
+     weak one. `posRel` above deliberately still exposes only `.level`: every consumer of it is built on
+     the tercile and must not start seeing new fields it might quietly come to depend on. */
+  const posRelFull = useMemo(() => {
+    const rosters = [];
+    for (let i = 0; i < TEAMS; i++) rosters.push(rostersByTeam[i] || []);
+    return posQualityTiers(rosters, cfg, userIdx);
+  }, [players, picks, cfg, userIdx, liveSlots, rostersByTeam]);
   /* ⭐ 29t — the same terciles over the PROJECTED rosters, for the decision card's Drafted/Projected toggle.
      ⚠ Kept as a SEPARATE memo rather than a parameter on posRel: the League-outlook grid must keep reading
      the drafted-only version (the comment above records why — a projected view painted a team with nothing
@@ -32666,6 +32683,12 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const rosters = [];
     for (let i = 0; i < TEAMS; i++) rosters.push(proj.rosters[i] || []);
     return posQualityTiers(rosters, cfg, userIdx).level;
+  }, [proj, cfg, userIdx, liveSlots]);
+  const posRelProjFull = useMemo(() => {
+    if (!proj || !proj.rosters) return null;
+    const rosters = [];
+    for (let i = 0; i < TEAMS; i++) rosters.push(proj.rosters[i] || []);
+    return posQualityTiers(rosters, cfg, userIdx);
   }, [proj, cfg, userIdx, liveSlots]);
   // Exact league rank (1 = best) for YOUR team at each position, plus your players per position — powers the
   // "How you're doing" positional-standing rail. Uses the same shared quality scorer as everything else.
@@ -34018,25 +34041,24 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
      ⚠ AND THE SLOT LAYOUT COMES FROM `lineupSlots` WITHOUT `fill`, so an unfilled slot stays EMPTY rather
        than being quietly papered over with an assumed replacement body. The empty K and DEF rows are half
        the reason to look at this panel at all. */
-  const myTeamRows = useMemo(() => {
-    const roster = (rostersByTeam && rostersByTeam[userIdx]) || [];
-    const gradeById = new Map();
-    graded.forEach((g) => {
-      if (!g || !g.p || g.t !== userIdx || g.o == null) return;
-      gradeById.set(g.p.id, { g: pickGradeFor(g.mval, stealCut, reachCut, MIN_MARK), mval: g.mval, o: g.o, keeper: !!g.keeper });
+  /* ⭐⭐⭐⭐⭐ A GRADE PER PICK, FOR EVERY TEAM — b159. Feeds the GR column in the Rosters panel; see
+     `pickGradeFor` for why the bands are absolute rather than relative.
+     ⚠⚠ IT LIVES IN THE EXISTING ROSTERS VIEW, NOT A NEW ONE. The first cut added a second face to the
+       recommendation panel — its own Recommended/My team toggle with its own roster list — and Trey's
+       answer was immediate: "I also just wanted the grades to sit in that roster toggle that was
+       existing." He is right and it is his own rule (26b): he does not want the app to become "a site
+       about tool kits". Two roster views is strictly worse than one, whatever the second one adds. The
+       toggle is gone and the column is here.
+     ⚠ KEYED BY PLAYER ID ACROSS ALL TEAMS, so the panel's team dropdown works without a second lookup —
+       a player is on exactly one roster, so one map serves twelve. */
+  const pickGradeById = useMemo(() => {
+    const m = new Map();
+    (graded || []).forEach((g) => {
+      if (!g || !g.p || g.o == null) return;
+      m.set(g.p.id, { g: pickGradeFor(g.mval, stealCut, reachCut, MIN_MARK), mval: g.mval, o: g.o, keeper: !!g.keeper });
     });
-    const { slots, bench } = lineupSlots(roster, cfg.sf);
-    const rowOf = (p, slot, isBench) => {
-      const hit = p ? gradeById.get(p.id) : null;
-      return { p: p || null, slot, bench: isBench, keeper: !!(hit && hit.keeper), grade: hit ? hit.g : null,
-        why: hit && hit.g
-          ? `${p.name} graded ${hit.g} — taken at ${pickLabel(hit.o)}, worth ${hit.mval > 0 ? "+" : ""}${hit.mval.toFixed(0)} against the market price for that slot.${hit.keeper ? " Kept, so the price was set before the draft." : ""}`
-          : (p ? `${p.name} has no market price to grade against — no ADP we trust for him.` : null) };
-    };
-    const rows = slots.map((s) => rowOf(s.p, s.slot, false))
-      .concat((bench || []).map((p) => rowOf(p, "BN", true)));
-    return { rows, filled: rows.filter((r) => r.p).length, total: rows.length };
-  }, [rostersByTeam, userIdx, graded, stealCut, reachCut, cfg.sf]);
+    return m;
+  }, [graded, stealCut, reachCut]);
   const valByTeamRaw = useMemo(() => Array.from({ length: TEAMS }, (_, i) => graded.filter((g) => g.t === i).reduce((s, g) => s + g.val, 0)), [graded]);
   // The raw per-pick value model is intentionally asymmetric (reaches sting more) and early-weighted, so
   // its LEAGUE SUM skews negative — most teams would show a negative total even in a normal draft. For the
@@ -36815,7 +36837,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 ];
               })(), true) : undefined;
               return (
-                <div className={`tickcard clock${isYou && isTimedMock && started && !paused && clock <= 15 ? " clock-urgent" : ""}`} style={{ borderColor: isYou ? (isTimedMock && started && clock <= 0 ? "var(--red)" : "var(--gold)") : "#33476B", borderWidth: isYou ? 2 : 1, background: isYou ? "linear-gradient(165deg, rgba(224,166,60,.22), rgba(31,36,26,1) 62%)" : undefined, boxShadow: isYou ? "0 0 18px rgba(224,166,60,.34), inset 0 0 30px rgba(224,166,60,.07)" : undefined, padding: "5px 10px", cursor: curTip ? "help" : "default", height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }} onMouseEnter={curTip} onMouseLeave={curTip ? hideTip : undefined}>
+                <div className={`tickcard clock${isYou && isTimedMock && started && !paused && clock <= 15 ? " clock-urgent" : ""}`} style={{ borderColor: isYou ? (isTimedMock && started && clock <= 0 ? "var(--red)" : "var(--gold)") : "var(--line2)", borderWidth: isYou ? 2 : 1, background: isYou ? "var(--clock-you)" : undefined, boxShadow: isYou ? "0 0 18px rgba(224,166,60,.34), inset 0 0 30px rgba(224,166,60,.07)" : undefined, padding: "5px 10px", cursor: curTip ? "help" : "default", height: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }} onMouseEnter={curTip} onMouseLeave={curTip ? hideTip : undefined}>
                   {/* ONE compact header row: pick + overall on the left, team name (and live timer) on the
                       right. The old second row (team / overall / "YOUR PICK" pill) is gone — when it's your
                       pick, the whole card goes loud gold instead, which reads faster than a pill. */}
@@ -36823,7 +36845,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     <span style={{ fontSize: isYou ? 10 : 9, textTransform: "uppercase", letterSpacing: ".05em", color: isYou ? "var(--gold)" : "var(--mut)", fontWeight: 800 }}>{isYou ? "You're on the clock" : "On the clock"} · {pickLabel(picks.length)} <span style={{ opacity: .7 }}>({picks.length + 1})</span></span>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                       <span title={isYou ? "Your team" : teamFullLabel(onClock)} style={{ fontSize: 11, fontWeight: 800, color: isYou ? "var(--gold)" : "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 96, cursor: "help" }}>{isYou ? "YOU" : teamShort(TEAM_NAMES[onClock] || `Team ${onClock + 1}`)}</span>
-                      {(connected || (cfg && cfg.mockTimerSec > 0)) && (liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? <span className="num mut" style={{ fontSize: 13 }}>no timer</span> : (isTimedMock && !started) ? <span className="num mut" style={{ fontSize: 12 }}>{fmtClock(cfg.mockTimerSec)}</span> : clock <= 0 ? <span className="num" style={{ fontSize: 15, color: "var(--red)", fontWeight: 800, letterSpacing: ".02em", textTransform: "uppercase" }}>{isTimedMock ? "Time's up" : "overdue"}</span> : <span className="num" style={{ fontSize: 22, lineHeight: 1, color: clock <= 15 ? "var(--red)" : "var(--ink)", fontWeight: 800, letterSpacing: ".02em", background: clock <= 15 ? "var(--neg-wash)" : "rgba(255,255,255,.06)", padding: "3px 9px", borderRadius: 6, fontVariantNumeric: "tabular-nums" }}>{fmtClock(clock)}</span>)}
+                      {(connected || (cfg && cfg.mockTimerSec > 0)) && (liveClock && liveClock.timerSec === 0 && !liveClock.deadlineMs ? <span className="num mut" style={{ fontSize: 13 }}>no timer</span> : (isTimedMock && !started) ? <span className="num mut" style={{ fontSize: 12 }}>{fmtClock(cfg.mockTimerSec)}</span> : clock <= 0 ? <span className="num" style={{ fontSize: 15, color: "var(--red)", fontWeight: 800, letterSpacing: ".02em", textTransform: "uppercase" }}>{isTimedMock ? "Time's up" : "overdue"}</span> : <span className="num" style={{ fontSize: 22, lineHeight: 1, color: clock <= 15 ? "var(--red)" : "var(--ink)", fontWeight: 800, letterSpacing: ".02em", background: clock <= 15 ? "var(--neg-wash)" : "var(--clock-chip)", padding: "3px 9px", borderRadius: 6, fontVariantNumeric: "tabular-nums" }}>{fmtClock(clock)}</span>)}
                     </span>
                   </div>
                   {/* projected pick (with photo) + 3 alternatives */}
@@ -38218,16 +38240,42 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         {(() => {
                           const TONE3 = ["var(--pos)", "var(--gold)", "var(--neg)"];
                           const WORD3 = ["strong", "middle", "thin"];
+                          const src = rosterProj && posRelProjFull ? posRelProjFull : posRelFull;
                           return (
                             <div data-rosterstrength style={{ display: "flex", gap: 5, marginBottom: 8 }}>
                               {["QB", "RB", "WR", "TE"].map((pos) => {
                                 const lvl = rosterRel && rosterRel[rosterTeam] ? rosterRel[rosterTeam][pos] : null;
-                                const col = lvl == null ? "var(--line2)" : TONE3[lvl];
+                                const held = src && src.count && src.count[rosterTeam] ? src.count[rosterTeam][pos] : null;
+                                const rk = src && src.rank && src.rank[rosterTeam] ? src.rank[rosterTeam][pos] : null;
+                                const of = src && src.ofHeld ? src.ofHeld[pos] : null;
+                                /* ⭐⭐⭐⭐⭐ NOBODY DRAFTED IS NOT "THIN" — b159. Trey: "if you haven't drafted
+                                   anyone, it shouldn't default to thin. That should be based on what is
+                                   available as an alternative of available players."
+                                   He is right, and the fault is the WORD rather than the maths: a team
+                                   holding no quarterback at pick 3.04 genuinely sits bottom-third, but
+                                   "thin" is a verdict on a room and there is no room yet. Printing it
+                                   tells somebody they are bad at a position they simply have not reached,
+                                   which is the "+spare" mistake of 29aj — a correct number answering a
+                                   question nobody asked. An empty slot reads OPEN, in neutral colour, and
+                                   the hover says what is still on the board for it. */
+                                const openSlot = held === 0;
+                                const col = openSlot ? "var(--mut)" : lvl == null ? "var(--line2)" : TONE3[lvl];
+                                const best = openSlot && advice && advice.bestNow ? advice.bestNow[pos] : null;
+                                const tip = openSlot
+                                  ? `You have no ${pos} yet — that is an empty slot, not a weak one. ${best ? `Best available: ${best.name} (${pos}${best.posRank || ""}${best.vbd != null ? `, ${fmtVal(best.vbd)} VBD` : ""}).` : "Nothing is rated at the position right now."} A rank appears once you hold one.`
+                                  : `${pos}: ${lvl == null ? "unrated" : WORD3[lvl]} — ${rk ? `${ordinal(rk)} of ${of} teams that hold a ${pos}` : "unranked"}, on quality and depth together. ${held != null ? `You hold ${held}.` : ""}`;
                                 return (
-                                  <div key={pos} data-strengthpos={pos} title={`${pos}: ${lvl == null ? "unrated" : WORD3[lvl]} for this league`}
-                                    style={{ flex: 1, minWidth: 0, border: `1px solid ${alpha(col, 40)}`, background: `${lvl == null ? "transparent" : `${alpha(col, 10)}`}`, borderRadius: 5, padding: "3px 0", textAlign: "center" }}>
+                                  <div key={pos} data-strengthpos={pos} data-strengthrank={rk == null ? "" : String(rk)}
+                                    data-strengthheld={held == null ? "" : String(held)} title={tip}
+                                    style={{ flex: 1, minWidth: 0, border: `1px solid ${alpha(col, 40)}`, background: `${openSlot || lvl == null ? "transparent" : `${alpha(col, 10)}`}`, borderRadius: 5, padding: "3px 0", textAlign: "center", cursor: "help" }}>
                                     <div className="num" style={{ fontSize: 9.5, fontWeight: 800, color: col, letterSpacing: ".04em" }}>{pos}</div>
-                                    <div className="mut" style={{ fontSize: 8, marginTop: 1 }}>{lvl == null ? "—" : WORD3[lvl]}</div>
+                                    <div className="mut" style={{ fontSize: 8, marginTop: 1 }}>
+                                      {openSlot ? "open" : lvl == null ? "—" : WORD3[lvl]}
+                                    </div>
+                                    {/* The actual rank, asked for by name — a word alone cannot tell 4th from 8th. */}
+                                    {!openSlot && rk != null && (
+                                      <div className="num" style={{ fontSize: 8.5, marginTop: 1, color: col, fontWeight: 700 }}>{rk}/{of}</div>
+                                    )}
                                   </div>
                                 );
                               })}
@@ -38249,7 +38297,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             return "var(--mut)";
                           };
                           const row = (label, p, dim, starter) => (
-                            <div key={label + (p ? p.id : "empty")} style={{ display: "grid", gridTemplateColumns: "38px minmax(0,1fr) 30px 34px 34px", gap: 5, alignItems: "baseline", fontSize: 11.5, padding: "2px 0", opacity: dim ? 0.68 : 1 }}>
+                            <div key={label + (p ? p.id : "empty")} style={{ display: "grid", gridTemplateColumns: "38px minmax(0,1fr) 30px 34px 34px 26px", gap: 5, alignItems: "baseline", fontSize: 11.5, padding: "2px 0", opacity: dim ? 0.68 : 1 }}>
                               <span className="mut" style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: ".03em" }}>{label}</span>
                               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: p ? "var(--ink)" : "var(--mut)" }}>
                                 {p ? <><b style={{ color: POS_COLOR[cpos(p.pos)] || "var(--ink)", fontSize: 9.5, marginRight: 4 }}>{cpos(p.pos)}</b>{p.name}</> : "—"}
@@ -38260,12 +38308,33 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               </span>
                               <span className="num" style={{ fontSize: 10.5, textAlign: "right", color: "var(--ink)" }}>{p && p.pts != null ? Math.round(p.pts) : ""}</span>
                               <span className="num" style={{ fontSize: 10.5, textAlign: "right", color: p ? vbdColor(p.vbd) : "var(--mut)", fontWeight: 700 }}>{p && p.vbd != null ? fmtVal(p.vbd) : ""}</span>
+                              {/* ⭐⭐⭐⭐⭐ THE PICK'S GRADE — b159, asked for by name ("what Yahoo draft boards
+                                  has when you draft your players and it puts a grade on each draft pick").
+                                  ⚠ IT GRADES THE PICK, NOT THE PLAYER. An A+ means he fell a long way past
+                                    his price; it says nothing about how good he is, which the VBD column
+                                    two cells left already answers. Two questions, two columns — 29aq is the
+                                    whole story of what happens when one number is asked to carry both.
+                                  ⚠ AND A PROJECTED ROW HAS NO GRADE, because nobody picked him: the
+                                    Projected toggle fills the lineup with men the engine expects you to
+                                    get, and pricing a pick that has not happened would be inventing one. */}
+                              {(() => {
+                                const hit = p && !p.assumed ? pickGradeById.get(p.id) : null;
+                                const g = hit ? hit.g : null;
+                                return (
+                                  <span className="num" data-rostergrade={g || ""}
+                                    title={hit && g
+                                      ? `${p.name} graded ${g} on the PICK — taken at ${pickLabel(hit.o)}, worth ${hit.mval > 0 ? "+" : ""}${hit.mval.toFixed(0)} against the market price for that slot.${hit.keeper ? " Kept, so the price was set before the draft rather than on the clock." : ""}`
+                                      : p ? `No market price to grade ${p.name}'s pick against.` : undefined}
+                                    style={{ fontSize: 10, textAlign: "right", fontWeight: 800,
+                                      color: GRADE_TONE(g), cursor: g ? "help" : "default" }}>{g || ""}</span>
+                                );
+                              })()}
                             </div>
                           );
                           return (
                             <div>
-                              <div style={{ display: "grid", gridTemplateColumns: "38px minmax(0,1fr) 30px 34px 34px", gap: 5, fontSize: 8, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, paddingBottom: 2, borderBottom: "1px solid var(--line2)", marginBottom: 3 }}>
-                                <span>Slot</span><span>Player</span><span style={{ textAlign: "right" }}>Bye</span><span style={{ textAlign: "right" }}>Proj</span><span style={{ textAlign: "right" }}>VBD</span>
+                              <div style={{ display: "grid", gridTemplateColumns: "38px minmax(0,1fr) 30px 34px 34px 26px", gap: 5, fontSize: 8, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, paddingBottom: 2, borderBottom: "1px solid var(--line2)", marginBottom: 3 }}>
+                                <span>Slot</span><span>Player</span><span style={{ textAlign: "right" }}>Bye</span><span style={{ textAlign: "right" }}>Proj</span><span style={{ textAlign: "right" }}>VBD</span><span style={{ textAlign: "right" }} title="Grade on the PICK — value against where he was taken, not how good he is. Hover any grade for the arithmetic.">Gr</span>
                               </div>
                               {slots.map((sl) => row(sl.slot, sl.p && !sl.p.assumed ? sl.p : null, false, true))}
                               {bench.length > 0 && (
@@ -38385,77 +38454,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         ))}
                       </div>
                     )}
-                    {/* ⭐⭐⭐⭐⭐ RECOMMENDED ↔ MY TEAM — b159.
-                        Trey: "I want a toggle on the recommendation widget that lets you go from the
-                        recommendation to your team (and shows something like the screenshot)."
-                        ⭐ A TOGGLE RATHER THAN A SECOND PANEL, and that is his own rule applied (26b): he
-                          does not want the app to become "a site about tool kits", and the answer that
-                          satisfies him is to put the thing where the user already is. This is the most
-                          crowded real estate in the app and it is where your eyes are on the clock —
-                          "what do I still need" belongs in it, not behind a navigation. */}
-                    <div className="filterchips" data-recface={recFace} style={{ display: "flex", gap: 5, marginBottom: 9 }}>
-                      {[["rec", "ti-target-arrow", "Recommended"], ["team", "ti-users", `My team${myTeamRows ? ` (${myTeamRows.filled}/${myTeamRows.total})` : ""}`]].map(([k, icon, lbl]) => {
-                        const on = recFace === k;
-                        return (
-                          <button key={k} data-recfacebtn={k} aria-pressed={on} onClick={() => setRecFace(k)}
-                            style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: on ? 800 : 600,
-                              padding: "4px 9px", borderRadius: 7, cursor: "pointer", fontFamily: "inherit",
-                              border: `1px solid ${on ? "var(--gold)" : "var(--line2)"}`,
-                              color: on ? "var(--on-gold)" : "var(--mut)", background: on ? "var(--gold)" : "transparent" }}>
-                            <i className={`ti ${icon}`} style={{ fontSize: 11 }} aria-hidden="true" />{lbl}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {recFace === "team" && (
-                      <div data-myteampanel={String(myTeamRows ? myTeamRows.filled : 0)}>
-                        {!myTeamRows || !myTeamRows.rows.length ? (
-                          <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5, padding: "6px 0" }}>
-                            Nothing drafted yet. Your roster fills in here as you pick, with a grade on each one.
-                          </div>
-                        ) : (
-                          <>
-                            {myTeamRows.rows.map((row, i) => (
-                              <div key={i} data-myteamrow={row.p ? row.p.name : `empty-${row.slot}`}
-                                style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 0",
-                                  borderTop: i === 0 ? "none" : "1px solid var(--line)", opacity: row.p ? 1 : 0.45 }}>
-                                {/* The slot label is the point of the whole panel: it is what turns a list of
-                                    names into "I still have no kicker". */}
-                                <span className="num" style={{ width: 30, flexShrink: 0, fontSize: 9, fontWeight: 800,
-                                  textTransform: "uppercase", letterSpacing: ".03em",
-                                  color: row.bench ? "var(--mut)" : (POS_COLOR[row.slot] || "var(--mut)") }}>{row.bench ? "BN" : row.slot}</span>
-                                {row.p ? <PlayerPhoto sid={row.p.sid} pos={row.p.pos} size={22} /> : <span style={{ width: 22, flexShrink: 0 }} />}
-                                <span style={{ flex: 1, minWidth: 0 }}>
-                                  <span style={{ display: "block", fontSize: 11.5, fontWeight: 700, overflow: "hidden",
-                                    textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                    {row.p ? row.p.name : "— empty —"}
-                                    {row.keeper && <span className="gold" style={{ fontWeight: 800, marginLeft: 4, fontSize: 9 }}>K</span>}
-                                  </span>
-                                  {row.p && (
-                                    <span className="mut" style={{ display: "block", fontSize: 9.5 }}>
-                                      {row.p.pos}{row.p.team ? ` · ${row.p.team}` : ""}{row.p.bye ? ` · Bye ${row.p.bye}` : ""}
-                                    </span>
-                                  )}
-                                </span>
-                                {/* ⚠ NO LETTER IS NOT A BLANK — a pick we cannot price says so on hover rather
-                                    than leaving a gap the reader fills in themselves. */}
-                                <span className="num" data-myteamgrade={row.grade || ""} title={row.why || undefined}
-                                  style={{ flexShrink: 0, width: 26, textAlign: "center", fontSize: 11, fontWeight: 800,
-                                    color: GRADE_TONE(row.grade), cursor: row.why ? "help" : "default" }}>
-                                  {row.grade || (row.p ? "·" : "")}
-                                </span>
-                              </div>
-                            ))}
-                            <div className="mut" style={{ fontSize: 9.5, lineHeight: 1.5, marginTop: 8, paddingTop: 6, borderTop: "1px solid var(--line2)" }}>
-                              The grade is on THE PICK — value against where he was taken, not how good he is.
-                              An A means he fell well past his price. Hover one for the arithmetic.
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    )}
                     {/* recommendation — single unified model, headshot */}
-                    {recFace === "rec" && topBal && (
+                    {topBal && (
                       <div style={{ marginBottom: 10 }}>
                         <div style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--mut)", fontWeight: 700, marginBottom: 4 }}>Recommended {onClockNow ? "— draft" : "for this pick"}</div>
                         <div style={{ display: "flex", gap: 7 }}>
@@ -38463,9 +38463,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         </div>
                       </div>
                     )}
-                    {recFace === "rec" && <div style={{ borderTop: "1px solid var(--line)", margin: "0 0 10px" }} />}
+                    <div style={{ borderTop: "1px solid var(--line)", margin: "0 0 10px" }} />
                     {/* single recommendation list — full top 10, market → build blended */}
-                    {recFace === "rec" && (
                     <div>
                       {recTable(balAdv, "var(--gold)", "For this pick", strategy === "adp" ? "strict ADP order" : strategy === "value" ? "max VBD" : strategy === "upside" ? "upside / breakout" : "smart · market early → your build by round 5")}
                       {isAdminUser && balAdv && balAdv.dbgRows && (balAdv.dbgRows.rows || []).length > 0 && (
@@ -38496,9 +38495,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                         </Boundary>
                       )}
                     </div>
-                    )}
                     {/* take now vs wait — per position (below My build): two reads side by side */}
-                    {recFace === "rec" && waitByPos.length > 0 && (
+                    {waitByPos.length > 0 && (
                       <>
                         <div style={{ borderTop: "1px solid var(--line)", margin: "11px 0 10px" }} />
                         <div>
