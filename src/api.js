@@ -335,6 +335,18 @@ export const api = {
     return call(`/api/connect/sleeper/live?league_ids=${encodeURIComponent(ids)}`
       + `${week ? `&week=${week}` : ''}${own ? `&owner=${encodeURIComponent(own)}` : ''}`);
   },
+  /* ⭐⭐⭐⭐ WHAT HAPPENED IN EVERY CONNECTED LEAGUE — b161. Trades, waivers and free-agent adds across
+     all of them in one call, because the ask was an AGGREGATED view: "just see an aggregated list of
+     connected leagues". Same batching reasoning as sleeperLive above — one request for fifteen leagues,
+     never fifteen requests.
+     ⚠ `weeks` is a window, not a page. Sleeper has no recent-transactions endpoint, so the backend makes
+       one upstream call per league per week; four weeks is what "recent" means and what it defaults to. */
+  async sleeperTransactions(leagueIds, owners, weeks) {
+    const ids = (leagueIds || []).filter(Boolean).join(',');
+    const own = (owners || []).filter(Boolean).join(',');
+    return call(`/api/connect/sleeper/transactions?league_ids=${encodeURIComponent(ids)}`
+      + `${own ? `&owner=${encodeURIComponent(own)}` : ''}${weeks ? `&weeks=${weeks}` : ''}`);
+  },
   /* Every COMPLETED week of one league, already reduced to verdicts, misses and totals — the whole season
      in one call so the week toggle is instant and the trend lines exist at all. See connect.js. */
   async sleeperSeasonReview(leagueId, owner) {
@@ -394,6 +406,13 @@ export const api = {
   async yahooExchange(code) { return call('/api/connect/yahoo/exchange', { method: 'POST', body: { code }, retries: 0 }); },
   async yahooMyLeagues() { return call('/api/connect/yahoo/my-leagues'); },
   async yahooLeague(leagueKey) { return call(`/api/connect/yahoo/league?league_key=${encodeURIComponent(leagueKey)}`); },
+  /* ⭐⭐⭐⭐ THE IN-SEASON HUB FOR A YAHOO LEAGUE — b161. It returns the SAME payload shape as
+     sleeperTeamHub, deliberately, so every in-season screen works on either platform without knowing
+     which one it is reading. See the route's header for why that is the whole design. */
+  async yahooTeamHub(leagueKey, week) {
+    return call(`/api/connect/yahoo/team-hub?league_key=${encodeURIComponent(leagueKey)}${week ? `&week=${week}` : ''}`);
+  },
+  async yahooUnlink() { return call('/api/connect/yahoo/unlink', { method: 'POST', body: {} }); },
   async platformStatus(which) { return call(`/api/connect/${which}/status`); },
 
   // ---- feedback (public submit) ----

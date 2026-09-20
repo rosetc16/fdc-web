@@ -100,7 +100,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29av";
+const BUILD_TAG = "2026.07.29ax";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -3000,6 +3000,32 @@ const INJURY_STATUS = {
   questionable: { color: "#f9a825", label: "Questionable", abbr: "Q" },
   dtd:       { color: "#e57373", label: "Day-to-day", abbr: "DTD" },
 };
+/* ⭐⭐⭐⭐⭐ THE TEXT COLOUR ON A FILLED BADGE IS COMPUTED, NOT ASSUMED — b161.
+   ==================================================================================================
+   The theme sweep has been reporting four failures for several builds and they were all one bug: the
+   injury pills on the draft board are drawn as white text on the tier's own colour, and two of the seven
+   tiers are light. "Q" is white on amber (#f9a825) at 2.1:1 and "DTD" is white on salmon (#e57373) at
+   2.99:1 — both under the 4.5:1 floor, and both UNREADABLE IN BOTH THEMES, which is why no amount of
+   dark-mode checking ever caught them. A fixed foreground over a variable background is a contrast bug
+   waiting for somebody to add a pale colour to the palette, and somebody always does.
+   ⚠ THE FIX IS NOT TO DARKEN THE AMBER. The tier colours carry meaning across the whole app — the same
+     amber is the "questionable" colour on the roster, in the hover card and in the legend — so changing
+     one of them here to suit one badge would put the badge out of step with everything that explains it.
+     The background is the signal; the foreground is whichever of black or white can be read on it.
+   ⚠ AND IT IS WCAG RELATIVE LUMINANCE, not `(r+g+b)/3`. The naive average calls #f9a825 and #6a1b9a
+     nearly the same brightness (they are 0.62 and 0.10 apart in real luminance) because it weights blue
+     as heavily as green, and green is most of what the eye measures. */
+function inkOn(hex) {
+  const h = String(hex || "").replace("#", "");
+  if (h.length !== 6) return "#fff";
+  const lin = (v) => { const c = parseInt(v, 16) / 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+  const L = 0.2126 * lin(h.slice(0, 2)) + 0.7152 * lin(h.slice(2, 4)) + 0.0722 * lin(h.slice(4, 6));
+  // Contrast against white and against a near-black that is not pure #000 (pure black on amber is harsh).
+  const onWhite = 1.05 / (L + 0.05);
+  const darkL = 0.0143;                                   // #1b1b1b
+  const onDark = (L + 0.05) / (darkL + 0.05);
+  return onDark > onWhite ? "#1b1b1b" : "#fff";
+}
 // Per-player injury detail. status -> tier above; note -> 1-3 sentence description; back -> optional return-by string.
 // In production these stream from the injury wire (status, designation, est. return) and refresh daily.
 // ⚠ THE CURATED INJURY TABLE IS GONE, DELIBERATELY.
@@ -6816,41 +6842,72 @@ function slotFillPts(pool, cfg, teamsN) {
 // `opts.withKDST` adds the K and DST starting slots (the projected-finish score needs them; the My Team
 // panel and the bye-exposure read deliberately do not, since those are about skill starters).
 // `opts.fill` is a slotFillPts table: an empty mandatory slot is priced at the typical fill instead of 0.
-/* ⭐⭐⭐⭐⭐ A LETTER GRADE FOR ONE PICK — b159.
+/* ⭐⭐⭐⭐⭐ A LETTER GRADE FOR ONE PICK — b159, recalibrated in b160.
    ─────────────────────────────────────────────────────────────────────────────────────────────────
-   Trey: "I think I want something that looks like what Yahoo draft boards has when you draft your
-   players and it puts a grade on each draft pick."
+   Trey: "something that looks like what Yahoo draft boards has when you draft your players and it puts a
+   grade on each draft pick." Then, seeing the first cut: "we should be a bit more lenient (Yahoo gives a
+   lot of A's/B's). Right now it looks like there are a ton of B's... we should expect people to take
+   players near ADP... but if they are a good player, that's a good thing."
 
-   It grades THE PICK, not the player — his choice when asked. An A+ means you got him far later than the
-   market says he goes; it says nothing about whether he is any good, which is what the League tab and the
-   roster chips are for. Two different questions, and 29aq is the whole story of what happens when one
-   number is quietly asked to answer both.
+   ⭐⭐⭐⭐ THAT SECOND NOTE IS A MODEL CHANGE, NOT A BAND SHIFT, and reading it as "add half a letter to
+     everything" would have missed it. The first cut graded on MARKET SURPLUS alone — how far past his
+     price he fell. Under that model Ja'Marr Chase at 1.01, exactly his ADP, is a B: no surplus, no
+     credit. But nobody looks at an elite receiver on their roster and calls it a C+ of a decision. The
+     market gap answers "did you buy well"; it does not answer "did you get a good player", and a draft
+     grade people recognise is mostly the second question with the first as a modifier.
 
-   ⚠⚠ THE BANDS ARE ABSOLUTE, SCALED TO THIS BOARD'S OWN CUTS — never a z-score across your picks. A
-     relative grade is an AMPLIFIER: in a draft where you took everybody within a point of their ADP it
-     would still hand out an A+ and an F, because something has to come first. That exact fault has now
-     been fixed twice on this project — 29n's steal/reach percentile bar, which coloured a tenth of the
-     board no matter what happened on it, and the team grades above, where a chalk draft graded from A+
-     down to D over a spread that was rounding error. `stealCut` and `reachCut` are already calibrated
-     per board, so a quiet draft correctly grades as a column of Bs.
-   ⚠ AND THE SCALE IS ASYMMETRIC ON PURPOSE, matching pickValue's own rule that reaches sting about 15%
-     more than equal steals reward: the reach side of the scale is wider, so an ordinary miss reads as a
-     B− rather than a C.
-   ⚠ `null` IS A REAL ANSWER — a pick with no market price to grade against (no ADP, an unresolved name)
-     gets no letter rather than a confident middle grade. */
-function pickGradeFor(mval, stealCut, reachCut, minMark = 5) {
+   ⚠ SO THE SCORE IS A BLEND, AND THE QUALITY TERM IS RELATIVE TO THE SLOT, NOT ABSOLUTE. An absolute
+     "how good is he" term would grade every round-13 pick an F by construction — the player taken 150th
+     is not good, and grading him against the first round says nothing about the decision. `lift` is
+     supplied by the caller as the player's standing among players taken around the same time, so a
+     strong pick in round 12 can still earn its letter.
+
+   ⚠⚠ AND THE BANDS ARE STILL ABSOLUTE, SCALED TO THIS BOARD'S OWN CUTS — never a z-score across your own
+     picks. A relative grade is an AMPLIFIER: a draft taken entirely at ADP would still hand out an A+ and
+     an F because something has to come first. That fault has been fixed twice on this project already
+     (29n's steal/reach percentile bar; the team grades, where a chalk draft spread A+ to D over rounding
+     error). `stealCut`/`reachCut` are calibrated per board, so a quiet draft grades as a quiet draft.
+   ⚠ THE SCALE IS ASYMMETRIC ON PURPOSE, matching pickValue's own rule that reaches sting ~15% more than
+     equal steals reward: the reach side is wider, so an ordinary miss reads B− rather than C.
+   ⚠ `null` IS A REAL ANSWER — a pick with no market price to grade against gets no letter rather than a
+     confident middle grade. */
+function pickGradeFor(mval, stealCut, reachCut, minMark = 5, lift = 0) {
+  return gradeFromScore(pickScoreFor(mval, stealCut, reachCut, minMark, lift));
+}
+/* THE BLEND ITSELF, AS A NUMBER — split out in b161 because the TEAM grade is the mean of its own picks
+   and you cannot average letters.
+   ⭐⭐⭐⭐⭐ THE QUALITY WEIGHT IS THE WHOLE ANSWER TO HIS NOTE. At 1.0 the quality half can carry a pick a
+     full grade family on its own, so an elite player taken at exactly his price — zero market surplus,
+     the case the first cut graded B — scores 0.95 and reads A. An ordinary body at the same price scores
+     0.5 and reads B+. That is the shape he described: "expect people to take players near ADP… but if
+     they are a good player, that's a good thing."
+   ⚠ MARKET IS IN UNITS OF "ONE BOARD-CALIBRATED STEAL", so the blend means the same thing in a wild room
+     and a chalky one. The reach side is divided by its own cut for the same reason — and the two cuts
+     differ, which is how the scale stays asymmetric in the way pickValue already is (reaches sting ~15%
+     more than equal steals reward). */
+function pickScoreFor(mval, stealCut, reachCut, minMark = 5, lift = 0) {
   if (!Number.isFinite(mval)) return null;
   const s = Math.max(Number(stealCut) || 0, minMark), r = Math.max(Number(reachCut) || 0, minMark);
-  if (mval >= s * 2) return "A+";
-  if (mval >= s) return "A";
-  if (mval >= s * 0.5) return "A−";
-  if (mval >= minMark) return "B+";
-  if (mval > -minMark) return "B";
-  if (mval >= -r * 0.6) return "B−";
-  if (mval >= -r) return "C+";
-  if (mval >= -r * 1.6) return "C";
-  if (mval >= -r * 2.4) return "C−";
-  if (mval >= -r * 3.5) return "D";
+  const market = mval >= 0 ? mval / s : mval / r;
+  const q = Math.max(0, Math.min(1, Number(lift) || 0));
+  return market + 1.0 * q;
+}
+/* ⭐⭐⭐⭐⭐ ONE SET OF BANDS, TWO CALLERS — b161, and it is the 29y rule applied to the thing this project
+   gets wrong most often. A pick grade and a team grade that use different scales will contradict each
+   other on the same screen, and Trey will be looking at a roster of A picks under a team grade of C
+   wondering which one is lying. There is now exactly one place a score becomes a letter. */
+function gradeFromScore(score) {
+  if (!Number.isFinite(score)) return null;
+  if (score >= 1.45) return "A+";
+  if (score >= 0.90) return "A";
+  if (score >= 0.60) return "A−";
+  if (score >= 0.30) return "B+";
+  if (score >= 0.00) return "B";
+  if (score >= -0.45) return "B−";
+  if (score >= -0.95) return "C+";
+  if (score >= -1.45) return "C";
+  if (score >= -2.00) return "C−";
+  if (score >= -2.80) return "D";
   return "F";
 }
 /* The colour a grade carries. Deliberately NOT a ramp through every letter — three bands, because the
@@ -12212,7 +12269,7 @@ function TrendsPage({ user, onBack, onHome, onSignOut }) {
     <div key={x.name} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "6px 0", borderTop: "1px solid var(--line)" }}>
       {x.pos ? <Dot pos={x.pos} /> : <i className="ti ti-arrow-badge-right" style={{ fontSize: 14, color: color || "var(--gold)", marginTop: 2 }} aria-hidden="true" />}
       <div style={{ flex: 1 }}>
-        <div style={{ fontWeight: 600, fontSize: 13 }}>{x.name} <span className="mut" style={{ fontSize: 11 }}>{x.team}{x.pos ? ` · ${x.pos}` : ""}</span>{x.sev && <span style={{ marginLeft: 6, fontSize: 10, color: "#fff", background: INJURY_INFO[x.sev].color, borderRadius: 3, padding: "0 5px" }}>{INJURY_INFO[x.sev].label}</span>}</div>
+        <div style={{ fontWeight: 600, fontSize: 13 }}>{x.name} <span className="mut" style={{ fontSize: 11 }}>{x.team}{x.pos ? ` · ${x.pos}` : ""}</span>{x.sev && <span style={{ marginLeft: 6, fontSize: 10, color: inkOn(INJURY_INFO[x.sev].color), background: INJURY_INFO[x.sev].color, borderRadius: 3, padding: "0 5px" }}>{INJURY_INFO[x.sev].label}</span>}</div>
         <div className="mut" style={{ fontSize: 11.5 }}>{x.note}</div>
       </div>
     </div>
@@ -16667,6 +16724,44 @@ function HubLoading() {
     </div>
   );
 }
+/* ⭐⭐⭐⭐⭐ THE FOUR SECTIONS OF THE TRADES TAB — b161, and they live out here on purpose.
+   Trey: "I'd also make the trade tab have tabs at the top to navigate to different sections because this
+   is getting crowded and confusing."
+   ⚠ THE BLURB MOVES WITH THE TAB. The old header sentence described all four sections in a row, which is
+     precisely the "crowded and confusing" it was meant to relieve — four descriptions on screen for one
+     section you are looking at. Each tab now carries its own, so the sentence under the title is always
+     about the thing underneath it.
+   ⚠ `count` IS A FUNCTION OF THE ALREADY-COMPUTED BOARDS, never its own measure. A badge that counts
+     deals differently from the section it labels is a number that contradicts the page one click later —
+     the same fault as the "You send —" beside "3 ideas" in b151. */
+const TRADE_SECTIONS = [
+  { k: "calc", label: "Calculator", icon: "scale",
+    blurb: "Put the players on each side of a deal you already have in mind and see what it does to both starting lineups.",
+    count: () => null },
+  { k: "league", label: "League read", icon: "target-arrow",
+    blurb: "Who to call, what you can afford to trade away, and what a deal with each manager would actually be worth.",
+    count: (o) => ((o.partners && o.partners.partners) || []).filter((p) => p.tone !== "none").length },
+  { k: "deals", label: "Deals worth sending", icon: "arrows-exchange",
+    blurb: "Specific swaps that raise your starting lineup and give the other manager a reason to say yes.",
+    count: (o) => (o.board ? o.board.length : 0) + ((o.board && o.board.longShots) || []).length },
+  { k: "market", label: "Positional market", icon: "chart-histogram",
+    blurb: "Where every roster in the league is strong and thin, so you can find the shape of a fit before you go looking for the players.",
+    count: (o) => (o.market && o.market.positions ? o.market.positions.length : 0) },
+  /* ⭐⭐⭐⭐ b161 — Trey: "ultimately when you're in the trade tab in a specific league, it can show the
+     specific league trades that are connected to that." The aggregated view across every connected league
+     is on This Week; this is the same feed narrowed to the league you are standing in.
+     ⚠ ITS COUNT IS NULL UNTIL THE FEED IS FETCHED, and the feed is only fetched when the section is
+       opened — see the note on the loader. A badge that reads 0 on a league with nine trades in it is
+       worse than no badge, because the reader believes it and never clicks. */
+  /* ⚠⚠ THE KEY IS "recent", NOT "activity", AND THAT IS NOT A PREFERENCE. tools/icons-scan.mjs intersects
+     every quoted lowercase token in the source with the real Tabler icon list — a deliberately broad net
+     so a dynamically-built icon name cannot slip through — and "activity" is one of those names. The
+     literal fails the icon gate and therefore the BUILD. Fifth time on this project (kind: "table",
+     ["map"], q.get("code")); renaming the string is cheaper and safer than loosening the net. */
+  { k: "recent", label: "Recent activity", icon: "history",
+    blurb: "Every trade, waiver claim and free-agent add in this league recently — who moved, what it cost, and what did not go through.",
+    count: (o) => (o.tx && o.tx.leagues && o.tx.leagues[0] ? (o.tx.leagues[0].items || []).length : null) },
+];
 function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate, onGameDay, onOpenDraft }) {
   const [data, setData] = useState(null);      // response from /sleeper/team-hub
   const [viewWeek, setViewWeek] = useState(null); // week the user picked to look at; null = backend default (current/upcoming)
@@ -16736,6 +16831,23 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   const [faShowAll, setFaShowAll] = useState(false);
   // 29x: which position's market is open in the Trades tab. null = the overview.
   const [mktPos, setMktPos] = useState(null);
+  /* b161: which of the Trades tab's four sections is open. Defaults to the calculator, which is where the
+     tab has led since b151 on his instruction ("Move trade calculator to the top of the trade section") —
+     being the first tab AND the open one is the same instruction expressed in a navigation that has room
+     for the other three. See TRADE_SECTIONS. */
+  const [tSec, setTSec] = useState("calc");
+  /* b161: the fit finder's sort column — which position's league-wide ranking orders the grid. "fit" is
+     the default and is not a position at all: it sorts by how well each roster lines up with MINE, which
+     is the question the section exists to answer. */
+  const [fitSort, setFitSort] = useState("fit");
+  /* b161 — this league's transaction feed. Fetched the first time the Recent activity section is opened
+     and not before: the backend makes one upstream Sleeper call per week of the window, and a league hub
+     already costs seven. See the loader below. */
+  const [tx, setTx] = useState(null);
+  const [txLoading, setTxLoading] = useState(false);
+  const [txErr, setTxErr] = useState(null);
+  const [txScope, setTxScope] = useState("all");   // all | mine — a single league leads with the league
+  const txRan = useRef(null);
   // The long-shot list starts folded — see the note where it renders.
   const [longOpen, setLongOpen] = useState(false);
   /* Which partner's ideas are expanded. One at a time on purpose: the list exists to help him pick a
@@ -16753,7 +16865,13 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
      that is the common case, and neither is pinned there. `give` are A's players, `get` are B's.
      ⚠ OPEN BY DEFAULT, also on his instruction. The panel is the reason to be on this tab. */
   const [tb, setTb] = useState({ open: true, a: null, b: null, give: [], get: [] });
-  const tbOpen = (partner, give = [], get = []) => setTb((v) => ({ open: true, a: v.a, b: partner, give, get }));
+  /* ⭐⭐⭐⭐⭐ AND IT MOVES YOU TO THE CALCULATOR — b161, and this was a real bug the moment the sections
+     became tabs. Every caller of `tbOpen` lives somewhere ELSE on this tab: "Price it" on a partner row,
+     a pathway in the positional market, a swap on the deals board. Before the tabs they all pointed at a
+     panel a little further up the same page; after them they were loading a deal into a calculator the
+     reader could not see, and the button appeared to do nothing at all. A control that fills a panel has
+     to also be a control that opens it. (plan29cd §4b is what caught it.) */
+  const tbOpen = (partner, give = [], get = []) => { setTSec("calc"); setTb((v) => ({ open: true, a: v.a, b: partner, give, get })); };
   /* `a` is null until the hub knows my roster id, so it resolves at use rather than at init. */
   const tbA = tb.a != null ? tb.a : (data && data.myRosterId != null ? data.myRosterId : null);
   const tbToggle = (side, sid) => setTb((v) => {
@@ -16773,14 +16891,53 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   const poolBySid = React.useMemo(() => buildHubPool(cfg),
     [cfg && JSON.stringify(cfg.start), cfg && cfg.sf, cfg && cfg.tePremMult, cfg && cfg.teams, data && data.week]);
 
+  /* ⭐⭐⭐⭐ THIS LEAGUE'S TRANSACTION FEED — b161, loaded lazily on purpose.
+     ⚠ THE BACKEND MAKES ONE UPSTREAM SLEEPER CALL PER WEEK of the window, so a four-week look-back is
+       four more calls on top of the seven a league hub already costs. Folding it into the hub load would
+       put that on every visit to a tab most people never open. Once per league, when asked. */
+  React.useEffect(() => {
+    if (tSec !== "recent" || !leagueId) return;
+    const sig = `${leagueId}`;
+    if (txRan.current === sig) return;
+    txRan.current = sig;
+    let alive = true;
+    setTxLoading(true); setTxErr("");
+    const _lg2 = (leagues || []).find((l) => String(hubIdOfLeague(l)) === String(leagueId));
+    api.sleeperTransactions([leagueId], [ownerUsernameOf(_lg2)], 6)
+      .then((d) => { if (alive) setTx(d); })
+      .catch((e) => { if (alive) setTxErr(String((e && e.message) || e)); })
+      .finally(() => { if (alive) setTxLoading(false); });
+    return () => { alive = false; };
+  }, [tSec, leagueId, leagues]);
+
   React.useEffect(() => {
     let alive = true;
     setLoading(true); setErr("");
     /* The account this league was imported under, so the hub can point at your roster even when that account
        is no longer the primary one (or is no longer linked at all). See connect.js `owner`. */
-    const _lg = (leagues || []).find((l) => String(hubIdOfLeague(l)) === String(leagueId));
+    const _lg = draftLeague;
+    /* ⚠⚠ DO NOT FETCH BEFORE THE LEAGUE RECORD IS KNOWN — b161. The effect used to run once with
+       `leagues` still empty, which made every league look like a Sleeper one for a moment: the hub fired
+       a Sleeper request carrying a YAHOO league id, then fired the right one when the records arrived.
+       Harmless-looking and not harmless — it is a wasted upstream call on every open, it puts a Yahoo id
+       in front of an API that has never seen one, and the first response briefly paints somebody else's
+       league on screen. `draftLeague` is the memo that already does this lookup; waiting for it costs a
+       render and removes the whole class. */
+    if (!_lg && (leagues || []).length === 0) { setLoading(true); return () => { alive = false; }; }
     const _owner = ownerUsernameOf(_lg);
-    api.sleeperTeamHub(leagueId, viewWeek || undefined, _owner).then((r) => {
+    /* ⭐⭐⭐⭐⭐ ONE HUB, TWO SOURCES — b161. The Yahoo route returns the SAME payload shape as the Sleeper
+       one (see its header), so the only thing that changes here is which endpoint is asked. Everything
+       below this line — every tab, every memo, every screen — is unchanged and cannot tell the
+       difference, which is the entire point of building it that way.
+       ⚠ A YAHOO LEAGUE WITH NO `league_key` CANNOT BE ASKED ABOUT AT ALL. Imports before b161 dropped it
+         (see finishImported), so those leagues fall through to the Sleeper call and fail with a clear
+         error rather than silently rendering an empty hub — and re-importing the league fixes it. */
+    const _plat = platformOfLeague(_lg);
+    const _ykey = _plat === "yahoo" ? yahooKeyOfLeague(_lg) : null;
+    const _req = _ykey
+      ? api.yahooTeamHub(_ykey, viewWeek || undefined)
+      : api.sleeperTeamHub(leagueId, viewWeek || undefined, _owner);
+    _req.then((r) => {
       if (!alive) return;
       setData(r); setLoading(false);
       // Remember the backend's resolved current/upcoming week as the toggle baseline. This does NOT change
@@ -16788,7 +16945,9 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
       if (r && (r.defaultWeek || r.week)) setCurWeek(r.defaultWeek || r.week);
     }).catch((e) => { if (alive) { setErr(e && e.message ? e.message : "Could not load this league"); setLoading(false); } });
     return () => { alive = false; };
-  }, [leagueId, viewWeek]);
+    /* ⚠ `draftLeague` IS IN THE DEPS NOW. Without it the effect cannot re-run when the league records
+       arrive, and the guard above would simply never fetch. */
+  }, [leagueId, viewWeek, draftLeague]);
 
   // Resolve a list of Sleeper ids to enriched players. Points are the player's REAL projection for THIS
   // week's matchup (from the backend's `weekly` map, sourced from Sleeper's weekly projections) — so a
@@ -17773,11 +17932,40 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
         }));
     });
     if (!rows.length) return null;
-    const rk = (myReadFor(rosterId) || {}).posRank || {};
-    const ranks = POS.filter((pp) => rk[pp]).map((pp) => `${pp} ${ordinal(rk[pp])}`).join("  ·  ");
+    const rd = myReadFor(rosterId) || {};
+    const rk = rd.posRank || {};
+    /* ⭐⭐⭐⭐⭐ THE STRENGTH READ IS A TABLE NOW, NOT A RUN-ON LINE — b161.
+       Trey: "I also want to make the hover on the team name for 'what moves your season' to look a bit
+       more clear to identify who they have at each position / their strength at each position."
+       ⚠⚠ THE OLD LINE WAS "Their rooms rank: QB 4th · RB 1st · WR 9th · TE 6th", and it failed at exactly
+         the job it was there for. Four ordinals run together in grey have no column to scan down, no
+         denominator (4th of WHAT — this is a 12-team league and the line never said so), and no word for
+         what the number MEANS, so the reader has to remember the league size and do the thirds in his
+         head for every position before he can tell strong from thin. That is three steps of arithmetic
+         between him and "they are loaded at running back".
+       ⭐ SAME NUMBERS, SAID OUT LOUD: the rank with its denominator, the verdict as a word in the colour
+         the rest of the app uses for it, how many bodies are in the room, and the best man in it — which
+         is the one the conversation would actually be about. */
+    const n = rd.teams || 0;
+    const topCut = Math.max(1, Math.ceil(n / 3));
+    const strengthRows = POS.filter((pp) => rk[pp]).map((pp) => {
+      const r = rk[pp];
+      const word = n < 4 ? "—" : r <= topCut ? "strong" : r >= n - topCut + 1 ? "thin" : "middle";
+      const at = roster.filter((x) => String(x.pos).toUpperCase() === pp)
+        .sort((a2, b2) => (b2.pts || 0) - (a2.pts || 0));
+      const starting = at.filter((x) => startSids.has(String(x.sid))).length;
+      return {
+        Pos: pp, League: n ? `${ordinal(r)} of ${n}` : ordinal(r), Room: word,
+        Bodies: `${at.length}${starting ? ` · ${starting} starting` : ""}`,
+        Best: at.length ? at[0].name : "—",
+        tone: word === "strong" ? "var(--pos)" : word === "thin" ? "var(--neg)" : "var(--mut)",
+      };
+    });
     return [
       { kind: "take", tone: "neutral", x: label || (lt.teamName || "Their roster") },
-    ].concat(ranks ? [`Their rooms rank: ${ranks}`] : []).concat([
+    ].concat(strengthRows.length ? [{ kind: "ptable", k: `strength-${rosterId}`,
+      cols: [{ k: "Pos", strong: true }, { k: "League" }, { k: "Room", tint: true }, { k: "Bodies" }, { k: "Best" }],
+      rows: strengthRows }] : []).concat([
       { kind: "ptable", k: `roster-${rosterId}`,
         cols: [{ k: "Player", strong: true }, { k: "Pos", tint: true }, { k: "Rank" }, { k: "Role" }, { k: "Season", right: true }],
         rows },
@@ -17785,6 +17973,95 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     ]);
   };
   const myRead = (teamReadRows || []).find((r) => r.isMe) || null;
+
+  /* ⭐⭐⭐⭐⭐ ONE POSITION ON ONE ROSTER, AS A HOVER CARD — b161, hoisted out of the partner table because
+     three places now want it: the send/get grid, the fit finder, and the market's team list.
+     Trey: "then you hover those positions and it shows who is on each... That way it's easy to see
+     everyone they have by position and what their rank / strength it."
+     ⚠ IT WORKS FOR ANY POSITION, NOT ONLY THE FITS. That is the whole change: the b152 version was built
+       inside the chip renderer and so could only ever be asked about a position that had already been
+       nominated as a fit — which meant the answer to "well what HAVE they got at tight end" was
+       unavailable precisely when the app had decided tight end was not interesting. */
+  const posCard = (rosterId, pos, dir, label) => {
+    const lt = leagueTeams.find((x) => x.rosterId === rosterId);
+    if (!lt) return null;
+    const roster = tradeRoster(lt);
+    const lu = lineupSlots(roster, cfg.sf);
+    const startSids = new Set((lu.slots || []).filter((x) => x && x.p).map((x) => String(x.p.sid)));
+    const at = roster.filter((x) => String(x.pos).toUpperCase() === pos)
+      .sort((a2, b2) => (b2.pts || 0) - (a2.pts || 0));
+    const rd = myReadFor(rosterId) || {};
+    const rank = (rd.posRank || {})[pos] || null;
+    const n = rd.teams || 0;
+    const topCut = Math.max(1, Math.ceil(n / 3));
+    const who = label || lt.teamName || lt.ownerName || "This roster";
+    const head = { kind: "take",
+      tone: !rank || n < 4 ? "neutral" : rank <= topCut ? "good" : rank >= n - topCut + 1 ? "bad" : "neutral",
+      x: `${who} — ${pos}${rank ? `: ${ordinal(rank)}${n ? ` of ${n}` : ""} in the league` : ""}` };
+    /* ⚠ AN EMPTY ROOM IS A REAL ANSWER and needs its own sentence. An empty table under a heading reads
+       as a failure to load, which is the opposite of the finding. */
+    if (!at.length) {
+      return [head, `${who} has nobody at ${pos} at all. That is not a trade opportunity so much as a hole — there is nothing here to ask for.`];
+    }
+    return [head,
+      { kind: "ptable", k: `pos-${rosterId}-${pos}`,
+        cols: [{ k: "Player", strong: true }, { k: "Rank" }, { k: "Role", tint: true }, { k: "Season", right: true }],
+        rows: at.slice(0, 8).map((x) => ({
+          Player: x.name,
+          Rank: x.posRank ? `${pos}${x.posRank}` : "—",
+          Role: startSids.has(String(x.sid)) ? "starting" : "bench",
+          Season: Math.round(x.pts || 0),
+          tone: startSids.has(String(x.sid)) ? "var(--gold)" : "var(--mut)",
+        })) },
+      dir === "sell"
+        ? "Anyone on your bench costs your lineup nothing to move. A man who is starting costs you what the next one down would give back."
+        : "A player on their bench is a conversation; one who is starting for them is a favour, and the deal has to pay for it.",
+    ];
+  };
+
+  /* ⭐⭐⭐⭐⭐ EVERY POSITION, WITH A VERDICT ON EACH — b161.
+     Trey: "It would be awesome if the 'you send' and 'they send' had every position... but it greys out
+     the ones that dont make sense and colors the ones that you think would fit."
+     ⚠⚠ THE SHAPE OF THE ANSWER IS RANK AGAINST RANK, not need against surplus — the 29ai lesson, and the
+       reason is his own sentence from then: "I rank 10th of 12 in RBs... but it says I have +1 spare.
+       Well, I suck at that position, so I probably don't have a spare." A headcount says a team with
+       three startable backs has one to sell whether that room is the best in the league or the worst.
+       The gap between where he ranks and where they rank cannot make that mistake in either direction.
+     ⚠ THREE STATES, NOT TWO. "Fit" and "no" would put a position where they are meaningfully better than
+       me but neither of us is at an extreme into the same grey as one where we are dead level — and that
+       middle band is where most real trades actually live. `maybe` is drawn dimmer than a fit and
+       brighter than a dead end, which is exactly how confident it deserves to look.
+     ⚠ A LEAGUE WITH FEWER THAN FOUR TEAMS HAS NO THIRDS and gets no verdicts at all rather than a
+       confident one — the same guard teamReads applies to strongAt/thinAt, for the same reason. */
+  const posFitFor = (rosterId) => {
+    const theirs = myReadFor(rosterId);
+    const n = (theirs && theirs.teams) || (myRead && myRead.teams) || 0;
+    const topCut = Math.max(1, Math.ceil(n / 3));
+    const near = Math.max(2, Math.ceil(n / 4));
+    return POS.map((pos) => {
+      const my = myRead && myRead.posRank ? myRead.posRank[pos] : null;
+      const th = theirs && theirs.posRank ? theirs.posRank[pos] : null;
+      const base = { pos, myRank: my || null, theirRank: th || null, teams: n };
+      if (!my || !th || n < 4) return { ...base, dir: null, strength: "none", why: "Not enough of the league has loaded to rank this position yet." };
+      const gap = my - th;                                    // positive → their room is better than mine
+      if (gap >= near) {
+        const strength = th <= topCut && my >= n - topCut + 1 ? "strong" : "maybe";
+        return { ...base, dir: "buy", strength, gap,
+          why: strength === "strong"
+            ? `They are ${ordinal(th)} of ${n} at ${pos} and you are ${ordinal(my)} — the cleanest kind of fit there is.`
+            : `They are ${ordinal(th)} of ${n} at ${pos} to your ${ordinal(my)}. Worth an ask, though neither of you is at an extreme.` };
+      }
+      if (-gap >= near) {
+        const strength = my <= topCut && th >= n - topCut + 1 ? "strong" : "maybe";
+        return { ...base, dir: "sell", strength, gap,
+          why: strength === "strong"
+            ? `You are ${ordinal(my)} of ${n} at ${pos} and they are ${ordinal(th)} — this is the room you can afford to sell from.`
+            : `You are ${ordinal(my)} of ${n} at ${pos} to their ${ordinal(th)}. You could spare one, but they may not feel short enough to pay up.` };
+      }
+      return { ...base, dir: null, strength: "none", gap,
+        why: `You are ${ordinal(my)} of ${n} at ${pos} and they are ${ordinal(th)}. Too close for either of you to want the other's — hover anyway to see who they have.` };
+    });
+  };
 
   /* ⭐⭐⭐⭐⭐ THE LEAGUE READ — 29ah. Trey, on the board 29af shipped: "it still isn't clear to me though
      that it is sharing information that's gonna like help you beat the league. Like identifying trends as
@@ -18191,7 +18468,16 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
         )}
 
         {/* Tabs */}
-        <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+        {/* ⭐⭐⭐⭐ WHICH SOURCE THIS SCREEN IS ACTUALLY READING — b161. The Yahoo hub returns the Sleeper
+            hub's payload shape on purpose, which is what makes one set of screens serve both platforms —
+            and it is also what makes a routing mistake INVISIBLE: point a Yahoo league at the Sleeper
+            endpoint and the hub still renders, fully populated, with somebody else's league in it.
+            plan29cq's first falsification proved exactly that, passing 25/25 against a build wired to the
+            wrong endpoint. One attribute is the difference between a suite that checks the wiring and one
+            that checks the screen mounts. */}
+        <div data-hubplatform={(data && data.platform) || "sleeper"}
+          data-hubleague={(data && data.leagueName) || ""}
+          style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
           {/* ⭐⭐⭐ 29m — "I want this to be able to be looked at within a specific league level (league
               hub)". Placed after Matchup, because the order of these tabs is the order of the week: what
               is happening, then what happened. Same component the cross-league view uses. */}
@@ -18880,11 +19166,76 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
         {tab === "trades" && (
           <div className="panel" style={{ padding: 16 }}>
             <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 3 }}>Trades</div>
-            <div className="mut" style={{ fontSize: 12, marginBottom: 12, lineHeight: 1.5 }}>
-              The calculator first, for the deal you already have in mind — then a read on the league, the deals worth
-              sending, and the positional market they sit in. Everything is season value, so a bye week never makes
-              somebody look expendable.
+            <div className="mut" style={{ fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}>
+              {TRADE_SECTIONS.find((s) => s.k === tSec)?.blurb}{" "}
+              Everything is season value, so a bye week never makes somebody look expendable.
             </div>
+
+            {/* ⭐⭐⭐⭐⭐ FOUR SECTIONS, FOUR TABS — b161.
+                Trey: "I'd also make the trade tab have tabs at the top to navigate to different sections
+                because this is getting crowded and confusing."
+                ⭐ HE IS DESCRIBING A REAL FAULT AND NOT A PREFERENCE. This tab had grown to four full
+                  features stacked vertically — a calculator, a league read with an eleven-row table, a
+                  recommendation board, and a positional market with a drill-in — and every one of them
+                  was added because he asked for it. Nothing here is padding; there is simply more of it
+                  than one scroll can hold, and the cost lands on whichever feature happens to be fourth.
+                ⚠⚠ THE BLOCKS ARE NOT MOVED, ONLY GATED, and that is deliberate. Each of these sections
+                  is a few hundred lines that has been corrected half a dozen times against his own
+                  screenshots; relocating them to sit under a switch would put every one of those fixes
+                  at risk for a layout change. A condition on the existing block reorders nothing and
+                  can only ever hide.
+                ⚠ THE COUNTS ON THE TABS ARE THE POINT OF HAVING TABS. A tab with nothing behind it that
+                  looks identical to one with five deals behind it just moves the hunting from scrolling
+                  to clicking — so each tab says what it is holding, and an empty one says so plainly
+                  rather than by being silently disappointing. */}
+            <div data-tsec={tSec} style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 13,
+              borderBottom: "1px solid var(--line)", paddingBottom: 9 }}>
+              {TRADE_SECTIONS.map((s) => {
+                const on = tSec === s.k;
+                const n = s.count({ board, partners, market, myLT, tx });
+                return (
+                  <button key={s.k} data-tsectab={s.k} data-tseccount={n == null ? "" : String(n)}
+                    aria-pressed={on} onClick={() => setTSec(s.k)}
+                    style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: on ? 800 : 600,
+                      padding: "6px 11px", borderRadius: 8, whiteSpace: "nowrap",
+                      border: `1px solid ${on ? "var(--gold)" : "var(--line2)"}`,
+                      background: on ? "var(--hover)" : "transparent",
+                      color: on ? "var(--ink)" : "var(--mut)" }}>
+                    <i className={`ti ti-${s.icon}`} style={{ fontSize: 13, marginRight: 5, verticalAlign: "-1px" }} aria-hidden="true" />
+                    {s.label}
+                    {n != null && <span className="num" style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 700,
+                      color: n > 0 ? (on ? "var(--gold)" : "var(--mut)") : "var(--mut)", opacity: n > 0 ? 1 : .6 }}>{n}</span>}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* ⚠⚠ A TAB THAT RENDERS NOTHING IS WORSE THAN NO TAB. Every section below is gated on data
+                it may not have — no roster resolved, no partner with a reason to talk, no market — and
+                four independent `&&` chains can each silently produce an empty panel. Before tabs that
+                looked like a short page; behind a tab it looks broken, because the reader clicked
+                something and got a blank. So each section names what it is missing. */}
+            {(() => {
+              const empty = tSec === "calc" ? !myLT
+                : tSec === "league" ? !(myRead && partners.partners.length > 0)
+                  : tSec === "deals" || tSec === "recent" ? false   /* both carry their own explainers — see below */
+                    : !(market && market.positions.length > 0);
+              if (!empty) return null;
+              return (
+                <div data-tsecempty={tSec} className="mut" style={{ fontSize: 12.5, lineHeight: 1.55,
+                  padding: "14px 4px" }}>
+                  {tSec === "calc"
+                    ? <>We could not resolve your roster in this league, so there is nothing to put on your
+                      side of a deal. Reopening the league usually fixes it; if it does not, the roster
+                      never came through and My roster will be thin too.</>
+                    : tSec === "league"
+                      ? <>There is no one to read yet — this needs the other rosters in your league, and
+                        they have not come through. It fills in as soon as the league does.</>
+                      : <>No positional market yet. This is built from every roster in the league, so it
+                        appears once they have all loaded.</>}
+                </div>
+              );
+            })()}
 
             {/* ⭐⭐⭐⭐⭐ THE TRADE CALCULATOR — 29y.
                 Trey: "I'd like to be able to go into that league and hit trade and be able to input players
@@ -18896,7 +19247,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 ⭐ AND IT LEADS THE TAB SINCE b151, on his instruction: "Move trade calculator to the top of
                   the trade section." It had been third, which made three screens of generated analysis the
                   price of admission for the one tool he arrives already wanting to use. */}
-            {myLT && (
+            {tSec === "calc" && myLT && (
               <div data-tb style={{ border: `1px solid ${tb.open ? "var(--line2)" : "var(--line)"}`, borderRadius: 10, marginBottom: 14, background: "var(--panel2)" }}>
                 <button data-tbtoggle={tb.open ? "1" : "0"}
                   onClick={() => setTb((v) => ({ ...v, open: !v.open }))}
@@ -19000,7 +19351,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 ⭐ THREE FACTS, IN THE ORDER A MANAGER WOULD ASK THEM: what is the single best move
                   available, what have I got that I should be selling, and who do I ring. Everything
                   below it — the cards and the market — is detail under one of those three. */}
-            {myRead && partners.partners.length > 0 && (
+            {tSec === "league" && myRead && partners.partners.length > 0 && (
               <div data-leagueread style={{ marginBottom: 18, padding: "12px 14px", borderRadius: 10,
                 border: "1px solid var(--gold-line)", background: "var(--panel2)" }}>
                 <div className="disp" style={{ fontSize: 15, fontWeight: 800, letterSpacing: ".01em", marginBottom: 7 }}>What moves your season</div>
@@ -19139,6 +19490,19 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       down a column instead of across eleven prose lines, which is the whole reason tabular
                       form exists and exactly what he asked for. The reasoning is not deleted — it moves to
                       the row's hover, where it is available to anyone who wants to check the call. */}
+                {/* ⚠⚠ THE LEGEND IS NOT OPTIONAL FURNITURE, and this is the same lesson as the ↑/↓ arrows
+                    b151 deleted: an encoding nobody has been taught is a second thing to decode. Three
+                    weights of the same colour say "yes / maybe / no" only to a reader who already knows
+                    that is what they mean, and there is nowhere else on the page to learn it. One line,
+                    once, above the table. */}
+                <div className="mut" data-lrlegend style={{ fontSize: 10.5, marginBottom: 6, display: "flex",
+                  gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+                  <span>Every position is listed both ways —</span>
+                  <span><span style={{ fontWeight: 800, color: "var(--ink)", border: "1px solid var(--line2)", background: "var(--hover)", borderRadius: 5, padding: "1px 6px" }}>solid</span> a fit</span>
+                  <span><span style={{ fontWeight: 800, color: "var(--ink)", border: "1px dashed var(--line2)", borderRadius: 5, padding: "1px 6px", opacity: .78 }}>dashed</span> worth an ask</span>
+                  <span><span style={{ fontWeight: 800, border: "1px solid var(--line)", borderRadius: 5, padding: "1px 6px", opacity: .42 }}>faded</span> no reason to</span>
+                  <span>· hover any of them to see the players.</span>
+                </div>
                 {(() => { const _f = partners.partners.filter((p) => p.tone !== "none"); return (
                 <div data-lrpartners={String(_f.length)} data-lrskipped={String(partners.partners.length - _f.length)}
                   style={{ overflowX: "auto" }}>
@@ -19146,8 +19510,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                     <thead>
                       <tr style={{ color: "var(--mut)", textAlign: "left" }}>
                         <th style={{ fontWeight: 600, padding: "3px 8px 5px 4px" }}>Manager</th>
-                        <th style={{ fontWeight: 600, padding: "3px 8px 5px" }} title="What you would send them">You send</th>
-                        <th style={{ fontWeight: 600, padding: "3px 8px 5px" }} title="What you would get back">You get</th>
+                        <th style={{ fontWeight: 600, padding: "3px 8px 5px" }} title="Every position, with the ones worth sending them picked out. Hover any of them to see who you have there.">You send</th>
+                        <th style={{ fontWeight: 600, padding: "3px 8px 5px" }} title="Every position, with the ones worth asking for picked out. Hover any of them to see who they have there.">You get</th>
                         <th style={{ fontWeight: 600, padding: "3px 8px 5px", textAlign: "right" }} title="What the best idea with this manager adds to your starting lineup">You</th>
                         <th style={{ fontWeight: 600, padding: "3px 8px 5px", textAlign: "right" }} title="What it adds to theirs — a deal they gain nothing from is not a deal">Them</th>
                         <th style={{ fontWeight: 600, padding: "3px 4px 5px 8px", textAlign: "right" }}>Ideas</th>
@@ -19174,64 +19538,74 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                        ⚠ STARTER OR BENCH IS THE COLUMN THAT DECIDES THE ASK, which is why it is here: a
                          back sitting on their bench is a conversation and their RB1 is a favour. It is
                          read from the same optimal-lineup solve the rest of the tab uses. */
-                    const fitRows = (pos, dir) => {
-                      const team = dir === "sell" ? myLT : leagueTeams.find((t) => t.rosterId === p.rosterId);
-                      if (!team) return null;
-                      const roster = tradeRoster(team);
-                      const lu = lineupSlots(roster, cfg.sf);
-                      const startSids = new Set((lu.slots || []).filter((x) => x && x.p).map((x) => String(x.p.sid)));
-                      const at = roster.filter((x) => String(x.pos).toUpperCase() === pos)
-                        .sort((a2, b2) => (b2.pts || 0) - (a2.pts || 0));
-                      if (!at.length) return null;
-                      /* ⚠ THE HUB'S TOOLTIP TAKES AN ARRAY of typed blocks (see OutlookCard), NOT the
-                         object shape the home page's HoverTable takes. Handing it the wrong one threw
-                         inside render and the error boundary swallowed the whole tab — see the guard in
-                         OutlookCard, which is now the backstop for the next person to mix them up. */
-                      return [
-                        { kind: "take", tone: dir === "sell" ? "neutral" : "good",
-                          x: `${dir === "sell" ? "You could send" : `${p.teamName || p.ownerName} can offer`} — ${pos}` },
-                        { kind: "ptable", k: `fit-${dir}-${pos}`,
-                          cols: [{ k: "Player", strong: true }, { k: "Rank" }, { k: "Role", tint: true }, { k: "Season", right: true }],
-                          rows: at.slice(0, 8).map((x) => ({
-                            Player: x.name,
-                            Rank: x.posRank ? `${pos}${x.posRank}` : "—",
-                            Role: startSids.has(String(x.sid)) ? "starting" : "bench",
-                            Season: Math.round(x.pts || 0),
-                            tone: startSids.has(String(x.sid)) ? "var(--gold)" : "var(--mut)",
-                          })) },
-                        dir === "sell"
-                          ? "Anyone on your bench costs your lineup nothing to move. A man who is starting costs you what the next one down would give back."
-                          : "A player on their bench is a conversation; one who is starting for them is a favour, and the deal has to pay for it.",
-                      ];
+                    /* The rank-against-rank read for THIS manager, one entry per position. See posFitFor. */
+                    const fitReads = posFitFor(p.rosterId);
+                    /* ⭐⭐⭐⭐⭐ EVERY POSITION IN BOTH COLUMNS — b161.
+                       Trey: "It would be awesome if the 'you send' and 'they send' had every position...
+                       but it greys out the ones that dont make sense and colors the ones that you think
+                       would fit (then you hover those positions and it shows who is on each)... That way
+                       it's easy to see everyone they have by position and what their rank / strength it."
+                       ⚠⚠ THE OLD COLUMN PRINTED "—" WHEN THERE WAS NO FIT, and that dash was doing two
+                         completely different jobs: "this manager has nothing you want" and "we did not
+                         look". Worse, it made the table unable to answer the question he is actually
+                         scanning it for — a reader running his eye down the You-get column wants to know
+                         what every manager has at running back, and a column that only shows the fits
+                         hides precisely the eleven rosters the finder already ruled out. Showing all four
+                         positions costs four small glyphs and turns a list of verdicts into a grid.
+                       ⚠ THE MEASURED FIT STILL WINS. `columns` comes from the finder, which has priced
+                         actual swaps; the rank read is a fallback for positions it did not nominate. A
+                         position the finder found a real deal at is drawn as a fit even if the ranks are
+                         close, because a deal beats a heuristic about a deal. */
+                    const PosGrid = ({ list, kind }) => {
+                      const want = kind === "send" ? "sell" : "buy";
+                      const measured = new Map(list.map((c) => [String(c.pos).toUpperCase(), c]));
+                      return (
+                        <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
+                          {fitReads.map((r) => {
+                            const hit = measured.get(r.pos) || null;
+                            const level = hit ? "fit"
+                              : r.dir === want ? (r.strength === "strong" ? "fit" : "maybe") : "no";
+                            /* The roster the hover is about: my own for what I would send, theirs for
+                               what I would get. */
+                            const card = kind === "send"
+                              ? posCard(myLT.rosterId, r.pos, "sell", "You")
+                              : posCard(p.rosterId, r.pos, "buy", p.teamName || p.ownerName);
+                            const col = POS_COLOR[r.pos] || "var(--ink)";
+                            const why = hit ? hit.why : r.why;
+                            return (
+                              <span key={r.pos} data-lrchip={`${want}:${r.pos}`} data-lrchiplevel={level}
+                                /* ⚠ THE TEXT REASON STAYS AS THE TITLE even though the card is richer: it
+                                   is the keyboard/assistive path, and it is what a reader gets if the card
+                                   cannot be built (a roster that failed to resolve). */
+                                title={`${kind === "send" ? "You send" : "You get"} a ${r.pos} — ${why}`}
+                                onMouseEnter={card ? (e) => { e.stopPropagation(); showTip(e, card); } : undefined}
+                                onMouseLeave={card ? hideTip : undefined}
+                                style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".03em", cursor: "help",
+                                  padding: "1px 6px", borderRadius: 5, whiteSpace: "nowrap",
+                                  /* Three states, three weights of the SAME hue — a greyed-out position is
+                                     still that position, and recolouring it would break the one mapping
+                                     that holds everywhere else in the app. */
+                                  color: level === "no" ? "var(--mut)" : col,
+                                  opacity: level === "fit" ? 1 : level === "maybe" ? .78 : .42,
+                                  border: `1px ${level === "maybe" ? "dashed" : "solid"} ${level === "no" ? "var(--line)" : alpha(col, level === "fit" ? 45 : 28)}`,
+                                  background: level === "fit" ? alpha(col, 12) : "transparent" }}>
+                                {r.pos}
+                              </span>
+                            );
+                          })}
+                        </span>
+                      );
                     };
-                    const Chips = ({ list, kind }) => (
-                      <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
-                        {list.length ? list.slice(0, 3).map((c) => {
-                          const card = fitRows(c.pos, c.dir);
-                          return (
-                          <span key={c.pos} data-lrchip={`${c.dir}:${c.pos}`}
-                            /* ⚠ THE TEXT REASON STAYS AS THE TITLE even though the card is richer: it is the
-                               keyboard/assistive path, and it is what a reader gets if the card cannot be
-                               built (a roster that failed to resolve). Belt and braces on a 10px chip. */
-                            title={`${kind === "send" ? "You send" : "You get"} a ${c.pos} — ${c.why}`}
-                            onMouseEnter={card ? (e) => { e.stopPropagation(); showTip(e, card); } : undefined}
-                            onMouseLeave={card ? hideTip : undefined}
-                            style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".03em", cursor: "help",
-                              padding: "1px 6px", borderRadius: 5, whiteSpace: "nowrap",
-                              color: POS_COLOR[c.pos] || "var(--ink)",
-                              border: `1px solid ${alpha(POS_COLOR[c.pos] || "var(--line2)", 45)}`,
-                              background: alpha(POS_COLOR[c.pos] || "var(--line2)", 12) }}>
-                            {c.pos}
-                          </span>
-                          );
-                        }) : <span className="mut" style={{ fontSize: 11 }}>—</span>}
-                      </span>
-                    );
                     return (
                       <React.Fragment key={p.rosterId}>
                       <tr data-lrpartner={p.teamName || String(p.rosterId)}
                         data-lrtone={p.tone} data-lrtwoway={p.twoWay ? "1" : "0"} data-lrdeals={String(p.realisticN)}
                         data-lrfit={cols.map((c) => `${c.dir}:${c.pos}`).join(",")}
+                        /* b161 — the whole grid, both columns, as one attribute, so a suite can check
+                           that every position is present and that the greyed ones are the ones the read
+                           says are dead. `data-lrfit` above stays exactly as it was: it is the MEASURED
+                           fits and the two are deliberately different facts. */
+                        data-lrgrid={fitReads.map((r) => `${r.pos}:${r.dir || "none"}:${r.strength}`).join(",")}
                         data-lrideas={String(p.ideaN || 0)} data-lrtilt={p.tilt || ""}
                         onClick={() => p.ideaN && setLrOpen(open ? null : p.rosterId)}
                         style={{ borderTop: "1px solid var(--line)", cursor: p.ideaN ? "pointer" : "default" }}>
@@ -19249,8 +19623,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                           {p.twoWay && <i className="ti ti-arrows-exchange" style={{ fontSize: 11, marginRight: 4, color: "var(--pos)" }} aria-hidden="true" />}
                           <b style={{ color: p.twoWay ? "var(--pos)" : "var(--ink)" }}>{p.teamName || p.ownerName}</b>
                         </td>
-                        <td style={{ padding: "5px 8px" }}><Chips list={sends} kind="send" /></td>
-                        <td style={{ padding: "5px 8px" }}><Chips list={gets} kind="get" /></td>
+                        <td style={{ padding: "5px 8px" }}><PosGrid list={sends} kind="send" /></td>
+                        <td style={{ padding: "5px 8px" }}><PosGrid list={gets} kind="get" /></td>
                         <td data-lrgain={String(p.myGain)} style={{ padding: "5px 8px", textAlign: "right",
                           fontWeight: 800, color: p.myGain > 0 ? "var(--pos)" : "var(--mut)" }}>
                           {p.myGain > 0 ? `+${p.myGain}` : "—"}
@@ -19356,7 +19730,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                   reconstructed by the reader for every row, which is what "difficult to follow" is. Each
                   card now carries its own argument, and the card is the recommendation rather than the
                   raw material for one. See src/trademarket.js for how each reason is measured. */}
-            {board.length > 0 && (
+            {tSec === "deals" && board.length > 0 && (
               <div data-tboard={String(board.length)} style={{ marginBottom: 16 }}>
                 <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 9 }}>
                   <span className="disp" style={{ fontSize: 15, fontWeight: 800, letterSpacing: ".01em" }}>Deals worth sending</span>
@@ -19524,7 +19898,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 into a position to really dive into that market."
                 The swap list answers "is there a deal"; this answers "who should I be talking to", which is
                 the question you actually arrive with. It sits above because it is the one you ask first. */}
-            {market && market.positions.length > 0 && (
+            {tSec === "market" && market && market.positions.length > 0 && (
               <div data-mkt style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "11px 12px", marginBottom: 14, background: "var(--panel2)" }}>
                 <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 9 }}>
                   <span className="disp" style={{ fontSize: 15, fontWeight: 800, letterSpacing: ".01em" }}>Potential Positional Trade Considerations</span>
@@ -19789,13 +20163,321 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
               </div>
             )}
 
+            {/* ⭐⭐⭐⭐⭐ THE FIT FINDER — b161.
+                Trey: "can you make it so there is a section similar to the league tab where you can rank
+                by positional strength so you can find potential fits."
+                ⭐⭐ THE LEAGUE TAB ALREADY HAS A POSITIONAL STRENGTH GRID and this is deliberately NOT a
+                  copy of it. That one answers "who is good at what", which is a standings question: every
+                  cell is about the team in the row and nothing in it refers to me. The question on THIS
+                  tab is "who lines up with what I have", and the answer is a comparison — so every cell
+                  here carries both ranks and a verdict about the pair. Duplicating the League tab's grid
+                  onto the Trades tab would have satisfied the sentence and missed the ask.
+                ⚠ THE VERDICTS ARE WORDS, NOT ARROWS. b151 deleted a ↑/↓ encoding from this very tab
+                  because he could not tell what the arrows meant and there was no legend anywhere; a grid
+                  of forty arrows would be that mistake at ten times the scale. GET and SEND are the same
+                  two words the positional market rows already use, so the vocabulary is one page wide.
+                ⚠ AND IT IS RANK AGAINST RANK, from `posFitFor` — the same measure as the send/get grid in
+                  the league read, so the two sections cannot disagree about whether a manager is a fit at
+                  running back. One implementation, two callers: the 29y rule. */}
+            {tSec === "market" && myRead && leagueTeams.length > 1 && (() => {
+              const n = leagueTeams.length;
+              const topCut = Math.max(1, Math.ceil(n / 3));
+              const rows = leagueTeams.filter((t) => t.rosterId !== data.myRosterId).map((t) => {
+                const reads = posFitFor(t.rosterId);
+                const byPos = {}; reads.forEach((r) => { byPos[r.pos] = r; });
+                /* ⭐ THE FIT SCORE IS NOT A COUNT OF FITS. A manager who is a clean two-way match at one
+                   position is a better call than one who is a vague maybe at three, and a count says the
+                   opposite. Strong fits are worth double, and a TWO-WAY pair (I can send at one position
+                   and get at another) earns a bonus of its own, because that is the deal that does not
+                   need anybody to be generous. */
+                const score = reads.reduce((s, r) => s + (r.dir ? (r.strength === "strong" ? 2 : 1) : 0), 0)
+                  + (reads.some((r) => r.dir === "buy") && reads.some((r) => r.dir === "sell") ? 2 : 0);
+                return { t, byPos, reads, score,
+                  twoWay: reads.some((r) => r.dir === "buy") && reads.some((r) => r.dir === "sell") };
+              });
+              const sorted = rows.slice().sort((a, b) => fitSort === "fit"
+                ? b.score - a.score
+                : ((a.byPos[fitSort] || {}).theirRank || 99) - ((b.byPos[fitSort] || {}).theirRank || 99));
+              const mine = POS.map((pos) => ({ pos, rank: (myRead.posRank || {})[pos] || null }));
+              return (
+                <div data-fitfinder={String(rows.length)} style={{ border: "1px solid var(--line)", borderRadius: 10,
+                  padding: "11px 12px", marginBottom: 14, background: "var(--panel2)" }}>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
+                    <span className="disp" style={{ fontSize: 15, fontWeight: 800, letterSpacing: ".01em" }}>Find a fit by position</span>
+                    <span className="mut" style={{ fontSize: 11 }}>where every roster ranks, and what that makes them to you · click a column to sort</span>
+                  </div>
+                  {/* ⚠ MY OWN ROW OF RANKS IS THE THING EVERY OTHER CELL IS MEASURED AGAINST, so it is
+                      stated once at the top rather than left for the reader to hold in his head while he
+                      scans forty numbers. Without it "3rd of 12" on their row is a fact about them and
+                      not a comparison. */}
+                  <div data-fitmine className="mut" style={{ fontSize: 11, marginBottom: 9, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <span>You rank:</span>
+                    {mine.map((m) => (
+                      <span key={m.pos} data-fitminepos={`${m.pos}:${m.rank || 0}`}>
+                        <b style={{ color: POS_COLOR[m.pos] || "var(--ink)" }}>{m.pos}</b>{" "}
+                        <span className="num" style={{ fontWeight: 700,
+                          color: !m.rank || n < 4 ? "var(--mut)" : m.rank <= topCut ? "var(--pos)" : m.rank >= n - topCut + 1 ? "var(--neg)" : "var(--mut)" }}>
+                          {m.rank ? `${ordinal(m.rank)}/${n}` : "—"}
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", minWidth: 460, borderCollapse: "collapse", fontSize: 12 }}>
+                      <thead>
+                        <tr className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em" }}>
+                          <th style={{ textAlign: "left", fontWeight: 600, padding: "3px 8px 5px 4px" }}>Manager</th>
+                          {POS.map((pos) => (
+                            <th key={pos} onClick={() => setFitSort(pos)} data-fitsortcol={fitSort === pos ? "1" : "0"}
+                              title={`Sort by who is strongest at ${pos}`}
+                              style={{ textAlign: "center", fontWeight: 700, padding: "3px 6px 5px", cursor: "pointer",
+                                userSelect: "none", color: fitSort === pos ? "var(--ink)" : (POS_COLOR[pos] || "var(--mut)"),
+                                borderBottom: `2px solid ${fitSort === pos ? "var(--gold)" : "transparent"}` }}>{pos}</th>
+                          ))}
+                          <th onClick={() => setFitSort("fit")} data-fitsortcol={fitSort === "fit" ? "1" : "0"}
+                            title="Sort by how well this manager lines up with your roster overall"
+                            style={{ textAlign: "right", fontWeight: 700, padding: "3px 4px 5px 8px", cursor: "pointer",
+                              userSelect: "none", color: fitSort === "fit" ? "var(--ink)" : "var(--mut)",
+                              borderBottom: `2px solid ${fitSort === "fit" ? "var(--gold)" : "transparent"}` }}>Fit</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sorted.map((row) => (
+                          <tr key={row.t.rosterId} data-fitrow={row.t.teamName || String(row.t.rosterId)}
+                            data-fitscore={String(row.score)} data-fittwoway={row.twoWay ? "1" : "0"}
+                            style={{ borderTop: "1px solid var(--line)" }}>
+                            <td onMouseEnter={(e) => { const c = rosterCard(row.t.rosterId, row.t.teamName || row.t.ownerName); if (c) showTip(e, c); }}
+                              onMouseLeave={hideTip}
+                              style={{ padding: "5px 8px 5px 4px", cursor: "help", maxWidth: 190, overflow: "hidden",
+                                textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {row.twoWay && <i className="ti ti-arrows-exchange" style={{ fontSize: 11, marginRight: 4, color: "var(--pos)" }} aria-hidden="true" />}
+                              <b style={{ color: row.twoWay ? "var(--pos)" : "var(--ink)" }}>{row.t.teamName || row.t.ownerName}</b>
+                            </td>
+                            {POS.map((pos) => {
+                              const r = row.byPos[pos] || {};
+                              const th = r.theirRank || null;
+                              /* The colour is THEIR strength — the same green/amber/red thirds the League
+                                 tab uses, so a reader arriving from there reads the cell the same way. */
+                              const tone = !th || n < 4 ? "var(--mut)" : th <= topCut ? "var(--pos)" : th >= n - topCut + 1 ? "var(--neg)" : "var(--gold)";
+                              const verdict = r.dir === "buy" ? "GET" : r.dir === "sell" ? "SEND" : null;
+                              const card = posCard(row.t.rosterId, pos, r.dir === "sell" ? "sell" : "buy", row.t.teamName || row.t.ownerName);
+                              return (
+                                <td key={pos} data-fitcell={`${pos}:${r.dir || "none"}:${r.strength || "none"}`}
+                                  title={r.why || undefined}
+                                  onMouseEnter={card ? (e) => showTip(e, card) : undefined}
+                                  onMouseLeave={card ? hideTip : undefined}
+                                  style={{ textAlign: "center", padding: "4px 6px", cursor: card ? "help" : "default",
+                                    background: r.strength === "strong" ? alpha(POS_COLOR[pos] || "var(--gold)", 10) : "transparent" }}>
+                                  <div className="num" style={{ fontWeight: 700, fontSize: 11.5, color: tone }}>{th ? `${th}/${n}` : "—"}</div>
+                                  <div style={{ fontSize: 8.5, fontWeight: 800, letterSpacing: ".06em", height: 11,
+                                    color: verdict ? (r.dir === "buy" ? "var(--neg)" : "var(--pos)") : "transparent",
+                                    opacity: r.strength === "strong" ? 1 : .72 }}>{verdict || "·"}</div>
+                                </td>
+                              );
+                            })}
+                            <td className="num" data-fitscorecell={String(row.score)}
+                              style={{ textAlign: "right", padding: "4px 4px 4px 8px", fontWeight: 800,
+                                color: row.score >= 4 ? "var(--pos)" : row.score > 0 ? "var(--ink)" : "var(--mut)" }}>
+                              {row.score || "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="mut" style={{ fontSize: 10.5, marginTop: 8, lineHeight: 1.5 }}>
+                    Each cell is that manager's league rank at the position. <b style={{ color: "var(--neg)" }}>GET</b> means
+                    they are enough better than you there to be worth asking; <b style={{ color: "var(--pos)" }}>SEND</b> means
+                    you are enough better to spare one. A shaded cell is a clean fit — top third against bottom third —
+                    and the <b>Fit</b> column adds those up, with a bonus for a manager you match with in both directions
+                    at once. Hover any cell for the players in that room, or a manager's name for the whole roster.
+                  </div>
+                </div>
+              );
+            })()}
+
+
+            {/* ⭐⭐⭐⭐⭐ WHAT HAS ACTUALLY BEEN HAPPENING IN THIS LEAGUE — b161.
+                Trey: "ultimately when you're in the trade tab in a specific league, it can show the
+                specific league trades that are connected to that."
+                ⚠⚠ AND IT LEADS WITH WHAT IT CANNOT SHOW. Sleeper publishes a transaction once it has
+                  resolved — there is no pending offer to read and a declined trade leaves no trace, so a
+                  "Pending" section here would be permanently empty and would read as "nobody has offered
+                  you anything" rather than "we cannot see that". One sentence, said plainly, at the top.
+                ⚠ THE SCOPE TOGGLE DEFAULTS TO EVERYONE HERE and to Mine on This Week, and that is not an
+                  inconsistency. On This Week the question is "what have I been doing across twelve
+                  leagues"; standing inside ONE league the question is "what has this league been doing" —
+                  the whole reason to be on this screen is the other eleven managers. */}
+            {tSec === "recent" && (
+              <div data-txpanel={tx ? String(((tx.leagues || [])[0] || {}).items ? tx.leagues[0].items.length : 0) : "loading"}>
+                {txLoading && !tx && <div className="mut" style={{ fontSize: 12.5, padding: "14px 4px" }}>Reading the last few weeks of this league…</div>}
+                {txErr && <div className="mut" style={{ fontSize: 12.5, padding: "14px 4px", color: "var(--neg)" }}>{txErr}</div>}
+                {tx && (() => {
+                  const L = (tx.leagues || [])[0] || null;
+                  if (!L) return <div className="mut" style={{ fontSize: 12.5, padding: "14px 4px" }}>No activity came back for this league.</div>;
+                  const items = (L.items || []).filter((x) => (txScope === "mine" ? x.mine : true));
+                  const T = (L.trends && L.trends.totals) || { trades: 0, waivers: 0, freeAgents: 0, failed: 0, faabSpent: 0 };
+                  return (
+                    <>
+                      <div style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "11px 12px",
+                        marginBottom: 12, background: "var(--panel2)" }}>
+                        <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 9 }}>
+                          {[["Trades", T.trades, "var(--gold)"], ["Waiver claims", T.waivers, "var(--ink)"],
+                            ["Free agents", T.freeAgents, "var(--ink)"], ["Didn't land", T.failed, "var(--neg)"]].map(([label, n2, tone]) => (
+                            <div key={label} data-txstat={`${label}:${n2}`}>
+                              <div className="num" style={{ fontSize: 20, fontWeight: 800, color: tone, lineHeight: 1.1 }}>{n2}</div>
+                              <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em" }}>{label}</div>
+                            </div>
+                          ))}
+                          {L.faab && (
+                            <div data-txfaab={String(T.faabSpent)}>
+                              <div className="num" style={{ fontSize: 20, fontWeight: 800, color: "var(--pos)", lineHeight: 1.1 }}>${T.faabSpent}</div>
+                              <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em" }}>FAAB spent</div>
+                            </div>
+                          )}
+                          {L.trends && L.trends.myRank && (
+                            <div data-txmyrank={String(L.trends.myRank)}>
+                              <div className="num" style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.1 }}>{ordinal(L.trends.myRank)}</div>
+                              <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em" }}>You, for activity</div>
+                            </div>
+                          )}
+                        </div>
+                        <div data-txnote className="mut" style={{ fontSize: 11.5, lineHeight: 1.55, paddingTop: 9, borderTop: "1px solid var(--line)" }}>
+                          <b style={{ color: "var(--ink)" }}>Pending offers are not available.</b> Sleeper only publishes a
+                          transaction once it has gone through, so an offer still waiting on a yes — and a trade somebody
+                          declined — leave no record for us to read. Everything here has already happened.
+                        </div>
+                      </div>
+
+                      {/* ⭐⭐⭐⭐⭐ WHO ACTUALLY WORKS AT THIS LEAGUE — b161. Trey asked for "transaction
+                          history, transaction trends, etc." The feed above is the history; this is the
+                          trend, and it is the half that tells you something you could not get by
+                          scrolling. A manager who has made fourteen moves is a different negotiating
+                          partner from one who has made none, and the one whose claims keep failing is
+                          short of FAAB whether or not he says so.
+                          ⚠ A FAILED CLAIM IS ITS OWN COLUMN, NEVER FOLDED INTO "waivers". Counting it as
+                            a move made would rank the manager with the worst waiver priority — the one
+                            whose claims LOSE — as the busiest in the league, which is exactly backwards.
+                          ⚠ AND THE WINDOW IS STATED. These are counts over the weeks we can see, not the
+                            season, and a count with no window behind it is a number people will quote. */}
+                      {L.trends && (L.trends.rows || []).length > 1 && (
+                        <div data-txtrends={String(L.trends.rows.length)} style={{ overflowX: "auto", marginBottom: 12,
+                          border: "1px solid var(--line)", borderRadius: 10, padding: "10px 11px" }}>
+                          <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 7 }}>
+                            <span className="disp" style={{ fontSize: 13.5, fontWeight: 800 }}>Who is active</span>
+                            <span className="mut" style={{ fontSize: 10.5 }}>
+                              over the {(tx.weeks || []).length || "last few"} week{((tx.weeks || []).length === 1) ? "" : "s"} we can see
+                              {L.trends.myRank ? ` · you are ${ordinal(L.trends.myRank)} of ${L.trends.teams}` : ""}
+                            </span>
+                          </div>
+                          <table className="num" style={{ width: "100%", minWidth: 380, borderCollapse: "collapse", fontSize: 12 }}>
+                            <thead>
+                              <tr className="mut" style={{ textAlign: "right", fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em" }}>
+                                <th style={{ textAlign: "left", fontWeight: 600, padding: "2px 8px 5px 2px" }}>Manager</th>
+                                <th style={{ fontWeight: 600, padding: "2px 8px 5px" }}>Trades</th>
+                                <th style={{ fontWeight: 600, padding: "2px 8px 5px" }}>Waivers</th>
+                                <th style={{ fontWeight: 600, padding: "2px 8px 5px" }}>Free agents</th>
+                                {L.faab && <th style={{ fontWeight: 600, padding: "2px 8px 5px" }} title="Spent on claims that landed">FAAB</th>}
+                                <th style={{ fontWeight: 600, padding: "2px 2px 5px 8px" }} title="Claims that did not go through — usually outbid, or beaten on priority">Missed</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {L.trends.rows.map((r) => {
+                                const mine = Number(r.rosterId) === Number(L.myRosterId);
+                                const cell = (v, dim) => (
+                                  <td style={{ textAlign: "right", padding: "3px 8px", color: v ? (dim || "var(--ink)") : "var(--mut)" }}>{v || "—"}</td>
+                                );
+                                return (
+                                  <tr key={r.rosterId} data-txtrendrow={r.teamName || String(r.rosterId)}
+                                    style={{ borderTop: "1px solid var(--line)", background: mine ? "var(--hover)" : "transparent" }}>
+                                    <td style={{ padding: "3px 8px 3px 2px", maxWidth: 190, overflow: "hidden",
+                                      textOverflow: "ellipsis", whiteSpace: "nowrap",
+                                      fontWeight: mine ? 800 : 500, color: mine ? "var(--gold)" : "var(--ink)" }}>
+                                      {mine ? "You" : (r.teamName || `Team ${r.rosterId}`)}
+                                    </td>
+                                    {cell(r.trades, "var(--gold)")}
+                                    {cell(r.waivers)}
+                                    {cell(r.freeAgents)}
+                                    {L.faab && <td style={{ textAlign: "right", padding: "3px 8px", color: r.faabSpent ? "var(--pos)" : "var(--mut)" }}>{r.faabSpent ? `$${r.faabSpent}` : "—"}</td>}
+                                    {cell(r.failedClaims, "var(--neg)")}
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+
+                      <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+                        {[["all", "Whole league"], ["mine", "Just mine"]].map(([k, l]) => (
+                          <button key={k} data-txscope={k} aria-pressed={txScope === k} onClick={() => setTxScope(k)}
+                            className="btn btn-mini" style={{ borderColor: txScope === k ? "var(--gold)" : "var(--line)",
+                              color: txScope === k ? "var(--gold)" : "var(--mut)", fontWeight: txScope === k ? 800 : 600 }}>{l}</button>
+                        ))}
+                        <span className="mut" style={{ fontSize: 10.5, marginLeft: 4 }}>{items.length} of {(L.items || []).length} shown</span>
+                      </div>
+
+                      {!items.length && (
+                        <div data-txempty className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, padding: "8px 2px" }}>
+                          {txScope === "mine"
+                            ? <>You have not made a move in this league recently. Switch to <b style={{ color: "var(--ink)" }}>Whole league</b> to see what everyone else has been doing.</>
+                            : <>Nothing has happened in this league in the weeks we can see.</>}
+                        </div>
+                      )}
+
+                      {items.slice(0, 60).map((x) => (
+                        <div key={x.id} data-txrow={`${x.type}:${x.status}`} data-txmine={x.mine ? "1" : "0"}
+                          style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "7px 0",
+                            borderTop: "1px solid var(--line)", opacity: x.status === "failed" ? .82 : 1 }}>
+                          <span style={{ flexShrink: 0, width: 62, fontSize: 9.5, fontWeight: 800, letterSpacing: ".05em",
+                            paddingTop: 3, color: x.type === "trade" ? "var(--gold)" : x.type === "waiver" ? "var(--ink)" : "var(--mut)" }}>
+                            {x.type === "trade" ? "TRADE" : x.type === "waiver" ? "WAIVER" : "FREE AGENT"}
+                          </span>
+                          <div style={{ flex: 1, minWidth: 0, fontSize: 12.5, lineHeight: 1.6 }}>
+                            {x.teams.map((t) => (
+                              <div key={t.rosterId} data-txside={String(t.rosterId)} style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "baseline" }}>
+                                <b style={{ color: t.isMe ? "var(--gold)" : "var(--ink)" }}>{t.isMe ? "You" : t.teamName}</b>
+                                {/* ⚠ "GETS"/"SENDS" ON A TRADE, "ADD"/"DROP" ON A CLAIM — the same field means
+                                    two different things and printing a trade as a pair of cuts is the one
+                                    mistake this feature can make that still looks plausible. */}
+                                {t.got.length > 0 && (
+                                  <span><span className="mut">{x.type === "trade" ? "gets" : "add"}</span>{" "}
+                                    {t.got.map((pp, j) => (
+                                      <span key={pp.sid}>{j ? ", " : ""}<Dot pos={pp.pos} /><b>{pp.name}</b></span>
+                                    ))}</span>
+                                )}
+                                {t.picks.map((pk) => <span key={pk.label} className="mut" style={{ fontSize: 11 }}>+ {pk.label}</span>)}
+                                {t.faabIn > 0 && <span style={{ fontSize: 11, color: "var(--pos)" }}>+ ${t.faabIn} FAAB</span>}
+                                {t.gave.length > 0 && (
+                                  <span className="mut" style={{ fontSize: 11.5 }}>
+                                    ({x.type === "trade" ? "sends" : "drops"} {t.gave.map((pp) => pp.name).join(", ")})
+                                  </span>
+                                )}
+                                {t.faabOut > 0 && <span className="mut" style={{ fontSize: 11 }}>(− ${t.faabOut} FAAB)</span>}
+                              </div>
+                            ))}
+                            {x.note && <div className="mut" style={{ fontSize: 11, fontStyle: "italic" }}>{x.note}</div>}
+                          </div>
+                          <div style={{ flexShrink: 0, textAlign: "right", display: "flex", flexDirection: "column", gap: 2 }}>
+                            {x.bid != null && <span className="num" style={{ fontSize: 12.5, fontWeight: 800,
+                              color: x.status === "failed" ? "var(--mut)" : "var(--pos)" }}>${x.bid}</span>}
+                            {x.status === "failed" && <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".05em", color: "var(--neg)" }}>DIDN'T LAND</span>}
+                            <span className="mut" style={{ fontSize: 10 }}>{x.week ? `Wk ${x.week}` : ""}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  );
+                })()}
+              </div>
+            )}
 
             {/* ⭐⭐⭐⭐⭐ THE LONG SHOTS ARE THEIR OWN LIST, AND THAT IS THE POINT — 29af.
                 A huge gain nobody would accept and a modest gain they would take today are not two points
                 on one scale. Mixed into one ranking the fantasy trade is always the top row, the eye learns
                 within a week that the list is aspirational, and then the realistic rows below it stop being
                 read at all. Kept apart, and folded away, both lists stay honest. */}
-            {(board.longShots || []).length > 0 && (
+            {tSec === "deals" && (board.longShots || []).length > 0 && (
               <div data-tblong={String(board.longShots.length)} style={{ marginTop: 14 }}>
                 <button data-tblongtoggle onClick={() => setLongOpen((v) => !v)} aria-expanded={longOpen}
                   style={{ cursor: "pointer", fontFamily: "inherit", background: "none", border: "none", padding: 0,
@@ -19831,7 +20513,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 the filters" looked exactly like "this never ran", which is why an empty list reads as a bug.
                 ⚠ AND IT NOW HAS A SECOND STATE TO EXPLAIN: offers can exist and all be long shots, which is
                   a real and different answer from "there are no trades here". */}
-            {board.length === 0 && (
+            {tSec === "deals" && board.length === 0 && (
               <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginTop: 4 }}>
                 {(() => {
                   const d = (board && board.diag) || null;
@@ -22363,6 +23045,32 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
                     <button onClick={() => onUmbrella(l.id)} style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: `1px solid ${draftLive ? "var(--gold)" : "var(--line2)"}`, background: draftLive ? "var(--gold)" : "var(--panel3)", color: draftLive ? "#151002" : "var(--ink)", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>
                       <i className="ti ti-clipboard-text" style={{ fontSize: 14 }} aria-hidden="true" />{draftLive ? "Resume" : st.pct === 100 ? "League hub" : "Draft room"}
                     </button>
+                    {/* ⭐⭐⭐⭐⭐ THE IN-SEASON DOOR — b161, and its absence made the whole Yahoo in-season
+                        build unreachable. The only way into the team hub was the home WEEK STRIP, which
+                        is drawn from the cross-league live feed — and that feed is Sleeper-only, so a
+                        Yahoo-only account had no route to the screens this batch exists to provide. The
+                        league card offered "League hub" and that is the DRAFT hub, and only once the
+                        draft reads 100%.
+                        ⚠ SHOWN FOR ANY PLATFORM THE TABLE SAYS WE CAN READ A ROSTER FROM (`season: true`
+                          in PLATFORMS) — so it appears for Sleeper too, where it is a second, more
+                          obvious door to a screen people were reaching sideways, and it correctly does
+                          NOT appear for ESPN, whose import ends at the settings. */}
+                    {onOpenHub && (() => {
+                      const plat = platformOfLeague(l);
+                      const P = plat ? PLATFORMS.find((x) => x.id === plat) : null;
+                      const id = hubIdOfLeague(l);
+                      if (!P || !P.season || !id) return null;
+                      return (
+                        <button data-openseason={l.name} onClick={() => onOpenHub({ league_id: id })}
+                          title={`Your live ${P.name} roster — lineup, matchup, free agents and trades`}
+                          style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px",
+                            display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                            border: "1px solid var(--line2)", background: "var(--panel3)", color: "var(--ink)",
+                            fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>
+                          <i className="ti ti-calendar-stats" style={{ fontSize: 14 }} aria-hidden="true" />In-season
+                        </button>
+                      );
+                    })()}
                     {st.pct === 100 && onOfficial && (
                       <button onClick={() => onOfficial(l.id)} title="Reopen the completed draft — board, grades, and recap, locked to draft-day values" style={{ cursor: "pointer", fontFamily: "inherit", borderRadius: 9, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: "1px solid var(--gold)", background: "rgba(224,166,60,.10)", color: "var(--gold)", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>
                         <i className="ti ti-flag-3" style={{ fontSize: 14 }} aria-hidden="true" />View draft
@@ -27468,6 +28176,25 @@ function ownerUsernameOf(l) {
     || (l.cfg && l.cfg.connect && (l.cfg.connect.ownerUsername || l.cfg.connect.username))
   )) || null;
 }
+/* ⭐⭐⭐⭐ WHICH PLATFORM A LEAGUE CAME FROM — b161, and it is derived HERE for the same reason
+   `hubIdOfLeague` is: it lives in two places on a league record depending on how old the import is, and
+   the in-season hub now has to choose an endpoint from it. ⚠ ABSENT MEANS MANUAL, not Sleeper: a league
+   set up by hand has no connect block at all, and treating that as Sleeper would send its id to an API
+   that has never heard of it. */
+function platformOfLeague(l) {
+  const c = (l && (l.connect || (l.cfg && l.cfg.connect))) || null;
+  if (!c) return l && l.sleeperLeagueId ? "sleeper" : null;
+  const p = c.platform ? String(c.platform).toLowerCase() : null;
+  if (p) return p;
+  return c.leagueId ? "sleeper" : null;
+}
+/* Yahoo addresses a league by `league_key` ("nfl.l.12345"), not by the bare numeric id — and the two are
+   not interchangeable in any Yahoo call. The importer stores it on the connect block; this is the one
+   place that knows to look for it. */
+function yahooKeyOfLeague(l) {
+  const c = (l && (l.connect || (l.cfg && l.cfg.connect))) || {};
+  return c.leagueKey || c.league_key || (c.leagueId && /^nfl\.l\./.test(String(c.leagueId)) ? c.leagueId : null) || null;
+}
 
 /* ⭐⭐⭐ IS THIS DRAFT OVER? One definition, because three places were about to grow their own.
    `ended` is the explicit "I stopped early" flag; otherwise it is simply every pick having been made. Used
@@ -27581,22 +28308,74 @@ function PlatformChip({ league, platform, live, size = 11 }) {
      degrades loudly — but it is not worth advertising as though it were Sleeper. The difference between
      "supported" and "proven" is exactly the difference between a feature and a promise, and this is a
      product people rely on for two hours once a year with no chance to retry. */
+/* ⭐⭐⭐⭐⭐ WHAT CONNECTING EACH PLATFORM ACTUALLY BUYS YOU — b161, and it is Trey's own sentence.
+   ==================================================================================================
+   "we need to make it clear that when you connect to Yahoo (or other platforms) that it will show your
+   live team in season / when done drafting, but you will have to input draft results live."
+
+   ⚠⚠ HE IS DESCRIBING A GAP THAT COST HIM AN EVENING. Connecting Yahoo during a live draft did nothing
+     visible, because Yahoo has no pick feed — and nothing on the screen said so, so the reasonable
+     conclusion was that the connection had failed. The app knew the answer (`live: false` has been on
+     this table for months) and only ever used it to decide a behaviour, never to say a sentence.
+
+   ⭐ TWO INDEPENDENT CAPABILITIES, STATED SEPARATELY, because they are genuinely different and a
+     platform can have either without the other:
+       `draft`  — 'live' (picks stream in), 'manual' (settings import, you type the picks), 'none'
+       `season` — whether we can read your live roster every week, which is what every in-season screen
+                  runs on. ESPN imports settings and then knows nothing about your team afterwards.
+   ⚠ AND IT LIVES ON THE TABLE, not in prose beside it, for the reason the note under this table already
+     gives: four hand-written sentences about platform capability had already drifted apart, and a user
+     who reads two of them learns only that the app does not know what it can do. */
 const PLATFORMS = [
   { id: "sleeper", name: "Sleeper", field: "Sleeper username", live: true, proven: true, icon: "ti-moon",
+    draft: "live", season: true,
     hint: "We read your leagues from Sleeper's free public API and sync your draft live." },
   { id: "yahoo", name: "Yahoo", live: false, icon: "ti-brand-yahoo",
+    draft: "manual", season: true,
     hint: "Sign in with Yahoo and pick a league. Nothing to copy or paste — Yahoo's own consent screen does it, and you can revoke us from your Yahoo account settings at any time." },
   { id: "espn", name: "ESPN", field: "ESPN league ID", live: false, icon: "ti-ball-football",
+    draft: "manual", season: false,
     hint: "A public league imports from its ID alone. A private one needs two cookies from your signed-in browser — we use them for the one import and never store them." },
   { id: "mfl", name: "MyFantasyLeague", short: "MFL", field: "MFL league ID", live: true, proven: false, icon: "ti-database",
+    draft: "live", season: false,
     hint: "MFL has a proper public API, so picks sync live. A private league needs the league's API key, which the commissioner generates under League Setup → Developer's API. New — this one hasn't been through a real draft yet, so check the first few picks land before you rely on it, and switch to typing them if anything looks off." },
   { id: "fantrax", name: "Fantrax", field: "Fantrax Secret ID", live: true, proven: false, icon: "ti-key",
+    draft: "live", season: false,
     hint: "Paste the Secret ID from your Fantrax profile — not your password. Picks sync live, and regenerating the ID in Fantrax revokes us instantly. New — this one hasn't been through a real draft yet, so check the first few picks land before you rely on it, and switch to typing them if anything looks off." },
   { id: "cbs", name: "CBS Sports", live: false, icon: "ti-alert-triangle", unsupported: true,
+    draft: "none", season: false,
     hint: "CBS retired its developer API, and the only way in would be to ask for your CBS password. We won't do that." },
   { id: "nfl", name: "NFL.com", live: false, icon: "ti-arrow-right", unsupported: true,
+    draft: "none", season: false,
     hint: "The NFL stopped running season-long fantasy in 2026 and moved leagues to ESPN. Import yours there, then connect it here as an ESPN league." },
 ];
+
+/* The two sentences, rendered from the table. One component, used in the platform picker and again in
+   the post-import banner — so the promise a reader sees before connecting and the promise they see after
+   are the same words, which is the only way to notice if either is wrong.
+   ⚠ THE DRAFT LINE IS THE ONE THAT MATTERS AND IT IS DELIBERATELY BLUNT. "you will have to input draft
+     results live" is his phrasing, and a softer one ("picks are entered manually") is the sentence
+     somebody skims past on draft night. */
+function PlatformCaps({ id, compact }) {
+  const P = PLATFORMS.find((p) => p.id === id);
+  if (!P || P.unsupported) return null;
+  const draft = P.draft === "live"
+    ? { tone: "var(--pos)", icon: "bolt", text: "Draft night: picks come across live as they happen." }
+    : { tone: "var(--gold)", icon: "hand-finger", text: "Draft night: you type each pick in as it is announced — this platform has no live pick feed." };
+  const season = P.season
+    ? { tone: "var(--pos)", icon: "calendar-check", text: "In season: your real roster, every week — lineup, matchup, free agents and trades all run on it." }
+    : { tone: "var(--mut)", icon: "ban", text: "In season: not yet — we can import the league's settings but cannot read your roster week to week." };
+  return (
+    <div data-platcaps={id} style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: compact ? 4 : 6 }}>
+      {[draft, season].map((x) => (
+        <div key={x.icon} style={{ display: "flex", gap: 6, alignItems: "flex-start", fontSize: compact ? 10.5 : 11.5, lineHeight: 1.45 }}>
+          <i className={`ti ti-${x.icon}`} style={{ fontSize: 12, color: x.tone, marginTop: 1, flexShrink: 0 }} aria-hidden="true" />
+          <span style={{ color: x.tone === "var(--mut)" ? "var(--mut)" : "var(--ink)" }}>{x.text}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 /* ⭐⭐⭐ EVERY SENTENCE THAT NAMES THE SYNCING PLATFORMS IS GENERATED FROM THE TABLE ABOVE.
    There were four of them written out by hand — the draft-mode chooser, its own help line directly
@@ -27728,7 +28507,31 @@ function ConnectedAccounts({ accounts, leagues, onUnlink, onAdd, onChoose, hidde
     const c = (l && (l.connect || (l.cfg && l.cfg.connect))) || null;
     return c && c.platform;
   });
-  if (!list.length && !conn.length) return null;
+  /* ⭐⭐⭐⭐⭐ YAHOO WAS INVISIBLE HERE, AND THAT IS THE BUG TREY ACTUALLY HIT — b161.
+     He wrote: "I know I'm connected to Yahoo based on that email, but when I'm in my website... it
+     doesn't show that I'm connected like it shows for my sleeper leagues... (I also want to be able to
+     log into multiple yahoo accounts, but I'm not even seeing any account linked)."
+     ⚠⚠ THE CAUSE IS THAT A YAHOO LINK IS NOT AN "ACCOUNT" IN THIS COMPONENT'S SENSE. Sleeper, MFL and
+       Fantrax links are rows in `accounts`; the Yahoo link is an OAuth token on the USER ROW, so it was
+       never in the list this panel iterates and there was nowhere for it to appear. He had done
+       everything right, got a confirmation email from Yahoo, and the app said nothing — which reads as
+       "it did not work" and is the worst possible answer to a sign-in that succeeded.
+     ⚠ IT IS FETCHED HERE RATHER THAN PASSED IN, because every caller of this panel would otherwise have
+       to know about Yahoo, and two of them have no other reason to. One call, once, when the panel
+       opens. */
+  const [yahoo, setYahoo] = useState(null);
+  const [yBusy, setYBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api.yahooStatus().then((r) => { if (alive) setYahoo(r); }).catch(() => { if (alive) setYahoo(null); });
+    return () => { alive = false; };
+  }, []);
+  const yahooLinked = !!(yahoo && yahoo.linked);
+  const yahooLeagues = conn.filter((l) => {
+    const c = (l && (l.connect || (l.cfg && l.cfg.connect))) || {};
+    return String(c.platform || "").toLowerCase() === "yahoo";
+  });
+  if (!list.length && !conn.length && !yahooLinked) return null;
 
   const handleOf = (l) => {
     const c = (l && (l.connect || (l.cfg && l.cfg.connect))) || {};
@@ -27789,7 +28592,41 @@ function ConnectedAccounts({ accounts, leagues, onUnlink, onAdd, onChoose, hidde
             </div>
           );
         })}
-        {[...byPlat.entries()].map(([plat, ls], i) => {
+        {/* THE YAHOO ROW. Same shape as an account row, because to the reader it IS one. */}
+        {yahooLinked && (
+          <div data-connyahoo="1" style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "9px 11px",
+            borderTop: groups.length ? "1px solid var(--line)" : "none" }}>
+            <i className="ti ti-plug-connected" style={{ fontSize: 16, color: "var(--gold)", marginTop: 1, flexShrink: 0 }} aria-hidden="true" />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700 }}>
+                Yahoo <span className="mut" style={{ fontWeight: 400 }}>·</span> signed in
+                <span className="mut" style={{ fontWeight: 400, fontSize: 11.5 }}>
+                  {" "}— {yahooLeagues.length} league{yahooLeagues.length === 1 ? "" : "s"} imported
+                </span>
+              </div>
+              <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5, marginTop: 2 }}>
+                {yahooLeagues.length
+                  ? yahooLeagues.map((l) => l.name).join(" · ")
+                  : "no leagues imported yet — open Connect a league and pick one"}
+              </div>
+              {/* ⚠⚠ ONE YAHOO ACCOUNT AT A TIME, AND IT SAYS SO. He asked for several. The token lives on
+                  the user row, so a second sign-in REPLACES the first — the same limit Sleeper had before
+                  b132, and the same reason it was worth fixing there. Until the schema changes, a
+                  sentence beats a silent overwrite: without it the second account appears to work and the
+                  first league quietly stops resolving. */}
+              <div className="mut" style={{ fontSize: 10.5, lineHeight: 1.45, marginTop: 3 }}>
+                Yahoo allows one signed-in account here for now — signing in with another replaces this one.
+              </div>
+            </div>
+            <button className="btn btn-mini" data-connyahoounlink style={{ flexShrink: 0 }} disabled={yBusy}
+              onClick={async () => {
+                setYBusy(true);
+                try { await api.yahooUnlink(); setYahoo({ ...(yahoo || {}), linked: false }); } catch {}
+                finally { setYBusy(false); }
+              }}>{yBusy ? "…" : "Unlink"}</button>
+          </div>
+        )}
+        {[...byPlat.entries()].filter(([plat]) => !(plat === "yahoo" && yahooLinked)).map(([plat, ls], i) => {
           const P = PLATFORMS.find((p) => p.id === plat);
           return (
             <div key={`plat:${plat}`} data-connorphan={plat}
@@ -28092,6 +28929,12 @@ function ConnectBox({ connect, onConnect, onClear, embedded, onCancel, jumpTo, j
   const finishImported = (r, platform, extra = {}) => {
     onConnect({
       platform, credential: extra.credential || "", leagueId: r.league_id, leagueName: r.name,
+      /* ⭐⭐⭐⭐ b161 — YAHOO ADDRESSES A LEAGUE BY `league_key` ("nfl.l.12345"), NOT by the bare
+         `league_id`, and the two are not interchangeable in any Yahoo call. It was being dropped here,
+         so a Yahoo league imported fine and then had no usable handle for anything afterwards — which is
+         why the in-season side had nothing to ask about. Carried for every platform; null everywhere
+         else costs nothing. */
+      leagueKey: r.league_key || null,
       cfg: r.cfg || null, picks: r.picks || [], status: r.status || null,
       teams: r.teams || null, yourSlot: r.yourSlot || null, slotNames: r.slotNames || null,
       draftType: r.draftType || "snake", tradedPicks: r.tradedPicks || [], keepers: r.keepers || [],
@@ -28287,7 +29130,10 @@ function ConnectBox({ connect, onConnect, onClear, embedded, onCancel, jumpTo, j
                 <b>{sel.name}</b>
                 {PLATFORMS.length > 1 && <button className="btn btn-mini" style={{ marginLeft: "auto" }} onClick={() => { setSel(null); setSleeperLeagues(null); setEspn(null); setError(null); setVal(""); }}>← Other platform</button>}
               </div>
-              <div className="mut" style={{ fontSize: 12, marginBottom: 10 }}>{sel.hint}</div>
+              <div className="mut" style={{ fontSize: 12, marginBottom: 6 }}>{sel.hint}</div>
+              {/* ⭐⭐⭐⭐⭐ WHAT THIS ONE ACTUALLY DOES, BEFORE YOU CONNECT IT — b161, and the reason is
+                  Trey connecting Yahoo mid-draft and watching nothing happen. See PLATFORMS. */}
+              <div style={{ marginBottom: 10, paddingLeft: 1 }}><PlatformCaps id={sel.id} /></div>
 
               {sel.id === "sleeper" ? (
                 <div>
@@ -28892,6 +29738,18 @@ function ConfigForm({ initial, onSubmit, submitLabel, onCancel, initialSeg, init
                 <summary style={{ fontSize: 11.5, color: "var(--mut)", cursor: "pointer", userSelect: "none" }}>Review or tweak settings (optional)</summary>
                 <div className="mut" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.5 }}>The fields below are pre-filled from your league. You can adjust them, but for a connected Sleeper league you normally don't need to — just hit “Enter draft room” above.</div>
               </details>
+            </div>
+          )}
+          {/* ⭐⭐⭐⭐⭐ THE SAME TWO SENTENCES, AFTER THE IMPORT — b161. Trey connected Yahoo during a live
+              draft and nothing appeared to happen, because Yahoo has no pick feed; the app knew that and
+              never said it. Rendering PlatformCaps here as well means the promise made before connecting
+              and the one made after are literally the same component, so they cannot drift — and the one
+              that matters on draft night ("you type each pick in") is on the last screen before the
+              draft room rather than only on the one you have already left. */}
+          {f.connect && f.connect.platform && f.connect.platform !== "sleeper" && (
+            <div data-importcaps={f.connect.platform} className="panel"
+              style={{ padding: "10px 14px", marginBottom: 12, marginTop: -6, background: "var(--panel2)" }}>
+              <PlatformCaps id={f.connect.platform} />
             </div>
           )}
           {/* ESPN import summary. Deliberately NOT styled like the Sleeper "you're done" banner: an ESPN
@@ -34052,10 +34910,33 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
      ⚠ KEYED BY PLAYER ID ACROSS ALL TEAMS, so the panel's team dropdown works without a second lookup —
        a player is on exactly one roster, so one map serves twelve. */
   const pickGradeById = useMemo(() => {
+    const rows = (graded || []).filter((g) => g && g.p && g.o != null);
+    /* ⭐⭐⭐⭐⭐ HOW GOOD WAS HE **FOR WHERE HE WENT** — b160, the quality half of the grade.
+       ⚠⚠ THE COMPARISON GROUP IS A WINDOW AROUND THE PICK, NOT THE WHOLE DRAFT. Ranking a player's VBD
+         against everyone taken would make every late pick an F by construction — the 150th player off the
+         board is not good, and saying so grades the round rather than the decision. Against the two rounds
+         either side of him, a strong pick in round 12 can still earn a real letter, which is the thing
+         Trey is describing when he says "if they are a good player, that's a good thing".
+       ⚠ AND THE WINDOW IS BY PICK NUMBER, NOT BY POSITION. A tight end taken in round 3 is competing with
+         what else was on the board at that moment, which is exactly the decision he made. */
+    const WINDOW = Math.max(12, (TEAMS || 12) * 2);
+    const byO = rows.slice().sort((a2, b2) => a2.o - b2.o);
+    const vbdOf = (g) => (g && g.p && Number.isFinite(g.p.vbd) ? g.p.vbd : null);
     const m = new Map();
-    (graded || []).forEach((g) => {
-      if (!g || !g.p || g.o == null) return;
-      m.set(g.p.id, { g: pickGradeFor(g.mval, stealCut, reachCut, MIN_MARK), mval: g.mval, o: g.o, keeper: !!g.keeper });
+    rows.forEach((g) => {
+      const peers = byO.filter((x) => Math.abs(x.o - g.o) <= WINDOW && vbdOf(x) != null).map(vbdOf);
+      const mine = vbdOf(g);
+      let lift = 0.35;                                  // no VBD to compare — treat as unremarkable
+      if (mine != null && peers.length >= 4) {
+        const below = peers.filter((v) => v < mine).length;
+        lift = below / (peers.length - 1);              // 0 = worst of his window, 1 = best
+      }
+      /* ⚠ THE SCORE IS STORED, NOT JUST THE LETTER — b161. The TEAM grade is the mean of its own picks
+         and you cannot average letters; storing both here is what keeps the two grades on one scale
+         rather than on two that happen to look similar. */
+      const score = pickScoreFor(g.mval, stealCut, reachCut, MIN_MARK, lift);
+      m.set(g.p.id, { g: gradeFromScore(score), score,
+        mval: g.mval, o: g.o, keeper: !!g.keeper, lift });
     });
     return m;
   }, [graded, stealCut, reachCut]);
@@ -34068,54 +34949,72 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     const mean = valByTeamRaw.reduce((a, b) => a + b, 0) / TEAMS;
     return valByTeamRaw.map((v) => Math.round(v - mean));
   }, [valByTeamRaw]);
+  /* ⭐⭐⭐⭐⭐ THE TEAM GRADE IS NOW THE MEAN OF ITS OWN PICKS — b161, and this is a correctness fix rather
+     than a tuning pass.
+     ==================================================================================================
+     Until b161 this was a Z-SCORE ACROSS THE TWELVE TEAMS. That had already been patched once (the sd
+     floors below, which stopped a chalk draft spreading A+ to D over rounding error) but the shape was
+     still relative, and b160's pick-grade recalibration made the consequence impossible to ignore: a
+     roster whose every pick reads A can carry a team grade of C, because it is being compared with
+     eleven other good drafts. Two grades on one screen, disagreeing, with nothing to tell the reader
+     which one is lying. That is the 29y one-number rule broken in the most visible place in the app.
+
+     ⭐ SO THE BASE IS THE SAME QUANTITY THE PICKS ARE GRADED ON: the mean of this team's own pick scores,
+       through `gradeFromScore` — the SAME bands, one implementation. A team that drafted well grades
+       well whatever the other eleven did, which is the whole definition of an absolute scale, and a
+       chalk draft grades as a chalk draft by construction rather than by a floor bolted on afterwards.
+     ⚠ EARLY PICKS DOMINATE FOR FREE, and that is worth knowing rather than adding. `pickValue` is
+       early-weighted, so a round-1 reach carries several times the magnitude of a round-14 one and the
+       mean is already weighted the way a reader would weight it.
+
+     ⚠⚠ AND THE POINTS AXIS IS DEMOTED TO A MODIFIER, DELIBERATELY. It cannot be made absolute: twelve
+       teams drafting from ONE pool means projected points are very nearly zero-sum, so "how many points
+       did you end up with" only has meaning against the other eleven. Leaving it as an equal partner
+       would have reintroduced exactly the relativity this change removes, through the back door. It is
+       capped at roughly one grade step — enough to pull down the "immense ADP value, middling projected
+       finish" redraft team that the old blend existed to catch, never enough to overturn the picks.
+     ⚠ THE CAP IS FORMAT-AWARE for the same reason the old weights were: redraft is win-or-go-home so the
+       outcome deserves the wider band; dynasty accumulates assets, so efficiency matters more and the
+       finish matters less. */
   const grades = useMemo(() => {
     if (!proj) return null;
-    const vMean = valByTeam.reduce((a, b) => a + b, 0) / TEAMS;
-    const pMean = proj.pts.reduce((a, b) => a + b, 0) / TEAMS;
-    const vSdRaw = Math.sqrt(valByTeam.reduce((a, b) => a + (b - vMean) ** 2, 0) / TEAMS) || 1;
-    const pSdRaw = Math.sqrt(proj.pts.reduce((a, b) => a + (b - pMean) ** 2, 0) / TEAMS) || 1;
-    /* ⭐⭐⭐⭐ A Z-SCORE OVER A FLAT LEAGUE IS AN AMPLIFIER, NOT A MEASUREMENT.
-       Trey: "When you sort by finish in the summary tab… 'A-' goes in front of 'A' — but clearly minus
-       should be below."
-       He was looking at a chalky draft: sorted by projected finish, the FIRST-place team graded A− and the
-       second graded A+. The sort was right and the blend below was right; the fault was here. Dividing by
-       the league's OWN standard deviation rescales whatever spread exists to ±2 no matter how small that
-       spread is — so in a draft where every player went at his ADP and the entire value column ran from −5
-       to +5 (rounding, essentially), that ±5 of nothing was stretched to the same ±2σ as a 140-point gap in
-       roster quality, and 0.35 × pure noise was enough to outweigh a genuine 25-point edge. A rig with the
-       board built in exact ADP order printed grades from A+ down to D over a draft in which, by
-       construction, nobody drafted better than anyone.
-       ⚠ THIS IS THE SAME FAULT 29n FIXED FOR STEALS AND REACHES, in a different place: a percentile bar
-         coloured a tenth of the board whatever happened on it, and the fix was an absolute one. A relative
-         measure that cannot help but produce a full spread is not reporting anything.
-       So each side gets a FLOOR under its sd — a spread smaller than the floor reads as "these teams are
-       the same on this axis" and contributes nearly nothing, instead of deciding the top grade:
-         • value — MIN_MARK is the smallest per-pick miss worth a manager's attention, so three of them is
-           the smallest TEAM-level edge worth grading on. Below that it is rounding.
-         • points — proportional, because point totals scale with scoring, roster size and rounds; an
-           absolute floor that suited a 15-round PPR league would be nonsense in a 6-round one. 0.6% of the
-           league's mean is about a point a week between teams.
-       Neither floor binds in an ordinary draft (measured: value sd ≈ 22 in a normal room, ≈ 29 in a wild
-       one, against a floor of 15), so the grades still spread when there is something to spread on — which
-       is the other half of the claim and is tested alongside it. */
-    const vSd = Math.max(vSdRaw, MIN_MARK * 3);
-    const pSd = Math.max(pSdRaw, pMean * 0.006);
-    // Grade = a blend of ADP VALUE (did you draft efficiently vs. the market?) and PROJECTED POINTS (the
-    // outcome that actually wins the league). The weight is FORMAT-AWARE:
-    //   • REDRAFT is win-or-go-home — projected finish is what matters, so points dominate (65/35 toward pts).
-    //   • DYNASTY/KEEPER accumulates long-term assets, so ADP value/efficiency matters more, but win-now still
-    //     counts — a lighter tilt toward value (60/40 toward value).
-    // This stops an "immense ADP value but middling projected finish" redraft team from grading out as an A+.
-    const dyn = isDynastyCfg(cfg);
-    const wVal = dyn ? 0.60 : 0.35;
-    const wPts = 1 - wVal;
-    return Array.from({ length: TEAMS }, (_, i) => {
-      const z = wVal * ((valByTeam[i] - vMean) / vSd) + wPts * ((proj.pts[i] - pMean) / pSd);
-      // full A–F spread so a genuinely bad draft reads as a bad draft
-      const g = z >= 1.5 ? "A+" : z >= 1.05 ? "A" : z >= 0.7 ? "A−" : z >= 0.4 ? "B+" : z >= 0.12 ? "B" : z >= -0.15 ? "B−" : z >= -0.45 ? "C+" : z >= -0.75 ? "C" : z >= -1.05 ? "C−" : z >= -1.4 ? "D" : "F";
-      return { z, g };
+    /* Each team's own picks, as SCORES. A team with no graded picks yet gets no grade rather than a
+       confident middle one — the same rule `pickGradeFor` applies to a pick with no market price. */
+    const byTeam = Array.from({ length: TEAMS }, () => []);
+    (graded || []).forEach((g) => {
+      if (!g || !g.p || g.t == null) return;
+      const e = pickGradeById.get(g.p.id);
+      if (e && Number.isFinite(e.score)) byTeam[g.t].push(e.score);
     });
-  }, [valByTeam, proj, cfg]);
+    const pMean = proj.pts.reduce((a, b) => a + b, 0) / TEAMS;
+    const pSdRaw = Math.sqrt(proj.pts.reduce((a, b) => a + (b - pMean) ** 2, 0) / TEAMS) || 1;
+    /* ⚠ THE FLOOR STAYS, and it is still doing a job: with the points axis capped it can no longer
+       decide a grade on its own, but without a floor a league where every roster projects within a
+       point of every other would still see that nothing stretched to the full ±1 of the modifier.
+       Proportional rather than absolute, because point totals scale with scoring, roster size and
+       rounds — an absolute floor tuned for a 15-round PPR league is nonsense in a 6-round one. */
+    const pSd = Math.max(pSdRaw, pMean * 0.006);
+    const dyn = isDynastyCfg(cfg);
+    /* ⚠⚠ THESE TWO NUMBERS WERE SET FROM THE LADDER, NOT BY FEEL. The bands through the middle of the
+       scale are 0.30 wide, so a cap of 0.30 is EXACTLY ONE GRADE STEP each way — a team projected to run
+       away with the league is lifted a step, one projected to finish last is dropped a step, and the
+       twenty-odd picks underneath still decide which step it is moving from. The first cut used 0.45 and
+       sim/teamgrade.js §1c caught it: across a realistic league that is a 0.90 swing, which is three
+       steps and most of a grade family, so the finish would have been deciding rather than modifying. */
+    const wPts = dyn ? 0.12 : 0.20;                    // how much a standard deviation of finish is worth
+    const CAP = dyn ? 0.18 : 0.30;                     // …and the most it may ever move the grade
+    return Array.from({ length: TEAMS }, (_, i) => {
+      const picksN = byTeam[i].length;
+      if (!picksN) return { z: null, g: null, base: null, adj: 0, picksN: 0 };
+      const base = byTeam[i].reduce((a, b) => a + b, 0) / picksN;
+      const pz = (proj.pts[i] - pMean) / pSd;
+      const adj = Math.max(-CAP, Math.min(CAP, pz * wPts));
+      const score = base + adj;
+      /* `z` is kept because the Summary tab sorts and tints on it; it is the same number the letter
+         comes from, which is the point. */
+      return { z: score, g: gradeFromScore(score), base, adj, picksN };
+    });
+  }, [graded, pickGradeById, proj, cfg])
 
   const recap = useMemo(() => {
     if (!proj || !grades || picks.length < 6) return null;
@@ -37758,7 +38657,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               <PosName p={p} /> <span className="mut pteam">{p.team}</span>
                             </span>
                             {injInfo && <span data-inj="1" onClick={(e) => showTip(e, makeInjuryCard(p, injInfo))} onMouseEnter={(e) => showTip(e, makeInjuryCard(p, injInfo))} onMouseLeave={hideTip}
-                              style={{ flexShrink: 0, height: 14, borderRadius: 3, background: injInfo.color, color: "#fff", fontSize: 8.5, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "help", padding: "0 4px", letterSpacing: ".02em" }} title="">{injInfo.abbr}</span>}
+                              style={{ flexShrink: 0, height: 14, borderRadius: 3, background: injInfo.color, color: inkOn(injInfo.color), fontSize: 8.5, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "help", padding: "0 4px", letterSpacing: ".02em" }} title="">{injInfo.abbr}</span>}
                             {avoided && !gone && <span className="itag" style={{ flexShrink: 0, fontSize: 8.5, fontWeight: 800, letterSpacing: ".03em", color: "var(--red)", border: "1px solid var(--red)", borderRadius: 4, padding: "0 4px", whiteSpace: "nowrap" }}>DO NOT DRAFT</span>}
                             {/* ⭐⭐ 29p — THE TARGET TAG. The round or, better, the exact pick you wrote him
                                 down for. Turns amber once that window is the round you are actually in, so
@@ -38323,7 +39222,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                                 return (
                                   <span className="num" data-rostergrade={g || ""}
                                     title={hit && g
-                                      ? `${p.name} graded ${g} on the PICK — taken at ${pickLabel(hit.o)}, worth ${hit.mval > 0 ? "+" : ""}${hit.mval.toFixed(0)} against the market price for that slot.${hit.keeper ? " Kept, so the price was set before the draft rather than on the clock." : ""}`
+                                      ? `${p.name} graded ${g} on the PICK — taken at ${pickLabel(hit.o)}, worth ${hit.mval > 0 ? "+" : ""}${hit.mval.toFixed(0)} against the market price for that slot, and ${hit.lift >= 0.75 ? "one of the best players" : hit.lift >= 0.45 ? "a solid player" : "a modest player"} available around that pick. Both halves count: a good player taken at his price is a good pick.${hit.keeper ? " Kept, so the price was set before the draft rather than on the clock." : ""}`
                                       : p ? `No market price to grade ${p.name}'s pick against.` : undefined}
                                     style={{ fontSize: 10, textAlign: "right", fontWeight: 800,
                                       color: GRADE_TONE(g), cursor: g ? "help" : "default" }}>{g || ""}</span>
@@ -39059,7 +39958,13 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 {(() => {
                   const maxPts = Math.max(...proj.pts, 1);
                   // Build a row per team with both metrics, plus the rank each metric implies.
-                  const base = Array.from({ length: TEAMS }, (_, i) => ({ i, pts: proj.pts[i] || 0, z: grades[i] ? grades[i].z : 0, g: grades[i] ? grades[i].g : "—", finish: proj.rank ? proj.rank[i] : i + 1 }));
+                  /* ⚠ b161 — A TEAM WITH NO GRADED PICKS SORTS LAST rather than at zero. `z` is the grade
+                     SCORE now (see the grades memo) and an ungraded team has none; zero would place it in
+                     the middle of the field, which is a confident statement about a team we have not
+                     measured. */
+                  const base = Array.from({ length: TEAMS }, (_, i) => ({ i, pts: proj.pts[i] || 0,
+                    z: grades[i] && Number.isFinite(grades[i].z) ? grades[i].z : -99,
+                    g: (grades[i] && grades[i].g) || "—", finish: proj.rank ? proj.rank[i] : i + 1 }));
                   const powerOrder = base.slice().sort((a, b) => b.z - a.z).map((r) => r.i);
                   const rows = base.slice().sort((a, b) => rankView === "power" ? b.z - a.z : a.finish - b.finish);
                   const Head = ({ k, label, w }) => (
@@ -39076,7 +39981,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                         {rows.map((row) => {
                           const isSel = row.i === selTeam, isYou = row.i === userIdx;
-                          const gradeColor = row.z >= 0.7 ? "var(--green)" : row.z >= 0.12 ? "var(--pos-mid)" : row.z >= -0.45 ? "var(--gold)" : "var(--red)";
+                          /* ⚠⚠ b161 — THE COLOUR COMES FROM THE LETTER, not from a second set of
+                             thresholds on the score. Two parallel mappings is how a row ends up printing
+                             a green B− the day somebody moves a band — the 29y one-number rule, and
+                             `GRADE_TONE` is the same function the Rosters panel's Gr column uses. */
+                          const gradeColor = GRADE_TONE(row.g);
                           const powerRk = powerOrder.indexOf(row.i) + 1;
                           const activeRk = rankView === "power" ? powerRk : row.finish;
                           return (
@@ -40006,7 +40915,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 // means anything. An empty list here is a real answer and the panel says so below.
                 const best5 = graded.slice().sort((a, b) => b.mval - a.mval).filter((g) => g.mval >= stealCut).slice(0, 5).map((g) => ({ ...g, val: g.mval }));
                 const worst5 = graded.slice().sort((a, b) => a.mval - b.mval).filter((g) => g.mval <= -reachCut).slice(0, 5).map((g) => ({ ...g, val: g.mval }));
-                const gradeOrder = Array.from({ length: TEAMS }, (_, i) => i).sort((a, b) => grades[b].z - grades[a].z);
+                const gz = (i) => (grades[i] && Number.isFinite(grades[i].z) ? grades[i].z : -99);
+                const gradeOrder = Array.from({ length: TEAMS }, (_, i) => i).sort((a, b) => gz(b) - gz(a));
                 const nm = (i) => (i === userIdx ? (TEAM_NAMES[i] || "You") : TEAM_NAMES[i]);
                 // Bottom summary line — one plain sentence of what happened.
                 const leader = proj.rank.indexOf(1);
@@ -40067,9 +40977,9 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                               const drafted = (rostersByTeam[ti] || []);
                               const mixOrder = ["QB", "RB", "WR", "TE", "K", "DST"];
                               const posMix = mixOrder.map((pos) => ({ pos, n: drafted.filter((p) => p && p.pos === pos).length })).filter((m) => m.n > 0);
-                              const gradeCol = (z) => (z >= 0.7 ? "var(--pos)" : z >= 0.12 ? "var(--pos-mid)" : z >= -0.45 ? "var(--warn)" : "var(--neg)");
                               const leagueRows = gradeOrder.map((i) => ({
-                                grade: grades[i].g, color: gradeCol(grades[i].z),
+                                /* b161 — one mapping, keyed on the letter. See the note in the power table. */
+                                grade: (grades[i] && grades[i].g) || "—", color: GRADE_TONE(grades[i] && grades[i].g),
                                 name: i === userIdx ? (TEAM_NAMES[i] || "Your team") : (TEAM_NAMES[i] || `Team ${i + 1}`),
                                 right: proj && proj.rank ? ordinal(proj.rank[i]) : "", you: i === ti,
                               }));
@@ -40130,7 +41040,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                             <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 12, padding: "1px 0", color: i === focusIdx ? "var(--gold)" : "var(--ink)", fontWeight: i === focusIdx ? 700 : 400 }}>
                               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{nm(i)}{i === userIdx ? " ★" : i === focusIdx ? " ◄" : ""}</span>
                               <span style={{ flexShrink: 0, marginLeft: 6, display: "inline-flex", alignItems: "baseline", gap: 5 }}>
-                                <b>{grades[i].g}</b>
+                                <b>{(grades[i] && grades[i].g) || "—"}</b>
                                 <span className="num" style={{ fontSize: 10.5, fontWeight: 700, color: valByTeam[i] > 0 ? "var(--green)" : valByTeam[i] < 0 ? "var(--red)" : "var(--mut)" }}>({valByTeam[i] > 0 ? "+" : ""}{valByTeam[i]})</span>
                               </span>
                             </div>

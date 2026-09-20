@@ -66,10 +66,36 @@ import WeeklyReview from "./WeeklyReview.jsx";
 const REFRESH_MS = 5 * 60 * 1000;   // his number, and about right: designations move in minutes, not seconds
 
 const hubIdOf = (l) => (l && ((l.connect && l.connect.leagueId) || (l.cfg && l.cfg.connect && l.cfg.connect.leagueId) || l.sleeperLeagueId)) || null;
+// 1st / 2nd / 3rd. This screen is code-split, so it cannot reach App.jsx's copy without dragging the
+// whole module in behind it — three lines is cheaper than the import.
+const ordinalOf = (n) => {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "—";
+  const sfx = ["th", "st", "nd", "rd"], m = v % 100;
+  return `${v}${sfx[(m - 20) % 10] || sfx[m] || sfx[0]}`;
+};
 const ownerOf = (l) => (l && (
   (l.connect && (l.connect.ownerUsername || l.connect.username))
   || (l.cfg && l.cfg.connect && (l.cfg.connect.ownerUsername || l.cfg.connect.username))
 )) || null;
+/* ⭐⭐⭐⭐ b161 — WHICH PLATFORM, AND YAHOO'S OWN KEY. The Yahoo hub returns the same payload shape as the
+   Sleeper one, so the only thing this page changes is which endpoint it asks; everything downstream is
+   untouched. ⚠ These duplicate the copies in App.jsx deliberately: this screen is code-split, and
+   importing them would drag the whole module into its chunk — which is the thing the split exists to
+   prevent. Three lines each, and the shape they read is the saved league record, which does not move. */
+const platOf = (l) => {
+  const c = (l && (l.connect || (l.cfg && l.cfg.connect))) || null;
+  if (!c) return l && l.sleeperLeagueId ? "sleeper" : null;
+  return (c.platform ? String(c.platform).toLowerCase() : null) || (c.leagueId ? "sleeper" : null);
+};
+const yahooKeyOf = (l) => {
+  const c = (l && (l.connect || (l.cfg && l.cfg.connect))) || {};
+  return c.leagueKey || c.league_key || (c.leagueId && /^nfl\.l\./.test(String(c.leagueId)) ? c.leagueId : null) || null;
+};
+const hubCall = (l, week) => {
+  const k = platOf(l) === "yahoo" ? yahooKeyOf(l) : null;
+  return k ? api.yahooTeamHub(k, week) : api.sleeperTeamHub(hubIdOf(l), week, ownerOf(l));
+};
 
 /* The four reasons to make a claim, each with its own word. The labels are the whole point: a streamer
    dressed as an upgrade is how a waiver list stops being trusted, and "Bye next week" is useless unless it
@@ -191,6 +217,18 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
   const ranFor = useRef(null);
   const connected = useMemo(() => (leagues || []).filter((l) => hubIdOf(l)), [leagues]);
   const unconnected = useMemo(() => (leagues || []).filter((l) => !hubIdOf(l)), [leagues]);
+  /* ⭐⭐⭐⭐⭐ LEAGUE ACTIVITY — b161. Trey: "just see an aggregated list of connected leagues... somewhere
+     on like the this week tab, I think, since it's an aggregated look."
+     ⚠⚠ FETCHED ONLY WHEN THE VIEW IS OPENED, and this is not an optimisation. The backend makes one
+       upstream Sleeper call per league PER WEEK, so a four-week window across twelve leagues is 48 calls —
+       adding that to this page's existing load would put it on every Sunday-morning poll, for a view
+       most visits never open. It is loaded once per (leagues × window) and kept. */
+  const [tx, setTx] = useState(null);
+  const [txErr, setTxErr] = useState(null);
+  const [txLoading, setTxLoading] = useState(false);
+  const [txScope, setTxScope] = useState("mine");     // mine | all — his toggle, and it defaults to mine
+  const [txWeeks, setTxWeeks] = useState(4);
+  const txRan = useRef(null);
 
   useEffect(() => {
     const sig = connected.map((l) => hubIdOf(l)).join(",") + "@" + (weekSel == null ? "auto" : weekSel);
@@ -213,7 +251,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
         const anyIdp = connected.some((l) => { const st = (l.cfg && l.cfg.start) || {}; return (st.DL || 0) + (st.LB || 0) + (st.DB || 0) + (st.IDPFLEX || 0) > 0; });
         const [pk, hubs] = await Promise.all([
           api.playerPack(fmt, undefined, { k: true, dst: true, idp: anyIdp }).catch(() => null),
-          pool(connected, 4, (l) => api.sleeperTeamHub(hubIdOf(l), weekSel == null ? undefined : weekSel, ownerOf(l))),
+          pool(connected, 4, (l) => hubCall(l, weekSel == null ? undefined : weekSel)),
         ]);
         if (!alive) return;
         if (pk) setPack(pk);
@@ -512,7 +550,10 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
     lineup: perLeague.reduce((s, L) => s + ((L && L.swaps) || []).length, 0),
     fa: perLeague.reduce((s, L) => s + ((L && L.fa) || []).length, 0),
     wx: wxRows.length,
-  }), [availRows, perLeague, wxRows]);
+    /* Zero until the feed has been fetched, which is correct rather than coy: before the view is opened
+       we genuinely do not know, and a badge guessing at a number is worse than no badge. */
+    moves: tx ? (tx.leagues || []).reduce((n, L) => n + (L.items || []).filter((x) => x.mine).length, 0) : 0,
+  }), [availRows, perLeague, wxRows, tx]);
 
   const LeagueTag = ({ l, dim }) => (
     <button onClick={() => onUmbrella && onUmbrella(l.id)} data-wkleague={l.name} title={`Open ${l.name}`}
@@ -544,12 +585,50 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
     );
   };
 
+  /* The activity feed, fetched the first time the view is opened and again only if the league set or the
+     window changes. `txRan` is the same guard pattern the main load uses — see `ranFor` above. */
+  useEffect(() => {
+    if (view !== "moves" || !connected.length) return;
+    const sig = connected.map((l) => `${platOf(l)}:${hubIdOf(l)}`).join(",") + "@" + txWeeks;
+    if (txRan.current === sig) return;
+    txRan.current = sig;
+    let alive = true;
+    setTxLoading(true); setTxErr(null);
+    /* ⚠ SLEEPER LEAGUES ONLY — b161. Yahoo publishes no transaction resource we can read, so asking about
+       a Yahoo league here would send an id the Sleeper API has never heard of and cost the whole call.
+       The section says so below rather than quietly showing a shorter list. */
+    const txLeagues = connected.filter((l) => platOf(l) !== "yahoo");
+    /* ⚠⚠ THE LEAGUES WE CANNOT COVER ARE CARRIED, NOT DROPPED. Trey's own account is MIXED — Sleeper and
+       Yahoo — so an explanation that only appears when EVERY league is a Yahoo one is an explanation he
+       would never see: his feed would simply be one league short and say nothing about it. A list that
+       is quietly incomplete is worse than an empty one, because nothing prompts you to doubt it. */
+    const uncovered = connected.filter((l) => platOf(l) === "yahoo").map((l) => l.name);
+    if (!txLeagues.length) { setTx({ leagues: [], pendingSupported: false, yahooOnly: true, uncovered }); setTxLoading(false); return; }
+    api.sleeperTransactions(txLeagues.map((l) => hubIdOf(l)), txLeagues.map((l) => ownerOf(l)), txWeeks)
+      .then((d) => { if (alive) setTx({ ...d, uncovered }); })
+      .catch((e) => { if (alive) setTxErr(String((e && e.message) || e)); })
+      .finally(() => { if (alive) setTxLoading(false); });
+    return () => { alive = false; };
+  }, [view, connected, txWeeks]);
+
+  /* One flat, newest-first list across every league, because the ask was explicitly an AGGREGATED look.
+     The per-league view already exists inside each league's Trades tab. */
+  const txItems = useMemo(() => {
+    const all = ((tx && tx.leagues) || []).flatMap((L) => (L.items || []).map((x) => ({ ...x, faab: L.faab, budget: L.budget })));
+    return all.sort((a, b) => (b.at || 0) - (a.at || 0));
+  }, [tx]);
+  const txShown = useMemo(() => (txScope === "mine" ? txItems.filter((x) => x.mine) : txItems), [txItems, txScope]);
+
   const VIEWS = [
     ["summary", "ti-layout-dashboard", "Summary", 0],
     ["avail", "ti-first-aid-kit", "Availability", counts.avail],
     ["lineup", "ti-arrows-exchange", "Lineup changes", counts.lineup],
     ["fa", "ti-user-plus", "Free agents", counts.fa],
     ["weather", "ti-cloud-storm", "Weather", counts.wx],
+    /* ⭐⭐⭐ b161 — and it sits AFTER the four things to do before kickoff, for the same reason the weekly
+       review is last: this is a record of what has already happened, and a badge on it would compete with
+       an injury warning for Sunday-morning attention and win. */
+    ["moves", "ti-arrows-shuffle", "League activity", counts.moves],
     /* ⭐⭐⭐ TWO DOORS TO THE SAME ROOM IS ONE DOOR TOO MANY — 29q.
        Trey: "can we just combine the 'Summary' and 'Weekly Review'."
        Inside the in-season shell the review is now a TAB, sitting three centimetres above this chip strip
@@ -1023,6 +1102,219 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
               </div>
             )}
           </>
+        )}
+
+        {/* ===================== LEAGUE ACTIVITY =====================
+            ⭐⭐⭐⭐⭐ b161. Trey: "trades that are currently pending, aka someone has sent me a trade or I
+            have sent them a trade... just see an aggregated list of connected leagues... And then you can
+            look at another section that says like recently rejected or recently accepted trades. I want
+            that to be only ones that I show, but I also want to be able to toggle to show the entire
+            league on trades that have been accepted recently."
+
+            ⚠⚠⚠⚠ THE FIRST THING THIS VIEW DOES IS ADMIT WHAT IT CANNOT DO. Sleeper publishes transactions
+              once they RESOLVE: there is no pending offer to read, and a declined trade leaves no record
+              at all — it is indistinguishable from a trade nobody ever sent. Every other build of this
+              feature I can imagine ships a "Pending" section that is always empty, which tells the reader
+              something false about his league rather than something true about the API. One sentence, at
+              the top, once. (See api/.../lib/transactions.js for the evidence.)
+            ⚠ AND THE TOGGLE DEFAULTS TO MINE, which is his order of asking: "I want that to be only ones
+              that I show, but I also want to be able to toggle". */}
+        {!loading && view === "moves" && !!connected.length && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {txLoading && !tx && (
+              <div className="panel" style={{ padding: 22, textAlign: "center" }}>
+                <div className="mut" style={{ fontSize: 13 }}>Reading the last {txWeeks} weeks across {connected.length} league{connected.length === 1 ? "" : "s"}…</div>
+              </div>
+            )}
+            {txErr && <div className="panel" style={{ padding: 16, borderColor: "var(--red)" }}><span style={{ color: "var(--red)" }}>{txErr}</span></div>}
+            {tx && (
+              <>
+                <div className="panel" data-wkmoves={String(txItems.length)} style={{ padding: "14px 16px" }}>
+                  <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 10 }}>
+                    {[["Trades", (tx.leagues || []).reduce((n, L) => n + (L.trends ? L.trends.totals.trades : 0), 0), "var(--gold)"],
+                      ["Waiver claims", (tx.leagues || []).reduce((n, L) => n + (L.trends ? L.trends.totals.waivers : 0), 0), "var(--ink)"],
+                      ["Free agents", (tx.leagues || []).reduce((n, L) => n + (L.trends ? L.trends.totals.freeAgents : 0), 0), "var(--ink)"],
+                      ["Claims that failed", (tx.leagues || []).reduce((n, L) => n + (L.trends ? L.trends.totals.failed : 0), 0), "var(--neg)"]]
+                      .map(([label, n, tone]) => (
+                      <div key={label} data-wkmovestat={`${label}:${n}`}>
+                        <div className="num" style={{ fontSize: 22, fontWeight: 800, color: tone, lineHeight: 1.1 }}>{n}</div>
+                        <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em" }}>{label}</div>
+                      </div>
+                    ))}
+                    {(tx.leagues || []).some((L) => L.faab) && (
+                      <div data-wkmovesfaab>
+                        <div className="num" style={{ fontSize: 22, fontWeight: 800, color: "var(--pos)", lineHeight: 1.1 }}>
+                          ${(tx.leagues || []).reduce((n, L) => n + (L.trends ? L.trends.totals.faabSpent : 0), 0)}
+                        </div>
+                        <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".05em" }}>FAAB spent</div>
+                      </div>
+                    )}
+                  </div>
+                  {/* THE HONEST SENTENCE. */}
+                  {/* ⚠ AND IT NAMES THE RIGHT PLATFORM. A Yahoo-only account was being told what SLEEPER
+                      does and does not publish, which is a true sentence about the wrong service and
+                      reads as though we had looked. */}
+                  <div data-wkmovesnote className="mut" style={{ fontSize: 11.5, lineHeight: 1.55, paddingTop: 10, borderTop: "1px solid var(--line)" }}>
+                    {tx.yahooOnly ? (
+                      <><b style={{ color: "var(--ink)" }}>Yahoo publishes no transaction feed.</b> There is nothing
+                      for us to read here — not pending offers, not completed trades, not waiver claims. Everything
+                      else in the in-season screens works on a Yahoo league; this one section needs Sleeper.</>
+                    ) : (
+                      <><b style={{ color: "var(--ink)" }}>Pending offers are not available.</b> Sleeper only publishes a
+                      transaction once it has gone through, so an offer sitting in your inbox — and a trade somebody
+                      turned down — leave no record we can read. Everything below has already happened. Check Sleeper
+                      itself for anything still waiting on a yes.</>
+                    )}
+                  </div>
+                  {(tx.uncovered || []).length > 0 && !tx.yahooOnly && (
+                    <div data-wkmovesuncovered={String((tx.uncovered || []).length)} className="mut"
+                      style={{ fontSize: 11.5, lineHeight: 1.55, marginTop: 7 }}>
+                      <b style={{ color: "var(--gold)" }}>Not included:</b>{" "}
+                      {tx.uncovered.join(", ")} — Yahoo publishes no transaction feed we can read, so those
+                      leagues are missing from everything above. Every other in-season screen works on them.
+                    </div>
+                  )}
+                </div>
+
+                {/* ⭐⭐⭐⭐ WHERE YOU SIT, LEAGUE BY LEAGUE — b161. The aggregated totals above answer "what
+                    has been happening"; this answers "am I the one it is happening to". Across twelve
+                    leagues the useful read is not how many moves you made, it is which leagues you have
+                    gone quiet in — and that is a per-league fact that an aggregate cannot carry.
+                    ⚠ ONLY LEAGUES WHERE THE STANDING EXISTS. `myRank` is null when there is nobody to
+                      compare against, and a rank of 1 out of 1 is not a finding. */}
+                {(tx.leagues || []).some((L) => L.trends && L.trends.myRank) && (
+                  <div className="panel" data-wkmovesrank style={{ padding: "11px 14px" }}>
+                    <div className="disp" style={{ fontSize: 13.5, fontWeight: 800, marginBottom: 7 }}>
+                      How active you are <span className="mut" style={{ fontSize: 10.5, fontWeight: 500 }}>· by league, over the window</span>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: "4px 16px" }}>
+                      {(tx.leagues || []).filter((L) => L.trends && L.trends.myRank).map((L) => {
+                        const r = L.trends.myRank, n = L.trends.teams;
+                        const me = L.trends.mine || { trades: 0, waivers: 0, freeAgents: 0 };
+                        const moves = me.trades + me.waivers + me.freeAgents;
+                        /* Quiet is the finding, so it gets the colour. Busy is just busy. */
+                        const quiet = r > Math.ceil(n * 0.66);
+                        return (
+                          <div key={L.leagueId} data-wkmovesrankrow={`${L.leagueId}:${r}/${n}`}
+                            style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, fontSize: 12, padding: "1px 0" }}>
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{L.leagueName || L.leagueId}</span>
+                            <span style={{ flexShrink: 0 }}>
+                              <b className="num" style={{ color: quiet ? "var(--gold)" : "var(--ink)" }}>{ordinalOf(r)}</b>
+                              <span className="mut"> of {n}</span>
+                              <span className="mut num" style={{ fontSize: 10.5 }}> · {moves} move{moves === 1 ? "" : "s"}</span>
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  {[["mine", "Mine"], ["all", "Everyone"]].map(([k, l]) => (
+                    <button key={k} data-wkmovescope={k} aria-pressed={txScope === k} onClick={() => setTxScope(k)}
+                      style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: txScope === k ? 800 : 600,
+                        padding: "6px 13px", borderRadius: 9,
+                        border: `1px solid ${txScope === k ? "var(--gold)" : "var(--line2)"}`,
+                        background: txScope === k ? "rgba(224,166,60,.10)" : "transparent",
+                        color: txScope === k ? "var(--gold)" : "var(--ink)" }}>{l}</button>
+                  ))}
+                  <div style={{ flex: 1 }} />
+                  <span className="mut" style={{ fontSize: 11 }}>Window</span>
+                  {[2, 4, 8].map((w) => (
+                    <button key={w} data-wkmoveswindow={String(w)} aria-pressed={txWeeks === w} onClick={() => setTxWeeks(w)}
+                      className="btn btn-mini" style={{ borderColor: txWeeks === w ? "var(--gold)" : "var(--line)",
+                        color: txWeeks === w ? "var(--gold)" : "var(--mut)" }}>{w} wk</button>
+                  ))}
+                </div>
+
+                {!txShown.length && (
+                  <div className="panel" data-wkmovesempty style={{ padding: 18 }}>
+                    <div className="mut" style={{ fontSize: 13, lineHeight: 1.55 }}>
+                      {tx.yahooOnly
+                        ? <span data-wkmovesuncovered={String((tx.uncovered || []).length)}>
+                          {(tx.uncovered || []).join(", ")}{(tx.uncovered || []).length ? " — " : ""}Yahoo
+                          publishes no transaction feed we can read, so there is nothing to aggregate here.
+                          Everything else in the in-season screens works on a Yahoo league; this one section
+                          needs Sleeper.</span>
+                        : txScope === "mine"
+                        ? <>You have not made a move in the last {txWeeks} weeks in any connected league. Switch to
+                          <b style={{ color: "var(--ink)" }}> Everyone</b> to see what the rest of your leagues have been doing.</>
+                          : <>Nothing has happened in any of your leagues in the last {txWeeks} weeks. Try a longer window.</>}
+                    </div>
+                  </div>
+                )}
+
+                {["trade", "waiver", "free_agent"].map((kind) => {
+                  const rows = txShown.filter((x) => x.type === kind);
+                  if (!rows.length) return null;
+                  const title = kind === "trade" ? "Trades" : kind === "waiver" ? "Waiver claims" : "Free-agent adds";
+                  return (
+                    <div key={kind} className="panel" data-wkmovesgroup={`${kind}:${rows.length}`} style={{ padding: "12px 14px" }}>
+                      <div className="disp" style={{ fontSize: 14, fontWeight: 800, marginBottom: 8 }}>
+                        {title} <span className="mut" style={{ fontSize: 11, fontWeight: 500 }}>· {rows.length}</span>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                        {rows.slice(0, 40).map((x) => (
+                          <div key={x.id} data-wkmove={`${x.type}:${x.status}`} data-wkmovemine={x.mine ? "1" : "0"}
+                            /* The league a row belongs to, and whether that league has bidding at all —
+                               so a check can tell "no bid shown" from "no bidding in this league". */
+                            data-wkmoveleague={x.leagueId || ""} data-wkmovefaab={x.faab ? "1" : "0"}
+                            style={{ display: "flex", gap: 10, alignItems: "flex-start", paddingBottom: 9,
+                              borderBottom: "1px solid var(--line)", opacity: x.status === "failed" ? .8 : 1 }}>
+                            <span className="mut" style={{ flexShrink: 0, fontSize: 10.5, width: 96, paddingTop: 2 }}>
+                              {x.leagueName || x.leagueId}
+                            </span>
+                            <div style={{ flex: 1, minWidth: 0, fontSize: 12.5, lineHeight: 1.6 }}>
+                              {x.teams.map((t, i) => (
+                                <div key={t.rosterId} data-wkmoveside={`${t.rosterId}`}
+                                  style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "baseline" }}>
+                                  <b style={{ color: t.isMe ? "var(--gold)" : "var(--ink)" }}>{t.isMe ? "You" : t.teamName}</b>
+                                  {/* ⚠ "GETS" AND "SENDS", NOT "ADDS" AND "DROPS". On a trade row `drops` means
+                                      "gave up in the deal" — printing it as a cut would say both managers
+                                      released their best players. See lib/transactions.js. */}
+                                  {t.got.length > 0 && (
+                                    <span><span className="mut">{kind === "trade" ? "gets" : "add"}</span>{" "}
+                                      {t.got.map((pp, j) => (
+                                        <span key={pp.sid}>{j ? ", " : ""}<Dot pos={pp.pos} /><b>{pp.name}</b>
+                                          <span className="mut" style={{ fontSize: 10.5 }}> {pp.team || ""}</span></span>
+                                      ))}</span>
+                                  )}
+                                  {t.picks.map((pk) => (
+                                    <span key={pk.label} className="mut" style={{ fontSize: 11 }}>+ {pk.label}</span>
+                                  ))}
+                                  {t.faabIn > 0 && <span style={{ fontSize: 11, color: "var(--pos)" }}>+ ${t.faabIn} FAAB</span>}
+                                  {t.gave.length > 0 && (
+                                    <span className="mut" style={{ fontSize: 11.5 }}>
+                                      ({kind === "trade" ? "sends" : "drops"} {t.gave.map((pp) => pp.name).join(", ")})
+                                    </span>
+                                  )}
+                                  {t.faabOut > 0 && <span className="mut" style={{ fontSize: 11 }}>(− ${t.faabOut} FAAB)</span>}
+                                  {i < x.teams.length - 1 && kind === "trade" && <span className="mut" style={{ fontSize: 11 }}>·</span>}
+                                </div>
+                              ))}
+                              {x.note && <div className="mut" style={{ fontSize: 11, fontStyle: "italic" }}>{x.note}</div>}
+                            </div>
+                            <div style={{ flexShrink: 0, textAlign: "right", display: "flex", flexDirection: "column", gap: 2 }}>
+                              {/* ⚠ A BID IS ONLY PRINTED WHERE BIDS EXIST. In a waiver-priority league the
+                                  backend sends null rather than 0, because "$0" reads as "he got him for
+                                  nothing" instead of "this league does not have bidding". */}
+                              {x.bid != null && <span className="num" style={{ fontSize: 12.5, fontWeight: 800,
+                                color: x.status === "failed" ? "var(--mut)" : "var(--pos)" }}>${x.bid}</span>}
+                              {x.status === "failed" && <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".05em",
+                                color: "var(--neg)" }}>DIDN'T LAND</span>}
+                              <span className="mut" style={{ fontSize: 10 }}>{x.week ? `Wk ${x.week}` : ""}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      {rows.length > 40 && <div className="mut" style={{ fontSize: 11, paddingTop: 8 }}>{rows.length - 40} more not shown — narrow the window.</div>}
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </div>
         )}
 
         {/* ===================== WEEKLY REVIEW =====================
