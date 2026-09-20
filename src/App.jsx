@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from "react";
 import { api, hasBackend, getToken, setToken, syncHealth, authHealth } from "./api.js";
 import { useWide } from "./usewide.js";
+import { useCoarsePointer, tipShouldOpen, tipShouldClose } from "./tipsheet.js";
 import { HoverTable, useHoverCard } from "./hovercard.jsx";
 import { teamReads, tradeBoard, marketSummary, partnerBoard, raceCurrency } from "./trademarket.js";
 import { GUIDE_TASKS, GUIDE_MAP, GUIDE_GLOSSARY, SEASON_STEPS, guideIndex, guideSearch } from "./guide.js";
+import { INJ_SEASON, INJ_WEEKS, INJ_LIMITED, INJ_CHOICES, applyInjuryToEntry, injuryFactors, injuryLabel, activeInjuryMap, activeInjuryCount, normalizeInjury, phasedLineupValue } from "./injuries.js";
 
 // Lightweight SECTION-level error boundary. The app has a full-page boundary at the root, but a render error
 // in one panel (e.g. a rare data edge case in the draft recap/superlatives) shouldn't take down the entire
@@ -100,7 +102,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29ax";
+const BUILD_TAG = "2026.07.29bc";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -392,6 +394,29 @@ function resolveKeepers(keepers, players, idx) {
 // more picks; with no stamp at all (data written before this build) the rule is simply never to lose a field
 // the winner doesn't have, which cannot destroy anything.
 const LEAGUE_LIST_FIELDS = ["strategy", "avoidList", "avoidAllow", "priorityQueue", "queueAllow"];
+/* ⭐⭐⭐ TWO DEVICES, ONE INJURY RECORD — 29bb, and a union rather than a winner.
+   Trey reads the news on his phone and marks a man out; his laptop has an older entry for somebody else
+   from Sunday. Taking either side whole would throw one of them away, so the map is unioned by sid and
+   ties are broken by WHEN THE ENTRY WAS WRITTEN — which is what `at` is for.
+   ⚠ A DELETION IS NOT AN ABSENCE. Clearing an injury on the phone would be undone on the next sync by
+     the laptop's stale copy, because "not present" and "removed" look identical in a union. So a cleared
+     entry is kept as a TOMBSTONE (`status: null`, with its own `at`) rather than deleted outright, and
+     the union resolves it by timestamp like any other edit. `activeInjuryMap` drops it either way, and
+     `normalizeInjury` already returns null for a status it does not recognise, so nothing downstream
+     needs to know tombstones exist. */
+const mergeInjuries = (a, b) => {
+  const A = a && typeof a === "object" ? a : {};
+  const B = b && typeof b === "object" ? b : {};
+  const out = { ...A };
+  Object.keys(B).forEach((sid) => {
+    const mine = out[sid], theirs = B[sid];
+    if (!mine) { out[sid] = theirs; return; }
+    const at = (x) => Number(x && x.at) || 0;
+    if (at(theirs) > at(mine)) out[sid] = theirs;
+  });
+  return out;
+};
+
 const mergeLeaguesById = (a, b) => {
   const arrA = Array.isArray(a) ? a : [];
   const arrB = Array.isArray(b) ? b : [];
@@ -641,7 +666,49 @@ export function hubPoolFor(cfg) {
   return pool;
 }
 
-export function leaguePower(data, pool) {
+/* ⭐⭐⭐⭐ HOW MUCH SEASON IS LEFT — one definition, three readers, 29bb.
+   The hub computed this inline several hundred lines into `TeamHub` (for playoff odds and the rest-of-
+   season trade maths) and it was the only copy. The injury model needs the identical window — "out four
+   weeks" is measured against what remains, not against 17 — and it needs it in TWO places the old copy
+   could not reach: `leaguePower`, which is a module-level function the home page calls, and `resolve`,
+   which runs before the hub's early returns. Three inline copies of this arithmetic is how a power
+   column and a trade calculator end up discounting the same injury by different amounts. */
+export function hubWeeks(data) {
+  const week = (data && data.week) || 1;
+  const regSeasonWeeks = (data && data.regularSeasonWeeks)
+    || (data && data.playoffStartWeek ? data.playoffStartWeek - 1 : 14);
+  return { week, regSeasonWeeks, weeksLeft: Math.max(1, regSeasonWeeks - week + 1) };
+}
+
+/* The context every injury lookup needs, built once from a hub payload. `injuries` is the user's saved
+   blob, keyed by Sleeper sid — a fact about a PLAYER, so the same record serves every league, and the
+   dynasty flag is what makes one record give two honest answers in two league types. */
+export function injCtxFor(data, injuries) {
+  const w = hubWeeks(data);
+  const cfg = data && data.cfg ? normalizeHubCfg(data.cfg) : null;
+  return {
+    week: w.week,
+    weeksLeft: w.weeksLeft,
+    dynasty: !!(cfg && isDynastyCfg(cfg)),
+    map: activeInjuryMap(injuries, { week: w.week, weeksLeft: w.weeksLeft }),
+  };
+}
+
+/* ⭐⭐⭐⭐⭐ THE INJURY DOOR, AND THERE ARE EXACTLY TWO OF THEM IN THE APP — 29bb.
+   `leaguePower` below and `resolve` inside `TeamHub` are the only two routes from a roster id to a
+   valued player, and they take different ones on purpose (this reads season value straight off the
+   pool; the hub resolves to weekly points and undoes it). Both call THIS, so a saved injury moves both
+   by the same amount. Adjusting only `resolve` would have left the home page's Power column and the
+   hub's own power table disagreeing about a team whose quarterback is on IR — the precise fault 29aj
+   was written to close, reopened by a feature that looked like it only touched one screen. */
+export function injResolve(pool, id, ictx) {
+  const base = pool && pool.bySid ? pool.bySid.get(String(id)) : null;
+  if (!base || !ictx || !ictx.map) return base || null;
+  const e = ictx.map[String(id)];
+  return e ? applyInjuryToEntry(base, e, ictx) : base;
+}
+
+export function leaguePower(data, pool, ictx) {
   if (!data || !pool || !pool.bySid || !Array.isArray(data.teams) || !data.teams.length) return [];
   const cfg = data.cfg ? normalizeHubCfg(data.cfg) : null;
   if (!cfg) return [];
@@ -685,7 +752,7 @@ export function leaguePower(data, pool) {
        points and then undoing it with `seasonRosterOf`; starting from the pool skips both steps and lands
        on exactly the same value. A player the pool has never heard of is dropped, not zeroed — an invented
        replacement-level body would flatter a roster with dead ids on it. */
-    const roster = (t.players || []).map((id) => pool.bySid.get(String(id))).filter(Boolean);
+    const roster = (t.players || []).map((id) => injResolve(pool, id, ictx)).filter(Boolean);
     return {
       rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName,
       isMe: t.rosterId === data.myRosterId,
@@ -710,8 +777,9 @@ const TradeVerdict = ({ r, weeks, games, oddsShift }) => {
   const sign = (v) => (v > 0 ? `+${v}` : `${v}`);
   const tone = (v) => (v > 0 ? "var(--green)" : v < 0 ? "var(--red)" : "var(--mut)");
 
-  const Side = ({ s, mine }) => (
-    <div data-tbside={mine ? "me" : "them"} style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "9px 11px", background: "var(--panel)", minWidth: 0 }}>
+  /* A plain function, CALLED — see `posGrid`. */
+  const tradeSide = (s, mine) => (
+    <div key={mine ? "me" : "them"} data-tbside={mine ? "me" : "them"} style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "9px 11px", background: "var(--panel)", minWidth: 0 }}>
       <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 5 }}>
         {mine ? "Your team" : s.teamName}
       </div>
@@ -756,8 +824,8 @@ const TradeVerdict = ({ r, weeks, games, oddsShift }) => {
         <div className="mut" data-tbnowlabel style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 5 }}>Right now</div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
-        <Side s={me} mine />
-        <Side s={them} />
+        {tradeSide(me, true)}
+        {tradeSide(them, false)}
       </div>
 
       <div data-tbverdict={r.verdict.key} style={{ border: `1px solid ${V[r.verdict.key]}`, background: "var(--panel)", borderRadius: 9, padding: "9px 11px", marginBottom: 10 }}>
@@ -6151,7 +6219,8 @@ function SimpleStrip({ players, picks, advice, sims, proj, userIdx, onClock, TEA
   const mine = onClock === userIdx;
   const v = advice && advice.verdict ? advice.verdict : null;
 
-  const Card = ({ title, children, grow = 1, accent }) => (
+  /* A plain function, CALLED — see `posGrid`. Children come in as a fragment. */
+  const panelCard = (title, children, grow = 1, accent) => (
     <div style={{ flex: `${grow} 1 0`, minWidth: 0, padding: "9px 11px", borderRadius: 10,
       border: `1px solid ${accent || "var(--line)"}`, background: accent ? "rgba(224,166,60,.06)" : "var(--panel2)" }}>
       <div className="disp" style={{ fontSize: 9.5, letterSpacing: ".07em", textTransform: "uppercase", color: accent ? "var(--gold)" : "var(--mut)", fontWeight: 800, marginBottom: 6 }}>{title}</div>
@@ -6162,7 +6231,7 @@ function SimpleStrip({ players, picks, advice, sims, proj, userIdx, onClock, TEA
   return (
     <div data-simplestrip style={{ display: "flex", gap: 9, padding: "9px 12px", alignItems: "stretch", flexWrap: "wrap" }}>
       {/* ---- LAST PICKS ---- */}
-      <Card title="Last picks" grow={0.8}>
+      {panelCard("Last picks", <>
         {last.length ? last.map(({ o, p, team }) => (
           <div key={o} data-simplelast={p.name}
             onMouseEnter={lastTip ? lastTip(p, o) : undefined} onMouseLeave={lastTip ? hideTip : undefined}
@@ -6173,10 +6242,10 @@ function SimpleStrip({ players, picks, advice, sims, proj, userIdx, onClock, TEA
               color: team === userIdx ? "var(--gold)" : "var(--ink)", fontWeight: team === userIdx ? 700 : 400 }}>{p.name}</span>
           </div>
         )) : <div className="mut" style={{ fontSize: 11.5 }}>Nobody has picked yet.</div>}
-      </Card>
+      </>, 0.8)}
 
       {/* ---- THE RECOMMENDATION — the one thing this screen exists to say ---- */}
-      <Card title={mine ? "Take him" : `On the clock · ${(teamNames[onClock] || "").split(" ").slice(0, 2).join(" ")}`} grow={1.5} accent="var(--gold)">
+      {panelCard(mine ? "Take him" : `On the clock · ${(teamNames[onClock] || "").split(" ").slice(0, 2).join(" ")}`, <>
         {v ? (
           <>
             <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
@@ -6202,10 +6271,10 @@ function SimpleStrip({ players, picks, advice, sims, proj, userIdx, onClock, TEA
             )}
           </>
         ) : <div className="mut" style={{ fontSize: 11.5 }}>{done ? "Draft complete." : "Working it out…"}</div>}
-      </Card>
+      </>, 1.5, "var(--gold)")}
 
       {/* ---- UPCOMING PICKS ---- */}
-      <Card title="Your next picks" grow={0.8}>
+      {panelCard("Your next picks", <>
         {/* Five, for the same reason Last picks shows eight: the card is stretched to the recommendation's
             height and four rows left 28px of it empty. Five upcoming picks is also the span the round-by-round
             plan is written against, so it is more useful as well as better proportioned. */}
@@ -6230,7 +6299,7 @@ function SimpleStrip({ players, picks, advice, sims, proj, userIdx, onClock, TEA
             </div>
           </div>
         )}
-      </Card>
+      </>, 0.8)}
     </div>
   );
 }
@@ -6275,7 +6344,8 @@ function ComboBuilder({ players, sortedAdp, picks, cfg, draftedSet, o1, o2, labe
     const v = oddsAt(n === 1 ? o1 : o2, p.id);
     return v == null ? null : v;
   };
-  const Pct = ({ v, suffix }) => (v == null ? null : (
+  /* A plain function, CALLED — see `posGrid`. */
+  const pct = (v, suffix) => (v == null ? null : (
     <span className="num" style={{ fontSize: 9.5, fontWeight: 800, marginLeft: 5,
       color: v >= 0.55 ? "var(--pos)" : v >= 0.3 ? "var(--gold)" : "var(--neg)" }}>{Math.round(v * 100)}%{suffix ? ` ${suffix}` : ""}</span>
   ));
@@ -6293,13 +6363,14 @@ function ComboBuilder({ players, sortedAdp, picks, cfg, draftedSet, o1, o2, labe
     return () => { alive = false; clearTimeout(id); };
   }, [a, b, o1, o2, picks.length]);
 
-  const Slot = ({ n, p, lbl }) => (
+  /* A plain function, CALLED — see `posGrid`. */
+  const comboSlot = (n, p, lbl) => (
     <button className="btn btn-mini" data-comboslot={n} onClick={() => { setSlot(slot === n ? null : n); setQ(""); }}
       style={{ flex: 1, minWidth: 0, justifyContent: "flex-start", textAlign: "left", padding: "6px 8px",
         borderColor: slot === n ? "var(--gold)" : p ? "var(--line2)" : "var(--line)" }}>
       <span style={{ display: "block", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         <span className="mut" style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", display: "block" }}>{lbl}</span>
-        {p ? <><b style={{ color: POS_COLOR[cpos(p.pos)], fontSize: 9.5, marginRight: 4 }}>{cpos(p.pos)}</b>{p.name}<span data-slotodds={p.name}><Pct v={oddsFor(p, n)} suffix="there" /></span></> : <span className="mut">choose a player</span>}
+        {p ? <><b style={{ color: POS_COLOR[cpos(p.pos)], fontSize: 9.5, marginRight: 4 }}>{cpos(p.pos)}</b>{p.name}<span data-slotodds={p.name}>{pct(oddsFor(p, n), "there")}</span></> : <span className="mut">choose a player</span>}
       </span>
     </button>
   );
@@ -6315,8 +6386,8 @@ function ComboBuilder({ players, sortedAdp, picks, cfg, draftedSet, o1, o2, labe
         Or price a pair of your own
       </div>
       <div style={{ display: "flex", gap: 6, alignItems: "stretch" }}>
-        <Slot n={1} p={pa} lbl={`Take at ${label1}`} />
-        <Slot n={2} p={pb} lbl={`Then at ${label2}`} />
+        {comboSlot(1, pa, `Take at ${label1}`)}
+        {comboSlot(2, pb, `Then at ${label2}`)}
         {(pa || pb) && <button className="btn btn-mini" data-comboclear onClick={() => { setA(null); setB(null); setSlot(null); setOdds(null); }} title="Clear both">✕</button>}
       </div>
 
@@ -6334,7 +6405,7 @@ function ComboBuilder({ players, sortedAdp, picks, cfg, draftedSet, o1, o2, labe
                 <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
                 <span className="num mut" style={{ fontSize: 10 }}>ADP {p.adp != null ? p.adp.toFixed(0) : "—"}</span>
                 <span className="num" style={{ fontSize: 10, color: "var(--mut)" }}>{Math.round(p.pts || 0)} pts</span>
-                <span data-candodds={p.name} style={{ minWidth: 34, textAlign: "right" }}><Pct v={oddsFor(p, slot)} /></span>
+                <span data-candodds={p.name} style={{ minWidth: 34, textAlign: "right" }}>{pct(oddsFor(p, slot))}</span>
               </div>
             ))}
             {!results.length && <div className="mut" style={{ padding: 9, fontSize: 11.5 }}>Nobody available matches that.</div>}
@@ -7263,7 +7334,47 @@ function BootSplash({ css }) {
   );
 }
 
-function Tooltip({ tip, children }) {
+function Tooltip({ tip, children, onClose }) {
+  /* ⭐⭐⭐⭐⭐ ON A TOUCH DEVICE THIS IS A SHEET, NOT A TOOLTIP — b164. See src/tipsheet.js for why; the
+     short version is that a tap opens a card and nothing on a phone ever closes one, so the card covered
+     the screen and ate the next tap. A sheet has a bottom edge, a close button and a backdrop, and none
+     of its behaviour depends on a pointer that is not there.
+     ⚠ THE BACKDROP IS A SIBLING, NOT A PARENT. Wrapping the card in the backdrop would make every tap on
+       the card itself bubble to the backdrop's close handler — the card would shut the moment you tried
+       to scroll it, which is the same class of "it fights me" the whole change is about. */
+  const coarse = useCoarsePointer();
+  React.useEffect(() => {
+    if (!coarse || !onClose) return;
+    const onKey = (ev) => { if (ev.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [coarse, onClose]);
+  if (coarse) {
+    return (
+      <>
+        <div data-tipbackdrop onClick={onClose} onTouchStart={onClose}
+          style={{ position: "fixed", inset: 0, zIndex: 89, background: "#0007" }} />
+        <div className="tooltip" data-tipsheet role="dialog" aria-modal="true"
+          style={{ position: "fixed", left: 0, right: 0, bottom: 0, top: "auto", width: "auto",
+            maxWidth: "none", transform: "none", zIndex: 90, maxHeight: "58vh", overflowY: "auto",
+            borderRadius: "14px 14px 0 0", paddingTop: 8, WebkitOverflowScrolling: "touch" }}>
+          {/* The grabber says "this slides away" before anybody has to find out. */}
+          <div style={{ position: "sticky", top: 0, zIndex: 1, background: "var(--tip-bg)",
+            display: "flex", alignItems: "center", gap: 8, margin: "-8px -16px 8px", padding: "7px 12px 6px",
+            borderBottom: "1px solid var(--line)" }}>
+            <span aria-hidden="true" style={{ width: 34, height: 4, borderRadius: 99, background: "var(--line2)" }} />
+            <span style={{ flex: 1 }} />
+            <button data-tipclose onClick={onClose} aria-label="Close"
+              style={{ background: "transparent", border: "1px solid var(--line)", borderRadius: 7,
+                color: "var(--ink)", fontSize: 13, lineHeight: 1, padding: "5px 9px", cursor: "pointer" }}>
+              Close
+            </button>
+          </div>
+          {children}
+        </div>
+      </>
+    );
+  }
   // PERF — this used to measure itself (offsetHeight/offsetWidth) in a useLayoutEffect on every hover, then
   // setState to reposition. Reading a layout property mid-JS forces the browser to STOP and recompute layout
   // for the whole page synchronously, and with a draft-board DOM of ~2,300 elements that is enormously
@@ -8138,6 +8249,21 @@ export function makeOutlook(p, sims, drafted, ctx) {
   // 0) HEADER — photo, name, team, position rank.
   out.push({ kind: "photo", sid: p.sid || null, name: p.name, team: p.team, pos: p.pos, posRank: p.posRank });
 
+  /* ⭐⭐⭐⭐⭐ 29bb — A DISCOUNTED PLAYER SAYS SO, FIRST, BEFORE ANYTHING ELSE IN THE CARD.
+     ⚠⚠ THIS IS THE SAFETY RAIL ON THE WHOLE FEATURE, not a decoration. Everything below this line —
+       the take, the value read, the ADP gap, the projection — is computed from numbers the injury has
+       already moved, and every one of them will read as a confident statement of fact. "Rich — he's
+       going around pick 14, earlier than this season's projection alone justifies" is TRUE of a man who
+       is out for the year and is a wildly misleading thing to say without the reason attached. A number
+       that moved silently is this project's most-repeated fault (29y's bye distortion, the two screens
+       disagreeing on power in 29aj); the fix is always to print the cause next to the effect.
+     ⚠ AND IT IS HERE RATHER THAN AT THIRTY CALL SITES because every hover in the app — roster, lineup,
+       trade calculator, positional market, free agents, the league table — comes through this one
+       function. `resolve` stamps the flag on the player; this prints it wherever he lands. */
+  if (p.injLabel) {
+    out.push({ kind: "take", tone: "bad", x: `${p.injLabel}${p.injDropPts ? ` — you've marked him down ${p.injDropPts} points for the rest of the season, and every number below already reflects that.` : " — every number below already reflects that."}` });
+  }
+
   // 1) THE TAKE — the headline verdict plus ONE supporting clause, so it reads as a quick 2-line summary
   // (the fuller synthesis lives in the Bottom line below). Draft-position context wins first: if he's slipped
   // past his ADP, taking him now is value regardless of raw projection; then urgency; then value read. We
@@ -8710,6 +8836,11 @@ const css = `
      and info the neutral blue. Named for what they MEAN, because that is the only thing both themes
      agree on. */
   --pos:#5FD0A8;--pos-soft:#2E8F6B;--neg:#F2655C;--neg-soft:#B8453C;--warn:#E0A63C;--info:#6BA8E5;
+  /* b163 — the near-even lean. Trey: "40-60 can be black with slight green tint if it's over."
+     It is INK WITH A CAST, not a third green: a 55% game is not a win, and giving it a colour of its own
+     would put it on the same footing as a 75% one. Same lightness as --ink so it never reads as emphasis,
+     just as direction. */
+  --lean:#B9D9CB;
   /* ⚠ THE WASH AND THE HAIRLINE ARE THEIR OWN TOKENS, NOT AN OPACITY OF THE ONE ABOVE. The app was
      using eleven different alphas of the same green to mean one thing ("this cell is good news"), and
      on a white ground a translucent tint needs a different recipe entirely — a 12%-opacity dark green
@@ -8756,6 +8887,7 @@ const css = `
   --ink:#131A22;--mut:#5A6874;--gold:#8A6A12;--gold2:#6E5410;--gold-line:rgba(138,106,18,.34);
   --red:#C0392B;--green:#0F7A57;--blue:#1F6FB8;
   --pos:#0C7A57;--pos-soft:#2E7D5E;--neg:#C0392B;--neg-soft:#A34A40;--warn:#8A6A12;--info:#1F6FB8;
+  --lean:#12372A;                                   /* b163 — see the dark block: ink, with a green cast */
   --pos-wash:rgba(12,122,87,.10);--pos-line:rgba(12,122,87,.38);
   --neg-wash:rgba(192,57,43,.09);--neg-line:rgba(192,57,43,.34);
   --p-qb:#C0392B;--p-rb:#0F7A57;--p-wr:#1F6FB8;--p-te:#A85A14;--p-dl:#6D3D8A;--p-lb:#4A6330;
@@ -9438,7 +9570,44 @@ select.gs option{background:var(--panel2);color:var(--ink)}
   /* tooltips: fit the phone width, sit near the bottom as a sheet, and allow touch-scrolling of long content */
   /* On a phone the tooltip is pinned to the viewport edges rather than following the cursor, so the
      cursor-relative transform used on desktop must be cancelled or it would push it off-screen. */
-  .tooltip{width:auto!important;max-width:calc(100vw - 20px)!important;left:10px!important;right:10px!important;pointer-events:auto!important;max-height:60vh!important;transform:none!important}
+  /* ⚠⚠ b164 — THE SHEET'S GEOMETRY IS SET IN THE COMPONENT NOW, NOT HERE, and this rule must not fight
+     it. The old rule pinned the card 10px from both edges at up to 60vh with pointer-events on, which is
+     most of a phone screen with no way out of it — see src/tipsheet.js. Only the things that are true of
+     BOTH shapes stay: it can be touched, and long content scrolls under a finger. */
+  .tooltip{pointer-events:auto!important;-webkit-overflow-scrolling:touch}
+  .tooltip:not([data-tipsheet]){width:auto!important;max-width:calc(100vw - 20px)!important;left:10px!important;right:10px!important;max-height:60vh!important;transform:none!important}
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+   THINGS YOU HAVE TO HIT WITH A THUMB — b163
+   ───────────────────────────────────────────────────────────────────────────────────────────────────
+   ⚠⚠⚠⚠⚠ THESE NUMBERS WERE MEASURED, NOT ESTIMATED, and the worst of them is genuinely unusable. On a
+     390px phone the league read draws EIGHTY position chips at 27x19 CSS pixels. Apple and Google both
+     put a comfortable touch target near 44px and treat anything under about 32 as a coin flip; a 19px
+     target sits between two other 19px targets, so the common outcome is not "I missed" but "I opened
+     the wrong position's card and believed it". The activity numbers (25px), the openness ranks (25px),
+     the market toggles (27px) and the calculator rows (27px) are all under the line too.
+     The fit grid measured 60x39 and is LEFT ALONE — it already passes, and padding it further would push
+     a 44-cell table wider for no gain.
+
+   ⚠ KEYED ON THE POINTER, NOT THE WIDTH. A narrow desktop window has a mouse and does not need any of
+     this; a large tablet has no pointer and does. Same query as src/tipsheet.js, for the same reason —
+     the app must not end up with two different ideas of what a touch device is.
+
+   ⚠ min-height PLUS VERTICAL PADDING, NOT font-size. Growing the text would reflow every one of these
+     tables and lose the density that makes them readable at a glance; growing the BOX leaves the type
+     where it is and just makes it hittable.
+   ══════════════════════════════════════════════════════════════════════════════════════════════════ */
+@media (hover: none), (pointer: coarse){
+  /* ⚠ WIDTH AS WELL AS HEIGHT. Raising only the height left "QB" at 27px across while "FLEX" sat at 40,
+     so the row was a line of differently-sized targets — and a uniform width is easier to hit AND easier
+     to scan, because the eye stops re-measuring each one. */
+  [data-lrchip]{min-height:32px!important;min-width:38px!important;padding-top:7px!important;padding-bottom:7px!important;display:inline-flex!important;align-items:center;justify-content:center}
+  /* Anything in a table you are meant to tap: the row's own padding is what sets the height. */
+  [data-txtrendcell],[data-txopenrank]{padding-top:10px!important;padding-bottom:10px!important}
+  /* Buttons that switch a view, and the calculator's two controls per row. */
+  [data-mktshowbtn],[data-txscope],[data-tbplayer],[data-tbinfo],[data-hubtabbtn],[data-tsectab]{min-height:36px!important}
+  [data-tbinfo]{min-width:40px!important}
 }
 @media(prefers-reduced-motion:reduce){.gs-root *{transition:none!important;animation:none!important}}
 `;
@@ -10085,8 +10254,9 @@ function VersionBadge() {
   const src = (typeof LIVE_ADP_SRC !== "undefined" && LIVE_ADP_SRC) ? LIVE_ADP_SRC : null;
   const fmt = (typeof LIVE_PACK_FORMAT !== "undefined" && LIVE_PACK_FORMAT) ? LIVE_PACK_FORMAT : null;
   const sparse = typeof LIVE_ADP_SPARSE !== "undefined" && LIVE_ADP_SPARSE;
-  const Row = ({ k, v, c }) => (
-    <div style={{ display: "flex", justifyContent: "space-between", gap: 16, padding: "2px 0" }}>
+  /* A plain function, CALLED — see `posGrid`. */
+  const kvRow = (k, v, c) => (
+    <div key={k} style={{ display: "flex", justifyContent: "space-between", gap: 16, padding: "2px 0" }}>
       <span style={{ color: "var(--mut)" }}>{k}</span><span style={{ color: c || "var(--ink)", fontWeight: 700 }}>{v}</span>
     </div>
   );
@@ -10109,11 +10279,11 @@ function VersionBadge() {
               <div style={{ color: "var(--green)", marginBottom: 6 }}>ADP format: {fmt}</div>
               {src && (
                 <div style={{ borderTop: "1px solid var(--line)", borderBottom: "1px solid var(--line)", padding: "6px 0", margin: "6px 0" }}>
-                  <Row k="From real drafts" v={src.harvest || 0} c={(src.harvest || 0) > 0 ? "var(--green)" : "var(--mut)"} />
-                  <Row k="Exact-format ADP" v={src.published || 0} c={(src.published || 0) > 0 ? "var(--green)" : "var(--mut)"} />
-                  <Row k="Wrong-format ADP" v={src.degraded || 0} c={(src.degraded || 0) > 0 ? "var(--gold)" : "var(--mut)"} />
-                  <Row k="No ADP (projected)" v={src.none || 0} c="var(--mut)" />
-                  <Row k="Trusted by board" v={src.trusted || 0} c={(src.trusted || 0) >= 20 ? "var(--green)" : "var(--red)"} />
+                  {kvRow("From real drafts", src.harvest || 0, (src.harvest || 0) > 0 ? "var(--green)" : "var(--mut)")}
+                  {kvRow("Exact-format ADP", src.published || 0, (src.published || 0) > 0 ? "var(--green)" : "var(--mut)")}
+                  {kvRow("Wrong-format ADP", src.degraded || 0, (src.degraded || 0) > 0 ? "var(--gold)" : "var(--mut)")}
+                  {kvRow("No ADP (projected)", src.none || 0, "var(--mut)")}
+                  {kvRow("Trusted by board", src.trusted || 0, (src.trusted || 0) >= 20 ? "var(--green)" : "var(--red)")}
                 </div>
               )}
               <div style={{ color: sparse ? "var(--red)" : "var(--green)" }}>
@@ -10128,9 +10298,9 @@ function VersionBadge() {
                 const off = cal.gap != null && cal.gap > 12;
                 return (
                   <div style={{ marginTop: 4, paddingTop: 4, borderTop: "1px solid var(--line)" }}>
-                    <Row k="ADP calib — pick" v={cal.pick} />
-                    <Row k="nearest avail ADP" v={cal.nearest.join(", ")} c={off ? "var(--red)" : "var(--green)"} />
-                    <Row k="gap (nearest − pick)" v={(cal.gap > 0 ? "+" : "") + cal.gap} c={off ? "var(--red)" : "var(--green)"} />
+                    {kvRow("ADP calib — pick", cal.pick)}
+                    {kvRow("nearest avail ADP", cal.nearest.join(", "), off ? "var(--red)" : "var(--green)")}
+                    {kvRow("gap (nearest − pick)", (cal.gap > 0 ? "+" : "") + cal.gap, off ? "var(--red)" : "var(--green)")}
                     {off && <div style={{ color: "var(--red)", fontSize: 10, marginTop: 2 }}>Nearest available sits well ahead of the pick — board ADP may be miscalibrated for this format.</div>}
                   </div>
                 );
@@ -10353,6 +10523,20 @@ export default function App() {
   // hard cap so a cold backend can't trap the user. `loaded` = local hydration done; `bootReady` = safe to
   // show the app AND navigate into a draft.
   const [bootReady, setBootReady] = useState(false);
+  /* ⭐⭐⭐⭐⭐ "HAVE WE HEARD BACK YET" IS A THIRD STATE, AND THE APP ONLY HAD TWO — b163.
+     Trey opened Compass on his phone and was shown an account with no Sleeper connection on it, so he
+     reconnected. 29az fixed half of that by CACHING who he is, which covers every load after the first.
+     This is the other half: on a device that has genuinely never seen the app, there is nothing to cache
+     and the honest answer is "I do not know yet". The old code had no way to say that — `user` was null
+     for "signed out" and null for "the server has not answered", so a Render dyno waking up rendered a
+     signed-in shell with no leagues, no connected accounts and no explanation. Empty and unknown look
+     identical, and only one of them is true.
+     ⚠ SCOPED TO A DEVICE THAT HAS A TOKEN AND NO CACHED USER. A signed-out visitor must still get the
+       marketing page, and anybody with a cached user must get straight into the app while `me` refreshes
+       behind them — that is what the cache is FOR, and gating the whole app on the network would throw it
+       away again. */
+  const [meState, setMeState] = useState("pending");   // pending | ok | failed
+  const hadTokenAtBoot = useRef(false);
   // Global hover-animation kill switch (persisted). Applied as a class on .gs-root so the CSS above can
   // strip motion from every tab at once; toggled from the draft-room top bar and remembered across visits.
   const [noHoverAnim, setNoHoverAnim] = useState(() => { try { return localStorage.getItem("fdcNoHoverAnim") === "1"; } catch (e) { return false; } });
@@ -10394,6 +10578,21 @@ export default function App() {
   const freeNoticeShown = useRef(false); // only auto-open once per session
   const [funMocks, setFunMocks] = useState([]); // standalone mocks not tied to a league
   const [feedback, setFeedback] = useState([]); // user-submitted feedback {id,email,topic,msg,ts,status,reply}
+  /* ⭐⭐⭐⭐ 29bb — SAVED INJURIES, keyed by Sleeper sid → { status, weeks, setWeek, note, at }.
+     Sleeper's own injury designation arrives late and is coarse; Trey wants to act on the news the hour
+     it breaks ("in real time, we are looking for trades that could improve the team given this injury"),
+     and to be able to take it back when the MRI comes in better than feared. So this is HIS record, not
+     the platform's: he owns it, it survives a reload, it follows him to his phone, and every entry is
+     one click from being edited or removed. Keyed by sid rather than by name so it works on a Yahoo
+     league too — the app's universal player key, same bridge the Yahoo hub already crosses. */
+  const [injuries, setInjuries0] = useState({});
+  /* Every mutation goes through here so no call site can update the screen without also writing it down —
+     the failure mode would be an injury that cascades beautifully and is gone on the next reload. */
+  const setInjuries = (next) => {
+    const v = next && typeof next === "object" ? next : {};
+    setInjuries0(v);
+    persist({ injuries: v });
+  };
   const [updateReady, setUpdateReady] = useState(false); // a newer build is deployed; prompt user to refresh
 
   // Persist the current view so a refresh restores it. We don't persist transient/modal routes like
@@ -10612,6 +10811,9 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
+      /* ⚠ READ BEFORE ANYTHING ELSE. A token here means this browser HAS an account, which is what
+         separates "the server has not answered yet" from "nobody is signed in". */
+      try { hadTokenAtBoot.current = !!getToken(); } catch (e) {}
       // ---- PHASE 1: instant local hydration. Read the cached blob and render the app IMMEDIATELY off
       // the built-in dataset + any local leagues. We do NOT wait on the (possibly cold-starting) backend
       // before showing the UI — that was the multi-second white screen. Live data swaps in below.
@@ -10637,6 +10839,11 @@ export default function App() {
         }
         if (d.funMocks) setFunMocks(d.funMocks);
         if (d.feedback) setFeedback(d.feedback);
+        /* ⚠ `setInjuries0`, NOT `setInjuries` — the hydrating setter must not turn round and persist what
+           it has just read. That write would race the server restore twenty lines below and could push a
+           stale local copy over a fresher one from another device. Same reason the user-record cache a
+           few lines up writes straight to storage instead of going through `persist`. */
+        if (d.injuries && typeof d.injuries === "object") setInjuries0(d.injuries);
       } catch (e) {}
       setLoaded(true); // <-- show the app now; everything below is background work
 
@@ -10679,19 +10886,46 @@ export default function App() {
         const meP = api.me().catch(() => null);
         packP.then((pack) => { try { if (pack && applyLivePack(pack)) setDataVersion((v) => v + 1); } catch (e) {} finally { packDoneRef.current = true; } });
         meP.then(async (me) => {
-          if (!me) return;
+          if (!me) { setMeState("failed"); return; }
+          setMeState("ok");
           try {
             const admin = isAdminEmail(me.email);
             // ⭐ MERGE, don't replace — see mergeUser. `localBlob.user` is what this device already had.
             const localUser = (localBlob && localBlob.user) || null;
             const srv = migrateRankSets({ ...me, rankSets: me.rankSets || [], admin, paid: me.paid || admin });
-            setUser(mergeUser(migrateRankSets(localUser), srv));
+            const merged = mergeUser(migrateRankSets(localUser), srv);
+            setUser(merged);
+            /* ⭐⭐⭐⭐⭐ AND WRITE IT DOWN — b164. Trey, from his phone: "my account didn't transfer from my
+               desktop to mobile with my connected sleeper accounts. I had to reconnect."
+               ⚠⚠⚠⚠ THIS LINE WAS MISSING AND IT IS THE WHOLE BUG. Every OTHER place that sets the user
+                 persists it — sign-in, sign-out, purchase, the account page — but this one, the only one
+                 that runs on a device that did not just sign in, threw the answer away. So the phone
+                 asked "who am I and what have I connected?" on every single load and kept nothing: until
+                 `/api/auth/me` came back it believed nothing was linked, and if that call was slow or
+                 failed it believed it for good. On a sleeping Render dyno over cellular — which is
+                 exactly a phone opening the app cold — that window is tens of seconds long, and what it
+                 shows in that window is an account with no Sleeper on it and a button inviting you to
+                 connect one. He took the invitation, which is the correct response to what he was shown.
+               ⚠ WRITTEN STRAIGHT TO STORAGE, NOT THROUGH `persist`. `persist` also uploads rank sets and
+                 mirrors the blob to /api/state; doing that on every boot would push a just-read copy back
+                 at the server and race the league restore three lines below. The server already owns the
+                 user record — this is only a local cache of it. Same spread-onto-current write the
+                 league restore uses, so nothing else in the blob is touched. */
+            try {
+              if (window.storage) {
+                const r0 = await window.storage.get("gs-state");
+                const cur0 = (r0 && r0.value) ? (JSON.parse(r0.value) || {}) : {};
+                await window.storage.set("gs-state", JSON.stringify({ ...cur0, user: merged }));
+              }
+            } catch (e2) {}
           } catch (e) {}
           // restore the server-saved blob (cross-device) once we know who we are
           try {
             const sr = await api.getState();
             const srv = sr && sr.state ? sr.state : null;
-            if (srv && (Array.isArray(srv.leagues) || Array.isArray(srv.funMocks))) {
+            /* ⚠ THE GUARD NOW ADMITS AN INJURIES-ONLY BLOB — 29bb. It used to require leagues or mocks,
+               which is the kind of condition that is true right up until the day it isn't. */
+            if (srv && (Array.isArray(srv.leagues) || Array.isArray(srv.funMocks) || (srv.injuries && typeof srv.injuries === "object"))) {
               const localLeagues = (localBlob && Array.isArray(localBlob.leagues)) ? localBlob.leagues : [];
               const srvLeagues = Array.isArray(srv.leagues) ? srv.leagues : [];
               // Union server + local so a league created on THIS device (not yet synced) survives alongside
@@ -10702,10 +10936,18 @@ export default function App() {
               if (mergedLeagues.length) setLeagues(mergedLeagues);
               if (mergedMocks.length) setFunMocks(mergedMocks);
               if (Array.isArray(srv.feedback)) setFeedback(srv.feedback);
-              try { if (window.storage) { const r = await window.storage.get("gs-state"); const cur = (r && r.value) ? JSON.parse(r.value) : {}; await window.storage.set("gs-state", JSON.stringify({ ...cur, leagues: mergedLeagues.length ? mergedLeagues : cur.leagues, funMocks: mergedMocks.length ? mergedMocks : cur.funMocks, feedback: Array.isArray(srv.feedback) ? srv.feedback : cur.feedback })); } } catch (e) {}
+              /* 29bb — the same union the leagues get, for the same reason: an injury saved on the phone
+                 and one saved on the laptop are both real and neither may be dropped. */
+              const mergedInj = mergeInjuries(srv.injuries, (localBlob && localBlob.injuries) || {});
+              setInjuries0(mergedInj);
+              try { if (window.storage) { const r = await window.storage.get("gs-state"); const cur = (r && r.value) ? JSON.parse(r.value) : {}; await window.storage.set("gs-state", JSON.stringify({ ...cur, leagues: mergedLeagues.length ? mergedLeagues : cur.leagues, funMocks: mergedMocks.length ? mergedMocks : cur.funMocks, feedback: Array.isArray(srv.feedback) ? srv.feedback : cur.feedback, injuries: mergedInj })); } } catch (e) {}
               // If the merge added anything the server didn't have (local-only leagues), push the union up so
               // other devices get it too. Only push when we actually have at least as much as the server.
-              try { if (mergedLeagues.length > srvLeagues.length) await api.putState({ leagues: mergedLeagues, funMocks: mergedMocks, feedback: Array.isArray(srv.feedback) ? srv.feedback : [] }); } catch (e) {}
+              /* ⚠⚠ AND `injuries` HAS TO RIDE ALONG ON THIS PUSH. `putState` REPLACES the whole server
+                 blob — it is one JSONB value, not a patch — so a partial payload here does not merely
+                 fail to save the injuries, it DELETES the ones already on the server. Any future
+                 top-level key has the same trap waiting for it at this line and at the two below. */
+              try { if (mergedLeagues.length > srvLeagues.length) await api.putState({ leagues: mergedLeagues, funMocks: mergedMocks, feedback: Array.isArray(srv.feedback) ? srv.feedback : [], injuries: mergedInj }); } catch (e) {}
             }
           } catch (e) {}
         });
@@ -10803,6 +11045,15 @@ export default function App() {
           biz: next.biz ?? biz ?? cur.biz,
           funMocks: next.funMocks ?? (funMocks.length ? funMocks : (cur.funMocks || [])),
           feedback: next.feedback ?? (feedback.length ? feedback : (cur.feedback || [])),
+          /* ⭐⭐⭐⭐⭐ 29bb — AND THIS LINE IS THE WHOLE REASON A NEW TOP-LEVEL KEY IS A FIVE-SITE CHANGE.
+             This merge is an ALLOWLIST, not a spread: it names the keys it keeps and silently drops
+             everything else. The backend stores the blob as one JSONB value with no schema, so an
+             `injuries` key needs no migration at all — and would nonetheless have been thrown away on
+             every single save, by this object, with no error anywhere. The symptom would have been the
+             most confusing one available: the feature works perfectly, all afternoon, and is empty
+             tomorrow. Same shape in the four restore paths below; all five are named in the 29bb note
+             on `syncFromCloud`. */
+          injuries: next.injuries ?? (Object.keys(injuries || {}).length ? injuries : (cur.injuries || {})),
         };
         mergedBlob = merged;
         await window.storage.set("gs-state", JSON.stringify(merged));
@@ -10839,14 +11090,21 @@ export default function App() {
           const locLeagues = Array.isArray(serverBlob.leagues) ? serverBlob.leagues : [];
           if (srvLeagues.length > locLeagues.length) {
             try {
+              /* ⚠ THE INJURIES ARE UNIONED, NOT ADOPTED — 29bb. The spread below takes the server's copy
+                 whole because it has MORE LEAGUES, which says nothing at all about whose injury record
+                 is fresher: this device may have saved one thirty seconds ago and be losing the race for
+                 an unrelated reason. Leagues have a count to compare; a map of injuries does not, so it
+                 gets merged by timestamp before the spread runs and is written back over the top. */
+              const mergedInj = mergeInjuries(r.state.injuries, serverBlob.injuries);
               if (window.storage) {
                 const cur = (await window.storage.get("gs-state").catch(() => null));
                 const curObj = cur && cur.value ? JSON.parse(cur.value) : {};
-                await window.storage.set("gs-state", JSON.stringify({ ...curObj, ...r.state }));
+                await window.storage.set("gs-state", JSON.stringify({ ...curObj, ...r.state, injuries: mergedInj }));
               }
               if (Array.isArray(r.state.leagues)) setLeagues(r.state.leagues);
               if (Array.isArray(r.state.funMocks)) setFunMocks(r.state.funMocks);
               if (Array.isArray(r.state.feedback)) setFeedback(r.state.feedback);
+              setInjuries0(mergedInj);
             } catch (e) {}
           } else {
             // our copy is richer — re-save it now that we hold the server's latest updatedAt token.
@@ -10896,9 +11154,16 @@ export default function App() {
       setLeagues(mergedLeagues);
       setFunMocks(mergedMocks);
       if (srv && Array.isArray(srv.feedback)) setFeedback(srv.feedback);
-      try { if (window.storage) { const r = await window.storage.get("gs-state"); const cur = (r && r.value) ? JSON.parse(r.value) : {}; await window.storage.set("gs-state", JSON.stringify({ ...cur, leagues: mergedLeagues, funMocks: mergedMocks })); } } catch (e) {}
+      /* ⭐ 29bb — THE FIVE PLACES A NEW TOP-LEVEL STATE KEY HAS TO BE NAMED, listed once here so the next
+         one does not have to be found the hard way: `persistNow`'s merge allowlist, the local hydration
+         at boot, the server restore after sign-in, the 409 conflict-adopt branch, and this manual sync —
+         plus the `putState` payload inside the last three, each of which REPLACES the whole server blob
+         and will delete any key it does not carry. Four of the five are silent on failure. */
+      const mergedInj = mergeInjuries(srv && srv.injuries, injuries);
+      setInjuries0(mergedInj);
+      try { if (window.storage) { const r = await window.storage.get("gs-state"); const cur = (r && r.value) ? JSON.parse(r.value) : {}; await window.storage.set("gs-state", JSON.stringify({ ...cur, leagues: mergedLeagues, funMocks: mergedMocks, injuries: mergedInj })); } } catch (e) {}
       // Push the union back so the other devices (and the server) converge to the full set.
-      try { await api.putState({ leagues: mergedLeagues, funMocks: mergedMocks, feedback: (srv && Array.isArray(srv.feedback)) ? srv.feedback : (feedback || []) }); } catch (e) {}
+      try { await api.putState({ leagues: mergedLeagues, funMocks: mergedMocks, feedback: (srv && Array.isArray(srv.feedback)) ? srv.feedback : (feedback || []), injuries: mergedInj }); } catch (e) {}
       return { ok: true, total: mergedLeagues.length, added: Math.max(0, added) };
     } catch (e) {
       return { ok: false, reason: (e && e.message) || "error" };
@@ -10955,9 +11220,13 @@ export default function App() {
           if (mergedLeagues.length) setLeagues(mergedLeagues);
           if (mergedMocks.length) setFunMocks(mergedMocks);
           if (srv && Array.isArray(srv.feedback)) setFeedback(srv.feedback);
-          try { if (window.storage) { const r = await window.storage.get("gs-state"); const cur = (r && r.value) ? JSON.parse(r.value) : {}; await window.storage.set("gs-state", JSON.stringify({ ...cur, leagues: mergedLeagues.length ? mergedLeagues : cur.leagues, funMocks: mergedMocks.length ? mergedMocks : cur.funMocks, feedback: (srv && Array.isArray(srv.feedback)) ? srv.feedback : cur.feedback, user: merged })); } } catch (e) {}
+          /* 29bb — signing in on a second device brings the account's injuries with it, unioned with
+             anything this device had recorded while signed out. */
+          const mergedInj = mergeInjuries(srv && srv.injuries, injuries);
+          setInjuries0(mergedInj);
+          try { if (window.storage) { const r = await window.storage.get("gs-state"); const cur = (r && r.value) ? JSON.parse(r.value) : {}; await window.storage.set("gs-state", JSON.stringify({ ...cur, leagues: mergedLeagues.length ? mergedLeagues : cur.leagues, funMocks: mergedMocks.length ? mergedMocks : cur.funMocks, feedback: (srv && Array.isArray(srv.feedback)) ? srv.feedback : cur.feedback, injuries: mergedInj, user: merged })); } } catch (e) {}
           // Push the merged union back so the server (and thus every other device) converges to the full set.
-          try { if (mergedLeagues.length >= srvLeagues.length) await api.putState({ leagues: mergedLeagues, funMocks: mergedMocks, feedback: (srv && Array.isArray(srv.feedback)) ? srv.feedback : (feedback || []) }); } catch (e) {}
+          try { if (mergedLeagues.length >= srvLeagues.length) await api.putState({ leagues: mergedLeagues, funMocks: mergedMocks, feedback: (srv && Array.isArray(srv.feedback)) ? srv.feedback : (feedback || []), injuries: mergedInj }); } catch (e) {}
         } catch (e) { /* server state unavailable — local copy stands */ }
         persist({ user: merged });
         return merged;
@@ -11376,6 +11645,38 @@ export default function App() {
 
   if (!bootReady) return <BootSplash css={css} />;
 
+  /* ⭐⭐⭐⭐⭐ THE HONEST ANSWER WHILE WE DO NOT KNOW — b163. Same shape as `restoring` below: say what is
+     happening, and always leave a door. ⚠ THE ESCAPE HATCH IS NOT OPTIONAL — a full-screen state with no
+     way past it turns a slow server into a broken app, which is a worse bug than the one it replaces. */
+  const wakingUp = hasBackend && hadTokenAtBoot.current && !user && meState !== "ok";
+  if (wakingUp) {
+    const failed = meState === "failed";
+    return (
+      <ThemeCtx.Provider value={themeApi}>
+      <div data-theme={themeApi.theme} className="gs-root">
+        <style>{css}</style>
+        <div data-waking={failed ? "failed" : "pending"}
+          style={{ maxWidth: 520, margin: "90px auto", padding: "0 20px", textAlign: "center" }}>
+          <i className={`ti ${failed ? "ti-cloud-off" : "ti-loader-2 spin"}`}
+            style={{ fontSize: 26, color: failed ? "var(--mut)" : "var(--gold)", marginBottom: 14, display: "inline-block" }} aria-hidden="true" />
+          <div className="disp" style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>
+            {failed ? "Can't reach the server right now" : "Waking the server…"}
+          </div>
+          <div className="mut" style={{ fontSize: 13.5, lineHeight: 1.55 }}>
+            {failed
+              ? <>Your leagues and your connected accounts live on the server, so nothing here is lost — this device just hasn't been able to read them yet. <b style={{ color: "var(--ink)" }}>Don't reconnect anything;</b> it will all be here once the server answers.</>
+              : <>It sleeps when nobody is using it, so the first visit of the day takes a few seconds. Your leagues and connected accounts are on their way.</>}
+          </div>
+          <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", marginTop: 18 }}>
+            {failed && <button className="btn btn-gold" data-wakingretry onClick={() => window.location.reload()}>Try again</button>}
+            <button className="btn" data-wakingskip onClick={() => setMeState("ok")}>Continue without it</button>
+          </div>
+        </div>
+      </div>
+      </ThemeCtx.Provider>
+    );
+  }
+
   return (
     <ThemeCtx.Provider value={themeApi}>
     <div ref={shellRef} data-theme={themeApi.theme} className={`gs-root${noHoverAnim ? " no-hover-anim" : ""}`}>
@@ -11451,6 +11752,12 @@ export default function App() {
           <button className="btn btn-gold" onClick={() => setRoute("home")}>← Back to your leagues</button>
         </div>
       )}><TeamHub user={user} leagues={visibleLeagues} leagueId={hubLeagueId} onBack={() => setRoute("home")} onHome={() => setRoute("home")} onSignOut={signOut} onUpdate={updateUser} onGameDay={() => setRoute("gameday")}
+        /* ⭐ 29bb — THE INJURY RECORD IS USER-LEVEL, NOT LEAGUE-LEVEL, and passed down rather than read
+           inside the hub. An injury is a fact about a PLAYER: if Trey marks Jayden Daniels out for the
+           year, that is true in all four of his leagues at once and he should not have to say it four
+           times. The tab lives in the hub because that is where he asked for it and where the cascade is
+           visible; the data does not. */
+        injuries={injuries} onInjuries={setInjuries}
         /* ⭐⭐⭐⭐ b154 — THE DRAFT IS REACHABLE FROM THE LEAGUE IT BELONGS TO. Trey: "When you have clicked
            into the league hub and looking at the summary, matchup, review, etc... I want a section to see
            draft ... then a pop up that comes up to select draft board or draft summary."
@@ -11819,7 +12126,8 @@ function GuideBook({ compact, onDemo }) {
      layout of the app it is explaining. It wraps at the arrows now, which is where a breadcrumb should
      break anyway. I built and screenshotted this at 1450px all week, which is how it got through — the
      phone-width sweep in plan29ci exists so the next one cannot. */
-  const Crumb = ({ at, children }) => {
+  /* A plain function, CALLED — see `posGrid`. */
+  const crumb = (at, children) => {
     const style = { fontSize: 11.5, color: "var(--gold)", fontWeight: 700, textAlign: "left",
       lineHeight: 1.45, wordBreak: "break-word" };
     if (compact || !at) return <span className="num" style={style}>{children}</span>;
@@ -11839,11 +12147,12 @@ function GuideBook({ compact, onDemo }) {
     .concat(GUIDE_MAP.map((s) => ({ k: s.key, label: s.title, icon: s.icon })))
     .concat([{ k: "glossary", label: "Glossary", icon: "ti-book" }]);
 
-  const Place = ({ it }) => (
-    <div data-guideplace={it.name} style={{ borderLeft: "2px solid var(--line2)", paddingLeft: 12 }}>
+  /* A plain function, CALLED — see `posGrid`. */
+  const place = (it) => (
+    <div key={it.name} data-guideplace={it.name} style={{ borderLeft: "2px solid var(--line2)", paddingLeft: 12 }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 9, flexWrap: "wrap" }}>
         <span className="disp" style={{ fontSize: 14.5, fontWeight: 700 }}>{it.name}</span>
-        <Crumb at={it.at}>{it.find}</Crumb>
+        {crumb(it.at, it.find)}
       </div>
       <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginTop: 2 }}>{it.does}</div>
       {it.tabs && (
@@ -11917,7 +12226,7 @@ function GuideBook({ compact, onDemo }) {
                 <span className="disp" style={{ fontSize: 15, fontWeight: 700 }}>{h.title}</span>
                 <span className="chip" style={{ fontSize: 9.5 }}>{h.kind === "task" ? "how to" : h.kind === "term" ? "term" : "screen"}</span>
               </div>
-              <div style={{ marginBottom: 4 }}><Crumb at={h.at}>{h.go}</Crumb></div>
+              <div style={{ marginBottom: 4 }}>{crumb(h.at, h.go)}</div>
               <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55 }}>{h.note}</div>
             </div>
           ))}
@@ -11944,7 +12253,7 @@ function GuideBook({ compact, onDemo }) {
                       {t.want}
                       <i className={`ti ti-chevron-${isOpen ? "up" : "down"}`} style={{ fontSize: 12, color: "var(--mut)", marginLeft: 6 }} aria-hidden="true" />
                     </button>
-                    <Crumb at={t.at}>{t.go}</Crumb>
+                    {crumb(t.at, t.go)}
                   </div>
                   {isOpen && <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, padding: "0 2px 10px" }}>{t.note}</div>}
                 </div>
@@ -11987,7 +12296,7 @@ function GuideBook({ compact, onDemo }) {
               </div>
               <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginBottom: 12 }}>{sec.blurb}</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                {sec.items.map((it) => <Place key={it.name} it={it} />)}
+                {sec.items.map((it) => place(it))}
               </div>
             </div>
           );
@@ -12233,28 +12542,36 @@ function HelpPage({ user, biz, onBack, onHome, onSignOut, onSubmit, initialTab }
   );
 }
 
+/* ⭐⭐⭐⭐⭐ HOISTED, NOT INLINED — b163. This one OWNS `useState`, so the usual cure for a component
+   declared during render (rename it lower-case and call it) is the wrong one: calling it would splice its
+   hook into the PARENT's hook list, and the parent would then have a hook count that depends on how many
+   sections it happens to render. It is a real component and now lives like one.
+   ⚠ NAMED `TrendsSection` BECAUSE `Section` IS ALREADY TAKEN at module scope — the exported one that
+     MockTrendsPage imports. Hoisting it under its old name would have shadowed a component used by
+     another screen, which is a far worse bug than the one being fixed. */
+function TrendsSection({ icon, title, items, render, cap }) {
+const [open, setOpen] = useState(false);
+const shown = open ? items : items.slice(0, cap);
+  return (
+    <div className="panel" style={{ padding: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+        <i className={`ti ${icon}`} style={{ fontSize: 20, color: "var(--gold)" }} aria-hidden="true" />
+        <div className="disp" style={{ fontSize: 16, fontWeight: 700, flex: 1 }}>{title}</div>
+        <span className="chip" style={{ fontSize: 10 }}>{items.length}</span>
+      </div>
+      {shown.map(render)}
+      {items.length > cap && (
+        <button className="btn btn-mini" style={{ marginTop: 10, width: "100%" }} onClick={() => setOpen((v) => !v)}>
+          {open ? "Show less" : `Show all ${items.length}`} <i className={`ti ti-chevron-${open ? "up" : "down"}`} style={{ fontSize: 12, marginLeft: 4 }} aria-hidden="true" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 function TrendsPage({ user, onBack, onHome, onSignOut }) {
   const f = useMemo(() => getTrendsFeed(), []);
   const CAP = 4; // collapsed view shows this many; rest behind "show all"
-  const Section = ({ icon, title, items, render }) => {
-    const [open, setOpen] = useState(false);
-    const shown = open ? items : items.slice(0, CAP);
-    return (
-      <div className="panel" style={{ padding: 16 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-          <i className={`ti ${icon}`} style={{ fontSize: 20, color: "var(--gold)" }} aria-hidden="true" />
-          <div className="disp" style={{ fontSize: 16, fontWeight: 700, flex: 1 }}>{title}</div>
-          <span className="chip" style={{ fontSize: 10 }}>{items.length}</span>
-        </div>
-        {shown.map(render)}
-        {items.length > CAP && (
-          <button className="btn btn-mini" style={{ marginTop: 10, width: "100%" }} onClick={() => setOpen((v) => !v)}>
-            {open ? "Show less" : `Show all ${items.length}`} <i className={`ti ti-chevron-${open ? "up" : "down"}`} style={{ fontSize: 12, marginLeft: 4 }} aria-hidden="true" />
-          </button>
-        )}
-      </div>
-    );
-  };
   const moveRow = (p, up) => (
     <div key={p.name} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderTop: "1px solid var(--line)" }}>
       <Dot pos={p.pos} />
@@ -12288,11 +12605,11 @@ function TrendsPage({ user, onBack, onHome, onSignOut }) {
         <div className="chip" style={{ borderColor: "var(--gold)", color: "var(--gold)", marginBottom: 16 }}>Pulled from public sources · {f.asOf}</div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 14 }}>
-          <Section icon="ti-trending-up" title="Climbing ADP" items={f.climbers} render={(p) => moveRow(p, true)} />
-          <Section icon="ti-trending-down" title="Falling ADP" items={f.fallers} render={(p) => moveRow(p, false)} />
-          <Section icon="ti-file-signature" title="Recent signings & moves" items={f.signings} render={(x) => noteRow(x)} />
-          <Section icon="ti-target-arrow" title="New weapons / situation upgrades" items={f.weapons} render={(x) => noteRow(x)} />
-          <Section icon="ti-bandage" title="Injury wire" items={f.injuries} render={(x) => noteRow(x, INJURY_INFO[x.sev].color)} />
+          <TrendsSection icon="ti-trending-up" title="Climbing ADP" items={f.climbers} render={(p) => moveRow(p, true)} cap={CAP} />
+          <TrendsSection icon="ti-trending-down" title="Falling ADP" items={f.fallers} render={(p) => moveRow(p, false)} cap={CAP} />
+          <TrendsSection icon="ti-file-signature" title="Recent signings & moves" items={f.signings} render={(x) => noteRow(x)} cap={CAP} />
+          <TrendsSection icon="ti-target-arrow" title="New weapons / situation upgrades" items={f.weapons} render={(x) => noteRow(x)} cap={CAP} />
+          <TrendsSection icon="ti-bandage" title="Injury wire" items={f.injuries} render={(x) => noteRow(x, INJURY_INFO[x.sev].color)} cap={CAP} />
         </div>
 
         <div className="mut" style={{ fontSize: 11.5, marginTop: 18 }}>These are the categories the daily feed tracks: ADP movement out of our Sleeper draft harvest, transactions and signings, depth-chart changes, and the injury wire. The entries above are a worked example of the format — the live feed is being wired in now.</div>
@@ -13504,8 +13821,9 @@ function CopyPlanModal({ leagues, user, rounds, translateTargets, onClose, onApp
   const total = (want.queue ? available.queue : 0) + (want.avoid ? available.avoid : 0)
     + (want.targets ? tr.moved.length : 0) + (want.rules ? available.rules : 0);
 
-  const Check = ({ k, label, n, note, disabled }) => (
-    <label data-copyopt={k} style={{ display: "flex", gap: 9, alignItems: "flex-start", padding: "9px 11px", borderRadius: 8,
+  /* A plain function, CALLED — see `posGrid`. */
+  const copyOpt = (k, label, n, note, disabled) => (
+    <label key={k} data-copyopt={k} style={{ display: "flex", gap: 9, alignItems: "flex-start", padding: "9px 11px", borderRadius: 8,
       border: `1px solid ${want[k] && !disabled ? "var(--gold)" : "var(--line)"}`, background: want[k] && !disabled ? "rgba(224,166,60,.07)" : "transparent",
       cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1 }}>
       <input type="checkbox" checked={!!want[k] && !disabled} disabled={disabled} style={{ marginTop: 2 }}
@@ -13543,16 +13861,16 @@ function CopyPlanModal({ leagues, user, rounds, translateTargets, onClose, onApp
           </div>
         )}
         <div style={{ display: "grid", gap: 7 }}>
-          <Check k="queue" label="Priority list" n={available.queue} disabled={!available.queue}
-            note="Players you always want. Travels cleanly — it is a view about the player, not about a draft." />
-          <Check k="avoid" label="Do-not-draft list" n={available.avoid} disabled={!available.avoid}
-            note="Same: a player you will never take is a player you will never take." />
-          <Check k="targets" label="Round suggestions" n={available.targets} disabled={!available.targets}
-            note={available.targets
+          {copyOpt("queue", "Priority list", available.queue,
+            "Players you always want. Travels cleanly — it is a view about the player, not about a draft.", !available.queue)}
+          {copyOpt("avoid", "Do-not-draft list", available.avoid,
+            "Same: a player you will never take is a player you will never take.", !available.avoid)}
+          {copyOpt("targets", "Round suggestions", available.targets,
+            available.targets
               ? <>Re-anchored to the picks you own here, by <b style={{ color: "var(--ink)" }}>overall pick</b> rather than round number — {src ? `${(src.cfg || {}).teams || 12} teams there, different picks here` : ""}. {tr.dropped.length ? <b style={{ color: "var(--gold)" }}>{tr.dropped.length} fall past your last pick and will be left behind.</b> : "All of them land on a pick you own."}</>
-              : null} />
-          <Check k="rules" label="Roster rules" n={available.rules} disabled={!available.rules}
-            note={`Things like "two RBs by round 6". Rounds beyond this draft's ${rounds} get clamped in.`} />
+              : null, !available.targets)}
+          {copyOpt("rules", "Roster rules", available.rules,
+            `Things like "two RBs by round 6". Rounds beyond this draft's ${rounds} get clamped in.`, !available.rules)}
         </div>
 
         {/* What will actually land, spelled out. A plan copied across is a lot of small changes at once, and
@@ -13780,8 +14098,14 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
   // Same styled tooltip the draft room uses, rather than the browser's — the native one is slow to appear,
   // can't be styled, and looked out of place next to everything else in the app.
   const [tip, setTip] = useState(null);
-  const showTip = (e, content) => { try { setTip(positionTip(e.clientX, e.clientY, content, e.currentTarget)); } catch (_) {} };
-  const hideTip = () => setTip(null);
+  /* ⚠ b164 — `tipShouldOpen`/`tipShouldClose` are what make these cards usable on a phone. See
+     src/tipsheet.js: on a touch device a synthesised `mouseleave` must never close a sheet, and an
+     element whose tap already has a job must not open one. */
+  const showTip = (e, content, opts) => {
+    if (!tipShouldOpen(e, opts)) return;
+    try { setTip(positionTip(e.clientX, e.clientY, content, e.currentTarget, opts)); } catch (_) {}
+  };
+  const hideTip = (e) => { if (!tipShouldClose(e)) return; setTip(null); };
   // ---- DYNASTY DRAFT HISTORY (connected leagues) ----
   // A dynasty league accumulates drafts: the original startup plus a rookie draft every year. Sleeper
   // chains these across seasons; the backend walks that chain, and this panel lists every draft so any
@@ -14498,7 +14822,7 @@ function LeagueUmbrella({ user, league, allLeagues, onBack, backLabel, onHome, o
 
         {/* Styled tooltip for the prep rows — same component the draft room uses. */}
         {tip && (
-          <Tooltip tip={tip}>
+          <Tooltip tip={tip} onClose={hideTip}>
             <OutlookCard content={tip.content} />
           </Tooltip>
         )}
@@ -14916,7 +15240,8 @@ function QuickMockSetup({ onStart, onCancel }) {
     onStart({ ...cfg, name: cfg.name && cfg.name !== "My league" ? cfg.name : "Quick mock", slot: chosenSlot, rounds: cfg.rounds || 15 });
   };
 
-  const Seg = ({ value, set, options }) => (
+  /* A plain function, CALLED — see `posGrid`. */
+  const seg = (value, set, options) => (
     <div style={{ display: "inline-flex", background: "var(--panel2)", borderRadius: 9, padding: 3, gap: 2, flexWrap: "wrap" }}>
       {options.map(([k, l]) => (
         <button key={k} onClick={() => set(k)} className="bigact" style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, padding: "6px 12px", borderRadius: 7, border: "none", background: value === k ? "var(--gold)" : "transparent", color: value === k ? "#151002" : "var(--ink)" }}>{l}</button>
@@ -14966,7 +15291,7 @@ function QuickMockSetup({ onStart, onCancel }) {
         {mode === "simple" ? (<>
         <div style={{ marginTop: 16 }}>
           <div className="mut" style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 6, letterSpacing: ".03em" }}>LEAGUE TYPE</div>
-          <Seg value={type} set={setType} options={TYPES} />
+          {seg(type, setType, TYPES)}
         </div>
 
         <div style={{ marginTop: 16 }}>
@@ -14988,7 +15313,7 @@ function QuickMockSetup({ onStart, onCancel }) {
         <div style={{ marginTop: 16, display: "flex", gap: 24, flexWrap: "wrap" }}>
           <div>
             <div className="mut" style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 6, letterSpacing: ".03em" }}>TIGHT END</div>
-            <Seg value={te} set={setTe} options={[["std", "Standard"], ["tep", "TE premium"]]} />
+            {seg(te, setTe, [["std", "Standard"], ["tep", "TE premium"]])}
           </div>
         </div>
 
@@ -15268,7 +15593,8 @@ function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, onOp
     }
     return { label: "—", color: "var(--mut)", dot: "var(--mut)" };
   };
-  const StatusPill = ({ dot, color, label }) => (
+  /* A plain function, CALLED — see `posGrid`. */
+  const statusPill = ({ dot, color, label }) => (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, color, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 99, padding: "2px 9px", flexShrink: 0 }}>
       <span style={{ width: 6, height: 6, borderRadius: "50%", background: dot }} />{label}
     </span>
@@ -15312,7 +15638,7 @@ function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, onOp
                       <div style={{ fontWeight: 700, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.name}</div>
                       <div className="mut" style={{ fontSize: 11 }}>{l.cfg.teams || 12}-team · {(l.cfg.type || "redraft")}{l.cfg.sf ? " · SF" : ""}{((l.connect && l.connect.platform === "sleeper") || (l.cfg && l.cfg.connect && l.cfg.connect.platform === "sleeper")) ? " · Sleeper" : ""}</div>
                     </div>
-                    <StatusPill {...st} />
+                    {statusPill(st)}
                     <i className="ti ti-chevron-right team-arrow" style={{ fontSize: 15, color: "var(--gold)", flexShrink: 0 }} aria-hidden="true" />
                   </button>
                 );
@@ -15345,7 +15671,7 @@ function YourTeamsDropdown({ user, leagues, onOpenLeague, onNewFromSleeper, onOp
                       <div style={{ fontWeight: 700, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sl.name}</div>
                       <div className="mut" style={{ fontSize: 11 }}>{sl.total_rosters}-team{sl.made_picks != null ? ` · ${sl.made_picks} picks in` : ""}</div>
                     </div>
-                    <StatusPill {...st} />
+                    {statusPill(st)}
                     {sl.best_ball
                       ? <span className="chip" style={{ fontSize: 10, color: "var(--mut)", flexShrink: 0 }} title="Best ball has no weekly management — the platform auto-starts your best scorers.">Best ball — no weekly management</span>
                       : (onOpenHub && <button className="btn btn-mini btn-gold" onClick={() => onOpenHub(sl)} style={{ flexShrink: 0 }}>Open hub</button>)}
@@ -15494,6 +15820,22 @@ function slotEligible(slot) {
 function closeCalls(slots, bench, opts) {
   const near = (opts && opts.near != null) ? opts.near : 60;
   const max = (opts && opts.max != null) ? opts.max : 4;
+  /* ⭐⭐⭐⭐⭐ THE LINEUP HE ACTUALLY SET, AND IT IS WHAT MAKES THIS SECTION WORTH HAVING — b163.
+     Trey, with a screenshot of a card comparing two men he was already starting: "The one close call
+     isn't relevant since both players are in my lineup. I rather this section be used if you recommend I
+     sit someone for someone on my bench."
+     ⚠⚠ HE IS DESCRIBING A REAL DEFECT, NOT A PREFERENCE. `slots` is the OPTIMAL lineup and `bench` is
+       the optimal bench — so a man the optimiser benched appears here as "the alternative" even when the
+       manager is starting him in the lineup he has actually set. The card then compares two of his own
+       starters and asks him to decide between them, which is not a decision: whatever he concludes, he
+       does nothing. Worse, it spends the one section on this screen that exists for genuine judgement
+       calls on the one comparison that cannot produce an action.
+     ⭐ SO A CLOSE CALL REQUIRES EXACTLY ONE OF THE PAIR TO BE IN THE SET LINEUP. One starting, one
+       benched, and the projection too close to separate them — that is a start/sit, and everything else
+       is either already done or already covered by the lineup-changes panel above.
+     ⚠ NO SET LINEUP MEANS NO FILTER. Early in the week Sleeper may report nothing set at all, and in
+       that state every pair is hypothetical; filtering on an empty set would silently empty the section. */
+  const set = (opts && opts.setStarters && opts.setStarters.size) ? opts.setStarters : null;
   const out = [], usedAlt = new Set();
   (slots || []).forEach(({ slot, p }) => {
     if (!p) return;
@@ -15504,8 +15846,18 @@ function closeCalls(slots, bench, opts) {
     if (!alt) return;
     const win = startWinPct(p, alt);
     if (win >= near) return;
+    /* ⚠ RAW sids, NOT `String(...)`. The set is built from the same player objects these come from, and
+       wrapping one side in String() while the set holds numbers matches nothing — which would filter out
+       every call and empty the section on a build that looks fine. */
+    if (set && set.has(p.sid) === set.has(alt.sid)) return;
     usedAlt.add(alt.sid);
-    out.push({ slot, start: p, alt, win, edge: Math.round(((p.pts || 0) - (alt.pts || 0)) * 10) / 10 });
+    /* Which way the action runs, decided here rather than re-derived by the card: `sit` means the man the
+       projection prefers is the one on his bench, so acting on it means benching somebody. */
+    const startedNow = set ? (set.has(p.sid) ? p : alt) : null;
+    out.push({ slot, start: p, alt, win,
+      edge: Math.round(((p.pts || 0) - (alt.pts || 0)) * 10) / 10,
+      benched: startedNow ? (startedNow === p ? alt : p) : null,
+      sit: startedNow ? startedNow !== p : null });
   });
   // Closest first, and capped: flagging seven "decisions" is the same as flagging none.
   return out.sort((a, b) => a.win - b.win).slice(0, max);
@@ -15586,6 +15938,110 @@ function faabBid(o) {
 function lineupValue(roster, sf) {
   const l = lineupSlots(roster || [], sf);
   return Math.round(l.slots.reduce((s, x) => s + (x.p ? (x.p.pts || 0) : 0), 0) * 10) / 10;
+}
+
+/* ⭐ THIS WEEK'S NUMBER FOR ONE PLAYER, WITH AN INJURY — 29bb. Pulled out of `resolve` for the same reason
+   as `injuryImpact`: it had a double-discount bug on its fallback path that no screen check would see,
+   and the fix needs a test that can call it directly.
+   @param rawBase   the player's HEALTHY pool entry
+   @param base      the same entry after `applyInjuryToEntry` (carries `injWeek` when he is marked)
+   @param wk        the platform's weekly entry for him, or undefined
+   @param haveWeeklyData  whether the platform published a slate at all this week
+   The platform's weekly figure is undiscounted (it has not heard of the injury), and the healthy season
+   average is too — so exactly ONE factor, `injWeek`, is applied to whichever of them is used. */
+export function hubWeekPts(rawBase, base, wk, haveWeeklyData, games = 17) {
+  const healthyAvg = Math.round((((rawBase && rawBase.pts) || 0) / games) * 10) / 10;
+  const w0 = wk && wk.pts != null ? wk.pts : (haveWeeklyData ? 0 : healthyAvg);
+  return base && base.injWeek != null ? Math.round(w0 * base.injWeek * 10) / 10 : w0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════════
+   WHAT AN INJURY DOES TO ONE TEAM — 29bb. The Injuries tab's "what it does to your team" block.
+   ───────────────────────────────────────────────────────────────────────────────────────────────────
+   Trey: "take Jayden Daniels' projection for the rest of the year, make it a zero, and the replacement
+   becomes whoever your backup quarterback is. So you basically want to see, like, what are the
+   ramifications of that injury?"
+
+   ⭐⭐⭐⭐⭐ EVERY FIGURE IS A DIFFERENCE BETWEEN TWO SOLVED LINEUPS, never the injured man's own points.
+     "You lose Daniels' 21 a week" is false when a backup plays and scores 13 — the true cost is 8, and
+     the naive number is wrong in the alarming direction, which is the direction that sends a manager to
+     overpay for a replacement he did not need. The difference of two optimal lineups gets this right by
+     construction, and also gets right the cases a subtraction cannot: an injured BENCH player (costs 0),
+     a flex reshuffle where the backup is a different position entirely, and an empty slot.
+   ⭐ MODULE LEVEL AND EXPORTED so a node suite can run the exact function the tab runs — the lesson of
+     this same build (see `vite.lib.config.js`): arithmetic that decides what a screen advises belongs
+     where a test can reach it without a browser.
+   ⚠ BOTH ROSTERS MUST COME FROM THE SAME RESOLVER, one with injuries and one without. Handing this a
+     roster resolved by some other path would measure two code paths rather than one injury.
+
+   @param now        roster as resolved WITH injuries   (each player: sid, pos, pts, ptsSeason, injStatus)
+   @param healthy    the same roster resolved WITHOUT them
+   @param sf         superflex flag, as lineupSlots takes it
+   @param games      games in a season, to turn season value into a per-game mean (default 17)
+   @param weeksLeft  the rest-of-season window, which the phased mean is cut from
+   ══════════════════════════════════════════════════════════════════════════════════════════════════ */
+export function injuryImpact(now, healthy, sf, games = 17, weeksLeft = 1) {
+  const nowR = now || [], healthyR = healthy || nowR;
+  const injured = nowR.filter((p) => p && p.injStatus).map((p) => String(p.sid));
+  const r1 = (v) => Math.round(v * 10) / 10;
+  const sum = (lu) => r1((lu.slots || []).reduce((s, x) => s + (x.p ? (x.p.pts || 0) : 0), 0));
+  const luNow = lineupSlots(nowR, sf);
+  const luHealthy = injured.length ? lineupSlots(healthyR, sf) : luNow;
+  const wkNow = sum(luNow), wkHealthy = sum(luHealthy);
+  /* The per-game mean is what the playoff sim runs on, so the odds shift the tab prints is driven by the
+     number printed beside it rather than by a second estimate of the same thing. */
+  const perGame = (roster) => roster.map((p) => ({
+    ...p, pts: (p.ptsSeason != null ? p.ptsSeason : (p.pts || 0) * games) / games,
+    ...(p.injStatus ? { phaseUnit: 1 / games } : null),
+  }));
+  /* ⚠⚠ PHASED, NOT AVERAGED — the bug plan29bb-team §6 caught: averaged, "out three weeks" cost exactly
+     what "out for the year" cost, because a two-thirds star averages below a decent backup and the
+     solver benches him for the whole window. See `phasedLineupValue`. */
+  const meanNow = injured.length ? phasedLineupValue(perGame(nowR), sf, weeksLeft, lineupValue) : null;
+  const meanHealthy = injured.length ? lineupValue(perGame(healthyR), sf) : null;
+  const slotOf = (lu, sid) => {
+    const hit = (lu.slots || []).find((s) => s.p && String(s.p.sid) === String(sid));
+    return hit ? hit.slot : null;
+  };
+  const rows = injured.map((sid) => {
+    const p = nowR.find((x) => String(x.sid) === sid) || null;
+    const was = slotOf(luHealthy, sid);
+    /* ⚠ THE SLOT IS MATCHED BY NAME AND BY OCCURRENCE, NOT BY FIRST MATCH. A lineup with two "RB" slots
+       would otherwise report the RB1's replacement for an injured RB2 — the right position, the wrong man,
+       and a sentence that reads perfectly. Count which RB slot he was in and read the same one back. */
+    let nowIn = null;
+    if (was) {
+      const idx = (luHealthy.slots || []).filter((s) => s.slot === was).findIndex((s) => s.p && String(s.p.sid) === sid);
+      const same = (luNow.slots || []).filter((s) => s.slot === was);
+      nowIn = (same[idx] || same[0] || {}).p || null;
+    }
+    const hp = (healthyR.find((x) => String(x.sid) === sid) || {}).pts;
+    /* ⚠⚠ HE CAN STILL BE "IN" THE SLOT AT ZERO. With nobody else eligible, the solver leaves an out-for-
+       the-year quarterback in the QB slot at 0.0 rather than leave it blank — and the first cut read that
+       as "still your best option, at reduced value", about a man who will not play again. A slot held by
+       a zero is an EMPTY slot, and that is the most urgent thing this block can say. */
+    const selfAtZero = !!(nowIn && String(nowIn.sid) === sid && !((nowIn.pts || 0) > 0));
+    return {
+      sid, p, wasStarting: was,
+      replacedBy: nowIn && String(nowIn.sid) !== sid ? nowIn : null,
+      stillStarting: !!(nowIn && String(nowIn.sid) === sid && !selfAtZero),
+      emptyNow: !!(was && (!nowIn || selfAtZero)),
+      healthyPts: hp != null ? hp : null,
+    };
+  });
+  return {
+    injuredCount: injured.length,
+    luNow, luHealthy, wkNow, wkHealthy,
+    weekCost: r1(Math.max(0, wkHealthy - wkNow)),
+    meanNow, meanHealthy,
+    meanCost: meanNow != null && meanHealthy != null ? r1(Math.max(0, meanHealthy - meanNow)) : 0,
+    rows,
+    /* The positions this team is now short at — only where he actually started, because an injured
+       bench player opens no hole and sending somebody shopping for one would be bad advice. */
+    /* ⚠ A LIMITED MAN WHO STILL STARTS IS INCLUDED: he is worth less, so an upgrade may exist. The two
+       lists this feeds only ever show a genuine improvement, so including the position costs nothing. */
+    needPos: Array.from(new Set(rows.filter((r) => r.p && r.wasStarting).map((r) => r.p.pos))),
+  };
 }
 // Two-sided trade finder. Everyone ships a trade ANALYZER — you propose, it grades. This mines all N
 // rosters for swaps that raise BOTH teams' starting lineups, which is only possible because the hub scores
@@ -16490,7 +16946,8 @@ export function WeekHoverCard({ card, bySid, winTone }) {
   const posOf = (sid) => (bySid.get(String(sid)) || {}).pos || null;
   const teamOf = (sid) => (bySid.get(String(sid)) || {}).team || null;
 
-  const Rows = ({ players, tone, empty }) => {
+  /* A plain function, CALLED — see `posGrid`. */
+  const sideRows = (players, tone, empty) => {
     const list = (players || []).slice().sort((a, b) => (b.proj || 0) - (a.proj || 0));
     if (!list.length) return <div className="mut" style={{ fontSize: 11 }}>{empty}</div>;
     return (
@@ -16534,7 +16991,7 @@ export function WeekHoverCard({ card, bySid, winTone }) {
           {F && <span><span className="mut">Projected </span><b className="num">{r1((kind === "me" ? F.me : F.opp).projected)}</b></span>}
           <span><span className="mut">Left </span><b className="num">{side.yetToPlay}</b></span>
         </div>
-        <Rows players={side.players} tone={tone} empty="No starters recorded." />
+        {sideRows(side.players, tone, "No starters recorded.")}
       </>
     );
   } else if (kind === "both") {
@@ -16552,13 +17009,13 @@ export function WeekHoverCard({ card, bySid, winTone }) {
           <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800, color: "var(--pos)", marginBottom: 3 }}>
             {(L.me && L.me.teamName) || "Yours"} · {total(L.me, F && F.me)}
           </div>
-          <Rows players={L.me && L.me.players} tone="var(--pos)" empty="No starters recorded." />
+          {sideRows(L.me && L.me.players, "var(--pos)", "No starters recorded.")}
         </div>
         <div>
           <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800, color: "var(--neg)", marginBottom: 3 }}>
             {(L.opp && L.opp.teamName) || "Theirs"} · {total(L.opp, F && F.opp)}
           </div>
-          <Rows players={L.opp && L.opp.players} tone="var(--neg)" empty="No starters recorded." />
+          {sideRows(L.opp && L.opp.players, "var(--neg)", "No starters recorded.")}
         </div>
       </div>
     );
@@ -16573,13 +17030,13 @@ export function WeekHoverCard({ card, bySid, winTone }) {
           <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800, color: "var(--pos)", marginBottom: 3 }}>
             Yours ({mine.length})
           </div>
-          <Rows players={mine} tone="var(--pos)" empty="All of yours have played." />
+          {sideRows(mine, "var(--pos)", "All of yours have played.")}
         </div>
         <div>
           <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800, color: "var(--neg)", marginBottom: 3 }}>
             Theirs ({theirs.length})
           </div>
-          <Rows players={theirs} tone="var(--neg)" empty="All of theirs have played." />
+          {sideRows(theirs, "var(--neg)", "All of theirs have played.")}
         </div>
       </div>
     );
@@ -16734,6 +17191,23 @@ function HubLoading() {
    ⚠ `count` IS A FUNCTION OF THE ALREADY-COMPUTED BOARDS, never its own measure. A badge that counts
      deals differently from the section it labels is a number that contradicts the page one click later —
      the same fault as the "You send —" beside "3 ideas" in b151. */
+/* ⭐⭐⭐⭐ WHEN A TRANSACTION HAPPENED — b163. Trey: "Is it possible for you to put the date for the trade".
+   ⚠ "Wk 9" IS NOT A DATE, and it was the only temporal information on the row. A week number tells you
+     which roster the move changed; it does not tell you whether a trade landed on Tuesday or three
+     minutes before kickoff, which is most of what you want to know when you are reading a league's
+     activity. Both are kept — they answer different questions.
+   ⚠ THE YEAR APPEARS ONLY WHEN IT IS NOT THIS ONE. A season crosses a new year at week 17, so a January
+     transaction next to a November one with no year on either is genuinely ambiguous. */
+function txWhen(at) {
+  const t = Number(at);
+  if (!Number.isFinite(t) || t <= 0) return null;
+  const d = new Date(t);
+  if (Number.isNaN(d.getTime())) return null;
+  const now = new Date();
+  return d.toLocaleDateString("en-US", d.getFullYear() === now.getFullYear()
+    ? { month: "short", day: "numeric" }
+    : { month: "short", day: "numeric", year: "numeric" });
+}
 const TRADE_SECTIONS = [
   { k: "calc", label: "Calculator", icon: "scale",
     blurb: "Put the players on each side of a deal you already have in mind and see what it does to both starting lineups.",
@@ -16762,7 +17236,7 @@ const TRADE_SECTIONS = [
     blurb: "Every trade, waiver claim and free-agent add in this league recently — who moved, what it cost, and what did not go through.",
     count: (o) => (o.tx && o.tx.leagues && o.tx.leagues[0] ? (o.tx.leagues[0].items || []).length : null) },
 ];
-function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate, onGameDay, onOpenDraft }) {
+function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate, onGameDay, onOpenDraft, injuries, onInjuries }) {
   const [data, setData] = useState(null);      // response from /sleeper/team-hub
   const [viewWeek, setViewWeek] = useState(null); // week the user picked to look at; null = backend default (current/upcoming)
   const [curWeek, setCurWeek] = useState(null);   // the backend's resolved current/upcoming week (toggle baseline)
@@ -16774,6 +17248,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   const [tab, setTab0] = useState("notes");    // notes(Summary) | lineup | freeagents | trades | roster | league
   const setTab = (t) => setTab0(t === "live" ? "lineup" : t);
   const [briefOpen, setBriefOpen] = useState(false); // the weekly brief modal
+  /* 29bb — the Injuries tab's own transient bits. Deliberately NOT persisted: what Trey typed into a
+     search box is not a fact about his season, and restoring it on the next visit would be noise. */
+  const [injQ, setInjQ] = useState("");
+  const [injDraft, setInjDraft] = useState(null);   // { sid, name, pos, team, status, weeks } being composed
   const [draftPick, setDraftPick] = useState(false); // b154 — the Draft chooser (board vs summary)
   /* ⭐⭐⭐⭐ WHICH LOCAL LEAGUE IS THIS HUB LOOKING AT. The hub is addressed by the PLATFORM's league id;
      the draft room is addressed by the app's own league record. `hubIdOfLeague` is the one function that
@@ -16840,6 +17318,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
      the default and is not a position at all: it sorts by how well each roster lines up with MINE, which
      is the question the section exists to answer. */
   const [fitSort, setFitSort] = useState("fit");
+  /* b163 — which direction the positional market is highlighting. "all" | "buy" | "sell".
+     Trey: "can you make it more clear who is a get and who is a send. Right now they mix together
+     because there are so many. You can even have a toggle that basically highlights get, send, or all." */
+  const [mktShow, setMktShow] = useState("all");
   /* b161 — this league's transaction feed. Fetched the first time the Recent activity section is opened
      and not before: the backend makes one upstream Sleeper call per week of the window, and a league hub
      already costs seven. See the loader below. */
@@ -16882,9 +17364,56 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   const [standSort, setStandSort] = useState({ key: "rank", dir: 1 }); // Standings table sort
   // Rich floating tooltip (same card the draft app uses) for player and positional hovers in this hub.
   const [tip, setTip] = useState(null);
-  const showTip = (e, content, opts) => { try { setTip(positionTip(e.clientX, e.clientY, content, e.currentTarget, opts)); } catch (_) {} };
+  /* ⭐⭐⭐⭐⭐ WHICH ELEMENT OWNS THE CARD — b163, and it is the fix for "conflicting when you move around".
+     ==================================================================================================
+     Trey: "The hovers on the trade section for 'league read' are being slow and conflicting when you move
+     around the page."
+     ⚠⚠ THE SECOND HALF IS A RACE, NOT A SPEED PROBLEM. Moving the pointer from one chip to the next fires
+       `mouseenter` on the new element and `mouseleave` on the old one, and the browser does not promise
+       which lands first. When leave arrives second it clears the card the new element just opened — so
+       the card flickers, or vanishes, or shows the previous chip's contents, and it gets worse the denser
+       the targets are. The league read now has eighty of them on one table, which is why he saw it there.
+     ⭐ SO A LEAVE IS DEFERRED BY ONE BEAT AND ANY ARRIVAL CANCELS IT. Leaving one chip for the next
+       schedules the close; the new chip's enter lands a few milliseconds later and calls it off. A leave
+       with nothing after it still closes the card, on time as far as anyone can see.
+     ⚠⚠⚠⚠ THE FIRST FIX WAS OWNERSHIP BY DOM NODE — `tipOwner` held the element that opened the card and
+       a leave from any other element was ignored — AND IT STRANDED THE CARD ON SCREEN FOREVER. The
+       league read's chips were drawn by a component declared during render (see `posGrid`), so React
+       remounted all eighty of them on every render: by the time the pointer left, the node holding the
+       card open no longer existed, every live node compared unequal to it, and no `mouseleave` could
+       ever match. The remount is fixed at its source, but ownership-by-identity is the wrong instrument
+       regardless — it is one accidental remount away from a tooltip that cannot be dismissed, and a
+       timer cannot be defeated that way. */
+  const tipTimer = useRef(null);
+  /* ⚠⚠⚠⚠⚠ THIS REF LIVES UP HERE WITH THE OTHER HOOKS, AND IT IS NOT A TIDINESS PREFERENCE. It was
+     first declared next to `cachedCard`, a thousand lines down and BELOW this component's four early
+     returns — `if (loading) return …`. On the first render the hub is loading, that branch fires, and
+     the ref is never reached; on the second the hook count jumps and React throws #310 before anything
+     paints. The whole in-season hub died behind its error boundary, on EVERY league, and neither the
+     build nor any of the four gates says a word about it: a conditional hook is perfectly valid
+     JavaScript. `page.on('pageerror')` does not see it either, because the boundary catches it.
+     ⚠ ANY hook added for the Trades tab belongs in this block, never beside the code that uses it. */
+  const hoverCache = useRef({ key: null, map: new Map() });
+  /* b164 — on a touch device the rows that already do something get an explicit ⓘ instead of opening a
+     card from a tap they do not own. ⚠ A HOOK, so it lives here with the others and not next to the row
+     that reads it — see the note on `hoverCache` above. */
+  const coarsePointer = useCoarsePointer();
+  const showTip = (e, content, opts) => {
+    if (!tipShouldOpen(e, opts)) return;
+    try {
+      if (tipTimer.current) { clearTimeout(tipTimer.current); tipTimer.current = null; }
+      setTip(positionTip(e.clientX, e.clientY, content, e.currentTarget, opts));
+    } catch (_) {}
+  };
   const showPlayerTip = (e, p, opts) => { if (p) showTip(e, makeOutlook(p, null, false, { dynasty: cfg && (isDynastyCfg(cfg)) }), opts); };
-  const hideTip = () => setTip(null);
+  /* ⚠ 40ms IS A DELIBERATE NUMBER. Long enough that the enter following a leave always wins the race,
+     short enough that a real goodbye looks instant. */
+  const hideTip = (e) => {
+    if (!tipShouldClose(e)) return;
+    if (tipTimer.current) clearTimeout(tipTimer.current);
+    tipTimer.current = setTimeout(() => { tipTimer.current = null; setTip(null); }, 40);
+  };
+  React.useEffect(() => () => { if (tipTimer.current) clearTimeout(tipTimer.current); }, []);
 
   // Build the enriched, projection-scored player pool for THIS league's cfg, keyed by Sleeper id.
   const cfg = data && data.cfg ? normalizeHubCfg(data.cfg) : null;
@@ -16903,8 +17432,22 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     let alive = true;
     setTxLoading(true); setTxErr("");
     const _lg2 = (leagues || []).find((l) => String(hubIdOfLeague(l)) === String(leagueId));
-    api.sleeperTransactions([leagueId], [ownerUsernameOf(_lg2)], 6)
-      .then((d) => { if (alive) setTx(d); })
+    /* ⭐⭐⭐⭐ EITHER PLATFORM — b163. ⚠ THE PLATFORM IS READ OFF THE LEAGUE RECORD, NOT GUESSED FROM THE
+       ID, which is the b161 lesson from the hub itself: a Yahoo key sent to the Sleeper API is a request
+       for a league that has never existed, and the first response painted somebody else's league. */
+    const _yk = _lg2 ? yahooKeyOfLeague(_lg2) : null;
+    const _req = (_lg2 && platformOfLeague(_lg2) === "yahoo" && _yk)
+      ? api.yahooTransactions([_yk])
+      : api.sleeperTransactions([leagueId], [ownerUsernameOf(_lg2)], 6);
+    _req
+      .then((d) => {
+        if (!alive) return;
+        /* A league whose own call came back with an error is an error on this screen, not an empty feed —
+           "nothing has happened in this league" is a claim, and it would be the wrong one. */
+        const L0 = ((d && d.leagues) || [])[0];
+        if (L0 && L0.error) { setTxErr(L0.error); return; }
+        setTx(d);
+      })
       .catch((e) => { if (alive) setTxErr(String((e && e.message) || e)); })
       .finally(() => { if (alive) setTxLoading(false); });
     return () => { alive = false; };
@@ -16996,16 +17539,40 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     }
     return out;
   };
-  const resolve = (ids) => {
+  /* ⭐⭐⭐⭐⭐ THE SECOND (AND LAST) INJURY DOOR — 29bb. See `injResolve` and `injCtxFor` at module level
+     for why there are exactly two and why they must share one transform.
+     ⚠ THIS IS ALSO WHY THE FEATURE IS ONE FUNCTION AND NOT A TOUR OF THE HUB. Every roster on this
+       screen — mine and all eleven others — comes through here, so a discount applied at this line is
+       already in the power table, positional strength and quality, the trade calculator's before/after,
+       the trade finder's every scored offer, the partner board, the positional market, playoff odds,
+       close calls and the lineup, without any of them being edited or even knowing injuries exist. */
+  const ictx = React.useMemo(() => injCtxFor(data, injuries), [data && data.week, data && data.regularSeasonWeeks, data && data.playoffStartWeek, cfg && cfg.type, injuries]);
+  /* ⚠ THE SECOND ARGUMENT IS THE COUNTERFACTUAL, AND IT EXISTS FOR ONE CALLER. Passing `null` resolves
+     the roster AS IF NOBODY WERE HURT — which is what the Injuries tab needs to answer Trey's actual
+     question ("where does it take me right now?"): the before and the after have to come from the SAME
+     resolver, or the comparison is measuring two code paths rather than one injury. Everything else
+     calls `resolve(ids)` and gets the injured league, which is the one the app lives in. */
+  const resolve = (ids, ctxOverride) => {
+    const rctx = ctxOverride === undefined ? ictx : ctxOverride;
     if (!poolBySid || !ids) return dedupeRoster([]);
     return dedupeRoster(ids.map((id) => {
-      const base = poolBySid.bySid.get(String(id));
+      const base = injResolve(poolBySid, id, rctx);
       if (!base) return null;
       const wk = weeklyMap[String(id)];
       // Real weekly number if present; else 0 when we have this week's data (player has no game) or the
-      // season-average estimate when there's no weekly data at all.
-      const seasonAvg = Math.round((base.pts / GAMES) * 10) / 10;
-      const wkPts = wk && wk.pts != null ? wk.pts : (haveWeeklyData ? 0 : seasonAvg);
+      // season-average estimate when there's no weekly data at all — see `hubWeekPts`.
+      /* ⚠ THE WEEKLY FIGURE IS THE PLATFORM'S AND KNOWS NOTHING ABOUT THIS. Sleeper will happily project
+         18 points for a man Trey has just told us is on IR, because Sleeper has not heard yet — that lag
+         is the entire reason this feature exists ("in real time"). `base.pts` above is already
+         discounted; this number has to be discounted separately or the Matchup tab would start a player
+         the rest of the app has written off. */
+      /* ⚠⚠ THE FALLBACK MUST START FROM THE HEALTHY AVERAGE, NOT `seasonAvg`. `seasonAvg` is built from
+         `base.pts`, which the injury has ALREADY discounted by its season factor — so multiplying it by
+         the week factor as well charged a "limited" player twice: 0.7 × 0.7 = 49% of a game instead of
+         70%. It only bit when the platform had no weekly slate (off-season, early week), which is why a
+         screen check in the normal case would never have seen it. Found while writing the test for
+         `injuryImpact`, by tracing which number each path multiplies. */
+      const wkPts = hubWeekPts(poolBySid.bySid.get(String(id)) || base, base, wk, haveWeeklyData, GAMES);
       const hasWk = !!(wk && wk.pts != null);
       // Difficulty of the defense this player faces, at his position.
       const opp = wk ? wk.opp : null;
@@ -17600,7 +18167,17 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
      multiply is the fallback for a payload that only had a weekly number. */
   const seasonRosterOf = (t) => ((t && t.roster) || []).map((p) => ({
     ...p, pts: p.ptsSeason != null ? p.ptsSeason : (p.pts || 0) * GAMES_IN_SEASON,
+    /* ⚠ 29bb — THE ONE PLACE A SEASON ROSTER IS MADE, SO THE ONE PLACE ITS UNIT IS DECLARED. An injured
+       man carries `phaseUnit: 1` here, which is what lets `phasedLineupValue` value him week by week
+       (out, then back) instead of at his window average. A weekly roster never passes through this
+       function and so never carries it — see the units note on phasedLineupValue. */
+    ...(p.injStatus ? { phaseUnit: 1 } : null),
   }));
+  /* ⭐⭐⭐⭐ THE REST-OF-SEASON LINEUP, PHASED — 29bb. Injected wherever a season roster's lineup is
+     valued (trade finder, league read, partner costs, the calculator), so a man out three weeks is
+     priced as three weeks out and not as a season-long bench player. Identical to `lineupValue` for any
+     roster with nobody marked. */
+  const lvPhased = (roster, sf) => phasedLineupValue(roster, sf, ictx.weeksLeft, lineupValue);
   const scoreRoster = (roster) => {
     const lu = lineupSlots(roster || [], cfg.sf);
     const fShare = flexShareForRoster(lu);
@@ -17611,7 +18188,15 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
         { dynasty: dynastyLg, flexShare: fShare[pos] || 0, slotBaseline: replLg[pos] }) || 0;
     });
     return {
-      start: lu.slots.reduce((s, x) => s + (x.p ? (x.p.pts || 0) : 0), 0),
+      /* ⚠ 29bb — PHASED, because this is the calculator's "starting points" and a trade for a man who
+         is back in two weeks must not be scored as if he never plays again. `rosterScore` below is the
+         power index and deliberately stays on the averaged values the power table has always used. */
+      /* ⚠ ONLY WHEN SOMEBODY IS MARKED. `lineupValue` rounds to a tenth and this sum never did, so
+         routing every roster through it would nudge the calculator's numbers by 0.1 on leagues with no
+         injuries at all — a change nobody asked for, in a screen that has been corrected by hand. */
+      start: (roster || []).some((p) => p && p.phaseUnit != null && p.injStatus)
+        ? lvPhased(roster || [], cfg.sf)
+        : lu.slots.reduce((s, x) => s + (x.p ? (x.p.pts || 0) : 0), 0),
       rosterScore,
       bench: lu.bench,
     };
@@ -17720,7 +18305,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
      two screens agree by construction rather than by coincidence.
      ⚠ The local fallback stays for the case where the pool failed to build: a hub with no power column is
        worse than a hub whose power column is computed the old way. */
-  const sharedScore = new Map(leaguePower(data, poolBySid).map((r) => [String(r.rosterId), r.rosterScore]));
+  /* ⚠ `ictx` IS PASSED, AND HAS TO BE. This line and `resolve` are the two valuation doors; a shared
+     scorer that could not see the injuries would quietly re-inflate every roster it scored and put the
+     hub's power column back into disagreement with its own trade calculator. */
+  const sharedScore = new Map(leaguePower(data, poolBySid, ictx).map((r) => [String(r.rosterId), r.rosterScore]));
   powerRanked = powerBlend(leagueTeams.map((t) => ({
     ...t,
     rosterScore: sharedScore.has(String(t.rosterId))
@@ -17776,22 +18364,65 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   // ================= IN-SEASON DECISIONS =================
   // Everything below runs AFTER the hub's early returns, so React hooks aren't available here — and a
   // tooltip hover must never re-run a 1,200-season Monte Carlo. hubMemo is the stand-in.
-  const regSeasonWeeks = data.regularSeasonWeeks || (data.playoffStartWeek ? data.playoffStartWeek - 1 : 14);
-  const weeksLeft = Math.max(1, regSeasonWeeks - (data.week || 1) + 1);
+  /* ⚠ FROM THE SHARED `hubWeeks` SINCE 29bb — these two lines were the only copy, and the injury model
+     needs the identical window in two places that cannot see this one. See the note on that function. */
+  const { regSeasonWeeks, weeksLeft } = hubWeeks(data);
   const playoffCut = data.playoffTeams || playoffSpots;
   const leagueSize = leagueTeams.length || teamsN;
 
+  /* ═══════════════════════════════════════════════════════════════════════════════════════════════
+     THE INJURY TAB'S OWN WORKINGS — 29bb
+     ⭐⭐⭐⭐⭐ THE TAB'S JOB IS TO SHOW WHAT MOVED, because nothing else can. Every other screen in this
+       hub now silently prices the injury in — which is exactly right and exactly why it is unnerving:
+       Trey marks a man out and eleven numbers change on screens he is not looking at, with nothing
+       anywhere saying they did. This project has made that mistake before in the other direction (29y's
+       bye-week power distortion survived two builds because no second opinion existed to contradict
+       it), and the fix both times is the same: print the before AND the after.
+     ⭐ THE BASELINE IS THE SAME FUNCTION WITH NO INJURIES PASSED. Not a stored snapshot, not a second
+       scorer — `leaguePower(data, pool, null)` IS the healthy league, computed by the identical code
+       path. So the delta cannot drift from what the rest of the hub believes, and a bug in the scorer
+       moves both columns rather than inventing a difference.
+     ══════════════════════════════════════════════════════════════════════════════════════════════ */
+  const injMap = (ictx && ictx.map) || {};
+  const injCount = Object.keys(injMap).length;
+  /* Who owns each player, so a saved injury can say whose problem it is — mine, or a rival's, which is
+     the half of this that finds trades rather than just absorbing bad news. */
+  const injOwnerBySid = hubMemo(`injown:${leagueId}:${(data.teams || []).length}`, () => {
+    const m = new Map();
+    (data.teams || []).forEach((t) => {
+      [].concat(t.players || [], t.reserve || [], t.taxi || []).forEach((id) => {
+        if (id != null && !m.has(String(id))) m.set(String(id), t);
+      });
+    });
+    return m;
+  });
+  /* The league as it would be with everybody healthy — the other half of every arrow on the tab. */
+  const injHealthyPower = injCount
+    ? hubMemo(`injbase:${leagueId}:${data.week}`, () => leaguePower(data, poolBySid, null))
+    : powerRanked;
+  const injHealthyRankById = {};
+  (injHealthyPower || []).forEach((t) => { injHealthyRankById[t.rosterId] = t.powerRank; });
+  /* Every team whose power rank the saved injuries actually moved, worst news first. */
+  const injMoved = (powerRanked || [])
+    .map((t) => ({ t, was: injHealthyRankById[t.rosterId], now: t.powerRank }))
+    .filter((x) => x.was != null && x.now != null && x.was !== x.now)
+    .sort((a, b) => (b.now - b.was) - (a.now - a.was));
+
   // ---- CLOSE CALLS: the lineup decisions the projection isn't actually making for you ----
-  const calls = closeCalls(opt.slots, opt.bench, {});
+  const calls = closeCalls(opt.slots, opt.bench, { setStarters: currentSet });
 
   // ---- PLAYOFF ODDS ----
   // Each team's weekly scoring mean is its best lineup in SEASON-average per-game terms (this week's
   // numbers would let a bye week masquerade as a bad team). Then simulate the rest of the schedule.
   const oddsInput = leagueTeams.map((t) => {
-    const seasonRoster = t.roster.map((p) => ({ ...p, pts: (p.ptsSeason != null ? p.ptsSeason : p.pts * GAMES_IN_SEASON) / GAMES_IN_SEASON }));
+    const seasonRoster = t.roster.map((p) => ({ ...p, pts: (p.ptsSeason != null ? p.ptsSeason : p.pts * GAMES_IN_SEASON) / GAMES_IN_SEASON,
+      ...(p.injStatus ? { phaseUnit: 1 / GAMES_IN_SEASON } : null) }));
     return {
       rosterId: t.rosterId,
-      mean: lineupValue(seasonRoster, cfg.sf),
+      /* ⚠ 29bb — PHASED, for every team, so a rival with a man back in two weeks is not simulated as
+         weaker for the whole season — and so my own mean here is the identical number `injuryImpact`
+         prints, which the odds shift beside it depends on. */
+      mean: phasedLineupValue(seasonRoster, cfg.sf, weeksLeft, lineupValue),
       wins: t.wins || 0, losses: t.losses || 0,
       pointsFor: t.pointsFor || 0,
       sd: 22,
@@ -17828,6 +18459,48 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   };
   // Setting the optimal lineup is worth this much, every week — the single most concrete number in the hub.
   const oddsFromLineup = leftOnBench > 0 ? oddsIfMeanShifts(leftOnBench) : null;
+
+  /* ═══════════════════════════════════════════════════════════════════════════════════════════════
+     WHAT THE INJURY DOES TO *THIS* TEAM — 29bb, the second half of the feature
+     ───────────────────────────────────────────────────────────────────────────────────────────────
+     Trey, after seeing the first cut: "Ultimately, I want this entry to show what does it do to my team
+     organically? Like, where does it take me right now on a projection basis? ... take Jayden Daniels'
+     projection for the rest of the year, make it a zero, and the replacement becomes whoever your backup
+     quarterback is. So you basically want to see, like, what are the ramifications of that injury? Then
+     what are replacements that we could seek for that injury, essentially?"
+
+     ⭐⭐⭐⭐⭐ HE IS DESCRIBING A COUNTERFACTUAL, AND THE ONLY HONEST WAY TO PRICE ONE IS TO RUN THE SAME
+       MACHINERY TWICE. The first cut answered "what happened to the league table", which is a real
+       question and not his. What he wants is the arithmetic of the hole: the man is a zero, somebody on
+       your bench inherits the slot, and the difference between those two lineups IS the injury. So every
+       number below is a DIFFERENCE BETWEEN TWO SOLVED LINEUPS — never a subtraction of the injured man's
+       own points, which would be wrong by exactly the backup's production and wrong in the alarming
+       direction. "You lost Daniels' 21 a week" is false if Huntley plays and scores 13.
+     ⭐ THE BASELINE IS `resolve(ids, null)` — the identical resolver with the injuries switched off — so
+       a bug in the optimizer moves both sides and cannot manufacture a difference.
+     ⚠ IT IS SCOPED TO MY OWN INJURIES ON PURPOSE. A rival's injury shows up in the power table and the
+       trade ideas, where it belongs; folding it into "what this does to your lineup" would answer a
+       question nobody asked with a number that looks like one he did.
+     ══════════════════════════════════════════════════════════════════════════════════════════════ */
+  /* ⭐ ONE FUNCTION, `injuryImpact` AT MODULE LEVEL — the tab reads it and the node suite tests it, so
+     the two cannot drift. The only thing done HERE is building the healthy roster, because that needs
+     `resolve`, which only exists inside this component. */
+  const injMineCount = myRoster.filter((p) => p.injStatus).length;
+  const myRosterHealthy = injMineCount ? resolve(myTeam.players, null) : myRoster;
+  const injImpact = injuryImpact(myRoster, myRosterHealthy, cfg.sf, GAMES_IN_SEASON, weeksLeft);
+  const injMine = injImpact.injuredCount;
+  const wkNow = injImpact.wkNow, wkHealthy = injImpact.wkHealthy;
+  const injWeekCost = injImpact.weekCost;
+  const injMeanCost = injImpact.meanCost;
+  const injSeasonCost = Math.round(injMeanCost * weeksLeft * 10) / 10;
+  /* ⚠ THE ODDS ARE ASKED THE ONLY WAY THIS SIM CAN HONESTLY BE ASKED. `myOdds` is ALREADY the injured
+     number — `oddsInput` is built from `leagueTeams`, which came through the injured resolver — so the
+     healthy figure is "my odds if my mean were `injMeanCost` higher", which is exactly what
+     `oddsIfMeanShifts` computes, on the SAME seeded season. Simulating a second whole season would give
+     a different answer for reasons that have nothing to do with the injury. */
+  const injOddsGap = injMeanCost > 0 ? oddsIfMeanShifts(injMeanCost) : null;
+  const injMyRows = injImpact.rows;
+  const injNeedPos = injImpact.needPos;
 
   // ---- FAAB: who else in the league actually needs this position ----
   // The read no tool without league-wide rosters can give you.
@@ -17886,7 +18559,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
          two callers: the 29y rule, and the reason the owner read can never disagree with the League tab. */
       rosterScore: scoreRoster(seasonRosterOf(t)).rosterScore,
     })),
-    sf: cfg.sf, req: reqStart, repl: tradeRepl, lineupValue,
+    sf: cfg.sf, req: reqStart, repl: tradeRepl, lineupValue: lvPhased,
     /* ⚠ THE BENCH READ USES THE WEEK'S OWN POINTS, NOT SEASON VALUE — `t.roster` is already resolved to
        this week. Scoring a manager on season value would call him wasteful for correctly benching a man
        on bye, which is the opposite of the truth. See teamReads. */
@@ -17902,12 +18575,32 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
        best lineup already uses, because "two for one" is only a consolidation when at least one of the two
        is somebody I am not starting. Same injection rule as `lineupValue`: the engine stays in App.jsx and
        trademarket.js never grows its own opinion about what a lineup is. */
-    reads: teamReadRows, lineupValue, lineupSlots, sf: cfg.sf, req: reqStart, repl: tradeRepl, max: 5,
+    reads: teamReadRows, lineupValue: lvPhased, lineupSlots, sf: cfg.sf, req: reqStart, repl: tradeRepl, max: 5,
   })) : [];
   /* ⚠ `board.all`, NOT `board` — b151. The top five are a shortlist and the positional verdict is about
      the whole market, so scoping it to the shortlist would report "nothing to do at RB" whenever the best
      RB idea happened to place sixth. Same reasoning, and the same field, as the partner read. */
   const mktSummary = myLT ? marketSummary(teamReadRows, reqStart, { offers: board.all || board }) : [];
+
+  /* ⭐⭐⭐⭐ "THEN WHAT ARE REPLACEMENTS THAT WE COULD SEEK" — 29bb.
+     Two places a replacement can come from, and the app already ranks both; this only FILTERS them to the
+     position the injury opened. ⚠ NO NEW SCORING, deliberately: the free-agent list and the trade finder
+     have each been corrected against Trey's own screenshots several times, and a third ranking of the same
+     players on this tab would be the next thing to disagree with them.
+     ⭐ BOTH LISTS ALREADY SEE THE INJURY. The free-agent upgrade compares against whoever would actually
+       play the slot (29w's rule — "you are not replacing a zero"), and the injured starter now projects
+       zero, so every FA is measured against the BACKUP, which is the comparison he asked for in so many
+       words. The trade finder reads season value through the injured resolver, so it already knows the
+       hole is there and is already pricing deals to fill it. */
+  const injFAsFor = (pos) => faScored
+    .filter((f) => f.p && f.p.pos === pos && !f.implausible && f.verdict !== "hold")
+    .slice(0, 4);
+  const injTradesFor = (pos) => ((board && (board.all || board)) || [])
+    .filter((o) => o && o.get && o.get.pos === pos && (o.myGain || 0) > 0)
+    /* Realistic first, then by what it does for me — the same order the finder uses for its own cards,
+       for the reason 29am found the hard way: sorting on gain alone surfaces the asks. */
+    .slice().sort((a, b) => (b.realism || 0) - (a.realism || 0) || (b.myGain || 0) - (a.myGain || 0))
+    .slice(0, 4);
   /* One team's read, by roster id — so a hover can print where THEIR rooms rank without recomputing a
      ranking this tab has already done once. (b152) */
   const myReadFor = (rosterId) => (teamReadRows || []).find((r) => r.rosterId === rosterId) || null;
@@ -17982,6 +18675,27 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
        inside the chip renderer and so could only ever be asked about a position that had already been
        nominated as a fit — which meant the answer to "well what HAVE they got at tight end" was
        unavailable precisely when the app had decided tight end was not interesting. */
+  /* ⭐⭐⭐⭐⭐ THE CARDS ARE BUILT ON HOVER AND CACHED — b163, and this is the "slow" half of his report.
+     ==================================================================================================
+     `posCard` and `rosterCard` each run `tradeRoster()` and then `lineupSlots()` — a full optimal-lineup
+     SOLVE — for one roster. That is the right cost for one hover and a catastrophic one per render, and
+     per render is what was happening: the send/get grid called `posCard(...)` inside its `.map`, so
+     drawing the partner table performed EIGHTY lineup solves, and the fit finder added forty-four more.
+     Every re-render of the Trades tab — a toggle, a sort, a hover setting state — paid all of it again.
+     That is why the hovers felt slow: the work was not in the hover, it was in the frame around it.
+     ⭐ TWO CHANGES, AND THE SECOND ONLY MATTERS BECAUSE OF THE FIRST: callers now pass a THUNK so the
+       card is built when the pointer actually arrives, and `hoverCache` keys the result so the second
+       visit to a chip is free. The cache is a ref keyed by `tradeKey`, so it empties by itself the
+       moment the underlying league data changes rather than needing anybody to remember to clear it. */
+  const cachedCard = (key, build) => {
+    const c = hoverCache.current;
+    if (c.key !== tradeKey) { c.key = tradeKey; c.map = new Map(); }
+    if (c.map.has(key)) return c.map.get(key);
+    let v = null;
+    try { v = build(); } catch (_) { v = null; }
+    c.map.set(key, v);
+    return v;
+  };
   const posCard = (rosterId, pos, dir, label) => {
     const lt = leagueTeams.find((x) => x.rosterId === rosterId);
     if (!lt) return null;
@@ -18078,8 +18792,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
        roster instead of theirs; one implementation, two callers, so the two halves of the trade screen can
        never disagree about what a player is worth to the team that holds him. */
     const myRoster = tradeRoster(myLT);
-    const base = lineupValue(myRoster, cfg.sf);
-    const costOf = (p) => Math.round((base - lineupValue(myRoster.filter((x) => String(x.sid) !== String(p.sid)), cfg.sf)) * 10) / 10;
+    const base = lvPhased(myRoster, cfg.sf);
+    const costOf = (p) => Math.round((base - lvPhased(myRoster.filter((x) => String(x.sid) !== String(p.sid)), cfg.sf)) * 10) / 10;
     const worthOf = (p) => Math.max(0, (Number(p.pts) || 0) - (tradeRepl[String(p.pos).toUpperCase()] || 0));
     return partnerBoard({
       me: { rosterId: myLT.rosterId },
@@ -18481,9 +19195,21 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
           {/* ⭐⭐⭐ 29m — "I want this to be able to be looked at within a specific league level (league
               hub)". Placed after Matchup, because the order of these tabs is the order of the week: what
               is happening, then what happened. Same component the cross-league view uses. */}
-          {[["notes", "Summary", "ti-clipboard-text"], ["lineup", "Matchup", "ti-swords"], ["review", "Review", "ti-history"], ["freeagents", "Free agents", "ti-user-plus"], ["trades", "Trades", "ti-arrows-exchange"], ["roster", "My roster", "ti-users"], ["league", "League", "ti-trophy"]].map(([k, label, icon]) => (
-            <button key={k} className="btn btn-mini" style={{ background: tab === k ? "var(--gold)" : "transparent", color: tab === k ? "#151002" : "var(--ink)", fontWeight: tab === k ? 700 : 400 }} onClick={() => setTab(k)}>
+          {/* ⭐⭐⭐ 29bb — INJURIES SITS BEFORE TRADES, because that is the order of the morning Trey
+              described: the news breaks, you write down what it means, and THEN you go looking for the
+              deal. Putting it after Trades would have it read as an afterthought to a screen it is
+              supposed to be feeding. */}
+          {[["notes", "Summary", "ti-clipboard-text"], ["lineup", "Matchup", "ti-swords"], ["review", "Review", "ti-history"], ["freeagents", "Free agents", "ti-user-plus"], ["injuries", "Injuries", "ti-bandage"], ["trades", "Trades", "ti-arrows-exchange"], ["roster", "My roster", "ti-users"], ["league", "League", "ti-trophy"]].map(([k, label, icon]) => (
+            /* ⚠ NAMED AND PRESSED. A suite that clicks these by their label and then waits a fixed
+               number of milliseconds reports the CONTENT missing when all that happened is that the
+               click landed late — which cost a run of plan29cr. Address the door by name. */
+            <button key={k} className="btn btn-mini" data-hubtabbtn={k} aria-pressed={tab === k} style={{ background: tab === k ? "var(--gold)" : "transparent", color: tab === k ? "#151002" : "var(--ink)", fontWeight: tab === k ? 700 : 400 }} onClick={() => setTab(k)}>
               <i className={`ti ${icon}`} style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />{label}
+              {/* The count is on the tab because the whole point of the feature is that it is changing
+                  numbers on screens you are not currently looking at. */}
+              {k === "injuries" && injCount > 0 ? (
+                <span data-injtabcount={injCount} style={{ marginLeft: 5, padding: "0 5px", borderRadius: 7, fontSize: 9.5, fontWeight: 700, background: tab === k ? "rgba(0,0,0,.22)" : "var(--red)", color: tab === k ? "#151002" : "#fff" }}>{injCount}</span>
+              ) : null}
             </button>
           ))}
           {/* ⭐⭐⭐⭐ DRAFT IS A DOORWAY, NOT A TAB — b154. Trey asked for "a section to see draft ... then a
@@ -18531,7 +19257,9 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
              imported as a draft in this app, and one whose draft has no picks recorded — and 29r's rule
              applies exactly: a thing that is ABSENT is indistinguishable from a thing that failed to load.
              So the popup always opens and always says which of the three situations this league is in. */
-          const Choice = ({ k, icon, label, note, disabled }) => (
+          /* ⚠ A PLAIN FUNCTION, for the reason spelled out at `posGrid` — a component declared during
+             render is a new type on every render and its whole subtree is remounted. */
+          const choiceBtn = (k, icon, label, note, disabled) => (
             <button type="button" className="btn" data-hubdraftchoice={k} disabled={disabled}
               onClick={disabled ? undefined : () => choose(k)}
               style={{ display: "flex", alignItems: "center", gap: 11, width: "100%", textAlign: "left",
@@ -18568,15 +19296,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                     </div>
                   ) : (
                     <>
-                      <Choice k="board" icon="ti-layout-board" label="Draft board"
-                        note={picksN ? `Every team's picks, round by round — ${picksN} recorded${over ? ", draft complete" : ", still in progress"}.`
+                      {choiceBtn("board", "ti-layout-board", "Draft board",
+                        picksN ? `Every team's picks, round by round — ${picksN} recorded${over ? ", draft complete" : ", still in progress"}.`
                           : syncs ? `Round by round, every team. The picks load from ${platName} when you open it.`
-                          : "Round by round, every team. No picks are recorded for this league yet."} />
-                      <Choice k="summary" icon="ti-clipboard-text" label="Draft summary"
-                        disabled={!picksN && !syncs}
-                        note={picksN ? `How it went: value by team, steals, reaches and grades across all ${picksN} picks.`
+                          : "Round by round, every team. No picks are recorded for this league yet.", false)}
+                      {choiceBtn("summary", "ti-clipboard-text", "Draft summary",
+                        picksN ? `How it went: value by team, steals, reaches and grades across all ${picksN} picks.`
                           : syncs ? `Value by team, steals, reaches and grades — it reads the draft from ${platName} first.`
-                          : "Nothing to summarise until the draft has picks in it."} />
+                          : "Nothing to summarise until the draft has picks in it.", !picksN && !syncs)}
                     </>
                   )}
                 </div>
@@ -18694,13 +19421,17 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 actually asks on Sunday morning — "is this even a decision?" — because a 0.4-point edge is a
                 coin flip and saying "start him, he projects higher" pretends otherwise. */}
             {calls.length > 0 && (
-              <div style={{ border: "1px solid var(--gold)", background: "rgba(224,166,60,.06)", borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
+              <div data-ccpanel={String(calls.length)} style={{ border: "1px solid var(--gold)", background: "rgba(224,166,60,.06)", borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
                 <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
                   <div className="disp" style={{ fontSize: 14, fontWeight: 700, color: "var(--gold)" }}>
                     <i className="ti ti-scale" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
-                    {calls.length} close call{calls.length > 1 ? "s" : ""} this week
+                    {calls.length} start/sit call{calls.length > 1 ? "s" : ""} this week
                   </div>
-                  <span className="mut" style={{ fontSize: 11 }}>too close for the projection to decide — your read matters here</span>
+                  {/* ⚠ b163 — IT SAYS WHAT THE SECTION IS FOR NOW. "Close calls" described the ARITHMETIC
+                      (two projections near each other) rather than the decision, which is how it ended up
+                      showing Trey two men he was already starting. Every row here is one starter against
+                      one bench player, so the heading can promise an action. */}
+                  <span className="mut" style={{ fontSize: 11 }}>one starter, one bench player, too close for the projection to call</span>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {calls.map((c) => {
@@ -18713,10 +19444,25 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       { p: c.alt, tag: inLineup(c.alt) ? "in your lineup" : "on your bench", win: Math.round((100 - c.win) * 10) / 10 },
                     ];
                     return (
-                      <div key={c.slot} style={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 9, padding: "9px 11px" }}>
+                      <div key={c.slot}
+                        /* ⚠ THE PROOF IS ON THE ROW, not inferred from the prose. `in|bench` reads
+                           "the man the projection prefers is starting, the alternative is benched";
+                           `in|in` is the row Trey was shown and should never exist again. */
+                        data-cccall={`${c.slot}|${inLineup(c.start) ? "in" : "bench"}|${inLineup(c.alt) ? "in" : "bench"}`}
+                        style={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 9, padding: "9px 11px" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7 }}>
                           <span className="disp" style={{ fontSize: 10.5, fontWeight: 700, color: "var(--mut)", letterSpacing: ".06em" }}>{c.slot}</span>
                           <span className="mut" style={{ fontSize: 11 }}>· {c.win >= 56 ? "a lean" : "a genuine coin flip"} — {c.edge > 0 ? `${c.edge} projected points apart` : "level on projection"}</span>
+                          {/* ⭐⭐⭐⭐ AND WHICH WAY THE ACTION RUNS. `sit` is true when the man the projection
+                              slightly prefers is the one on the bench — which is the only version of this
+                              row that asks him to change anything. Decided in `closeCalls` so the card and
+                              the filter can never disagree about it. */}
+                          {c.sit === true && (
+                            <span data-ccsit={c.slot} style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".05em",
+                              color: "var(--neg)", border: "1px solid var(--neg)", borderRadius: 5, padding: "1px 5px" }}>
+                              WORTH A SWAP
+                            </span>
+                          )}
                         </div>
                         <div className="ccgrid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                           {pair.map(({ p, tag, win }) => (
@@ -18804,7 +19550,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                         {align === "right" && <SwapMark s={matchupView.oppSwapIdx.outBy[String(p.sid)]} kind="sit" />}
                         {align === "right" && <Dot pos={p.pos} />}
                       </div>
-                      <div className="mut" style={{ fontSize: 10, whiteSpace: "nowrap" }}>{p.matchupStr || p.team}{p.bye === data.week ? " · BYE" : ""}{p.noGame ? " · no game" : ""}</div>
+                      {/* ⚠ 29bb — A 0.0 NEEDS ITS REASON ATTACHED. The app already labels a bye and a missing
+                          slate for exactly this reason: an unexplained zero beside a star reads as a broken
+                          projection, not as information. A man marked out is the third way to get one. */}
+                      <div className="mut" style={{ fontSize: 10, whiteSpace: "nowrap" }}>{p.matchupStr || p.team}{p.bye === data.week ? " · BYE" : ""}{p.noGame ? " · no game" : ""}{p.injShort ? <span data-injmark={p.sid} style={{ color: "var(--red)", fontWeight: 700 }}> · {p.injShort}</span> : null}</div>
                     </div>
                   ) : <div style={{ flex: 1, color: "var(--mut)", fontSize: 12, textAlign: align === "right" ? "right" : "left" }}>—</div>;
                   /* ⭐⭐⭐⭐⭐ LIVE ON TOP, PROJECTED UNDERNEATH — 29r. Trey: "You should be able to see the
@@ -19092,7 +19841,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                               : trend.top === "usage" ? "Usage up" : "Hot add"}
                           </span>
                         )}
-                        <span className="mut" style={{ fontSize: 11 }}> {p.pos}{p.posRank} · {p.team}{p.age ? ` · ${p.age}y` : ""}{p.rookie ? " · rookie" : ""}{p.noGame ? " · 0 this week" : ""}</span>
+                        <span className="mut" style={{ fontSize: 11 }}> {p.pos}{p.posRank} · {p.team}{p.age ? ` · ${p.age}y` : ""}{p.rookie ? " · rookie" : ""}{p.noGame ? " · 0 this week" : ""}{p.injShort ? <span data-injmark={p.sid} style={{ color: "var(--red)", fontWeight: 700 }}> · {p.injShort}</span> : null}</span>
                       </div>
                       <div style={{ fontSize: 10.5, color: verdict === "add" ? "var(--green)" : verdict === "verify" ? "var(--gold)" : "var(--mut)", lineHeight: 1.35 }}>
                         {verdict === "verify" && <i className="ti ti-alert-triangle" style={{ fontSize: 10.5, marginRight: 4 }} aria-hidden="true" />}
@@ -19158,6 +19907,379 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
           </div>
           );
         })()}
+
+        {/* ═══════════════════════════════════════════════════════════════════════════════════════════
+            ---- INJURIES TAB — 29bb ----
+            Trey: "Jayden Daniels just got hurt and likely missing most/all of the rest of the year. In
+            real time, we are looking for trades that could improve the team given this injury... then it
+            would cascade to the rest of the league outlook... You can save the injuries... then you can
+            revert them back or edit them in real time."
+
+            ⭐⭐⭐⭐⭐ THIS TAB DOES NOT COMPUTE ANYTHING THE REST OF THE HUB DOES NOT ALREADY KNOW. The
+              cascade happens at `resolve` and `leaguePower`, two hundred lines and one module away, and
+              every screen inherits it without being touched. What is left for a tab to do is the two
+              things only a tab can: let him SAY the thing, and show him WHAT SAYING IT DID. If this
+              screen ever starts deriving a number of its own, that number will eventually disagree with
+              the eleven screens downstream of the resolver, and the disagreement will be invisible.
+            ⭐ SO THE LAYOUT IS: say it → see what moved → go trade. The third is a doorway rather than a
+              feature, because the Trades tab is already the trade finder and it can now see the injury.
+            ══════════════════════════════════════════════════════════════════════════════════════════ */}
+        {tab === "injuries" && (
+          <div className="panel" data-injpanel style={{ padding: 16 }}>
+            <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 3 }}>Injuries</div>
+            <div className="mut" style={{ fontSize: 12, marginBottom: 12, lineHeight: 1.5 }}>
+              Tell the app who is hurt and for how long, and every number in this league re-prices around
+              it — power rankings, positional strength, the trade calculator, trade ideas, the market and
+              your lineup. Nothing here is permanent: edit the weeks or clear it the moment the news
+              changes.{" "}
+              {/* ⚠ SAY THE SCOPE OUT LOUD. An injury is stored per PLAYER, so it silently applies to every
+                  league on the account — which is the behaviour anybody would want and NOT what a tab
+                  sitting inside one league looks like it does. An unstated scope is a surprise waiting. */}
+              <b>A player you mark here is marked in all of your leagues</b>, because an injury is a fact
+              about him rather than about this league.
+              {isDynasty ? " This is a dynasty league, so a long absence costs far less here than it would in redraft — the player is still an asset." : ""}
+            </div>
+
+            {/* ---- 1. SAY IT ---- */}
+            <div style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "12px 13px", background: "var(--panel2)", marginBottom: 14 }}>
+              <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 7 }}>Mark a player</div>
+              <input
+                data-injsearch
+                value={injQ}
+                onChange={(e) => setInjQ(e.target.value)}
+                placeholder="Search any player in the league…"
+                style={{ width: "100%", maxWidth: 360, padding: "7px 10px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--panel)", color: "var(--ink)", fontSize: 13 }}
+              />
+              {injQ.trim().length >= 2 && (() => {
+                const q = injQ.trim().toLowerCase();
+                /* Rostered players first and clearly labelled with their owner: the man who just got hurt
+                   is on somebody's team, and WHOSE team is the first thing that decides what to do. */
+                const hits = (poolBySid && poolBySid.pool ? poolBySid.pool : [])
+                  .filter((p) => p && p.sid != null && p.name && String(p.name).toLowerCase().includes(q))
+                  .map((p) => ({ p, owner: injOwnerBySid.get(String(p.sid)) || null }))
+                  .sort((a, b) => (b.owner ? 1 : 0) - (a.owner ? 1 : 0) || (b.p.pts || 0) - (a.p.pts || 0))
+                  .slice(0, 8);
+                if (!hits.length) return <div className="mut" style={{ fontSize: 11.5, marginTop: 8 }}>Nobody by that name in this league's player pool.</div>;
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
+                    {hits.map(({ p, owner }) => (
+                      <button key={p.sid} className="btn btn-mini" data-injhit={p.sid}
+                        style={{ justifyContent: "flex-start", textAlign: "left", background: injDraft && injDraft.sid === String(p.sid) ? "var(--gold)" : "transparent", color: injDraft && injDraft.sid === String(p.sid) ? "#151002" : "var(--ink)" }}
+                        onClick={() => {
+                          const cur = injMap[String(p.sid)];
+                          setInjDraft({ sid: String(p.sid), name: p.name, pos: p.pos, team: p.team,
+                            status: (cur && cur.status) || INJ_SEASON, weeks: (cur && cur.weeks) || 4 });
+                        }}>
+                        <b>{p.name}</b>
+                        <span style={{ marginLeft: 6, opacity: .75 }}>{p.pos}{p.team ? ` · ${p.team}` : ""}</span>
+                        <span style={{ marginLeft: "auto", opacity: .75, fontSize: 10.5 }}>
+                          {owner ? (owner.rosterId === data.myRosterId ? "your team" : (owner.teamName || owner.ownerName || "rostered")) : "free agent"}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
+
+              {injDraft && (
+                <div data-injdraft={injDraft.sid} style={{ marginTop: 11, paddingTop: 11, borderTop: "1px solid var(--line)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 7 }}>{injDraft.name} <span className="mut" style={{ fontWeight: 400 }}>{injDraft.pos}{injDraft.team ? ` · ${injDraft.team}` : ""}</span></div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 9 }}>
+                    {INJ_CHOICES.map((c) => (
+                      <button key={c.status} className="btn btn-mini" data-injchoice={c.status} aria-pressed={injDraft.status === c.status} title={c.hint}
+                        style={{ background: injDraft.status === c.status ? "var(--gold)" : "transparent", color: injDraft.status === c.status ? "#151002" : "var(--ink)", fontWeight: injDraft.status === c.status ? 700 : 400 }}
+                        onClick={() => setInjDraft({ ...injDraft, status: c.status })}>{c.label}</button>
+                    ))}
+                  </div>
+                  {injDraft.status === INJ_WEEKS && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 9 }}>
+                      <span className="mut" style={{ fontSize: 11.5 }}>Out for</span>
+                      <button className="btn btn-mini" data-injweeksdown onClick={() => setInjDraft({ ...injDraft, weeks: Math.max(1, (injDraft.weeks || 4) - 1) })}>−</button>
+                      <b data-injweeks={injDraft.weeks} style={{ fontSize: 14, minWidth: 46, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>{injDraft.weeks} {injDraft.weeks === 1 ? "week" : "weeks"}</b>
+                      <button className="btn btn-mini" data-injweeksup onClick={() => setInjDraft({ ...injDraft, weeks: Math.min(20, (injDraft.weeks || 4) + 1) })}>+</button>
+                      <span className="mut" style={{ fontSize: 11 }}>
+                        {/* ⚠ WEEKS ARE MEANINGLESS WITHOUT THE CALENDAR BESIDE THEM. "Out 4 weeks" in week
+                            13 of a 14-week season IS "out for the year", and a manager deciding whether to
+                            sell should be told that in words rather than left to do the subtraction. */}
+                        {(injDraft.weeks || 0) >= weeksLeft
+                          ? `— that is the rest of the regular season (${weeksLeft} left)`
+                          : `— back around week ${Math.min(regSeasonWeeks, (data.week || 1) + (injDraft.weeks || 0))}, with ${weeksLeft} weeks left to play`}
+                      </span>
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                    <button className="btn btn-gold btn-mini" data-injsave onClick={() => {
+                      const next = { ...(injuries || {}), [injDraft.sid]: {
+                        status: injDraft.status,
+                        weeks: injDraft.status === INJ_WEEKS ? injDraft.weeks : 0,
+                        /* ⚠ STAMPED WITH THE WEEK IT WAS SET IN, so "out 4 weeks" counts DOWN as the
+                           season runs rather than restarting every time the page loads. `at` is what the
+                           two-device merge breaks ties on. */
+                        setWeek: data.week || 1,
+                        at: Date.now(),
+                      } };
+                      onInjuries && onInjuries(next);
+                      setInjDraft(null); setInjQ("");
+                    }}>{injMap[injDraft.sid] ? "Update" : "Save"} injury</button>
+                    <button className="btn btn-mini" data-injcancel onClick={() => setInjDraft(null)}>Cancel</button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* ---- 2. WHAT IT DID ---- */}
+            {injCount === 0 ? (
+              <div className="mut" data-injempty style={{ fontSize: 12, lineHeight: 1.5, padding: "10px 2px" }}>
+                Nothing marked. Everyone in this league is being valued as fully healthy — including
+                anybody the news says otherwise about, because the platforms take a day or two to update
+                and this app follows them until you say different.
+              </div>
+            ) : (
+              <>
+                <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 7 }}>Marked ({injCount})</div>
+                <div data-injlist style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
+                  {Object.keys(injMap).map((sid) => {
+                    const e = injMap[sid];
+                    const base = poolBySid && poolBySid.bySid ? poolBySid.bySid.get(String(sid)) : null;
+                    const owner = injOwnerBySid.get(String(sid)) || null;
+                    const f = injuryFactors(e, ictx);
+                    const hurt = base ? applyInjuryToEntry(base, e, ictx) : null;
+                    const mine = owner && owner.rosterId === data.myRosterId;
+                    return (
+                      <div key={sid} data-injrow={sid} style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap", border: "1px solid var(--line)", borderLeft: `3px solid ${mine ? "var(--red)" : "var(--gold)"}`, borderRadius: 9, padding: "8px 11px", background: "var(--panel2)" }}>
+                        <div style={{ minWidth: 0, flex: "1 1 190px" }}>
+                          <div style={{ fontSize: 13, fontWeight: 700 }}>
+                            {base ? base.name : `Player ${sid}`}
+                            <span className="mut" style={{ fontWeight: 400, marginLeft: 6, fontSize: 11.5 }}>
+                              {base ? `${base.pos}${base.team ? ` · ${base.team}` : ""}` : ""}
+                            </span>
+                          </div>
+                          <div className="mut" style={{ fontSize: 10.5, marginTop: 1 }}>
+                            {owner ? (mine ? "Your team" : (owner.teamName || owner.ownerName || "Rostered")) : "Free agent"}
+                          </div>
+                        </div>
+                        <span data-injchip={f.status} style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 7, background: f.status === INJ_LIMITED ? "var(--gold)" : "var(--red)", color: f.status === INJ_LIMITED ? "#151002" : "#fff", whiteSpace: "nowrap" }}>{f.short}</span>
+                        <div className="mut" style={{ fontSize: 11, flex: "1 1 150px", minWidth: 0 }}>
+                          {injuryLabel(e, ictx)}
+                          {/* ⚠ SAY WHAT IT COST, IN POINTS. "Out for the season" is the input; the number
+                              underneath is what every other screen is now acting on, and a reader who
+                              cannot see it has to take the whole cascade on faith. */}
+                          {hurt && hurt.injDropPts ? <span> · −{hurt.injDropPts} pts rest-of-season</span> : null}
+                        </div>
+                        <div style={{ display: "flex", gap: 5, marginLeft: "auto" }}>
+                          <button className="btn btn-mini" data-injedit={sid} onClick={() => setInjDraft({ sid: String(sid), name: base ? base.name : `Player ${sid}`, pos: base ? base.pos : "", team: base ? base.team : "", status: e.status, weeks: e.weeks || 4 })}>Edit</button>
+                          {/* ⚠⚠ A TOMBSTONE, NOT A DELETE. Removing the key would look identical to "this
+                              device never heard of him" to the other device's copy, and the next sync
+                              would hand the injury straight back. See `mergeInjuries`. */}
+                          <button className="btn btn-mini" data-injclear={sid} title="He's cleared — value him as healthy again"
+                            onClick={() => onInjuries && onInjuries({ ...(injuries || {}), [sid]: { status: null, at: Date.now() } })}>Clear</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* ═══════════════════════════════════════════════════════════════════════════════
+                    ---- 2. WHAT IT DOES TO YOUR TEAM ----
+                    Trey: "where does it take me right now on a projection basis? ... take Jayden
+                    Daniels' projection for the rest of the year, make it a zero, and the replacement
+                    becomes whoever your backup quarterback is."
+                    ⭐ SO IT LEADS WITH THE SLOT, NOT THE TOTAL. "Daniels → Huntley" is the fact a manager
+                      reasons from; the points and the odds are consequences of it and read as such.
+                    ════════════════════════════════════════════════════════════════════════════ */}
+                <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 7 }}>What it does to your team</div>
+                {injMine === 0 ? (
+                  <div className="mut" data-injnotmine style={{ fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
+                    None of the players you have marked are on your roster, so your lineup is untouched.
+                    The injuries still matter to you — they weaken the teams that hold them, which is
+                    reflected in the league table below and in the trade ideas, where a rival with a new
+                    hole is priced as a buyer.
+                  </div>
+                ) : (
+                  <div data-injmine={injMine} style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "12px 13px", background: "var(--panel2)", marginBottom: 14 }}>
+                    {/* The slot, man by man. */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 7, marginBottom: 12 }}>
+                      {injMyRows.map((r) => {
+                        const nm = r.p ? r.p.name : `Player ${r.sid}`;
+                        return (
+                          <div key={r.sid} data-injslot={r.sid} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 12.5 }}>
+                            {r.wasStarting ? <span className="mut" style={{ fontSize: 10, fontWeight: 700, minWidth: 38, fontVariantNumeric: "tabular-nums" }}>{r.wasStarting}</span> : null}
+                            <span style={{ textDecoration: r.stillStarting ? "none" : "line-through", color: "var(--mut)" }}
+                              onMouseEnter={(e) => r.p && showPlayerTip(e, r.p)} onMouseLeave={hideTip}>{nm}</span>
+                            {r.healthyPts != null ? <span className="mut num" style={{ fontSize: 10.5 }}>{r.healthyPts.toFixed(1)}</span> : null}
+                            <i className="ti ti-arrow-right" style={{ fontSize: 13, color: "var(--mut)" }} aria-hidden="true" />
+                            {/* ⚠ FOUR CASES, EACH ITS OWN SENTENCE, because they call for four different
+                                reactions: a replacement you already own, a slot nobody on your roster can
+                                fill, a man still worth starting at reduced value, and a bench player whose
+                                absence costs your lineup nothing at all. Collapsing them would make the
+                                calm case and the urgent one look alike. */}
+                            {r.replacedBy ? (
+                              <span data-injrepl={r.replacedBy.sid} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                                onMouseEnter={(e) => showPlayerTip(e, r.replacedBy)} onMouseLeave={hideTip}>
+                                <Dot pos={r.replacedBy.pos} /><b>{r.replacedBy.name}</b>
+                                <span className="mut num" style={{ fontSize: 10.5 }}>{(r.replacedBy.pts || 0).toFixed(1)}</span>
+                                <span className="mut" style={{ fontSize: 10.5 }}>steps in</span>
+                              </span>
+                            ) : r.emptyNow ? (
+                              <b data-injempty-slot style={{ color: "var(--red)" }}>nobody on your roster can fill {r.wasStarting} — the slot is empty</b>
+                            ) : r.stillStarting ? (
+                              <span className="mut">still your best option at {r.wasStarting}, at reduced value</span>
+                            ) : (
+                              <span className="mut">he was not in your best lineup, so it costs you nothing this week</span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* The consequences, in the three units he thinks in. */}
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(128px, 1fr))", gap: 8 }}>
+                      <div data-injcost-week={injWeekCost} style={{ background: "var(--panel)", borderRadius: 8, padding: "8px 10px" }}>
+                        <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>This week</div>
+                        <div className="num" style={{ fontSize: 18, fontWeight: 800, color: injWeekCost > 0 ? "var(--red)" : "var(--ink)" }}>{injWeekCost > 0 ? `−${injWeekCost}` : "0.0"}</div>
+                        <div className="mut" style={{ fontSize: 10.5 }}>{wkHealthy.toFixed(1)} → {wkNow.toFixed(1)} projected</div>
+                      </div>
+                      <div data-injcost-season={injSeasonCost} style={{ background: "var(--panel)", borderRadius: 8, padding: "8px 10px" }}>
+                        <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Rest of season</div>
+                        <div className="num" style={{ fontSize: 18, fontWeight: 800, color: injSeasonCost > 0 ? "var(--red)" : "var(--ink)" }}>{injSeasonCost > 0 ? `−${injSeasonCost}` : "0"}</div>
+                        {/* ⚠ "AVERAGED", because since the phased model a three-week absence puts all of its cost into those
+                            three weeks — "−1.8 a week" read literally would understate the next three
+                            Sundays and overstate the six after them. */}
+                        <div className="mut" style={{ fontSize: 10.5 }}>{injMyRows.every((r) => r.p && r.p.injStatus === INJ_SEASON)
+                          ? `−${injMeanCost}/wk for all ${weeksLeft} ${weeksLeft === 1 ? "week" : "weeks"} left`
+                          : `averaged over the ${weeksLeft} ${weeksLeft === 1 ? "week" : "weeks"} left — most of it while he is out`}</div>
+                      </div>
+                      {/* ⚠ ONLY PRINTED WHEN THE SIM RAN. A league with no schedule or too few teams has no
+                          odds, and a dash is truer than a zero that reads as "no effect". */}
+                      {myOdds && injOddsGap != null ? (
+                        <div data-injcost-odds={injOddsGap} style={{ background: "var(--panel)", borderRadius: 8, padding: "8px 10px" }}>
+                          <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Playoff odds</div>
+                          <div className="num" style={{ fontSize: 18, fontWeight: 800, color: injOddsGap > 0.5 ? "var(--red)" : "var(--ink)" }}>{injOddsGap > 0 ? `−${injOddsGap}` : "0"}<span style={{ fontSize: 12 }}> pts</span></div>
+                          <div className="mut" style={{ fontSize: 10.5 }}>{Math.round(myOdds.odds + injOddsGap)}% → {Math.round(myOdds.odds)}%</div>
+                        </div>
+                      ) : null}
+                      {injHealthyRankById[data.myRosterId] != null && myPowerRank != null ? (
+                        <div data-injcost-power style={{ background: "var(--panel)", borderRadius: 8, padding: "8px 10px" }}>
+                          <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Power rank</div>
+                          <div className="num" style={{ fontSize: 18, fontWeight: 800, color: myPowerRank > injHealthyRankById[data.myRosterId] ? "var(--red)" : "var(--ink)" }}>{ordinal(myPowerRank)}</div>
+                          <div className="mut" style={{ fontSize: 10.5 }}>was {ordinal(injHealthyRankById[data.myRosterId])}</div>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                )}
+
+                {/* ═══════════════════════════════════════════════════════════════════════════════
+                    ---- 3. WHERE TO FIND A REPLACEMENT ----
+                    "Then what are replacements that we could seek for that injury, essentially?"
+                    Two sources, side by side, and the app already ranks both — see `injFAsFor` and
+                    `injTradesFor`. The free agents are measured against the BACKUP, not the injured
+                    man's zero, which is the comparison he described.
+                    ════════════════════════════════════════════════════════════════════════════ */}
+                {injNeedPos.map((pos) => {
+                  const fas = injFAsFor(pos);
+                  const trades = injTradesFor(pos);
+                  const backup = (injMyRows.find((r) => r.p && r.p.pos === pos && r.replacedBy) || {}).replacedBy || null;
+                  return (
+                    <div key={pos} data-injneed={pos} style={{ marginBottom: 14 }}>
+                      <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 7 }}>
+                        Replacing him at {pos}{backup ? <span style={{ textTransform: "none", letterSpacing: 0 }}> — anything below beats {backup.name} by the margin shown</span> : null}
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 10 }}>
+                        {/* Free agents: costs a roster spot, not a player. */}
+                        <div data-injfas={fas.length} style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "9px 11px" }}>
+                          <div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 6 }}><i className="ti ti-user-plus" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />On the wire</div>
+                          {fas.length === 0 ? (
+                            <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.45 }}>No free-agent {pos} worth a claim — the wire has nobody better than what you already have. A trade is the route.</div>
+                          ) : fas.map((f) => (
+                            <div key={f.p.sid} data-injfa={f.p.sid} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, padding: "3px 0" }}
+                              onMouseEnter={(e) => showPlayerTip(e, f.p)} onMouseLeave={hideTip}>
+                              <Dot pos={f.p.pos} />
+                              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }}>{f.p.name}</span>
+                              {/* ⚠ THE MARGIN IS PER WEEK AGAINST THE MAN WHO WOULD OTHERWISE PLAY, and says so
+                                  in the header above — a bare "+4.2" invites the reader to compare it to
+                                  the injured star, which is the exact comparison 29w retired. */}
+                              <span className="num" style={{ fontSize: 11, fontWeight: 700, color: (f.upgrade || 0) > 0 ? "var(--green)" : "var(--mut)" }}>{(f.upgrade || 0) > 0 ? `+${(Math.round(f.upgrade * 10) / 10).toFixed(1)}/wk` : "depth"}</span>
+                            </div>
+                          ))}
+                          {fas.length > 0 && (
+                            <button className="btn btn-mini" data-injgofa style={{ marginTop: 6 }} onClick={() => setTab("freeagents")}>All free agents</button>
+                          )}
+                        </div>
+
+                        {/* Trades: costs a player, and the finder has already priced what. */}
+                        <div data-injtrades={trades.length} style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "9px 11px" }}>
+                          <div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 6 }}><i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />By trade</div>
+                          {trades.length === 0 ? (
+                            <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.45 }}>No trade for a {pos} improves your lineup at a fair price right now. The full finder may still have ideas elsewhere on your roster.</div>
+                          ) : trades.map((o, i) => (
+                            <div key={i} data-injtrade={o.get.sid} style={{ fontSize: 12, padding: "4px 0", borderTop: i ? "1px solid var(--line)" : "none" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                <span onMouseEnter={(e) => showPlayerTip(e, o.get)} onMouseLeave={hideTip} style={{ display: "inline-flex", alignItems: "center", gap: 5, minWidth: 0, flex: 1 }}>
+                                  <Dot pos={o.get.pos} /><b style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.get.name}</b>
+                                </span>
+                                <span className="num" style={{ fontSize: 11, fontWeight: 700, color: "var(--green)" }}>+{o.myGain}</span>
+                                <button className="btn btn-mini" data-injprice={o.get.sid} title="Open this deal in the trade calculator"
+                                  /* ⚠ `setTab` AS WELL AS `tbOpen`. Every existing caller of tbOpen already lives on the
+                                     Trades tab, so it only switches the SECTION; from here it would fill a
+                                     calculator on a tab nobody is looking at — the exact 29aw bug, one tab over. */
+                                  onClick={() => { tbOpen(o.team.rosterId, [String(o.give.sid)].concat(o.give2 ? [String(o.give2.sid)] : []), [String(o.get.sid)]); setTab("trades"); }}>Price it</button>
+                              </div>
+                              <div className="mut" style={{ fontSize: 10.5, marginTop: 1 }}>
+                                from {o.team.teamName || o.team.ownerName} for {o.give.name}{o.give2 ? ` + ${o.give2.name}` : ""} · {o.band}
+                              </div>
+                            </div>
+                          ))}
+                          {/* ⚠ THE FIGURE IS SEASON LINEUP POINTS, the finder's own unit. Saying so here stops
+                              it being read against the per-week numbers in the free-agent column beside it. */}
+                          {trades.length > 0 && <div className="mut" style={{ fontSize: 10, marginTop: 5 }}>+ = season points added to your best lineup.</div>}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {/* ---- 4. THE LEAGUE ---- */}
+                <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 7 }}>Across the league</div>
+                {injMoved.length === 0 ? (
+                  <div className="mut" data-injnomove style={{ fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
+                    Not enough to reorder the power rankings — the values moved, but no team changed
+                    position. That is itself worth knowing: it usually means there was real cover behind
+                    him, and it is an argument against panic-selling.
+                  </div>
+                ) : (
+                  <div data-injmoved={injMoved.length} style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 14 }}>
+                    {injMoved.map(({ t, was, now }) => {
+                      const worse = now > was;
+                      return (
+                        <div key={t.rosterId} data-injmove={t.rosterId} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "5px 9px", borderRadius: 7, background: t.isMe ? "var(--panel2)" : "transparent", border: t.isMe ? "1px solid var(--line)" : "1px solid transparent" }}>
+                          <span style={{ fontWeight: t.isMe ? 700 : 400, flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {t.isMe ? "Your team" : (t.teamName || t.ownerName)}
+                          </span>
+                          <span className="mut" style={{ fontVariantNumeric: "tabular-nums" }}>#{was}</span>
+                          <i className={`ti ${worse ? "ti-arrow-down" : "ti-arrow-up"}`} style={{ color: worse ? "var(--red)" : "var(--green)", fontSize: 13 }} aria-hidden="true" />
+                          <b style={{ color: worse ? "var(--red)" : "var(--green)", fontVariantNumeric: "tabular-nums" }}>#{now}</b>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+
+                <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+                  <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5, marginBottom: 9 }}>
+                    The full trade finder, the calculator and the positional market are all re-scored
+                    against these injuries — including the rival whose season just broke, who is now
+                    priced as a buyer.
+                  </div>
+                  <button className="btn btn-gold btn-mini" data-injgotrades onClick={() => setTab("trades")}>
+                    <i className="ti ti-arrows-exchange" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Open the trade finder
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
 
         {/* ---- TRADES TAB ----
              Every tool ships a trade ANALYZER: you propose, it grades. This is a trade FINDER — it mines
@@ -19302,20 +20424,52 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                           <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 250, overflowY: "auto" }}>
                             {tradeRoster(team).slice().sort((a, b) => (b.pts || 0) - (a.pts || 0)).map((p) => {
                               const on = sel.includes(String(p.sid));
-                              return (
+                              const row = (
                                 <button key={p.sid} data-tbplayer={p.name} data-tbon={on ? "1" : "0"}
                                   onClick={() => tbToggle(side, p.sid)}
                                   /* ⚠ THE LEFT COLUMN OPENS ITS CARD LEFTWARD. There is room to the right of
                                      these rows and it is occupied by the other team's roster — the thing you
                                      are comparing against. See positionTip's `prefer`. */
-                                  onMouseEnter={(e) => showPlayerTip(e, p, side === "give" ? { prefer: "left" } : undefined)} onMouseLeave={hideTip}
+                                  /* ⭐⭐⭐⭐⭐ `tapHasJob` — b164, AND THIS ROW IS THE ONE TREY REPORTED. Its tap
+                                     puts a man INTO the deal; on a phone the browser also synthesises a
+                                     `mouseenter`, so one tap both toggled him and threw a card over the
+                                     screen that nothing could close. The row's tap now does the row's job
+                                     and nothing else, and the card moved to the ⓘ below — which is the
+                                     only control on the row whose entire purpose is to explain. */
+                                  onMouseEnter={(e) => showPlayerTip(e, p, { tapHasJob: true, ...(side === "give" ? { prefer: "left" } : null) })} onMouseLeave={hideTip}
                                   style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 6,
                                     border: `1px solid ${on ? "var(--gold)" : "var(--line)"}`, background: on ? "rgba(224,166,60,.10)" : "var(--panel)",
                                     borderRadius: 7, padding: "4px 8px", fontSize: 11.5, color: "var(--ink)" }}>
                                   <Dot pos={p.pos} />
                                   <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: on ? 700 : 500 }}>{p.name}</span>
+                                  {/* ⚠⚠ 29bb — THE CALCULATOR IS WHERE AN UNMARKED DISCOUNT DOES THE MOST
+                                      DAMAGE. The number beside the name is this man's season value with the
+                                      injury already taken out, and it is about to be added up into a verdict
+                                      that says a trade is good. Somebody reading a suspiciously low figure
+                                      and not knowing why would either distrust the tool or, far worse,
+                                      believe it and send the offer. The tag is four characters and removes
+                                      the whole question. */}
+                                  {p.injShort ? <span data-injmark={p.sid} style={{ fontSize: 9, fontWeight: 800, color: "#fff", background: "var(--red)", borderRadius: 5, padding: "0 4px", whiteSpace: "nowrap" }}>{p.injShort}</span> : null}
                                   <span className="mut num" style={{ fontSize: 10.5 }}>{Math.round(p.pts || 0)}</span>
                                 </button>
+                              );
+                              /* ⭐⭐⭐⭐ THE CARD'S OWN DOOR, ON TOUCH ONLY — b164. On a desktop the hover IS
+                                 the affordance and an ⓘ on every row would be clutter; on a phone there is
+                                 no hover, so the card needs somewhere to be asked from that is not the row
+                                 itself. ⚠ A SIBLING, not a child: a button inside a button is invalid HTML
+                                 and browsers resolve it by dropping one of them. */
+                              if (!coarsePointer) return row;
+                              return (
+                                <div key={p.sid} style={{ display: "flex", alignItems: "stretch", gap: 4 }}>
+                                  <span style={{ flex: 1, minWidth: 0, display: "flex" }}>{row}</span>
+                                  <button data-tbinfo={p.name} aria-label={`About ${p.name}`}
+                                    onClick={(e) => showPlayerTip(e, p)}
+                                    style={{ flexShrink: 0, fontFamily: "inherit", cursor: "pointer",
+                                      border: "1px solid var(--line)", background: "var(--panel)", borderRadius: 7,
+                                      color: "var(--mut)", fontSize: 11, fontWeight: 800, padding: "0 9px" }}>
+                                    <i className="ti ti-info-circle" style={{ fontSize: 13 }} aria-hidden="true" />
+                                  </button>
+                                </div>
                               );
                             })}
                           </div>
@@ -19556,7 +20710,15 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                          actual swaps; the rank read is a fallback for positions it did not nominate. A
                          position the finder found a real deal at is drawn as a fit even if the ranks are
                          close, because a deal beats a heuristic about a deal. */
-                    const PosGrid = ({ list, kind }) => {
+                    /* ⚠⚠⚠⚠⚠ A PLAIN FUNCTION, CALLED — NOT A COMPONENT, RENDERED. It was written as
+                       `const PosGrid = ({list, kind}) => …` and used as `<PosGrid …/>`, which looks
+                       identical and behaves completely differently: the function is re-created on every
+                       render, so React sees a NEW COMPONENT TYPE every time and unmounts and remounts the
+                       whole subtree. Eighty chips destroyed and rebuilt on every hover — which is the
+                       "slow" half of Trey's report — and, worse, the ownership token the hover plumbing
+                       held was a DOM node that no longer existed, so the card could never be dismissed.
+                       Calling it inlines the elements into this parent and both problems go. */
+                    const posGrid = (list, kind) => {
                       const want = kind === "send" ? "sell" : "buy";
                       const measured = new Map(list.map((c) => [String(c.pos).toUpperCase(), c]));
                       return (
@@ -19566,10 +20728,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                             const level = hit ? "fit"
                               : r.dir === want ? (r.strength === "strong" ? "fit" : "maybe") : "no";
                             /* The roster the hover is about: my own for what I would send, theirs for
-                               what I would get. */
-                            const card = kind === "send"
-                              ? posCard(myLT.rosterId, r.pos, "sell", "You")
-                              : posCard(p.rosterId, r.pos, "buy", p.teamName || p.ownerName);
+                               what I would get.
+                               ⚠⚠ BUILT ON HOVER, NOT HERE — b163. This line used to CALL `posCard`, which
+                                 runs a full lineup solve, once per chip per render: eighty solves to draw
+                                 one table, repeated on every toggle and every hover. See `cachedCard`. */
+                            const rid = kind === "send" ? myLT.rosterId : p.rosterId;
+                            const who = kind === "send" ? "You" : (p.teamName || p.ownerName);
+                            const cardOf = () => cachedCard(`pos|${rid}|${r.pos}|${kind}`,
+                              () => posCard(rid, r.pos, kind === "send" ? "sell" : "buy", who));
                             const col = POS_COLOR[r.pos] || "var(--ink)";
                             const why = hit ? hit.why : r.why;
                             return (
@@ -19578,8 +20744,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                                    is the keyboard/assistive path, and it is what a reader gets if the card
                                    cannot be built (a roster that failed to resolve). */
                                 title={`${kind === "send" ? "You send" : "You get"} a ${r.pos} — ${why}`}
-                                onMouseEnter={card ? (e) => { e.stopPropagation(); showTip(e, card); } : undefined}
-                                onMouseLeave={card ? hideTip : undefined}
+                                onMouseEnter={(e) => { e.stopPropagation(); const c = cardOf(); if (c) showTip(e, c); }}
+                                onMouseLeave={hideTip}
                                 style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".03em", cursor: "help",
                                   padding: "1px 6px", borderRadius: 5, whiteSpace: "nowrap",
                                   /* Three states, three weights of the SAME hue — a greyed-out position is
@@ -19616,15 +20782,15 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                             manager's name meaning two different things on one tab would be worse than not
                             having it in both. The `why` stays as the title, which is the text path. */}
                         <td data-lrwhy={p.why || ""} title={p.why || undefined}
-                          onMouseEnter={(e) => { const c = rosterCard(p.rosterId, p.teamName || p.ownerName); if (c) showTip(e, c); }}
+                          onMouseEnter={(e) => { const c = cachedCard(`roster|${p.rosterId}`, () => rosterCard(p.rosterId, p.teamName || p.ownerName)); if (c) showTip(e, c); }}
                           onMouseLeave={hideTip}
                           style={{ padding: "5px 8px 5px 4px", cursor: "help", maxWidth: 200, overflow: "hidden",
                             textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           {p.twoWay && <i className="ti ti-arrows-exchange" style={{ fontSize: 11, marginRight: 4, color: "var(--pos)" }} aria-hidden="true" />}
                           <b style={{ color: p.twoWay ? "var(--pos)" : "var(--ink)" }}>{p.teamName || p.ownerName}</b>
                         </td>
-                        <td style={{ padding: "5px 8px" }}><PosGrid list={sends} kind="send" /></td>
-                        <td style={{ padding: "5px 8px" }}><PosGrid list={gets} kind="get" /></td>
+                        <td style={{ padding: "5px 8px" }}>{posGrid(sends, "send")}</td>
+                        <td style={{ padding: "5px 8px" }}>{posGrid(gets, "get")}</td>
                         <td data-lrgain={String(p.myGain)} style={{ padding: "5px 8px", textAlign: "right",
                           fontWeight: 800, color: p.myGain > 0 ? "var(--pos)" : "var(--mut)" }}>
                           {p.myGain > 0 ? `+${p.myGain}` : "—"}
@@ -19928,14 +21094,50 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                     its own colour, and the sentence after it names a PLAYER wherever there is one to name.
                     Same information, read in a glance instead of a paragraph. */}
                 {mktSummary.length > 0 && (
+                  <>
+                  {/* ⭐⭐⭐⭐⭐ GET, SEND, OR ALL — b163. Trey: "can you make it more clear who is a get and
+                      who is a send. Right now they mix together because there are so many. You can even
+                      have a toggle that basically highlights get, send, or all."
+                      ⚠⚠ IT HIGHLIGHTS, IT DOES NOT FILTER, and the difference matters. Removing the other
+                        direction would leave a reader looking at four rows with no way to tell whether the
+                        rest were irrelevant or simply hidden — and on a grid the missing rows would
+                        collapse the layout under the pointer. Dimming keeps the shape of the league on
+                        screen while making one direction impossible to miss, which is what he asked for.
+                      ⚠ AND THE COUNTS ARE ON THE BUTTONS. "Get" with nothing behind it and "Get" with six
+                        positions behind it must not look the same before you press them. */}
+                  <div data-mktshow={mktShow} style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 9 }}>
+                    <span className="mut" style={{ fontSize: 10.5 }}>Highlight</span>
+                    {[["all", "All", null], ["buy", "Get", "var(--neg)"], ["sell", "Send", "var(--pos)"]].map(([k, label, tone]) => {
+                      const n2 = k === "all" ? mktSummary.length
+                        : mktSummary.filter((m) => m.twoWay || m.side === k).length;
+                      const on = mktShow === k;
+                      return (
+                        <button key={k} data-mktshowbtn={k} aria-pressed={on} onClick={() => setMktShow(k)}
+                          style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: on ? 800 : 600,
+                            padding: "4px 11px", borderRadius: 8,
+                            border: `1px solid ${on ? (tone || "var(--gold)") : "var(--line2)"}`,
+                            background: on ? "var(--hover)" : "transparent",
+                            color: on ? (tone || "var(--ink)") : "var(--mut)" }}>
+                          {label} <span className="num" style={{ fontSize: 10, opacity: .8 }}>{n2}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
                   <div data-mktread={String(mktSummary.length)} style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 11 }}>
                     {mktSummary.map((m) => {
                       const VERB = m.twoWay ? "SWAP" : m.side === "buy" ? "GET" : m.side === "sell" ? "MOVE" : "HOLD";
                       const VTONE = m.twoWay ? "var(--gold)" : m.side === "buy" ? "var(--neg)" : m.side === "sell" ? "var(--pos)" : "var(--mut)";
+                      /* ⚠ A TWO-WAY POSITION MATCHES BOTH FILTERS, because it genuinely is both — dropping
+                         it out of "get" would hide the best kind of fit there is from the view that exists
+                         to find them. */
+                      const lit = mktShow === "all" || (m.twoWay
+                        ? (mktShow === "buy" || mktShow === "sell")
+                        : m.side === mktShow);
                       return (
                         <div key={m.pos} data-mktreadpos={m.pos} data-mktreadtone={m.tone} data-mktreadside={m.twoWay ? "swap" : m.side}
+                          data-mktreadlit={lit ? "1" : "0"}
                           style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 11.5, flexWrap: "wrap",
-                            opacity: m.side === "set" ? .62 : 1 }}>
+                            opacity: !lit ? .3 : m.side === "set" ? .62 : 1 }}>
                           {/* The position keeps its own colour everywhere in the app — see POS_COLOR. */}
                           <span className="disp" style={{ fontSize: 11.5, fontWeight: 800, minWidth: 30,
                             color: POS_COLOR[m.pos] || "var(--ink)" }}>{m.pos}</span>
@@ -19952,6 +21154,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       );
                     })}
                   </div>
+                  </>
                 )}
                 <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
                   {market.positions.map((row) => {
@@ -20072,7 +21275,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                                     the useful read is the SHAPE of their team, which is what tells you where
                                     they are deep and where they are desperate. */}
                               <span data-mktteamhover={t.teamName} style={{ fontSize: 12.5, fontWeight: 800, cursor: "help" }}
-                                onMouseEnter={(e) => { const c = rosterCard(t.rosterId, t.teamName); if (c) showTip(e, c); }}
+                                onMouseEnter={(e) => { const c = cachedCard(`roster|${t.rosterId}`, () => rosterCard(t.rosterId, t.teamName)); if (c) showTip(e, c); }}
                                 onMouseLeave={hideTip}>{t.teamName}</span>
                               {t.ownerName && <span className="mut" style={{ fontSize: 10.5 }}>@{t.ownerName}</span>}
                               <span style={{ flex: 1 }} />
@@ -20246,7 +21449,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                           <tr key={row.t.rosterId} data-fitrow={row.t.teamName || String(row.t.rosterId)}
                             data-fitscore={String(row.score)} data-fittwoway={row.twoWay ? "1" : "0"}
                             style={{ borderTop: "1px solid var(--line)" }}>
-                            <td onMouseEnter={(e) => { const c = rosterCard(row.t.rosterId, row.t.teamName || row.t.ownerName); if (c) showTip(e, c); }}
+                            <td onMouseEnter={(e) => { const c = cachedCard(`roster|${row.t.rosterId}`, () => rosterCard(row.t.rosterId, row.t.teamName || row.t.ownerName)); if (c) showTip(e, c); }}
                               onMouseLeave={hideTip}
                               style={{ padding: "5px 8px 5px 4px", cursor: "help", maxWidth: 190, overflow: "hidden",
                                 textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -20260,18 +21463,42 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                                  tab uses, so a reader arriving from there reads the cell the same way. */
                               const tone = !th || n < 4 ? "var(--mut)" : th <= topCut ? "var(--pos)" : th >= n - topCut + 1 ? "var(--neg)" : "var(--gold)";
                               const verdict = r.dir === "buy" ? "GET" : r.dir === "sell" ? "SEND" : null;
-                              const card = posCard(row.t.rosterId, pos, r.dir === "sell" ? "sell" : "buy", row.t.teamName || row.t.ownerName);
+                              /* Same rule as the send/get grid: built on hover, cached by key. Forty-four
+                                 cells × one lineup solve each is a frame nobody should pay for a grid
+                                 they may never hover. */
+                              const cardOf = () => cachedCard(`pos|${row.t.rosterId}|${pos}|fit`,
+                                () => posCard(row.t.rosterId, pos, r.dir === "sell" ? "sell" : "buy", row.t.teamName || row.t.ownerName));
+                              /* ⭐⭐⭐⭐⭐ THE HIGHLIGHT, AND THE REASON THE VERDICT IS A PILL NOW — b163. Trey:
+                                 "can you make it more clear who is a get and who is a send. Right now they
+                                 mix together because there are so many."
+                                 ⚠⚠ FORTY-FOUR CELLS, HALF OF THEM LABELLED, AND THE TWO LABELS DIFFERED ONLY
+                                   IN HUE AT 8.5px. Red GET and green SEND at that size are a texture, not a
+                                   distinction — and red/green is the one pair a colourblind reader cannot
+                                   separate at all, so for some people the grid carried no direction
+                                   whatsoever. The verdict is now a FILLED pill: the word is the signal, the
+                                   colour is reinforcement, and the two directions differ in shape as well
+                                   as hue because one is light-on-colour and the other is outlined. */
+                              const dim = !(mktShow === "all" || (r.dir && r.dir === mktShow));
+                              const vTone = r.dir === "buy" ? "var(--neg)" : "var(--pos)";
                               return (
                                 <td key={pos} data-fitcell={`${pos}:${r.dir || "none"}:${r.strength || "none"}`}
+                                  data-fitlit={dim ? "0" : "1"}
                                   title={r.why || undefined}
-                                  onMouseEnter={card ? (e) => showTip(e, card) : undefined}
-                                  onMouseLeave={card ? hideTip : undefined}
-                                  style={{ textAlign: "center", padding: "4px 6px", cursor: card ? "help" : "default",
-                                    background: r.strength === "strong" ? alpha(POS_COLOR[pos] || "var(--gold)", 10) : "transparent" }}>
+                                  onMouseEnter={(e) => { const c = cardOf(); if (c) showTip(e, c); }}
+                                  onMouseLeave={hideTip}
+                                  style={{ textAlign: "center", padding: "4px 6px", cursor: "help",
+                                    opacity: dim ? .28 : 1,
+                                    background: !dim && r.strength === "strong" ? alpha(POS_COLOR[pos] || "var(--gold)", 10) : "transparent" }}>
                                   <div className="num" style={{ fontWeight: 700, fontSize: 11.5, color: tone }}>{th ? `${th}/${n}` : "—"}</div>
-                                  <div style={{ fontSize: 8.5, fontWeight: 800, letterSpacing: ".06em", height: 11,
-                                    color: verdict ? (r.dir === "buy" ? "var(--neg)" : "var(--pos)") : "transparent",
-                                    opacity: r.strength === "strong" ? 1 : .72 }}>{verdict || "·"}</div>
+                                  <div style={{ height: 13, display: "flex", justifyContent: "center", alignItems: "center" }}>
+                                    {verdict ? (
+                                      <span style={{ fontSize: 8.5, fontWeight: 800, letterSpacing: ".06em",
+                                        padding: "0 5px", borderRadius: 4, lineHeight: "12px",
+                                        border: `1px solid ${vTone}`,
+                                        background: r.dir === "buy" ? vTone : "transparent",
+                                        color: r.dir === "buy" ? "var(--panel)" : vTone }}>{verdict}</span>
+                                    ) : null}
+                                  </div>
                                 </td>
                               );
                             })}
@@ -20286,9 +21513,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                     </table>
                   </div>
                   <div className="mut" style={{ fontSize: 10.5, marginTop: 8, lineHeight: 1.5 }}>
-                    Each cell is that manager's league rank at the position. <b style={{ color: "var(--neg)" }}>GET</b> means
-                    they are enough better than you there to be worth asking; <b style={{ color: "var(--pos)" }}>SEND</b> means
-                    you are enough better to spare one. A shaded cell is a clean fit — top third against bottom third —
+                    Each cell is that manager's league rank at the position.{" "}
+                    <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: ".06em", padding: "0 5px", borderRadius: 4,
+                      border: "1px solid var(--neg)", background: "var(--neg)", color: "var(--panel)" }}>GET</span> means
+                    they are enough better than you there to be worth asking;{" "}
+                    <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: ".06em", padding: "0 5px", borderRadius: 4,
+                      border: "1px solid var(--pos)", color: "var(--pos)" }}>SEND</span> means
+                    you are enough better to spare one. The <b>Highlight</b> buttons above dim one direction so the other
+                    stands out. A shaded cell is a clean fit — top third against bottom third —
                     and the <b>Fit</b> column adds those up, with a bonus for a manager you match with in both directions
                     at once. Hover any cell for the players in that room, or a manager's name for the whole roster.
                   </div>
@@ -20342,10 +21574,20 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                             </div>
                           )}
                         </div>
-                        <div data-txnote className="mut" style={{ fontSize: 11.5, lineHeight: 1.55, paddingTop: 9, borderTop: "1px solid var(--line)" }}>
-                          <b style={{ color: "var(--ink)" }}>Pending offers are not available.</b> Sleeper only publishes a
-                          transaction once it has gone through, so an offer still waiting on a yes — and a trade somebody
-                          declined — leave no record for us to read. Everything here has already happened.
+                        {/* ⭐ PER PLATFORM — b163. This league is one platform or the other, so unlike the
+                            aggregated feed there is no mixed case to word around: Yahoo carries offers still
+                            waiting on a decision, Sleeper does not, and the sentence says whichever is true. */}
+                        <div data-txnote data-txpending={tx.pendingSupported ? "1" : "0"}
+                          className="mut" style={{ fontSize: 11.5, lineHeight: 1.55, paddingTop: 9, borderTop: "1px solid var(--line)" }}>
+                          {tx.pendingSupported ? (
+                            <><b style={{ color: "var(--ink)" }}>Pending offers are included.</b> Yahoo publishes trades that
+                            are still waiting on a decision, and ones that were turned down — so an offer sitting in your
+                            inbox is below, marked as waiting.</>
+                          ) : (
+                            <><b style={{ color: "var(--ink)" }}>Pending offers are not available.</b> Sleeper only publishes a
+                            transaction once it has gone through, so an offer still waiting on a yes — and a trade somebody
+                            declined — leave no record for us to read. Everything here has already happened.</>
+                          )}
                         </div>
                       </div>
 
@@ -20360,7 +21602,124 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                             whose claims LOSE — as the busiest in the league, which is exactly backwards.
                           ⚠ AND THE WINDOW IS STATED. These are counts over the weeks we can see, not the
                             season, and a count with no window behind it is a number people will quote. */}
-                      {L.trends && (L.trends.rows || []).length > 1 && (
+                      {L.trends && (L.trends.rows || []).length > 1 && (() => {
+                        /* ⭐⭐⭐⭐⭐ WHO MIGHT ACTUALLY TALK TO YOU — b163. Trey: "You can also have a column
+                           for rank on activity (basically, who might be most open to a trade)."
+                           ⚠⚠ THE HONEST VERSION OF THIS IS NOT "ACTIVITY", AND THE DIFFERENCE IS THE WHOLE
+                             COLUMN. Raw move-count ranks the manager who streams a defence every week above
+                             one who has made two trades and nothing else — and the second is plainly the
+                             better call. What this weighs is EVIDENCE OF WILLINGNESS, each piece of it
+                             something we can see rather than guess:
+                               · he has traded before, which is by far the strongest signal a manager trades;
+                               · a claim of his FAILED — he wanted somebody, the wire said no, and a trade is
+                                 the other door;
+                               · he is short somewhere (the same `thinAt` the rest of this tab runs on), so
+                                 he has a reason to move;
+                               · and general churn, weighted lightly, because it shows he opens the app —
+                                 necessary but nowhere near sufficient.
+                           ⚠ IT IS A RANK, NOT A PERCENTAGE. A number like "68% likely to trade" would be a
+                             confident claim about somebody's intentions built from a dozen waiver rows —
+                             the FAAB-bid mistake of 29w in a new costume. An ordering is what the evidence
+                             can actually support, and the hover shows every term that produced it. */
+                        /* ⭐⭐⭐⭐⭐ WHAT A MANAGER HAS DONE, THEN WHAT HIS SEASON IS DOING TO HIM — b163.
+                           Trey asked for contention: "a 2-6 team with a good running back is a seller and
+                           we already know their record." He is right, and it is the strongest thing here
+                           that is not about behaviour.
+                           ⚠⚠⚠⚠ WHICH IS EXACTLY WHY IT IS CAPPED WITH THE REST. The evidence splits in two
+                             and the split IS the model:
+                               · WHAT HE DID — he has traded before; a claim of his lost. Both are acts.
+                               · WHAT IS TRUE OF HIM — his season is over, he is short at a position, he
+                                 churns the wire. All three are things you could say about a manager who
+                                 has never once answered a message.
+                             Uncapped, the second group outgrows the first: a team out of it, thin in two
+                             places and streaming every week would outrank a man who has actually made a
+                             deal — and having traded before is by a distance the best predictor anybody
+                             has. An earlier cut had the roster-hole term alone at 4 against a trade's 3,
+                             and the league's biggest streamer came out THIRD of ten, above five managers
+                             who had made deals. So the whole circumstantial group is capped BELOW one
+                             trade, and churn is capped inside it as well, because opening the app is
+                             evidence of one thing and it saturates after a move or two.
+                           ⚠ OUT-OF-IT IS WORTH MORE THAN IN-IT. Both ends of the table deal — the seller
+                             with nothing to lose and the contender topping up — but the seller takes a
+                             call from anybody and the contender is picky about what he gives up.
+                           ⚠ NO ODDS, NO OPINION: early in the year, or with no schedule to simulate, the
+                             contention term is simply absent rather than guessed from the record. */
+                        const CIRCUMSTANTIAL_CAP = 2.4;   // < one trade (3), on purpose — see above
+                        const contentionOf = (rosterId) => {
+                          const o = oddsById[rosterId];
+                          if (!o || !Number.isFinite(o.odds)) return { add: 0, label: null };
+                          if (o.odds <= 0.15) return { add: 2, label: "Season effectively over" };
+                          if (o.odds >= 0.65) return { add: 1, label: "In it — may be buying" };
+                          return { add: 0, label: null };
+                        };
+                        const openOf = (r) => {
+                          const rd = myReadFor(r.rosterId) || {};
+                          const thin = Object.keys(rd.thinAt || {}).length;
+                          const churn = (r.waivers || 0) + (r.freeAgents || 0);
+                          const circ = Math.min(CIRCUMSTANTIAL_CAP,
+                            contentionOf(r.rosterId).add + Math.min(1.2, thin * 0.6) + Math.min(1, churn * 0.25));
+                          return (r.trades || 0) * 3 + (r.failedClaims || 0) * 2 + circ;
+                        };
+                        const openRank = new Map(L.trends.rows.slice()
+                          .sort((a, b2) => openOf(b2) - openOf(a))
+                          .map((r, i) => [r.rosterId, i + 1]));
+                        /* The transactions behind one number. ⚠ Cached with the feed's own size in the key,
+                           so a reloaded feed cannot serve a stale card. */
+                        const txCard = (r, kind) => cachedCard(`tx|${L.leagueId}|${r.rosterId}|${kind}|${(L.items || []).length}`, () => {
+                          const mineRows = (L.items || []).filter((x) => {
+                            if (kind === "failed") return x.status === "failed" && x.teams.some((t) => t.rosterId === r.rosterId);
+                            return x.status === "complete" && x.type === kind && x.teams.some((t) => t.rosterId === r.rosterId);
+                          });
+                          const who = Number(r.rosterId) === Number(L.myRosterId) ? "You" : (r.teamName || `Team ${r.rosterId}`);
+                          const label = kind === "trade" ? "trades" : kind === "waiver" ? "waiver claims"
+                            : kind === "free_agent" ? "free-agent adds" : "claims that did not land";
+                          if (!mineRows.length) return [{ kind: "take", tone: "neutral", x: `${who} — no ${label} in the weeks we can see` }];
+                          return [
+                            { kind: "take", tone: kind === "trade" ? "good" : "neutral", x: `${who} — ${mineRows.length} ${label}` },
+                            { kind: "ptable", k: `tx-${r.rosterId}-${kind}`,
+                              cols: [{ k: "When" }, { k: "In", strong: true }, { k: "Out", tint: true }, { k: "Cost", right: true }],
+                              rows: mineRows.slice(0, 8).map((x) => {
+                                const side = x.teams.find((t) => t.rosterId === r.rosterId) || { got: [], gave: [] };
+                                return {
+                                  When: txWhen(x.at) || (x.week ? `Wk ${x.week}` : "—"),
+                                  In: side.got.map((pp) => pp.name).join(", ") || "—",
+                                  Out: side.gave.map((pp) => pp.name).join(", ") || "—",
+                                  Cost: x.bid != null ? `$${x.bid}` : (side.picks || []).length ? side.picks[0].label : "—",
+                                  tone: "var(--mut)",
+                                };
+                              }) },
+                            mineRows.length > 8 ? `…and ${mineRows.length - 8} more.` : null,
+                          ].filter(Boolean);
+                        });
+                        /* Why a manager sits where he sits. ⚠ Every line is a thing we watched happen. */
+                        const openCard = (r) => cachedCard(`open|${L.leagueId}|${r.rosterId}|${(L.items || []).length}`, () => {
+                          const rd = myReadFor(r.rosterId) || {};
+                          const thin = Object.keys(rd.thinAt || {});
+                          const who = Number(r.rosterId) === Number(L.myRosterId) ? "You are" : `${r.teamName || `Team ${r.rosterId}`} is`;
+                          const rk = openRank.get(r.rosterId);
+                          const bits = [];
+                          const cont = contentionOf(r.rosterId);
+                          const st = (data.standings || []).find((x) => x.rosterId === r.rosterId);
+                          if (r.trades) bits.push({ k: "Has traded", v: `${r.trades}\u00d7`, c: "var(--pos)" });
+                          if (r.failedClaims) bits.push({ k: "Claims that lost", v: String(r.failedClaims), c: "var(--neg)" });
+                          /* ⭐ THE RECORD SITS BESIDE THE VERDICT, not instead of it. "Season effectively
+                             over" is our reading; the record is the fact behind it, and a reader who
+                             disagrees with the reading can see what it was built from. */
+                          if (cont.label) bits.push({ k: cont.label, c: cont.add >= 2 ? "var(--pos)" : "var(--mut)",
+                            v: st && st.record ? `${st.record.wins}-${st.record.losses}${st.record.ties ? `-${st.record.ties}` : ""}` : "—" });
+                          if (thin.length) bits.push({ k: "Short at", v: thin.slice(0, 3).join(", "), c: "var(--neg)" });
+                          const churn = (r.waivers || 0) + (r.freeAgents || 0);
+                          if (churn) bits.push({ k: "Other moves", v: String(churn), c: "var(--mut)" });
+                          return [
+                            { kind: "take", tone: rk <= Math.ceil(L.trends.rows.length / 3) ? "good" : "neutral",
+                              x: `${who} ${ordinal(rk)} of ${L.trends.rows.length} on how likely this league is to want a deal` },
+                            bits.length ? { kind: "kvtable", items: bits } : null,
+                            !bits.length ? "Nothing on record either way \u2014 no trades, no failed claims, no holes in the roster." : null,
+                            "This is an ordering, not a probability. What a manager has DONE counts most \u2014 he has traded before, or a claim of his lost. What is merely true of him \u2014 his season is over, he is short somewhere, he streams the wire \u2014 counts for less, and all of it together counts for less than one trade.",
+                          ].filter(Boolean);
+                        });
+                        const openTop = Math.ceil(L.trends.rows.length / 3);
+                        return (
                         <div data-txtrends={String(L.trends.rows.length)} style={{ overflowX: "auto", marginBottom: 12,
                           border: "1px solid var(--line)", borderRadius: 10, padding: "10px 11px" }}>
                           <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 7 }}>
@@ -20378,14 +21737,22 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                                 <th style={{ fontWeight: 600, padding: "2px 8px 5px" }}>Waivers</th>
                                 <th style={{ fontWeight: 600, padding: "2px 8px 5px" }}>Free agents</th>
                                 {L.faab && <th style={{ fontWeight: 600, padding: "2px 8px 5px" }} title="Spent on claims that landed">FAAB</th>}
-                                <th style={{ fontWeight: 600, padding: "2px 2px 5px 8px" }} title="Claims that did not go through — usually outbid, or beaten on priority">Missed</th>
+                                <th style={{ fontWeight: 600, padding: "2px 8px 5px" }} title="Claims that did not go through — usually outbid, or beaten on priority">Missed</th>
+                                <th style={{ fontWeight: 600, padding: "2px 2px 5px 8px" }} title="A ranking of who this league's evidence says is most likely to want a deal — hover a manager's rank for the reasons">Open to a deal</th>
                               </tr>
                             </thead>
                             <tbody>
                               {L.trends.rows.map((r) => {
                                 const mine = Number(r.rosterId) === Number(L.myRosterId);
-                                const cell = (v, dim) => (
-                                  <td style={{ textAlign: "right", padding: "3px 8px", color: v ? (dim || "var(--ink)") : "var(--mut)" }}>{v || "—"}</td>
+                                /* ⚠ THE HOVER GOES ON THE CELL THAT HAS SOMETHING TO SHOW. A zero opens a card
+                                   that says "no trades", which is a sentence nobody needed a tooltip for, so an
+                                   empty cell stays inert and does not advertise itself as hoverable. */
+                                const cell = (v, dim, kind) => (
+                                  <td data-txtrendcell={kind ? `${r.rosterId}:${kind}` : undefined}
+                                    onMouseEnter={v && kind ? ((e) => { const c = txCard(r, kind); if (c) showTip(e, c); }) : undefined}
+                                    onMouseLeave={v && kind ? hideTip : undefined}
+                                    style={{ textAlign: "right", padding: "3px 8px", cursor: v && kind ? "help" : "default",
+                                      color: v ? (dim || "var(--ink)") : "var(--mut)" }}>{v || "—"}</td>
                                 );
                                 return (
                                   <tr key={r.rosterId} data-txtrendrow={r.teamName || String(r.rosterId)}
@@ -20395,18 +21762,39 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                                       fontWeight: mine ? 800 : 500, color: mine ? "var(--gold)" : "var(--ink)" }}>
                                       {mine ? "You" : (r.teamName || `Team ${r.rosterId}`)}
                                     </td>
-                                    {cell(r.trades, "var(--gold)")}
-                                    {cell(r.waivers)}
-                                    {cell(r.freeAgents)}
+                                    {cell(r.trades, "var(--gold)", "trade")}
+                                    {cell(r.waivers, null, "waiver")}
+                                    {cell(r.freeAgents, null, "free_agent")}
                                     {L.faab && <td style={{ textAlign: "right", padding: "3px 8px", color: r.faabSpent ? "var(--pos)" : "var(--mut)" }}>{r.faabSpent ? `$${r.faabSpent}` : "—"}</td>}
-                                    {cell(r.failedClaims, "var(--neg)")}
+                                    {cell(r.failedClaims, "var(--neg)", "failed")}
+                                    {(() => {
+                                      const rk = openRank.get(r.rosterId);
+                                      const top = rk <= openTop;
+                                      return (
+                                        <td data-txopenrank={`${r.rosterId}:${rk}`}
+                                          onMouseEnter={(e) => { const c = openCard(r); if (c) showTip(e, c); }}
+                                          onMouseLeave={hideTip}
+                                          style={{ textAlign: "right", padding: "3px 2px 3px 8px", cursor: "help",
+                                            fontWeight: top ? 800 : 600, color: top ? "var(--pos)" : "var(--mut)" }}>
+                                          {ordinal(rk)}
+                                        </td>
+                                      );
+                                    })()}
                                   </tr>
                                 );
                               })}
                             </tbody>
                           </table>
+                          <div className="mut" style={{ fontSize: 10.5, marginTop: 7, lineHeight: 1.5 }}>
+                            Hover any number for the moves behind it. <b>Open to a deal</b> ranks the league on how much
+                            evidence there is that a manager wants one. What he has DONE counts most — traded before, or
+                            lost a claim. What is merely true of him — his season is over, he is short somewhere, he streams
+                            the wire — counts for less, and all of it together counts for less than one trade.
+                            It is an ordering, not a prediction.
+                          </div>
                         </div>
-                      )}
+                        );
+                      })()}
 
                       <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
                         {[["all", "Whole league"], ["mine", "Just mine"]].map(([k, l]) => (
@@ -20426,9 +21814,15 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       )}
 
                       {items.slice(0, 60).map((x) => (
+                        /* ⚠ A PENDING OFFER IS NOT A DASHED-OUT FAILURE AND IT IS NOT A COMPLETED MOVE.
+                           It gets its own left rule and its own badge below, because the one thing this row
+                           must never do is read as a deal that went through — that would be a false story
+                           about somebody's roster, told with real names. */
                         <div key={x.id} data-txrow={`${x.type}:${x.status}`} data-txmine={x.mine ? "1" : "0"}
                           style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "7px 0",
-                            borderTop: "1px solid var(--line)", opacity: x.status === "failed" ? .82 : 1 }}>
+                            borderTop: "1px solid var(--line)", opacity: x.status === "failed" ? .82 : 1,
+                            borderLeft: x.status === "pending" ? "3px solid var(--gold)" : undefined,
+                            paddingLeft: x.status === "pending" ? 8 : undefined }}>
                           <span style={{ flexShrink: 0, width: 62, fontSize: 9.5, fontWeight: 800, letterSpacing: ".05em",
                             paddingTop: 3, color: x.type === "trade" ? "var(--gold)" : x.type === "waiver" ? "var(--ink)" : "var(--mut)" }}>
                             {x.type === "trade" ? "TRADE" : x.type === "waiver" ? "WAIVER" : "FREE AGENT"}
@@ -20446,14 +21840,32 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                                       <span key={pp.sid}>{j ? ", " : ""}<Dot pos={pp.pos} /><b>{pp.name}</b></span>
                                     ))}</span>
                                 )}
-                                {t.picks.map((pk) => <span key={pk.label} className="mut" style={{ fontSize: 11 }}>+ {pk.label}</span>)}
-                                {t.faabIn > 0 && <span style={{ fontSize: 11, color: "var(--pos)" }}>+ ${t.faabIn} FAAB</span>}
+                                {/* ⭐⭐⭐⭐⭐ THE OTHER HALF OF THE DEAL IS NOT FOOTNOTES — b163. Trey: "there are
+                                    some players and draft picks that are greyed out and makes it hard to
+                                    track what was actually in the transaction."
+                                    ⚠⚠ HE IS RIGHT AND IT WAS A REAL MISTAKE OF EMPHASIS. The players a
+                                      manager RECEIVED were set in ink with a position dot; the players he
+                                      GAVE UP, and every draft pick, were muted at 11px inside brackets —
+                                      as though they were an aside. In a trade both sides ARE the
+                                      transaction: "gets Gibbs" with the price in grey is half a sentence.
+                                      The labels stay muted, because "sends" is scaffolding; the NAMES are
+                                      what you are reading the row for, and they now look like it. */}
+                                {t.picks.map((pk) => (
+                                  <span key={pk.label} style={{ fontSize: 11.5 }}>
+                                    <i className="ti ti-ticket" style={{ fontSize: 11, color: "var(--gold)", marginRight: 3 }} aria-hidden="true" />
+                                    <b>{pk.label}</b>
+                                  </span>
+                                ))}
+                                {t.faabIn > 0 && <span style={{ fontSize: 11.5, color: "var(--pos)" }}>+ <b>${t.faabIn}</b> FAAB</span>}
                                 {t.gave.length > 0 && (
-                                  <span className="mut" style={{ fontSize: 11.5 }}>
-                                    ({x.type === "trade" ? "sends" : "drops"} {t.gave.map((pp) => pp.name).join(", ")})
+                                  <span style={{ fontSize: 12.5 }}>
+                                    <span className="mut">{x.type === "trade" ? "sends" : "drops"}</span>{" "}
+                                    {t.gave.map((pp, j) => (
+                                      <span key={pp.sid}>{j ? ", " : ""}<Dot pos={pp.pos} /><b>{pp.name}</b></span>
+                                    ))}
                                   </span>
                                 )}
-                                {t.faabOut > 0 && <span className="mut" style={{ fontSize: 11 }}>(− ${t.faabOut} FAAB)</span>}
+                                {t.faabOut > 0 && <span style={{ fontSize: 11.5 }}><span className="mut">−</span> <b>${t.faabOut}</b> <span className="mut">FAAB</span></span>}
                               </div>
                             ))}
                             {x.note && <div className="mut" style={{ fontSize: 11, fontStyle: "italic" }}>{x.note}</div>}
@@ -20462,6 +21874,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                             {x.bid != null && <span className="num" style={{ fontSize: 12.5, fontWeight: 800,
                               color: x.status === "failed" ? "var(--mut)" : "var(--pos)" }}>${x.bid}</span>}
                             {x.status === "failed" && <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".05em", color: "var(--neg)" }}>DIDN'T LAND</span>}
+                            {x.status === "pending" && <span data-txpendingbadge={x.id} style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".05em", color: "var(--gold)" }}>WAITING</span>}
+                            {/* The date first, because it is the one people scan for; the week under it,
+                                because it is the one that says which roster the move changed. */}
+                            <span data-txwhen={x.at ? String(x.at) : ""} className="num" style={{ fontSize: 11, fontWeight: 600 }}>{txWhen(x.at) || ""}</span>
                             <span className="mut" style={{ fontSize: 10 }}>{x.week ? `Wk ${x.week}` : ""}</span>
                           </div>
                         </div>
@@ -20684,6 +22100,25 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
             <div className="panel" style={{ padding: 16 }}>
               <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 3 }}>Standings & projections</div>
               <div className="mut" style={{ fontSize: 11.5, marginBottom: 10 }}>Current record, projected finish (blending record with roster strength), and power ranking. Top {playoffSpots} make the playoffs. Click a column to sort.</div>
+              {/* ⭐⭐⭐⭐⭐ 29bb — THE TABLE SAYS WHEN IT IS NOT THE HEALTHY TABLE.
+                  ⚠⚠ THIS IS THE MOST IMPORTANT SENTENCE THE FEATURE ADDS. This table is the league's
+                    scoreboard of record: people screenshot it, argue about it and quote it at each other.
+                    Once injuries are priced in it is no longer "the power rankings" but "the power
+                    rankings GIVEN WHAT I HAVE MARKED", and those are different claims. A reader who
+                    cannot tell which one he is looking at will eventually show somebody a ranking that
+                    only exists inside his own assumptions — and be unable to explain it. So the banner
+                    states the assumption, counts it, and links to where it can be undone. */}
+              {injCount > 0 && (
+                <div data-injbanner={injCount} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", border: "1px solid var(--line)", borderLeft: "3px solid var(--red)", borderRadius: 8, padding: "7px 11px", background: "var(--panel2)", marginBottom: 10 }}>
+                  <i className="ti ti-bandage" style={{ fontSize: 14, color: "var(--red)" }} aria-hidden="true" />
+                  <span style={{ fontSize: 11.5, lineHeight: 1.45, flex: "1 1 240px", minWidth: 0 }}>
+                    These rankings include the <b>{injCount}</b> {injCount === 1 ? "injury" : "injuries"} you
+                    have marked{injMoved.length ? <>, which moved <b>{injMoved.length}</b> {injMoved.length === 1 ? "team" : "teams"}</> : ", though no team changed position"}.
+                    {isDynasty ? " Dynasty values take a much smaller hit than the weekly numbers do." : ""}
+                  </span>
+                  <button className="btn btn-mini" data-injbannergo onClick={() => setTab("injuries")}>Review</button>
+                </div>
+              )}
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                   {(() => {
@@ -20828,7 +22263,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 const overallVal = (t) => t.posQuality.QB + t.posQuality.RB + t.posQuality.WR + t.posQuality.TE;
                 const sortVal = (t) => posSortCol === "all" ? overallVal(t) : (t.posQuality[posSortCol] || 0);
                 const rowsSorted = leagueTeams.slice().sort((a, b) => sortVal(b) - sortVal(a));
-                const Header = ({ col, label, color }) => (
+                /* A plain function — see `posGrid`. */
+                const headCell = (col, label, color) => (
                   <th onClick={() => setPosSortCol(col)} style={{ textAlign: "center", padding: "4px 6px", color: posSortCol === col ? "var(--ink)" : (color || "var(--mut)"), cursor: "pointer", userSelect: "none", borderBottom: posSortCol === col ? "2px solid var(--gold)" : "2px solid transparent" }} title={`Sort by ${label} strength`}>{label}{posSortCol === col ? " ▾" : ""}</th>
                 );
                 return (
@@ -20837,8 +22273,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       <thead>
                         <tr style={{ color: "var(--mut)", fontSize: 10.5, textTransform: "uppercase" }}>
                           <th style={{ textAlign: "left", padding: "4px 6px" }}>Team</th>
-                          {POS.map((pos) => <Header key={pos} col={pos} label={pos} color={POS_COLOR[pos]} />)}
-                          <Header col="all" label="All" />
+                          {POS.map((pos) => <React.Fragment key={pos}>{headCell(pos, pos, POS_COLOR[pos])}</React.Fragment>)}
+                          {headCell("all", "All")}
                         </tr>
                       </thead>
                       <tbody>
@@ -21127,7 +22563,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
         )}
       </div>
       {tip && (
-        <Tooltip tip={tip}>
+        <Tooltip tip={tip} onClose={hideTip}>
           <OutlookCard content={tip.content} />
         </Tooltip>
       )}
@@ -22019,7 +23455,13 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                           {league && (
                             <>
                               {onOpenTeam && (
-                                <button className="btn btn-mini" data-homeweekteam style={{ padding: "2px 8px", fontSize: 11 }}
+                                /* ⚠ THE LEAGUE'S NAME IS ON THE BUTTON. This table is SORTED BY HOW LIVE
+                                   THE GAME IS, so the first row is a different league from one visit to
+                                   the next — a suite that clicks `[data-homeweekteam]` opens whichever
+                                   league happens to be the closest game that day, which is exactly how a
+                                   correct build got reported as broken twice. */
+                                <button className="btn btn-mini" data-homeweekteam={(league && league.name) || ""}
+                                  style={{ padding: "2px 8px", fontSize: 11 }}
                                   onClick={() => onOpenTeam(league)}>My team</button>
                               )}
                               <button className="btn btn-mini" data-homeweekleague style={{ padding: "2px 8px", fontSize: 11, marginLeft: 4 }}
@@ -22365,7 +23807,7 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
           const { leagueStanding } = await import("./weekcache.js");
           const st = {};
           for (let i = 0; i < (w.connected || []).length; i++) {
-            const s = await leagueStanding(w.hubs[i]);
+            const s = await leagueStanding(w.hubs[i], injuries);
             if (s) st[hid(w.connected[i])] = s;
           }
           if (alive) setWeekStand(st);
@@ -22373,7 +23815,10 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
       } catch (e) { /* the badge is a nicety; its absence is not an error state */ }
     }, 600);
     return () => { alive = false; clearTimeout(t); };
-  }, [seasonFirst, seasonTeams.length, leagues]);
+    /* ⚠ `injuries` IS IN THE DEPS. Without it the home page's Power column would be computed once at
+       boot and never again — so saving an injury in the hub would move the hub and leave the row Trey
+       came from reading the old rank until he reloaded the tab. */
+  }, [seasonFirst, seasonTeams.length, leagues, injuries]);
   /* `openThisWeek` lived here until 29o. It opened seasonTeams[0] — a league chosen by array order — behind
      a button labelled "This Week", which is why Trey could not tell it apart from My Week. Removed rather
      than renamed: every league row already carries its own Hub button, which says what it opens. */
@@ -24263,8 +25708,14 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
     ["ti-arrows-exchange", "Trade Intelligence", "Format-aware pick values, generated trade packages, and acceptance odds — who to call and exactly what to offer."],
     ["ti-trophy", "Grades & Recap", "Live draft grades, biggest steals and reaches, projected standings, and a shareable recap with receipts."],
   ];
-  const showTip = (e, p) => { setHover(p.id); setTip(positionTip(e.clientX, e.clientY, makeOutlook(p, null, false), e.currentTarget)); };
-  const hideTip = () => { setHover(null); setTip(null); };
+  /* ⚠ b164 — `tipShouldOpen`/`tipShouldClose` are what make these cards usable on a phone. See
+     src/tipsheet.js: on a touch device a synthesised `mouseleave` must never close a sheet, and an
+     element whose tap already has a job must not open one. */
+  const showTip = (e, p, opts) => {
+    if (!tipShouldOpen(e, opts)) return;
+    setHover(p.id); setTip(positionTip(e.clientX, e.clientY, makeOutlook(p, null, false), e.currentTarget, opts));
+  };
+  const hideTip = (e) => { if (!tipShouldClose(e)) return; setHover(null); setTip(null); };
   const heading = hover != null ? (top.findIndex((p) => p.id === hover) / top.length) * 360 : null;
   const paid = !!(user && user.paid);
 
@@ -24688,7 +26139,7 @@ function HomePage({ biz, user, onSignIn, onDemo, onBuy, onApp, onHelp, initialTa
       <SiteFooter biz={biz} onDemo={onDemo} onBuy={onBuy} onSignIn={onSignIn} onHelp={onHelp} onTab={setHtab} />
 
       {tip && (
-        <Tooltip tip={tip}>
+        <Tooltip tip={tip} onClose={hideTip}>
           <OutlookCard content={tip.content} />
           </Tooltip>
       )}
@@ -24884,7 +26335,8 @@ function AuthModal({ onClose, onSignUp, hasBackend, authError, authCode, onClear
     try { await onSignUp(email.trim(), pw, mode); } finally { setBusy(false); }
   };
   // a small reusable eye button for the password fields
-  const EyeBtn = () => (
+  /* A plain function, CALLED — see `posGrid`. */
+  const eyeBtn = () => (
     <button type="button" tabIndex={-1} onClick={() => setShowPw((s) => !s)} aria-label={showPw ? "Hide password" : "Show password"}
       style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "var(--mut)", cursor: "pointer", padding: 4, lineHeight: 0 }}>
       <i className={`ti ${showPw ? "ti-eye-off" : "ti-eye"}`} style={{ fontSize: 16 }} aria-hidden="true" />
@@ -24900,12 +26352,12 @@ function AuthModal({ onClose, onSignUp, hasBackend, authError, authCode, onClear
           <input ref={emailRef} className="gs" style={{ width: "100%", marginBottom: 8 }} placeholder="Email" value={email} onChange={(e) => { setEmail(e.target.value); setFormErr(null); }} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
           <div style={{ position: "relative", marginBottom: mode === "signup" ? 8 : 14 }}>
             <input ref={pwRef} className="gs" type={showPw ? "text" : "password"} style={{ width: "100%", paddingRight: 34 }} placeholder={mode === "signup" ? "Password (6 characters or more)" : "Password"} value={pw} onChange={(e) => { setPw(e.target.value); setFormErr(null); }} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
-            <EyeBtn />
+            {eyeBtn()}
           </div>
           {mode === "signup" && <>
             <div style={{ position: "relative", marginBottom: 6 }}>
               <input ref={pw2Ref} className="gs" type={showPw ? "text" : "password"} style={{ width: "100%", paddingRight: 34, borderColor: pwMismatch ? "var(--red)" : undefined }} placeholder="Confirm password" value={pw2} onChange={(e) => { setPw2(e.target.value); setFormErr(null); }} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
-              <EyeBtn />
+              {eyeBtn()}
             </div>
             {pwMismatch && <div style={{ color: "var(--red)", fontSize: 11.5, marginBottom: 8 }}>Passwords don't match</div>}
             {!pwMismatch && <div style={{ height: 6 }} />}
@@ -26462,8 +27914,9 @@ function LeagueMockTrends({ league, players, compact, onRunMock }) {
     );
   }
 
-  const Bucket = ({ label, group }) => group && group.buckets.length >= 2 ? (
-    <div style={{ marginTop: 10 }}>
+  /* A plain function, CALLED — see `posGrid`. */
+  const bucketBars = (label, group) => (group && group.buckets.length >= 2 ? (
+    <div key={label} style={{ marginTop: 10 }}>
       <div className="mut" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>{label}</div>
       {group.buckets.map((b, i) => (
         <div key={b.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "2px 0" }}>
@@ -26475,7 +27928,7 @@ function LeagueMockTrends({ league, players, compact, onRunMock }) {
         </div>
       ))}
     </div>
-  ) : null;
+  ) : null);
 
   return (
     <div className="panel" style={{ padding: 16, marginTop: 10, background: "var(--panel2)" }}>
@@ -26494,9 +27947,9 @@ function LeagueMockTrends({ league, players, compact, onRunMock }) {
           <b style={{ color: "var(--ink)" }}>{f.head}. </b><span className="mut">{f.body}</span>
         </div>
       ))}
-      <Bucket label="Quarterback timing" group={t.groups.find((x) => x.label === "qb")} />
-      <Bucket label="How they opened" group={t.groups.find((x) => x.label === "shape")} />
-      <Bucket label="Tight end timing" group={t.groups.find((x) => x.label === "te")} />
+      {bucketBars("Quarterback timing", t.groups.find((x) => x.label === "qb"))}
+      {bucketBars("How they opened", t.groups.find((x) => x.label === "shape"))}
+      {bucketBars("Tight end timing", t.groups.find((x) => x.label === "te"))}
       <div className="mut" style={{ fontSize: 10.5, marginTop: 10, lineHeight: 1.45 }}>
         The bar is projected points above or below the average team <b>carrying the same number of keepers</b>
         {t.keeperLeague ? " — so a roster that finished first on the strength of its keepers doesn't get credited for it" : ""}. n = team-drafts in that bucket.
@@ -26544,7 +27997,7 @@ export function Section({ n, title, sub, children, accent }) {
    Two buttons in the page's own bar rather than a floating widget: the whole page is the document, and the
    header is where a person looks for "print". `printtarget` is set by printElement() on the CONTENT div, so
    the nav bar and the buttons themselves stay off the page (they carry .noprint too, belt and braces). */
-export function TrendsShell({ onBack, backLabel, onHome, onSignOut, tip, onPrint, onCheatSheet, children }) {
+export function TrendsShell({ onBack, backLabel, onHome, onSignOut, tip, onTipClose, onPrint, onCheatSheet, children }) {
   return (
     <div>
       <div className="hairline hubbar noprint" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 20px", flexWrap: "wrap" }}>
@@ -26569,7 +28022,7 @@ export function TrendsShell({ onBack, backLabel, onHome, onSignOut, tip, onPrint
         {onSignOut && <button className="btn btn-mini" onClick={onSignOut}>Sign out</button>}
       </div>
       <div data-planbody style={{ maxWidth: 1080, margin: "0 auto", padding: "22px 20px 70px" }}>{children}</div>
-      {tip && <Tooltip tip={tip}><OutlookCard content={tip.content} /></Tooltip>}
+      {tip && <Tooltip tip={tip} onClose={onTipClose}><OutlookCard content={tip.content} /></Tooltip>}
     </div>
   );
 }
@@ -28558,7 +30011,8 @@ function ConnectedAccounts({ accounts, leagues, onUnlink, onAdd, onChoose, hidde
     byPlat.get(k).push(l);
   });
 
-  const Names = ({ ls }) => (
+  /* A plain function, CALLED — see `posGrid`. */
+  const acctNames = (ls) => (
     <div className="mut" style={{ fontSize: 11.5, lineHeight: 1.5, marginTop: 2 }}>
       {ls.length ? ls.map((l) => l.name).join(" · ") : "no leagues imported from this account yet"}
     </div>
@@ -28583,7 +30037,7 @@ function ConnectedAccounts({ accounts, leagues, onUnlink, onAdd, onChoose, hidde
                     {" "}— {g.leagues.length} league{g.leagues.length === 1 ? "" : "s"}
                   </span>
                 </div>
-                <Names ls={g.leagues} />
+                {acctNames(g.leagues)}
               </div>
               {onUnlink && (
                 <button className="btn btn-mini" data-connunlink={g.username} style={{ flexShrink: 0 }}
@@ -30224,8 +31678,9 @@ function TradePickModal({ teams, rounds, teamNames, userIdx, ownerOf, naturalOwn
   // can see at a glance which pick is closest for each side.
   const nextPickOf = (team) => { const pm = picksMade || 0; for (let o = 0; o < TOTAL; o++) if (owner[o] === team && o >= pm) return o; return -1; };
   const nextA = nextPickOf(teamA), nextB = nextPickOf(teamB);
-  const PickChip = ({ o, checked, onToggle, soon }) => (
-    <button className="btn btn-mini" onClick={onToggle} title={soon ? "Closest upcoming pick for this team" : undefined}
+  /* A plain function, CALLED — see `posGrid`. */
+  const pickChip = (o, checked, onToggle, soon) => (
+    <button key={o} className="btn btn-mini" onClick={onToggle} title={soon ? "Closest upcoming pick for this team" : undefined}
       style={{ position: "relative", borderColor: checked ? "var(--gold)" : soon ? "#5AA9E6" : "var(--line)", background: checked ? "rgba(224,166,60,.14)" : soon ? "rgba(90,169,230,.10)" : "transparent", color: checked ? "var(--gold)" : soon ? "#7Fc0F0" : "var(--ink)", fontWeight: checked || soon ? 700 : 400, padding: "3px 8px" }}>
       {checked ? "✓ " : ""}{pickLabelOf(o)}
       {soon && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 800, letterSpacing: ".03em", color: "#0b0f14", background: "#5AA9E6", borderRadius: 3, padding: "0 3px", verticalAlign: "middle" }}>NEXT</span>}
@@ -30262,13 +31717,13 @@ function TradePickModal({ teams, rounds, teamNames, userIdx, ownerOf, naturalOwn
           <div className="panel" style={{ padding: 10, background: "var(--panel2)" }}>
             <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6, color: teamA === userIdx ? "var(--gold)" : "var(--ink)" }}>{name(teamA)} sends →</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-              {aPicks.length ? aPicks.map((o) => <PickChip key={o} o={o} checked={selA.has(o)} soon={o === nextA} onToggle={() => toggle(selA, setSelA, o)} />) : <span className="mut" style={{ fontSize: 11 }}>No remaining picks</span>}
+              {aPicks.length ? aPicks.map((o) => pickChip(o, selA.has(o), () => toggle(selA, setSelA, o), o === nextA)) : <span className="mut" style={{ fontSize: 11 }}>No remaining picks</span>}
             </div>
           </div>
           <div className="panel" style={{ padding: 10, background: "var(--panel2)" }}>
             <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6, color: teamB === userIdx ? "var(--gold)" : "var(--ink)" }}>{name(teamB)} sends →</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-              {bPicks.length ? bPicks.map((o) => <PickChip key={o} o={o} checked={selB.has(o)} soon={o === nextB} onToggle={() => toggle(selB, setSelB, o)} />) : <span className="mut" style={{ fontSize: 11 }}>No remaining picks</span>}
+              {bPicks.length ? bPicks.map((o) => pickChip(o, selB.has(o), () => toggle(selB, setSelB, o), o === nextB)) : <span className="mut" style={{ fontSize: 11 }}>No remaining picks</span>}
             </div>
           </div>
         </div>
@@ -35116,6 +36571,10 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
        a hover survives the switch only because someone typed `keep` at the place it is raised. */
   const showTip = (e, content, keep) => {
     if (noHoverAnim && !keep) return; // hover off via the top-bar toggle → suppress every popup but the named few
+    /* ⚠ b164 — THE THIRD ARGUMENT HERE IS `keep`, NOT AN OPTIONS OBJECT, which is why this call passes
+       nothing: the draft room's rows are hover-only and have no competing tap, so on a phone the
+       synthesised mouseenter IS the deliberate open and must go through. See src/tipsheet.js. */
+    if (!tipShouldOpen(e, null)) return;
     let cx = 0, cy = 0;
     if (e) {
       if (e.touches && e.touches[0]) { cx = e.touches[0].clientX; cy = e.touches[0].clientY; }
@@ -35127,7 +36586,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
     //   even when the pointer is over a child of it.
     setTip(positionTip(cx, cy, content, e && e.currentTarget));
   };
-  const hideTip = () => setTip(null);
+  const hideTip = (e) => { if (!tipShouldClose(e)) return; setTip(null); };
   /* ⚠⚠ 29ad — A POPUP WHOSE TRIGGER DISAPPEARS IS STRANDED FOREVER. Found while building the hover suite,
      and it is a real one: a tooltip closes only on the `mouseleave` of the element that raised it, so if
      that element UNMOUNTS while the pointer is still on it, the event never fires and the popup sits over
@@ -37262,7 +38721,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
               a labelled chip rather than a run of text, so the eye finds the one it wants without reading
               the line. Only rendered while COLLAPSED — expanded, all of this is on the cards below in full. */}
           {!trackerOpen && (() => {
-            const Chip = ({ k, children, tone }) => (
+            /* A plain function, CALLED — see `posGrid`. */
+            const trackChip = (k, children, tone) => (
               <span style={{ display: "inline-flex", alignItems: "baseline", gap: 4, minWidth: 0, fontSize: 11, whiteSpace: "nowrap" }}>
                 <span className="mut" style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 800 }}>{k}</span>
                 <span style={{ fontWeight: 700, color: tone || "var(--ink)", overflow: "hidden", textOverflow: "ellipsis" }}>{children}</span>
@@ -37281,15 +38741,15 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
             const then = path && path[1] ? path[1] : null;
             return (
               <>
-                {fin != null && <Chip k="You" tone={finColor}>{ordinal(fin)} of {TEAMS}</Chip>}
-                {myNextOverall != null && <>{dot}<Chip k="Your pick" tone="var(--gold)">{pickLabel(myNextOverall)}</Chip></>}
-                {best && <>{dot}<Chip k="Best avail">{best.name} <span className="num mut" style={{ fontSize: 9.5 }}>{(best.vbd ?? 0) >= 0 ? "+" : ""}{Math.round(best.vbd ?? 0)}</span></Chip></>}
-                {last && <>{dot}<Chip k="Last">{last.name}</Chip></>}
+                {fin != null && trackChip("You", <>{ordinal(fin)} of {TEAMS}</>, finColor)}
+                {myNextOverall != null && <>{dot}{trackChip("Your pick", pickLabel(myNextOverall), "var(--gold)")}</>}
+                {best && <>{dot}{trackChip("Best avail", <>{best.name} <span className="num mut" style={{ fontSize: 9.5 }}>{(best.vbd ?? 0) >= 0 ? "+" : ""}{Math.round(best.vbd ?? 0)}</span></>)}</>}
+                {last && <>{dot}{trackChip("Last", last.name)}</>}
                 {!done && <>{dot}<Chip k={onClock === userIdx ? "You're up" : `On clock ${pickLabel(picks.length)}`}>
                   {onClock === userIdx ? "" : `${teamShort(TEAM_NAMES[onClock] || `Team ${onClock + 1}`)} `}
                   {currentPred ? <span className="mut" style={{ fontWeight: 400 }}>→ {currentPred.name}</span> : null}
                 </Chip></>}
-                {then && then.p && <>{dot}<Chip k="Then">{pickLabel(then.o)} <span className="mut" style={{ fontWeight: 400 }}>→ {then.p.name}</span></Chip></>}
+                {then && then.p && <>{dot}{trackChip("Then", <>{pickLabel(then.o)} <span className="mut" style={{ fontWeight: 400 }}>→ {then.p.name}</span></>)}</>}
               </>
             );
           })()}
@@ -39967,7 +41427,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                     g: (grades[i] && grades[i].g) || "—", finish: proj.rank ? proj.rank[i] : i + 1 }));
                   const powerOrder = base.slice().sort((a, b) => b.z - a.z).map((r) => r.i);
                   const rows = base.slice().sort((a, b) => rankView === "power" ? b.z - a.z : a.finish - b.finish);
-                  const Head = ({ k, label, w }) => (
+                  /* A plain function, CALLED — see `posGrid`. */
+                  const headCol = (k, label, w) => (
                     <span onClick={() => setRankView(k)} style={{ width: w, textAlign: "right", cursor: "pointer", fontSize: 9, textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 700, color: rankView === k ? "var(--gold)" : "var(--mut)", userSelect: "none" }}>{label}{rankView === k ? " ▾" : ""}</span>
                   );
                   return (
@@ -39975,8 +41436,8 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 6px 4px", borderBottom: "1px solid var(--line2)", marginBottom: 3 }}>
                         <span style={{ width: 22 }} />
                         <span style={{ flex: 1, fontSize: 9, textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 700, color: "var(--mut)" }}>Team</span>
-                        <Head k="standings" label="Proj pts" w={76} />
-                        <Head k="power" label="Power" w={44} />
+                        {headCol("standings", "Proj pts", 76)}
+                        {headCol("power", "Power", 44)}
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                         {rows.map((row) => {
@@ -42121,7 +43582,7 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
       )}
 
       {tip && (
-        <Tooltip tip={tip}>
+        <Tooltip tip={tip} onClose={hideTip}>
           <OutlookCard content={tip.content} />
           </Tooltip>
       )}

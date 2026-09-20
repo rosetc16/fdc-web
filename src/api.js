@@ -347,6 +347,16 @@ export const api = {
     return call(`/api/connect/sleeper/transactions?league_ids=${encodeURIComponent(ids)}`
       + `${own ? `&owner=${encodeURIComponent(own)}` : ''}${weeks ? `&weeks=${weeks}` : ''}`);
   },
+
+  /* The same feed for Yahoo leagues — b163. ⭐ A SEPARATE CALL, NOT A MERGED ONE: the two platforms
+     address a league differently (a Sleeper numeric id vs a Yahoo "nfl.l.123" key) and answer on
+     different upstreams, so one endpoint taking both would be a router pretending to be a feature. The
+     screen merges the two payloads, which is where the merge belongs. */
+  async yahooTransactions(leagueKeys) {
+    const keys = (leagueKeys || []).filter(Boolean).join(',');
+    if (!keys) return { leagues: [] };
+    return call(`/api/connect/yahoo/transactions?league_keys=${encodeURIComponent(keys)}`);
+  },
   /* Every COMPLETED week of one league, already reduced to verdicts, misses and totals — the whole season
      in one call so the week toggle is instant and the trend lines exist at all. See connect.js. */
   async sleeperSeasonReview(leagueId, owner) {

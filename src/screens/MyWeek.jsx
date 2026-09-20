@@ -68,6 +68,18 @@ const REFRESH_MS = 5 * 60 * 1000;   // his number, and about right: designations
 const hubIdOf = (l) => (l && ((l.connect && l.connect.leagueId) || (l.cfg && l.cfg.connect && l.cfg.connect.leagueId) || l.sleeperLeagueId)) || null;
 // 1st / 2nd / 3rd. This screen is code-split, so it cannot reach App.jsx's copy without dragging the
 // whole module in behind it — three lines is cheaper than the import.
+/* When a transaction happened. ⚠ Duplicated from App.jsx's `txWhen` deliberately — this screen is
+   code-split and importing it would drag the whole module into its chunk. Six lines, and the shape it
+   reads (an epoch in milliseconds) is not going to move. */
+const whenOf = (at) => {
+  const t = Number(at);
+  if (!Number.isFinite(t) || t <= 0) return null;
+  const d = new Date(t);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString("en-US", d.getFullYear() === new Date().getFullYear()
+    ? { month: "short", day: "numeric" }
+    : { month: "short", day: "numeric", year: "numeric" });
+};
 const ordinalOf = (n) => {
   const v = Number(n);
   if (!Number.isFinite(v)) return "—";
@@ -555,8 +567,10 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
     moves: tx ? (tx.leagues || []).reduce((n, L) => n + (L.items || []).filter((x) => x.mine).length, 0) : 0,
   }), [availRows, perLeague, wxRows, tx]);
 
-  const LeagueTag = ({ l, dim }) => (
-    <button onClick={() => onUmbrella && onUmbrella(l.id)} data-wkleague={l.name} title={`Open ${l.name}`}
+  /* A plain function, CALLED — a component declared during render is a new type every render and React
+     remounts its whole subtree. See src/App.jsx `posGrid`. */
+  const leagueTag = (l, dim) => (
+    <button key={l.id} onClick={() => onUmbrella && onUmbrella(l.id)} data-wkleague={l.name} title={`Open ${l.name}`}
       style={{ cursor: "pointer", fontFamily: "inherit", flexShrink: 0, maxWidth: 230, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
         border: `1px solid ${dim ? "var(--line)" : "var(--line2)"}`, background: "var(--panel2)", color: "var(--mut)",
         opacity: dim ? .6 : 1, borderRadius: 99, padding: "2px 9px", fontSize: 10.5, fontWeight: 700 }}>{l.name}</button>
@@ -571,10 +585,11 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
      So the wording follows the arithmetic: a genuine gain is an instruction, a loss is a fallback, and the
      colour follows too. Nothing is hidden either way — you still see both projections and the gap, because
      the whole point is to let you decide how much a questionable tag is worth to you. */
-  const Swap = ({ outPts, inName, inPts, delta, where }) => {
+  /* A plain function, CALLED — see `leagueTag` above. */
+  const swapLine = ({ outPts, inName, inPts, delta, where }) => {
     const better = delta == null || delta >= 0;
     return (
-      <span data-wkswap={inName} data-wkswapkind={better ? "gain" : "fallback"}
+      <span key={inName} data-wkswap={inName} data-wkswapkind={better ? "gain" : "fallback"}
         style={{ display: "inline-flex", alignItems: "baseline", gap: 5, fontSize: 11.5, flexWrap: "wrap" }}>
         <span className="mut">{better ? "→ start" : "→ if he sits, best you have is"}</span>
         <b style={{ color: better ? "var(--pos)" : "var(--ink)" }}>{inName}</b>
@@ -594,29 +609,78 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
     txRan.current = sig;
     let alive = true;
     setTxLoading(true); setTxErr(null);
-    /* ⚠ SLEEPER LEAGUES ONLY — b161. Yahoo publishes no transaction resource we can read, so asking about
-       a Yahoo league here would send an id the Sleeper API has never heard of and cost the whole call.
-       The section says so below rather than quietly showing a shorter list. */
-    const txLeagues = connected.filter((l) => platOf(l) !== "yahoo");
-    /* ⚠⚠ THE LEAGUES WE CANNOT COVER ARE CARRIED, NOT DROPPED. Trey's own account is MIXED — Sleeper and
-       Yahoo — so an explanation that only appears when EVERY league is a Yahoo one is an explanation he
-       would never see: his feed would simply be one league short and say nothing about it. A list that
-       is quietly incomplete is worse than an empty one, because nothing prompts you to doubt it. */
-    const uncovered = connected.filter((l) => platOf(l) === "yahoo").map((l) => l.name);
-    if (!txLeagues.length) { setTx({ leagues: [], pendingSupported: false, yahooOnly: true, uncovered }); setTxLoading(false); return; }
-    api.sleeperTransactions(txLeagues.map((l) => hubIdOf(l)), txLeagues.map((l) => ownerOf(l)), txWeeks)
-      .then((d) => { if (alive) setTx({ ...d, uncovered }); })
-      .catch((e) => { if (alive) setTxErr(String((e && e.message) || e)); })
-      .finally(() => { if (alive) setTxLoading(false); });
+    /* ⭐⭐⭐⭐⭐ BOTH PLATFORMS NOW — b163. Until this build the feed asked Sleeper only and named the
+       Yahoo leagues it was skipping; Trey's own account is mixed, so his feed was genuinely a league
+       short every time he opened it. ⚠ TWO CALLS, NOT ONE: the platforms address a league differently
+       and answer on different upstreams, so they are fetched separately and merged here.
+       ⚠⚠ AND ONE SIDE FAILING MUST NOT EMPTY THE OTHER. `allSettled`, not `all` — an expired Yahoo token
+         costing the Sleeper half of the feed would be a new way to show a quietly incomplete list, which
+         is the exact fault this change is fixing. Whatever cannot be read is NAMED. */
+    const sleeperLgs = connected.filter((l) => platOf(l) !== "yahoo");
+    const yahooLgs = connected.filter((l) => platOf(l) === "yahoo" && yahooKeyOf(l));
+    /* A Yahoo league with no usable league_key cannot be asked about at all — say which. */
+    const noKey = connected.filter((l) => platOf(l) === "yahoo" && !yahooKeyOf(l)).map((l) => l.name);
+    if (!sleeperLgs.length && !yahooLgs.length) {
+      setTx({ leagues: [], pendingSupported: false, uncovered: noKey }); setTxLoading(false); return;
+    }
+    Promise.allSettled([
+      sleeperLgs.length
+        ? api.sleeperTransactions(sleeperLgs.map((l) => hubIdOf(l)), sleeperLgs.map((l) => ownerOf(l)), txWeeks)
+        : Promise.resolve(null),
+      yahooLgs.length ? api.yahooTransactions(yahooLgs.map((l) => yahooKeyOf(l))) : Promise.resolve(null),
+    ]).then(([sRes, yRes]) => {
+      if (!alive) return;
+      const sOk = sRes.status === "fulfilled" && sRes.value ? sRes.value : null;
+      const yOk = yRes.status === "fulfilled" && yRes.value ? yRes.value : null;
+      if (!sOk && !yOk) {
+        const why = (sRes.reason && sRes.reason.message) || (yRes.reason && yRes.reason.message) || "error";
+        setTxErr(String(why)); return;
+      }
+      /* ⚠ NAMED THE WAY HE NAMED IT. A league that could not be read came back as "nfl.l.99" — a Yahoo
+         league key, which is how the API addresses it and not how anybody thinks about it. The name on
+         his own league record is the one he will recognise. */
+      const nameFor = (id) => (connected.find((c) => String(hubIdOf(c)) === String(id)
+        || String(yahooKeyOf(c) || "") === String(id)) || {}).name || id;
+      const uncovered = [...noKey];
+      if (!sOk && sleeperLgs.length) uncovered.push(...sleeperLgs.map((l) => l.name));
+      if (!yOk && yahooLgs.length) uncovered.push(...yahooLgs.map((l) => l.name));
+      ((yOk && yOk.leagues) || []).forEach((L) => { if (L.error) uncovered.push(L.leagueName || nameFor(L.leagueId)); });
+      const leagues = [...((sOk && sOk.leagues) || []), ...((yOk && yOk.leagues) || []).filter((L) => !L.error)];
+      setTx({
+        ...(sOk || {}),
+        leagues,
+        /* ⭐ THE PENDING SENTENCE IS PER PLATFORM NOW. Sleeper cannot show an unresolved offer and Yahoo
+           can, so the claim depends on which leagues are actually in this feed — printing Sleeper's
+           limitation over a Yahoo league would be a fresh false statement where the old one was fixed. */
+        pendingSupported: !!(yOk && yOk.pendingSupported),
+        sleeperCovered: !!(sOk && (sOk.leagues || []).length),
+        yahooCovered: !!(yOk && (yOk.leagues || []).filter((L) => !L.error).length),
+        uncovered,
+      });
+    }).finally(() => { if (alive) setTxLoading(false); });
     return () => { alive = false; };
   }, [view, connected, txWeeks]);
 
   /* One flat, newest-first list across every league, because the ask was explicitly an AGGREGATED look.
      The per-league view already exists inside each league's Trades tab. */
   const txItems = useMemo(() => {
-    const all = ((tx && tx.leagues) || []).flatMap((L) => (L.items || []).map((x) => ({ ...x, faab: L.faab, budget: L.budget })));
+    /* ⚠⚠⚠⚠ THE LEAGUE LABEL IS STAMPED FROM THE WRAPPER, and this line is why the Yahoo rows shipped
+       blank in the first cut. The row prints `x.leagueName || x.leagueId` — per ITEM — and the Sleeper
+       backend happens to set both on every transaction it normalises. The Yahoo parser does not, so
+       every Yahoo row rendered with an empty league column: on an AGGREGATED feed across twelve leagues,
+       the one thing that tells you which league a move happened in was simply missing, and the rows
+       otherwise looked perfect. Stamping here fixes it for both platforms and for any platform added
+       later, because it reads the wrapper the merge already has rather than trusting each backend to
+       remember. ⚠ The item's own values still WIN where it has them. */
+    const named = (l) => (connected.find((c) => String(hubIdOf(c)) === String(l.leagueId)
+      || String(yahooKeyOf(c) || "") === String(l.leagueId)) || {}).name || null;
+    const all = ((tx && tx.leagues) || []).flatMap((L) => {
+      const nm = L.leagueName || named(L) || L.leagueId;
+      return (L.items || []).map((x) => ({ ...x, faab: L.faab, budget: L.budget,
+        leagueId: x.leagueId || L.leagueId, leagueName: x.leagueName || nm }));
+    });
     return all.sort((a, b) => (b.at || 0) - (a.at || 0));
-  }, [tx]);
+  }, [tx, connected]);
   const txShown = useMemo(() => (txScope === "mine" ? txItems.filter((x) => x.mine) : txItems), [txItems, txScope]);
 
   const VIEWS = [
@@ -931,8 +995,8 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                 ))}
               </div>
               {sortBy === "league"
-                ? <ByLeague perLeague={perLeague} Swap={Swap} onUmbrella={onUmbrella} />
-                : <FlatList rows={availSorted} sortBy={sortBy} LeagueTag={LeagueTag} Swap={Swap} />}
+                ? <ByLeague perLeague={perLeague} swapLine={swapLine} onUmbrella={onUmbrella} />
+                : <FlatList rows={availSorted} sortBy={sortBy} leagueTag={leagueTag} swapLine={swapLine} />}
             </>
           )
         )}
@@ -1084,7 +1148,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                               <span style={{ fontSize: 12.5, fontWeight: 700 }}>{r.name}</span>
                               <span className="mut" style={{ fontSize: 10.5 }}>{r.pos} · {r.team}</span>
                               <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
-                                {r.inLeagues.map((l) => <LeagueTag key={l.id} l={l} />)}
+                                {r.inLeagues.map((l) => leagueTag(l))}
                               </span>
                             </div>
                           ))}
@@ -1155,10 +1219,21 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                       does and does not publish, which is a true sentence about the wrong service and
                       reads as though we had looked. */}
                   <div data-wkmovesnote className="mut" style={{ fontSize: 11.5, lineHeight: 1.55, paddingTop: 10, borderTop: "1px solid var(--line)" }}>
-                    {tx.yahooOnly ? (
-                      <><b style={{ color: "var(--ink)" }}>Yahoo publishes no transaction feed.</b> There is nothing
-                      for us to read here — not pending offers, not completed trades, not waiver claims. Everything
-                      else in the in-season screens works on a Yahoo league; this one section needs Sleeper.</>
+                    {/* ⭐⭐⭐⭐⭐ THE SENTENCE IS PER PLATFORM NOW — b163, and it has to be, because the two
+                        platforms differ on exactly the thing Trey asked for first. Sleeper publishes a
+                        transaction only once it has resolved; Yahoo carries offers still waiting on a
+                        decision and ones that were turned down. A single sentence over a mixed feed is
+                        false whichever way it is written, so it says what is true OF THE LEAGUES IN THIS
+                        FEED — which is why the flags travel on the payload rather than being decided here. */}
+                    {tx.yahooCovered && !tx.sleeperCovered ? (
+                      <><b style={{ color: "var(--ink)" }}>Pending offers are included.</b> Yahoo publishes trades that
+                      are still waiting on a decision, and ones that were turned down — so an offer sitting in your
+                      inbox shows up below, marked as waiting.</>
+                    ) : tx.yahooCovered && tx.sleeperCovered ? (
+                      <><b style={{ color: "var(--ink)" }}>Pending offers show for your Yahoo leagues only.</b> Yahoo
+                      publishes trades still waiting on a decision; Sleeper publishes a transaction only once it has
+                      gone through, so an offer in a Sleeper league leaves no record we can read. Anything below from
+                      a Sleeper league has already happened.</>
                     ) : (
                       <><b style={{ color: "var(--ink)" }}>Pending offers are not available.</b> Sleeper only publishes a
                       transaction once it has gone through, so an offer sitting in your inbox — and a trade somebody
@@ -1166,12 +1241,16 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                       itself for anything still waiting on a yes.</>
                     )}
                   </div>
-                  {(tx.uncovered || []).length > 0 && !tx.yahooOnly && (
+                  {/* ⚠ STILL NAMED, BUT FOR A DIFFERENT REASON. This used to say "Yahoo publishes no
+                      transaction feed", which is no longer true. A league lands here now only when the
+                      call for it actually failed — an expired token, a league key we never got — and a
+                      quietly incomplete list is still worse than an empty one. */}
+                  {(tx.uncovered || []).length > 0 && (
                     <div data-wkmovesuncovered={String((tx.uncovered || []).length)} className="mut"
                       style={{ fontSize: 11.5, lineHeight: 1.55, marginTop: 7 }}>
                       <b style={{ color: "var(--gold)" }}>Not included:</b>{" "}
-                      {tx.uncovered.join(", ")} — Yahoo publishes no transaction feed we can read, so those
-                      leagues are missing from everything above. Every other in-season screen works on them.
+                      {tx.uncovered.join(", ")} — we couldn't read activity for {(tx.uncovered || []).length === 1 ? "that league" : "those leagues"} just
+                      now, so {(tx.uncovered || []).length === 1 ? "it is" : "they are"} missing from everything above. Every other in-season screen still works on {(tx.uncovered || []).length === 1 ? "it" : "them"}.
                     </div>
                   )}
                 </div>
@@ -1231,12 +1310,11 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                 {!txShown.length && (
                   <div className="panel" data-wkmovesempty style={{ padding: 18 }}>
                     <div className="mut" style={{ fontSize: 13, lineHeight: 1.55 }}>
-                      {tx.yahooOnly
+                      {(tx.uncovered || []).length && !(tx.leagues || []).length
                         ? <span data-wkmovesuncovered={String((tx.uncovered || []).length)}>
-                          {(tx.uncovered || []).join(", ")}{(tx.uncovered || []).length ? " — " : ""}Yahoo
-                          publishes no transaction feed we can read, so there is nothing to aggregate here.
-                          Everything else in the in-season screens works on a Yahoo league; this one section
-                          needs Sleeper.</span>
+                          We couldn't read activity for {(tx.uncovered || []).join(", ")} just now, so there is
+                          nothing to aggregate here. Everything else in the in-season screens still works on
+                          {(tx.uncovered || []).length === 1 ? " it" : " them"}.</span>
                         : txScope === "mine"
                         ? <>You have not made a move in the last {txWeeks} weeks in any connected league. Switch to
                           <b style={{ color: "var(--ink)" }}> Everyone</b> to see what the rest of your leagues have been doing.</>
@@ -1280,16 +1358,28 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                                           <span className="mut" style={{ fontSize: 10.5 }}> {pp.team || ""}</span></span>
                                       ))}</span>
                                   )}
+                                  {/* ⭐⭐⭐⭐⭐ THE OTHER HALF OF THE DEAL IS NOT FOOTNOTES — b163. Trey: "there
+                                      are some players and draft picks that are greyed out and makes it
+                                      hard to track what was actually in the transaction." The received
+                                      players were in ink with a position dot and the ones given up, plus
+                                      every pick, were muted at 11px in brackets. In a trade both sides ARE
+                                      the transaction. The LABELS stay muted; the names do not. */}
                                   {t.picks.map((pk) => (
-                                    <span key={pk.label} className="mut" style={{ fontSize: 11 }}>+ {pk.label}</span>
+                                    <span key={pk.label} style={{ fontSize: 11.5 }}>
+                                      <i className="ti ti-ticket" style={{ fontSize: 11, color: "var(--gold)", marginRight: 3 }} aria-hidden="true" />
+                                      <b>{pk.label}</b>
+                                    </span>
                                   ))}
-                                  {t.faabIn > 0 && <span style={{ fontSize: 11, color: "var(--pos)" }}>+ ${t.faabIn} FAAB</span>}
+                                  {t.faabIn > 0 && <span style={{ fontSize: 11.5, color: "var(--pos)" }}>+ <b>${t.faabIn}</b> FAAB</span>}
                                   {t.gave.length > 0 && (
-                                    <span className="mut" style={{ fontSize: 11.5 }}>
-                                      ({kind === "trade" ? "sends" : "drops"} {t.gave.map((pp) => pp.name).join(", ")})
+                                    <span style={{ fontSize: 12.5 }}>
+                                      <span className="mut">{kind === "trade" ? "sends" : "drops"}</span>{" "}
+                                      {t.gave.map((pp, j) => (
+                                        <span key={pp.sid}>{j ? ", " : ""}<Dot pos={pp.pos} /><b>{pp.name}</b></span>
+                                      ))}
                                     </span>
                                   )}
-                                  {t.faabOut > 0 && <span className="mut" style={{ fontSize: 11 }}>(− ${t.faabOut} FAAB)</span>}
+                                  {t.faabOut > 0 && <span style={{ fontSize: 11.5 }}><span className="mut">−</span> <b>${t.faabOut}</b> <span className="mut">FAAB</span></span>}
                                   {i < x.teams.length - 1 && kind === "trade" && <span className="mut" style={{ fontSize: 11 }}>·</span>}
                                 </div>
                               ))}
@@ -1303,6 +1393,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                                 color: x.status === "failed" ? "var(--mut)" : "var(--pos)" }}>${x.bid}</span>}
                               {x.status === "failed" && <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".05em",
                                 color: "var(--neg)" }}>DIDN'T LAND</span>}
+                              <span data-wkmovewhen={x.at ? String(x.at) : ""} className="num" style={{ fontSize: 11, fontWeight: 600 }}>{whenOf(x.at) || ""}</span>
                               <span className="mut" style={{ fontSize: 10 }}>{x.week ? `Wk ${x.week}` : ""}</span>
                             </div>
                           </div>
@@ -1347,7 +1438,10 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
 
 /* ---- the two shapes the availability list takes ------------------------------------------------- */
 
-function Row({ r, LeagueTag, Swap }) {
+/* ⚠ `leagueTag` AND `swapLine` ARRIVE AS PLAIN FUNCTIONS, not components — b163. They used to be
+   declared inside MyWeek's render and passed down as component props, so React saw a new component type
+   on every render and remounted this row's whole subtree every time. Called, they inline. */
+function Row({ r, leagueTag, swapLine }) {
   return (
     <div data-wkrow={r.name} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "9px 10px", borderTop: "1px solid var(--line)", flexWrap: "wrap" }}>
       <span style={{ flexShrink: 0, marginTop: 1 }}><Dot pos={r.pos} /></span>
@@ -1379,10 +1473,10 @@ function Row({ r, LeagueTag, Swap }) {
           </span>
           {r.inLeagues.map((x) => (
             <div key={x.league.id} style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", paddingLeft: 2 }}>
-              <LeagueTag l={x.league} dim={!x.starting} />
+              {leagueTag(x.league, !x.starting)}
               {x.starting && (x.replacement
-                ? <Swap outPts={x.replacement.curPts} inName={x.replacement.name} inPts={x.replacement.pts}
-                    delta={x.replacement.delta} where={x.replacement.where} />
+                ? swapLine({ outPts: x.replacement.curPts, inName: x.replacement.name, inPts: x.replacement.pts,
+                    delta: x.replacement.delta, where: x.replacement.where })
                 : <span className="mut" style={{ fontSize: 11 }}>→ nobody healthy at {r.pos} on your bench or the wire</span>)}
             </div>
           ))}
@@ -1392,11 +1486,11 @@ function Row({ r, LeagueTag, Swap }) {
   );
 }
 
-function FlatList({ rows, sortBy, LeagueTag, Swap }) {
+function FlatList({ rows, sortBy, leagueTag, swapLine }) {
   /* Grouped into the severity buckets only in the default view. The explicit sorts render one flat list,
      because grouping would quietly re-sort the list the user just asked to sort. */
   if (sortBy !== "impact") {
-    return <div className="panel" style={{ padding: 6 }}>{rows.map((r) => <Row key={r.key} r={r} LeagueTag={LeagueTag} Swap={Swap} />)}</div>;
+    return <div className="panel" style={{ padding: 6 }}>{rows.map((r) => <Row key={r.key} r={r} leagueTag={leagueTag} swapLine={swapLine} />)}</div>;
   }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -1412,7 +1506,7 @@ function FlatList({ rows, sortBy, LeagueTag, Swap }) {
               <span className="mut" style={{ fontSize: 11.5 }}>{group.length}</span>
             </div>
             <div className="panel" style={{ padding: 6, borderColor: sev >= 3 ? meta.tone : "var(--line)" }}>
-              {group.map((r) => <Row key={r.key} r={r} LeagueTag={LeagueTag} Swap={Swap} />)}
+              {group.map((r) => <Row key={r.key} r={r} leagueTag={leagueTag} swapLine={swapLine} />)}
             </div>
           </div>
         );
@@ -1422,7 +1516,7 @@ function FlatList({ rows, sortBy, LeagueTag, Swap }) {
 }
 
 /* One league at a time — for when you are going to go and fix them rather than survey them. */
-function ByLeague({ perLeague, Swap, onUmbrella }) {
+function ByLeague({ perLeague, swapLine, onUmbrella }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       {perLeague.filter((L) => L && (L.avail || []).some((r) => r.rank >= 2)).map((L) => {
@@ -1448,7 +1542,7 @@ function ByLeague({ perLeague, Swap, onUmbrella }) {
                     </div>
                     {(r.part || r.note) && <div className="mut" style={{ fontSize: 11.5, marginTop: 3 }}>{r.part ? <b style={{ color: "var(--ink)" }}>{r.part}</b> : null}{r.part && r.note ? " — " : ""}{r.note}</div>}
                     {r.starting && (r.replacement
-                      ? <div style={{ marginTop: 5 }}><Swap outPts={r.replacement.curPts} inName={r.replacement.name} inPts={r.replacement.pts} delta={r.replacement.delta} where={r.replacement.where} /></div>
+                      ? <div style={{ marginTop: 5 }}>{swapLine({ outPts: r.replacement.curPts, inName: r.replacement.name, inPts: r.replacement.pts, delta: r.replacement.delta, where: r.replacement.where })}</div>
                       : <div className="mut" style={{ fontSize: 11, marginTop: 5 }}>→ nobody healthy at {r.pos} on your bench or the wire</div>)}
                   </div>
                 </div>

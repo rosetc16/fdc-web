@@ -122,8 +122,10 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
     return myCounts[pos] < cap;
   };
 
-  const AssetRow = ({ a, checked, onToggle }) => (
-    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, padding: "2px 0", cursor: "pointer", opacity: a.pickAsset ? 0.92 : 1 }}>
+  /* A plain function, CALLED — a component declared during render is a new type every render and React
+     remounts its whole subtree. See src/App.jsx `posGrid`. */
+  const assetRow = (a, checked, onToggle) => (
+    <label key={a.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, padding: "2px 0", cursor: "pointer", opacity: a.pickAsset ? 0.92 : 1 }}>
       <input type="checkbox" checked={checked} onChange={onToggle} />
       {a.pickAsset ? <i className="ti ti-ticket" style={{ fontSize: 13, color: "var(--gold)" }} aria-hidden="true" /> : <Dot pos={a.pos} />}
       {a.name} <span className="mut num" style={{ marginLeft: "auto" }}>{assetValE(a)}</span>
@@ -239,13 +241,13 @@ function TradeCenter({ players, picks, userIdx, cfg, sortedAdp, draftedSet, show
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
                 <div>
                   <div className="disp gold" style={{ fontSize: 12, letterSpacing: ".06em", marginBottom: 6 }}>YOU GIVE <span className="mut" style={{ fontWeight: 400, letterSpacing: 0 }}>· highest value first</span></div>
-                  {myAssets.map((a) => <AssetRow key={a.id} a={a} checked={give.includes(a.id)} onToggle={() => toggle(give, setGive, a.id)} />)}
+                  {myAssets.map((a) => assetRow(a, give.includes(a.id), () => toggle(give, setGive, a.id)))}
                   {myAssets.length === 0 && <div className="mut" style={{ fontSize: 12 }}>You haven't drafted yet.</div>}
                 </div>
                 <div>
                   <div className="disp gold" style={{ fontSize: 12, letterSpacing: ".06em", marginBottom: 6 }}>YOU GET <span className="mut" style={{ fontWeight: 400, letterSpacing: 0 }}>· highest value first</span></div>
                   {partnerAssets.length === 0 ? <div className="mut" style={{ fontSize: 12 }}>This team hasn't drafted yet.</div>
-                    : partnerAssets.map((a) => <AssetRow key={a.id} a={a} checked={get.includes(a.id)} onToggle={() => toggle(get, setGet, a.id)} />)}
+                    : partnerAssets.map((a) => assetRow(a, get.includes(a.id), () => toggle(get, setGet, a.id)))}
                 </div>
               </div>
               <div className="panel" style={{ padding: 12, marginTop: 14, background: "var(--panel2)" }}>

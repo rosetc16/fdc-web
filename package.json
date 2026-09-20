@@ -5,13 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node tools/icons-check.mjs && node tools/css-check.mjs && node tools/screens-check.mjs && vite build",
-    "build:test": "node tools/icons-check.mjs && node tools/css-check.mjs && node tools/screens-check.mjs && node tools/build-test.mjs",
+    "build": "node tools/icons-check.mjs && node tools/css-check.mjs && node tools/screens-check.mjs && node tools/hooks-check.mjs && vite build",
+    "build:test": "node tools/icons-check.mjs && node tools/css-check.mjs && node tools/screens-check.mjs && node tools/hooks-check.mjs && node tools/build-test.mjs",
     "preview": "vite preview",
     "icons:build": "node tools/icons-build.mjs",
     "icons:check": "node tools/icons-check.mjs",
     "css:check": "node tools/css-check.mjs",
-    "screens:check": "node tools/screens-check.mjs"
+    "screens:check": "node tools/screens-check.mjs",
+    "hooks:check": "node tools/hooks-check.mjs"
   },
   "dependencies": {
     "@fontsource/barlow": "^5.3.0",

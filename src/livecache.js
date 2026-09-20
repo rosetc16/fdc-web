@@ -90,11 +90,24 @@ export async function loadLive(leagues, opts = {}) {
      but implies something. Each pole is now ONE hue at two lightnesses (validated as an ordinal ramp:
      monotone lightness, visible step gaps, both ends clearing the surface for contrast), so intensity reads
      as intensity and the grey midpoint reads as genuine uncertainty. */
+/* ⭐⭐⭐⭐⭐ b163 — THE MIDDLE WAS ONE FLAT GREY THIRTY POINTS WIDE, AND THAT IS WHERE MOST GAMES LIVE.
+   Trey: "can you use more colours for the win %. I basically want it to be green if it's over 60%...
+   40-60 can be black with slight green tint if it's over."
+   ⚠⚠ HE IS POINTING AT A REAL LOSS OF RESOLUTION. Everything from 36% to 65% came back as `--mut`
+     "toss-up" — so a 63% favourite and a 38% underdog were the same grey, and across a dozen leagues the
+     strip went flat exactly where the reading is most interesting. The old thresholds were 0.65/0.35,
+     which also means the scale never agreed with the number beside it: 62% printed in grey reads as
+     "we have no idea" next to a figure that plainly says otherwise.
+   ⭐ THE NEW BREAKS ARE HIS: green over 60, red under 40, and the near-even band is INK — with a green
+     cast when it is above even, which is the whole of what a 54% tells you. ⚠ Below even inside that
+     band stays plain ink rather than taking a red cast, because that is what he asked for and because a
+     red tint on 47% overstates it: the honest reading of 47% is "nothing to say", not "bad news". */
 export function winTone(p) {
   if (!Number.isFinite(p)) return { color: "var(--mut)", label: "—" };
   if (p >= 0.85) return { color: "var(--pos)", label: "safe" };
-  if (p >= 0.65) return { color: "var(--pos-soft)", label: "likely" };
-  if (p > 0.35) return { color: "var(--mut)", label: "toss-up" };
+  if (p >= 0.60) return { color: "var(--pos-soft)", label: "likely" };
+  if (p >= 0.50) return { color: "var(--lean)", label: "slight lean" };
+  if (p > 0.40) return { color: "var(--ink)", label: "toss-up" };
   if (p > 0.15) return { color: "var(--neg-soft)", label: "unlikely" };
   return { color: "var(--neg)", label: "long shot" };
 }

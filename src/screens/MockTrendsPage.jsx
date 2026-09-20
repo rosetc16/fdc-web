@@ -10,6 +10,7 @@
    needs a value at module-evaluation time must NOT be imported this way — it would be in its temporal
    dead zone and the screen would throw on first render. */
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { tipShouldOpen, tipShouldClose } from "../tipsheet.js";
 import { alpha, resolveMyRanks, readStrategy, surname, POS, cpos, bandOfRound, POS_COLOR, ORDER, ordinal, sample, positionTip, vbdColor, CheatSheetModal, PrintedStrategy, printElement, analyzeLeagueMockTrends, Section, TrendsShell } from "../App.jsx";
 
 function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut, user, onRunMock, onEditStrategy }) {
@@ -18,8 +19,12 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
   const [expanded, setExpanded] = useState({});   // which price columns are showing their full list
   const [runSort, setRunSort] = useState("recent");  // section 02: "recent" | "finish"
   const [runAll, setRunAll] = useState(false);       // section 02: top 10, or every mock
-  const showTip = (e, content) => { try { setTip(positionTip(e.clientX, e.clientY, content, e.currentTarget)); } catch (_) {} };
-  const hideTip = () => setTip(null);
+  /* ⚠ b164 — see src/tipsheet.js. On a touch device a synthesised `mouseleave` must not close a sheet. */
+  const showTip = (e, content, opts) => {
+    if (!tipShouldOpen(e, opts)) return;
+    try { setTip(positionTip(e.clientX, e.clientY, content, e.currentTarget, opts)); } catch (_) {}
+  };
+  const hideTip = (e) => { if (!tipShouldClose(e)) return; setTip(null); };
   const teams = league.cfg.teams || 12;
   // ⭐ 29p — print this plan, and the door to the printable cheat sheet. See TrendsShell.
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -52,7 +57,7 @@ function MockTrendsPage({ league, players, onBack, backLabel, onHome, onSignOut,
   // React still throws away everything under it on every render. Half-fixing it left the probe failing in
   // the same way, which is how I know.
   const shellProps = {
-    onBack, backLabel, onHome, onSignOut, tip,
+    onBack, backLabel, onHome, onSignOut, tip, onTipClose: hideTip,
     onPrint: () => printElement("[data-planbody]", { title: `${league.name} — draft plan` }),
     onCheatSheet: () => setSheetOpen(true),
   };

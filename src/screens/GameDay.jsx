@@ -171,8 +171,10 @@ function MatchupDetail({ L, F, tone, bySid, wide, onOpenHub }) {
     .sort((a, b) => (b.proj || 0) - (a.proj || 0));
   const mine = left(L.me), theirs = left(L.opp);
 
-  const Roster = ({ rows, label, who, rootFor, empty }) => (
-    <div style={{ minWidth: 0 }}>
+  /* A plain function, CALLED — a component declared during render is a new type every render and React
+     remounts its whole subtree. See src/App.jsx `posGrid`. */
+  const rosterSide = ({ rows, label, who, rootFor, empty }) => (
+    <div key={label} style={{ minWidth: 0 }}>
       {/* ⚠ THE TEAM NAME IS A SUFFIX, NOT PART OF THE SENTENCE. Built into the label it produced
           "ROOT AGAINST — THEM PLAYERS STILL TO PLAY" the moment an opponent was called "Them", and
           plenty of real team names read no better in the possessive. */}
@@ -260,10 +262,10 @@ function MatchupDetail({ L, F, tone, bySid, wide, onOpenHub }) {
 
       <div style={{ display: "grid", gap: wide ? 20 : 12,
         gridTemplateColumns: wide ? "minmax(0,1fr) minmax(0,1fr)" : "minmax(0,1fr)" }}>
-        <Roster rows={mine} label="Root for — still to play" who={(L.me && L.me.teamName) || null}
-          rootFor empty="All of yours have played." />
-        <Roster rows={theirs} label="Root against — still to play" who={(L.opp && L.opp.teamName) || null}
-          rootFor={false} empty="All of theirs have played." />
+        {rosterSide({ rows: mine, label: "Root for — still to play", who: (L.me && L.me.teamName) || null,
+          rootFor: true, empty: "All of yours have played." })}
+        {rosterSide({ rows: theirs, label: "Root against — still to play", who: (L.opp && L.opp.teamName) || null,
+          rootFor: false, empty: "All of theirs have played." })}
       </div>
 
       <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
