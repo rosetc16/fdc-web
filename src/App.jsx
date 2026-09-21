@@ -103,7 +103,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29be";
+const BUILD_TAG = "2026.07.29bg";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -788,6 +788,28 @@ export function leaguePower(data, pool, ictx) {
    deal. The layout follows that order — your side, their side, then the two league-level consequences.
    ⚠ EVERY FIGURE IS A DIFFERENCE BETWEEN TWO OPTIMAL LINEUPS, never a sum of the players changing hands,
      which is what makes a third man in a package correctly worth zero. See `tradeEval`. */
+/* ⭐⭐⭐⭐⭐ THE GRADE, SMALL — 29bg. The calculator's letter and call (29bf) on every trade IDEA, so a list
+   of suggestions says which to send without a click into the calculator. `g` is `ideaGrade(...)` in TeamHub
+   — the real tradeEval from my side, so this pill and the calculator's card cannot disagree.
+   ⚠ THE LETTER CARRIES A WORD, never colour alone (the win% rule): "Offer it" / "Don't" read in greyscale.
+   ⚠ SHORT WORDS, because it sits in a table row as well as a card; the full sentence is the hover. */
+const CALL_TONE = { send: "var(--pos)", sweeten: "var(--gold)", small: "var(--ink)", even: "var(--mut)", pass: "var(--neg)" };
+const CALL_SHORT = { send: "Offer it", sweeten: "Good · may need more", small: "Small upgrade", even: "Not worth it", pass: "Don't" };
+function IdeaGrade({ g, size = "md", style }) {
+  if (!g || !g.letter) return null;
+  const c = CALL_TONE[g.call && g.call.key] || "var(--ink)";
+  const sm = size === "sm";
+  const tip = `${g.call ? g.call.label + " — " + g.call.why : ""}${g.why && g.why.length ? `\nGraded on ${g.why.join(", ")}.` : ""}\nThe same grade the trade calculator gives it.`;
+  return (
+    <span data-ideagrade={g.letter} data-ideacall={g.call ? g.call.key : ""} data-ideascore={String(g.score)} title={tip}
+      style={{ display: "inline-flex", alignItems: "center", gap: sm ? 4 : 6, whiteSpace: "nowrap", cursor: "help",
+        border: `1px solid ${c}`, borderRadius: 99, padding: sm ? "0 6px 0 5px" : "1px 9px 1px 7px", background: "var(--panel)", lineHeight: 1.5, ...(style || {}) }}>
+      <b className="disp num" style={{ fontSize: sm ? 11.5 : 14, color: GRADE_TONE(g.letter), lineHeight: 1 }}>{g.letter.replace("-", "−")}</b>
+      <span style={{ fontSize: sm ? 9.5 : 10.5, fontWeight: 800, color: c, letterSpacing: ".02em" }}>{CALL_SHORT[g.call && g.call.key] || ""}</span>
+    </span>
+  );
+}
+
 const TradeVerdict = ({ r, weeks, games, oddsShift }) => {
   const V = { good: "var(--green)", lopsided: "var(--gold)", flat: "var(--mut)", bad: "var(--red)" };
   const me = r.sides.me, them = r.sides.them;
@@ -837,6 +859,27 @@ const TradeVerdict = ({ r, weeks, games, oddsShift }) => {
       data-tbranks={JSON.stringify((r.power.before || []).reduce((acc, t) => {
         acc[t.teamName] = t.powerRank; return acc;
       }, {}))}>
+      {/* ⭐⭐⭐⭐⭐ 29bf — THE ANSWER FIRST. Trey: "a grade on the trade for you... and a recommendation (that
+          is clear) for whether or not you should make the deal." Everything below is the working; this is
+          the conclusion, and it is on top because it is what he reads the panel for. The detail stays —
+          "which I like" — so the call can always be checked against the numbers under it. */}
+      {r.grade && r.call && (() => {
+        const c = CALL_TONE[r.call.key] || "var(--ink)";
+        return (
+          <div data-tbgrade={r.grade.letter} data-tbcall={r.call.key}
+            style={{ display: "flex", gap: 13, alignItems: "center", border: `2px solid ${c}`, borderRadius: 11, padding: "11px 13px", marginBottom: 11, background: "var(--panel)" }}>
+            <div style={{ flexShrink: 0, textAlign: "center", minWidth: 54 }}>
+              <div className="disp num" style={{ fontSize: 34, fontWeight: 800, lineHeight: 1, color: GRADE_TONE(r.grade.letter) }}>{r.grade.letter.replace("-", "−")}</div>
+              <div className="mut" style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".06em", marginTop: 3 }}>{me.isMe ? "for you" : `for ${me.teamName}`}</div>
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 15.5, fontWeight: 800, color: c, marginBottom: 2 }}>{r.call.label}</div>
+              <div style={{ fontSize: 12, lineHeight: 1.45 }}>{r.call.why}</div>
+              <div className="mut" style={{ fontSize: 10.5, marginTop: 4, lineHeight: 1.4 }}>Graded on {r.grade.why.join(", ")}.</div>
+            </div>
+          </div>
+        );
+      })()}
       {/* The horizon label only appears where there are two horizons; in redraft "right now" is the only
           thing on screen and naming it would imply something else exists. */}
       {r.long && (
@@ -10564,6 +10607,19 @@ export default function App() {
        behind them — that is what the cache is FOR, and gating the whole app on the network would throw it
        away again. */
   const [meState, setMeState] = useState("pending");   // pending | ok | failed
+  /* ⭐⭐⭐⭐⭐ ARE THIS ACCOUNT'S LEAGUES STILL ON THEIR WAY? — 29bf.
+     Trey: "when you go to the home page of the site, it takes 2-4 seconds for the leagues that you're
+     connected to to render on the screen. Can you show some kind of loading mechanism... I want people to
+     not just click other buttons if that's what they were looking for."
+     On a device that has never held this account's leagues they arrive with the server restore
+     (`api.getState()` after `/auth/me`), and until then the home page had no way to tell "you have no
+     leagues" from "your leagues are coming" — so it said the first: 0 LEAGUES, "Let's get you drafting"
+     and a big Connect Sleeper button, which is precisely the wrong button to invite a click on.
+     "pending" from boot whenever there is a token to restore with; "done" once the restore has answered
+     either way (or /auth/me failed). A 15s ceiling below means a hung request can never leave the
+     page stuck on a spinner. */
+  const [leagueSync, setLeagueSync] = useState(() => (hasBackend && !!getToken() ? "pending" : "done"));
+  useEffect(() => { if (leagueSync !== "pending") return; const t = setTimeout(() => setLeagueSync("done"), 15000); return () => clearTimeout(t); }, [leagueSync]);
   const hadTokenAtBoot = useRef(false);
   // Global hover-animation kill switch (persisted). Applied as a class on .gs-root so the CSS above can
   // strip motion from every tab at once; toggled from the draft-room top bar and remembered across visits.
@@ -10914,7 +10970,7 @@ export default function App() {
         const meP = api.me().catch(() => null);
         packP.then((pack) => { try { if (pack && applyLivePack(pack)) setDataVersion((v) => v + 1); } catch (e) {} finally { packDoneRef.current = true; } });
         meP.then(async (me) => {
-          if (!me) { setMeState("failed"); return; }
+          if (!me) { setMeState("failed"); setLeagueSync("done"); return; }
           setMeState("ok");
           try {
             const admin = isAdminEmail(me.email);
@@ -10977,7 +11033,7 @@ export default function App() {
                  top-level key has the same trap waiting for it at this line and at the two below. */
               try { if (mergedLeagues.length > srvLeagues.length) await api.putState({ leagues: mergedLeagues, funMocks: mergedMocks, feedback: Array.isArray(srv.feedback) ? srv.feedback : [], injuries: mergedInj }); } catch (e) {}
             }
-          } catch (e) {}
+          } catch (e) {} finally { setLeagueSync("done"); }
         });
         // Stripe return handling (independent of the above)
         try {
@@ -11226,6 +11282,7 @@ export default function App() {
         setUser(merged);
         // Restore this account's server-saved blob (leagues, picks/preds, queues, mocks) so signing in
         // on any device brings the user's drafts with them. Falls back silently to whatever's local.
+        setLeagueSync("pending");   // 29bf — the same "your leagues are coming" state the boot restore uses
         try {
           const sr = await api.getState();
           const srv = sr && sr.state ? sr.state : null;
@@ -11255,7 +11312,7 @@ export default function App() {
           try { if (window.storage) { const r = await window.storage.get("gs-state"); const cur = (r && r.value) ? JSON.parse(r.value) : {}; await window.storage.set("gs-state", JSON.stringify({ ...cur, leagues: mergedLeagues.length ? mergedLeagues : cur.leagues, funMocks: mergedMocks.length ? mergedMocks : cur.funMocks, feedback: (srv && Array.isArray(srv.feedback)) ? srv.feedback : cur.feedback, injuries: mergedInj, user: merged })); } } catch (e) {}
           // Push the merged union back so the server (and thus every other device) converges to the full set.
           try { if (mergedLeagues.length >= srvLeagues.length) await api.putState({ leagues: mergedLeagues, funMocks: mergedMocks, feedback: (srv && Array.isArray(srv.feedback)) ? srv.feedback : (feedback || []), injuries: mergedInj }); } catch (e) {}
-        } catch (e) { /* server state unavailable — local copy stands */ }
+        } catch (e) { /* server state unavailable — local copy stands */ } finally { setLeagueSync("done"); }
         persist({ user: merged });
         return merged;
       } catch (e) {
@@ -11730,7 +11787,7 @@ export default function App() {
           <button onClick={() => setUpdateReady(false)} title="Dismiss — I'll refresh later" style={{ background: "transparent", border: "none", color: "var(--on-gold)", cursor: "pointer", padding: 4, display: "flex", opacity: 0.7 }}><i className="ti ti-x" style={{ fontSize: 15 }} aria-hidden="true" /></button>
         </div>
       )}
-      {route === "home" && user?.paid && <PaidHub user={user} leagues={visibleLeagues} allLeagues={leagues} funMocks={funMocks}
+      {route === "home" && user?.paid && <PaidHub user={user} leagues={visibleLeagues} allLeagues={leagues} funMocks={funMocks} leaguesLoading={leagueSync === "pending" && !(leagues || []).length}
         /* ⚠⚠⚠ 29bc hotfix — `injuries` IS APP STATE AND HAS TO BE PASSED DOWN. 29bb wired the home page's
            Power column to the injuries (so it agrees with the hub) but read `injuries` as if PaidHub could
            see App's state. It cannot: in PaidHub it was an undeclared name, so every signed-in load of the
@@ -16590,9 +16647,65 @@ export function tradeEval(teams, opts) {
     return null;
   })();
 
+  /* ═══════════════════════════════════════════════════════════════════════════════════════════════
+     ⭐⭐⭐⭐⭐ A GRADE FOR YOU, AND ONE CLEAR CALL — 29bf.
+     Trey: "can you also put a grade on the trade for you... and a recommendation (that is clear) for
+     whether or not you should make the deal. Right now there are a bunch of detailed metrics, which I
+     like, but it can be tough to tell if you should do it or not."
+     ⚠⚠ THE EXISTING VERDICT NEVER ANSWERED HIS QUESTION. `verdict` above ("Worth asking", "They would be
+       worse off") is entirely about whether the OTHER manager accepts. Nothing on the panel said whether
+       the deal is good for YOU — the reader had to assemble that from six numbers. That is the gap.
+     ⭐ THE GRADE IS ABSOLUTE, in points a week of YOUR best lineup (the 29au rule — a relative grade is an
+       amplifier that hands out an A to a trade that changes nothing). Nudged, never driven, by what the
+       lineup number cannot see: depth changing hands off the bench, and in keeper/dynasty leagues the
+       long-term value, which is weighted in rather than ignored because there it is half the question.
+     ⭐ THE CALL COMBINES THE TWO QUESTIONS HE ACTUALLY HAS — is it good for me, and will they say yes — into
+       one sentence, because "good for you, expect a no" and "fair, but it barely helps you" call for
+       completely different next moves and a grade alone cannot tell them apart.
+     ══════════════════════════════════════════════════════════════════════════════════════════════ */
+  const G = o.games || 17;
+  const pw = (mine.delta || 0) / G;                                  // your best lineup, points a week
+  const depthPw = ((mine.assetDelta || 0) - (mine.delta || 0)) / G;  // value moving that is NOT in your lineup
+  const longPw = long && long.delta != null ? long.delta / G : null;
+  let gScore = keeps && longPw != null ? pw * 0.6 + longPw * 0.4 : pw;
+  const gWhy = [`${pw >= 0 ? '+' : ''}${pw.toFixed(1)} a week in your best lineup`];
+  /* Depth only nudges, and only when the lineup change is small — a bench stash is worth something, but
+     never more than the starters actually scoring points. */
+  if (Math.abs(pw) < 0.6 && Math.abs(depthPw) >= 1.5) {
+    gScore += depthPw > 0 ? 0.3 : -0.3;
+    gWhy.push(depthPw > 0 ? 'and it adds real depth behind your starters' : 'and it thins out your bench');
+  }
+  if (keeps && longPw != null) gWhy.push(`${longPw >= 0 ? 'gains' : 'costs'} ${Math.abs(long.delta).toFixed(0)} of long-term value`);
+  const mr = { from: rankOf(powerBefore, me.rosterId), to: rankOf(powerAfter, me.rosterId) };
+  if (mr.from != null && mr.to != null && mr.from !== mr.to) {
+    gWhy.push(`moves you ${mr.to < mr.from ? 'up' : 'down'} from ${mr.from} to ${mr.to} in the power rankings`);
+  }
+  const BANDS = [[3.0, 'A+'], [2.0, 'A'], [1.4, 'A-'], [0.9, 'B+'], [0.5, 'B'], [0.2, 'B-'], [-0.2, 'C'], [-0.5, 'C-'], [-1.2, 'D']];
+  const letter = (BANDS.find(([cut]) => gScore >= cut) || [null, 'F'])[1];
+  const grade = { letter, score: Math.round(gScore * 100) / 100, perWeek: Math.round(pw * 10) / 10, why: gWhy };
+  const willAccept = (verdictLong || verdict).key === 'good' || (verdictLong || verdict).key === 'future';
+  const call = (() => {
+    const wk = `${Math.abs(pw).toFixed(1)} a week`;
+    if (gScore >= 0.5 && willAccept) return { key: 'send', label: 'Make this offer',
+      why: `It makes your team better by about ${wk}, and it is fair enough that they have a reason to say yes.` };
+    /* ⚠ 29bg — WAS "expect a no". On a Deals card that sat beside the finder's own "WORTH ASKING" band and
+       the two read as a contradiction. They are not: the finder says the ask is reasonable to OPEN with, this
+       says the deal as written leaves them behind. "They will likely want more" says both at once. */
+    if (gScore >= 0.5) return { key: 'sweeten', label: 'Good for you — they will likely want more',
+      why: `It makes your team better by about ${wk}, but they come out behind. Add something small they need, or use it to open the conversation.` };
+    if (gScore >= 0.2) return { key: 'small', label: willAccept ? 'Small upgrade — fine if it is easy' : 'Small upgrade, and they may not bite',
+      why: `It helps a little (about ${wk}). Worth doing only if it costs you nothing else — it will not change your season.` };
+    /* key "even", not "wash" — the icon scanner reads a quoted "wash" as a Tabler icon (7th time). */
+    if (gScore > -0.2) return { key: 'even', label: 'Not worth it',
+      why: 'It barely changes your team either way. Skip it unless you need the roster spot or a different bye week.' };
+    return { key: 'pass', label: "Don't make this trade",
+      why: `It makes your team worse by about ${wk}${mr.to > mr.from ? ` and drops you to ${mr.to} in the power rankings` : ''}.` };
+  })();
+
   return {
     ok: true, error: null,
     horizon: keeps ? 'both' : 'now',
+    grade, call,
     sides: { me: mine, them: theirs },
     power: { before: powerBefore, after: powerAfter, moves,
       myRank: { from: rankOf(powerBefore, me.rosterId), to: rankOf(powerAfter, me.rosterId) },
@@ -17184,10 +17297,53 @@ function BriefTable({ cols, rows, note, tmpl }) {
 const HUB_MEMO = new Map();
 function hubMemo(key, fn) {
   if (HUB_MEMO.has(key)) return HUB_MEMO.get(key);
-  if (HUB_MEMO.size > 12) HUB_MEMO.clear();
+  /* 29bg — 12 → 40. A hub render now touches ~12 keys on its own (odds, market, reads, board, partners,
+     ideas, and the two grade caches), and a cap below that clears the map on EVERY render — every memo in
+     the hub silently recomputing, every time. */
+  if (HUB_MEMO.size > 40) HUB_MEMO.clear();
   const v = fn();
   HUB_MEMO.set(key, v);
   return v;
+}
+
+/* ⭐⭐⭐⭐⭐ "YOUR LEAGUES ARE ON THEIR WAY" — 29bf.
+   Trey: "it takes 2-4 seconds for the leagues that you're connected to to render on the screen. Can you show
+   some kind of loading mechanism... I want people to not just click other buttons if that's what they were
+   looking for."
+   Two moments use it, and they are different waits:
+     · `kind="leagues"` — the account's leagues themselves are still coming (a device that has never held
+       them; the server restore). Shown where the leagues will appear, in place of the onboarding cards.
+     · `kind="week"` — the leagues are known but this week's scores are still loading (HomeWeekStrip's first
+       `loadLive`). A slimmer version in the strip's own slot, so the row it becomes does not jump in.
+   ⚠ It is a SKELETON IN THE SHAPE OF WHAT IS COMING, not a spinner over the whole page: the page stays
+     usable, but the space where the answer lands is visibly busy, so nobody reads its emptiness as "you
+     have no leagues" and goes looking for another button. */
+function HomeLeaguesLoading({ kind = "leagues", count = 0 }) {
+  const LINES = kind === "week"
+    ? [`Loading this week${count ? ` across your ${count} league${count === 1 ? "" : "s"}` : ""}…`, "Pulling live scores and matchups…", "Working out win chances…", "Almost there…"]
+    : ["Loading your leagues…", "Syncing your account…", "Bringing in your connected teams…", "Almost there…"];
+  const [li, setLi] = useState(0);
+  useEffect(() => { const iv = setInterval(() => setLi((i) => Math.min(i + 1, LINES.length - 1)), 1500); return () => clearInterval(iv); }, []);
+  const bar = (w, h) => <div style={{ width: w, height: h, borderRadius: 6, background: "linear-gradient(90deg,var(--panel2) 25%,var(--panel3) 37%,var(--panel2) 63%)", backgroundSize: "400% 100%", animation: "hubshimmer 1.4s ease infinite" }} />;
+  const rows = kind === "week" ? 3 : 4;
+  return (
+    <div className="panel" data-homeloading={kind} role="status" aria-live="polite" aria-busy="true"
+      style={{ padding: 14, marginBottom: 12, border: "1px solid var(--line2)" }}>
+      <style>{`@keyframes hubshimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}`}</style>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+        <div style={{ width: 16, height: 16, borderRadius: "50%", border: "2px solid var(--line2)", borderTopColor: "var(--gold)", animation: "fdcspin .8s linear infinite", flexShrink: 0 }} />
+        <div style={{ fontSize: 13.5, fontWeight: 700 }}>{LINES[li]}</div>
+        <div className="mut" style={{ fontSize: 11.5, marginLeft: "auto" }}>{kind === "week" ? "a few seconds" : "hang tight — this takes a few seconds"}</div>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {Array.from({ length: rows }, (_, i) => (
+          <div key={i} style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            {bar(30, 30)}<div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>{bar(`${62 - i * 7}%`, 12)}{bar(`${36 - i * 3}%`, 10)}</div>{bar(64, 24)}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // Animated loading state for the team hub — a shimmering skeleton plus a rotating status line, so a slow
@@ -17581,7 +17737,9 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
        close calls and the lineup, without any of them being edited or even knowing injuries exist. */
   /* ⭐ 29be — season-to-date actuals, fetched once per week. Until they arrive (or if the backend has not
      built them yet) every value is the pure projection, and the Trades tab says which it is using. */
-  const [std, setStd] = useState(null);
+  /* `undefined` = still fetching, `null` = unavailable, object = the table (possibly `warming`). The
+     Trades tab says which, so nobody prices a trade in the seconds before the values settle. */
+  const [std, setStd] = useState(undefined);
   React.useEffect(() => {
     const wk = data && data.week;
     if (!wk || !hasBackend) return;
@@ -17711,6 +17869,13 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     </HubShell>;
   }
 
+  /* ⚠⚠ 29bf — PIN THIS LEAGUE'S SLOTS BEFORE ANY LINEUP IS SOLVED. `lineupSlots` reads the module-level
+     SPEC, and SPEC is set by whichever league's player pool was built LAST — the home page builds one
+     per league for its Power column, in an async loop that can still be running after you click into a
+     hub. With two leagues of different shapes, the hub could silently solve every lineup (and therefore
+     the calculator, power and odds) with another league's slots. Not reproduced in the fixture, but the
+     exposure is real and the fix is one cheap, idempotent assignment on every render. */
+  setSpec(cfg.start);
   // -------- Lineup optimizer: current starters vs the best possible lineup --------
   const opt = lineupSlots(myRoster, cfg.sf);
   const optimalStartersArr = opt.slots.map((s) => s.p).filter(Boolean);
@@ -18580,7 +18745,13 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   // player look expendable.
   const tradeRoster = seasonRosterOf;
   const myLT = leagueTeams.find((t) => t.rosterId === data.myRosterId);
-  const tradeKey = `trades|${leagueId}|${data.week}|${(myLT ? myLT.roster : []).map((p) => p.sid).join(",")}`;
+  /* ⚠⚠⚠ 29bg — THE KEY USED TO BE MY ROSTER AND NOTHING ELSE, and every trade list is cached under it.
+     So the Deals, Market, League-table and finder lists kept the numbers they had on first render while the
+     calculator (never cached) moved: when this season's actual results arrived a few seconds after load,
+     when an injury was marked, and when ANOTHER team's roster changed. The lists and the calculator then
+     disagreed about the same trade — the very "the numbers changed" confusion from 29bf. The key now
+     carries everything that moves a value: the form table's week, the injury map, and every roster. */
+  const tradeKey = `trades|${leagueId}|${data.week}|f${ictx.formThrough || 0}|${Object.keys(ictx.map || {}).sort().map((k) => `${k}:${JSON.stringify(ictx.map[k])}`).join(";")}|${leagueTeams.map((t) => `${t.rosterId}:${(t.roster || []).map((p) => p.sid).join(",")}`).join("/")}`;
   /* ⭐⭐⭐⭐⭐ THE MARKET VIEW — 29x. Same rosters, same replacement level, a different question: not
      "is there a swap" but "who should I be talking to, and about what". See positionMarket above. */
   const market = myLT ? hubMemo(`market|${tradeKey}`, () => positionMarket(
@@ -18877,14 +19048,15 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     isMe: t.rosterId === data.myRosterId, roster: tradeRoster(t),
     record: t.record, pointsFor: t.pointsFor || 0,
   }));
-  const tbEval = (tbA != null && tb.b != null && (tb.give.length || tb.get.length))
-    ? (() => { try {
-        return tradeEval(tbTeams, {
+  /* ⭐⭐⭐⭐⭐ ONE SET OF OPTIONS FOR EVERY TRADE THE HUB PRICES — 29bg. The calculator and the grade chip on
+     each trade idea call `tradeEval` with exactly this, so the letter on a Deals card is the letter the
+     calculator shows when you press "Price it". Two option lists would be two graders. */
+  const tbOptsFor = (aId, bId, give, get) => ({
           /* ⚠ "myId" IS SIDE A, WHICH IS USUALLY BUT NO LONGER ALWAYS MINE. Everything `tradeEval` reports
              is from side A's point of view, which is exactly right when reading somebody else's trade too:
              the question becomes "what did THAT manager gain", and the power table is recomputed for the
              whole league either way. */
-          myId: tbA, theirId: tb.b, give: tb.give, get: tb.get,
+          myId: aId, theirId: bId, give, get,
           sf: cfg.sf, req: reqStart,
           score: (r) => scoreRoster(r),
           bench: (r) => scoreRoster(r).bench,
@@ -18898,7 +19070,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
           /* ⚠ THE WINDOW IS MINE, so it only applies when side A is my team. Reading a trade between two
              other managers through MY rebuild/win-now lens would be a confident answer to a question
              nobody asked; with no posture the long-term read stays neutral and says so. */
-          posture: (isDynasty && String(tbA) === String(data.myRosterId)) ? activePosture : undefined,
+          posture: (isDynasty && String(aId) === String(data.myRosterId)) ? activePosture : undefined,
           /* Keeper cost, ONLY where the league actually carries it. `cfg.keepers` records who is kept and
              at which pick; anything beyond that (a league's escalator rule, contract years) we do not know
              and therefore do not claim — the FAAB decision from 29w, applied again. */
@@ -18915,9 +19087,46 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
             const owner = ((data && data.teams) || []).find((t) => (t.keepers || []).some((k) => String(k) === String(pl.sid)));
             return owner ? { kept: true, by: owner.teamName } : null;
           },
-        });
+  });
+  const tbEval = (tbA != null && tb.b != null && (tb.give.length || tb.get.length))
+    ? (() => { try {
+        return tradeEval(tbTeams, tbOptsFor(tbA, tb.b, tb.give, tb.get));
       } catch (e) { return { ok: false, error: 'failed' }; } })()
     : null;
+
+  /* ⭐⭐⭐⭐⭐ A GRADE ON EVERY TRADE IDEA — 29bg.
+     Trey (29bf): "can you also put a grade on the trade for you... and a recommendation (that is clear) for
+     whether or not you should make the deal." 29bf answered it inside the calculator; this carries the same
+     answer out to every list that SUGGESTS a trade — Deals, long shots, the League table's ideas, the
+     Market's pathways and the Injuries tab — so the verdict is on the screen where the idea is, not one
+     click away.
+     ⭐ IT IS THE CALCULATOR, NOT AN ESTIMATE OF IT: the real `tradeEval` with `tbOptsFor`, from MY side.
+     ⚠ COST. tradeEval re-scores every roster in the league twice (the power table before and after), and a
+       Deals tab can list a dozen ideas. The rosters that do not change are the same arrays every time, so
+       lineup solves are cached by roster content: each idea then costs two new solves, not two dozen.
+       Both caches live under `tradeKey`, which now changes with anything that moves a value (see above). */
+  const ideaScoreCache = myLT ? hubMemo(`ideascore|${tradeKey}`, () => new Map()) : null;
+  const ideaGradeCache = myLT ? hubMemo(`ideagrade|${tradeKey}`, () => new Map()) : null;
+  const cachedScore = (r) => {
+    const k = (r || []).map((p) => String(p && p.sid)).sort().join(",");
+    let v = ideaScoreCache.get(k);
+    if (!v) { v = scoreRoster(r); ideaScoreCache.set(k, v); }
+    return v;
+  };
+  const ideaGrade = (theirId, give, get) => {
+    if (!myLT || theirId == null) return null;
+    const gv = (give || []).filter(Boolean).map(String), gt = (get || []).filter(Boolean).map(String);
+    const key = `${theirId}|${gv.slice().sort().join(",")}|${gt.slice().sort().join(",")}`;
+    if (ideaGradeCache.has(key)) return ideaGradeCache.get(key);
+    let out = null;
+    try {
+      const r = tradeEval(tbTeams, { ...tbOptsFor(data.myRosterId, theirId, gv, gt), score: cachedScore, bench: (x) => cachedScore(x).bench });
+      if (r && r.ok && r.grade && r.call) out = { letter: r.grade.letter, score: r.grade.score, perWeek: r.grade.perWeek, why: r.grade.why, call: r.call };
+    } catch (e) { out = null; }
+    ideaGradeCache.set(key, out);
+    return out;
+  };
+  const ideaGradeOf = (t, theirId) => t ? ideaGrade(theirId != null ? theirId : (t.team && t.team.rosterId), [t.give && t.give.sid, t.give2 && t.give2.sid], [t.get && t.get.sid]) : null;
 
   const tradeIdeas = myLT ? hubMemo(tradeKey, () => findTrades(
     { rosterId: myLT.rosterId, teamName: myLT.teamName, roster: tradeRoster(myLT) },
@@ -20334,6 +20543,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                                   <Dot pos={o.get.pos} /><b style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.get.name}</b>
                                 </span>
                                 <span className="num" style={{ fontSize: 11, fontWeight: 700, color: "var(--green)" }}>+{o.myGain}</span>
+                                <IdeaGrade g={ideaGradeOf(o)} size="sm" />
                                 <button className="btn btn-mini" data-injprice={o.get.sid} title="Open this deal in the trade calculator"
                                   /* ⚠ `setTab` AS WELL AS `tbOpen`. Every existing caller of tbOpen already lives on the
                                      Trades tab, so it only switches the SECTION; from here it would fill a
@@ -20415,9 +20625,11 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
               <span data-formnote={ictx.form ? String(ictx.formThrough) : "none"}>
                 {ictx.form
                   ? <>Values blend each player's projection with what he has actually scored through week {ictx.formThrough} — the projection counts as {FORM_PRIOR_GAMES} games of evidence, so real results take over as the season goes.</>
-                  : (data.week || 1) > 1
-                    ? <>Values are projections only right now — this week's actual results are still being compiled, and will be blended in on the next load.</>
-                    : null}
+                  : (data.week || 1) > 1 && std === undefined
+                    ? <b style={{ color: "var(--gold)" }}>Loading this season's actual results — values will update in a few seconds, so wait before pricing a trade.</b>
+                    : (data.week || 1) > 1
+                      ? <>Values are projections only right now — this season's actual results are still being compiled, and will be blended in on the next load.</>
+                      : null}
               </span>
             </div>
 
@@ -20971,6 +21183,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                                 it on his screen. The tilt word after it is what he asked for in his words:
                                 "You can say that this slightly favors me or them." */}
                             <span className="num mut" style={{ fontSize: 10.5 }}> +{t.myGain} you / {t.theirGain > 0 ? `+${t.theirGain}` : t.theirGain} them · {t.band}</span>
+                            <IdeaGrade g={ideaGradeOf(t)} size="sm" style={{ marginLeft: 6 }} />
                             {t.tilt === "you" && (
                               <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".03em", marginLeft: 5,
                                 padding: "1px 5px", borderRadius: 5, whiteSpace: "nowrap", color: "var(--gold)",
@@ -21029,7 +21242,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 9 }}>
                   <span className="disp" style={{ fontSize: 15, fontWeight: 800, letterSpacing: ".01em" }}>Deals worth sending</span>
                   <span className="mut" style={{ fontSize: 11 }}>
-                    ranked by what they do for your lineup, and filtered to the ones the other manager has a reason to accept
+                    graded for you the same way the calculator grades, best first — and filtered to the ones the other manager has a reason to accept
                   </span>
                 </div>
                 {/* ⭐⭐⭐⭐⭐ THE THEME, SAID OUT LOUD — 29af. Four offers for the same position look like
@@ -21064,7 +21277,12 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                   );
                 })()}
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  {board.map((t) => {
+                  {/* ⭐ 29bg — BEST FOR YOU FIRST, BY THE CALCULATOR'S OWN GRADE. Within one letter the finder's
+                      order stands (it already weighs whether they would accept), so this only moves a card
+                      when the grade genuinely separates two deals. */}
+                  {board.map((t) => ({ t, g: ideaGradeOf(t) }))
+                    .sort((x, y) => ((y.g ? y.g.score : -99) - (x.g ? x.g.score : -99)) || (x.t.rank - y.t.rank))
+                    .map(({ t, g }, pos) => {
                     const BAND = { likely: "var(--pos)", "worth asking": "var(--gold)", "long shot": "var(--mut)" };
                     const tone = BAND[t.band] || "var(--mut)";
                     const perWeek = Math.round((t.myGain / GAMES_IN_SEASON) * 10) / 10;
@@ -21076,11 +21294,12 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                     return (
                       <div key={`${t.team.rosterId}-${t.get.sid}-${t.give.sid}`} data-tbrec={String(t.rank)}
                         data-tbrecband={t.band}
-                        style={{ border: `1px solid ${t.rank === 1 ? "var(--line2)" : "var(--line)"}`, borderRadius: 10,
+                        style={{ border: `1px solid ${pos === 0 ? "var(--line2)" : "var(--line)"}`, borderRadius: 10,
                           background: "var(--panel2)", padding: "12px 13px" }}>
                         {/* ── who, and how likely ─────────────────────────────────────────────── */}
                         <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 9 }}>
-                          <span className="num" style={{ fontSize: 11, fontWeight: 800, color: "var(--mut)" }}>#{t.rank}</span>
+                          <span className="num" style={{ fontSize: 11, fontWeight: 800, color: "var(--mut)" }}>#{pos + 1}</span>
+                          <IdeaGrade g={g} />
                           <span style={{ fontSize: 12.5 }}>
                             <span className="mut">to </span><b>{t.team.teamName}</b>
                             {t.team.ownerName ? <span className="mut"> (@{t.team.ownerName})</span> : null}
@@ -21474,6 +21693,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                                     <span className="mut"> for </span>
                                     <span style={{ color: "var(--pos)" }}>{x.get.name}</span>
                                     <span className="mut" style={{ fontSize: 10 }}> · you +{x.myGain}, them {x.theirGain > 0 ? `+${x.theirGain}` : x.theirGain}</span>
+                                    <IdeaGrade g={ideaGradeOf(x, t.rosterId)} size="sm" style={{ marginLeft: 6 }} />
                                   </button>
                                 ))}
                               </div>
@@ -22037,6 +22257,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "baseline" }}>
                           <span><b>{t.give.name}</b>{t.give2 ? <> <span className="mut">+</span> <b>{t.give2.name}</b></> : null}<span className="mut"> for </span><b style={{ color: "var(--green)" }}>{t.get.name}</b></span>
                           <span className="mut">with {t.team.teamName}</span>
+                          <IdeaGrade g={ideaGradeOf(t)} size="sm" />
                           <span style={{ marginLeft: "auto" }}>
                             <b className="num" style={{ color: "var(--green)" }}>+{t.myGain}</b>
                             <span className="mut"> to you · </span>
@@ -22921,6 +23142,9 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
   const [live, setLive] = useState(null);
   const [tab, setTab] = useState("live");
   const [view, setView] = useState(null);
+  /* 29bf — true until the first `loadLive` has answered (either way). While it is, the strip shows a
+     skeleton in its own slot instead of nothing; see HomeLeaguesLoading. */
+  const [firstLoad, setFirstLoad] = useState(true);
   /* ⭐⭐⭐⭐ OPEN BY DEFAULT — 29q, reversing 29o on his say-so.
      Trey, then: "I also think the This Week section should have some sort of expander. Rather than
      defaulting to showing everything at once, you could click into it and expand it."
@@ -23088,11 +23312,15 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
         timer = setTimeout(() => { if (typeof document === "undefined" || !document.hidden) tick(); else timer = setTimeout(tick, 60000); },
           on ? 45000 : 10 * 60 * 1000);
       } catch (e) { /* the strip is a nicety; its absence is not an error state */ }
+      finally { if (alive) setFirstLoad(false); }
     };
-    const t0 = setTimeout(tick, 900);
+    /* 29bf — was 900ms. The delay made the wait longer than it had to be and bought nothing: loadLive is a
+       dynamic import plus one request, and it no longer competes with anything the page needs first. */
+    const t0 = setTimeout(tick, 150);
     return () => { alive = false; clearTimeout(t0); if (timer) clearTimeout(timer); };
   }, [leagues]);
 
+  if (!view && firstLoad && hasBackend) return <HomeLeaguesLoading kind="week" count={(leagues || []).length} />;
   // Nothing on, nothing finished — no strip. This is the common case for most of the week.
   if (!view || !view.show) return null;
 
@@ -23788,7 +24016,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
   );
 }
 
-function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onOpenMock, onDeleteFun, onDeleteMock, onDraftTrends, onAutoImportSleeper, onConnectLeague, onMyWeek, onGameDay, onReview, injuries }) {
+function PaidHub({ user, leagues, allLeagues, funMocks, leaguesLoading, onSettings, onStrategy, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onOpenMock, onDeleteFun, onDeleteMock, onDraftTrends, onAutoImportSleeper, onConnectLeague, onMyWeek, onGameDay, onReview, injuries }) {
   const [connectOpen, setConnectOpen] = useState(false);
   // In season the leagues/mocks library is collapsed by default — see the control that toggles it.
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -23983,7 +24211,10 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
   const [openPickFlow, setOpenPickFlow] = useState(false); // in-flow (Get started) league picker
   const [mockPick, setMockPick] = useState(false); // expand the "run a mock" picker box
   const [delConfirm, setDelConfirm] = useState(null); // league id pending delete confirmation
-  const [showSteps, setShowSteps] = useState(leagues.length === 0); // getting-started collapsed by default for veterans; open for first-timers
+  const [showSteps, setShowSteps] = useState(leagues.length === 0 && !leaguesLoading); // getting-started collapsed by default for veterans; open for first-timers
+  /* 29bf — a first-timer is only known to be one once the restore has answered. */
+  const wasLoading = useRef(!!leaguesLoading);
+  useEffect(() => { if (wasLoading.current && !leaguesLoading) { wasLoading.current = false; if (!leagues.length) setShowSteps(true); } }, [leaguesLoading, leagues.length]);
   const [showTools, setShowTools] = useState(false); // toolkit collapsed into a dropdown by default
   const [statusFilter, setStatusFilter] = useState("all"); // all | pre | drafting | complete — league status tabs
   /* ⭐⭐⭐⭐ WHICH SLEEPER ACCOUNT'S LEAGUES YOU ARE LOOKING AT.
@@ -24222,7 +24453,7 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
             </div>
             {/* live stat strip */}
             <div style={{ display: "flex", gap: 22, flexShrink: 0, paddingLeft: 4 }}>
-              {[[leagues.length, leagues.length === 1 ? "league" : "leagues"], [inProgress.length, "in progress"], [totalMocks, totalMocks === 1 ? "mock" : "mocks"]].map(([n, label], i) => (
+              {[[leaguesLoading ? "–" : leagues.length, leagues.length === 1 ? "league" : "leagues"], [leaguesLoading ? "–" : inProgress.length, "in progress"], [leaguesLoading ? "–" : totalMocks, totalMocks === 1 ? "mock" : "mocks"]].map(([n, label], i) => (
                 <div key={i} style={{ textAlign: "center", minWidth: 46 }}>
                   <div className="num" style={{ fontSize: 26, fontWeight: 800, lineHeight: 1, color: i === 1 && n > 0 ? (seasonFirst ? "var(--pos)" : "var(--gold2)") : "var(--ink)" }}>{n}</div>
                   <div className="mut" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".05em", marginTop: 3 }}>{label}</div>
@@ -24237,7 +24468,12 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
           it exists for is the one right after someone pays: the hub is built for a returning user with six
           leagues, and a brand-new account sees a wall. It removes itself once the three steps are genuinely
           done (see GetStartedPanel) so it never becomes furniture. */}
-      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "16px 20px 0" }}>
+      {leaguesLoading && (
+        <div style={{ maxWidth: 1180, margin: "0 auto", padding: "16px 20px 0" }}>
+          <HomeLeaguesLoading kind="leagues" />
+        </div>
+      )}
+      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "16px 20px 0", display: leaguesLoading ? "none" : undefined }}>
         <GetStartedPanel
           leagues={leagues} funMocks={funMocks}
           dismissed={gsDismissed} onDismiss={dismissGetStarted}
@@ -24444,7 +24680,7 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
             style={{ padding: "6px 13px", fontSize: 12, color: "var(--mut)" }}>
             <i className="ti ti-clipboard-list" style={{ fontSize: 13, marginRight: 6 }} aria-hidden="true" />
             Your leagues &amp; mocks
-            <span className="mut" style={{ marginLeft: 6 }}>{leagues.length}{funMocks.length ? ` · ${funMocks.length} mock${funMocks.length === 1 ? "" : "s"}` : ""}</span>
+            <span className="mut" style={{ marginLeft: 6 }}>{leaguesLoading ? "…" : leagues.length}{funMocks.length ? ` · ${funMocks.length} mock${funMocks.length === 1 ? "" : "s"}` : ""}</span>
             <span style={{ marginLeft: 8 }}>{libraryOpen ? "⌃" : "⌄"}</span>
           </button>
         </div>
@@ -24540,7 +24776,7 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
           );
         })()}
 
-        {leagues.length === 0 && unimportedSleeper.length === 0 ? (
+        {leaguesLoading ? null /* the loader at the top of the page already holds this place */ : leagues.length === 0 && unimportedSleeper.length === 0 ? (
           <div className="panel" style={{ padding: 18, textAlign: "center" }}>
             <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>No leagues yet</div>
             <div className="mut" style={{ fontSize: 12.5, marginBottom: 12 }}>{sleeperLink.linked ? "Create a league by hand, or run a quick mock to get a feel for the board." : "Link your Sleeper account above to pull your leagues in, or create one by hand."}</div>
@@ -24957,7 +25193,7 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
         {/* RESUME banner now lives at the very top, above Your leagues */}
 
         {/* ===== SECTION: GET STARTED (collapsed by default for veterans) ===== */}
-        <div className="hubsection">
+        <div className="hubsection" style={leaguesLoading ? { display: "none" } : undefined}>
           <button onClick={() => setShowSteps((v) => !v)} style={{ width: "100%", cursor: "pointer", fontFamily: "inherit", background: "transparent", border: "none", padding: 0, textAlign: "left", display: "flex", alignItems: "center", gap: 9, marginBottom: showSteps ? 3 : 0, color: "var(--ink)" }}>
             <i className="ti ti-route" style={{ fontSize: 19, color: "var(--gold)" }} aria-hidden="true" />
             <div className="disp" style={{ fontSize: 19, fontWeight: 700, flex: 1 }}>New here? Get started</div>
