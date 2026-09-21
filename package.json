@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node tools/icons-check.mjs && node tools/css-check.mjs && node tools/screens-check.mjs && node tools/hooks-check.mjs && vite build",
-    "build:test": "node tools/icons-check.mjs && node tools/css-check.mjs && node tools/screens-check.mjs && node tools/hooks-check.mjs && node tools/build-test.mjs",
+    "build": "node tools/icons-check.mjs && node tools/css-check.mjs && node tools/screens-check.mjs && node tools/hooks-check.mjs && node tools/globals-check.mjs && vite build",
+    "build:test": "node tools/icons-check.mjs && node tools/css-check.mjs && node tools/screens-check.mjs && node tools/hooks-check.mjs && node tools/globals-check.mjs && node tools/build-test.mjs",
     "preview": "vite preview",
     "icons:build": "node tools/icons-build.mjs",
     "icons:check": "node tools/icons-check.mjs",

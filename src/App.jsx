@@ -102,7 +102,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29bc";
+const BUILD_TAG = "2026.07.29bd";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -11703,6 +11703,11 @@ export default function App() {
         </div>
       )}
       {route === "home" && user?.paid && <PaidHub user={user} leagues={visibleLeagues} allLeagues={leagues} funMocks={funMocks}
+        /* ⚠⚠⚠ 29bc hotfix — `injuries` IS APP STATE AND HAS TO BE PASSED DOWN. 29bb wired the home page's
+           Power column to the injuries (so it agrees with the hub) but read `injuries` as if PaidHub could
+           see App's state. It cannot: in PaidHub it was an undeclared name, so every signed-in load of the
+           home page threw "injuries is not defined" and the whole app showed "Something hiccuped". */
+        injuries={injuries}
         onLibrary={() => setRoute("library")} onNewLeague={() => { setSetupReturn(null); setSetupConnect(null); setRoute("setup"); }} onDatabase={() => setRoute("database")}
         onConnectLeague={(c) => { setSetupReturn(null); setSetupConnect(c || null); setRoute("setup"); }}
         onOfficial={(id) => { setDraftTab(officialTabFor(leagues.find((l) => l.id === id))); setActiveId(id); setRoute("draft"); }} onMock={startMock} onQuickMock={() => setQuickMockOpen(true)}
@@ -23644,7 +23649,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
   );
 }
 
-function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onOpenMock, onDeleteFun, onDeleteMock, onDraftTrends, onAutoImportSleeper, onConnectLeague, onMyWeek, onGameDay, onReview }) {
+function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, onLibrary, onNewLeague, onOfficial, onMock, onQuickMock, onDatabase, onTrends, onHelp, onGuide, onAccount, onAdmin, onSignOut, onUmbrella, onRankings, onTrendsTime, onTradeTools, onAdpIntel, onDelete, onUpdate, onOpenHub, onOpenFun, onOpenMock, onDeleteFun, onDeleteMock, onDraftTrends, onAutoImportSleeper, onConnectLeague, onMyWeek, onGameDay, onReview, injuries }) {
   const [connectOpen, setConnectOpen] = useState(false);
   // In season the leagues/mocks library is collapsed by default — see the control that toggles it.
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -36203,7 +36208,11 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
         );
       }
       case "avail": { const av = targetSurv ? targetSurv[p.id] : null; return gone ? "—" : av != null ? <span style={{ color: av < 35 ? "var(--red)" : av > 75 ? "var(--green)" : "var(--ink)" }}>{av}%</span> : "…"; }
-      case "nextpick": return gone ? "—" : av2 != null ? <span className="mut">{av2}%</span> : "—";
+      /* ⚠⚠ 29bc — `av2` WAS NEVER DECLARED (already true in 29az), so turning this column on threw
+         "av2 is not defined" and took the draft room down. Found by tools/globals-check.mjs on its first
+         run. It reads the same `sims.pct[1]` the column's SORT key uses, so the number shown and the
+         order it is sorted in cannot disagree. */
+      case "nextpick": { const av2 = sims && sims.pct && sims.pct[1] ? sims.pct[1][p.id] : null; return gone ? "—" : av2 != null ? <span className="mut">{av2}%</span> : "—"; }
       default: return <span className="mut">{p.stats?.[key] || "—"}</span>;
     }
   };
@@ -38745,10 +38754,14 @@ function DraftRoom({ league, user, isMock, isDemo, initialTab, onSave, onSaveQue
                 {myNextOverall != null && <>{dot}{trackChip("Your pick", pickLabel(myNextOverall), "var(--gold)")}</>}
                 {best && <>{dot}{trackChip("Best avail", <>{best.name} <span className="num mut" style={{ fontSize: 9.5 }}>{(best.vbd ?? 0) >= 0 ? "+" : ""}{Math.round(best.vbd ?? 0)}</span></>)}</>}
                 {last && <>{dot}{trackChip("Last", last.name)}</>}
-                {!done && <>{dot}<Chip k={onClock === userIdx ? "You're up" : `On clock ${pickLabel(picks.length)}`}>
+                {/* ⚠⚠ 29bc — THE ONE CALL SITE 29ba'S REMOUNT CONVERSION MISSED. `Chip` became the plain
+                    function `trackChip`, and this was the only multi-line usage, so the conversion walked
+                    past it: every IN-PROGRESS draft threw "Chip is not defined". A finished draft never
+                    renders it, which is why nothing checked caught it. tools/globals-check.mjs does now. */}
+                {!done && <>{dot}{trackChip(onClock === userIdx ? "You're up" : `On clock ${pickLabel(picks.length)}`, <>
                   {onClock === userIdx ? "" : `${teamShort(TEAM_NAMES[onClock] || `Team ${onClock + 1}`)} `}
                   {currentPred ? <span className="mut" style={{ fontWeight: 400 }}>→ {currentPred.name}</span> : null}
-                </Chip></>}
+                </>)}</>}
                 {then && then.p && <>{dot}{trackChip("Then", <>{pickLabel(then.o)} <span className="mut" style={{ fontWeight: 400 }}>→ {then.p.name}</span></>)}</>}
               </>
             );
