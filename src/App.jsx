@@ -103,7 +103,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29bh";
+const BUILD_TAG = "2026.07.29bj";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -851,7 +851,7 @@ const TradeVerdict = ({ r, weeks, games, oddsShift }) => {
   );
 
   return (
-    <div data-tbresult
+    <div data-tbresult data-tbfair={r.assets && r.assets.fairRatio != null ? String(r.assets.fairRatio) : ""}
       /* The calculator's own PRE-TRADE ranking of the whole league, exposed so a suite can hold it against
          the standings table. These two numbers are computed by the same `scoreRoster` and must agree; if
          they ever drift, the calculator is reporting movement on a scale no other screen uses, which is
@@ -16591,6 +16591,22 @@ export function tradeEval(teams, opts) {
      ignored too. A manager handing over 130 points of value for 75 notices, whatever the finder's band says
      about candidate generation. 0.7 is the line; it is on screen with the numbers beside it, so the read is
      auditable rather than authoritative. */
+  /* ⭐⭐⭐⭐⭐ 29bi — FAIR ON EITHER SCALE. `ratio` above compares raw points over replacement, which the finder
+     learned in b151 is not comparable across positions: in a year with no good backs, the best back sits
+     84 over replacement while an ordinary receiver sits 176, and "RB1 for a WR1" reads as a robbery. The
+     finder measures fairness as a share of each position's best (`o.shareOf`, supplied by the hub from the
+     same replacement line), and the calculator now accepts a deal as fair when EITHER measure does, so a
+     Deals card and the calculator can no longer disagree about whether a swap is even. A side of two or
+     more players is discounted (2 for 1 at 0.75, as the finder does): the other manager needs a roster
+     spot and a lineup spot for the second man. */
+  const shareRatio = (() => {
+    if (typeof o.shareOf !== 'function') return null;
+    const side = (ps) => { const real = ps.filter((p) => !isPick(p)).length; const f = real > 1 ? 1 / (1 + 0.33 * (real - 1)) : 1;
+      return ps.reduce((acc, p) => acc + Math.max(0, Number(o.shareOf(p)) || 0), 0) * f; };
+    const a = side(inMine), b = side(outMine), hi = Math.max(a, b), lo = Math.min(a, b);
+    return hi > 0 ? Math.round((lo / hi) * 100) / 100 : 1;
+  })();
+  const fairR = shareRatio != null ? Math.max(ratio, shareRatio) : ratio;
   const FAIR = o.fair != null ? o.fair : 0.7;
   /* ⭐⭐⭐⭐⭐ THE SECOND HORIZON — 29z, and it exists ONLY where the league keeps players.
      ==================================================================================================
@@ -16681,7 +16697,7 @@ export function tradeEval(teams, opts) {
   })();
 
   const verdict = (() => {
-    if (theirs.delta > 0 && ratio >= FAIR) {
+    if (theirs.delta > 0 && fairR >= FAIR) {
       return { key: 'good', label: 'Worth asking', why: `helps their lineup by ${theirs.delta.toFixed(1)} too, and the value each way is comparable` };
     }
     if (theirs.delta > 0) {
@@ -16708,7 +16724,7 @@ export function tradeEval(teams, opts) {
       return { key: 'future', label: 'A rebuilder might take it',
         why: `it costs them ${Math.abs(theirs.delta).toFixed(1)} a week now, but sends them ${Math.abs(long.delta).toFixed(0)} of long-term value — worth asking a team that is building` };
     }
-    if (theirs.delta > 0 && long.delta > 0 && ratio >= FAIR) {
+    if (theirs.delta > 0 && long.delta > 0 && fairR >= FAIR) {
       return { key: 'good', label: 'Worth asking',
         why: 'better for them now AND you come out ahead long term — check they are not simply the better judge of one of those' };
     }
@@ -16762,16 +16778,26 @@ export function tradeEval(teams, opts) {
   }
   /* Depth only nudges, and only when the lineup change is small — a bench stash is worth something, but
      never more than the starters actually scoring points. */
-  if (Math.abs(pw) < 0.6 && Math.abs(depthPw) >= 1.5) {
-    gScore += depthPw > 0 ? 0.3 : -0.3;
-    gWhy.push(depthPw > 0 ? 'and it adds real depth behind your starters' : 'and it thins out your bench');
+  /* ⭐⭐⭐⭐ 29bi — DEPTH COUNTS EVERY TIME, A LITTLE. Trey, on a D: "it drops my annual scoring by only 12
+     points and just re-allocates to different players. It might still be a B- or a C, but a D is harsh."
+     The old rule only looked at depth when the lineup barely moved, so a deal that gave up 12 season points
+     of starters for more total talent was graded on the 12 points alone. Now a quarter of the value moving
+     OFF the lineup (bench talent gained or lost) always counts, capped so depth can soften a grade but never
+     carry one. */
+  if (Math.abs(depthPw) >= 0.3) {
+    const nudge = Math.max(-0.6, Math.min(0.6, depthPw * 0.25));
+    gScore += nudge;
+    if (Math.abs(nudge) >= 0.1) gWhy.push(depthPw > 0 ? 'and it adds real depth behind your starters' : 'and it thins out your bench');
   }
   if (keeps && longPw != null) gWhy.push(`${longPw >= 0 ? 'gains' : 'costs'} ${Math.abs(long.delta).toFixed(0)} of long-term value`);
   const mr = { from: rankOf(powerBefore, me.rosterId), to: rankOf(powerAfter, me.rosterId) };
   if (mr.from != null && mr.to != null && mr.from !== mr.to) {
     gWhy.push(`moves you ${mr.to < mr.from ? 'up' : 'down'} from ${mr.from} to ${mr.to} in the power rankings`);
   }
-  const BANDS = [[3.0, 'A+'], [2.0, 'A'], [1.4, 'A-'], [0.9, 'B+'], [0.5, 'B'], [0.2, 'B-'], [-0.2, 'C'], [-0.5, 'C-'], [-1.2, 'D']];
+  /* 29bi — the losing side of the scale was steeper than the winning side: −0.6 a week (about 10 points
+     over a season) was already a D. A small give-back is a C now; D and F are for trades that really cost
+     you (about a point and a half a week and more). */
+  const BANDS = [[3.0, 'A+'], [2.0, 'A'], [1.4, 'A-'], [0.9, 'B+'], [0.5, 'B'], [0.2, 'B-'], [-0.6, 'C'], [-1.0, 'C-'], [-1.8, 'D']];
   const letter = (BANDS.find(([cut]) => gScore >= cut) || [null, 'F'])[1];
   const grade = { letter, score: Math.round(gScore * 100) / 100, perWeek: Math.round(pw * 10) / 10, why: gWhy };
   const willAccept = (verdictLong || verdict).key === 'good' || (verdictLong || verdict).key === 'future';
@@ -16781,7 +16807,7 @@ export function tradeEval(teams, opts) {
        the calculator could say about Eagles D for Josh Allen, which is the most one-sided offer imaginable.
        When the value going back is under 40% of what comes in, more is not a sweetener away — it is a
        different trade — so the call says so instead of encouraging the send. */
-    if (gScore >= 0.5 && !willAccept && ratio < 0.4 && mine.assetsIn > mine.assetsOut) return { key: 'dream', label: 'Great for you — they won\'t accept this',
+    if (gScore >= 0.5 && !willAccept && fairR < 0.4 && mine.assetsIn > mine.assetsOut) return { key: 'dream', label: 'Great for you — they won\'t accept this',
       why: `It makes your team better by about ${wk}, but you are offering ${mine.assetsOut.toFixed(0)} of value for ${mine.assetsIn.toFixed(0)}. No manager takes that — build a real offer around what they need.` };
     if (gScore >= 0.5 && willAccept) return { key: 'send', label: 'Make this offer',
       why: `It makes your team better by about ${wk}, and it is fair enough that they have a reason to say yes.` };
@@ -16793,8 +16819,8 @@ export function tradeEval(teams, opts) {
     if (gScore >= 0.2) return { key: 'small', label: willAccept ? 'Small upgrade — fine if it is easy' : 'Small upgrade, and they may not bite',
       why: `It helps a little (about ${wk}). Worth doing only if it costs you nothing else — it will not change your season.` };
     /* key "even", not "wash" — the icon scanner reads a quoted "wash" as a Tabler icon (7th time). */
-    if (gScore > -0.2) return { key: 'even', label: 'Not worth it',
-      why: 'It barely changes your team either way. Skip it unless you need the roster spot or a different bye week.' };
+    if (gScore > -0.6) return { key: 'even', label: 'Not worth it',
+      why: gScore < -0.2 ? `It costs you a little (about ${wk} in your lineup) for no real gain. Only if it solves something else, like a bye week or a roster spot.` : 'It barely changes your team either way. Skip it unless you need the roster spot or a different bye week.' };
     return { key: 'pass', label: "Don't make this trade",
       why: `It makes your team worse by about ${wk}${mr.to > mr.from ? ` and drops you to ${mr.to} in the power rankings` : ''}.` };
   })();
@@ -16807,7 +16833,7 @@ export function tradeEval(teams, opts) {
     power: { before: powerBefore, after: powerAfter, moves,
       myRank: { from: rankOf(powerBefore, me.rosterId), to: rankOf(powerAfter, me.rosterId) },
       theirRank: { from: rankOf(powerBefore, them.rosterId), to: rankOf(powerAfter, them.rosterId) } },
-    assets: { ratio, fair: FAIR },
+    assets: { ratio, shareRatio, fairRatio: fairR, fair: FAIR },
     long,
     verdict: verdictLong || verdict,
   };
@@ -17638,6 +17664,16 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   /* 29bh — the calculator's "Ideas" answer: { key, list } where key is the target set it was built for, so a
      stale answer is never shown against a different selection. */
   const [tbIdeas, setTbIdeas] = useState(null);
+  /* 29bi — trade ideas for a whole POSITION ("I need a QB"): { pos, list } | { pos, busy: true } */
+  const [posIdeas, setPosIdeas] = useState(null);
+  /* 29bi — Game Day as a popup over the hub instead of a page change. */
+  const [gdOpen, setGdOpen] = useState(false);
+  React.useEffect(() => {
+    if (!gdOpen) return;
+    const onKey = (e) => { if (e.key === "Escape") setGdOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [gdOpen]);
   /* ⭐⭐⭐⭐⭐ AND IT MOVES YOU TO THE CALCULATOR — b161, and this was a real bug the moment the sections
      became tabs. Every caller of `tbOpen` lives somewhere ELSE on this tab: "Price it" on a partner row,
      a pathway in the positional market, a swap on the deals board. Before the tabs they all pointed at a
@@ -17685,6 +17721,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
      JavaScript. `page.on('pageerror')` does not see it either, because the boundary catches it.
      ⚠ ANY hook added for the Trades tab belongs in this block, never beside the code that uses it. */
   const hoverCache = useRef({ key: null, map: new Map() });
+  /* 29bi — the team-outlook card on trade cards (a table, so the shared HoverTable rather than showTip). */
+  const { card: teamCard, show: showTeamCard, hide: hideTeamCard } = useHoverCard();
   /* b164 — on a touch device the rows that already do something get an explicit ⓘ instead of opening a
      card from a tap they do not own. ⚠ A HOOK, so it lives here with the others and not next to the row
      that reads it — see the note on `hoverCache` above. */
@@ -19175,7 +19213,28 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   /* ⭐⭐⭐⭐⭐ ONE SET OF OPTIONS FOR EVERY TRADE THE HUB PRICES — 29bg. The calculator and the grade chip on
      each trade idea call `tradeEval` with exactly this, so the letter on a Deals card is the letter the
      calculator shows when you press "Price it". Two option lists would be two graders. */
+  /* ⭐⭐⭐⭐ 29bi — A PLAYER'S SHARE OF HIS POSITION'S BEST, the finder's fairness scale (trademarket's
+     `tierShare`), computed from the SAME replacement line tradeEval uses, so "fair" means one thing on the
+     Deals cards, the Ideas list and the calculator. K/DEF at 15%, picks on the average top's scale. */
+  const shareOf = (() => {
+    const rosters = tbTeams.map((t) => (t.roster || []).filter((p) => p.pos !== "PICK"));
+    const rp = replacementByPos(rosters, cfg.sf, rosters.length);
+    const w = (p) => Math.max(0, (Number(p.pts) || 0) - (rp[String(p.pos).toUpperCase()] || 0));
+    const top = {};
+    ["QB", "RB", "WR", "TE"].forEach((pos) => { top[pos] = Math.max(0, ...rosters.flat().filter((p) => String(p.pos).toUpperCase() === pos).map(w)); });
+    const tops = Object.values(top).filter((x) => x > 0);
+    const avgTop = tops.length ? tops.reduce((a, b) => a + b, 0) / tops.length : 25;
+    return (p) => {
+      if (!p) return 0;
+      if (p.pos === "PICK") return (Number(p.pickValue) || 0) / Math.max(25, avgTop);
+      const pos = String(p.pos).toUpperCase();
+      if (["K", "DEF", "DST", "PK"].includes(pos)) return 0.15 * w(p) / Math.max(25, avgTop);
+      const t = top[pos] || 0;
+      return t >= 25 ? w(p) / t : Math.min(1, w(p) / 25);
+    };
+  })();
   const tbOptsFor = (aId, bId, give, get) => ({
+          shareOf,
           /* ⚠ "myId" IS SIDE A, WHICH IS USUALLY BUT NO LONGER ALWAYS MINE. Everything `tradeEval` reports
              is from side A's point of view, which is exactly right when reading somebody else's trade too:
              the question becomes "what did THAT manager gain", and the power table is recomputed for the
@@ -19262,64 +19321,194 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
      what fills THEIR hole first — "based on their needs" — then the fairer offer, then what it costs him.
      ⭐ EVERY NUMBER IS THE CALCULATOR'S: each candidate is a full `tradeEval` with the shared options, and
        "Load" puts it in the calculator where the same card appears. */
-  const buildIdeas = (theirId, getSids) => {
+  const buildIdeas = (theirId, getSids, opt) => {
+    const O = opt || {};
     if (!myLT || theirId == null || !getSids || !getSids.length) return [];
+    const evalGive = (give) => { try { return tradeEval(tbTeams, { ...tbOptsFor(data.myRosterId, theirId, give.map((p) => String(p.sid)), getSids.map(String)), score: cachedScore, bench: (x) => cachedScore(x).bench }); } catch (e) { return null; } };
     /* ⚠ A TARGET WORTH NOTHING OVER REPLACEMENT HAS NO PRICE. A backup quarterback in a one-QB league is
        exactly as useful as the best one on the wire, and "ideas" for him would be pairs of zeroes that read
        as "close on value". Say so instead (the `worthless` flag drives the message). */
     {
-      const probe = (() => { try { return tradeEval(tbTeams, { ...tbOptsFor(data.myRosterId, theirId, [], getSids.map(String)), score: cachedScore, bench: (x) => cachedScore(x).bench }); } catch (e) { return null; } })();
+      const probe = evalGive([]);
       if (probe && probe.ok) {
         const worth = probe.long && probe.long.in != null ? (probe.sides.me.assetsIn + probe.long.in) / 2 : probe.sides.me.assetsIn;
         if (worth < 5) { const w = []; w.worthless = true; return w; }
       }
     }
     const offerable = (p) => p && !["K", "DEF", "DST", "PK"].includes(String(p.pos || "").toUpperCase());
-    const myRoster = tradeRoster(myLT).filter(offerable).sort((a, b) => (b.pts || 0) - (a.pts || 0)).slice(0, 14);
+    const fullMine = tradeRoster(myLT);
+    const myRoster = fullMine.filter(offerable).sort((a, b) => (b.pts || 0) - (a.pts || 0)).slice(0, O.depth || 14);
     const theirRead = myReadFor(Number(theirId)) || myReadFor(theirId);
-    const sets = myRoster.map((p) => [p]);
-    for (let i = 0; i < myRoster.length; i++) for (let j = i + 1; j < myRoster.length; j++) sets.push([myRoster[i], myRoster[j]]);
+    const targets = tradeRoster(leagueTeams.find((t) => String(t.rosterId) === String(theirId)) || {}).filter((p) => getSids.map(String).includes(String(p.sid)));
+    /* ⭐⭐⭐⭐⭐ 29bi — WHAT MADE THE CHUBA HUBBARD IDEAS BAD, rule by rule.
+       Trey: "it's recommending that I trade both of my QBs (Lamar Jackson + Bo Nix) for him. This is just a
+       terrible idea... Garrett Wilson for Hubbard 1-for-1 is an 'F'... but Thomas for Hubbard is a B- and much
+       more realistic (but that's not on there)."
+       1. NEVER EMPTY A POSITION. An offer that leaves me fewer bodies at a position than I start there is not
+          a trade idea, whatever it does for them. (Both QBs in a one-QB league: out.)
+       2. FAIRNESS ON THE FINDER'S SCALE. Raw points over replacement are not comparable across positions
+          (b151): a scarce running back looks worth two receivers, so the old list reached for PAIRS of
+          receivers where one was the honest price. The fairness test now uses `shareOf`, the same scale the
+          Deals list uses, via tradeEval's `fairRatio`.
+       3. NO PADDING. A pair is only an idea when neither man alone is a fair price — "Wilson + Thomas" never
+          appears when "Thomas" alone is fair; the single is the idea.
+       4. IT HAS TO BE WORTH IT TO ME. An idea graded D or F for my own team is a way to lose, not an idea. If
+          nothing clears that bar the list says so plainly and shows the least-bad two. */
+    const req = reqStart || {};
+    const leavesHole = (give) => Object.keys(req).some((pos) => {
+      if (!(req[pos] > 0) || ["FLEX", "SUPER", "K", "DST", "DEF"].includes(pos)) return false;
+      const gone = new Set(give.map((p) => String(p.sid)));
+      const left = fullMine.filter((p) => !gone.has(String(p.sid)) && String(p.pos).toUpperCase() === pos).length
+        + targets.filter((p) => String(p.pos).toUpperCase() === pos).length;
+      return left < req[pos];
+    });
+    const keepsFair = (r) => {
+      const me = r.sides.me;
+      if (r.long && r.long.in != null) {
+        const vIn = (me.assetsIn + r.long.in) / 2, vOut = (me.assetsOut + r.long.out) / 2, hi = Math.max(vIn, vOut);
+        return Math.max(hi > 0 ? Math.min(vIn, vOut) / hi : 1, (r.assets && r.assets.shareRatio) || 0);
+      }
+      return (r.assets && r.assets.fairRatio) != null ? r.assets.fairRatio : 0;
+    };
+    const judge = (give) => {
+      if (leavesHole(give)) return null;
+      const r = evalGive(give);
+      if (!r || !r.ok || !r.grade) return null;
+      const me = r.sides.me, them = r.sides.them;
+      if (Math.max(me.assetsIn, me.assetsOut) < 5 && !(r.long && Math.max(r.long.in || 0, r.long.out || 0) >= 5)) return null;
+      const fair = keepsFair(r);
+      return { give, r, fair, me, them };
+    };
+    const FAIR_MIN = 0.6;
+    const singles = new Map();
+    myRoster.forEach((p) => singles.set(String(p.sid), judge([p])));
+    const sets = [];
+    myRoster.forEach((p) => sets.push(singles.get(String(p.sid))));
+    for (let i = 0; i < myRoster.length; i++) for (let j = i + 1; j < myRoster.length; j++) {
+      const a = singles.get(String(myRoster[i].sid)), b2 = singles.get(String(myRoster[j].sid));
+      /* rule 3: a member who is a fair price alone makes the pair padding */
+      if ((a && a.fair >= FAIR_MIN) || (b2 && b2.fair >= FAIR_MIN)) continue;
+      sets.push(judge([myRoster[i], myRoster[j]]));
+    }
     /* 29bh — where picks trade, a pick alone or a pick with a player is an idea too ("my 1st for him"). */
     const myPicks = (picksByOwner[data.myRosterId] || []).slice().sort((a, b) => b.pickValue - a.pickValue).slice(0, 4);
-    myPicks.forEach((pk) => { sets.push([pk]); myRoster.slice(0, 8).forEach((p) => sets.push([p, pk])); });
+    myPicks.forEach((pk) => { sets.push(judge([pk])); myRoster.slice(0, 8).forEach((p) => { const s1 = singles.get(String(p.sid)); if (!(s1 && s1.fair >= FAIR_MIN)) sets.push(judge([p, pk])); }); });
     const out = [];
-    sets.forEach((give) => {
-      let r = null;
-      try { r = tradeEval(tbTeams, { ...tbOptsFor(data.myRosterId, theirId, give.map((p) => String(p.sid)), getSids.map(String)), score: cachedScore, bench: (x) => cachedScore(x).bench }); } catch (e) { r = null; }
-      if (!r || !r.ok || !r.grade) return;
-      const me = r.sides.me, them = r.sides.them;
-      /* In a league that keeps players, value is half this season and half the long view — a 22-year-old
-         worth little today is not a throw-in there. */
-      const keepsLg = !!(r.long && r.long.in != null);
-      const vIn = keepsLg ? (me.assetsIn + r.long.in) / 2 : me.assetsIn;
-      const vOut = keepsLg ? (me.assetsOut + r.long.out) / 2 : me.assetsOut;
-      /* Two sides worth nothing over replacement are "even" only in the sense that 0 = 0. Not an idea. */
-      if (Math.max(vIn, vOut) < 5) return;
-      const hi = Math.max(vIn, vOut), lo = Math.min(vIn, vOut);
-      const ratio = hi > 0 ? lo / hi : 1;
-      /* Fair enough to open with, from EITHER side — an offer that overpays is not an idea, it is a gift. */
-      if (ratio < 0.6) return;
+    sets.filter(Boolean).forEach(({ give, r, fair, me, them }) => {
+      if (fair < FAIR_MIN) return;
       /* Their lineup may give a little (they are selling), but not collapse. */
       const floor = -Math.max(5, (them.startBefore || 0) * 0.04);
       if (them.delta < floor) return;
-      const fills = theirRead && theirRead.need ? give.filter((p) => (theirRead.need[String(p.pos).toUpperCase()] || 0) > 0) : [];
+      const fillPos = theirRead && theirRead.need ? [...new Set(give.filter((p) => (theirRead.need[String(p.pos).toUpperCase()] || 0) > 0).map((p) => p.pos))] : [];
       const why = [];
-      if (fills.length) why.push(`they are short at ${[...new Set(fills.map((p) => p.pos))].join(" and ")}`);
+      if (fillPos.length) why.push(`they are short at ${fillPos.join(" and ")}`);
       if (them.delta > 0.5) why.push(`their lineup +${them.delta.toFixed(0)}`);
       else why.push(them.delta < -0.5 ? `their lineup ${them.delta.toFixed(0)}, so it is a sell for them` : "their lineup holds");
-      why.push(ratio >= 0.85 ? "close on value" : vOut > vIn ? "you pay a little extra" : "you get a little extra");
-      const score = fills.length * 2 + (them.delta > 0.5 ? 1 : 0) + ratio * 2 + Math.max(-2, Math.min(2, r.grade.score)) * 1.0 - (give.length - 1) * 0.4;
-      out.push({ give, r, ratio: Math.round(ratio * 100), vIn, vOut, theirDelta: them.delta, myDelta: me.delta, fills: fills.length, why, score,
+      why.push(fair >= 0.85 ? "close on value" : me.assetsOut > me.assetsIn ? "you pay a little extra" : "you get a little extra");
+      const gs = Math.max(-2, Math.min(2, r.grade.score));
+      /* 29bi — an offer they would actually accept outranks a better one they would not: these are meant to
+         be sendable starting points, and "good for you, they'll want more" on every row is a list of asks. */
+      const accept = r.call && (r.call.key === "send" || (r.verdict && (r.verdict.key === "good" || r.verdict.key === "future")));
+      const theirPw = Math.max(-1.5, Math.min(1, them.delta / (GAMES_IN_SEASON || 17)));
+      const score = gs * 1.1 + fillPos.length * 1.2 + theirPw * 0.9 + (accept ? 1.8 : 0) + fair * 1.5 - (give.length - 1) * 0.5;
+      const keepsLg = !!(r.long && r.long.in != null);
+      out.push({ give, r, ratio: Math.round(fair * 100), vIn: keepsLg ? (me.assetsIn + r.long.in) / 2 : me.assetsIn, vOut: keepsLg ? (me.assetsOut + r.long.out) / 2 : me.assetsOut,
+        theirDelta: them.delta, myDelta: me.delta, fills: fillPos.length, why, score,
         g: { letter: r.grade.letter, score: r.grade.score, perWeek: r.grade.perWeek, why: r.grade.why, call: r.call } });
     });
+    /* rule 4 */
+    const worthIt = out.filter((x) => x.g.score >= -1.0);
+    const pool = worthIt.length ? worthIt : out.sort((a, b) => b.g.score - a.g.score).slice(0, 2);
     /* One idea per anchor player, so "Chase alone / Chase + a dart / Chase + another dart" is one idea. */
     const seen = new Set(), list = [];
-    out.sort((a, b) => b.score - a.score).forEach((x) => {
+    pool.sort((a, b) => b.score - a.score).forEach((x) => {
       const anchor = String(x.give[0].sid);
-      if (seen.has(anchor) || list.length >= 5) return;
+      if (seen.has(anchor) || list.length >= (O.max || 5)) return;
       seen.add(anchor); list.push(x);
     });
+    if (!worthIt.length && list.length) list.costly = true;
     return list;
+  };
+  /* ⭐⭐⭐⭐⭐ "I NEED A QB" — 29bi.
+     Trey: "let's say you have a need for a QB (i.e. Jayden Daniels gets hurt last night) that you click QB and
+     ideas automatically populate... on the 'positional market' you can click QB and it shows the teams that
+     have QBs to trade, but it doesn't really show specific trade ideas."
+     Every player at that position on another roster who would actually raise MY lineup is a target; the best
+     few (by what they add) each get the calculator's own `buildIdeas`, and the best offer for each is kept.
+     So the list is "a specific player, a specific offer, a grade", ranked best for me first, and every row
+     loads into the calculator exactly like the Ideas button's. */
+  /* ⭐⭐⭐⭐⭐ WHAT BOTH ROSTERS LOOK LIKE IF THIS DEAL HAPPENS — 29bi.
+     Trey: "I'm sending a TE to him and we are getting a WR in return... 'who is my back up TE?' - 'who do
+     they have at TE and would they send him back to me' - We need to have somewhere where I can hover on
+     there to see team outlooks."
+     One row per position (the positions in the deal first), their room today beside mine AFTER the deal, so
+     "who plays TE for me now" and "who could come back" are both one glance. Starters are the top N at the
+     position by season value, N = the league's slots there. */
+  const teamOutlookCard = (t, prefer) => {
+    const them = leagueTeams.find((q) => String(q.rosterId) === String(t.team && t.team.rosterId));
+    if (!them || !myLT) return null;
+    const gone = new Set([t.give, t.give2].filter(Boolean).map((p) => String(p.sid)));
+    const mineAfter = tradeRoster(myLT).filter((p) => !gone.has(String(p.sid))).concat(t.get ? [t.get] : []);
+    const theirs = tradeRoster(them);
+    const read = myReadFor(them.rosterId);
+    const inDeal = [t.give, t.give2, t.get].filter(Boolean).map((p) => String(p.pos).toUpperCase());
+    const order = [...new Set(inDeal.concat(["QB", "RB", "WR", "TE"]))].filter((pos) => ["QB", "RB", "WR", "TE"].includes(pos));
+    const room = (ps, pos) => {
+      const at = ps.filter((p) => String(p.pos).toUpperCase() === pos).sort((a, b) => (b.pts || 0) - (a.pts || 0));
+      const n = (reqStart && reqStart[pos]) || 1;
+      const fmt = (p) => `${p.name} ${Math.round((p.pts || 0) / GAMES_IN_SEASON)}`;
+      const st = at.slice(0, n).map(fmt).join(", ") || "nobody";
+      const bench = at.slice(n, n + 2).map(fmt).join(", ");
+      return bench ? `${st} · then ${bench}` : `${st} · no backup`;
+    };
+    const lines = [];
+    if (powerRankById && powerRankById[them.rosterId]) lines.push({ k: "Power", v: `${ordinal(powerRankById[them.rosterId])} of ${leagueTeams.length}${them.record ? `, ${them.record.wins}-${them.record.losses}` : ""}` });
+    if (read && read.need) { const nd = Object.keys(read.need).filter((k) => read.need[k] > 0); if (nd.length) lines.push({ k: "Short at", v: nd.join(", "), tone: "var(--neg)" }); }
+    if (read && read.surplus) { const sp = Object.keys(read.surplus).filter((k) => read.surplus[k] > 0); if (sp.length) lines.push({ k: "Deep at", v: sp.join(", "), tone: "var(--pos)" }); }
+    return {
+      key: `outlook-${them.rosterId}`, prefer,
+      title: `${them.teamName}: their rooms, and yours after this deal`,
+      subtitle: "points a week, starters first",
+      lines,
+      cols: [{ k: "Pos", strong: true }, { k: them.teamName.length > 16 ? "Them" : them.teamName }, { k: "You, after" }],
+      rows: order.map((pos) => ({ Pos: pos, [them.teamName.length > 16 ? "Them" : them.teamName]: room(theirs, pos), "You, after": room(mineAfter, pos),
+        tone: inDeal.includes(pos) ? "var(--gold)" : undefined })),
+      note: "Positions in this deal are listed first.",
+    };
+  };
+  const ideasForPosition = (pos) => {
+    if (!myLT) return [];
+    const mine = tradeRoster(myLT);
+    const base = cachedScore(mine).start || 0;
+    const cands = [];
+    leagueTeams.forEach((t) => {
+      if (t.rosterId === data.myRosterId) return;
+      tradeRoster(t).forEach((p) => {
+        if (String(p.pos).toUpperCase() !== pos) return;
+        const add = (cachedScore(mine.concat([p])).start || 0) - base;
+        if (add > 0.5) cands.push({ team: t, p, add });
+      });
+    });
+    const out = [];
+    cands.sort((a, b) => b.add - a.add).slice(0, 7).forEach(({ team, p, add }) => {
+      const ideas = buildIdeas(team.rosterId, [String(p.sid)], { depth: 10, max: 1 });
+      if (!ideas || !ideas.length || ideas.worthless) return;
+      out.push({ team, target: p, add, idea: ideas[0], costly: !!ideas.costly });
+    });
+    /* Sendable first, then best for me; and no one player of mine anchors more than two rows, or "RB ideas"
+       becomes "six ways to trade Kyren Williams". */
+    const acc = (x) => !!(x.idea.r && x.idea.r.call && x.idea.r.call.key === "send");
+    const used = {}, list = [];
+    out.sort((a, b) => (a.costly - b.costly) || (acc(b) - acc(a)) || (b.idea.g.score - a.idea.g.score)).forEach((x) => {
+      const k = String(x.idea.give[0].sid);
+      if ((used[k] || 0) >= 2 || list.length >= 6) return;
+      used[k] = (used[k] || 0) + 1; list.push(x);
+    });
+    return list;
+  };
+  const runPosIdeas = (pos) => {
+    setPosIdeas({ pos, busy: true });
+    setTimeout(() => { let list = []; try { list = ideasForPosition(pos); } catch (e) { list = []; } setPosIdeas({ pos, list }); }, 30);
   };
   /* ⭐⭐⭐⭐⭐ A GRADE FOR EACH SIDE OF A TRADE THAT ALREADY HAPPENED — 29bh.
      Trey: "On the 'recent activity' for trades, I'd love if you could give a grade for each team based on the
@@ -19751,7 +19940,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
             const groupOf = (k) => (GROUPS.find((g) => (g.tab === k) || (g.items && g.items.some((it) => it[0] === k))) || GROUPS[0]).k;
             const activeGroup = groupOf(subKey);
             const go = (k) => {
-              if (k === "gameday") { onGameDay && onGameDay(); return; }
+              /* ⭐ 29bi — Trey: "When you click on 'my team' in the team hub and click on 'game day' - can you just
+                 make this a pop up that I can see on my current screen instead of taking me to a different
+                 page?" The same GameDay screen, embedded, over the hub; the full page is one click inside it. */
+              if (k === "gameday") { setGdOpen(true); return; }
               if (k === "draft") { setDraftPick(true); return; }
               if (k === "txlog") { setTab("trades"); setTSec("recent"); return; }
               /* Leaving Recent activity for Trades must not land back on the activity section it came from. */
@@ -21126,7 +21318,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                                     Nothing on your roster matches his value without wrecking their lineup — one or two of your players either falls well short of what he is worth or overpays badly. He may simply cost more than you want to spend.
                                   </div>
                                 )}
-                                {cur && cur.length > 0 && !cur.some((x) => x.g.score >= -0.5) && (
+                                {cur && cur.length > 0 && cur.costly && (
                                   <div className="mut" data-tbideascostly style={{ fontSize: 11.5, marginTop: 7, lineHeight: 1.5 }}>
                                     Every fair offer below costs your own lineup — at a price they would accept, {wanted.join(" + ")} {wanted.length === 1 ? "is" : "are"} worth more to {them.teamName} than to you. These are starting points if you want him anyway.
                                   </div>
@@ -21134,7 +21326,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                                 {cur && cur.length > 0 && (
                                   <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 8 }}>
                                     {cur.map((x) => (
-                                      <div key={x.give.map((p) => p.sid).join("+")} data-tbidea={x.give.map((p) => p.name).join(" + ")}
+                                      <div key={x.give.map((p) => p.sid).join("+")} data-tbidea={x.give.map((p) => p.name).join(" + ")} data-tbideafair={String(x.ratio)}
                                         style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 12, padding: "4px 0", borderTop: "1px solid var(--line)" }}>
                                         <IdeaGrade g={x.g} size="sm" />
                                         <span style={{ minWidth: 0 }}>
@@ -21142,7 +21334,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                                           {x.give.map((p, i) => <React.Fragment key={p.sid}>{i ? <span className="mut"> + </span> : null}<b><Dot pos={p.pos} />{p.name}</b></React.Fragment>)}
                                         </span>
                                         <span className="mut" style={{ fontSize: 10.5 }}>{x.why.join(" · ")}</span>
-                                        <span className="mut num" style={{ fontSize: 10.5 }}>value {Math.round(x.vOut)} for {Math.round(x.vIn)}</span>
+                                        <span className="mut num" style={{ fontSize: 10.5 }} title="How even the deal is, measured as each player's share of the best at his position (the scale the Deals list uses), so a receiver and a running back compare fairly.">{x.ratio}% even</span>
                                         <button className="btn btn-mini" data-tbideaload style={{ marginLeft: "auto", fontSize: 10.5 }}
                                           onClick={() => setTb((v) => ({ ...v, give: x.give.map((p) => String(p.sid)) }))}>Load</button>
                                       </div>
@@ -21568,6 +21760,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                   raw material for one. See src/trademarket.js for how each reason is measured. */}
             {tSec === "deals" && dealsGraded.main.length > 0 && (
               <div data-tboard={String(dealsGraded.main.length)} style={{ marginBottom: 16 }}>
+                <HoverTable card={teamCard} />
                 <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 9 }}>
                   <span className="disp" style={{ fontSize: 15, fontWeight: 800, letterSpacing: ".01em" }}>Deals worth sending</span>
                   <span className="mut" style={{ fontSize: 11 }}>
@@ -21629,8 +21822,13 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                         <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 9 }}>
                           <span className="num" style={{ fontSize: 11, fontWeight: 800, color: "var(--mut)" }}>#{pos + 1}</span>
                           <IdeaGrade g={g} />
+                          <button className="btn btn-mini" data-teamoutlookbtn={t.team.teamName} aria-label="Both rosters after this deal"
+                            onMouseEnter={(e) => showTeamCard(e, teamOutlookCard(t))} onMouseLeave={hideTeamCard}
+                            onClick={(e) => showTeamCard(e, teamOutlookCard(t))}
+                            style={{ fontSize: 10, padding: "1px 7px" }}><i className="ti ti-users" style={{ fontSize: 11, marginRight: 3 }} aria-hidden="true" />Rosters</button>
                           <span style={{ fontSize: 12.5 }}>
-                            <span className="mut">to </span><b>{t.team.teamName}</b>
+                            <span className="mut">to </span><b data-teamoutlook={t.team.teamName} onMouseEnter={(e) => showTeamCard(e, teamOutlookCard(t))} onMouseLeave={hideTeamCard}
+                              style={{ cursor: "help", borderBottom: "1px dotted var(--line2)" }}>{t.team.teamName}</b>
                             {t.team.ownerName ? <span className="mut"> (@{t.team.ownerName})</span> : null}
                           </span>
                           {/* ⚠ THE BAND IS A WORD, NOT JUST A COLOUR, and the number is printed beside it —
@@ -21832,6 +22030,12 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                   </div>
                   </>
                 )}
+                {/* ⭐⭐⭐⭐ 29bi — SAY THAT THE CHIPS ARE BUTTONS. Trey: "I want to make it clear that you can click on
+                    those different positions on there." */}
+                <div className="mut" data-mktclickhint style={{ fontSize: 11.5, marginBottom: 7 }}>
+                  <i className="ti ti-hand-click" style={{ fontSize: 13, marginRight: 5, color: "var(--gold)" }} aria-hidden="true" />
+                  Click a position to see who has one to trade and specific offers you could send.
+                </div>
                 <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
                   {market.positions.map((row) => {
                     const on = mktPos === row.pos;
@@ -21856,14 +22060,17 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                         : state === "sell" ? "can move" : "set";
                     return (
                       <button key={row.pos} data-mktpos={row.pos} data-mktposstate={state}
-                        onClick={() => setMktPos(on ? null : row.pos)} aria-pressed={on}
-                        title={sum ? sum.action : `${row.pos}`}
+                        onClick={() => { if (on) { setMktPos(null); } else { setMktPos(row.pos); runPosIdeas(row.pos); } }} aria-pressed={on}
+                        title={`${sum ? sum.action + " " : ""}Click for trade ideas at ${row.pos}.`}
+                        className="mktposbtn"
                         style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left",
-                          border: `1px solid ${on ? tone : "var(--line2)"}`, background: on ? "var(--hover)" : "transparent",
-                          borderRadius: 9, padding: "6px 10px", minWidth: 108, opacity: state === "set" ? .7 : 1 }}>
-                        <div style={{ fontSize: 12.5, fontWeight: 800, color: POS_COLOR[row.pos] || "var(--ink)" }}>
+                          border: `1px solid ${on ? tone : "var(--line2)"}`, background: on ? "var(--hover)" : "var(--panel)",
+                          borderRadius: 9, padding: "6px 10px", minWidth: 118, opacity: state === "set" ? .8 : 1,
+                          boxShadow: on ? "none" : "0 1px 0 var(--line2)" }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 800, color: POS_COLOR[row.pos] || "var(--ink)", display: "flex", alignItems: "center", gap: 4 }}>
                           {row.pos}{" "}
                           <span style={{ fontSize: 10, fontWeight: 700, color: tone }}>{label}</span>
+                          <i className={`ti ti-chevron-${on ? "down" : "right"}`} style={{ fontSize: 12, color: "var(--mut)", marginLeft: "auto" }} aria-hidden="true" />
                         </div>
                         {/* ⭐⭐⭐⭐ WHERE THIS GROUP RANKS IN THE LEAGUE — 29ac, asked for by name, and since
                             29ai the number the whole fit read runs on. "Short 1" is a fact about my own
@@ -21904,6 +22111,40 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                     );
                   })}
                 </div>
+
+                {/* ⭐⭐⭐⭐⭐ 29bi — SPECIFIC OFFERS FOR THIS POSITION, first thing under the chips. */}
+                {mktPos && (
+                  <div data-posideas={mktPos} style={{ border: "1px solid var(--gold-line)", borderRadius: 9, padding: "9px 11px", marginTop: 10, background: "var(--panel)" }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+                      <span className="disp" style={{ fontSize: 13.5, fontWeight: 800 }}><i className="ti ti-bulb" style={{ fontSize: 14, color: "var(--gold)", marginRight: 5 }} aria-hidden="true" />Trade ideas for a {mktPos}</span>
+                      <span className="mut" style={{ fontSize: 11 }}>every {mktPos} who would start for you, with the best fair offer for each, graded like the calculator</span>
+                    </div>
+                    {(!posIdeas || posIdeas.pos !== mktPos) ? (
+                      <button className="btn btn-mini" data-posideasrun onClick={() => runPosIdeas(mktPos)}>Find ideas</button>
+                    ) : posIdeas.busy ? (
+                      <div className="mut" data-posideasbusy style={{ fontSize: 12 }}>Pricing every {mktPos} in the league…</div>
+                    ) : posIdeas.list.length === 0 ? (
+                      <div className="mut" data-posideasnone style={{ fontSize: 12, lineHeight: 1.5 }}>No {mktPos} on another roster would start for you at a price that works. Your best move here is probably the waiver wire.</div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        {posIdeas.list.map((x) => (
+                          <div key={`${x.team.rosterId}-${x.target.sid}`} data-posidea={`${x.idea.give.map((p) => p.name).join(" + ")}->${x.target.name}`}
+                            style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 12, padding: "4px 0", borderTop: "1px solid var(--line)" }}>
+                            <IdeaGrade g={x.idea.g} size="sm" />
+                            <span><span className="mut">get </span><b style={{ color: "var(--pos)" }}><Dot pos={x.target.pos} />{x.target.name}</b>
+                              <span className="mut"> from {x.team.teamName} for </span>
+                              {x.idea.give.map((p, i) => <React.Fragment key={p.sid}>{i ? <span className="mut"> + </span> : null}<b><Dot pos={p.pos} />{p.name}</b></React.Fragment>)}</span>
+                            <span className="mut" style={{ fontSize: 10.5 }}>{x.idea.why.join(" · ")}</span>
+                            {x.costly && <span className="mut" style={{ fontSize: 10.5, color: "var(--gold)" }}>costs your lineup at any fair price</span>}
+                            <button className="btn btn-mini" data-posideaload style={{ marginLeft: "auto", fontSize: 10.5 }}
+                              onClick={() => { tbOpen(x.team.rosterId, x.idea.give.map((p) => String(p.sid)), [String(x.target.sid)]);
+                                try { setTimeout(() => { const el = document.querySelector('[data-tb]'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 50); } catch (_) {} }}>Load</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* THE DRILL-IN: who has a spare at this position, what they are short of, and the swap. */}
                 {mktPos && (() => {
@@ -22585,6 +22826,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 read at all. Kept apart, and folded away, both lists stay honest. */}
             {tSec === "deals" && longShotsAll.length > 0 && (
               <div data-tblong={String(longShotsAll.length)} style={{ marginTop: 14 }}>
+                {!(dealsGraded.main.length > 0) && <HoverTable card={teamCard} />}
                 <button data-tblongtoggle onClick={() => setLongOpen((v) => !v)} aria-expanded={longOpen}
                   style={{ cursor: "pointer", fontFamily: "inherit", background: "none", border: "none", padding: 0,
                     color: "var(--mut)", fontSize: 11.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
@@ -22598,7 +22840,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                         style={{ border: "1px dashed var(--line)", borderRadius: 9, padding: "9px 11px", fontSize: 11.5 }}>
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "baseline" }}>
                           <span><b>{t.give.name}</b>{t.give2 ? <> <span className="mut">+</span> <b>{t.give2.name}</b></> : null}<span className="mut"> for </span><b style={{ color: "var(--green)" }}>{t.get.name}</b></span>
-                          <span className="mut">with {t.team.teamName}</span>
+                          <span className="mut">with <span data-teamoutlook={t.team.teamName} onMouseEnter={(e) => showTeamCard(e, teamOutlookCard(t))} onMouseLeave={hideTeamCard}
+                            style={{ cursor: "help", borderBottom: "1px dotted var(--line2)" }}>{t.team.teamName}</span></span>
                           <IdeaGrade g={ideaGradeOf(t)} size="sm" />
                           <span style={{ marginLeft: "auto" }}>
                             <b className="num" style={{ color: "var(--green)" }}>+{t.myGain}</b>
@@ -23257,6 +23500,27 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
         <Tooltip tip={tip} onClose={hideTip}>
           <OutlookCard content={tip.content} />
         </Tooltip>
+      )}
+      {gdOpen && (
+        <div data-gdpopup onClick={() => setGdOpen(false)}
+          style={{ position: "fixed", inset: 0, zIndex: 80, background: "rgba(0,0,0,.45)", display: "flex", justifyContent: "center", alignItems: "flex-start", padding: "4vh 12px" }}>
+          <div role="dialog" aria-modal="true" aria-label="Game Day" onClick={(e) => e.stopPropagation()}
+            style={{ width: "min(1180px, 100%)", maxHeight: "92vh", overflowY: "auto", background: "var(--bg)", border: "1px solid var(--line2)", borderRadius: 12, boxShadow: "0 20px 60px rgba(0,0,0,.5)" }}>
+            <div style={{ position: "sticky", top: 0, zIndex: 2, display: "flex", alignItems: "center", gap: 8, padding: "9px 14px", background: "var(--panel)", borderBottom: "1px solid var(--line)" }}>
+              <i className="ti ti-broadcast" style={{ fontSize: 16, color: "var(--pos)" }} aria-hidden="true" />
+              <span className="disp" style={{ fontSize: 15, fontWeight: 800 }}>Game Day</span>
+              <span className="mut" style={{ fontSize: 11 }}>live across your leagues</span>
+              <div style={{ flex: 1 }} />
+              {onGameDay && <button className="btn btn-mini" data-gdfull onClick={() => { setGdOpen(false); onGameDay(); }}>Open full page</button>}
+              <button className="btn btn-mini" data-gdclose onClick={() => setGdOpen(false)} aria-label="Close Game Day">
+                <i className="ti ti-x" style={{ fontSize: 13 }} aria-hidden="true" /> Close
+              </button>
+            </div>
+            <React.Suspense fallback={<div className="mut" style={{ padding: 20 }}>Loading Game Day…</div>}>
+              <GameDay leagues={leagues} embedded onOpenHub={() => setGdOpen(false)} />
+            </React.Suspense>
+          </div>
+        </div>
       )}
     </HubShell>
   );
@@ -31008,6 +31272,18 @@ function ConnectBox({ connect, onConnect, onClear, embedded, onCancel, jumpTo, j
   const [yStatus, setYStatus] = useState(null);         // { configured, linked }
   const [yLeagues, setYLeagues] = useState(null);
   const [yCode, setYCode] = useState("");
+  /* ⭐ 29bj — IS YAHOO SWITCHED ON AT ALL? Trey: "It looks like the Yahoo connection is still waiting for
+     Yahoo to approve it. Can you add a note on there that grey's it out and states that we are working on
+     connection." Asked once when the picker mounts. Until the backend says `configured: true` the Yahoo tile
+     is greyed and cannot be picked; the day the Render keys go in, it lights up with no new build.
+     null = not known yet (also greyed: a tile that works for a second and then says no is worse). */
+  const [yReady, setYReady] = useState(null);
+  React.useEffect(() => {
+    let alive = true;
+    if (!hasBackend) { setYReady(false); return; }
+    api.yahooStatus().then((r) => { if (alive) setYReady(!!(r && r.configured)); }).catch(() => { if (alive) setYReady(false); });
+    return () => { alive = false; };
+  }, []);
   /* "Add another username" in the dialog above has to land on the Sleeper FORM, not on the platform grid
      with Sleeper merely highlighted — the whole point of pressing it is that you know which platform you
      mean. `jumpKey` increments on every press so pressing it again after backing out still works; a
@@ -31259,10 +31535,12 @@ function ConnectBox({ connect, onConnect, onClear, embedded, onCancel, jumpTo, j
                     reasoning is kept (PLATFORMS still carries both rows, so an old connected league still
                     renders with its right name and the FAQ still answers the question) — it just is not a
                     button you can press here. */}
-                {PLATFORMS.filter((p) => !p.unsupported).map((p) => (
-                  <button key={p.id} data-plat={p.id} className="btn" style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-start", padding: "9px 11px", opacity: p.unsupported ? 0.66 : 1 }}
-                    onClick={() => { setSel(p); setVal(""); setKey2(""); setS2(""); setSwid(""); setEspnPriv(false); setFxLeagues(null); setYLeagues(null); setSleeperLeagues(null); setEspn(null); setError(null); }}>
-                    <i className={`ti ${p.icon}`} style={{ fontSize: 17, color: p.unsupported ? "var(--mut)" : "var(--gold)" }} aria-hidden="true" />
+                {PLATFORMS.filter((p) => !p.unsupported).map((p) => { const pending = p.id === "yahoo" && yReady !== true; return (
+                  <button key={p.id} data-plat={p.id} data-platpending={pending ? "1" : "0"} className="btn" disabled={pending} aria-disabled={pending}
+                    title={pending ? "We're working on the Yahoo connection. It's waiting on Yahoo's approval and will switch on here as soon as it's ready." : undefined}
+                    style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-start", padding: "9px 11px", opacity: p.unsupported || pending ? 0.5 : 1, cursor: pending ? "not-allowed" : "pointer", filter: pending ? "grayscale(1)" : undefined }}
+                    onClick={() => { if (pending) return; setSel(p); setVal(""); setKey2(""); setS2(""); setSwid(""); setEspnPriv(false); setFxLeagues(null); setYLeagues(null); setSleeperLeagues(null); setEspn(null); setError(null); }}>
+                    <i className={`ti ${p.icon}`} style={{ fontSize: 17, color: p.unsupported || pending ? "var(--mut)" : "var(--gold)" }} aria-hidden="true" />
                     {/* ⚠ THE NAME IS THE FLEX ITEM THAT GIVES, AND IT GAVE. With the badge pinned at
                         flexShrink 0 (below, for good reason) the longest platform name was the one that
                         clipped instead — "MyFantasyL" beside a LIVE PICKS chip, in a 150px grid cell. A
@@ -31274,9 +31552,16 @@ function ConnectBox({ connect, onConnect, onClear, embedded, onCancel, jumpTo, j
                         longest platform name — the one place the badge matters most. */}
                     {p.live && <span className="chip" data-platlive style={{ fontSize: 8.5, borderColor: "var(--green)", color: "var(--green)", flexShrink: 0 }}>LIVE PICKS</span>}
                     {p.unsupported && <span className="chip" style={{ fontSize: 8.5, borderColor: "var(--line2)", color: "var(--mut)", flexShrink: 0 }}>READ WHY</span>}
+                    {pending && <span className="chip" data-platsoon style={{ fontSize: 8.5, borderColor: "var(--line2)", color: "var(--mut)", flexShrink: 0 }}>SOON</span>}
                   </button>
-                ))}
+                ); })}
               </div>
+              {yReady !== true && PLATFORMS.some((p) => p.id === "yahoo" && !p.unsupported) && (
+                <div className="mut" data-yahoopending style={{ fontSize: 11.5, marginTop: 7, lineHeight: 1.5, display: "flex", gap: 6, alignItems: "flex-start" }}>
+                  <i className="ti ti-brand-yahoo" style={{ fontSize: 14, color: "var(--mut)", marginTop: 1 }} aria-hidden="true" />
+                  <span><b style={{ color: "var(--ink)" }}>Yahoo is coming soon.</b> We're working on the connection, and it's waiting on Yahoo's approval. It will switch on here as soon as it's ready. Until then you can set a Yahoo league up by hand below.</span>
+                </div>
+              )}
               {/* ⭐⭐⭐⭐ MANUAL IS A DRAFT-DAY TOOL, AND THE DIALOG NOW SAYS SO BEFORE YOU PICK IT — 29q.
                   Trey: "You can leave the 'Set up manually' instead… but you need to be clear that this is
                   ONLY an option for completing a draft (it won't be able to track manual leagues to the
