@@ -348,6 +348,19 @@ export function tradeBoard(input) {
      regex that lifts ONE named function at a time; a new module-level helper called from inside
      `tradeBoard` is invisible to all of them and six suites go red at once (29aj, and it cost an hour). */
   const TILT_FLOOR = (base) => -Math.max(5, Math.abs(Number(base) || 0) * 0.04);
+  /* ⭐⭐⭐⭐⭐ KICKERS AND DEFENSES ARE NEVER PART OF A SUGGESTED TRADE — 29bh.
+     Trey: "It's recommending an A+ trade for me of the Eagles defense for Josh Allen... this might be the
+     worst trade I've ever seen. Defenses should hold very little value."
+     ⚠⚠ THE CAUSE WAS A UNIT MISMATCH, NOT A JUDGEMENT. `tierShare` below turns a QB/RB/WR/TE into a SHARE
+       of his position's best (0 to 1) — and `posTop` is only built for those four, so a defense fell
+       through to its RAW points over replacement. A defense a point or so above the streaming line was
+       therefore "worth" about 1.0, the same number as the best quarterback in the league at 1.0, and the
+       fairness band waved Eagles-for-Allen through as an even swap.
+     ⭐ AND THE HONEST VALUE IS NOT "SMALLER", IT IS "NONE WORTH TRADING FOR": a defense or kicker is
+       replaced from the wire every week, so no manager will pay a starter for one. They stay IN the
+       rosters — they are real points in a real lineup — but they are never offered, and never asked for. */
+  const STREAM_POS = new Set(['K', 'DEF', 'DST', 'PK']);
+  const tradeable = (p) => !!p && !STREAM_POS.has(String(p.pos || '').toUpperCase());
   const tiltNoteFor = (tilt, mine, theirs) => (tilt === 'both'
     ? `Both lineups improve — you +${mine}, them +${theirs}.`
     : `Fair on value, but it is your lineup that gains — you +${mine}, their own starting lineup ${theirs >= 0 ? `barely moves (+${theirs})` : `drops ${Math.abs(theirs)}`}. Worth asking, not a lock.`);
@@ -407,7 +420,10 @@ export function tradeBoard(input) {
     const pos = String(p && p.pos).toUpperCase();
     const top = posTop[pos] || 0;
     const w = worthOf(p);
-    return top >= TIER_FLOOR ? w / top : w;
+    /* ⚠ 29bh — WAS `: w`, raw points, on a scale where every other answer is a 0-1 share. Comparing the two
+       is the unit mismatch that let a defense pass as a franchise quarterback; a thin position now stays on
+       the share scale, measured against the floor instead of its own tiny top. */
+    return top >= TIER_FLOOR ? w / top : Math.min(1, w / TIER_FLOOR);
   };
 
   const offers = [];
@@ -422,7 +438,7 @@ export function tradeBoard(input) {
 
     them.roster.forEach((get) => {
       const pos = String(get.pos || '').toUpperCase();
-      if (!pos || get.sid == null) return;
+      if (!pos || get.sid == null || !tradeable(get)) return;
       const theirRestNoGet = them.roster.filter((p) => p.sid !== get.sid);
       // What losing him actually costs THEM — the other half of the fit edge.
       const theirLoss = r1(theirBase - lineupValue(theirRestNoGet, sf));
@@ -434,7 +450,7 @@ export function tradeBoard(input) {
       if (myAdd <= 0.5) return;
 
       me.roster.forEach((give) => {
-        if (give.sid == null || give.sid === get.sid) return;
+        if (give.sid == null || give.sid === get.sid || !tradeable(give)) return;
         diag.pairs++;
         const gPos = String(give.pos || '').toUpperCase();
         if (gPos === pos && Math.abs((give.pts || 0) - (get.pts || 0)) < 6) { diag.wash++; return; }
@@ -611,7 +627,7 @@ export function tradeBoard(input) {
          nothing to my lineup and is still a real part of a real trade — "my WR3 and a dart for your
          RB1" is the most ordinary package in fantasy football. The fairness gate below prices the pair
          against what comes back, so a worthless throw-in cannot make a bad deal look fair. */
-    const scored = me.roster
+    const scored = me.roster.filter(tradeable)
       .map((p) => ({ p, w: worthOf(p), spare: myOptSids.size ? !myOptSids.has(String(p.sid)) : true }))
       .sort((a, b) => b.w - a.w);
     const topAny = scored.filter((x) => x.w > 0).slice(0, CONSOL_POOL);
@@ -624,7 +640,7 @@ export function tradeBoard(input) {
       const theirBase = lineupValue(them.roster, sf);
       let theirBest = null;
       them.roster.forEach((p) => { if (!theirBest || worthOf(p) > worthOf(theirBest)) theirBest = p; });
-      const targets = them.roster
+      const targets = them.roster.filter(tradeable)
         .map((p) => ({ p, w: worthOf(p) }))
         .filter((x) => x.w > 0)
         .sort((a, b) => b.w - a.w)

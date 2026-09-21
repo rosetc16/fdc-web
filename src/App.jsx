@@ -103,7 +103,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29bg";
+const BUILD_TAG = "2026.07.29bh";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -793,8 +793,8 @@ export function leaguePower(data, pool, ictx) {
    — the real tradeEval from my side, so this pill and the calculator's card cannot disagree.
    ⚠ THE LETTER CARRIES A WORD, never colour alone (the win% rule): "Offer it" / "Don't" read in greyscale.
    ⚠ SHORT WORDS, because it sits in a table row as well as a card; the full sentence is the hover. */
-const CALL_TONE = { send: "var(--pos)", sweeten: "var(--gold)", small: "var(--ink)", even: "var(--mut)", pass: "var(--neg)" };
-const CALL_SHORT = { send: "Offer it", sweeten: "Good · may need more", small: "Small upgrade", even: "Not worth it", pass: "Don't" };
+const CALL_TONE = { send: "var(--pos)", sweeten: "var(--gold)", dream: "var(--mut)", small: "var(--ink)", even: "var(--mut)", pass: "var(--neg)" };
+const CALL_SHORT = { send: "Offer it", sweeten: "Good · may need more", dream: "They won't accept", small: "Small upgrade", even: "Not worth it", pass: "Don't" };
 function IdeaGrade({ g, size = "md", style }) {
   if (!g || !g.letter) return null;
   const c = CALL_TONE[g.call && g.call.key] || "var(--ink)";
@@ -16408,6 +16408,60 @@ export function positionMarket(teams, opts) {
      Passing `score` in keeps this function pure and testable while leaving exactly ONE implementation of
      "what is this roster worth", which is what stops the calculator and the power table disagreeing.
    ================================================================================================== */
+/* ⭐⭐⭐⭐⭐ WHAT A FUTURE DRAFT PICK IS WORTH, IN THE CALCULATOR'S OWN UNITS — 29bh.
+   Trey: "For leagues that allow draft pick trading, those also need to be in the trade calculator and need
+   you to place them in there based on value."
+   A pick is priced against THIS league's players, never an outside chart, so it moves when the league does:
+     · ANCHOR — the value of the Nth-best asset in the league (N = number of teams): roughly what the best
+       pick in a draft turns into. Two anchors, because the calculator counts value two ways: points over
+       replacement this season (`pickValue`, the fairness check) and long-term value (`pickLong`).
+     · SLOT — where the pick is likely to land. Next year's pick uses the ORIGINAL team's power rank (the
+       worst team picks first); further out nobody knows, so it is priced mid-round. Then a decay down the
+       draft: each pick is worth 90% of the one before, so a late 1st is about a third of the 1.01 and a
+       3rd-rounder is a dart.
+     · TIME — each year further out is worth 85% of the one before; a pick three drafts away is a promise.
+     · FORMAT — full value in dynasty (rookie drafts are how dynasty teams are built). In a keeper league the
+       pick feeds a full redraft, so it is worth half; in a redraft league that happens to trade picks, a
+       fifth — next year's roster starts from scratch either way.
+   ⚠ It is a MODEL and says so in the tooltip; the numbers it produces are shown beside each pick so they
+     can be argued with. */
+export function pickAssetsFor({ futurePicks, teams, powerRankById, repl, longValue, format }) {
+  const fp = futurePicks;
+  const out = {};
+  if (!fp || !fp.enabled || !Array.isArray(fp.picks) || !fp.picks.length) return out;
+  const T = Math.max(2, (teams || []).length || 12);
+  const players = (teams || []).flatMap((t) => t.roster || []).filter((p) => p && p.pos !== "PICK");
+  const aboveOf = (p) => Math.max(0, (Number(p.pts) || 0) - ((repl || {})[String(p.pos).toUpperCase()] || 0));
+  const nth = (arr) => { const v = arr.filter((x) => x > 0).sort((a, b) => b - a); return v.length ? v[Math.min(T - 1, v.length - 1)] : 0; };
+  const anchorNow = nth(players.map(aboveOf));
+  const anchorLong = nth(players.map((p) => Math.max(0, (longValue || longValueOf)(p))));
+  const fmt = format === "dynasty" ? 1 : format === "keeper" ? 0.5 : 0.2;
+  const first = Math.min(...fp.seasons.map(Number));
+  const nameOf = (rid) => { const t = (teams || []).find((q) => String(q.rosterId) === String(rid)); return t ? t.teamName : `Team ${rid}`; };
+  const ord = (n) => (n === 1 ? "1st" : n === 2 ? "2nd" : n === 3 ? "3rd" : `${n}th`);
+  fp.picks.forEach((pk) => {
+    const yrs = Number(pk.season) - first;
+    const pr = powerRankById ? powerRankById[pk.originalRosterId] : null;
+    const mid = (T + 1) / 2;
+    const slot = yrs === 0 && pr != null ? T - pr + 1 : mid;
+    const overall = (pk.round - 1) * T + slot;
+    const f = Math.pow(0.9, overall - 1) * Math.pow(0.85, yrs) * fmt;
+    const when = yrs === 0 && pr != null ? (slot <= T / 3 ? "early" : slot > (2 * T) / 3 ? "late" : "mid") : "mid";
+    const own = String(pk.originalRosterId) === String(pk.ownerRosterId);
+    const o2 = {
+      sid: `pick:${pk.season}:${pk.round}:${pk.originalRosterId}`, pos: "PICK", pts: 0,
+      name: `${pk.season} ${ord(pk.round)}${own ? "" : ` (${nameOf(pk.originalRosterId)})`}`,
+      season: pk.season, round: pk.round, originalRosterId: pk.originalRosterId, ownerRosterId: pk.ownerRosterId,
+      projSlot: Math.round(slot), when,
+      pickValue: Math.round(anchorNow * f * 10) / 10,
+      pickLong: Math.round(anchorLong * f * 10) / 10,
+    };
+    (out[pk.ownerRosterId] = out[pk.ownerRosterId] || []).push(o2);
+  });
+  Object.values(out).forEach((arr) => arr.sort((a, b) => (a.season - b.season) || (a.round - b.round) || (b.pickValue - a.pickValue)));
+  return out;
+}
+
 export function tradeEval(teams, opts) {
   const o = opts || {};
   const list = (teams || []).filter((t) => t && Array.isArray(t.roster));
@@ -16436,9 +16490,22 @@ export function tradeEval(teams, opts) {
   const myAfter = applied(me, outMine, inMine);
   const theirAfter = applied(them, inMine, outMine);
 
-  const score = o.score || ((roster) => ({ start: 0, rosterScore: 0 }));
-  const repl = o.replacement || replacementByPos(list.map((t) => t.roster), o.sf, list.length);
-  const above = (p) => Math.max(0, (Number(p.pts) || 0) - (repl[String(p.pos).toUpperCase()] || 0));
+  /* ⭐⭐⭐⭐⭐ 29bh — DRAFT PICKS RIDE IN THE ROSTERS AS `pos: "PICK"` (see `pickAssetsFor`). They score
+     nothing in a lineup — a 2027 1st does not start in week 9 — so every lineup/power score sees the roster
+     WITHOUT them, and they enter only where value is counted: the value check (`pickValue`) and the long
+     horizon (`pickLong`). A pick is not a roster spot either. */
+  const isPick = (p) => !!p && p.pos === "PICK";
+  const score0 = o.score || ((roster) => ({ start: 0, rosterScore: 0 }));
+  const score = (roster) => score0((roster || []).filter((p) => !isPick(p)));
+  const repl = o.replacement || replacementByPos(list.map((t) => (t.roster || []).filter((p) => !isPick(p))), o.sf, list.length);
+  /* ⭐⭐⭐⭐ 29bh — A KICKER OR DEFENSE IS WORTH A FRACTION OF ITS POINTS IN A TRADE. They are replaced off
+     the wire every week, so the market pays almost nothing for them — and pricing Eagles D at its full
+     points over the streaming line is how "Eagles for Josh Allen" read as fair. The points still count
+     in full in the LINEUP (they are real points); only the trade value is discounted. */
+  const STREAM_SHARE = 0.15;
+  const streamed = (p) => ["K", "DEF", "DST", "PK"].includes(String(p && p.pos || "").toUpperCase());
+  const above = (p) => (isPick(p) ? Math.max(0, Number(p.pickValue) || 0)
+    : Math.max(0, (Number(p.pts) || 0) - (repl[String(p.pos).toUpperCase()] || 0)) * (streamed(p) ? STREAM_SHARE : 1));
   const assetsOf = (ps) => Math.round(ps.reduce((s, p) => s + above(p), 0) * 10) / 10;
 
   const sideOf = (team, after, out, inc) => {
@@ -16451,7 +16518,7 @@ export function tradeEval(teams, opts) {
        exactly why the lineup maths must not be the only thing on screen: the deal is still one you cannot
        execute in Sleeper until you drop somebody, and naming him is the difference between a number and an
        instruction. */
-    const spotsNeeded = Math.max(0, inc.length - out.length);
+    const spotsNeeded = Math.max(0, inc.filter((p) => !isPick(p)).length - out.filter((p) => !isPick(p)).length);
     const benchAfter = (o.bench ? o.bench(after) : []) || [];
     const likelyCut = spotsNeeded > 0
       ? benchAfter.slice().sort((x, y) => (x.pts || 0) - (y.pts || 0)).slice(0, spotsNeeded)
@@ -16553,7 +16620,8 @@ export function tradeEval(teams, opts) {
      ================================================================================================== */
   const keeps = !!o.keeps;
   const long = !keeps ? null : (() => {
-    const lv = o.longValue || longValueOf;
+    const lv0 = o.longValue || longValueOf;
+    const lv = (p) => (isPick(p) ? (Number(p.pickLong) || 0) : lv0(p));
     const sum = (ps) => Math.round(ps.reduce((s2, p) => s2 + Math.max(0, lv(p)), 0) * 10) / 10;
     const outL = sum(outMine), inL = sum(inMine);
     const hi = Math.max(outL, inL), lo = Math.min(outL, inL);
@@ -16667,8 +16735,31 @@ export function tradeEval(teams, opts) {
   const pw = (mine.delta || 0) / G;                                  // your best lineup, points a week
   const depthPw = ((mine.assetDelta || 0) - (mine.delta || 0)) / G;  // value moving that is NOT in your lineup
   const longPw = long && long.delta != null ? long.delta / G : null;
-  let gScore = keeps && longPw != null ? pw * 0.6 + longPw * 0.4 : pw;
+  /* ⭐⭐⭐⭐⭐ 29bh — IN A DYNASTY LEAGUE THE SAME TRADE GRADES DIFFERENTLY FOR A CONTENDER AND A REBUILDER.
+     Trey: "The trade calculator also needs to take into account a few more variables for dynasty leagues...
+     What is the outlook of your team (are you winning? Are you win-now? Is your roster aging?) and the age /
+     upside of the player (are you rebuilding? How old is the player? What's the players outlook?)."
+     ⚠ THE WEIGHT WAS A FIXED 60/40 NOW/LATER FOR EVERY TEAM. That grades a 30-year-old for a rookie
+       identically for the first-place team and the last-place one, which is exactly backwards for one of
+       them. The window (win-now / balanced / rebuild — his own setting, or read from the standings and his
+       roster's age when he has not set one) now decides the split, and the age read (`long.fit`: getting
+       younger while rebuilding, or cashing youth for points while contending) nudges the grade the way the
+       depth read does. The player's own age curve and runway are already inside `long.delta`
+       (`longValueOf` / `yearsOfUse`), which is where "how old is he, what is his outlook" lives. */
+  const W = { winnow: [0.8, 0.2], balanced: [0.6, 0.4], rebuild: [0.3, 0.7] }[(long && long.posture) || 'balanced'] || [0.6, 0.4];
+  let gScore = keeps && longPw != null ? pw * W[0] + longPw * W[1] : pw;
   const gWhy = [`${pw >= 0 ? '+' : ''}${pw.toFixed(1)} a week in your best lineup`];
+  if (keeps && long && o.posture) {
+    const lbl = { winnow: 'a win-now team', balanced: 'a balanced team', rebuild: 'a rebuilding team' }[long.posture] || 'your team';
+    const age = o.windowInfo && o.windowInfo.avgAge ? `, core age ${Number(o.windowInfo.avgAge).toFixed(1)}` : '';
+    gWhy.push(`graded as ${lbl}${age}${o.windowInfo && !o.windowInfo.set ? ' (read from your standings and roster age)' : ''} — this season ${Math.round(W[0] * 100)}%, the future ${Math.round(W[1] * 100)}%`);
+    if (long.fit && long.fit.key === 'with') { gScore += 0.3; gWhy.push(long.fit.why); }
+    else if (long.fit && long.fit.key === 'against') { gScore -= 0.4; gWhy.push(long.fit.why); }
+    const ip = long.inProfile || {}, op = long.outProfile || {};
+    if (ip.age != null && op.age != null && ip.years != null && op.years != null && Math.abs(ip.years - op.years) >= 1) {
+      gWhy.push(`the ${ip.years > op.years ? 'incoming' : 'outgoing'} side has more useful years left (${Math.max(ip.years, op.years).toFixed(1)} vs ${Math.min(ip.years, op.years).toFixed(1)})`);
+    }
+  }
   /* Depth only nudges, and only when the lineup change is small — a bench stash is worth something, but
      never more than the starters actually scoring points. */
   if (Math.abs(pw) < 0.6 && Math.abs(depthPw) >= 1.5) {
@@ -16686,6 +16777,12 @@ export function tradeEval(teams, opts) {
   const willAccept = (verdictLong || verdict).key === 'good' || (verdictLong || verdict).key === 'future';
   const call = (() => {
     const wk = `${Math.abs(pw).toFixed(1)} a week`;
+    /* ⭐⭐⭐⭐ 29bh — "GREAT FOR YOU, THEY WON'T DO IT". "They will likely want more" was the gentlest thing
+       the calculator could say about Eagles D for Josh Allen, which is the most one-sided offer imaginable.
+       When the value going back is under 40% of what comes in, more is not a sweetener away — it is a
+       different trade — so the call says so instead of encouraging the send. */
+    if (gScore >= 0.5 && !willAccept && ratio < 0.4 && mine.assetsIn > mine.assetsOut) return { key: 'dream', label: 'Great for you — they won\'t accept this',
+      why: `It makes your team better by about ${wk}, but you are offering ${mine.assetsOut.toFixed(0)} of value for ${mine.assetsIn.toFixed(0)}. No manager takes that — build a real offer around what they need.` };
     if (gScore >= 0.5 && willAccept) return { key: 'send', label: 'Make this offer',
       why: `It makes your team better by about ${wk}, and it is fair enough that they have a reason to say yes.` };
     /* ⚠ 29bg — WAS "expect a no". On a Deals card that sat beside the finder's own "WORTH ASKING" band and
@@ -16722,7 +16819,9 @@ function findTrades(me, others, opts) {
   const minGain = o.minGain != null ? o.minGain : 0.5;
   if (!me || !me.roster || !me.roster.length) return [];
   const base = lineupValue(me.roster, sf);
-  const mine = me.roster.slice().sort((a, b) => (b.pts || 0) - (a.pts || 0)).slice(0, depth);
+  /* 29bh — kickers and defenses are streamed, never traded for; see STREAM_POS in trademarket.js. */
+  const offerable = (p) => p && !["K", "DEF", "DST", "PK"].includes(String(p.pos || "").toUpperCase());
+  const mine = me.roster.filter(offerable).sort((a, b) => (b.pts || 0) - (a.pts || 0)).slice(0, depth);
 
   const allRosters = [me.roster].concat((others || []).map((t) => t && t.roster).filter(Boolean));
   const repl = replacementByPos(allRosters, sf, allRosters.length);
@@ -16745,7 +16844,7 @@ function findTrades(me, others, opts) {
     if (!them || !them.roster || !them.roster.length) return;
     diag.teams++;
     const theirBase = lineupValue(them.roster, sf);
-    const theirs = them.roster.slice().sort((a, b) => (b.pts || 0) - (a.pts || 0)).slice(0, depth);
+    const theirs = them.roster.filter(offerable).sort((a, b) => (b.pts || 0) - (a.pts || 0)).slice(0, depth);
     mine.forEach((give) => {
       const myRest = me.roster.filter((p) => p.sid !== give.sid);
       const wGive = worth(give);
@@ -17536,6 +17635,9 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
      that is the common case, and neither is pinned there. `give` are A's players, `get` are B's.
      ⚠ OPEN BY DEFAULT, also on his instruction. The panel is the reason to be on this tab. */
   const [tb, setTb] = useState({ open: true, a: null, b: null, give: [], get: [] });
+  /* 29bh — the calculator's "Ideas" answer: { key, list } where key is the target set it was built for, so a
+     stale answer is never shown against a different selection. */
+  const [tbIdeas, setTbIdeas] = useState(null);
   /* ⭐⭐⭐⭐⭐ AND IT MOVES YOU TO THE CALCULATOR — b161, and this was a real bug the moment the sections
      became tabs. Every caller of `tbOpen` lives somewhere ELSE on this tab: "Price it" on a partner row,
      a pathway in the positional market, a swap on the deals board. Before the tabs they all pointed at a
@@ -17747,6 +17849,23 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     api.seasonToDate(wk).then((r) => { if (alive) setStd(r || null); }).catch(() => { if (alive) setStd(null); });
     return () => { alive = false; };
   }, [data && data.week]);
+  /* ⭐⭐⭐⭐ 29bh — THIS SEASON'S RESULTS AS THEY STOOD WHEN EACH TRADE WAS MADE. The Recent activity grade
+     (see `gradeTxTrade`) rewinds the form blend to the trade's week — stats through the week before — so a
+     deal is judged on what both managers could see, not on what happened afterwards. One request per
+     distinct week, only while the Recent section is open. */
+  const [txStd, setTxStd] = useState({});
+  React.useEffect(() => {
+    if (!tx || !hasBackend || tSec !== "recent") return;
+    const L0 = (tx.leagues || [])[0];
+    const weeks = [...new Set(((L0 && L0.items) || []).filter((x) => x && x.type === "trade" && x.status === "complete" && x.week).map((x) => Number(x.week)))]
+      .filter((w) => !(w in txStd));
+    if (!weeks.length) return;
+    let alive = true;
+    weeks.forEach((w) => api.seasonToDate(w)
+      .then((r) => { if (alive) setTxStd((v) => ({ ...v, [w]: r || null })); })
+      .catch(() => { if (alive) setTxStd((v) => ({ ...v, [w]: null })); }));
+    return () => { alive = false; };
+  }, [tx, tSec]);
   const ictx = React.useMemo(() => injCtxFor(data, injuries, std), [data && data.week, data && data.regularSeasonWeeks, data && data.playoffStartWeek, cfg && cfg.type, cfg && JSON.stringify(cfg.scoring || null), injuries, std]);
   /* ⚠ THE SECOND ARGUMENT IS THE COUNTERFACTUAL, AND IT EXISTS FOR ONE CALLER. Passing `null` resolves
      the roster AS IF NOBODY WERE HURT — which is what the Injuries tab needs to answer Trey's actual
@@ -19043,9 +19162,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   /* ⭐⭐⭐⭐⭐ THE CALCULATOR'S INPUT — 29y. Season-value rosters, for the same reason the finder uses them:
      a trade is a season decision and a bye week must never make a good player look expendable. The teams
      carry their record and points-for untouched so the power half of the blend keeps its history. */
+  /* 29bh — each team's future picks, valued (see pickAssetsFor), riding in its calculator roster. */
+  const pickFormat = isDynasty ? "dynasty" : leagueKeepsPlayers(cfg) ? "keeper" : "redraft";
+  const picksByOwner = hubMemo(`picks|${tradeKey}|${JSON.stringify((data.futurePicks && data.futurePicks.picks) || []).length}`, () => pickAssetsFor({
+    futurePicks: data.futurePicks, teams: leagueTeams.map((t) => ({ rosterId: t.rosterId, teamName: t.teamName, roster: tradeRoster(t) })),
+    powerRankById, repl: replacementByPos(leagueTeams.map((t) => tradeRoster(t)), cfg.sf, leagueTeams.length), format: pickFormat }));
   const tbTeams = leagueTeams.map((t) => ({
     rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName,
-    isMe: t.rosterId === data.myRosterId, roster: tradeRoster(t),
+    isMe: t.rosterId === data.myRosterId, roster: tradeRoster(t).concat(picksByOwner[t.rosterId] || []),
     record: t.record, pointsFor: t.pointsFor || 0,
   }));
   /* ⭐⭐⭐⭐⭐ ONE SET OF OPTIONS FOR EVERY TRADE THE HUB PRICES — 29bg. The calculator and the grade chip on
@@ -19071,6 +19195,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
              other managers through MY rebuild/win-now lens would be a confident answer to a question
              nobody asked; with no posture the long-term read stays neutral and says so. */
           posture: (isDynasty && String(aId) === String(data.myRosterId)) ? activePosture : undefined,
+          /* 29bh — what the window was read from, so the grade can say so. */
+          windowInfo: (isDynasty && String(aId) === String(data.myRosterId)) ? { avgAge: autoPosture && autoPosture.avgAge, set: !!posture } : undefined,
           /* Keeper cost, ONLY where the league actually carries it. `cfg.keepers` records who is kept and
              at which pick; anything beyond that (a league's escalator rule, contract years) we do not know
              and therefore do not claim — the FAAB decision from 29w, applied again. */
@@ -19126,7 +19252,137 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     ideaGradeCache.set(key, out);
     return out;
   };
+  /* ⭐⭐⭐⭐⭐ "WHAT WOULD IT TAKE?" — 29bh.
+     Trey: "I'd also love if you had the ability to select a player from a different team and click a button
+     for 'ideas' that might either be starting points or of interest to the other team based on their needs /
+     correct trade valuation."
+     Given the man (or men) he wants, this walks every offer of ONE or TWO of his own players and keeps the
+     ones a real manager would read as a fair opening: comparable value (the calculator's own value check,
+     so a defense can never pay for a quarterback) and a lineup that does not fall apart for them. It ranks
+     what fills THEIR hole first — "based on their needs" — then the fairer offer, then what it costs him.
+     ⭐ EVERY NUMBER IS THE CALCULATOR'S: each candidate is a full `tradeEval` with the shared options, and
+       "Load" puts it in the calculator where the same card appears. */
+  const buildIdeas = (theirId, getSids) => {
+    if (!myLT || theirId == null || !getSids || !getSids.length) return [];
+    /* ⚠ A TARGET WORTH NOTHING OVER REPLACEMENT HAS NO PRICE. A backup quarterback in a one-QB league is
+       exactly as useful as the best one on the wire, and "ideas" for him would be pairs of zeroes that read
+       as "close on value". Say so instead (the `worthless` flag drives the message). */
+    {
+      const probe = (() => { try { return tradeEval(tbTeams, { ...tbOptsFor(data.myRosterId, theirId, [], getSids.map(String)), score: cachedScore, bench: (x) => cachedScore(x).bench }); } catch (e) { return null; } })();
+      if (probe && probe.ok) {
+        const worth = probe.long && probe.long.in != null ? (probe.sides.me.assetsIn + probe.long.in) / 2 : probe.sides.me.assetsIn;
+        if (worth < 5) { const w = []; w.worthless = true; return w; }
+      }
+    }
+    const offerable = (p) => p && !["K", "DEF", "DST", "PK"].includes(String(p.pos || "").toUpperCase());
+    const myRoster = tradeRoster(myLT).filter(offerable).sort((a, b) => (b.pts || 0) - (a.pts || 0)).slice(0, 14);
+    const theirRead = myReadFor(Number(theirId)) || myReadFor(theirId);
+    const sets = myRoster.map((p) => [p]);
+    for (let i = 0; i < myRoster.length; i++) for (let j = i + 1; j < myRoster.length; j++) sets.push([myRoster[i], myRoster[j]]);
+    /* 29bh — where picks trade, a pick alone or a pick with a player is an idea too ("my 1st for him"). */
+    const myPicks = (picksByOwner[data.myRosterId] || []).slice().sort((a, b) => b.pickValue - a.pickValue).slice(0, 4);
+    myPicks.forEach((pk) => { sets.push([pk]); myRoster.slice(0, 8).forEach((p) => sets.push([p, pk])); });
+    const out = [];
+    sets.forEach((give) => {
+      let r = null;
+      try { r = tradeEval(tbTeams, { ...tbOptsFor(data.myRosterId, theirId, give.map((p) => String(p.sid)), getSids.map(String)), score: cachedScore, bench: (x) => cachedScore(x).bench }); } catch (e) { r = null; }
+      if (!r || !r.ok || !r.grade) return;
+      const me = r.sides.me, them = r.sides.them;
+      /* In a league that keeps players, value is half this season and half the long view — a 22-year-old
+         worth little today is not a throw-in there. */
+      const keepsLg = !!(r.long && r.long.in != null);
+      const vIn = keepsLg ? (me.assetsIn + r.long.in) / 2 : me.assetsIn;
+      const vOut = keepsLg ? (me.assetsOut + r.long.out) / 2 : me.assetsOut;
+      /* Two sides worth nothing over replacement are "even" only in the sense that 0 = 0. Not an idea. */
+      if (Math.max(vIn, vOut) < 5) return;
+      const hi = Math.max(vIn, vOut), lo = Math.min(vIn, vOut);
+      const ratio = hi > 0 ? lo / hi : 1;
+      /* Fair enough to open with, from EITHER side — an offer that overpays is not an idea, it is a gift. */
+      if (ratio < 0.6) return;
+      /* Their lineup may give a little (they are selling), but not collapse. */
+      const floor = -Math.max(5, (them.startBefore || 0) * 0.04);
+      if (them.delta < floor) return;
+      const fills = theirRead && theirRead.need ? give.filter((p) => (theirRead.need[String(p.pos).toUpperCase()] || 0) > 0) : [];
+      const why = [];
+      if (fills.length) why.push(`they are short at ${[...new Set(fills.map((p) => p.pos))].join(" and ")}`);
+      if (them.delta > 0.5) why.push(`their lineup +${them.delta.toFixed(0)}`);
+      else why.push(them.delta < -0.5 ? `their lineup ${them.delta.toFixed(0)}, so it is a sell for them` : "their lineup holds");
+      why.push(ratio >= 0.85 ? "close on value" : vOut > vIn ? "you pay a little extra" : "you get a little extra");
+      const score = fills.length * 2 + (them.delta > 0.5 ? 1 : 0) + ratio * 2 + Math.max(-2, Math.min(2, r.grade.score)) * 1.0 - (give.length - 1) * 0.4;
+      out.push({ give, r, ratio: Math.round(ratio * 100), vIn, vOut, theirDelta: them.delta, myDelta: me.delta, fills: fills.length, why, score,
+        g: { letter: r.grade.letter, score: r.grade.score, perWeek: r.grade.perWeek, why: r.grade.why, call: r.call } });
+    });
+    /* One idea per anchor player, so "Chase alone / Chase + a dart / Chase + another dart" is one idea. */
+    const seen = new Set(), list = [];
+    out.sort((a, b) => b.score - a.score).forEach((x) => {
+      const anchor = String(x.give[0].sid);
+      if (seen.has(anchor) || list.length >= 5) return;
+      seen.add(anchor); list.push(x);
+    });
+    return list;
+  };
+  /* ⭐⭐⭐⭐⭐ A GRADE FOR EACH SIDE OF A TRADE THAT ALREADY HAPPENED — 29bh.
+     Trey: "On the 'recent activity' for trades, I'd love if you could give a grade for each team based on the
+     outlook at the time of the trade (if that's possible)."
+     ⭐ WHAT "AT THE TIME" CAN HONESTLY MEAN HERE. Two things move a player's value: his PROJECTION and what
+       he has actually DONE. The actual results are rewound — the form blend uses stats only through the
+       week before the trade (`txStd`), so a man who has broken out since is not held against the manager
+       who sold him. The projection cannot be rewound: Sleeper publishes today's, not last month's. The row
+       says exactly that, so the grade is read as "the deal on what they knew, priced on today's forecast".
+     ⭐ THE ROSTERS ARE REWOUND TOO: each side's roster is its CURRENT one with this deal undone (what it got
+       out, what it gave back in). Anything they have done since stays — the deal is graded on the team it
+       lands on, which is the only roster we can see.
+     ⚠ Two-team deals only; a three-way trade has no single "other side" for the calculator to price, and
+       the row says so rather than inventing one. Injuries Trey has marked are left OUT — they are his view of
+       today, not a fact the managers had. */
+  const gradeTxTrade = (x) => {
+    if (!x || x.type !== "trade" || x.status !== "complete" || !Array.isArray(x.teams)) return null;
+    if (x.teams.length !== 2) return { multi: true };
+    const w = Number(x.week) || null;
+    const then = w != null ? txStd[w] : null;
+    if (w != null && hasBackend && then === undefined) return { loading: true };
+    const form = then && then.players && Object.keys(then.players).length ? then.players : null;
+    const ctxThen = { ...ictx, map: {}, form, formThrough: form ? then.throughWeek : 0 };
+    const idsOf = (rid) => { const t = (data.teams || []).find((q) => String(q.rosterId) === String(rid)); return ((t && t.players) || []).map(String); };
+    const [A, B] = x.teams;
+    const sidsOf = (list) => (list || []).map((pp) => String(pp.sid)).filter(Boolean);
+    const aGot = sidsOf(A.got), aGave = sidsOf(A.gave), bGot = sidsOf(B.got), bGave = sidsOf(B.gave);
+    const pre = (rid, got, gave) => { const g = new Set(got.concat(gave)); return idsOf(rid).filter((id) => !g.has(id)).concat(gave); };
+    const valued = (ids) => seasonRosterOf({ roster: resolve(ids, ctxThen) });
+    const preA = valued(pre(A.rosterId, aGot, aGave)), preB = valued(pre(B.rosterId, bGot, bGave));
+    /* Other teams keep today's rosters, on the rewound values, so the power table is one consistent world. */
+    const teamsThen = leagueTeams.map((t) => ({
+      rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName, isMe: t.rosterId === data.myRosterId,
+      roster: String(t.rosterId) === String(A.rosterId) ? preA : String(t.rosterId) === String(B.rosterId) ? preB : valued((t.players || idsOf(t.rosterId)).map(String)),
+      record: t.record, pointsFor: t.pointsFor || 0,
+    }));
+    const side = (me, them, give, get) => {
+      /* Only players the pool can still name — a man cut and gone from the pool cannot be priced. */
+      const has = (rid, sid) => teamsThen.some((t) => String(t.rosterId) === String(rid) && t.roster.some((pp) => String(pp.sid) === sid));
+      const gv = give.filter((sid) => has(me, sid)), gt = get.filter((sid) => has(them, sid));
+      if (!gv.length && !gt.length) return null;
+      try {
+        const r = tradeEval(teamsThen, { ...tbOptsFor(me, them, gv, gt), posture: undefined });
+        return r && r.ok && r.grade ? { letter: r.grade.letter, score: r.grade.score, perWeek: r.grade.perWeek, why: r.grade.why, call: r.call, delta: r.sides.me.delta, vIn: r.sides.me.assetsIn, vOut: r.sides.me.assetsOut } : null;
+      } catch (e) { return null; }
+    };
+    return {
+      throughWeek: form ? then.throughWeek : 0,
+      [A.rosterId]: side(A.rosterId, B.rosterId, aGave, aGot),
+      [B.rosterId]: side(B.rosterId, A.rosterId, bGave, bGot),
+    };
+  };
   const ideaGradeOf = (t, theirId) => t ? ideaGrade(theirId != null ? theirId : (t.team && t.team.rosterId), [t.give && t.give.sid, t.give2 && t.give2.sid], [t.get && t.get.sid]) : null;
+  /* ⭐⭐⭐⭐ 29bh — A DEAL THE CALCULATOR SAYS THEY WON'T ACCEPT IS NOT A "DEAL WORTH SENDING". The finder's
+     band and the calculator's value check can disagree (the finder is deliberately generous so the list is
+     not empty); when the calculator calls it "they won't accept this", the card moves down to the long
+     shots, where "they would have to be feeling generous" is the honest heading. */
+  const dealsGraded = (() => {
+    const all = (Array.isArray(board) ? board : []).map((t) => ({ t, g: ideaGradeOf(t) }));
+    const isDream = (x) => !!(x.g && x.g.call && x.g.call.key === "dream");
+    return { main: all.filter((x) => !isDream(x)), dream: all.filter(isDream).map((x) => x.t) };
+  })();
+  const longShotsAll = (board && board.longShots ? board.longShots : []).concat(dealsGraded.dream);
 
   const tradeIdeas = myLT ? hubMemo(tradeKey, () => findTrades(
     { rosterId: myLT.rosterId, teamName: myLT.teamName, roster: tradeRoster(myLT) },
@@ -20812,6 +21068,27 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                                 </div>
                               );
                             })}
+                            {/* ⭐⭐⭐⭐⭐ 29bh — THEIR FUTURE PICKS, PRICED. Only where the league trades picks
+                                (the backend says which). The number is the pick's value on the same scale as
+                                the players above it — hover for how it was reached. */}
+                            {(picksByOwner[team.rosterId] || []).length > 0 && (
+                              <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".06em", margin: "6px 0 2px" }}>Draft picks</div>
+                            )}
+                            {(picksByOwner[team.rosterId] || []).map((pk) => {
+                              const on = sel.includes(String(pk.sid));
+                              return (
+                                <button key={pk.sid} data-tbpick={pk.name} data-tbplayer={pk.name} data-tbon={on ? "1" : "0"} onClick={() => tbToggle(side, pk.sid)}
+                                  title={`${pk.season} round ${pk.round}${pk.when !== "mid" || pk.projSlot ? ` — projected ${pk.when} (slot ~${pk.projSlot}${String(pk.season) === String(Math.min(...((data.futurePicks && data.futurePicks.seasons) || [pk.season]).map(Number))) ? ", from the original team's power rank" : ", too far out to place — priced mid-round"})` : ""}. Valued against this league's own players: worth ${pk.pickValue} now, ${pk.pickLong} long-term.`}
+                                  style={{ cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 6,
+                                    border: `1px solid ${on ? "var(--gold)" : "var(--line)"}`, background: on ? "rgba(224,166,60,.10)" : "var(--panel)",
+                                    borderRadius: 7, padding: "4px 8px", fontSize: 11.5, color: "var(--ink)" }}>
+                                  <i className="ti ti-ticket" style={{ fontSize: 12, color: "var(--gold)" }} aria-hidden="true" />
+                                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: on ? 700 : 500 }}>{pk.name}</span>
+                                  <span className="mut" style={{ fontSize: 9.5 }}>{pk.when}</span>
+                                  <span className="mut num" style={{ fontSize: 10.5 }}>{Math.round(pk.pickValue)}</span>
+                                </button>
+                              );
+                            })}
                           </div>
                         </div>
                       );
@@ -20823,6 +21100,58 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                             {col(mineTeam, "give", String(tbA) === String(data.myRosterId) ? "You send" : `${mineTeam.teamName} sends`, tb.give)}
                             {col(them, "get", String(tbA) === String(data.myRosterId) ? `You get from ${them.teamName}` : `${them.teamName} sends`, tb.get)}
                           </div>
+                          {/* ⭐⭐⭐⭐⭐ IDEAS FOR THE MAN YOU WANT — 29bh. Only from your own seat: "what would it
+                              take" is a question about YOUR roster. */}
+                          {String(tbA) === String(data.myRosterId) && tb.get.length > 0 && (() => {
+                            const key = `${tb.b}|${tb.get.slice().sort().join(",")}`;
+                            const cur = tbIdeas && tbIdeas.key === key ? tbIdeas.list : null;
+                            const wanted = tradeRoster(them).filter((p) => tb.get.includes(String(p.sid))).map((p) => p.name);
+                            return (
+                              <div data-tbideasbox style={{ border: "1px dashed var(--line2)", borderRadius: 9, padding: "9px 11px", marginBottom: 11 }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                  <button className="btn btn-mini" data-tbideas onClick={() => setTbIdeas({ key, list: buildIdeas(tb.b, tb.get) })}>
+                                    <i className="ti ti-bulb" style={{ fontSize: 13, marginRight: 4 }} aria-hidden="true" />Ideas
+                                  </button>
+                                  <span className="mut" style={{ fontSize: 11.5 }}>
+                                    {cur ? `What ${them.teamName} might take for ${wanted.join(" + ")}` : `What would it take to get ${wanted.join(" + ")}? Offers built around what ${them.teamName} needs, at fair value.`}
+                                  </span>
+                                </div>
+                                {cur && cur.worthless && (
+                                  <div className="mut" data-tbideasworthless style={{ fontSize: 11.5, marginTop: 7, lineHeight: 1.5 }}>
+                                    {wanted.join(" + ")} {wanted.length === 1 ? "isn't" : "aren't"} worth more than a replacement from the wire in this league, so there is nothing to price him against — you would only want him as a bye-week or injury fill, and the waiver wire is the cheaper place to get one.
+                                  </div>
+                                )}
+                                {cur && cur.length === 0 && !cur.worthless && (
+                                  <div className="mut" data-tbideasnone style={{ fontSize: 11.5, marginTop: 7, lineHeight: 1.5 }}>
+                                    Nothing on your roster matches his value without wrecking their lineup — one or two of your players either falls well short of what he is worth or overpays badly. He may simply cost more than you want to spend.
+                                  </div>
+                                )}
+                                {cur && cur.length > 0 && !cur.some((x) => x.g.score >= -0.5) && (
+                                  <div className="mut" data-tbideascostly style={{ fontSize: 11.5, marginTop: 7, lineHeight: 1.5 }}>
+                                    Every fair offer below costs your own lineup — at a price they would accept, {wanted.join(" + ")} {wanted.length === 1 ? "is" : "are"} worth more to {them.teamName} than to you. These are starting points if you want him anyway.
+                                  </div>
+                                )}
+                                {cur && cur.length > 0 && (
+                                  <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 8 }}>
+                                    {cur.map((x) => (
+                                      <div key={x.give.map((p) => p.sid).join("+")} data-tbidea={x.give.map((p) => p.name).join(" + ")}
+                                        style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 12, padding: "4px 0", borderTop: "1px solid var(--line)" }}>
+                                        <IdeaGrade g={x.g} size="sm" />
+                                        <span style={{ minWidth: 0 }}>
+                                          <span className="mut">send </span>
+                                          {x.give.map((p, i) => <React.Fragment key={p.sid}>{i ? <span className="mut"> + </span> : null}<b><Dot pos={p.pos} />{p.name}</b></React.Fragment>)}
+                                        </span>
+                                        <span className="mut" style={{ fontSize: 10.5 }}>{x.why.join(" · ")}</span>
+                                        <span className="mut num" style={{ fontSize: 10.5 }}>value {Math.round(x.vOut)} for {Math.round(x.vIn)}</span>
+                                        <button className="btn btn-mini" data-tbideaload style={{ marginLeft: "auto", fontSize: 10.5 }}
+                                          onClick={() => setTb((v) => ({ ...v, give: x.give.map((p) => String(p.sid)) }))}>Load</button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
                           {tbEval && tbEval.ok ? <TradeVerdict r={tbEval} weeks={weeksLeft} games={GAMES_IN_SEASON} oddsShift={oddsIfMeanShifts} /> : (
                             <div className="mut" data-tbempty style={{ fontSize: 12, lineHeight: 1.5 }}>
                               {tbEval && tbEval.error === 'rosters changed'
@@ -21237,8 +21566,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                   reconstructed by the reader for every row, which is what "difficult to follow" is. Each
                   card now carries its own argument, and the card is the recommendation rather than the
                   raw material for one. See src/trademarket.js for how each reason is measured. */}
-            {tSec === "deals" && board.length > 0 && (
-              <div data-tboard={String(board.length)} style={{ marginBottom: 16 }}>
+            {tSec === "deals" && dealsGraded.main.length > 0 && (
+              <div data-tboard={String(dealsGraded.main.length)} style={{ marginBottom: 16 }}>
                 <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 9 }}>
                   <span className="disp" style={{ fontSize: 15, fontWeight: 800, letterSpacing: ".01em" }}>Deals worth sending</span>
                   <span className="mut" style={{ fontSize: 11 }}>
@@ -21253,7 +21582,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                     position, at a position `teamReads` agrees you are short at. */}
                 {(() => {
                   const byPos = {};
-                  board.forEach((t) => { const k = String(t.get.pos || "").toUpperCase(); byPos[k] = (byPos[k] || 0) + 1; });
+                  dealsGraded.main.forEach(({ t }) => { const k = String(t.get.pos || "").toUpperCase(); byPos[k] = (byPos[k] || 0) + 1; });
                   const top = Object.keys(byPos).sort((a, b) => byPos[b] - byPos[a])[0];
                   if (!top || byPos[top] < 2) return null;
                   const short = myRead && myRead.need && myRead.need[top] > 0;
@@ -21262,7 +21591,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                      from one manager, and a line that says "they are different managers" while two rows
                      name the same person is the kind of small, checkable falsehood that costs a page its
                      credibility on everything else it says. */
-                  const partners = new Set(board.filter((t) => String(t.get.pos || "").toUpperCase() === top)
+                  const partners = new Set(dealsGraded.main.map((x) => x.t).filter((t) => String(t.get.pos || "").toUpperCase() === top)
                     .map((t) => t.team.rosterId)).size;
                   const have = (myRead.startable && myRead.startable[top]) || 0;
                   return (
@@ -21280,7 +21609,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                   {/* ⭐ 29bg — BEST FOR YOU FIRST, BY THE CALCULATOR'S OWN GRADE. Within one letter the finder's
                       order stands (it already weighs whether they would accept), so this only moves a card
                       when the grade genuinely separates two deals. */}
-                  {board.map((t) => ({ t, g: ideaGradeOf(t) }))
+                  {dealsGraded.main
                     .sort((x, y) => ((y.g ? y.g.score : -99) - (x.g ? x.g.score : -99)) || (x.t.rank - y.t.rank))
                     .map(({ t, g }, pos) => {
                     const BAND = { likely: "var(--pos)", "worth asking": "var(--gold)", "long shot": "var(--mut)" };
@@ -22161,7 +22490,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                         </div>
                       )}
 
-                      {items.slice(0, 60).map((x) => (
+                      {items.slice(0, 60).map((x) => { const txG = x.type === "trade" && x.status === "complete" ? gradeTxTrade(x) : null; return (
                         /* ⚠ A PENDING OFFER IS NOT A DASHED-OUT FAILURE AND IT IS NOT A COMPLETED MOVE.
                            It gets its own left rule and its own badge below, because the one thing this row
                            must never do is read as a deal that went through — that would be a false story
@@ -22179,6 +22508,12 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                             {x.teams.map((t) => (
                               <div key={t.rosterId} data-txside={String(t.rosterId)} style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "baseline" }}>
                                 <b style={{ color: t.isMe ? "var(--gold)" : "var(--ink)" }}>{t.isMe ? "You" : t.teamName}</b>
+                                {txG && txG[t.rosterId] && (
+                                  <span data-txgrade={`${t.rosterId}:${txG[t.rosterId].letter}`} title={`${(txG[t.rosterId].why || []).join(", ")} — value ${Math.round(txG[t.rosterId].vOut)} out, ${Math.round(txG[t.rosterId].vIn)} in`}
+                                    style={{ fontSize: 11.5, fontWeight: 800, color: GRADE_TONE(txG[t.rosterId].letter), border: `1px solid ${GRADE_TONE(txG[t.rosterId].letter)}`, borderRadius: 6, padding: "0 5px", cursor: "help", alignSelf: "center", lineHeight: 1.45 }}>
+                                    {txG[t.rosterId].letter.replace("-", "−")}
+                                  </span>
+                                )}
                                 {/* ⚠ "GETS"/"SENDS" ON A TRADE, "ADD"/"DROP" ON A CLAIM — the same field means
                                     two different things and printing a trade as a pair of cuts is the one
                                     mistake this feature can make that still looks plausible. */}
@@ -22217,6 +22552,13 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                               </div>
                             ))}
                             {x.note && <div className="mut" style={{ fontSize: 11, fontStyle: "italic" }}>{x.note}</div>}
+                            {txG && txG.loading && <div className="mut" data-txgradenote="loading" style={{ fontSize: 10.5 }}>Grading on what was known in week {x.week}…</div>}
+                            {txG && txG.multi && <div className="mut" data-txgradenote="multi" style={{ fontSize: 10.5 }}>Three-team trade — not graded (there is no single other side to price each team against).</div>}
+                            {txG && !txG.loading && !txG.multi && (
+                              <div className="mut" data-txgradenote="graded" style={{ fontSize: 10.5 }}>
+                                Grades: each team's lineup and value {txG.throughWeek ? `using results through week ${txG.throughWeek}, as they stood at the trade` : "on projections, as at the start of the season"} — priced on today's forecast.
+                              </div>
+                            )}
                           </div>
                           <div style={{ flexShrink: 0, textAlign: "right", display: "flex", flexDirection: "column", gap: 2 }}>
                             {x.bid != null && <span className="num" style={{ fontSize: 12.5, fontWeight: 800,
@@ -22229,7 +22571,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                             <span className="mut" style={{ fontSize: 10 }}>{x.week ? `Wk ${x.week}` : ""}</span>
                           </div>
                         </div>
-                      ))}
+                      ); })}
                     </>
                   );
                 })()}
@@ -22241,17 +22583,17 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 on one scale. Mixed into one ranking the fantasy trade is always the top row, the eye learns
                 within a week that the list is aspirational, and then the realistic rows below it stop being
                 read at all. Kept apart, and folded away, both lists stay honest. */}
-            {tSec === "deals" && (board.longShots || []).length > 0 && (
-              <div data-tblong={String(board.longShots.length)} style={{ marginTop: 14 }}>
+            {tSec === "deals" && longShotsAll.length > 0 && (
+              <div data-tblong={String(longShotsAll.length)} style={{ marginTop: 14 }}>
                 <button data-tblongtoggle onClick={() => setLongOpen((v) => !v)} aria-expanded={longOpen}
                   style={{ cursor: "pointer", fontFamily: "inherit", background: "none", border: "none", padding: 0,
                     color: "var(--mut)", fontSize: 11.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
                   <i className={`ti ${longOpen ? "ti-chevron-down" : "ti-chevron-right"}`} style={{ fontSize: 12 }} aria-hidden="true" />
-                  {board.longShots.length} long shot{board.longShots.length === 1 ? "" : "s"} — bigger wins for you, but they would have to be feeling generous
+                  {longShotsAll.length} long shot{longShotsAll.length === 1 ? "" : "s"} — bigger wins for you, but they would have to be feeling generous
                 </button>
                 {longOpen && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 8 }}>
-                    {board.longShots.map((t) => (
+                    {longShotsAll.map((t) => (
                       <div key={`ls-${t.team.rosterId}-${t.get.sid}`} data-tblongrow={t.get.name}
                         style={{ border: "1px dashed var(--line)", borderRadius: 9, padding: "9px 11px", fontSize: 11.5 }}>
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "baseline" }}>
@@ -22278,7 +22620,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 the filters" looked exactly like "this never ran", which is why an empty list reads as a bug.
                 ⚠ AND IT NOW HAS A SECOND STATE TO EXPLAIN: offers can exist and all be long shots, which is
                   a real and different answer from "there are no trades here". */}
-            {tSec === "deals" && board.length === 0 && (
+            {tSec === "deals" && dealsGraded.main.length === 0 && (
               <div className="mut" style={{ fontSize: 12.5, lineHeight: 1.55, marginTop: 4 }}>
                 {(() => {
                   const d = (board && board.diag) || null;
@@ -22288,7 +22630,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                       league, and if it persists the League tab will be thin too.</>;
                   }
                   if (!d.pairs) return <>Your roster came through empty, so no swap could be considered.</>;
-                  if ((board.longShots || []).length) {
+                  if (longShotsAll.length) {
                     return <>Nothing here is a realistic ask right now — every swap that would help you meaningfully
                       costs the other manager something he is using. The long shots below are the honest version of
                       that; they are worth an ask, not an expectation.</>;
