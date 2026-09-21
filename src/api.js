@@ -128,6 +128,7 @@ export const syncHealth = {
   subscribe(cb) { _syncSubs.add(cb); return () => _syncSubs.delete(cb); },
 };
 
+let _stdMemo = null;
 export const api = {
   hasBackend,
 
@@ -341,6 +342,18 @@ export const api = {
      never fifteen requests.
      ⚠ `weeks` is a window, not a page. Sleeper has no recent-transactions endpoint, so the backend makes
        one upstream call per league per week; four weeks is what "recent" means and what it defaults to. */
+  /* ⭐ 29be — every player's summed actual stats through the last completed week (NFL-wide, not per
+     league), for blending with projections. Memoised per week in-page: the hub and the home page both
+     ask, and a week's completed games do not change under them. A `warming` answer is NOT memoised, so
+     the next load picks up the table once the backend has built it. */
+  async seasonToDate(week) {
+    const k = String(week || '');
+    _stdMemo = _stdMemo || new Map();
+    if (_stdMemo.has(k)) return _stdMemo.get(k);
+    const r = await call(`/api/connect/season-to-date?week=${encodeURIComponent(k)}`);
+    if (r && !r.warming && r.players) _stdMemo.set(k, r);
+    return r;
+  },
   async sleeperTransactions(leagueIds, owners, weeks) {
     const ids = (leagueIds || []).filter(Boolean).join(',');
     const own = (owners || []).filter(Boolean).join(',');

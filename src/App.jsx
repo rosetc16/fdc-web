@@ -6,6 +6,7 @@ import { HoverTable, useHoverCard } from "./hovercard.jsx";
 import { teamReads, tradeBoard, marketSummary, partnerBoard, raceCurrency } from "./trademarket.js";
 import { GUIDE_TASKS, GUIDE_MAP, GUIDE_GLOSSARY, SEASON_STEPS, guideIndex, guideSearch } from "./guide.js";
 import { INJ_SEASON, INJ_WEEKS, INJ_LIMITED, INJ_CHOICES, applyInjuryToEntry, injuryFactors, injuryLabel, activeInjuryMap, activeInjuryCount, normalizeInjury, phasedLineupValue } from "./injuries.js";
+import { applyFormToEntry, FORM_PRIOR_GAMES } from "./form.js";
 
 // Lightweight SECTION-level error boundary. The app has a full-page boundary at the root, but a render error
 // in one panel (e.g. a rare data edge case in the draft recap/superlatives) shouldn't take down the entire
@@ -102,7 +103,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29bd";
+const BUILD_TAG = "2026.07.29be";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -683,14 +684,22 @@ export function hubWeeks(data) {
 /* The context every injury lookup needs, built once from a hub payload. `injuries` is the user's saved
    blob, keyed by Sleeper sid — a fact about a PLAYER, so the same record serves every league, and the
    dynasty flag is what makes one record give two honest answers in two league types. */
-export function injCtxFor(data, injuries) {
+export function injCtxFor(data, injuries, std) {
   const w = hubWeeks(data);
   const cfg = data && data.cfg ? normalizeHubCfg(data.cfg) : null;
+  const sc = { ...DEFAULT_SCORING, ...((cfg && cfg.scoring) || {}) };
   return {
     week: w.week,
     weeksLeft: w.weeksLeft,
     dynasty: !!(cfg && isDynastyCfg(cfg)),
     map: activeInjuryMap(injuries, { week: w.week, weeksLeft: w.weeksLeft }),
+    /* ⭐ 29be — SEASON-TO-DATE FORM rides in the same context, so it reaches the same two doors (see
+       `formResolve`). `form` is the backend's { sid: { gp, s } }; `formScore` scores a line with THIS
+       league's settings — the very scorer and settings the pool's projections were built with, which is
+       what makes "actual" and "projected" comparable at all. */
+    form: std && std.players && Object.keys(std.players).length ? std.players : null,
+    formThrough: std && std.throughWeek ? std.throughWeek : 0,
+    formScore: (pos, stats) => scoreFromStats(pos, stats, sc),
   };
 }
 
@@ -701,8 +710,18 @@ export function injCtxFor(data, injuries) {
    by the same amount. Adjusting only `resolve` would have left the home page's Power column and the
    hub's own power table disagreeing about a team whose quarterback is on IR — the precise fault 29aj
    was written to close, reopened by a feature that looked like it only touched one screen. */
-export function injResolve(pool, id, ictx) {
+/* ⭐⭐⭐⭐⭐ 29be — FORM FIRST, THEN INJURY. What a player is worth per game going forward is his projection
+   blended with what he has actually done (`applyFormToEntry`); an injury then removes games from THAT
+   rate. The other order would discount the projection and then blend actuals back in, partly undoing the
+   injury for any man who had been playing well — exactly the player whose absence hurts most. */
+export function formResolve(pool, id, ictx) {
   const base = pool && pool.bySid ? pool.bySid.get(String(id)) : null;
+  if (!base) return null;
+  const rec = ictx && ictx.form ? ictx.form[String(id)] : null;
+  return rec ? applyFormToEntry(base, rec, { score: ictx.formScore, dynasty: ictx.dynasty }) : base;
+}
+export function injResolve(pool, id, ictx) {
+  const base = formResolve(pool, id, ictx);
   if (!base || !ictx || !ictx.map) return base || null;
   const e = ictx.map[String(id)];
   return e ? applyInjuryToEntry(base, e, ictx) : base;
@@ -8262,6 +8281,15 @@ export function makeOutlook(p, sims, drafted, ctx) {
        function. `resolve` stamps the flag on the player; this prints it wherever he lands. */
   if (p.injLabel) {
     out.push({ kind: "take", tone: "bad", x: `${p.injLabel}${p.injDropPts ? ` — you've marked him down ${p.injDropPts} points for the rest of the season, and every number below already reflects that.` : " — every number below already reflects that."}` });
+  }
+  /* ⭐⭐⭐⭐ 29be — AND WHEN HIS VALUE MOVED BECAUSE OF WHAT HE HAS ACTUALLY SCORED, THE CARD SAYS SO, with
+     both numbers and the weight, because "valued at 15.0 a game" means nothing to a reader who can see a
+     12.0 projection everywhere else. Only when the move is material (a point a game or more) — a line
+     restating that a player is doing roughly what was expected is noise on every card in the app. */
+  if (p.formGp && p.formActualPg != null && p.formProjPg != null && Math.abs((p.formPg || 0) - p.formProjPg) >= 1) {
+    const up = p.formPg > p.formProjPg;
+    out.push({ kind: "take", tone: up ? "good" : "warn",
+      x: `${up ? "Outplaying" : "Underperforming"} his projection: ${p.formActualPg} a game over ${p.formGp} ${p.formGp === 1 ? "game" : "games"} against ${p.formProjPg} projected, so he is valued at ${p.formPg} a game — the projection still counts as ${FORM_PRIOR_GAMES} games of evidence.` });
   }
 
   // 1) THE TAKE — the headline verdict plus ONE supporting clause, so it reads as a quick 2-line summary
@@ -17551,7 +17579,17 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
        already in the power table, positional strength and quality, the trade calculator's before/after,
        the trade finder's every scored offer, the partner board, the positional market, playoff odds,
        close calls and the lineup, without any of them being edited or even knowing injuries exist. */
-  const ictx = React.useMemo(() => injCtxFor(data, injuries), [data && data.week, data && data.regularSeasonWeeks, data && data.playoffStartWeek, cfg && cfg.type, injuries]);
+  /* ⭐ 29be — season-to-date actuals, fetched once per week. Until they arrive (or if the backend has not
+     built them yet) every value is the pure projection, and the Trades tab says which it is using. */
+  const [std, setStd] = useState(null);
+  React.useEffect(() => {
+    const wk = data && data.week;
+    if (!wk || !hasBackend) return;
+    let alive = true;
+    api.seasonToDate(wk).then((r) => { if (alive) setStd(r || null); }).catch(() => { if (alive) setStd(null); });
+    return () => { alive = false; };
+  }, [data && data.week]);
+  const ictx = React.useMemo(() => injCtxFor(data, injuries, std), [data && data.week, data && data.regularSeasonWeeks, data && data.playoffStartWeek, cfg && cfg.type, cfg && JSON.stringify(cfg.scoring || null), injuries, std]);
   /* ⚠ THE SECOND ARGUMENT IS THE COUNTERFACTUAL, AND IT EXISTS FOR ONE CALLER. Passing `null` resolves
      the roster AS IF NOBODY WERE HURT — which is what the Injuries tab needs to answer Trey's actual
      question ("where does it take me right now?"): the before and the after have to come from the SAME
@@ -17577,7 +17615,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
          70%. It only bit when the platform had no weekly slate (off-season, early week), which is why a
          screen check in the normal case would never have seen it. Found while writing the test for
          `injuryImpact`, by tracing which number each path multiplies. */
-      const wkPts = hubWeekPts(poolBySid.bySid.get(String(id)) || base, base, wk, haveWeeklyData, GAMES);
+      const wkPts = hubWeekPts(formResolve(poolBySid, id, rctx) || base, base, wk, haveWeeklyData, GAMES);
       const hasWk = !!(wk && wk.pts != null);
       // Difficulty of the defense this player faces, at his position.
       const opp = wk ? wk.opp : null;
@@ -17602,13 +17640,19 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   // A per-game view of the WHOLE pool (for free agents): real weekly where we have it, else season avg.
   const perGamePool = React.useMemo(() => {
     if (!poolBySid) return [];
-    return poolBySid.pool.filter((p) => p.sid != null).map((p) => {
+    /* ⚠⚠ 29be — THE FREE AGENTS GO THROUGH THE SAME DOOR AS EVERY ROSTER. This list read the raw pool,
+       so once rostered players started moving with their form the wire would have stayed frozen at its
+       projections — and the one man the feature most needs to find, the unprojected receiver who has
+       been starting for a month, would never have surfaced. Injuries too: a free agent marked out must
+       not be recommended. */
+    return poolBySid.pool.filter((p) => p.sid != null).map((p0) => {
+      const p = injResolve(poolBySid, p0.sid, ictx) || p0;
       const wk = weeklyMap[String(p.sid)];
       const hasWk = !!(wk && wk.pts != null);
-      const pts = hasWk ? wk.pts : (haveWeeklyData ? 0 : Math.round((p.pts / GAMES) * 10) / 10);
+      const pts = hubWeekPts(formResolve(poolBySid, p0.sid, ictx) || p, p, wk, haveWeeklyData, GAMES);
       return { ...p, ptsSeason: p.pts, pts, isRealWeekly: hasWk, noGame: haveWeeklyData && !hasWk, opp: wk ? wk.opp : null };
     });
-  }, [poolBySid, data && data.weekly]);
+  }, [poolBySid, data && data.weekly, ictx]);
   // Weekly positional rank: within each position, rank all relevant players by per-game points, so we can
   // show "the WR14 this week" etc. Keyed by sid.
   const wkPosRankBySid = React.useMemo(() => {
@@ -18403,7 +18447,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   });
   /* The league as it would be with everybody healthy — the other half of every arrow on the tab. */
   const injHealthyPower = injCount
-    ? hubMemo(`injbase:${leagueId}:${data.week}`, () => leaguePower(data, poolBySid, null))
+    ? hubMemo(`injbase:${leagueId}:${data.week}:${ictx.formThrough}`, () => leaguePower(data, poolBySid, { ...ictx, map: {} }))
     : powerRanked;
   const injHealthyRankById = {};
   (injHealthyPower || []).forEach((t) => { injHealthyRankById[t.rosterId] = t.powerRank; });
@@ -18491,7 +18535,10 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
      the two cannot drift. The only thing done HERE is building the healthy roster, because that needs
      `resolve`, which only exists inside this component. */
   const injMineCount = myRoster.filter((p) => p.injStatus).length;
-  const myRosterHealthy = injMineCount ? resolve(myTeam.players, null) : myRoster;
+  /* ⚠ 29be — "HEALTHY" MEANS INJURIES OFF, FORM STILL ON. Passing `null` switched off everything in the
+     context, so once form joined it the counterfactual would have compared a form-adjusted roster with a
+     pure-projection one and reported every hot or cold streak as part of the injury's cost. */
+  const myRosterHealthy = injMineCount ? resolve(myTeam.players, { ...ictx, map: {} }) : myRoster;
   const injImpact = injuryImpact(myRoster, myRosterHealthy, cfg.sf, GAMES_IN_SEASON, weeksLeft);
   const injMine = injImpact.injuredCount;
   const wkNow = injImpact.wkNow, wkHealthy = injImpact.wkHealthy;
@@ -19200,42 +19247,105 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
           {/* ⭐⭐⭐ 29m — "I want this to be able to be looked at within a specific league level (league
               hub)". Placed after Matchup, because the order of these tabs is the order of the week: what
               is happening, then what happened. Same component the cross-league view uses. */}
-          {/* ⭐⭐⭐ 29bb — INJURIES SITS BEFORE TRADES, because that is the order of the morning Trey
-              described: the news breaks, you write down what it means, and THEN you go looking for the
-              deal. Putting it after Trades would have it read as an afterthought to a screen it is
-              supposed to be feeding. */}
-          {[["notes", "Summary", "ti-clipboard-text"], ["lineup", "Matchup", "ti-swords"], ["review", "Review", "ti-history"], ["freeagents", "Free agents", "ti-user-plus"], ["injuries", "Injuries", "ti-bandage"], ["trades", "Trades", "ti-arrows-exchange"], ["roster", "My roster", "ti-users"], ["league", "League", "ti-trophy"]].map(([k, label, icon]) => (
-            /* ⚠ NAMED AND PRESSED. A suite that clicks these by their label and then waits a fixed
-               number of milliseconds reports the CONTENT missing when all that happened is that the
-               click landed late — which cost a run of plan29cr. Address the door by name. */
-            <button key={k} className="btn btn-mini" data-hubtabbtn={k} aria-pressed={tab === k} style={{ background: tab === k ? "var(--gold)" : "transparent", color: tab === k ? "#151002" : "var(--ink)", fontWeight: tab === k ? 700 : 400 }} onClick={() => setTab(k)}>
-              <i className={`ti ${icon}`} style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />{label}
-              {/* The count is on the tab because the whole point of the feature is that it is changing
-                  numbers on screens you are not currently looking at. */}
-              {k === "injuries" && injCount > 0 ? (
-                <span data-injtabcount={injCount} style={{ marginLeft: 5, padding: "0 5px", borderRadius: 7, fontSize: 9.5, fontWeight: 700, background: tab === k ? "rgba(0,0,0,.22)" : "var(--red)", color: tab === k ? "#151002" : "#fff" }}>{injCount}</span>
-              ) : null}
-            </button>
-          ))}
-          {/* ⭐⭐⭐⭐ DRAFT IS A DOORWAY, NOT A TAB — b154. Trey asked for "a section to see draft ... then a
-              pop up that comes up to select draft board or draft summary", and the popup is the right shape
-              for a reason worth stating: both destinations are WHOLE SCREENS that replace the hub, so
-              rendering either one inside a tab would mean a third copy of the draft board living in a
-              component that knows nothing about drafting. The button sits in the tab row because that is
-              where a reader looks for "the other things this league has", and it leaves rather than
-              switches — which the popup is what makes obvious. */}
-          {onOpenDraft && (
-            <button className="btn btn-mini" data-hubdraftopen onClick={() => setDraftPick(true)}
-              title="Open this league's draft board or draft summary"
-              style={{ background: "transparent", color: "var(--ink)" }}>
-              <i className="ti ti-layout-board" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Draft
-            </button>
-          )}
-          <div style={{ flex: 1, minWidth: 0 }} />
-          <button className="btn btn-mini" onClick={() => { setBriefOpen(true); markWeekSeen(); }} title="Everything worth knowing about this week, in one card you can paste into the league chat"
-            style={{ borderColor: "var(--gold)", color: "var(--gold)", flexShrink: 0 }}>
-            <i className="ti ti-clipboard-text" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Weekly brief
-          </button>
+          {/* ═══════════════════════════════════════════════════════════════════════════════════════
+              ⭐⭐⭐⭐⭐ FOUR GROUPS, SUB-TABS UNDER EACH — 29be.
+              Trey: "I think we need to find a way to condense the menu... I don't want to get rid of these,
+              but maybe we combine some and have sub-tabs. Transactions (Free Agents, Injuries, Trades,
+              Recent Transactions) / My Team (Roster, Matchup... maybe we could even add other ones?),
+              League (League, Draft... maybe we could even add other ones?)"
+              The strip had grown to eight tabs plus a Draft doorway plus the brief — nine things of equal
+              weight in one row, which on a phone wraps into three and reads as a wall.
+              ⚠⚠ THE TAB KEYS DID NOT CHANGE AND NO CONTENT BLOCK MOVED. Every panel below is still gated
+                on the same `tab === "x"` it always was; this layer only decides which buttons are shown.
+                Same rule as the b161 Trades split — the blocks under these tabs have been corrected against
+                his screenshots many times, and a menu change must not be able to touch any of it. Every
+                existing `setTab("trades")` (Price it, Find trades around this, the League banner) still
+                lands where it did, and the group follows it because the group is DERIVED from the tab.
+              ⭐ TWO DOORWAYS ARE MARKED AS DOORWAYS: Game Day and Draft replace the hub with a whole other
+                screen, so they carry an arrow and never look "selected" — a sub-tab that throws you out of
+                the hub without saying so is the navigation equivalent of a link styled as plain text.
+              ⭐ "RECENT ACTIVITY" MOVES UP out of the Trades tab's own section row, as asked. It is still the
+                Trades panel's `recent` section underneath (sub-tab key `txlog`, see `isActivity`), because that block owns the
+                lazy feed loader; only where you click to reach it changed.
+              ═════════════════════════════════════════════════════════════════════════════════════ */}
+          {(() => {
+            const isActivity = tab === "trades" && tSec === "recent";
+            const subKey = isActivity ? "txlog" : tab;
+            const GROUPS = [
+              { k: "summary", label: "Summary", icon: "ti-clipboard-text", tab: "notes", items: null },
+              { k: "team", label: "My Team", icon: "ti-users", items: [
+                ["lineup", "Matchup", "ti-swords"], ["roster", "Roster", "ti-users"], ["review", "Review", "ti-history"],
+                onGameDay ? ["gameday", "Game Day", "ti-broadcast", true] : null] },
+              { k: "moves", label: "Transactions", icon: "ti-arrows-exchange", badge: injCount, items: [
+                ["freeagents", "Free agents", "ti-user-plus"], ["injuries", "Injuries", "ti-bandage"],
+                ["trades", "Trades", "ti-arrows-exchange"], ["txlog", "Recent activity", "ti-history"]] },
+              { k: "league", label: "League", icon: "ti-trophy", items: [
+                ["league", "Standings", "ti-trophy"],
+                onOpenDraft ? ["draft", "Draft", "ti-layout-board", true] : null] },
+            ].map((g) => ({ ...g, items: g.items ? g.items.filter(Boolean) : null }));
+            const groupOf = (k) => (GROUPS.find((g) => (g.tab === k) || (g.items && g.items.some((it) => it[0] === k))) || GROUPS[0]).k;
+            const activeGroup = groupOf(subKey);
+            const go = (k) => {
+              if (k === "gameday") { onGameDay && onGameDay(); return; }
+              if (k === "draft") { setDraftPick(true); return; }
+              if (k === "txlog") { setTab("trades"); setTSec("recent"); return; }
+              /* Leaving Recent activity for Trades must not land back on the activity section it came from. */
+              if (k === "trades" && tSec === "recent") setTSec("calc");
+              setTab(k);
+            };
+            /* A group opens on its first REAL sub-tab — never a doorway, which would leave the hub. */
+            const openGroup = (g) => {
+              if (g.tab) { go(g.tab); return; }
+              if (g.k === activeGroup) return;
+              const first = g.items.find((it) => !it[3]);
+              if (first) go(first[0]);
+            };
+            const cur = GROUPS.find((g) => g.k === activeGroup);
+            const btn = (on) => ({ background: on ? "var(--gold)" : "transparent", color: on ? "#151002" : "var(--ink)", fontWeight: on ? 700 : 400 });
+            return (
+              <div data-hubnav style={{ display: "flex", flexDirection: "column", gap: 7, flex: "1 1 100%", minWidth: 0 }}>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                  {GROUPS.map((g) => {
+                    const on = g.k === activeGroup;
+                    return (
+                      <button key={g.k} className="btn btn-mini" data-hubgroup={g.k} aria-pressed={on} style={btn(on)} onClick={() => openGroup(g)}>
+                        <i className={`ti ${g.icon}`} style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />{g.label}
+                        {g.badge > 0 ? (
+                          <span data-injtabcount={g.badge} style={{ marginLeft: 5, padding: "0 5px", borderRadius: 7, fontSize: 9.5, fontWeight: 700, background: on ? "rgba(0,0,0,.22)" : "var(--red)", color: on ? "#151002" : "#fff" }}>{g.badge}</span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                  <div style={{ flex: 1, minWidth: 0 }} />
+                  <button className="btn btn-mini" onClick={() => { setBriefOpen(true); markWeekSeen(); }} title="Everything worth knowing about this week, in one card you can paste into the league chat"
+                    style={{ borderColor: "var(--gold)", color: "var(--gold)", flexShrink: 0 }}>
+                    <i className="ti ti-clipboard-text" style={{ fontSize: 13, marginRight: 5 }} aria-hidden="true" />Weekly brief
+                  </button>
+                </div>
+                {cur && cur.items && (
+                  <div data-hubsubnav={cur.k} style={{ display: "flex", gap: 4, flexWrap: "wrap", paddingLeft: 2, borderLeft: "2px solid var(--line2)", marginLeft: 2 }}>
+                    {cur.items.map(([k, label, icon, door]) => {
+                      const on = !door && subKey === k;
+                      return (
+                        /* ⚠ `data-hubtabbtn` KEEPS THE SAME KEYS it had as a flat strip (plus `txlog`,
+                           `gameday`, `draft`), so anything addressing a tab by name still finds it — once
+                           its group is open. The draft doorway keeps `data-hubdraftopen` for the same reason. */
+                        <button key={k} className="btn btn-mini" data-hubtabbtn={k} aria-pressed={on}
+                          {...(k === "draft" ? { "data-hubdraftopen": true } : {})}
+                          title={door ? (k === "draft" ? "Opens this league's draft board or draft summary" : "Opens Game Day for all your leagues") : undefined}
+                          style={{ ...btn(on), fontSize: 11.5, background: on ? "var(--hover)" : "transparent", color: on ? "var(--ink)" : "var(--mut)", border: `1px solid ${on ? "var(--gold)" : "var(--line2)"}` }}
+                          onClick={() => go(k)}>
+                          <i className={`ti ${icon}`} style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />{label}
+                          {k === "injuries" && injCount > 0 ? <span className="num" style={{ marginLeft: 5, fontSize: 10, fontWeight: 700, color: "var(--red)" }}>{injCount}</span> : null}
+                          {door ? <i className="ti ti-arrow-up-right" style={{ fontSize: 11, marginLeft: 3, opacity: .7 }} aria-hidden="true" /> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
 
         {/* ===== THE DRAFT CHOOSER ===== */}
@@ -20045,7 +20155,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 <div data-injlist style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
                   {Object.keys(injMap).map((sid) => {
                     const e = injMap[sid];
-                    const base = poolBySid && poolBySid.bySid ? poolBySid.bySid.get(String(sid)) : null;
+                    const base = formResolve(poolBySid, sid, ictx);
                     const owner = injOwnerBySid.get(String(sid)) || null;
                     const f = injuryFactors(e, ictx);
                     const hurt = base ? applyInjuryToEntry(base, e, ictx) : null;
@@ -20292,10 +20402,23 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
              hub already scores every team in the league on one engine. ---- */}
         {tab === "trades" && (
           <div className="panel" style={{ padding: 16 }}>
-            <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 3 }}>Trades</div>
+            {/* 29be — Recent activity is its own Transactions sub-tab now; it still renders inside this
+                panel (its feed loader lives here), so the heading and the section row follow which one
+                you came in through. */}
+            <div className="disp" style={{ fontSize: 17, fontWeight: 700, marginBottom: 3 }}>{tSec === "recent" ? "Recent activity" : "Trades"}</div>
             <div className="mut" style={{ fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}>
               {TRADE_SECTIONS.find((s) => s.k === tSec)?.blurb}{" "}
-              Everything is season value, so a bye week never makes somebody look expendable.
+              Everything is season value, so a bye week never makes somebody look expendable.{" "}
+              {/* ⭐ 29be — WHICH SEASON VALUE, stated once where every section on this tab can see it. The
+                  blend is what makes these numbers move week to week; a reader who does not know it is
+                  happening would reasonably think a player's value changed for no reason. */}
+              <span data-formnote={ictx.form ? String(ictx.formThrough) : "none"}>
+                {ictx.form
+                  ? <>Values blend each player's projection with what he has actually scored through week {ictx.formThrough} — the projection counts as {FORM_PRIOR_GAMES} games of evidence, so real results take over as the season goes.</>
+                  : (data.week || 1) > 1
+                    ? <>Values are projections only right now — this week's actual results are still being compiled, and will be blended in on the next load.</>
+                    : null}
+              </span>
             </div>
 
             {/* ⭐⭐⭐⭐⭐ FOUR SECTIONS, FOUR TABS — b161.
@@ -20315,9 +20438,9 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                   looks identical to one with five deals behind it just moves the hunting from scrolling
                   to clicking — so each tab says what it is holding, and an empty one says so plainly
                   rather than by being silently disappointing. */}
-            <div data-tsec={tSec} style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 13,
+            {tSec !== "recent" && <div data-tsec={tSec} style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 13,
               borderBottom: "1px solid var(--line)", paddingBottom: 9 }}>
-              {TRADE_SECTIONS.map((s) => {
+              {TRADE_SECTIONS.filter((s) => s.k !== "recent").map((s) => {
                 const on = tSec === s.k;
                 const n = s.count({ board, partners, market, myLT, tx });
                 return (
@@ -20335,7 +20458,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                   </button>
                 );
               })}
-            </div>
+            </div>}
 
             {/* ⚠⚠ A TAB THAT RENDERS NOTHING IS WORSE THAN NO TAB. Every section below is gated on data
                 it may not have — no roster resolved, no partner with a reason to talk, no market — and
@@ -22588,7 +22711,23 @@ export function normalizeHubCfg(c) {
     tePremMult: c.tePremMult || 0,
     scoringType: c.scoringType || "ppr",
     start,
-    scoring: {},
+    /* ⚠⚠⚠⚠ 29be — THIS WAS `scoring: {}`, AND IT MEANT EVERY IN-SEASON SEASON VALUE WAS SCORED AS DEFAULT
+       PPR, WHATEVER THE LEAGUE PLAYS. The backend has always built the league's full scoring into this cfg
+       in the engine's own vocabulary (connect.js `cfgFromLeague` → passTD, recTE, rec…; the Yahoo hub
+       sends `rec`) and this line threw it away, so the hub pool — trade values, power, free-agent value —
+       ignored half-PPR, standard, TE premium and six-point passing touchdowns. The WEEKLY numbers come
+       from the backend in league scoring, so the two scales on one screen disagreed as well.
+       Found while testing the 29be form blend: a TE-premium fixture scored Bowers identically to plain
+       PPR, which is only possible if the league's rules never reach the scorer. `tePremMult` is separate
+       and only moves ADP (see buildPlayers), so passing this through cannot double-count the premium. */
+    scoring: (() => {
+      const sc = c.scoring && typeof c.scoring === "object" ? { ...c.scoring } : {};
+      /* ⚠ A TE's catch is worth `recTE`, and DEFAULT_SCORING's is 1. Sleeper always sends recTE, but the
+         Yahoo hub sends only `rec` — so without this a half-PPR Yahoo league would score every tight end
+         at full PPR, a phantom premium. No recTE from the platform means no premium: TEs get `rec`. */
+      if (sc.rec != null && sc.recTE == null) sc.recTE = sc.rec;
+      return sc;
+    })(),
     caps: {},
     pickTrades: [],
   };
@@ -23811,8 +23950,13 @@ function PaidHub({ user, leagues, allLeagues, funMocks, onSettings, onStrategy, 
         try {
           const { leagueStanding } = await import("./weekcache.js");
           const st = {};
+          /* 29be — one season-to-date fetch serves every league (it is NFL-wide); memoised in api.js, so
+             opening a hub afterwards costs nothing. A failure just means projections only. */
+          const wk0 = (w.hubs || []).map((h) => h && h.week).find(Boolean);
+          let std = null;
+          try { std = wk0 && hasBackend ? await api.seasonToDate(wk0) : null; } catch (e) { std = null; }
           for (let i = 0; i < (w.connected || []).length; i++) {
-            const s = await leagueStanding(w.hubs[i], injuries);
+            const s = await leagueStanding(w.hubs[i], injuries, std);
             if (s) st[hid(w.connected[i])] = s;
           }
           if (alive) setWeekStand(st);

@@ -308,7 +308,7 @@ export function leagueFlags(hub, pack, opts = {}) {
      (see `loadWeek`), and that property is worth more than saving an await.
    ⚠ AND A LEAGUE WHOSE POOL WILL NOT BUILD RETURNS `power: null`, which the column prints as a dash. A
      rank invented for a roster we could not score is the kind of number that looks fine and is wrong. */
-export async function leagueStanding(hub, injuries) {
+export async function leagueStanding(hub, injuries, std) {
   if (!hub || !Array.isArray(hub.teams) || !hub.teams.length) return null;
   const me = hub.teams.find((t) => t.rosterId === hub.myRosterId);
   const rec = (me && me.record) || null;
@@ -326,7 +326,8 @@ export async function leagueStanding(hub, injuries) {
        screen uses, so it would have been the one place where an injured roster still read at full
        strength: Trey marks his QB out in the hub, the hub drops him to 9th, and the row he gets back to
        on the home page still says 4th. Two screens, one number, and the discount has to reach both. */
-    const table = leaguePower(hub, pool, injCtxFor(hub, injuries));
+    /* 29be — and the same season-to-date form the hub blends in, so the two Power ranks keep agreeing. */
+    const table = leaguePower(hub, pool, injCtxFor(hub, injuries, std));
     const mine = table.find((t) => t.isMe);
     if (mine) out.power = mine.powerRank;
   } catch (e) { /* the column degrades to a dash; it is never worth failing the row over */ }
