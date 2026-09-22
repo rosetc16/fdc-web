@@ -27,7 +27,10 @@ export function HoverTable({ card }) {
     <div data-wkcard={card.key} role="tooltip" style={{
       position: "fixed", left: x, top: y,
       transform: `translate(${card.anchor === "left" ? "-100%" : card.anchor === "right" ? "0" : "-50%"},${above ? "-100%" : "0"})`,
-      zIndex: 95, pointerEvents: "none", maxWidth: wide ? 560 : 460,
+      zIndex: 95, pointerEvents: "none", maxWidth: card.width ? "calc(100vw - 16px)" : (wide ? 560 : 460),
+      /* 29bk — a card can ask for a width and for its cells to WRAP (the trade "Rosters" card lists four
+         names a cell; unwrapped they ran straight out of the card, Trey's screenshot). */
+      width: card.width ? `min(${card.width}px, calc(100vw - 16px))` : undefined, boxSizing: "border-box",
       background: "var(--panel)", border: "1px solid var(--line2)", borderRadius: 10,
       boxShadow: "0 10px 30px rgba(0,0,0,.45)", padding: "9px 11px" }}>
       <div className="disp" style={{ fontSize: 11.5, fontWeight: 800, marginBottom: subtitle ? 2 : 6 }}>{title}</div>
@@ -57,7 +60,8 @@ export function HoverTable({ card }) {
               <tr key={i} style={{ borderTop: "1px solid var(--line)" }}>
                 {cols.map((c) => (
                   <td key={c.k} style={{ textAlign: c.right ? "right" : "left", padding: "3px 10px 3px 0",
-                    whiteSpace: "nowrap", color: r.tone && c.tint ? r.tone : "var(--ink)",
+                    whiteSpace: card.wrap ? "normal" : "nowrap", verticalAlign: "top", lineHeight: card.wrap ? 1.4 : undefined,
+                    width: card.wrap && c.w ? c.w : undefined, color: r.tone && c.tint ? r.tone : "var(--ink)",
                     fontWeight: c.strong ? 700 : 400 }}>{r[c.k]}</td>
                 ))}
               </tr>
@@ -84,10 +88,14 @@ export function useHoverCard() {
       /* Above when there is no room below AND there is room above — checking only the first put cards
          off the top of the window on short viewports. Estimated height rather than measured, because the
          card does not exist yet at the moment we have to decide where to put it. */
-      const above = r.bottom + 240 > window.innerHeight && r.top > 260;
+      const estH = payload.estHeight || 240;
+      const above = r.bottom + estH > window.innerHeight && r.top > estH + 20;
       const anchor = payload.prefer === "left" ? "left" : payload.prefer === "right" ? "right" : "center";
+      /* 29bk — clamp by the card's real half-width when it declares one, so a wide card never hangs off the
+         window; the 180 default is the old 360px card. */
+      const half = payload.width ? Math.min(payload.width, window.innerWidth - 16) / 2 : 180;
       const x = anchor === "left" ? Math.max(200, r.right) : anchor === "right" ? Math.min(r.left, window.innerWidth - 200)
-        : Math.min(Math.max(r.left + r.width / 2, 180), Math.max(180, window.innerWidth - 180));
+        : Math.min(Math.max(r.left + r.width / 2, half + 8), Math.max(half + 8, window.innerWidth - half - 8));
       setCard({ ...payload, anchor, x, y: above ? r.top - 8 : r.bottom + 8, above });
     } catch (_) { /* a card that cannot be placed is simply not shown */ }
   };

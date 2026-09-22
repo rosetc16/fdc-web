@@ -103,7 +103,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29bj";
+const BUILD_TAG = "2026.07.29bk";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -9415,6 +9415,13 @@ select.gs option{background:var(--panel2);color:var(--ink)}
 .spin-needle{transform-origin:50% 50%;transition:transform 1.1s cubic-bezier(.34,1.56,.64,1)}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spin{display:inline-block;animation:spin .9s linear infinite}
+.hwrow{cursor:pointer;transition:background .16s ease,box-shadow .16s ease}
+.hwrow:hover,.hwrow:focus-visible{background:linear-gradient(90deg,rgba(224,166,60,.20),rgba(224,166,60,.06) 65%,transparent);box-shadow:inset 3px 0 0 var(--gold);outline:none}
+.hwrow:hover .hwname,.hwrow:focus-visible .hwname{color:var(--gold)!important}
+.hwgo{display:inline-flex;align-items:center;gap:2px;margin-left:7px;font-size:10.5px;font-weight:800;letter-spacing:.03em;color:var(--gold);opacity:0;transform:translateX(-4px);transition:opacity .16s ease,transform .16s ease}
+.hwrow:hover .hwgo,.hwrow:focus-visible .hwgo{opacity:1;transform:none}
+@media (hover:none){.hwgo{opacity:.85;transform:none}}
+@media (prefers-reduced-motion:reduce){.hwrow,.hwgo{transition:none}}
 @keyframes pulseGold{0%,100%{opacity:.5}50%{opacity:1}}
 /* 29n - the live badge on the home page. A slow breath rather than a blink: the dot says football is
    being played right now, and something that flashes on a page you keep open all Sunday becomes a thing
@@ -16785,7 +16792,7 @@ export function tradeEval(teams, opts) {
      OFF the lineup (bench talent gained or lost) always counts, capped so depth can soften a grade but never
      carry one. */
   if (Math.abs(depthPw) >= 0.3) {
-    const nudge = Math.max(-0.6, Math.min(0.6, depthPw * 0.25));
+    const nudge = Math.max(-0.8, Math.min(0.8, depthPw * 0.35));
     gScore += nudge;
     if (Math.abs(nudge) >= 0.1) gWhy.push(depthPw > 0 ? 'and it adds real depth behind your starters' : 'and it thins out your bench');
   }
@@ -16797,7 +16804,11 @@ export function tradeEval(teams, opts) {
   /* 29bi — the losing side of the scale was steeper than the winning side: −0.6 a week (about 10 points
      over a season) was already a D. A small give-back is a C now; D and F are for trades that really cost
      you (about a point and a half a week and more). */
-  const BANDS = [[3.0, 'A+'], [2.0, 'A'], [1.4, 'A-'], [0.9, 'B+'], [0.5, 'B'], [0.2, 'B-'], [-0.6, 'C'], [-1.0, 'C-'], [-1.8, 'D']];
+  /* ⭐⭐⭐⭐ 29bk — THE SCALE WAS STILL TOO STEEP. Trey, with a screenshot of Recent activity full of A−/F and A/F
+     pairs: "Trades still look really harsh." A 2-point-a-week swing on a 120-point lineup is under 2% of a
+     week and well inside the noise of any projection, and it was grading an F. The bands now run about 1.5×
+     wider on both sides: an A means roughly +3 a week, an F means losing about 3 a week or more. */
+  const BANDS = [[4.0, 'A+'], [2.8, 'A'], [2.0, 'A-'], [1.3, 'B+'], [0.7, 'B'], [0.25, 'B-'], [-0.8, 'C'], [-1.5, 'C-'], [-2.8, 'D']];
   const letter = (BANDS.find(([cut]) => gScore >= cut) || [null, 'F'])[1];
   const grade = { letter, score: Math.round(gScore * 100) / 100, perWeek: Math.round(pw * 10) / 10, why: gWhy };
   const willAccept = (verdictLong || verdict).key === 'good' || (verdictLong || verdict).key === 'future';
@@ -16807,20 +16818,20 @@ export function tradeEval(teams, opts) {
        the calculator could say about Eagles D for Josh Allen, which is the most one-sided offer imaginable.
        When the value going back is under 40% of what comes in, more is not a sweetener away — it is a
        different trade — so the call says so instead of encouraging the send. */
-    if (gScore >= 0.5 && !willAccept && fairR < 0.4 && mine.assetsIn > mine.assetsOut) return { key: 'dream', label: 'Great for you — they won\'t accept this',
+    if (gScore >= 0.7 && !willAccept && fairR < 0.4 && mine.assetsIn > mine.assetsOut) return { key: 'dream', label: 'Great for you — they won\'t accept this',
       why: `It makes your team better by about ${wk}, but you are offering ${mine.assetsOut.toFixed(0)} of value for ${mine.assetsIn.toFixed(0)}. No manager takes that — build a real offer around what they need.` };
-    if (gScore >= 0.5 && willAccept) return { key: 'send', label: 'Make this offer',
+    if (gScore >= 0.7 && willAccept) return { key: 'send', label: 'Make this offer',
       why: `It makes your team better by about ${wk}, and it is fair enough that they have a reason to say yes.` };
     /* ⚠ 29bg — WAS "expect a no". On a Deals card that sat beside the finder's own "WORTH ASKING" band and
        the two read as a contradiction. They are not: the finder says the ask is reasonable to OPEN with, this
        says the deal as written leaves them behind. "They will likely want more" says both at once. */
-    if (gScore >= 0.5) return { key: 'sweeten', label: 'Good for you — they will likely want more',
+    if (gScore >= 0.7) return { key: 'sweeten', label: 'Good for you — they will likely want more',
       why: `It makes your team better by about ${wk}, but they come out behind. Add something small they need, or use it to open the conversation.` };
-    if (gScore >= 0.2) return { key: 'small', label: willAccept ? 'Small upgrade — fine if it is easy' : 'Small upgrade, and they may not bite',
+    if (gScore >= 0.25) return { key: 'small', label: willAccept ? 'Small upgrade — fine if it is easy' : 'Small upgrade, and they may not bite',
       why: `It helps a little (about ${wk}). Worth doing only if it costs you nothing else — it will not change your season.` };
     /* key "even", not "wash" — the icon scanner reads a quoted "wash" as a Tabler icon (7th time). */
-    if (gScore > -0.6) return { key: 'even', label: 'Not worth it',
-      why: gScore < -0.2 ? `It costs you a little (about ${wk} in your lineup) for no real gain. Only if it solves something else, like a bye week or a roster spot.` : 'It barely changes your team either way. Skip it unless you need the roster spot or a different bye week.' };
+    if (gScore > -0.8) return { key: 'even', label: 'Not worth it',
+      why: gScore < -0.25 ? `It costs you a little (about ${wk} in your lineup) for no real gain. Only if it solves something else, like a bye week or a roster spot.` : 'It barely changes your team either way. Skip it unless you need the roster spot or a different bye week.' };
     return { key: 'pass', label: "Don't make this trade",
       why: `It makes your team worse by about ${wk}${mr.to > mr.from ? ` and drops you to ${mr.to} in the power rankings` : ''}.` };
   })();
@@ -19202,8 +19213,14 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
      carry their record and points-for untouched so the power half of the blend keeps its history. */
   /* 29bh — each team's future picks, valued (see pickAssetsFor), riding in its calculator roster. */
   const pickFormat = isDynasty ? "dynasty" : leagueKeepsPlayers(cfg) ? "keeper" : "redraft";
-  const picksByOwner = hubMemo(`picks|${tradeKey}|${JSON.stringify((data.futurePicks && data.futurePicks.picks) || []).length}`, () => pickAssetsFor({
-    futurePicks: data.futurePicks, teams: leagueTeams.map((t) => ({ rosterId: t.rosterId, teamName: t.teamName, roster: tradeRoster(t) })),
+  /* ⚠ 29bk — A REDRAFT LEAGUE ONLY GETS PICKS IF A FUTURE PICK HAS ACTUALLY MOVED. Trey: "I'm looking at a
+     re-draft league and there are still draft picks (it's not eligible to trade draft picks)." Backend b167
+     fixes the cause (it counted traded picks from drafts already held); this guard makes the web build right
+     on its own too, whatever backend it talks to. */
+  const fpUsable = !!(data.futurePicks && data.futurePicks.enabled && (pickFormat !== "redraft"
+    || (data.futurePicks.picks || []).some((p) => String(p.ownerRosterId) !== String(p.originalRosterId))));
+  const picksByOwner = hubMemo(`picks|${tradeKey}|${fpUsable ? 1 : 0}|${JSON.stringify((data.futurePicks && data.futurePicks.picks) || []).length}`, () => pickAssetsFor({
+    futurePicks: fpUsable ? data.futurePicks : null, teams: leagueTeams.map((t) => ({ rosterId: t.rosterId, teamName: t.teamName, roster: tradeRoster(t) })),
     powerRankById, repl: replacementByPos(leagueTeams.map((t) => tradeRoster(t)), cfg.sf, leagueTeams.length), format: pickFormat }));
   const tbTeams = leagueTeams.map((t) => ({
     rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName,
@@ -19417,7 +19434,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
         g: { letter: r.grade.letter, score: r.grade.score, perWeek: r.grade.perWeek, why: r.grade.why, call: r.call } });
     });
     /* rule 4 */
-    const worthIt = out.filter((x) => x.g.score >= -1.0);
+    const worthIt = out.filter((x) => x.g.score >= -1.5);
     const pool = worthIt.length ? worthIt : out.sort((a, b) => b.g.score - a.g.score).slice(0, 2);
     /* One idea per anchor player, so "Chase alone / Chase + a dart / Chase + another dart" is one idea. */
     const seen = new Set(), list = [];
@@ -19466,11 +19483,11 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     if (read && read.need) { const nd = Object.keys(read.need).filter((k) => read.need[k] > 0); if (nd.length) lines.push({ k: "Short at", v: nd.join(", "), tone: "var(--neg)" }); }
     if (read && read.surplus) { const sp = Object.keys(read.surplus).filter((k) => read.surplus[k] > 0); if (sp.length) lines.push({ k: "Deep at", v: sp.join(", "), tone: "var(--pos)" }); }
     return {
-      key: `outlook-${them.rosterId}`, prefer,
+      key: `outlook-${them.rosterId}`, prefer, width: 760, wrap: true, estHeight: 330,
       title: `${them.teamName}: their rooms, and yours after this deal`,
       subtitle: "points a week, starters first",
       lines,
-      cols: [{ k: "Pos", strong: true }, { k: them.teamName.length > 16 ? "Them" : them.teamName }, { k: "You, after" }],
+      cols: [{ k: "Pos", strong: true, w: 36 }, { k: them.teamName.length > 16 ? "Them" : them.teamName, w: "48%" }, { k: "You, after", w: "48%" }],
       rows: order.map((pos) => ({ Pos: pos, [them.teamName.length > 16 ? "Them" : them.teamName]: room(theirs, pos), "You, after": room(mineAfter, pos),
         tone: inDeal.includes(pos) ? "var(--gold)" : undefined })),
       note: "Positions in this deal are listed first.",
@@ -24055,6 +24072,12 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                     live table, and it deserves the same answer. Same columns, same alignment, same shape;
                     only the contents differ, because a week that has not been played has projections where
                     the live one has scores. */}
+                {onOpenTeam && (
+                  <div className="mut" data-homeweekhint style={{ fontSize: 11, margin: "2px 4px 7px", display: "flex", alignItems: "center", gap: 5 }}>
+                    <i className="ti ti-hand-click" style={{ fontSize: 13, color: "var(--gold)" }} aria-hidden="true" />
+                    Click any league to open it: your matchup, roster, trades and the whole league.
+                  </div>
+                )}
                 {wide && (
                   <div className="mut" style={{ display: "grid", gap: 10, padding: "0 4px 5px",
                     gridTemplateColumns: AHEAD_COLS, fontSize: 9, textTransform: "uppercase",
@@ -24146,18 +24169,23 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                   );
                   return (
                     <div key={r.id} data-homeaheadrow={r.name} data-homeaheadsev={String(unreadable ? -1 : sev)}
+                      className={onOpenTeam && r.league ? "hwrow" : undefined} tabIndex={onOpenTeam && r.league ? 0 : undefined}
+                      title={onOpenTeam && r.league ? `Open ${r.name}` : undefined}
+                      onClick={(e) => { if (e.target.closest && e.target.closest("button, [data-chip]")) return; if (onOpenTeam && r.league) onOpenTeam(r.league); }}
+                      onKeyDown={(e) => { if (e.key === "Enter" && onOpenTeam && r.league) onOpenTeam(r.league); }}
                       style={{ display: "grid", alignItems: "center", gap: wide ? 10 : 5,
                         gridTemplateColumns: wide ? AHEAD_COLS : "minmax(0,1fr)",
                         padding: "6px 4px", borderTop: "1px solid var(--line)" }}>
                       <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
                         <span style={{ width: 7, height: 7, borderRadius: 99, flexShrink: 0,
                           background: unreadable ? "var(--mut)" : (SEV[sev] || "var(--mut)") }} aria-hidden="true" />
-                        <button onClick={() => onOpenTeam && onOpenTeam(r.league)}
+                        <button className="hwname" onClick={() => onOpenTeam && onOpenTeam(r.league)}
                           style={{ cursor: "pointer", fontFamily: "inherit", background: "none", border: "none", padding: 0,
-                            color: "var(--ink)", fontSize: 12.5, fontWeight: 700, textAlign: "left",
+                            color: "var(--ink)", fontSize: 12.5, fontWeight: 700, textAlign: "left", transition: "color .16s ease",
                             minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           {r.name}
                         </button>
+                        {onOpenTeam && r.league && <span className="hwgo" aria-hidden="true">Open<i className="ti ti-chevron-right" style={{ fontSize: 12 }} /></span>}
                       </span>
                       <span className="mut" style={{ fontSize: 11.5, minWidth: 0, overflow: "hidden",
                         textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -24266,7 +24294,13 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
               ⚠ Its own horizontal scroll container, so a narrow phone scrolls the TABLE rather than the page. */}
           {card && <WeekHoverCard card={card} bySid={bySid} winTone={winTone} />}
           {open && !!rows.length && (
-            <div data-homeweektable={String(rows.length)} style={{ marginTop: 10, overflowX: "auto" }}>
+            <div className="mut" data-homeweekhint style={{ fontSize: 11, marginTop: 8, display: "flex", alignItems: "center", gap: 5 }}>
+              <i className="ti ti-hand-click" style={{ fontSize: 13, color: "var(--gold)" }} aria-hidden="true" />
+              Click any league to open it: your matchup, roster, trades and the whole league.
+            </div>
+          )}
+          {open && !!rows.length && (
+            <div data-homeweektable={String(rows.length)} style={{ marginTop: 6, overflowX: "auto" }}>
               <table className="num" style={{ width: "100%", minWidth: 560, borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
                   {/* ⭐⭐⭐⭐⭐ GROUPED BY SIDE, NOT BY METRIC — 29r.
@@ -24323,6 +24357,15 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                     const SEVTONE = { 3: "var(--neg)", 2: "var(--gold)", 1: "var(--info)", 0: "var(--pos)" };
                     return (
                       <tr key={L.leagueId || i} data-homeweekrow={(league && league.name) || L.leagueName || L.leagueId}
+                        /* ⭐ 29bk — THE WHOLE ROW OPENS THE LEAGUE. Trey: "when you hover a team on the 'this week'
+                           can you make them highlight yellow to show that you can click them (make it look
+                           really nice). I also want people to know you can click on these to look into the
+                           league." A gold wash and a gold edge on hover, the name turns gold and an "Open"
+                           arrow slides in; clicks on the row's own buttons and hover cells still do their job. */
+                        className={league && onOpenTeam ? "hwrow" : undefined} tabIndex={league && onOpenTeam ? 0 : undefined}
+                        title={league && onOpenTeam ? `Open ${(league && league.name) || "this league"}` : undefined}
+                        onClick={(e) => { if (e.target.closest && e.target.closest("button")) return; if (league && onOpenTeam) onOpenTeam(league); }}
+                        onKeyDown={(e) => { if (e.key === "Enter" && league && onOpenTeam) onOpenTeam(league); }}
                         style={{ borderTop: "1px solid var(--line)" }}>
                         <td style={{ textAlign: "left", padding: "5px 8px 5px 4px", maxWidth: 210, overflow: "hidden",
                           textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -24354,11 +24397,12 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                               league page is the draft-era record. On a season table the first is what you
                               want — the first cut sent both controls to the league page, which meant the
                               row's own Live tab was two clicks away through the wrong door. */}
-                          <button onClick={() => league && onOpenTeam && onOpenTeam(league)}
+                          <button className="hwname" onClick={() => league && onOpenTeam && onOpenTeam(league)}
                             style={{ cursor: "pointer", fontFamily: "inherit", background: "none", border: "none", padding: 0,
-                              color: "var(--ink)", fontSize: 12.5, fontWeight: 700 }}>
+                              color: "var(--ink)", fontSize: 12.5, fontWeight: 700, transition: "color .16s ease" }}>
                             {(league && league.name) || L.leagueName || L.leagueId}
                           </button>
+                          {league && onOpenTeam && <span className="hwgo" aria-hidden="true">Open<i className="ti ti-chevron-right" style={{ fontSize: 12 }} /></span>}
                         </td>
                         {/* 29aj — record and power. Both come from the hub read the injury badge already
                             did (see `leagueStanding`), so they cost nothing; both print a dash rather than
