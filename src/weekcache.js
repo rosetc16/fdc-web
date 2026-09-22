@@ -183,7 +183,9 @@ export function rosterRead(hub, pack) {
     const p = packOf(sid);
     return hub.week != null && !!p && p.bye === hub.week;
   };
-  const starters = (mine.starters || []).filter(Boolean).map(String);
+  /* 29bm — a starter traded away is not starting (Sleeper seeds a new week's lineup from the old one). */
+  const onTeam = new Set([].concat(mine.players || [], mine.reserve || [], mine.taxi || []).map(String));
+  const starters = (mine.starters || []).filter(Boolean).map(String).filter((sid) => sid !== "0" && (!onTeam.size || onTeam.has(sid)));
   const startSet = new Set(starters);
   const rosterAll = [...new Set([...(mine.players || []), ...(mine.reserve || []), ...(mine.taxi || [])].filter(Boolean).map(String))];
   return { hub, mine, bySid, wkOf, packOf, ptsOf, posOf, nameOf, teamOf, injOf, onBye,

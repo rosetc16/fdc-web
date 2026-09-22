@@ -632,6 +632,23 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
   }, [data]);
 
   const T = (data && data.totals) || null;
+  /* ⭐⭐⭐⭐⭐ THE PROJECTED RECORD — 29bm. Trey: "it's showing I'm 0-0-10 across 10 leagues. Can you change
+     these numbers to reflect the projections (and make it clear that it's based on projections)." Before
+     kickoff every matchup is 0-0, so the live tally is all ties and says nothing. The headline now counts
+     each matchup by its projected final (`forecast.me.projected` vs `forecast.opp.projected`, the same
+     figures printed on each row) and says "projected" in words; the live tally sits under it. */
+  const PT = useMemo(() => {
+    const Ls = ((data && data.leagues) || []).filter((L) => L && L.opp && L.forecast && L.forecast.me && L.forecast.opp
+      && Number.isFinite(L.forecast.me.projected) && Number.isFinite(L.forecast.opp.projected));
+    if (!Ls.length) return null;
+    let w = 0, l = 0, t = 0, exp = 0, expN = 0;
+    Ls.forEach((L) => {
+      const d = L.forecast.me.projected - L.forecast.opp.projected;
+      if (Math.abs(d) < 0.05) t++; else if (d > 0) w++; else l++;
+      if (Number.isFinite(L.forecast.win)) { exp += L.forecast.win > 1 ? L.forecast.win / 100 : L.forecast.win; expN++; }
+    });
+    return { w, l, t, n: Ls.length, exp: expN === Ls.length ? Math.round(exp * 10) / 10 : null };
+  }, [data]);
 
   /* Every starter on the payload, by id — the board already holds one entry per player with his name,
      position, team and game state, so the matchup drill-down can name a roster without a second lookup. */
@@ -671,9 +688,21 @@ export default function GameDay({ leagues, onHome, onBack, backLabel, onOpenHub,
         {/* ===================== THE DAY, IN ONE LINE ===================== */}
         {T && (
           <div className="panel" data-gdtotals style={{ padding: 14, marginBottom: 14 }}>
-            <div className="disp" style={{ fontSize: 19, fontWeight: 800, marginBottom: 6 }}>
-              {T.winning}–{T.losing}{T.tied ? `–${T.tied}` : ""} across {T.leagues} league{T.leagues === 1 ? "" : "s"}
-            </div>
+            {PT ? (
+              <>
+                <div className="disp" data-gdprojrec={`${PT.w}-${PT.l}-${PT.t}`} style={{ fontSize: 19, fontWeight: 800, marginBottom: 2 }}>
+                  Projected {PT.w}-{PT.l}{PT.t ? `-${PT.t}` : ""} across {PT.n} league{PT.n === 1 ? "" : "s"}
+                </div>
+                <div className="mut" data-gdliverec={`${T.winning || 0}-${T.losing || 0}-${T.tied || 0}`} style={{ fontSize: 11.5, marginBottom: 8 }}>
+                  Based on each matchup's projected final score{PT.exp != null ? `, about ${PT.exp} expected wins from the win odds` : ""}.
+                  On the board right now: {T.winning || 0}-{T.losing || 0}{T.tied ? `-${T.tied}` : ""}.
+                </div>
+              </>
+            ) : (
+              <div className="disp" style={{ fontSize: 19, fontWeight: 800, marginBottom: 6 }}>
+                {T.winning}–{T.losing}{T.tied ? `–${T.tied}` : ""} across {T.leagues} league{T.leagues === 1 ? "" : "s"}
+              </div>
+            )}
             <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 12 }}>
               {T.close > 0 && <span><b className="num" style={{ color: "var(--gold)" }}>{T.close}</b>
                 <span className="mut"> still within 15</span></span>}

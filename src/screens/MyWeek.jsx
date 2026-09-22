@@ -57,7 +57,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import WeekStep from "../weekstep.jsx";
 import { api } from "../api.js";
-import { backendFormatKey, Dot } from "../App.jsx";
+import { backendFormatKey, Dot, gradeHubTrade, GRADE_TONE } from "../App.jsx";
 import { HoverTable, useHoverCard } from "../hovercard.jsx";
 import { useWide } from "../usewide.js";
 import { designationOf, lineupSwaps } from "../weekcache.js";
@@ -117,6 +117,7 @@ const FA_KIND = {
   byeNext: { label: "Bye next week", tone: "var(--info)" },
   upgrade: { label: "Upgrade",       tone: "var(--pos)" },
   stream:  { label: "Thin spot",     tone: "var(--mut)" },
+  hole:    { label: "Starter out",   tone: "var(--neg)" },
 };
 
 /* ⭐⭐⭐⭐ THE DESIGNATION LADDER, IN HIS ORDER.
@@ -435,6 +436,51 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
          anything, but he generates a claim — and because byes are answered before upgrades, that phantom
          claim SPENDS the best free player at his position and the genuine upgrade behind it goes unlisted.
          A player you are not starting is not a slot you have to fill. */
+      /* ⭐⭐⭐⭐⭐ HOLES FIRST: A STARTER WHO WILL NOT PLAY, OR A SLOT WITH NOBODY IN IT — 29bm.
+         Trey: "I just lost Jaxson Dart and Jayden Daniels (my 2 QBs) to injuries that will keep both out
+         this week. At a very minimum, that league should be recommending I pick up a QB." It recommended
+         nothing, for two reasons. The upgrade pass needs the starter's projection, and Sleeper stops
+         projecting a player once he is ruled out (null, so `cur == null` skipped him). And an empty slot
+         ('0', which is what the lineup holds once you bench or drop the injured man) has no player and so
+         no position to search. A hole is now: an empty slot, a starter who is out or doubtful, or a starter
+         projecting nothing while the rest of the lineup is projected. It is answered against the best
+         healthy bench player at that position, because a free agent is only worth a claim if he beats the
+         man you would otherwise slide in. */
+      const SLOT_POS = { QB: ["QB"], RB: ["RB"], WR: ["WR"], TE: ["TE"], K: ["K"], DEF: ["DEF", "DST"], DST: ["DST", "DEF"],
+        FLEX: ["RB", "WR", "TE"], WRRB_FLEX: ["RB", "WR"], REC_FLEX: ["WR", "TE"], SUPER_FLEX: ["QB", "RB", "WR", "TE"],
+        IDP_FLEX: ["DL", "LB", "DB"], DL: ["DL"], LB: ["LB"], DB: ["DB"] };
+      const slotList = (Array.isArray(hub.rosterPositions) ? hub.rosterPositions : []).filter((x) => !/^(BN|IR|TAXI)$/i.test(x));
+      const anyProj = starters.some((s) => { const v = ptsOf(s); return v != null && v > 0; });
+      const benchUsed = new Set();
+      const healthy = (sid) => { const d = injOf(sid); return !onBye(sid) && ptsOf(sid) != null && ptsOf(sid) > 0 && !(d && d.sev >= 4); };
+      const holeSids = new Set();
+      (mine.starters || []).forEach((raw, i) => {
+        const sid = raw == null ? "0" : String(raw);
+        const empty = sid === "0";
+        if (!empty && onBye(sid)) return;              // byes have their own pass below
+        const d = empty ? null : injOf(sid);
+        const v = empty ? null : ptsOf(sid);
+        const out = empty || (d && d.sev >= 4) || (anyProj && (v == null || v <= 0));
+        if (!out) return;
+        const slot = slotList[i] || null;
+        const positions = empty ? (SLOT_POS[slot] || (slot ? [slot] : [])) : [posOf(sid)].filter(Boolean);
+        if (!positions.length) return;
+        if (!empty) holeSids.add(sid);
+        const benchBest = bench.filter((b) => !benchUsed.has(b) && !startSet.has(b) && positions.includes(posOf(b)) && healthy(b))
+          .sort((a, b) => ptsOf(b) - ptsOf(a))[0] || null;
+        const benchPts = benchBest ? ptsOf(benchBest) : 0;
+        const best = positions.flatMap((pp) => claimable(pp).filter((f) => !(f.inj && f.inj.rank >= 3)).slice(0, 1).map((f) => ({ ...f, pos: pp })))
+          .sort((a, b) => b.pts - a.pts)[0];
+        const who = empty ? `Your ${slot || positions[0]} slot is empty` : `${nameOf(sid)} is ${!d ? "not projected to play" : d.key === "IR" ? "on IR" : d.key === "PUP" ? "not available" : d.label.toLowerCase()} this week`;
+        if (!best || best.pts - benchPts < 1.5) { if (benchBest) benchUsed.add(benchBest); return; }
+        taken.add(best.name);
+        fa.push({ kind: "hole", rank: 5, pos: best.pos, outName: empty ? "empty slot" : nameOf(sid), inName: best.name, inTeam: best.team,
+          gain: r1(best.pts - benchPts),
+          why: benchBest
+            ? `${who}. ${best.name} projects ${r1(best.pts)}, ${r1(best.pts - benchPts)} more than ${nameOf(benchBest)} on your bench`
+            : `${who} and you have no healthy ${positions.join("/")} on the bench. ${best.name} projects ${r1(best.pts)}` });
+      });
+
       starters.forEach((sid) => { if (onBye(sid)) pushBye(sid, "now"); });
       if (byeNextSet) starters.forEach((sid) => { const t = teamOf(sid); if (t && byeNextSet.has(t)) pushBye(sid, "next"); });
 
@@ -444,12 +490,16 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
          can be worth without turning the list into noise. */
       starters.forEach((sid) => {
         const pos = posOf(sid);
-        if (!pos || onBye(sid)) return;
+        if (!pos || onBye(sid) || holeSids.has(sid)) return;
         const cur = ptsOf(sid);
         const best = claimable(pos)[0];
         if (!best || cur == null) return;
-        if (best.pts - cur >= Math.max(2, cur * 0.25) || (cur < 6 && best.pts > cur)) taken.add(best.name);
-        if (best.pts - cur >= Math.max(2, cur * 0.25)) {
+        /* 29bm: the bar was 25% of the starter's projection, which at 16 points meant a free agent had to
+           clear 20 before he was mentioned. Trey saw three suggestions across eleven leagues. 15% (and never
+           less than two points) still keeps coin flips off the list. */
+        const bar = Math.max(2, cur * 0.15);
+        if (best.pts - cur >= bar || (cur < 6 && best.pts > cur)) taken.add(best.name);
+        if (best.pts - cur >= bar) {
           fa.push({ kind: "upgrade", rank: 2, pos, outName: nameOf(sid), inName: best.name, inTeam: best.team,
             gain: r1(best.pts - cur), why: `projects ${r1(best.pts - cur)} more than ${nameOf(sid)} this week` });
         } else if (cur < 6 && best.pts > cur) {
@@ -682,6 +732,38 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
     return all.sort((a, b) => (b.at || 0) - (a.at || 0));
   }, [tx, connected]);
   const txShown = useMemo(() => (txScope === "mine" ? txItems.filter((x) => x.mine) : txItems), [txItems, txScope]);
+
+  /* ⭐⭐⭐⭐⭐ A GRADE ON EVERY TRADE IN THE FEED — 29bm. Trey: "On the 'my week' 'league activity' tab... can
+     you show the trade grades next to each trade shown on there." Same recipe as the hub's Recent activity
+     (`gradeHubTrade` in App.jsx): each side graded on the rosters just before the deal, with this season's
+     results as they stood that week. That needs season-to-date for each trade's week (one request per
+     distinct week, only while this view is open) and today's, for the fairness scale. */
+  const [txStd, setTxStd] = useState({});
+  useEffect(() => {
+    if (view !== "moves" || !tx) return;
+    const wanted = [...new Set(txItems.filter((x) => x.type === "trade" && x.status === "complete" && x.week).map((x) => String(Number(x.week))))];
+    if (week) wanted.push("cur");
+    const todo = wanted.filter((k) => !(k in txStd));
+    if (!todo.length) return;
+    let alive = true;
+    todo.forEach((k) => (api.seasonToDate ? api.seasonToDate(k === "cur" ? week : Number(k)) : Promise.resolve(null))
+      .then((r) => { if (alive) setTxStd((v) => ({ ...v, [k]: r || null })); })
+      .catch(() => { if (alive) setTxStd((v) => ({ ...v, [k]: null })); }));
+    return () => { alive = false; };
+  }, [view, tx, txItems, week]);
+  const txGrades = useMemo(() => {
+    const out = {};
+    if (view !== "moves" || !rows) return out;
+    txItems.forEach((x) => {
+      if (x.type !== "trade" || x.status !== "complete") return;
+      const row = rows.find((r) => r.hub && String(hubIdOf(r.league)) === String(x.leagueId));
+      if (!row) return;
+      const w = Number(x.week) || null;
+      if ((w != null && txStd[String(w)] === undefined) || (week && txStd.cur === undefined)) { out[x.id] = { loading: true }; return; }
+      try { out[x.id] = gradeHubTrade(row.hub, x, { then: w != null ? txStd[String(w)] : null, std: txStd.cur || null }); } catch (e) { /* ungraded, not broken */ }
+    });
+    return out;
+  }, [view, txItems, rows, txStd, week]);
 
   const VIEWS = [
     ["summary", "ti-layout-dashboard", "Summary", 0],
@@ -1086,7 +1168,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
               </div>
             )}
             <div className="mut" style={{ fontSize: 11, lineHeight: 1.5, marginTop: 10 }}>
-              Four kinds of claim, labelled so none of them pretends to be another: a slot left empty by a bye this
+              Five kinds of claim, labelled so none of them pretends to be another: a starter who is out (or a slot with nobody in it), a slot left empty by a bye this
               week, a bye coming next week you can cover while the wire is still worth picking over, an available
               player who clearly beats one of yours, and a thin spot where your starter is barely producing. Byes come
               from the NFL schedule rather than from a player's bye-week field, which is blank for much of the year. A
@@ -1348,6 +1430,20 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                                 <div key={t.rosterId} data-wkmoveside={`${t.rosterId}`}
                                   style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "baseline" }}>
                                   <b style={{ color: t.isMe ? "var(--gold)" : "var(--ink)" }}>{t.isMe ? "You" : t.teamName}</b>
+                                  {kind === "trade" && (() => {
+                                    const G = txGrades[x.id];
+                                    const g = G && !G.loading && !G.multi ? G[t.rosterId] : null;
+                                    if (G && G.loading) return <span className="mut" data-wkmovegrade="loading" style={{ fontSize: 10.5 }}>grading…</span>;
+                                    if (!g) return null;
+                                    const tone = GRADE_TONE(g.letter);
+                                    return (
+                                      <span data-wkmovegrade={`${t.rosterId}:${g.letter}`}
+                                        title={`${(g.why || []).join(", ")}${g.perWeek != null ? `. ${g.perWeek >= 0 ? "+" : ""}${Number(g.perWeek).toFixed(1)} a week for ${t.isMe ? "you" : t.teamName}` : ""}`}
+                                        style={{ fontSize: 11.5, fontWeight: 800, color: tone, border: `1px solid ${tone}`, borderRadius: 6, padding: "0 5px", cursor: "help", alignSelf: "center", lineHeight: 1.45 }}>
+                                        {g.letter.replace("-", "\u2212")}
+                                      </span>
+                                    );
+                                  })()}
                                   {/* ⚠ "GETS" AND "SENDS", NOT "ADDS" AND "DROPS". On a trade row `drops` means
                                       "gave up in the deal" — printing it as a cut would say both managers
                                       released their best players. See lib/transactions.js. */}

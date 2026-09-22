@@ -16,6 +16,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { api } from "../api.js";
 import { useWide } from "../usewide.js";
+import { HoverTable, useHoverCard } from "../hovercard.jsx";
 import { benchTone, fieldTone } from "../App.jsx";
 
 const r1 = (n) => Math.round(n * 10) / 10;
@@ -395,6 +396,57 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
   const [week, setWeek] = useState(null);
   const [openMap, setOpenMap] = useState({});
   const [faWhy, setFaWhy] = useState(false);
+  const { card: hcard, show: showCard, hide: hideCard } = useHoverCard();
+  /* ⭐⭐⭐⭐⭐ WHY THE CHIP SAYS WHAT IT SAYS — 29bm. Trey: "'Got away with it' or 'robbed' or 'earned' - when
+     you hover that tag, can you show why... Did I start someone wrong? Did they leave points on the bench?"
+     Every figure the verdict was decided on is already on the row's payload: where your score and theirs
+     placed in the week's field, how far they were from their own average, and what your best lineup would
+     have scored. The card lays those out, then the lineup mistakes by name. (Their bench is the one thing
+     we cannot show: the review only carries your roster's full points.) */
+  const placeIn = (field, v) => {
+    const vals = (field || []).filter(Number.isFinite);
+    if (!Number.isFinite(v) || !vals.length) return null;
+    return { rank: vals.filter((x) => x > v).length + 1, of: vals.length };
+  };
+  const verdictCard = (R) => {
+    const me = R.me; if (!me || !me.verdict) return null;
+    const V = VERDICT[me.verdict.key] || VERDICT.earned;
+    const mp = placeIn(R.field, me.pts), op = placeIn(R.field, me.oppPts);
+    const lines = [
+      { k: "You scored", v: `${r1(me.pts)}${mp ? `, ${ord(mp.rank)} of ${mp.of} this week` : ""}`, strong: true },
+      Number.isFinite(me.oppPts) ? { k: "They scored", v: `${r1(me.oppPts)}${op ? `, ${ord(op.rank)} of ${op.of}` : ""}${Number.isFinite(me.oppSwing) ? ` (${me.oppSwing >= 0 ? "+" : "-"}${r1(Math.abs(me.oppSwing))} on their average)` : ""}` } : null,
+      Number.isFinite(me.median) ? { k: "League median", v: `${r1(me.median)}` } : null,
+      me.allPlay ? { k: "Vs the field", v: `${me.allPlay.w}-${me.allPlay.l}${me.allPlay.t ? `-${me.allPlay.t}` : ""}` } : null,
+      { k: "Your bench", v: me.left > 0
+          ? `${r1(me.left)} points left there. Your best lineup scored ${r1(me.optimal)}${Number.isFinite(me.oppPts) ? (me.optimal > me.oppPts ? ", enough to win" : ", still not enough") : ""}`
+          : "You started your best lineup", tone: me.left > 0 ? "var(--gold)" : "var(--pos)" },
+    ].filter(Boolean);
+    const rows = (me.misses || []).slice(0, 4).map((m) => ({ Slot: m.slot, Started: `${m.out} ${m.outPts}`, "Should have": `${m.in} ${m.inPts}`, Cost: `-${m.gain}` }));
+    return { key: `verdict:${R.league.id}`, title: `${V.label}: why`, subtitle: me.verdict.text, lines,
+      cols: rows.length ? [{ k: "Slot" }, { k: "Started" }, { k: "Should have" }, { k: "Cost", right: true }] : null, rows,
+      note: rows.length ? null : "No lineup mistakes this week." };
+  };
+  /* ⭐⭐⭐⭐ THE RESULT, SIDE BY SIDE — 29bm. "When I hover the 'result' on this, can you show the side by
+     side of both teams and what we scored." Slot by slot, from the lineups the review now carries (b168). */
+  const resultCard = (R) => {
+    const me = R.me; if (!me) return null;
+    const a = me.lineup || [], b = me.oppLineup || [];
+    const n = Math.max(a.length, b.length);
+    if (!n) return null;
+    const nm = (x) => (x && x.name) || (x ? "(empty)" : "");
+    const pt = (x) => (x && Number.isFinite(x.pts) ? r1(x.pts) : x ? "0" : "");
+    const rows = Array.from({ length: n }, (_, i) => {
+      const x = a[i], y = b[i];
+      const d = (x && Number.isFinite(x.pts) ? x.pts : 0) - (y && Number.isFinite(y.pts) ? y.pts : 0);
+      return { Pos: (x && x.slot) || (y && y.slot) || "", You: nm(x), "Your pts": pt(x), Them: nm(y), "Their pts": pt(y),
+        tone: d > 0.05 ? "var(--pos)" : d < -0.05 ? "var(--neg)" : undefined };
+    });
+    rows.push({ Pos: "", You: "Total", "Your pts": r1(me.pts), Them: "Total", "Their pts": Number.isFinite(me.oppPts) ? r1(me.oppPts) : "" });
+    return { key: `result:${R.league.id}`, title: `Week ${week}: ${r1(me.pts)} to ${Number.isFinite(me.oppPts) ? r1(me.oppPts) : "?"}`,
+      width: 600, wrap: true, estHeight: 60 + n * 22, prefer: "left",
+      cols: [{ k: "Pos", w: 44 }, { k: "You", w: 170 }, { k: "Your pts", right: true, tint: true, strong: true }, { k: "Them", w: 170 }, { k: "Their pts", right: true }],
+      rows };
+  };
   /* The projected finish for the weeks still in play. Read from the SHARED live cache rather than computed
      here — the home strip, Game Day and this page must agree about the same Sunday, and three independent
      forecasts is three chances to disagree. */
@@ -524,6 +576,7 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
 
   return (
     <div data-weeklyreview={scope}>
+      <HoverTable card={hcard} />
               {loading && !raw && (
                 <div className="panel mut" style={{ padding: 18, fontSize: 13 }}>Reading every completed week…</div>
               )}
@@ -691,7 +744,9 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                         </span>
                       );
                       const verdictChip = liveChip || (V && (
-                        <span data-wkverdict={me.verdict.key} style={{ fontSize: 10, fontWeight: 800,
+                        <span data-wkverdict={me.verdict.key}
+                          onMouseEnter={(e) => { const c = verdictCard(R); if (c) showCard(e, c); }} onMouseLeave={hideCard}
+                          style={{ fontSize: 10, fontWeight: 800, cursor: "help",
                           textTransform: "uppercase", letterSpacing: ".04em", border: `1px solid ${V.tone}`,
                           color: V.tone, borderRadius: 99, padding: "1px 8px", display: "inline-flex",
                           alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
@@ -704,7 +759,9 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                          head-to-head is reporting half the result. Absent entirely for leagues that do not
                          play it, so the column never implies something that does not apply. */
                       const score = me && (
-                        <span className="num" style={{ fontSize: 13, fontWeight: 800, whiteSpace: "nowrap",
+                        <span className="num" data-wkresult={me.result || ""}
+                          onMouseEnter={(e) => { const c = resultCard(R); if (c) showCard(e, c); }} onMouseLeave={hideCard}
+                          style={{ fontSize: 13, fontWeight: 800, whiteSpace: "nowrap", cursor: (me.lineup || []).length ? "help" : undefined,
                           color: me.result === "W" ? "var(--pos)" : me.result === "L" ? "var(--neg)" : "var(--mut)" }}>
                           {me.result || "—"} {r1(me.pts)}–{me.oppPts != null ? r1(me.oppPts) : "—"}
                         </span>

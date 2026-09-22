@@ -103,7 +103,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29bl";
+const BUILD_TAG = "2026.07.29bm";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -782,6 +782,115 @@ export function leaguePower(data, pool, ictx) {
   return powerBlend(rows);
 }
 
+/* ⭐⭐⭐⭐⭐ A LEAGUE'S TRADE, GRADED FROM ITS HUB PAYLOAD ALONE — 29bm.
+   Trey: "On the 'my week' 'league activity' tab... can you show the trade grades next to each trade shown on
+   there." The hub's Recent activity already grades them (`gradeTxTrade` in TeamHub), but that one reads a
+   dozen things that only exist inside the hub. My Week has the same hub payload per league and nothing
+   else, so this is the same recipe laid out at module level:
+     • both rosters REWOUND to just before the deal (current roster, deal undone), every other team as it is;
+     • values from the pool through `injResolve` with this season's results as they stood that week
+       (`form`), no saved injuries (they are today's view, not a fact the managers had);
+     • `tradeEval` with the hub's own scorer, lineup, requirement, share and keeper options, no free-agent
+       baseline and no posture.
+   The plan29bm suite checks that a trade reads the same letter here and in the hub's Recent activity. */
+export function gradeHubTrade(data, x, opts = {}) {
+  if (!data || !x || x.type !== "trade" || !Array.isArray(x.teams)) return null;
+  if (x.teams.length !== 2) return { multi: true };
+  const cfg = data.cfg ? normalizeHubCfg(data.cfg) : null;
+  if (!cfg || !Array.isArray(data.teams)) return null;
+  const pool = hubPoolFor(cfg);
+  if (!pool || !pool.bySid) return null;
+  const then = opts.then || null;
+  const form = then && then.players && Object.keys(then.players).length ? then.players : null;
+  const ictxNow = injCtxFor(data, null, opts.std || null);
+  const ctxThen = { ...ictxNow, map: {}, form, formThrough: form ? then.throughWeek : 0 };
+  const dedupe = (list) => { const seen = new Set(), man = new Set(), out = [];
+    (list || []).forEach((p) => { if (!p) return; const k = String(p.sid); const m = `${String(p.name || "").toLowerCase()}|${p.pos || ""}|${p.team || ""}`;
+      if (seen.has(k) || (p.name && man.has(m))) return; seen.add(k); if (p.name) man.add(m); out.push(p); });
+    return out; };
+  const valued = (ids, ctx) => dedupe((ids || []).map((id) => injResolve(pool, id, ctx))).map((p) => ({
+    ...p, ptsSeason: p.pts, ...(p.injStatus ? { phaseUnit: 1 } : null) }));
+  const idsOf = (rid) => { const t = data.teams.find((q) => String(q.rosterId) === String(rid)); return ((t && t.players) || []).map(String); };
+  const [A, B] = x.teams;
+  const sidsOf = (list) => (list || []).map((pp) => String(pp.sid)).filter(Boolean);
+  const aGot = sidsOf(A.got), aGave = sidsOf(A.gave), bGot = sidsOf(B.got), bGave = sidsOf(B.gave);
+  const pre = (rid, got, gave) => { const g = new Set(got.concat(gave)); return idsOf(rid).filter((id) => !g.has(id)).concat(gave); };
+  const teamsThen = data.teams.map((t) => ({
+    rosterId: t.rosterId, teamName: t.teamName, ownerName: t.ownerName, isMe: t.rosterId === data.myRosterId,
+    roster: String(t.rosterId) === String(A.rosterId) ? valued(pre(A.rosterId, aGot, aGave), ctxThen)
+      : String(t.rosterId) === String(B.rosterId) ? valued(pre(B.rosterId, bGot, bGave), ctxThen)
+      : valued((t.players || []).map(String), ctxThen),
+    record: t.record, pointsFor: t.pointsFor || 0,
+  }));
+  /* The hub's scorer, the same arithmetic as `scoreRoster` in TeamHub and `leaguePower` above. */
+  const dynastyLg = isDynastyCfg(cfg), effReqLg = EFF_REQ(cfg), flexShLg = flexShareOf(cfg);
+  const replLg = slotBaselines(pool.pool || [], cfg, data.teams.length || cfg.teams);
+  const flexShareForRoster = (lu) => {
+    const share = { QB: 0, RB: 0, WR: 0, TE: 0 }; let seen = 0, filled = 0;
+    ((lu && lu.slots) || []).forEach((sl) => { if (!/^(FLEX|SFLX)/.test(sl.slot || "")) return; seen++;
+      const pos = sl.p && !sl.p.assumed ? sl.p.pos : null; if (pos && share[pos] != null) { share[pos] += 1; filled++; } });
+    if (!seen) return flexShLg;
+    const unfilled = seen - filled;
+    if (unfilled > 0) POS.forEach((pp) => { share[pp] += ((flexShLg[pp] || 0) / Math.max(1, seen)) * unfilled; });
+    return share;
+  };
+  const scoreRoster = (roster) => {
+    const lu = lineupSlots(roster || [], cfg.sf);
+    const fShare = flexShareForRoster(lu);
+    let rosterScore = 0;
+    POS.forEach((pos) => {
+      const atPos = (roster || []).filter((p) => p && p.pos === pos).sort((a, b) => (b.pts || 0) - (a.pts || 0));
+      rosterScore += posQualityScore(atPos, effReqLg[pos] || 0, { dynasty: dynastyLg, flexShare: fShare[pos] || 0, slotBaseline: replLg[pos] }) || 0;
+    });
+    return {
+      start: (roster || []).some((p) => p && p.phaseUnit != null && p.injStatus)
+        ? phasedLineupValue(roster || [], cfg.sf, ctxThen.weeksLeft, lineupValue)
+        : lu.slots.reduce((s2, q) => s2 + (q.p ? (q.p.pts || 0) : 0), 0),
+      rosterScore, bench: lu.bench,
+    };
+  };
+  const st = cfg.start || {}; const superN = st.SUPER || 0;
+  const req = { QB: (st.QB || 0) + superN, RB: st.RB || 0, WR: st.WR || 0, TE: st.TE || 0 };
+  /* Share of a position's best, off TODAY's rosters, as the hub's calculator reads it. */
+  const shareOf = (() => {
+    const rosters = data.teams.map((t) => valued((t.players || []).map(String), ictxNow));
+    const rp = replacementByPos(rosters, cfg.sf, rosters.length);
+    const w = (p) => Math.max(0, (Number(p.pts) || 0) - (rp[String(p.pos).toUpperCase()] || 0));
+    const top = {};
+    ["QB", "RB", "WR", "TE"].forEach((pos) => { top[pos] = Math.max(0, ...rosters.flat().filter((p) => String(p.pos).toUpperCase() === pos).map(w)); });
+    const tops = Object.values(top).filter((v) => v > 0);
+    const avgTop = tops.length ? tops.reduce((a, b) => a + b, 0) / tops.length : 25;
+    return (p) => {
+      if (!p) return 0;
+      if (p.pos === "PICK") return (Number(p.pickValue) || 0) / Math.max(25, avgTop);
+      const pos = String(p.pos).toUpperCase();
+      if (["K", "DEF", "DST", "PK"].includes(pos)) return 0.15 * w(p) / Math.max(25, avgTop);
+      const t = top[pos] || 0;
+      return t >= 25 ? w(p) / t : Math.min(1, w(p) / 25);
+    };
+  })();
+  const keeperOf = (pl) => {
+    if (!pl || pl.sid == null) return null;
+    const owner = data.teams.find((t) => (t.keepers || []).some((k) => String(k) === String(pl.sid)));
+    return owner ? { kept: true, by: owner.teamName } : null;
+  };
+  const side = (me, them, give, get) => {
+    const has = (rid, sid) => teamsThen.some((t) => String(t.rosterId) === String(rid) && t.roster.some((pp) => String(pp.sid) === sid));
+    const gv = give.filter((sid) => has(me, sid)), gt = get.filter((sid) => has(them, sid));
+    if (!gv.length && !gt.length) return null;
+    try {
+      const r = tradeEval(teamsThen, { shareOf, slotsOf: (r0) => lineupSlots(r0 || [], cfg.sf).slots, myId: me, theirId: them, give: gv, get: gt,
+        sf: cfg.sf, req, score: (r0) => scoreRoster(r0), bench: (r0) => scoreRoster(r0).bench, keeps: leagueKeepsPlayers(cfg), keeperOf });
+      return r && r.ok && r.grade ? { letter: r.grade.letter, score: r.grade.score, perWeek: r.grade.perWeek, why: r.grade.why, call: r.call, delta: r.sides.me.delta } : null;
+    } catch (e) { return null; }
+  };
+  return {
+    throughWeek: form ? then.throughWeek : 0,
+    [A.rosterId]: side(A.rosterId, B.rosterId, aGave, aGot),
+    [B.rosterId]: side(B.rosterId, A.rosterId, bGave, bGot),
+  };
+}
+
 /* ⭐⭐⭐⭐⭐ WHAT A PROPOSED TRADE DOES — the calculator's output — 29y.
    Trey asked for two numbers, "power rankings and overall points in the season", and the honest answer
    needs a third thing beside them: what it does to the OTHER side, because a deal nobody accepts is not a
@@ -795,7 +904,7 @@ export function leaguePower(data, pool, ictx) {
    ⚠ SHORT WORDS, because it sits in a table row as well as a card; the full sentence is the hover. */
 const CALL_TONE = { send: "var(--pos)", sweeten: "var(--gold)", dream: "var(--mut)", small: "var(--ink)", even: "var(--mut)", pass: "var(--neg)", wire: "var(--info)" };
 const CALL_SHORT = { send: "Offer it", sweeten: "Good · may need more", dream: "They won't accept", small: "Small upgrade", even: "Not worth it", pass: "Don't", wire: "Use the wire" };
-function IdeaGrade({ g, size = "md", style }) {
+export function IdeaGrade({ g, size = "md", style }) {
   if (!g || !g.letter) return null;
   const c = CALL_TONE[g.call && g.call.key] || "var(--ink)";
   const sm = size === "sm";
@@ -892,6 +1001,11 @@ const TradeVerdict = ({ r, weeks, games, oddsShift }) => {
               <i className="ti ti-user-plus" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
               Or pick up {w.replaced.map((p) => p.name).join(" and ")} for free
             </div>
+            {w.replaced.some((p) => p.weekly != null) && (
+              <div className="mut" style={{ fontSize: 11, marginTop: -3, marginBottom: 6 }}>
+                {w.replaced.map((p) => `${p.name} is projected ${p.weekly != null ? p.weekly : "?"} this week`).join("; ")}.
+              </div>
+            )}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 8, fontSize: 12 }}>
               <div data-tbwirepickup={String(w.alone)} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "7px 9px" }}>
                 <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Free-agent pickup</div>
@@ -7104,7 +7218,7 @@ function gradeFromScore(score) {
 }
 /* The colour a grade carries. Deliberately NOT a ramp through every letter — three bands, because the
    question the colour answers is "is this one worth looking at", and eleven shades answers nothing. */
-const GRADE_TONE = (g) => (g == null ? "var(--mut)"
+export const GRADE_TONE = (g) => (g == null ? "var(--mut)"
   : /^A/.test(g) ? "var(--pos)" : /^B/.test(g) ? "var(--ink)" : /^C/.test(g) ? "var(--gold)" : "var(--neg)");
 
 function lineupSlots(roster, sf, opts = {}) {
@@ -16646,7 +16760,7 @@ export function tradeEval(teams, opts) {
     const aloneOf = replaced.length ? (Number((score(now.concat(replaced)) || {}).start) || 0) - s0 : sB - s0;
     return { alone: r1(aloneOf), overWire: r1(sA - sB),
       pickups: pickups.map((p) => ({ sid: p.sid, name: p.name, pos: p.pos, pts: r1(Number(p.pts) || 0) })),
-      replaced: replaced.map((p) => ({ sid: p.sid, name: p.name, pos: p.pos, pts: r1(Number(p.pts) || 0) })) };
+      replaced: replaced.map((p) => ({ sid: p.sid, name: p.name, pos: p.pos, pts: r1(Number(p.pts) || 0), weekly: p.faWeekly != null ? r1(p.faWeekly) : null })) };
   })();
 
   /* ⭐⭐⭐⭐ WHERE THE LINEUP CHANGE COMES FROM, SLOT BY SLOT — 29bl. Trey: "I also want to check the 14.1
@@ -18337,7 +18451,11 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
      why a kicker once outranked a real running back on this page. Any position the roster actually holds
      gets a list. */
   const myByPos = { QB: [], RB: [], WR: [], TE: [], K: [], DST: [], DEF: [] };
-  myRoster.forEach((p) => { if (myByPos[p.pos]) myByPos[p.pos].push(p); });
+  /* ⚠ 29bm — IR AND TAXI MEN ARE NOT PART OF THE COMPARISON EITHER. Trey saw every free agent listed as
+     "+X vs Higgins" with Higgins on his IR: he is not a man you would start or drop, so measuring the wire
+     against him says nothing. They are left out of the position lists the free-agent tab reads. */
+  const faParked = new Set([].concat((myTeam && myTeam.reserve) || [], (myTeam && myTeam.taxi) || []).filter(Boolean).map(String));
+  myRoster.forEach((p) => { if (myByPos[p.pos] && !faParked.has(String(p.sid))) myByPos[p.pos].push(p); });
   Object.keys(myByPos).forEach((k) => myByPos[k].sort((a, b) => seasonOf(b) - seasonOf(a)));
   // Do you have enough startable bodies (by season value) to fill your effective demand at each position?
   /* ⚠ "SHORT AT A POSITION" MEANS YOU CANNOT FIELD THE SLOTS YOU MUST FIELD — nothing else. Measured against
@@ -18449,8 +18567,12 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
        ⚠ STARTERS ARE NEVER CASUALTIES. Anyone in the current lineup is out of the pool regardless of what
          the value thresholds say — proposing you drop a man you are starting this week is not advice. */
     const startingSids = new Set((myTeam.starters || []).filter(Boolean).map(String));
-    const dropPool = (myRoster || []).filter((mp) => mp && mp.sid != null && !startingSids.has(String(mp.sid)));
-    let droppableList = (dropPool.length ? dropPool : posList)
+    /* ⚠ 29bm — AN IR (OR TAXI) PLAYER IS NOT A DROP. Trey: "it's recommending I pick up all these players in
+       place of 'Jayden Higgins' - but Higgins is on my IR, so it's not a clean swap. We should just ignore IR
+       players for FA purposes." He occupies an IR slot, not a bench spot, so dropping him opens nothing. */
+    const parkedSids = new Set([].concat(myTeam.reserve || [], myTeam.taxi || []).filter(Boolean).map(String));
+    const dropPool = (myRoster || []).filter((mp) => mp && mp.sid != null && !startingSids.has(String(mp.sid)) && !parkedSids.has(String(mp.sid)));
+    let droppableList = (dropPool.length ? dropPool : posList.filter((mp) => !parkedSids.has(String(mp.sid))))
       .filter((mp) => !protectedFromDrop(mp))
       .sort((a, b) => (seasonOf(b) || 0) - (seasonOf(a) || 0));
     // In rebuild, an aging vet can be the casualty — but only when the incoming FA is actually younger.
@@ -19376,11 +19498,19 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     };
   })();
   /* 29bl — the best few free agents at each position, in season units, for the calculator's wire baseline. */
+  /* ⭐⭐⭐⭐⭐ 29bm — A FREE AGENT IS WORTH WHAT HE IS PROJECTED TO DO NOW. Trey, after 29bl: Evans for Burrow
+     was still an A+ while "Bryce Young +17.5 points this week, Tyler Shough for 16, Jordan Love for 15.9" sat
+     on waivers. The wire baseline priced free agents on their PRESEASON season projection, and a backup who
+     has just been handed the job has a tiny one: Shough's summer projection assumed he would barely play. The
+     weekly projection is the one that knows who is starting, so a free agent is valued at the better of the
+     two, his weekly projection run over the season. (A rostered starter's weekly and season rates agree, so
+     this only moves the men whose role has changed, which is exactly the free-agent case.) */
   const faForTrade = (() => {
     const out = [];
+    const valueOf = (p) => Math.max(Number(p.ptsSeason) || 0, p.isRealWeekly && Number.isFinite(p.pts) ? p.pts * GAMES_IN_SEASON : 0);
     ["QB", "RB", "WR", "TE"].forEach((pos) => {
       faScored.filter((f) => f && f.p && f.p.pos === pos && !f.implausible).map((f) => f.p)
-        .sort((a, b) => (b.ptsSeason || 0) - (a.ptsSeason || 0)).slice(0, 2).forEach((p) => out.push(p));
+        .sort((a, b) => valueOf(b) - valueOf(a)).slice(0, 2).forEach((p) => out.push({ ...p, ptsSeason: valueOf(p), faWeekly: p.isRealWeekly ? p.pts : null }));
     });
     return seasonRosterOf({ roster: out });
   })();
@@ -19828,10 +19958,17 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
        ⚠ A REPEATED ID STILL COLLAPSES TO ONE SLOT. `resolve` dedupes a roster (b152, the Deebo bug) and
          a set lineup deserves the same: the same man drawn into two slots is the same double-count, and
          `sumPts` below would add him twice. */
+    /* ⚠ 29bm — A MAN WHO HAS BEEN TRADED AWAY IS NOT IN YOUR LINEUP, whatever Sleeper's week file says.
+       Trey traded Chase and Love for Lamar, Irving and McConkey and saw all five on his Matchup screen: the
+       new week's `starters` were seeded from last week's lineup, so the departed pair still "started" and the
+       arrivals sat on the bench. For the current and future weeks a starter must be on the roster now; a
+       finished week keeps the lineup as it was played. (Backend b168 fixes the payload too.) */
+    const weekOpen = !(data.defaultWeek != null && data.week < data.defaultWeek);
     const slotsOf = (team) => {
       const raw = (team && Array.isArray(team.starters)) ? team.starters : null;
       if (!raw || !raw.length) return null;
-      const ids = raw.map((id) => (id != null && String(id) !== "0" ? String(id) : null));
+      const onTeam = new Set([].concat(team.players || [], team.reserve || [], team.taxi || []).map(String));
+      const ids = raw.map((id) => (id != null && String(id) !== "0" && (!weekOpen || onTeam.has(String(id))) ? String(id) : null));
       const bySid = new Map(resolve(ids.filter(Boolean)).map((p) => [String(p.sid), p]));
       const seen = new Set();
       return ids.map((sid) => {
@@ -23879,7 +24016,7 @@ function GetStartedPanel({ leagues, funMocks, dismissed, onDismiss, onConnectSle
      that says 2-3, and nobody would ever work out why.
    ------------------------------------------------------------------------------------------------ */
 /* The future-week table's column track — named once so the header and the rows cannot drift. */
-const AHEAD_COLS = "minmax(0,1.3fr) minmax(0,1fr) 108px 118px minmax(0,1.6fr)";
+const AHEAD_COLS = "minmax(0,1.3fr) 52px minmax(0,1fr) 108px 118px minmax(0,1.6fr)";
 
 /* 29aj — a power RANK is only meaningful against the size of the field, so the colour is a share of it
    rather than a threshold on the number. Top third and bottom third only; the middle is deliberately
@@ -23956,6 +24093,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
   };
   const hideCard = () => setCard(null);
   const [aheadData, setAheadData] = useState(null);   // { week, rows:[{name, flags, league}] } | "loading"
+  const aheadPackById = useMemo(() => new Map((((aheadData && aheadData.pack && aheadData.pack.players) || [])).map((p) => [String(p.id), p])), [aheadData]);
   /* The finished week, loaded only when the Review tab is opened — most visits never open it, and this is
      one season-review call per league. See the Review tab below for what it renders. */
   const [reviewData, setReviewData] = useState(null);
@@ -24048,7 +24186,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
           const f = leagueFlags(h, w.pack);   // no playedOf: nothing in a future week has been played
           out.push({ league: l, id: hid(l), name: l.name, flags: f, hub: h });
         });
-        setAheadData({ week: w.week || todoWeek, rows: out });
+        setAheadData({ week: w.week || todoWeek, rows: out, pack: w.pack || null });
       } catch (e) { if (alive) setAheadData({ week: todoWeek, rows: [], error: true }); }
     })();
     return () => { alive = false; };
@@ -24082,6 +24220,58 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
     return () => { alive = false; clearTimeout(t0); if (timer) clearTimeout(timer); };
   }, [leagues]);
 
+  /* ⭐⭐⭐⭐ 29bm — BOTH LINEUPS, SIDE BY SIDE, BEHIND THE PROJECTED SCORE. Trey: "when you hover the projected
+     score, I'd like to see a side by side of each team and the projected score." The lineups each manager
+     has actually SET (the same ones the total sums), slot by slot, with this week's projection for each man. */
+  const projSideBySide = (r, m) => {
+    const h = r.hub || {}, wk = h.weekly || {};
+    const byId = aheadPackById;
+    const nm = (sid) => { const p = byId.get(String(sid)); return p ? p.name : (sid && sid !== "0" ? String(sid) : "empty"); };
+    const ps = (sid) => { const w = wk[String(sid)]; return w && Number.isFinite(w.pts) ? Math.round(w.pts * 10) / 10 : (sid && sid !== "0" ? "—" : 0); };
+    const pos = (sid) => { const p = byId.get(String(sid)); return p ? p.pos : ""; };
+    const a = (m.me && m.me.starters) || [], b2 = (m.opp && m.opp.starters) || [];
+    const n = Math.max(a.length, b2.length);
+    const rowsX = [];
+    for (let i = 0; i < n; i++) {
+      const x = a[i], y = b2[i];
+      rowsX.push({ Pos: pos(x) || pos(y) || "", You: nm(x), "Your proj": ps(x), Them: nm(y), "Their proj": ps(y),
+        tone: Number(ps(x)) > Number(ps(y)) ? "var(--pos)" : Number(ps(x)) < Number(ps(y)) ? "var(--neg)" : undefined });
+    }
+    /* The server's totals when it sent them; otherwise the sum of the slots just listed, so the heading and
+       the table can never disagree. */
+    const sum = (k) => { const v = rowsX.map((r0) => Number(r0[k])).filter(Number.isFinite); return v.length ? Math.round(v.reduce((q, z) => q + z, 0) * 10) / 10 : null; };
+    const mp = m.meProj && m.meProj.pts != null ? m.meProj.pts : sum("Your proj"), op = m.oppProj && m.oppProj.pts != null ? m.oppProj.pts : sum("Their proj");
+    return { key: `aheadproj-${r.id}`, width: 640, wrap: true, estHeight: 360,
+      title: `${r.name}: your lineup vs ${(m.opp && m.opp.teamName) || "your opponent"}`,
+      subtitle: `Projected ${mp != null ? mp : "—"} to ${op != null ? op : "—"}, from the lineups each of you has set`,
+      cols: [{ k: "Pos", w: 34 }, { k: "You", strong: true }, { k: "Your proj", right: true, tint: true, w: 62 }, { k: "Them" }, { k: "Their proj", right: true, w: 62 }],
+      rows: rowsX, note: "Green where your man is projected higher in that slot, red where theirs is." };
+  };
+  /* 29bm — every league's record, added up. */
+  const combinedRecord = (() => {
+    const vals = Object.values(weekStand || {}).filter((st) => st && st.record);
+    if (!vals.length) return null;
+    const w = vals.reduce((a, st) => a + (st.record.wins || 0), 0), l = vals.reduce((a, st) => a + (st.record.losses || 0), 0), t = vals.reduce((a, st) => a + (st.record.ties || 0), 0);
+    return { w, l, t, n: vals.length, pct: w + l + t ? Math.round((w + t / 2) / (w + l + t) * 1000) / 10 : null };
+  })();
+  const recordFooter = combinedRecord ? (
+    <div data-homecombined={`${combinedRecord.w}-${combinedRecord.l}${combinedRecord.t ? `-${combinedRecord.t}` : ""}`}
+      style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginTop: 9, paddingTop: 8, borderTop: "1px solid var(--line)", fontSize: 12 }}>
+      <span className="mut" style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".06em" }}>Across all {combinedRecord.n} leagues</span>
+      <b className="num" style={{ fontSize: 15 }}>{combinedRecord.w}-{combinedRecord.l}{combinedRecord.t ? `-${combinedRecord.t}` : ""}</b>
+      {combinedRecord.pct != null && <span className="mut">({combinedRecord.pct}% wins)</span>}
+    </div>
+  ) : null;
+  /* 29bm — Trey: "what do the red, yellow, and green dots next to the league name mean?" Say it on the page. */
+  const dotLegend = (
+    <div className="mut" data-homedotlegend style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 10.5, marginTop: 6 }}>
+      {[["var(--neg)", "a starter is out"], ["var(--gold)", "a starter to check (questionable)"], ["var(--info)", "a starter on bye"], ["var(--pos)", "lineup is clean"]].map(([c, t]) => (
+        <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+          <span style={{ width: 7, height: 7, borderRadius: 99, background: c, display: "inline-block" }} aria-hidden="true" />{t}
+        </span>
+      ))}
+    </div>
+  );
   if (!view && firstLoad && hasBackend) return <HomeLeaguesLoading kind="week" count={(leagues || []).length} />;
   // Nothing on, nothing finished — no strip. This is the common case for most of the week.
   if (!view || !view.show) return null;
@@ -24222,6 +24412,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                     gridTemplateColumns: AHEAD_COLS, fontSize: 9, textTransform: "uppercase",
                     letterSpacing: ".05em", fontWeight: 800 }}>
                     <span>League</span>
+                    <span style={{ textAlign: "right" }}>Rec</span>
                     <span>Opponent</span>
                     <span style={{ textAlign: "right" }}>Projected</span>
                     <span style={{ textAlign: "right" }}>vs median</span>
@@ -24326,11 +24517,21 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                         </button>
                         {onOpenTeam && r.league && <span className="hwgo" aria-hidden="true">Open<i className="ti ti-chevron-right" style={{ fontSize: 12 }} /></span>}
                       </span>
+                      {/* 29bk2 — the record rides the to-do view too. Trey: "the week just flipped... it isn't showing
+                          my record for each league right now". The live table had a Rec column; this one never did. */}
+                      {(() => { const st = (weekStand || {})[r.id] || null; const rec = st && st.record;
+                        return (
+                          <span className="num" data-homeaheadrec={rec ? `${rec.wins}-${rec.losses}${rec.ties ? `-${rec.ties}` : ""}` : ""}
+                            style={{ fontSize: 12, fontWeight: 700, textAlign: wide ? "right" : "left" }}>
+                            {rec ? `${rec.wins}-${rec.losses}${rec.ties ? `-${rec.ties}` : ""}` : <span className="mut">—</span>}
+                          </span>
+                        ); })()}
                       <span className="mut" style={{ fontSize: 11.5, minWidth: 0, overflow: "hidden",
                         textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {oppName || (unreadable ? "—" : "no opponent set")}
                       </span>
-                      <span className="num" data-homeaheadproj={r.name} style={{ fontSize: 12, textAlign: wide ? "right" : "left" }}>
+                      <span className="num" data-homeaheadproj={r.name} style={{ fontSize: 12, textAlign: wide ? "right" : "left", cursor: m ? "help" : undefined }}
+                        onMouseEnter={m ? (e) => showTip(e, projSideBySide(r, m)) : undefined} onMouseLeave={m ? hideTip : undefined}>
                         {Number.isFinite(meProj) ? (
                           <>
                             <b style={{ color: Number.isFinite(oppProj) ? (meProj >= oppProj ? "var(--pos)" : "var(--neg)") : "var(--ink)" }}>
@@ -24370,6 +24571,8 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                   : <>Week {todoWeek} hasn't kicked off yet, so this is what to sort out before it does —
                       injury tags and byes off your live rosters. Scores appear here as the games start.</>}
               </div>
+              {dotLegend}
+              {recordFooter}
             </>
           )}
         </div>
@@ -24658,6 +24861,8 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                   </div>
                 )}
               </div>
+              {dotLegend}
+              {recordFooter}
             </div>
           )}
         </>
