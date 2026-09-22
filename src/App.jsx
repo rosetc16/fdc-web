@@ -103,7 +103,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29bk";
+const BUILD_TAG = "2026.07.29bl";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -793,8 +793,8 @@ export function leaguePower(data, pool, ictx) {
    — the real tradeEval from my side, so this pill and the calculator's card cannot disagree.
    ⚠ THE LETTER CARRIES A WORD, never colour alone (the win% rule): "Offer it" / "Don't" read in greyscale.
    ⚠ SHORT WORDS, because it sits in a table row as well as a card; the full sentence is the hover. */
-const CALL_TONE = { send: "var(--pos)", sweeten: "var(--gold)", dream: "var(--mut)", small: "var(--ink)", even: "var(--mut)", pass: "var(--neg)" };
-const CALL_SHORT = { send: "Offer it", sweeten: "Good · may need more", dream: "They won't accept", small: "Small upgrade", even: "Not worth it", pass: "Don't" };
+const CALL_TONE = { send: "var(--pos)", sweeten: "var(--gold)", dream: "var(--mut)", small: "var(--ink)", even: "var(--mut)", pass: "var(--neg)", wire: "var(--info)" };
+const CALL_SHORT = { send: "Offer it", sweeten: "Good · may need more", dream: "They won't accept", small: "Small upgrade", even: "Not worth it", pass: "Don't", wire: "Use the wire" };
 function IdeaGrade({ g, size = "md", style }) {
   if (!g || !g.letter) return null;
   const c = CALL_TONE[g.call && g.call.key] || "var(--ink)";
@@ -876,6 +876,65 @@ const TradeVerdict = ({ r, weeks, games, oddsShift }) => {
               <div style={{ fontSize: 15.5, fontWeight: 800, color: c, marginBottom: 2 }}>{r.call.label}</div>
               <div style={{ fontSize: 12, lineHeight: 1.45 }}>{r.call.why}</div>
               <div className="mut" style={{ fontSize: 10.5, marginTop: 4, lineHeight: 1.4 }}>Graded on {r.grade.why.join(", ")}.</div>
+            </div>
+          </div>
+        );
+      })()}
+      {/* ⭐⭐⭐⭐⭐ 29bl — THE FREE ALTERNATIVE, SIDE BY SIDE WITH THE TRADE. Shown whenever the wire covers some
+          of what this trade does, so the trade-off is explicit rather than folded into a letter. */}
+      {r.waiver && r.waiver.replaced && r.waiver.replaced.length > 0 && me.isMe && (() => {
+        const G = games || 17, w = r.waiver;
+        const per = (x) => `${x >= 0 ? "+" : ""}${(x / G).toFixed(1)}`;
+        const tradeGain = me.delta;
+        return (
+          <div data-tbwire={w.replaced.map((p) => p.name).join("|")} style={{ border: "1px solid var(--info)", borderRadius: 10, padding: "9px 12px", marginBottom: 11, background: "var(--panel)" }}>
+            <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 6, color: "var(--info)" }}>
+              <i className="ti ti-user-plus" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
+              Or pick up {w.replaced.map((p) => p.name).join(" and ")} for free
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 8, fontSize: 12 }}>
+              <div data-tbwirepickup={String(w.alone)} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "7px 9px" }}>
+                <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Free-agent pickup</div>
+                <b className="num" style={{ fontSize: 16, color: "var(--pos)" }}>{per(w.alone)}</b><span className="mut"> a week</span>
+                <div className="mut" style={{ fontSize: 11 }}>costs a roster spot, keeps everyone you have</div>
+              </div>
+              <div data-tbwiretrade={String(tradeGain)} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "7px 9px" }}>
+                <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>This trade</div>
+                <b className="num" style={{ fontSize: 16, color: tradeGain >= 0 ? "var(--pos)" : "var(--neg)" }}>{per(tradeGain)}</b><span className="mut"> a week</span>
+                <div className="mut" style={{ fontSize: 11 }}>costs {me.out.map((p) => p.name).join(" + ") || "nothing"}</div>
+              </div>
+              <div data-tbwireover={String(w.overWire)} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "7px 9px" }}>
+                <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>Trade over the pickup</div>
+                <b className="num" style={{ fontSize: 16, color: w.overWire > 0 ? "var(--ink)" : "var(--neg)" }}>{per(w.overWire)}</b><span className="mut"> a week</span>
+                <div className="mut" style={{ fontSize: 11 }}>what the trade really adds</div>
+              </div>
+            </div>
+            <div className="mut" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.45 }}>
+              The grade above is on the last number: the trade compared with making the free pickup instead.
+              {w.pickups.length > w.replaced.length ? ` Other free agents who would start for you either way: ${w.pickups.filter((p) => !w.replaced.some((q) => q.sid === p.sid)).map((p) => p.name).join(", ")}.` : ""}
+            </div>
+          </div>
+        );
+      })()}
+      {/* ⭐⭐⭐⭐ 29bl — WHERE THE LINEUP NUMBER COMES FROM. A net figure is what gets doubted ("I'd expect Burrow to
+          be much higher"), so the slots that change are listed, each at points a week. */}
+      {me.isMe && r.lineupDiff && r.lineupDiff.length > 0 && (() => {
+        const G = games || 17;
+        const f = (x) => (x / G).toFixed(1);
+        return (
+          <div data-tbdiff={String(r.lineupDiff.length)} style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "8px 11px", marginBottom: 11, background: "var(--panel)" }}>
+            <div style={{ fontSize: 11.5, fontWeight: 800, marginBottom: 4 }}>Where the lineup change comes from <span className="mut" style={{ fontWeight: 500 }}>(your roster as it stands, points a week)</span></div>
+            {r.lineupDiff.map((d, i) => (
+              <div key={i} data-tbdiffrow={d.slot} style={{ display: "flex", gap: 8, fontSize: 11.5, padding: "2px 0", alignItems: "baseline" }}>
+                <b style={{ minWidth: 44 }}>{d.slot}</b>
+                <span className="mut" style={{ flex: 1, minWidth: 0 }}>
+                  {d.from ? `${d.from.name} ${f(d.from.pts)}` : "empty"} <span aria-hidden="true">→</span> <span style={{ color: "var(--ink)" }}>{d.to ? `${d.to.name} ${f(d.to.pts)}` : "empty"}</span>
+                </span>
+                <b className="num" style={{ color: d.delta >= 0 ? "var(--pos)" : "var(--neg)" }}>{d.delta >= 0 ? "+" : ""}{f(d.delta)}</b>
+              </div>
+            ))}
+            <div className="mut" style={{ fontSize: 10.5, marginTop: 4, lineHeight: 1.45 }}>
+              Season value spread over {G} weeks, so each player's bye counts as a zero week: a player projected for 18.7 next week averages a little lower here.
             </div>
           </div>
         );
@@ -16557,7 +16616,58 @@ export function tradeEval(teams, opts) {
   };
 
   const mine = sideOf(me, myAfter, outMine, inMine);
-  const theirs = sideOf(them, theirAfter, inMine, outMine);
+
+  /* ⭐⭐⭐⭐⭐ THE WAIVER WIRE IS ALWAYS AN OPTION, AND IT IS FREE — 29bl.
+     Trey: "I lost Jayden Daniels and Jaxson Dart this week... I input a trade of Mike Evans for Joe Burrow,
+     which gave me an A+ because it adds 14.1 points to my starting lineup... Jordan Love (19.5 points
+     projected), Bryce Young (16.5)... are all on waivers... So it might make more sense to just pick up the
+     free agent and keep Evans on my team."
+     ⚠ THE CALCULATOR MEASURED THE TRADE AGAINST YOUR ROSTER AS IT STANDS, and a roster with no healthy
+       quarterback scores ZERO at QB. Against that baseline any quarterback is a huge upgrade, including one
+       you could add for nothing. The honest baseline is your roster WITH the best free agents available
+       (`o.freeAgents`, the top few at each position from the hub's own wire): the trade is worth what it
+       adds on top of the pickups you would make anyway.
+     `waiver.overWire` is that number; `waiver.pickups` are the free agents who would start for you, and
+     `waiver.replaced` the ones this trade makes unnecessary (the ones it is really competing with). */
+  const waiver = (() => {
+    const fa = Array.isArray(o.freeAgents) ? o.freeAgents.filter((p) => p && !isPick(p)
+      && !(me.roster || []).some((q) => String(q.sid) === String(p.sid)) && !(them.roster || []).some((q) => String(q.sid) === String(p.sid))) : [];
+    if (!fa.length) return null;
+    const now = me.roster || [];
+    const s0 = Number((score(now) || {}).start) || 0;
+    const bFA = score(now.concat(fa)) || {}, aFA = score(myAfter.concat(fa)) || {};
+    const sB = Number(bFA.start) || 0, sA = Number(aFA.start) || 0;
+    const benchB = new Set((bFA.bench || []).map((p) => String(p.sid))), benchA = new Set((aFA.bench || []).map((p) => String(p.sid)));
+    const pickups = fa.filter((p) => !benchB.has(String(p.sid)));
+    const replaced = pickups.filter((p) => benchA.has(String(p.sid)));
+    const r1 = (x) => Math.round(x * 10) / 10;
+    /* "The pickup" is only the free agents this trade competes with. Other free agents who would start
+       anyway are in both baselines and must not inflate what "just pick him up" is worth. */
+    const aloneOf = replaced.length ? (Number((score(now.concat(replaced)) || {}).start) || 0) - s0 : sB - s0;
+    return { alone: r1(aloneOf), overWire: r1(sA - sB),
+      pickups: pickups.map((p) => ({ sid: p.sid, name: p.name, pos: p.pos, pts: r1(Number(p.pts) || 0) })),
+      replaced: replaced.map((p) => ({ sid: p.sid, name: p.name, pos: p.pos, pts: r1(Number(p.pts) || 0) })) };
+  })();
+
+  /* ⭐⭐⭐⭐ WHERE THE LINEUP CHANGE COMES FROM, SLOT BY SLOT — 29bl. Trey: "I also want to check the 14.1
+     points a week... I'd expect the points per week of Burrow to be much higher." It is: the headline is a
+     NET, what Burrow adds at QB minus what losing Evans costs at receiver once the next man moves up. A net
+     with no working shown invites exactly that doubt, so the slots that change are listed. */
+  const lineupDiff = (() => {
+    if (typeof o.slotsOf !== 'function') return null;
+    try {
+      const b = o.slotsOf((me.roster || []).filter((p) => !isPick(p))) || [], a = o.slotsOf(myAfter.filter((p) => !isPick(p))) || [];
+      const rows = [];
+      for (let i = 0; i < Math.max(a.length, b.length); i++) {
+        const x = b[i] || {}, y = a[i] || {};
+        const xs = x.p ? String(x.p.sid) : '', ys = y.p ? String(y.p.sid) : '';
+        if (xs === ys) continue;
+        const xp = x.p ? Number(x.p.pts) || 0 : 0, yp = y.p ? Number(y.p.pts) || 0 : 0;
+        rows.push({ slot: y.slot || x.slot, from: x.p ? { name: x.p.name, pts: xp } : null, to: y.p ? { name: y.p.name, pts: yp } : null, delta: Math.round((yp - xp) * 10) / 10 });
+      }
+      return rows;
+    } catch (e) { return null; }
+  })();  const theirs = sideOf(them, theirAfter, inMine, outMine);
 
   /* ⭐⭐⭐⭐⭐ POWER IS RE-RANKED FOR THE WHOLE LEAGUE, NOT JUST THE TWO OF YOU. `powerBlend` normalises
      inside the field, so two rosters changing moves everybody's position on the scale a little — and a
@@ -16755,7 +16865,11 @@ export function tradeEval(teams, opts) {
        completely different next moves and a grade alone cannot tell them apart.
      ══════════════════════════════════════════════════════════════════════════════════════════════ */
   const G = o.games || 17;
-  const pw = (mine.delta || 0) / G;                                  // your best lineup, points a week
+  const pwRaw = (mine.delta || 0) / G;
+  /* 29bl — graded on what the trade adds OVER the best free-agent pickups whenever the wire covers some of
+     it (see `waiver`). With nothing relevant on waivers the two numbers are the same. */
+  const wireBites = !!(waiver && waiver.replaced.length && waiver.overWire < (mine.delta || 0));
+  const pw = wireBites ? waiver.overWire / G : pwRaw;               // your best lineup, points a week
   const depthPw = ((mine.assetDelta || 0) - (mine.delta || 0)) / G;  // value moving that is NOT in your lineup
   const longPw = long && long.delta != null ? long.delta / G : null;
   /* ⭐⭐⭐⭐⭐ 29bh — IN A DYNASTY LEAGUE THE SAME TRADE GRADES DIFFERENTLY FOR A CONTENDER AND A REBUILDER.
@@ -16771,7 +16885,9 @@ export function tradeEval(teams, opts) {
        (`longValueOf` / `yearsOfUse`), which is where "how old is he, what is his outlook" lives. */
   const W = { winnow: [0.8, 0.2], balanced: [0.6, 0.4], rebuild: [0.3, 0.7] }[(long && long.posture) || 'balanced'] || [0.6, 0.4];
   let gScore = keeps && longPw != null ? pw * W[0] + longPw * W[1] : pw;
-  const gWhy = [`${pw >= 0 ? '+' : ''}${pw.toFixed(1)} a week in your best lineup`];
+  const gWhy = [wireBites
+    ? `${pw >= 0 ? '+' : ''}${pw.toFixed(1)} a week over just picking up ${waiver.replaced.map((p) => p.name).join(' and ')} (+${pwRaw.toFixed(1)} against your roster as it stands)`
+    : `${pw >= 0 ? '+' : ''}${pw.toFixed(1)} a week in your best lineup`];
   if (keeps && long && o.posture) {
     const lbl = { winnow: 'a win-now team', balanced: 'a balanced team', rebuild: 'a rebuilding team' }[long.posture] || 'your team';
     const age = o.windowInfo && o.windowInfo.avgAge ? `, core age ${Number(o.windowInfo.avgAge).toFixed(1)}` : '';
@@ -16814,6 +16930,15 @@ export function tradeEval(teams, opts) {
   const willAccept = (verdictLong || verdict).key === 'good' || (verdictLong || verdict).key === 'future';
   const call = (() => {
     const wk = `${Math.abs(pw).toFixed(1)} a week`;
+    /* ⭐⭐⭐⭐⭐ 29bl — "If you do suggest I just take a free agent, I'd like you to explicitly show that in the
+       trade calculator and make the suggestion / show the trade off." When the wire covers most of what the
+       trade does, the call IS the pickup. */
+    if (wireBites && pwRaw >= 0.5 && ((mine.delta || 0) - waiver.overWire) >= 0.5 * (mine.delta || 0) && waiver.overWire / G < 0.7) {
+      const names = waiver.replaced.map((p) => p.name).join(' and ');
+      const alone = (waiver.alone / G).toFixed(1), over = (waiver.overWire / G).toFixed(1);
+      return { key: 'wire', label: `Pick up ${names} instead`,
+        why: `${names} ${waiver.replaced.length === 1 ? 'is' : 'are'} on waivers and ${waiver.replaced.length === 1 ? 'adds' : 'add'} about ${alone} a week for free. This trade adds ${Number(over) > 0 ? `only ${over} a week` : 'nothing'} on top of that, and costs you ${outMine.map((p) => p.name).join(' and ') || 'nothing'}.` };
+    }
     /* ⭐⭐⭐⭐ 29bh — "GREAT FOR YOU, THEY WON'T DO IT". "They will likely want more" was the gentlest thing
        the calculator could say about Eagles D for Josh Allen, which is the most one-sided offer imaginable.
        When the value going back is under 40% of what comes in, more is not a sweetener away — it is a
@@ -16839,7 +16964,7 @@ export function tradeEval(teams, opts) {
   return {
     ok: true, error: null,
     horizon: keeps ? 'both' : 'now',
-    grade, call,
+    grade, call, waiver, lineupDiff,
     sides: { me: mine, them: theirs },
     power: { before: powerBefore, after: powerAfter, moves,
       myRank: { from: rankOf(powerBefore, me.rosterId), to: rankOf(powerAfter, me.rosterId) },
@@ -19250,8 +19375,21 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
       return t >= 25 ? w(p) / t : Math.min(1, w(p) / 25);
     };
   })();
+  /* 29bl — the best few free agents at each position, in season units, for the calculator's wire baseline. */
+  const faForTrade = (() => {
+    const out = [];
+    ["QB", "RB", "WR", "TE"].forEach((pos) => {
+      faScored.filter((f) => f && f.p && f.p.pos === pos && !f.implausible).map((f) => f.p)
+        .sort((a, b) => (b.ptsSeason || 0) - (a.ptsSeason || 0)).slice(0, 2).forEach((p) => out.push(p));
+    });
+    return seasonRosterOf({ roster: out });
+  })();
+  const slotsOf = (r) => lineupSlots(r || [], cfg.sf).slots;
   const tbOptsFor = (aId, bId, give, get) => ({
           shareOf,
+          /* 29bl — the wire only counts for MY side: it is my baseline, not an observation about theirs. */
+          freeAgents: String(aId) === String(data.myRosterId) ? faForTrade : undefined,
+          slotsOf,
           /* ⚠ "myId" IS SIDE A, WHICH IS USUALLY BUT NO LONGER ALWAYS MINE. Everything `tradeEval` reports
              is from side A's point of view, which is exactly right when reading somebody else's trade too:
              the question becomes "what did THAT manager gain", and the power table is recomputed for the
@@ -19568,7 +19706,8 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
       const gv = give.filter((sid) => has(me, sid)), gt = get.filter((sid) => has(them, sid));
       if (!gv.length && !gt.length) return null;
       try {
-        const r = tradeEval(teamsThen, { ...tbOptsFor(me, them, gv, gt), posture: undefined });
+        /* 29bl — no free-agent baseline here: today's wire says nothing about what was available then. */
+        const r = tradeEval(teamsThen, { ...tbOptsFor(me, them, gv, gt), posture: undefined, freeAgents: undefined });
         return r && r.ok && r.grade ? { letter: r.grade.letter, score: r.grade.score, perWeek: r.grade.perWeek, why: r.grade.why, call: r.call, delta: r.sides.me.delta, vIn: r.sides.me.assetsIn, vOut: r.sides.me.assetsOut } : null;
       } catch (e) { return null; }
     };
