@@ -5,6 +5,7 @@ import { useCoarsePointer, tipShouldOpen, tipShouldClose } from "./tipsheet.js";
 import { HoverTable, useHoverCard } from "./hovercard.jsx";
 import { teamReads, tradeBoard, marketSummary, partnerBoard, raceCurrency } from "./trademarket.js";
 import { GUIDE_TASKS, GUIDE_MAP, GUIDE_GLOSSARY, SEASON_STEPS, guideIndex, guideSearch } from "./guide.js";
+import { lineupMoves } from "./weekcache.js";
 import { INJ_SEASON, INJ_WEEKS, INJ_LIMITED, INJ_CHOICES, applyInjuryToEntry, injuryFactors, injuryLabel, activeInjuryMap, activeInjuryCount, normalizeInjury, phasedLineupValue } from "./injuries.js";
 import { applyFormToEntry, FORM_PRIOR_GAMES } from "./form.js";
 
@@ -103,7 +104,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29bm";
+const BUILD_TAG = "2026.07.29bn";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -10004,13 +10005,15 @@ export const Dot = ({ pos }) => <span className="posdot" title={pos} style={{ ba
    ⚠ AND IT CARRIES THE ARITHMETIC IN ITS TITLE — the two projections and the difference between them, so
      the claim can be checked without opening anything, and a test can read it off the DOM. */
 export const SwapMark = ({ s, kind }) => {
-  if (!s || !s.in || !s.out) return null;
+  if (!s || !s.in) return null;
   const up = kind === "start";
-  const d = Math.round(((s.in.pts || 0) - (s.out.pts || 0)) * 10) / 10;
+  if (!s.out && !up) return null;
+  const d = Math.round(((s.in.pts || 0) - ((s.out && s.out.pts) || 0)) * 10) / 10;
   return (
     <span data-hubswap={`${kind}:${String(up ? s.in.sid : s.out.sid)}`} data-hubswapgain={String(d)}
       title={up
-        ? `Start him — ${s.in.name} projects ${(s.in.pts || 0).toFixed(1)} against ${s.out.name}'s ${(s.out.pts || 0).toFixed(1)}, a gain of ${d.toFixed(1)}.`
+        ? (s.out ? `Start him — ${s.in.name} projects ${(s.in.pts || 0).toFixed(1)} against ${s.out.name}'s ${(s.out.pts || 0).toFixed(1)}, a gain of ${d.toFixed(1)}.`
+          : `Start him in your empty ${s.empty || ""} slot — ${s.in.name} projects ${(s.in.pts || 0).toFixed(1)}.`)
         : `Sit him — ${s.in.name} on the bench projects ${(s.in.pts || 0).toFixed(1)} against his ${(s.out.pts || 0).toFixed(1)}, a gain of ${d.toFixed(1)}.`}
       style={{ fontSize: 8.5, fontWeight: 800, letterSpacing: ".05em", lineHeight: 1.6, whiteSpace: "nowrap",
         padding: "0 4px", borderRadius: 4, cursor: "help", flexShrink: 0,
@@ -16753,7 +16756,14 @@ export function tradeEval(teams, opts) {
     const sB = Number(bFA.start) || 0, sA = Number(aFA.start) || 0;
     const benchB = new Set((bFA.bench || []).map((p) => String(p.sid))), benchA = new Set((aFA.bench || []).map((p) => String(p.sid)));
     const pickups = fa.filter((p) => !benchB.has(String(p.sid)));
-    const replaced = pickups.filter((p) => benchA.has(String(p.sid)));
+    /* ⚠⚠ 29bn — AND THE FREE AGENT WHO IS BETTER THAN THE MAN YOU ARE TRADING FOR. Trey priced Evans for Burrow
+       again and saw nothing about the wire. With Bo Nix (18.1 this week) and Bryce Young free, the best free
+       quarterback outranks Burrow, so after the trade the FREE AGENT still starts and BURROW sits: nothing
+       the trade does "replaces" a pickup, and the old test (pickups benched by the trade) came back empty
+       exactly when the wire is most clearly the better move. A pickup also competes with the trade when he
+       plays a position the trade brings in. */
+    const inPos = new Set((inMine || []).filter((p) => !isPick(p)).map((p) => String(p.pos).toUpperCase()));
+    const replaced = pickups.filter((p) => benchA.has(String(p.sid)) || inPos.has(String(p.pos).toUpperCase()));
     const r1 = (x) => Math.round(x * 10) / 10;
     /* "The pickup" is only the free agents this trade competes with. Other free agents who would start
        anyway are in both baselines and must not inflate what "just pick him up" is worth. */
@@ -19925,21 +19935,45 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
        genuine flex swap and reads correctly as one.
      ⚠ AND THE MARK IS A WORD, NOT A GLYPH. "I also don't know what the arrows mean" — 29ak, about a ↑ on
        this same tab. START and SIT need no legend. */
-  const pairSwaps = (ins, outs) => {
-    const pool = (ins || []).filter(Boolean).slice(), pairs = [];
+  /* ⭐⭐⭐⭐⭐ 29bn — A SWAP HAS TO FIT THE SLOT. Trey: "it's telling me to start Bucky Irving (RB) for Harrison
+     Mevis (K)... clearly I can't have a RB take a K spot... I also have an open RB and WR spot on my roster
+     that I haven't filled yet". The pairing fell back to "the first man in" whenever no incoming player shared
+     the outgoing man's position, so a running back bound for an EMPTY slot was printed against the kicker.
+     Now each pair is made against the SLOT the outgoing man occupies (FLEX takes RB/WR/TE, SUPERFLEX adds QB,
+     K and DST take only their own), an incoming player with no slot to take goes into an EMPTY slot he fits
+     and says so, and anything left unpaired is left out rather than invented. */
+  const SLOT_FITS = (label) => {
+    const L = String(label || "").toUpperCase().replace(/\d+$/, "");
+    if (L === "FLEX") return ["RB", "WR", "TE"];
+    if (L === "SUPERFLEX" || L === "SFLX") return ["QB", "RB", "WR", "TE"];
+    if (L === "DST" || L === "DEF") return ["DST", "DEF"];
+    return [L];
+  };
+  const pairSwaps = (ins, outs, setArr) => {
+    const pool = (ins || []).filter(Boolean).slice().sort((a, b) => (b.pts || 0) - (a.pts || 0)), pairs = [];
+    const slotOf = (p) => { const i = (setArr || []).findIndex((q) => q && p && String(q.sid) === String(p.sid)); return i >= 0 && slotTemplate[i] ? slotTemplate[i].label : null; };
     (outs || []).filter(Boolean).forEach((out) => {
-      let k = pool.findIndex((p) => String(p.pos).toUpperCase() === String(out.pos).toUpperCase());
-      if (k < 0) k = 0;
+      const fits = SLOT_FITS(slotOf(out) || out.pos);
+      const k = pool.findIndex((p) => fits.includes(String(p.pos).toUpperCase()));
+      if (k < 0) return;
       const inn = pool.splice(k, 1)[0];
       // ⚠ A SWAP THE OPTIMISER MADE FOR SLOT REASONS IS NOT A "HIGHER PROJECTION" — he asked for the
       //   second one, so a pair that does not gain points is not marked.
       if (inn && (inn.pts || 0) > (out.pts || 0)) pairs.push({ in: inn, out });
     });
+    (setArr || []).forEach((q, i) => {
+      if (q || !slotTemplate[i]) return;
+      const fits = SLOT_FITS(slotTemplate[i].label);
+      const k = pool.findIndex((p) => fits.includes(String(p.pos).toUpperCase()));
+      if (k < 0) return;
+      const inn = pool.splice(k, 1)[0];
+      pairs.push({ in: inn, out: null, empty: slotTemplate[i].label });
+    });
     return pairs;
   };
   const swapIndex = (pairs) => {
     const inBy = {}, outBy = {};
-    (pairs || []).forEach((s) => { inBy[String(s.in.sid)] = s; outBy[String(s.out.sid)] = s; });
+    (pairs || []).forEach((s) => { if (s.in) inBy[String(s.in.sid)] = s; if (s.out) outBy[String(s.out.sid)] = s; });
     return { inBy, outBy };
   };
 
@@ -20019,9 +20053,12 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     /* ⚠ ONLY WHEN THERE IS A LINEUP TO SECOND-GUESS. With no set starters `meSet` IS the optimal lineup,
        so `swapsIn` is every starter on it and `swapsOut` is empty — marking that would put START on eight
        men who are already starting. */
-    const meSwaps = (myTeam.starters && myTeam.starters.length) ? pairSwaps(swapsIn, swapsOut) : [];
+    const meSwapsIn = optimalStarters.filter((p) => !new Set(meSetPlayers.map((q) => q.sid)).has(p.sid));
+    const meSwapsOut = meSetPlayers.filter((p) => !optimalSet.has(p.sid));
+    const meSwaps = (myTeam.starters && myTeam.starters.length) ? pairSwaps(meSwapsIn, meSwapsOut, meSet) : [];
     const meSwapIdx = swapIndex(meSwaps);
-    const oppSwapIdx = swapIndex(oppSet.length ? pairSwaps(oppSwapsIn, oppSwapsOut) : []);
+    const oppSwaps = oppSet.length ? pairSwaps(oppSwapsIn, oppSwapsOut, oppSet) : [];
+    const oppSwapIdx = swapIndex(oppSwaps);
 
     matchupView = {
       isLive,
@@ -20039,7 +20076,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
       oppLeftOnBench,
       oppSwapsIn,
       oppSwapsOut,
-      meSwaps, meSwapIdx, oppSwapIdx,
+      meSwaps, meSwapIdx, oppSwapIdx, oppSwaps,
     };
   }
 
@@ -20579,24 +20616,26 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
                 <div style={{ background: (leftOnBench > 0 && swapsIn.length > 0) ? "var(--neg-wash)" : "var(--panel2)", border: `1px solid ${(leftOnBench > 0 && swapsIn.length > 0) ? "var(--red)" : "var(--line)"}`, borderRadius: 8, padding: "10px 12px" }}>
                   {leftOnBench > 0 && swapsIn.length > 0 ? <>
                     <div style={{ fontWeight: 700, color: "var(--red)", fontSize: 11.5, marginBottom: 5 }}>You could gain {leftOnBench.toFixed(2)}</div>
-                    {swapsIn.map((pin, i) => { const pout = swapsOut[i]; return (
-                      <div key={pin.sid} style={{ fontSize: 11.5, padding: "2px 0", lineHeight: 1.3 }}>
-                        <span style={{ color: "var(--green)" }}><Dot pos={pin.pos} />{pin.name} ({pin.pts.toFixed(2)})</span>
-                        {pout && <span className="mut"> for {pout.name} ({pout.pts.toFixed(2)})</span>}
+                    {(matchupView.meSwaps || []).map((sw) => (
+                      <div key={sw.in.sid} data-myswap={`${sw.in.name}>${sw.out ? sw.out.name : `empty ${sw.empty}`}`} style={{ fontSize: 11.5, padding: "2px 0", lineHeight: 1.3 }}>
+                        <span style={{ color: "var(--green)" }}><Dot pos={sw.in.pos} />{sw.in.name} ({(sw.in.pts || 0).toFixed(2)})</span>
+                        {sw.out ? <span className="mut"> for {sw.out.name} ({(sw.out.pts || 0).toFixed(2)})</span>
+                          : <span className="mut"> into your empty {sw.empty} slot</span>}
                       </div>
-                    ); })}
+                    ))}
                   </> : <div className="mut" style={{ fontSize: 11.5 }}><span style={{ color: "var(--green)" }}>✓</span> Your lineup is optimal</div>}
                 </div>
                 {/* Their upgrades */}
                 <div style={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 8, padding: "10px 12px" }}>
                   {matchupView.oppLeftOnBench > 0 && matchupView.oppSwapsIn.length > 0 ? <>
                     <div style={{ fontWeight: 700, color: "var(--mut)", fontSize: 11.5, marginBottom: 5 }}>They could gain {matchupView.oppLeftOnBench.toFixed(2)}</div>
-                    {matchupView.oppSwapsIn.map((pin, i) => { const pout = matchupView.oppSwapsOut[i]; return (
-                      <div key={pin.sid} style={{ fontSize: 11.5, padding: "2px 0", lineHeight: 1.3 }}>
-                        <span style={{ color: "var(--ink)" }}><Dot pos={pin.pos} />{pin.name} ({pin.pts.toFixed(2)})</span>
-                        {pout && <span className="mut"> for {pout.name} ({pout.pts.toFixed(2)})</span>}
+                    {(matchupView.oppSwaps || []).map((sw) => (
+                      <div key={sw.in.sid} style={{ fontSize: 11.5, padding: "2px 0", lineHeight: 1.3 }}>
+                        <span style={{ color: "var(--ink)" }}><Dot pos={sw.in.pos} />{sw.in.name} ({(sw.in.pts || 0).toFixed(2)})</span>
+                        {sw.out ? <span className="mut"> for {sw.out.name} ({(sw.out.pts || 0).toFixed(2)})</span>
+                          : <span className="mut"> into their empty {sw.empty} slot</span>}
                       </div>
-                    ); })}
+                    ))}
                   </> : <div className="mut" style={{ fontSize: 11.5 }}><span style={{ color: "var(--green)" }}>✓</span> Their lineup is optimal</div>}
                 </div>
               </div>
@@ -24016,7 +24055,7 @@ function GetStartedPanel({ leagues, funMocks, dismissed, onDismiss, onConnectSle
      that says 2-3, and nobody would ever work out why.
    ------------------------------------------------------------------------------------------------ */
 /* The future-week table's column track — named once so the header and the rows cannot drift. */
-const AHEAD_COLS = "minmax(0,1.3fr) 52px minmax(0,1fr) 108px 118px minmax(0,1.6fr)";
+const AHEAD_COLS = "minmax(0,1.3fr) 52px 48px minmax(0,1fr) 108px 118px minmax(0,1.6fr)";
 
 /* 29aj — a power RANK is only meaningful against the size of the field, so the colour is a share of it
    rather than a threshold on the number. Top third and bottom third only; the middle is deliberately
@@ -24026,6 +24065,19 @@ function powTone(st) {
   const share = (st.power - 1) / Math.max(1, st.powerOf - 1);
   if (share <= 1 / 3) return "var(--pos)";
   if (share >= 2 / 3) return "var(--neg)";
+  return "var(--ink)";
+}
+
+/* ⭐⭐⭐ 29bn — THE RECORD IS COLOURED TOO. Trey: "color code record and power ranking based on how I'm
+   doing." Green at .600 or better, red at .400 or worse, ink between; an 0-0 record says nothing yet. */
+function recTone(st) {
+  const r = st && st.record;
+  if (!r) return "var(--mut)";
+  const g = (r.wins || 0) + (r.losses || 0) + (r.ties || 0);
+  if (!g) return "var(--mut)";
+  const pct = ((r.wins || 0) + (r.ties || 0) / 2) / g;
+  if (pct >= 0.6) return "var(--pos)";
+  if (pct <= 0.4) return "var(--neg)";
   return "var(--ink)";
 }
 
@@ -24223,29 +24275,55 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
   /* ⭐⭐⭐⭐ 29bm — BOTH LINEUPS, SIDE BY SIDE, BEHIND THE PROJECTED SCORE. Trey: "when you hover the projected
      score, I'd like to see a side by side of each team and the projected score." The lineups each manager
      has actually SET (the same ones the total sums), slot by slot, with this week's projection for each man. */
+  /* ⭐⭐⭐⭐⭐ 29bn — BOTH LINEUPS, THE TOTALS, THE BENCHES, AND WHO SHOULD MOVE. Trey: "put the total at the
+     bottom of each team... Then show bench options below that. Put an icon next to players that you believe
+     should move from bench to starting lineup and starting lineup to bench." `lineupMoves` (weekcache) reads
+     each SLOT, so a running back is only ever moved into a slot he can fill. */
   const projSideBySide = (r, m) => {
-    const h = r.hub || {}, wk = h.weekly || {};
-    const byId = aheadPackById;
-    const nm = (sid) => { const p = byId.get(String(sid)); return p ? p.name : (sid && sid !== "0" ? String(sid) : "empty"); };
-    const ps = (sid) => { const w = wk[String(sid)]; return w && Number.isFinite(w.pts) ? Math.round(w.pts * 10) / 10 : (sid && sid !== "0" ? "—" : 0); };
-    const pos = (sid) => { const p = byId.get(String(sid)); return p ? p.pos : ""; };
-    const a = (m.me && m.me.starters) || [], b2 = (m.opp && m.opp.starters) || [];
-    const n = Math.max(a.length, b2.length);
+    const h = r.hub || {};
+    const pk = aheadData && aheadData.pack;
+    const A = lineupMoves(h, pk, m.me) || { slots: [], bench: [], moves: [], total: 0 };
+    const B = lineupMoves(h, pk, m.opp) || { slots: [], bench: [], moves: [], total: 0 };
+    const fmt = (v) => (Number.isFinite(v) ? Math.round(v * 10) / 10 : "—");
+    const mark = (x, side) => {
+      if (!x) return "";
+      if (x.empty) return <span className="mut">empty</span>;
+      const up = x.move === "start", down = x.move === "sit";
+      return (
+        <span data-projmove={up ? "start" : down ? "sit" : ""} title={up ? `Start him${x.moveFor ? ` over ${x.moveFor}` : ""}` : down ? `Sit him for ${x.moveTo}` : undefined}>
+          {up && <i className="ti ti-arrow-up" style={{ color: "var(--pos)", fontSize: 12, marginRight: 3 }} aria-label="move into the lineup" />}
+          {down && <i className="ti ti-arrow-down" style={{ color: "var(--neg)", fontSize: 12, marginRight: 3 }} aria-label="move to the bench" />}
+          {x.name}{x.inj ? <span style={{ color: "var(--neg)", fontSize: 10 }}> {x.inj.key}</span> : null}{x.bye ? <span className="mut" style={{ fontSize: 10 }}> bye</span> : null}
+        </span>
+      );
+    };
     const rowsX = [];
+    const n = Math.max(A.slots.length, B.slots.length);
     for (let i = 0; i < n; i++) {
-      const x = a[i], y = b2[i];
-      rowsX.push({ Pos: pos(x) || pos(y) || "", You: nm(x), "Your proj": ps(x), Them: nm(y), "Their proj": ps(y),
-        tone: Number(ps(x)) > Number(ps(y)) ? "var(--pos)" : Number(ps(x)) < Number(ps(y)) ? "var(--neg)" : undefined });
+      const x = A.slots[i], y = B.slots[i];
+      const xp = x && !x.dead && Number.isFinite(x.pts) ? x.pts : (x && x.sid ? 0 : null), yp = y && !y.dead && Number.isFinite(y.pts) ? y.pts : (y && y.sid ? 0 : null);
+      rowsX.push({ Pos: (x && x.slot) || (y && y.slot) || "", You: mark(x), "Your proj": x && x.sid ? fmt(x.pts) : "", Them: mark(y), "Their proj": y && y.sid ? fmt(y.pts) : "",
+        tone: xp != null && yp != null ? (xp > yp ? "var(--pos)" : xp < yp ? "var(--neg)" : undefined) : undefined });
     }
-    /* The server's totals when it sent them; otherwise the sum of the slots just listed, so the heading and
-       the table can never disagree. */
-    const sum = (k) => { const v = rowsX.map((r0) => Number(r0[k])).filter(Number.isFinite); return v.length ? Math.round(v.reduce((q, z) => q + z, 0) * 10) / 10 : null; };
-    const mp = m.meProj && m.meProj.pts != null ? m.meProj.pts : sum("Your proj"), op = m.oppProj && m.oppProj.pts != null ? m.oppProj.pts : sum("Their proj");
-    return { key: `aheadproj-${r.id}`, width: 640, wrap: true, estHeight: 360,
+    /* The server's totals when it sent them; otherwise the sum of the slots, so heading and table agree. */
+    const mp = m.meProj && m.meProj.pts != null ? m.meProj.pts : A.total, op = m.oppProj && m.oppProj.pts != null ? m.oppProj.pts : B.total;
+    rowsX.push({ Pos: "", You: <b data-projtotal="me">Total</b>, "Your proj": <b>{fmt(mp)}</b>, Them: <b data-projtotal="opp">Total</b>, "Their proj": <b>{fmt(op)}</b>,
+      tone: mp > op ? "var(--pos)" : mp < op ? "var(--neg)" : undefined });
+    rowsX.push({ Pos: <span className="mut" style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".05em" }}>BENCH</span>, You: "", "Your proj": "", Them: "", "Their proj": "" });
+    const benchOf = (T) => T.bench.filter((q) => q.pts != null || q.move).slice(0, 7);
+    const ab = benchOf(A), bb = benchOf(B);
+    for (let i = 0; i < Math.max(ab.length, bb.length); i++) {
+      const x = ab[i], y = bb[i];
+      rowsX.push({ Pos: (x && x.pos) || (y && y.pos) || "", You: mark(x), "Your proj": x ? fmt(x.pts) : "", Them: mark(y), "Their proj": y ? fmt(y.pts) : "" });
+    }
+    const gainNote = A.moves.length
+      ? `Arrows: your best lineup moves ${A.moves.map((mv) => `${mv.in} in${mv.out ? ` for ${mv.out}` : ` at ${mv.slot}`}`).join(", ")} (+${A.gain}).`
+      : "Your lineup is already your best one.";
+    return { key: `aheadproj-${r.id}`, width: 660, wrap: true, estHeight: 60 + rowsX.length * 22,
       title: `${r.name}: your lineup vs ${(m.opp && m.opp.teamName) || "your opponent"}`,
-      subtitle: `Projected ${mp != null ? mp : "—"} to ${op != null ? op : "—"}, from the lineups each of you has set`,
-      cols: [{ k: "Pos", w: 34 }, { k: "You", strong: true }, { k: "Your proj", right: true, tint: true, w: 62 }, { k: "Them" }, { k: "Their proj", right: true, w: 62 }],
-      rows: rowsX, note: "Green where your man is projected higher in that slot, red where theirs is." };
+      subtitle: `Projected ${fmt(mp)} to ${fmt(op)}, from the lineups each of you has set`,
+      cols: [{ k: "Pos", w: 40 }, { k: "You", strong: true }, { k: "Your proj", right: true, tint: true, w: 62 }, { k: "Them" }, { k: "Their proj", right: true, w: 62 }],
+      rows: rowsX, note: `${gainNote} Green up arrow: move into the lineup. Red down arrow: move to the bench. Row colour: whose slot projects higher.` };
   };
   /* 29bm — every league's record, added up. */
   const combinedRecord = (() => {
@@ -24413,6 +24491,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                     letterSpacing: ".05em", fontWeight: 800 }}>
                     <span>League</span>
                     <span style={{ textAlign: "right" }}>Rec</span>
+                    <span style={{ textAlign: "right" }}>Pow</span>
                     <span>Opponent</span>
                     <span style={{ textAlign: "right" }}>Projected</span>
                     <span style={{ textAlign: "right" }}>vs median</span>
@@ -24521,10 +24600,19 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                           my record for each league right now". The live table had a Rec column; this one never did. */}
                       {(() => { const st = (weekStand || {})[r.id] || null; const rec = st && st.record;
                         return (
+                          <>
                           <span className="num" data-homeaheadrec={rec ? `${rec.wins}-${rec.losses}${rec.ties ? `-${rec.ties}` : ""}` : ""}
-                            style={{ fontSize: 12, fontWeight: 700, textAlign: wide ? "right" : "left" }}>
+                            data-homeaheadrectone={recTone(st)}
+                            style={{ fontSize: 12, fontWeight: 800, textAlign: wide ? "right" : "left", color: recTone(st) }}>
                             {rec ? `${rec.wins}-${rec.losses}${rec.ties ? `-${rec.ties}` : ""}` : <span className="mut">—</span>}
                           </span>
+                          {/* 29bn — "add the power ranking to the 'this week' graphic", coloured by where you sit. */}
+                          <span className="num" data-homeaheadpow={st && st.power ? `${st.power}/${st.powerOf}` : ""} data-homeaheadpowtone={powTone(st)}
+                            title={st && st.power ? `Power ${st.power} of ${st.powerOf} in this league` : "Power ranking is still loading"}
+                            style={{ fontSize: 12, fontWeight: 800, textAlign: wide ? "right" : "left", color: powTone(st) }}>
+                            {st && st.power ? <>{!wide && <span className="mut" style={{ fontWeight: 600, fontSize: 10.5 }}>Power </span>}{st.power}<span className="mut" style={{ fontWeight: 600, fontSize: 10.5 }}>/{st.powerOf}</span></> : <span className="mut">—</span>}
+                          </span>
+                          </>
                         ); })()}
                       <span className="mut" style={{ fontSize: 11.5, minWidth: 0, overflow: "hidden",
                         textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -24750,7 +24838,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                             did (see `leagueStanding`), so they cost nothing; both print a dash rather than
                             a guess when that read has not landed or a roster could not be scored. */}
                         <td data-homeweekrec={st && st.record ? `${st.record.wins}-${st.record.losses}${st.record.ties ? `-${st.record.ties}` : ""}` : ""}
-                          style={{ textAlign: "right", padding: "5px 8px", fontWeight: 700 }}>
+                          style={{ textAlign: "right", padding: "5px 8px", fontWeight: 800, color: recTone(st) }}>
                           {st && st.record
                             ? `${st.record.wins}-${st.record.losses}${st.record.ties ? `-${st.record.ties}` : ""}`
                             : <span className="mut">—</span>}

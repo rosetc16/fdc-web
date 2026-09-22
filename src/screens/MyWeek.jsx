@@ -115,7 +115,7 @@ const hubCall = (l, week) => {
 const FA_KIND = {
   bye:     { label: "Bye hole",      tone: "var(--gold)" },
   byeNext: { label: "Bye next week", tone: "var(--info)" },
-  upgrade: { label: "Upgrade",       tone: "var(--pos)" },
+  upgrade: { label: "Pos upgrade",   tone: "var(--pos)" },
   stream:  { label: "Thin spot",     tone: "var(--mut)" },
   hole:    { label: "Starter out",   tone: "var(--neg)" },
 };
@@ -484,28 +484,56 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
       starters.forEach((sid) => { if (onBye(sid)) pushBye(sid, "now"); });
       if (byeNextSet) starters.forEach((sid) => { const t = teamOf(sid); if (t && byeNextSet.has(t)) pushBye(sid, "next"); });
 
-      /* ⭐⭐⭐ THEN THE UPGRADES — "but also just specific team upgrades." Same shape as before, now over a
-         pool that contains the players who are actually free. The bar stays deliberately high: a claim
-         costs you a roster spot and possibly FAAB, so "two points and a quarter better" is the least this
-         can be worth without turning the list into noise. */
+      /* ⭐⭐⭐⭐⭐ THEN THE POSITION UPGRADES — 29bn. Trey: "I also want you to list if there is a starter that
+         would get outscored by someone on waivers. For example... My kicker is being outscored by other
+         available K's. For DST and K, I only want to show the top option and then you can hover next to Pos
+         upgrade that shows other players that might fit. For RB, WR, TE, QB upgrades to starting lineup, you
+         can show more than one, but only if you are convicted. Otherwise, you can hover on Position Upgrade and
+         see other alternatives. Show how your player you are telling is an improvement compares to the player
+         you'd start AND the player you'd release - the player you bench doesn't have to be the player you
+         release."
+         So, per starter: every free agent projected above him is an alternative (the hover). The best one is a
+         row when he clears the bar (K/DST: a point; everyone else: 1.5 points and 10%). A second free agent
+         at the same position becomes its own row only with CONVICTION (3 points and 20% over the starter he
+         would replace). Each row names the man he would start over AND the man you would release, who is the
+         least valuable body on your bench (never an IR or taxi man, never a starter); for a kicker or defence
+         it is the one he replaces, since nobody carries two. */
+      const parkedMine = new Set([].concat(mine.reserve || [], mine.taxi || []).filter(Boolean).map(String));
+      const adpOf = (sid) => { const p = bySid.get(sid); return p && Number.isFinite(p.adp) ? p.adp : 999; };
+      const KD = (pos) => /^(K|DEF|DST)$/i.test(String(pos || ""));
+      const releaseFor = (pos, startingOver) => {
+        if (KD(pos)) {
+          const same = bench.filter((b) => !parkedMine.has(b) && posOf(b) === pos);
+          if (same.length) return same.sort((x, y) => adpOf(y) - adpOf(x))[0];
+          return startingOver;
+        }
+        const pool2 = bench.filter((b) => !parkedMine.has(b) && !KD(posOf(b)));
+        if (!pool2.length) return startingOver;
+        return pool2.sort((x, y) => adpOf(y) - adpOf(x) || (ptsOf(x) || 0) - (ptsOf(y) || 0))[0];
+      };
+      const relInfo = (sid) => sid ? { name: nameOf(sid), pos: posOf(sid), pts: ptsOf(sid), adp: adpOf(sid) < 999 ? Math.round(adpOf(sid)) : null } : null;
       starters.forEach((sid) => {
         const pos = posOf(sid);
         if (!pos || onBye(sid) || holeSids.has(sid)) return;
         const cur = ptsOf(sid);
-        const best = claimable(pos)[0];
-        if (!best || cur == null) return;
-        /* 29bm: the bar was 25% of the starter's projection, which at 16 points meant a free agent had to
-           clear 20 before he was mentioned. Trey saw three suggestions across eleven leagues. 15% (and never
-           less than two points) still keeps coin flips off the list. */
-        const bar = Math.max(2, cur * 0.15);
-        if (best.pts - cur >= bar || (cur < 6 && best.pts > cur)) taken.add(best.name);
-        if (best.pts - cur >= bar) {
+        if (cur == null) return;
+        const kd = KD(pos);
+        const better = claimable(pos).filter((f) => !(f.inj && f.inj.rank >= 3) && f.pts > cur);
+        if (!better.length) return;
+        const bar = kd ? 1 : Math.max(1.5, cur * 0.10);
+        const conv = (f) => f.pts - cur >= Math.max(3, cur * 0.20);
+        const alts = better.slice(0, 8).map((f) => ({ name: f.name, team: f.team, pts: r1(f.pts), gain: r1(f.pts - cur), opp: f.opp }));
+        const rows = [];
+        if (better[0].pts - cur >= bar) rows.push(better[0]);
+        if (!kd) better.slice(1).forEach((f) => { if (rows.length && rows.length < 3 && conv(f) && conv(rows[0])) rows.push(f); });
+        rows.forEach((best, j) => {
+          taken.add(best.name);
+          const rel = releaseFor(pos, sid);
           fa.push({ kind: "upgrade", rank: 2, pos, outName: nameOf(sid), inName: best.name, inTeam: best.team,
-            gain: r1(best.pts - cur), why: `projects ${r1(best.pts - cur)} more than ${nameOf(sid)} this week` });
-        } else if (cur < 6 && best.pts > cur) {
-          fa.push({ kind: "stream", rank: 1, pos, outName: nameOf(sid), inName: best.name, inTeam: best.team,
-            gain: r1(best.pts - cur), why: `${nameOf(sid)} projects ${r1(cur)} — ${best.name} is available at ${r1(best.pts)}` });
-        }
+            gain: r1(best.pts - cur), inPts: r1(best.pts), convicted: conv(best),
+            startOver: { name: nameOf(sid), pts: r1(cur) }, release: relInfo(rel), alts, second: j > 0,
+            why: `projects ${r1(best.pts)}, ${r1(best.pts - cur)} more than ${nameOf(sid)} this week` });
+        });
       });
       // One suggestion per position and player: the same free agent covering three of your slots is one idea.
       const seen = new Set();
@@ -1149,15 +1177,34 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                     <div className="panel" style={{ padding: 6 }}>
                       {L.fa.map((r, i) => (
                         <div key={i} data-wkfarow={r.inName} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderTop: "1px solid var(--line)", flexWrap: "wrap" }}>
-                          <span data-wkfakind={r.kind} style={{ flexShrink: 0, fontSize: 9.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".04em",
-                            border: `1px solid ${FA_KIND[r.kind].tone}`, color: FA_KIND[r.kind].tone,
-                            borderRadius: 99, padding: "2px 8px" }}>{FA_KIND[r.kind].label}</span>
+                          <span data-wkfakind={r.kind}
+                            onMouseEnter={r.alts && r.alts.length ? (e) => showCard(e, { key: `alts:${L.league.id}:${r.inName}`,
+                              title: `${r.pos} free agents projected above ${r.startOver ? r.startOver.name : r.outName}`,
+                              subtitle: `${r.startOver ? r.startOver.name : r.outName} projects ${r.startOver ? r.startOver.pts : "?"} this week`,
+                              cols: [{ k: "Player" }, { k: "Team" }, { k: "Opp" }, { k: "Proj", right: true, strong: true }, { k: "Gain", right: true, tint: true }],
+                              rows: r.alts.map((a) => ({ Player: a.name, Team: a.team || "", Opp: a.opp || "", Proj: a.pts, Gain: `+${a.gain}`, tone: "var(--pos)" })),
+                              note: r.pos && /^(K|DEF|DST)$/.test(r.pos) ? "Kickers and defences: only the best one gets a row. The rest are here." : "More than one row only when the gain is big enough to be sure of it. The rest are here." }) : undefined}
+                            onMouseLeave={r.alts && r.alts.length ? hideCard : undefined}
+                            style={{ flexShrink: 0, fontSize: 9.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".04em",
+                            border: `1px solid ${FA_KIND[r.kind].tone}`, color: FA_KIND[r.kind].tone, cursor: r.alts && r.alts.length ? "help" : undefined,
+                            borderRadius: 99, padding: "2px 8px" }}>{FA_KIND[r.kind].label}{r.alts && r.alts.length > 1 ? ` +${r.alts.length - 1}` : ""}</span>
                           <div style={{ flex: "1 1 300px", minWidth: 0 }}>
                             <div style={{ fontSize: 13.5, fontWeight: 700 }}>
                               Add <span style={{ color: "var(--pos)" }}>{r.inName}</span>
                               <span className="mut" style={{ fontSize: 10.5, fontWeight: 400 }}> {r.pos}{r.inTeam ? ` · ${r.inTeam}` : ""}</span>
                             </div>
                             <div className="mut" style={{ fontSize: 11.5, marginTop: 2 }}>{r.why}</div>
+                            {r.startOver && (
+                              <div data-wkfacompare style={{ fontSize: 11, marginTop: 3, display: "flex", gap: 12, flexWrap: "wrap" }}>
+                                <span data-wkfastart={r.startOver.name}><span className="mut">Starts over </span><b>{r.startOver.name}</b> <span className="num mut">{r.startOver.pts}</span>
+                                  <span className="num" style={{ color: "var(--pos)", fontWeight: 700 }}> (+{r1(r.inPts - r.startOver.pts)})</span></span>
+                                {r.release && (
+                                  <span data-wkfarelease={r.release.name}><span className="mut">Release </span><b>{r.release.name}</b>
+                                    <span className="num mut"> {r.release.pos} · {r.release.pts != null ? `${r1(r.release.pts)} this week` : "no projection"}{r.release.adp ? ` · ADP ${r.release.adp}` : " · undrafted"}</span>
+                                    {r.release.pts != null && <span className="num" style={{ color: "var(--pos)", fontWeight: 700 }}> (+{r1(r.inPts - r.release.pts)})</span>}</span>
+                                )}
+                              </div>
+                            )}
                           </div>
                           <span className="num" style={{ fontSize: 12, fontWeight: 800, color: "var(--pos)", flexShrink: 0 }}>+{r.gain}</span>
                         </div>
@@ -1168,12 +1215,12 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
               </div>
             )}
             <div className="mut" style={{ fontSize: 11, lineHeight: 1.5, marginTop: 10 }}>
-              Five kinds of claim, labelled so none of them pretends to be another: a starter who is out (or a slot with nobody in it), a slot left empty by a bye this
-              week, a bye coming next week you can cover while the wire is still worth picking over, an available
-              player who clearly beats one of yours, and a thin spot where your starter is barely producing. Byes come
-              from the NFL schedule rather than from a player's bye-week field, which is blank for much of the year. A
-              "trending up" read needs in-season usage — snap and target share week to week — which the app does not
-              collect yet, so it is absent rather than faked from draft-market movement.
+              Four kinds of claim: a starter who is out (or a slot with nobody in it), a slot left empty by a bye this
+              week, a bye coming next week you can cover while the wire is still worth picking over, and a position
+              upgrade, which is any starter a free agent outprojects this week, kickers and defences included. Each
+              upgrade names the starter he would replace and the bench player you would release (never an IR man).
+              Hover a Pos upgrade chip for the other free agents who would also beat your starter. Byes come from the
+              NFL schedule.
             </div>
           </>
         )}

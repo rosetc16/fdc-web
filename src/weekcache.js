@@ -335,3 +335,88 @@ export async function leagueStanding(hub, injuries, std) {
   } catch (e) { /* the column degrades to a dash; it is never worth failing the row over */ }
   return out;
 }
+
+/* ⭐⭐⭐⭐⭐ WHO SHOULD MOVE, SLOT BY SLOT, FOR ANY TEAM — 29bn.
+   Trey, on the home table's projected hover: "put the total at the bottom of each team... Then show bench
+   options below that. Put an icon next to players that you believe should move from bench to starting
+   lineup and starting lineup to bench."
+   `lineupSwaps` above is same-position and my-team-only by design. This one reads a SLOT: an RB can take a
+   FLEX but never a K, an empty slot is a slot to fill, and a starter who is out or projects nothing is a
+   hole. It works for either side of a matchup (`team` is a hub team object), because the hover shows both.
+   Greedy on the biggest gain, one bench man per slot, and a point of projection is the least worth moving
+   for (inside that is noise). */
+export const SLOT_FITS = (label) => {
+  const L = String(label || "").toUpperCase().replace(/\d+$/, "");
+  if (L === "FLEX" || L === "W/R/T") return ["RB", "WR", "TE"];
+  if (L === "WRRB_FLEX" || L === "W/R") return ["RB", "WR"];
+  if (L === "REC_FLEX" || L === "W/T") return ["WR", "TE"];
+  if (L === "SUPER_FLEX" || L === "SUPERFLEX" || L === "SFLX" || L === "OP") return ["QB", "RB", "WR", "TE"];
+  if (L === "DEF" || L === "DST" || L === "D/ST") return ["DEF", "DST"];
+  if (L === "IDP_FLEX") return ["DL", "LB", "DB"];
+  return [L];
+};
+export function startSlotLabels(hub) {
+  const rp = Array.isArray(hub && hub.rosterPositions) ? hub.rosterPositions.filter((x) => x && !/^(BN|IR|TAXI|RES)$/i.test(x)) : null;
+  if (rp && rp.length) return rp;
+  const st = (hub && hub.cfg && hub.cfg.start) || {};
+  const out = [];
+  [["QB", "QB"], ["RB", "RB"], ["WR", "WR"], ["TE", "TE"], ["FLEX", "FLEX"], ["SUPER", "SUPER_FLEX"], ["K", "K"], ["DST", "DEF"]]
+    .forEach(([k, lab]) => { for (let i = 0; i < (Number(st[k]) || 0); i++) out.push(lab); });
+  return out;
+}
+export function lineupMoves(hub, pack, team) {
+  if (!hub || !team) return null;
+  const bySid = new Map();
+  ((pack && pack.players) || []).forEach((p) => { const k = p && (p.id != null ? p.id : p.sid); if (k != null) bySid.set(String(k), p); });
+  const wkOf = (sid) => (hub.weekly && hub.weekly[String(sid)]) || null;
+  const packOf = (sid) => bySid.get(String(sid)) || null;
+  const ptsOf = (sid) => { const w = wkOf(sid); return w && w.pts != null ? Number(w.pts) : null; };
+  const posOf = (sid) => { const p = packOf(sid); const w = wkOf(sid); return String((p && p.pos) || (w && w.pos) || "").toUpperCase() || null; };
+  const nameOf = (sid) => { const p = packOf(sid); const w = wkOf(sid); return (p && p.name) || (w && w.name) || `Player ${sid}`; };
+  const teamOf = (sid) => { const p = packOf(sid); const w = wkOf(sid); return (p && p.team) || (w && w.team) || null; };
+  const injOf = (sid) => designationOf((wkOf(sid) || {}).inj || (packOf(sid) || {}).inj);
+  const byeSet = Array.isArray(hub.byeTeams) ? new Set(hub.byeTeams) : null;
+  const onBye = (sid) => { const t = teamOf(sid); return byeSet && t ? byeSet.has(t) : false; };
+  const labels = startSlotLabels(hub);
+  const onTeam = new Set([].concat(team.players || [], team.reserve || [], team.taxi || []).map(String));
+  const parked = new Set([].concat(team.reserve || [], team.taxi || []).map(String));
+  const raw = (team.starters || []).map((x) => (x == null ? "0" : String(x)));
+  const slots = labels.map((label, i) => {
+    const sid0 = raw[i];
+    const sid = sid0 && sid0 !== "0" && (!onTeam.size || onTeam.has(sid0)) ? sid0 : null;
+    if (!sid) return { slot: label, sid: null, name: null, pos: null, pts: null, empty: true };
+    const d = injOf(sid);
+    return { slot: label, sid, name: nameOf(sid), pos: posOf(sid), pts: ptsOf(sid), inj: d, bye: onBye(sid),
+      dead: onBye(sid) || !!(d && d.sev >= 4) || ptsOf(sid) == null };
+  });
+  const startSet = new Set(slots.filter((s) => s.sid).map((s) => s.sid));
+  const bench = [...onTeam].filter((sid) => !startSet.has(sid) && !parked.has(sid)).map((sid) => {
+    const d = injOf(sid);
+    return { sid, name: nameOf(sid), pos: posOf(sid), pts: ptsOf(sid), inj: d, bye: onBye(sid),
+      usable: !onBye(sid) && ptsOf(sid) != null && ptsOf(sid) > 0 && !(d && d.rank >= 3) };
+  }).sort((a, b) => (b.pts || 0) - (a.pts || 0));
+  const used = new Set();
+  const moves = [];
+  // Every (slot, bench man) pair that gains, best first; each slot and each man used once.
+  const cand = [];
+  slots.forEach((s, i) => {
+    const cur = s.empty || s.dead ? 0 : (s.pts || 0);
+    bench.forEach((b) => {
+      if (!b.usable || !SLOT_FITS(s.slot).includes(b.pos)) return;
+      const gain = b.pts - cur;
+      if (gain >= 1 || ((s.empty || s.dead) && gain > 0)) cand.push({ i, b, gain });
+    });
+  });
+  cand.sort((a, b) => b.gain - a.gain);
+  const slotUsed = new Set();
+  cand.forEach(({ i, b, gain }) => {
+    if (slotUsed.has(i) || used.has(b.sid)) return;
+    slotUsed.add(i); used.add(b.sid);
+    const s = slots[i];
+    moves.push({ slot: s.slot, in: b.name, inSid: b.sid, inPts: b.pts, out: s.empty ? null : s.name, outSid: s.sid, outPts: s.empty ? null : s.pts, gain: Math.round(gain * 10) / 10 });
+    s.move = "sit"; s.moveTo = b.name;
+    b.move = "start"; b.moveFor = s.empty ? `empty ${s.slot}` : s.name;
+  });
+  const total = (arr) => Math.round(arr.reduce((q, x) => q + (Number.isFinite(x) ? x : 0), 0) * 10) / 10;
+  return { slots, bench, moves, total: total(slots.map((s) => (s.dead ? 0 : s.pts))), gain: Math.round(moves.reduce((q, m) => q + m.gain, 0) * 10) / 10 };
+}

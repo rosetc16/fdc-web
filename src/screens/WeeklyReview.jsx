@@ -426,6 +426,37 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
       cols: rows.length ? [{ k: "Slot" }, { k: "Started" }, { k: "Should have" }, { k: "Cost", right: true }] : null, rows,
       note: rows.length ? null : "No lineup mistakes this week." };
   };
+  /* ⭐⭐⭐⭐ WHERE YOUR SCORE LANDED IN THE LEAGUE — 29bn. Trey: "When you hover vs. Median on review, can you
+     show where my total points ranked that week compared to the league. You can just list from highest to
+     lowest scored with team name and points scored with a line where the median starts." Every team's score
+     for the week is on the payload (`pointsByRoster`); the line sits between the top half and the rest. */
+  const fieldCard = (R) => {
+    const w = R.w; if (!w || !w.pointsByRoster) return null;
+    const names = new Map(((R.data && R.data.teams) || []).map((t) => [String(t.rosterId), t.teamName || t.ownerName || `Team ${t.rosterId}`]));
+    const myId = String(R.data && R.data.myRosterId);
+    const oppId = R.me && R.me.oppRosterId != null ? String(R.me.oppRosterId) : null;
+    const list = Object.entries(w.pointsByRoster).filter(([, v]) => Number.isFinite(v)).sort((a, b) => b[1] - a[1]);
+    if (!list.length) return null;
+    const vals = list.map(([, v]) => v).slice().sort((a, b) => a - b);
+    const h = Math.floor(vals.length / 2);
+    const med = R.me && Number.isFinite(R.me.medianPts) ? R.me.medianPts : R.me && Number.isFinite(R.me.median) ? R.me.median
+      : (vals.length % 2 ? vals[h] : (vals[h - 1] + vals[h]) / 2);
+    const rows = [];
+    let lined = false;
+    list.forEach(([rid, v], i) => {
+      if (!lined && v < med) {
+        lined = true;
+        rows.push({ "#": "", Team: <span data-wkmedianline style={{ color: "var(--gold)", fontWeight: 800, fontSize: 10, letterSpacing: ".05em" }}>MEDIAN {r1(med)}</span>, Points: "" });
+      }
+      const me = rid === myId;
+      rows.push({ "#": String(i + 1), Team: <span style={{ fontWeight: me ? 800 : 400, color: me ? "var(--gold)" : undefined }}>{names.get(rid) || `Team ${rid}`}{me ? " (you)" : rid === oppId ? " (opponent)" : ""}</span>,
+        Points: r1(v), tone: me ? "var(--gold)" : undefined });
+    });
+    const mine = list.findIndex(([rid]) => rid === myId);
+    return { key: `field:${R.league.id}`, title: `Week ${week}: every score in ${R.league.name}`,
+      subtitle: mine >= 0 ? `You scored ${r1(list[mine][1])}, ${ord(mine + 1)} of ${list.length}` : undefined,
+      cols: [{ k: "#", w: 22 }, { k: "Team" }, { k: "Points", right: true, tint: true, strong: true }], rows };
+  };
   /* ⭐⭐⭐⭐ THE RESULT, SIDE BY SIDE — 29bm. "When I hover the 'result' on this, can you show the side by
      side of both teams and what we scored." Slot by slot, from the lineups the review now carries (b168). */
   const resultCard = (R) => {
@@ -775,6 +806,7 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                            the home strip. */
                       const medianCell = me && me.medianResult ? (
                         <span className="num" data-wkmedian={me.medianResult}
+                          onMouseEnter={(e) => { const c = fieldCard(R); if (c) showCard(e, c); }} onMouseLeave={hideCard}
                           style={{ fontSize: 12, fontWeight: 800, whiteSpace: "nowrap",
                             color: me.medianResult === "W" ? "var(--pos)" : me.medianResult === "L" ? "var(--neg)" : "var(--mut)" }}>
                           {me.medianResult}
@@ -816,6 +848,7 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                                     read the digits. `fieldTone` breaks at the same thirds the insight block
                                     speaks in; see App.jsx. */}
                                 <span className="num" data-wkfieldtone={me.allPlay ? fieldTone(me.allPlay.w, me.allPlay.l) : ""}
+                                  data-wkfield onMouseEnter={(e) => { const c = fieldCard(R); if (c) showCard(e, c); }} onMouseLeave={hideCard}
                                   style={{ fontSize: 11.5, textAlign: "right", fontWeight: 700,
                                     color: me.allPlay ? fieldTone(me.allPlay.w, me.allPlay.l) : "var(--mut)" }}>
                                   {me.allPlay ? <>{me.allPlay.w}–{me.allPlay.l}
