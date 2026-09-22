@@ -511,6 +511,19 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
         if (!pool2.length) return startingOver;
         return pool2.sort((x, y) => adpOf(y) - adpOf(x) || (ptsOf(x) || 0) - (ptsOf(y) || 0))[0];
       };
+      /* ⭐⭐⭐⭐⭐ 29bo — THE NEXT THREE WEEKS, AND YOUR OWN MAN IN THE LIST. Trey: "can you highlight where your
+         current player fits. For example, I see +7 for DST, but I don't see my defense in there to compare
+         them. It might also be helpful to see the next 3 weeks and how they project comparatively to ensure
+         it's not just a one week thing... This is particularly important for defenses for matchups."
+         Backend b169 sends `weeklyNext` ([[pts, opp], ...] for the three weeks after this one) so a streaming
+         defence can be read as a schedule rather than a single Sunday. */
+      const nextOf = (sid) => {
+        const rowsN = (hub.weeklyNext && hub.weeklyNext[String(sid)]) || null;
+        return (hub.weeksNext || []).map((wk2, i) => {
+          const cell = rowsN && rowsN[i];
+          return { week: wk2, pts: cell && cell[0] != null ? r1(cell[0]) : null, opp: cell ? cell[1] : null };
+        });
+      };
       const relInfo = (sid) => sid ? { name: nameOf(sid), pos: posOf(sid), pts: ptsOf(sid), adp: adpOf(sid) < 999 ? Math.round(adpOf(sid)) : null } : null;
       starters.forEach((sid) => {
         const pos = posOf(sid);
@@ -522,7 +535,8 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
         if (!better.length) return;
         const bar = kd ? 1 : Math.max(1.5, cur * 0.10);
         const conv = (f) => f.pts - cur >= Math.max(3, cur * 0.20);
-        const alts = better.slice(0, 8).map((f) => ({ name: f.name, team: f.team, pts: r1(f.pts), gain: r1(f.pts - cur), opp: f.opp }));
+        const alts = better.slice(0, 8).map((f) => ({ name: f.name, team: f.team, pts: r1(f.pts), gain: r1(f.pts - cur), opp: f.opp, next: nextOf(f.sid) }));
+        const yours = { name: nameOf(sid), team: teamOf(sid), pts: r1(cur), opp: (wkOf(sid) || {}).opp || null, next: nextOf(sid), mine: true };
         const rows = [];
         if (better[0].pts - cur >= bar) rows.push(better[0]);
         if (!kd) better.slice(1).forEach((f) => { if (rows.length && rows.length < 3 && conv(f) && conv(rows[0])) rows.push(f); });
@@ -531,7 +545,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
           const rel = releaseFor(pos, sid);
           fa.push({ kind: "upgrade", rank: 2, pos, outName: nameOf(sid), inName: best.name, inTeam: best.team,
             gain: r1(best.pts - cur), inPts: r1(best.pts), convicted: conv(best),
-            startOver: { name: nameOf(sid), pts: r1(cur) }, release: relInfo(rel), alts, second: j > 0,
+            startOver: { name: nameOf(sid), pts: r1(cur) }, release: relInfo(rel), alts, yours, weeksNext: hub.weeksNext || [], second: j > 0,
             why: `projects ${r1(best.pts)}, ${r1(best.pts - cur)} more than ${nameOf(sid)} this week` });
         });
       });
@@ -779,6 +793,44 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
       .catch(() => { if (alive) setTxStd((v) => ({ ...v, [k]: null })); }));
     return () => { alive = false; };
   }, [view, tx, txItems, week]);
+  /* ⭐⭐⭐⭐⭐ 29bo — THE ALTERNATIVES CARD: your own man in the list, and the next three weeks beside this one.
+     Trey: "can you highlight where your current player fits... I see +7 for DST, but I don't see my defense in
+     there to compare them. It might also be helpful to see the next 3 weeks... particularly important for
+     defenses for matchups." Your starter is a row like any other, drawn in gold and labelled, and every row
+     carries its next three opponents and projections plus the three-week total, so a good matchup this week
+     and a bad month after it cannot hide. */
+  const faAltsCard = (L, r) => {
+    const weeks = r.weeksNext || [];
+    const rowsAll = [r.yours, ...(r.alts || [])].filter(Boolean);
+    const three = (x) => { const v = (x.next || []).map((n) => n.pts).filter((n) => n != null); return v.length ? r1(v.reduce((a, b2) => a + b2, 0)) : null; };
+    const best3 = Math.max(...rowsAll.map((x) => three(x) || 0));
+    const cell = (x, i) => { const n = (x.next || [])[i]; if (!n || n.pts == null) return <span className="mut">—</span>;
+      return <span>{n.pts}<span className="mut" style={{ fontSize: 9.5 }}>{n.opp ? ` ${n.opp}` : ""}</span></span>; };
+    const cols = [{ k: "Player", w: 150 }, { k: "This week", right: true, strong: true, tint: true },
+      ...weeks.map((w2) => ({ k: `Wk ${w2}`, right: true, w: 74 })),
+      { k: "Next 3", right: true, strong: true }];
+    const rows = rowsAll.map((x) => {
+      const t3 = three(x);
+      const row = {
+        Player: x.mine
+          ? <span data-wkaltmine={x.name} style={{ color: "var(--gold)", fontWeight: 800 }}>{x.name} <span style={{ fontSize: 9.5 }}>YOURS</span></span>
+          : <span>{x.name}<span className="mut" style={{ fontSize: 9.5 }}>{x.team ? ` ${x.team}` : ""}</span></span>,
+        "This week": <span>{x.pts}<span className="mut" style={{ fontSize: 9.5 }}>{x.opp ? ` ${x.opp}` : ""}</span></span>,
+        "Next 3": t3 == null ? <span className="mut">—</span>
+          : <span style={{ color: t3 >= best3 - 0.01 ? "var(--pos)" : undefined }}>{t3}</span>,
+        tone: x.mine ? "var(--gold)" : "var(--pos)",
+      };
+      weeks.forEach((w2, i) => { row[`Wk ${w2}`] = cell(x, i); });
+      return row;
+    });
+    return { key: `alts:${L.league.id}:${r.inName}`, width: 620, wrap: true, estHeight: 70 + rows.length * 22,
+      title: `${r.pos} options next to ${r.yours ? r.yours.name : r.outName}`,
+      subtitle: `Week ${L.week || ""} projection first, then the next ${weeks.length || 0} weeks with the opponent`,
+      cols, rows,
+      note: weeks.length
+        ? `Your own player is the gold row. "Next 3" is the sum of those weeks, so a one-week matchup does not read as a season-long upgrade.${/^(K|DEF|DST)$/.test(String(r.pos)) ? " Kickers and defences get one row on the list; the rest are here." : ""}`
+        : "The next weeks' projections are not published yet, so this is one week only." };
+  };
   const txGrades = useMemo(() => {
     const out = {};
     if (view !== "moves" || !rows) return out;
@@ -1178,12 +1230,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                       {L.fa.map((r, i) => (
                         <div key={i} data-wkfarow={r.inName} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderTop: "1px solid var(--line)", flexWrap: "wrap" }}>
                           <span data-wkfakind={r.kind}
-                            onMouseEnter={r.alts && r.alts.length ? (e) => showCard(e, { key: `alts:${L.league.id}:${r.inName}`,
-                              title: `${r.pos} free agents projected above ${r.startOver ? r.startOver.name : r.outName}`,
-                              subtitle: `${r.startOver ? r.startOver.name : r.outName} projects ${r.startOver ? r.startOver.pts : "?"} this week`,
-                              cols: [{ k: "Player" }, { k: "Team" }, { k: "Opp" }, { k: "Proj", right: true, strong: true }, { k: "Gain", right: true, tint: true }],
-                              rows: r.alts.map((a) => ({ Player: a.name, Team: a.team || "", Opp: a.opp || "", Proj: a.pts, Gain: `+${a.gain}`, tone: "var(--pos)" })),
-                              note: r.pos && /^(K|DEF|DST)$/.test(r.pos) ? "Kickers and defences: only the best one gets a row. The rest are here." : "More than one row only when the gain is big enough to be sure of it. The rest are here." }) : undefined}
+                            onMouseEnter={r.alts && r.alts.length ? (e) => showCard(e, faAltsCard(L, r)) : undefined}
                             onMouseLeave={r.alts && r.alts.length ? hideCard : undefined}
                             style={{ flexShrink: 0, fontSize: 9.5, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".04em",
                             border: `1px solid ${FA_KIND[r.kind].tone}`, color: FA_KIND[r.kind].tone, cursor: r.alts && r.alts.length ? "help" : undefined,

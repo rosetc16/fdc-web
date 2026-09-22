@@ -104,7 +104,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29bn";
+const BUILD_TAG = "2026.07.29bo";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -18298,8 +18298,16 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
   const optimalStartersArr = opt.slots.map((s) => s.p).filter(Boolean);
   const sumPts = (arr) => Math.round(arr.reduce((s, p) => s + (p.pts || 0), 0) * 10) / 10;
   const optimalPts = sumPts(optimalStartersArr);
-  // Current starters as reported by Sleeper (may be suboptimal). Resolve + score them.
-  const currentStarters = resolve((myTeam.starters || []).filter(Boolean));
+  /* Current starters as reported by Sleeper (may be suboptimal). Resolve + score them.
+     ⚠ 29bo — AND A MAN WHO IS NO LONGER ON THE ROSTER IS NOT ONE OF THEM. Sleeper seeds a new week's lineup
+     from the old one (see the note on `slotsOf` below), so a traded-away starter was still being counted
+     here — which made the "current" lineup score MORE than the best lineup available from the actual roster,
+     leftOnBench came out 0, and the whole "you could gain" block with it (including the empty-slot advice
+     Trey needed). The same test as the Matchup rows, applied to the numbers under them. */
+  const weekIsOpen = !(data.defaultWeek != null && data.week < data.defaultWeek);
+  const onMyTeam = new Set([].concat(myTeam.players || [], myTeam.reserve || [], myTeam.taxi || []).map(String));
+  const currentStarters = resolve((myTeam.starters || []).filter(Boolean)
+    .filter((id) => String(id) !== "0" && (!weekIsOpen || !onMyTeam.size || onMyTeam.has(String(id)))));
   const currentPts = sumPts(currentStarters);
   const leftOnBench = Math.round(Math.max(0, optimalPts - currentPts) * 10) / 10;
   // Which optimal starters are NOT in the current lineup? Those are the suggested swaps.
@@ -19997,7 +20005,7 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
        new week's `starters` were seeded from last week's lineup, so the departed pair still "started" and the
        arrivals sat on the bench. For the current and future weeks a starter must be on the roster now; a
        finished week keeps the lineup as it was played. (Backend b168 fixes the payload too.) */
-    const weekOpen = !(data.defaultWeek != null && data.week < data.defaultWeek);
+    const weekOpen = weekIsOpen;
     const slotsOf = (team) => {
       const raw = (team && Array.isArray(team.starters)) ? team.starters : null;
       if (!raw || !raw.length) return null;

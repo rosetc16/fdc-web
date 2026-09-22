@@ -54,7 +54,7 @@ const VERDICT = {
    aligned. Left-aligned in a track that wide, every shorter chip ("BLOWN", "EARNED") left a 70px hole
    before the numbers, which is most of the "there is empty space" in his screenshot: the gap was not
    between columns, it was inside one. */
-const COLS = "minmax(0,1fr) 116px 80px 152px 100px 76px 30px";
+const COLS = "minmax(0,1fr) 78px 116px 80px 152px 100px 76px 30px";
 
 // 1st / 2nd / 3rd / 11th — the English rule, including the teens exception that catches every naive version.
 const ord = (n) => {
@@ -367,7 +367,7 @@ async function pool(items, n, fn) {
    container for figures you want to compare — nothing aligns, nothing can be scanned, and the numbers are
    the same size as the words around them. Tiles fix all three at once. */
 function Tile({ n, label, tone, sub }) {
-  const on = Number(n) > 0 || (typeof n === "string" && n !== "0");
+  const on = React.isValidElement(n) || Number(n) > 0 || (typeof n === "string" && n !== "0");
   return (
     <div data-wktile={label} style={{ minWidth: 92 }}>
       <div className="num" style={{ fontSize: 23, fontWeight: 800, lineHeight: 1.12,
@@ -545,6 +545,21 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
       return { league: r.league, data: r.data, w, me: w && w.me ? w.me : null,
         field: w ? Object.values(w.pointsByRoster || {}) : [] };
     });
+    /* ⭐⭐⭐⭐⭐ 29bo — THE SEASON RECORD BESIDE THE WEEK. Trey: "can you also put in my season record on there
+       just so I can see where I stand with the macro view mixed with the weekly view." Counted from the
+       finished weeks this payload already carries, up to and including the week on screen, so stepping back
+       to week 3 shows what your record WAS then rather than what it is now. Median games are counted
+       separately: a 6-2 head to head with a 5-3 median half is not 11-5 to anybody who plays in one. */
+    rows2.forEach((r) => {
+      const ws = ((r.data && r.data.weeks) || []).filter((x) => x && x.me && x.me.complete !== false && x.week <= week);
+      if (!ws.length) { r.season = null; return; }
+      const cnt = (f) => ws.filter(f).length;
+      r.season = { w: cnt((x) => x.me.result === "W"), l: cnt((x) => x.me.result === "L"), t: cnt((x) => x.me.result === "T"),
+        mw: cnt((x) => x.me.medianResult === "W"), ml: cnt((x) => x.me.medianResult === "L"),
+        medianGames: cnt((x) => !!x.me.medianResult), weeks: ws.length,
+        pf: Math.round(ws.reduce((a, x) => a + (Number(x.me.pts) || 0), 0) * 10) / 10,
+        pa: Math.round(ws.reduce((a, x) => a + (Number(x.me.oppPts) || 0), 0) * 10) / 10 };
+    });
     const played = rows2.filter((r) => r.me);
     /* ⭐⭐⭐⭐⭐ A WEEK STILL BEING PLAYED IS NOT A RESULT — 29r.
        Trey: "At the top of the review… it shows I'm 8-2 across 10 leagues. This is what it is based on the
@@ -575,6 +590,13 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
          missing the points your unplayed starter is about to add — so it reads as waste that has not
          happened yet. See `pending` in lib/review.js. */
       left: r1(settled.filter((r) => !r.me.pending).reduce((s, r) => s + (r.me.left || 0), 0)),
+      /* The macro view: every league's season record added up, through the week on screen. */
+      seasonW: rows2.reduce((n, r) => n + ((r.season && r.season.w) || 0), 0),
+      seasonL: rows2.reduce((n, r) => n + ((r.season && r.season.l) || 0), 0),
+      seasonT: rows2.reduce((n, r) => n + ((r.season && r.season.t) || 0), 0),
+      seasonMed: rows2.reduce((n, r) => n + ((r.season && r.season.medianGames) || 0), 0),
+      seasonMW: rows2.reduce((n, r) => n + ((r.season && r.season.mw) || 0), 0),
+      seasonML: rows2.reduce((n, r) => n + ((r.season && r.season.ml) || 0), 0),
       blown: settled.filter((r) => r.me.verdict && r.me.verdict.key === "blown").length,
       robbed: settled.filter((r) => r.me.verdict && r.me.verdict.key === "robbed").length,
       lucky: settled.filter((r) => r.me.verdict && r.me.verdict.key === "lucky").length,
@@ -714,6 +736,11 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                           space. A grid gives every tile the same track, so rows align whatever wraps. */}
                       <div style={{ display: "grid", gap: "14px 22px",
                         gridTemplateColumns: wide ? "repeat(auto-fit, minmax(104px, max-content))" : "repeat(2, minmax(0,1fr))" }}>
+                        {/* ⭐⭐⭐⭐ THE MACRO VIEW, BESIDE THE WEEK — 29bo. */}
+                        <Tile n={<span data-wkseasontotal={`${data.sum.seasonW}-${data.sum.seasonL}${data.sum.seasonT ? `-${data.sum.seasonT}` : ""}`}>{data.sum.seasonW}–{data.sum.seasonL}{data.sum.seasonT ? `–${data.sum.seasonT}` : ""}</span>}
+                          label={`Season through week ${week}`}
+                          tone={data.sum.seasonW > data.sum.seasonL ? "var(--pos)" : data.sum.seasonW < data.sum.seasonL ? "var(--neg)" : undefined}
+                          sub={data.sum.seasonMed ? `plus ${data.sum.seasonMW}–${data.sum.seasonML} in median games` : "every league added up"} />
                         <Tile n={data.sum.left} label="Left on benches" tone="var(--gold)" />
                         {data.sum.apAny && (
                           <Tile n={`${data.sum.apW}–${data.sum.apL}`} label="Against the field"
@@ -747,6 +774,7 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                         padding: "7px 15px", borderTop: "1px solid var(--line)", background: "var(--panel2)",
                         fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700 }}>
                         <span>League</span>
+                        <span style={{ textAlign: "right" }}>Season</span>
                         <span style={{ textAlign: "right" }}>Result</span>
                         <span style={{ textAlign: "right" }}>vs median</span>
                         <span style={{ textAlign: "right" }}>Verdict</span>
@@ -839,6 +867,14 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
 
                             {me && wide ? (
                               <>
+                                {/* 29bo — where this league stands, so the week has its season beside it. */}
+                                <span className="num" data-wkseason={R.season ? `${R.season.w}-${R.season.l}${R.season.t ? `-${R.season.t}` : ""}` : ""}
+                                  title={R.season ? `${R.season.w}-${R.season.l}${R.season.t ? `-${R.season.t}` : ""} through week ${week}${R.season.medianGames ? `, plus ${R.season.mw}-${R.season.ml} in median games` : ""}. ${R.season.pf} points for, ${R.season.pa} against.` : undefined}
+                                  style={{ textAlign: "right", fontSize: 12, fontWeight: 800, cursor: R.season ? "help" : undefined,
+                                    color: R.season ? (R.season.w > R.season.l ? "var(--pos)" : R.season.l > R.season.w ? "var(--neg)" : "var(--ink)") : "var(--mut)" }}>
+                                  {R.season ? <>{R.season.w}-{R.season.l}{R.season.t ? `-${R.season.t}` : ""}
+                                    {R.season.medianGames ? <span className="mut" style={{ fontSize: 9.5, fontWeight: 600 }}> +{R.season.mw}-{R.season.ml}</span> : null}</> : "—"}
+                                </span>
                                 <span style={{ textAlign: "right" }}>{score}</span>
                                 <span style={{ textAlign: "right" }}>{medianCell}</span>
                                 <span style={{ textAlign: "right" }}>{verdictChip}</span>
@@ -881,6 +917,7 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                                 <span style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center",
                                   gap: 8, flexWrap: "wrap", fontSize: 11.5 }}>
                                   {verdictChip}
+                                  {R.season && <span className="num mut" data-wkseason={`${R.season.w}-${R.season.l}${R.season.t ? `-${R.season.t}` : ""}`}>season {R.season.w}-{R.season.l}{R.season.t ? `-${R.season.t}` : ""}</span>}
                                   {medianCell && <span className="num mut">median {medianCell}</span>}
                                   {me.allPlay && <span className="num" style={{ color: fieldTone(me.allPlay.w, me.allPlay.l), fontWeight: 700 }}>
                                     vs field {me.allPlay.w}–{me.allPlay.l}</span>}
