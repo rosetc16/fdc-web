@@ -118,6 +118,7 @@ const FA_KIND = {
   upgrade: { label: "Pos upgrade",   tone: "var(--pos)" },
   stream:  { label: "Thin spot",     tone: "var(--mut)" },
   hole:    { label: "Starter out",   tone: "var(--neg)" },
+  depth:   { label: "Bench upgrade", tone: "var(--info)" },
 };
 
 /* ⭐⭐⭐⭐ THE DESIGNATION LADDER, IN HIS ORDER.
@@ -446,6 +447,33 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
          projecting nothing while the rest of the lineup is projected. It is answered against the best
          healthy bench player at that position, because a free agent is only worth a claim if he beats the
          man you would otherwise slide in. */
+      /* ⭐⭐⭐⭐⭐ 29bo — THE NEXT THREE WEEKS, AND YOUR OWN MAN IN THE LIST. Trey: "can you highlight where your
+         current player fits. For example, I see +7 for DST, but I don't see my defense in there to compare
+         them. It might also be helpful to see the next 3 weeks and how they project comparatively to ensure
+         it's not just a one week thing... This is particularly important for defenses for matchups."
+         Backend b169 sends `weeklyNext` ([[pts, opp], ...] for the three weeks after this one) so a streaming
+         defence can be read as a schedule rather than a single Sunday. */
+      const parkedMine = new Set([].concat(mine.reserve || [], mine.taxi || []).filter(Boolean).map(String));
+      const adpOf = (sid) => { const p = bySid.get(sid); return p && Number.isFinite(p.adp) ? p.adp : 999; };
+      const KD = (pos) => /^(K|DEF|DST)$/i.test(String(pos || ""));
+      const releaseFor = (pos, startingOver) => {
+        if (KD(pos)) {
+          const same = bench.filter((b) => !parkedMine.has(b) && posOf(b) === pos);
+          if (same.length) return same.sort((x, y) => adpOf(y) - adpOf(x))[0];
+          return startingOver;
+        }
+        const pool2 = bench.filter((b) => !parkedMine.has(b) && !KD(posOf(b)));
+        if (!pool2.length) return startingOver;
+        return pool2.sort((x, y) => adpOf(y) - adpOf(x) || (ptsOf(x) || 0) - (ptsOf(y) || 0))[0];
+      };
+      const nextOf = (sid) => {
+        const rowsN = (hub.weeklyNext && hub.weeklyNext[String(sid)]) || null;
+        return (hub.weeksNext || []).map((wk2, i) => {
+          const cell = rowsN && rowsN[i];
+          return { week: wk2, pts: cell && cell[0] != null ? r1(cell[0]) : null, opp: cell ? cell[1] : null };
+        });
+      };
+      const relInfo = (sid) => sid ? { name: nameOf(sid), pos: posOf(sid), pts: ptsOf(sid), adp: adpOf(sid) < 999 ? Math.round(adpOf(sid)) : null } : null;
       const SLOT_POS = { QB: ["QB"], RB: ["RB"], WR: ["WR"], TE: ["TE"], K: ["K"], DEF: ["DEF", "DST"], DST: ["DST", "DEF"],
         FLEX: ["RB", "WR", "TE"], WRRB_FLEX: ["RB", "WR"], REC_FLEX: ["WR", "TE"], SUPER_FLEX: ["QB", "RB", "WR", "TE"],
         IDP_FLEX: ["DL", "LB", "DB"], DL: ["DL"], LB: ["LB"], DB: ["DB"] };
@@ -474,8 +502,19 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
         const who = empty ? `Your ${slot || positions[0]} slot is empty` : `${nameOf(sid)} is ${!d ? "not projected to play" : d.key === "IR" ? "on IR" : d.key === "PUP" ? "not available" : d.label.toLowerCase()} this week`;
         if (!best || best.pts - benchPts < 1.5) { if (benchBest) benchUsed.add(benchBest); return; }
         taken.add(best.name);
+        /* ⭐ 29bp — Trey: "On the 'starter out' ones, I also want to see alternatives on there." Same card the
+           position upgrades get: every free agent who could fill the hole, the man on your bench who would
+           otherwise take it (the gold row, since he is what you are really replacing), and the next weeks. */
+        const holeAlts = positions.flatMap((pp) => claimable(pp).filter((f) => !(f.inj && f.inj.rank >= 3)).slice(0, 6))
+          .sort((a, b) => b.pts - a.pts).slice(0, 8)
+          .map((f) => ({ name: f.name, team: f.team, pts: r1(f.pts), gain: r1(f.pts - benchPts), opp: f.opp, next: nextOf(f.sid) }));
+        const holeYours = benchBest
+          ? { name: `${nameOf(benchBest)} (your bench)`, team: teamOf(benchBest), pts: r1(benchPts), opp: (wkOf(benchBest) || {}).opp || null, next: nextOf(benchBest), mine: true }
+          : (empty ? null : { name: `${nameOf(sid)} (out)`, team: teamOf(sid), pts: 0, opp: (wkOf(sid) || {}).opp || null, next: nextOf(sid), mine: true });
         fa.push({ kind: "hole", rank: 5, pos: best.pos, outName: empty ? "empty slot" : nameOf(sid), inName: best.name, inTeam: best.team,
-          gain: r1(best.pts - benchPts),
+          gain: r1(best.pts - benchPts), inPts: r1(best.pts), alts: holeAlts, yours: holeYours, weeksNext: hub.weeksNext || [],
+          startOver: benchBest ? { name: nameOf(benchBest), pts: r1(benchPts) } : null,
+          release: relInfo(releaseFor(best.pos, empty ? null : sid)),
           why: benchBest
             ? `${who}. ${best.name} projects ${r1(best.pts)}, ${r1(best.pts - benchPts)} more than ${nameOf(benchBest)} on your bench`
             : `${who} and you have no healthy ${positions.join("/")} on the bench. ${best.name} projects ${r1(best.pts)}` });
@@ -484,71 +523,86 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
       starters.forEach((sid) => { if (onBye(sid)) pushBye(sid, "now"); });
       if (byeNextSet) starters.forEach((sid) => { const t = teamOf(sid); if (t && byeNextSet.has(t)) pushBye(sid, "next"); });
 
-      /* ⭐⭐⭐⭐⭐ THEN THE POSITION UPGRADES — 29bn. Trey: "I also want you to list if there is a starter that
-         would get outscored by someone on waivers. For example... My kicker is being outscored by other
-         available K's. For DST and K, I only want to show the top option and then you can hover next to Pos
-         upgrade that shows other players that might fit. For RB, WR, TE, QB upgrades to starting lineup, you
-         can show more than one, but only if you are convicted. Otherwise, you can hover on Position Upgrade and
-         see other alternatives. Show how your player you are telling is an improvement compares to the player
-         you'd start AND the player you'd release - the player you bench doesn't have to be the player you
-         release."
-         So, per starter: every free agent projected above him is an alternative (the hover). The best one is a
-         row when he clears the bar (K/DST: a point; everyone else: 1.5 points and 10%). A second free agent
-         at the same position becomes its own row only with CONVICTION (3 points and 20% over the starter he
-         would replace). Each row names the man he would start over AND the man you would release, who is the
-         least valuable body on your bench (never an IR or taxi man, never a starter); for a kicker or defence
-         it is the one he replaces, since nobody carries two. */
-      const parkedMine = new Set([].concat(mine.reserve || [], mine.taxi || []).filter(Boolean).map(String));
-      const adpOf = (sid) => { const p = bySid.get(sid); return p && Number.isFinite(p.adp) ? p.adp : 999; };
-      const KD = (pos) => /^(K|DEF|DST)$/i.test(String(pos || ""));
-      const releaseFor = (pos, startingOver) => {
-        if (KD(pos)) {
-          const same = bench.filter((b) => !parkedMine.has(b) && posOf(b) === pos);
-          if (same.length) return same.sort((x, y) => adpOf(y) - adpOf(x))[0];
-          return startingOver;
-        }
-        const pool2 = bench.filter((b) => !parkedMine.has(b) && !KD(posOf(b)));
-        if (!pool2.length) return startingOver;
-        return pool2.sort((x, y) => adpOf(y) - adpOf(x) || (ptsOf(x) || 0) - (ptsOf(y) || 0))[0];
-      };
-      /* ⭐⭐⭐⭐⭐ 29bo — THE NEXT THREE WEEKS, AND YOUR OWN MAN IN THE LIST. Trey: "can you highlight where your
-         current player fits. For example, I see +7 for DST, but I don't see my defense in there to compare
-         them. It might also be helpful to see the next 3 weeks and how they project comparatively to ensure
-         it's not just a one week thing... This is particularly important for defenses for matchups."
-         Backend b169 sends `weeklyNext` ([[pts, opp], ...] for the three weeks after this one) so a streaming
-         defence can be read as a schedule rather than a single Sunday. */
-      const nextOf = (sid) => {
-        const rowsN = (hub.weeklyNext && hub.weeklyNext[String(sid)]) || null;
-        return (hub.weeksNext || []).map((wk2, i) => {
-          const cell = rowsN && rowsN[i];
-          return { week: wk2, pts: cell && cell[0] != null ? r1(cell[0]) : null, opp: cell ? cell[1] : null };
-        });
-      };
-      const relInfo = (sid) => sid ? { name: nameOf(sid), pos: posOf(sid), pts: ptsOf(sid), adp: adpOf(sid) < 999 ? Math.round(adpOf(sid)) : null } : null;
-      starters.forEach((sid) => {
-        const pos = posOf(sid);
-        if (!pos || onBye(sid) || holeSids.has(sid)) return;
-        const cur = ptsOf(sid);
-        if (cur == null) return;
+      /* ⭐⭐⭐⭐⭐ THEN THE POSITION UPGRADES, BY POSITION RATHER THAN BY STARTER — 29bp.
+         Trey (29bn): "I also want you to list if there is a starter that would get outscored by someone on
+         waivers... For DST and K, I only want to show the top option... For RB, WR, TE, QB upgrades to starting
+         lineup, you can show more than one, but only if you are convicted."
+         Trey (29bp): "I see a lot of defense and kicker recommendations, but not a ton of position players. I do
+         want to ultimately compare against the starting lineup, but we should also compare against the bench
+         too."
+         ⚠ WHY THE SKILL POSITIONS WERE QUIET, AND THE KICKER STOPPED: the old pass walked STARTERS and needed a
+           free agent to beat one of them. A kicker or a defence has one starter and a thin wire, so it clears
+           that bar constantly; a running back room has two starters and a flex and a bench, so almost nothing
+           does — and a starter with no projection at all (a kicker Sleeper has not published yet) was skipped
+           entirely, which is how a league that had a kicker upgrade last week had nothing at all this week.
+         Now each POSITION is read as a room: the man a pickup would replace in the lineup is the WORST starter
+         there, and the man he would replace on the bench is the worst usable backup. Two kinds of row come out
+         of that, and they are labelled differently because they are different claims:
+           · "Pos upgrade" — he beats your worst starter (K/DEF: by a point; else 1.5 and 10%).
+           · "Bench upgrade" — he does not, but he beats your best BACKUP at that position and is close enough
+             to the lineup to matter (70% of your worst starter), which is the injury and bye insurance that
+             never used to be listed. One per position, and never for K/DEF, where a second one is dead weight.
+         Alternatives (and your own man, and the next three weeks) ride on every row's hover. */
+      const usable = (sid) => { const d = injOf(sid); return !onBye(sid) && ptsOf(sid) != null && !(d && d.rank >= 3); };
+      const posGroups = new Map();
+      const addTo = (pos, sid, starting) => { if (!pos) return; if (!posGroups.has(pos)) posGroups.set(pos, { starters: [], bench: [] });
+        posGroups.get(pos)[starting ? "starters" : "bench"].push(sid); };
+      starters.forEach((sid) => { if (!onBye(sid) && !holeSids.has(sid)) addTo(posOf(sid), sid, true); });
+      bench.forEach((sid) => { if (!parkedMine.has(sid) && usable(sid)) addTo(posOf(sid), sid, false); });
+      const depthRows = [];
+      posGroups.forEach((g, pos) => {
         const kd = KD(pos);
-        const better = claimable(pos).filter((f) => !(f.inj && f.inj.rank >= 3) && f.pts > cur);
-        if (!better.length) return;
-        const bar = kd ? 1 : Math.max(1.5, cur * 0.10);
-        const conv = (f) => f.pts - cur >= Math.max(3, cur * 0.20);
-        const alts = better.slice(0, 8).map((f) => ({ name: f.name, team: f.team, pts: r1(f.pts), gain: r1(f.pts - cur), opp: f.opp, next: nextOf(f.sid) }));
-        const yours = { name: nameOf(sid), team: teamOf(sid), pts: r1(cur), opp: (wkOf(sid) || {}).opp || null, next: nextOf(sid), mine: true };
-        const rows = [];
-        if (better[0].pts - cur >= bar) rows.push(better[0]);
-        if (!kd) better.slice(1).forEach((f) => { if (rows.length && rows.length < 3 && conv(f) && conv(rows[0])) rows.push(f); });
-        rows.forEach((best, j) => {
-          taken.add(best.name);
-          const rel = releaseFor(pos, sid);
-          fa.push({ kind: "upgrade", rank: 2, pos, outName: nameOf(sid), inName: best.name, inTeam: best.team,
-            gain: r1(best.pts - cur), inPts: r1(best.pts), convicted: conv(best),
-            startOver: { name: nameOf(sid), pts: r1(cur) }, release: relInfo(rel), alts, yours, weeksNext: hub.weeksNext || [], second: j > 0,
-            why: `projects ${r1(best.pts)}, ${r1(best.pts - cur)} more than ${nameOf(sid)} this week` });
-        });
+        const mineStart = g.starters.slice().sort((x, y) => (ptsOf(x) || 0) - (ptsOf(y) || 0));
+        const worstStart = mineStart[0] || null;
+        const cur = worstStart != null ? (ptsOf(worstStart) || 0) : null;
+        const mineBench = g.bench.slice().sort((x, y) => (ptsOf(y) || 0) - (ptsOf(x) || 0));
+        const bestBench = mineBench[0] || null;
+        const free = claimable(pos).filter((f) => !(f.inj && f.inj.rank >= 3));
+        if (!free.length) return;
+        const wkNext = hub.weeksNext || [];
+        const altsFrom = (baseline) => free.slice(0, 8).map((f) => ({ name: f.name, team: f.team, pts: r1(f.pts), gain: r1(f.pts - baseline), opp: f.opp, next: nextOf(f.sid) }));
+        /* ── starter upgrades ─────────────────────────────────────────────────────────────────── */
+        if (cur != null) {
+          const better = free.filter((f) => f.pts > cur);
+          const bar = kd ? 1 : Math.max(1.5, cur * 0.10);
+          const conv = (f) => f.pts - cur >= Math.max(3, cur * 0.20);
+          const rows = [];
+          if (better.length && better[0].pts - cur >= bar) rows.push(better[0]);
+          if (!kd && rows.length) better.slice(1).forEach((f) => { if (rows.length < 3 && conv(f) && conv(rows[0])) rows.push(f); });
+          rows.forEach((best) => {
+            taken.add(best.name);
+            const rel = releaseFor(pos, worstStart);
+            fa.push({ kind: "upgrade", rank: 2, pos, outName: nameOf(worstStart), inName: best.name, inTeam: best.team,
+              gain: r1(best.pts - cur), inPts: r1(best.pts), weeksNext: wkNext,
+              startOver: { name: nameOf(worstStart), pts: r1(cur) }, release: relInfo(rel),
+              alts: altsFrom(cur),
+              yours: { name: nameOf(worstStart), team: teamOf(worstStart), pts: r1(cur), opp: (wkOf(worstStart) || {}).opp || null, next: nextOf(worstStart), mine: true },
+              why: `projects ${r1(best.pts)}, ${r1(best.pts - cur)} more than ${nameOf(worstStart)}, the ${pos} you would drop from the lineup` });
+          });
+          if (rows.length) return;      // one claim per position: a starter upgrade outranks depth
+        }
+        /* ── bench upgrades: the depth claim, which is where the running backs and receivers live ── */
+        if (kd) return;
+        const benchPts = bestBench != null ? (ptsOf(bestBench) || 0) : 0;
+        const floor = cur != null ? cur * 0.7 : 0;
+        const best = free[0];
+        if (!best || best.pts < floor || best.pts - benchPts < 1.5) return;
+        const rel = releaseFor(pos, null);
+        depthRows.push({ kind: "depth", rank: 1, pos, outName: bestBench != null ? nameOf(bestBench) : `no backup ${pos}`,
+          inName: best.name, inTeam: best.team, gain: r1(best.pts - benchPts), inPts: r1(best.pts), weeksNext: wkNext,
+          startOver: cur != null ? { name: nameOf(worstStart), pts: r1(cur) } : null,
+          benchOver: bestBench != null ? { name: nameOf(bestBench), pts: r1(benchPts) } : null,
+          release: relInfo(rel), alts: altsFrom(benchPts),
+          yours: bestBench != null
+            ? { name: `${nameOf(bestBench)} (your best backup)`, team: teamOf(bestBench), pts: r1(benchPts), opp: (wkOf(bestBench) || {}).opp || null, next: nextOf(bestBench), mine: true }
+            : (worstStart != null ? { name: `${nameOf(worstStart)} (your ${pos})`, team: teamOf(worstStart), pts: r1(cur || 0), opp: (wkOf(worstStart) || {}).opp || null, next: nextOf(worstStart), mine: true } : null),
+          why: bestBench != null
+            ? `projects ${r1(best.pts)} and would be your best backup ${pos}, ${r1(best.pts - benchPts)} ahead of ${nameOf(bestBench)}`
+            : `projects ${r1(best.pts)} and you have no healthy backup ${pos} at all` });
       });
+      /* Depth is the quietest claim on the page, so it is capped: the three best, not one per position. */
+      depthRows.sort((x, y) => y.gain - x.gain).slice(0, 3).forEach((rowD) => { taken.add(rowD.inName); fa.push(rowD); });
+
       // One suggestion per position and player: the same free agent covering three of your slots is one idea.
       const seen = new Set();
       const faTrim = fa.sort((a, b) => b.rank - a.rank || b.gain - a.gain)
@@ -1241,10 +1295,17 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                               <span className="mut" style={{ fontSize: 10.5, fontWeight: 400 }}> {r.pos}{r.inTeam ? ` · ${r.inTeam}` : ""}</span>
                             </div>
                             <div className="mut" style={{ fontSize: 11.5, marginTop: 2 }}>{r.why}</div>
-                            {r.startOver && (
+                            {(r.startOver || r.benchOver) && (
                               <div data-wkfacompare style={{ fontSize: 11, marginTop: 3, display: "flex", gap: 12, flexWrap: "wrap" }}>
-                                <span data-wkfastart={r.startOver.name}><span className="mut">Starts over </span><b>{r.startOver.name}</b> <span className="num mut">{r.startOver.pts}</span>
-                                  <span className="num" style={{ color: "var(--pos)", fontWeight: 700 }}> (+{r1(r.inPts - r.startOver.pts)})</span></span>
+                                {r.benchOver && (
+                                  <span data-wkfabench={r.benchOver.name}><span className="mut">Better than </span><b>{r.benchOver.name}</b>
+                                    <span className="num mut"> {r.benchOver.pts} (your best backup)</span>
+                                    <span className="num" style={{ color: "var(--pos)", fontWeight: 700 }}> (+{r1(r.inPts - r.benchOver.pts)})</span></span>
+                                )}
+                                {r.startOver && (
+                                  <span data-wkfastart={r.startOver.name}><span className="mut">{r.kind === "depth" ? "Your lineup " + r.pos + " " : r.kind === "hole" ? "Instead of " : "Starts over "}</span><b>{r.startOver.name}</b> <span className="num mut">{r.startOver.pts}</span>
+                                    <span className="num" style={{ color: r.inPts - r.startOver.pts >= 0 ? "var(--pos)" : "var(--mut)", fontWeight: 700 }}> ({r.inPts - r.startOver.pts >= 0 ? "+" : ""}{r1(r.inPts - r.startOver.pts)})</span></span>
+                                )}
                                 {r.release && (
                                   <span data-wkfarelease={r.release.name}><span className="mut">Release </span><b>{r.release.name}</b>
                                     <span className="num mut"> {r.release.pos} · {r.release.pts != null ? `${r1(r.release.pts)} this week` : "no projection"}{r.release.adp ? ` · ADP ${r.release.adp}` : " · undrafted"}</span>
@@ -1262,10 +1323,13 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
               </div>
             )}
             <div className="mut" style={{ fontSize: 11, lineHeight: 1.5, marginTop: 10 }}>
-              Four kinds of claim: a starter who is out (or a slot with nobody in it), a slot left empty by a bye this
+              Five kinds of claim: a starter who is out (or a slot with nobody in it), a slot left empty by a bye this
               week, a bye coming next week you can cover while the wire is still worth picking over, and a position
               upgrade, which is any starter a free agent outprojects this week, kickers and defences included. Each
-              upgrade names the starter he would replace and the bench player you would release (never an IR man).
+              upgrade names the starter he would replace and the bench player you would release (never an IR man). A
+              "Bench upgrade" is the other half of the same read: he does not beat your starter, but he beats your
+              best backup at that position and is close enough to the lineup to matter, which is your injury and
+              bye cover.
               Hover a Pos upgrade chip for the other free agents who would also beat your starter. Byes come from the
               NFL schedule.
             </div>

@@ -554,9 +554,16 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
       const ws = ((r.data && r.data.weeks) || []).filter((x) => x && x.me && x.me.complete !== false && x.week <= week);
       if (!ws.length) { r.season = null; return; }
       const cnt = (f) => ws.filter(f).length;
-      r.season = { w: cnt((x) => x.me.result === "W"), l: cnt((x) => x.me.result === "L"), t: cnt((x) => x.me.result === "T"),
-        mw: cnt((x) => x.me.medianResult === "W"), ml: cnt((x) => x.me.medianResult === "L"),
-        medianGames: cnt((x) => !!x.me.medianResult), weeks: ws.length,
+      /* ⭐ 29bp — Trey: "you can just combine the head to head and median if it's a median league. If it's not
+         a median league, then just show the head to head." A median league plays two games a week and its
+         standings are kept that way, so the record on this page has to be the record he sees in Sleeper. The
+         two halves are still counted apart for the hover, which is where "5-3 of that was the median" belongs. */
+      const hh = { w: cnt((x) => x.me.result === "W"), l: cnt((x) => x.me.result === "L"), t: cnt((x) => x.me.result === "T") };
+      const med = { w: cnt((x) => x.me.medianResult === "W"), l: cnt((x) => x.me.medianResult === "L"), t: cnt((x) => x.me.medianResult === "T") };
+      const medianGames = cnt((x) => !!x.me.medianResult);
+      r.season = { w: hh.w + med.w, l: hh.l + med.l, t: hh.t + med.t,
+        hhW: hh.w, hhL: hh.l, hhT: hh.t, mw: med.w, ml: med.l,
+        medianGames, weeks: ws.length,
         pf: Math.round(ws.reduce((a, x) => a + (Number(x.me.pts) || 0), 0) * 10) / 10,
         pa: Math.round(ws.reduce((a, x) => a + (Number(x.me.oppPts) || 0), 0) * 10) / 10 };
     });
@@ -740,7 +747,7 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                         <Tile n={<span data-wkseasontotal={`${data.sum.seasonW}-${data.sum.seasonL}${data.sum.seasonT ? `-${data.sum.seasonT}` : ""}`}>{data.sum.seasonW}–{data.sum.seasonL}{data.sum.seasonT ? `–${data.sum.seasonT}` : ""}</span>}
                           label={`Season through week ${week}`}
                           tone={data.sum.seasonW > data.sum.seasonL ? "var(--pos)" : data.sum.seasonW < data.sum.seasonL ? "var(--neg)" : undefined}
-                          sub={data.sum.seasonMed ? `plus ${data.sum.seasonMW}–${data.sum.seasonML} in median games` : "every league added up"} />
+                          sub={data.sum.seasonMed ? "every league added up, median games included" : "every league added up"} />
                         <Tile n={data.sum.left} label="Left on benches" tone="var(--gold)" />
                         {data.sum.apAny && (
                           <Tile n={`${data.sum.apW}–${data.sum.apL}`} label="Against the field"
@@ -869,11 +876,11 @@ export default function WeeklyReview({ leagues, scope = "all", onOpenLeague }) {
                               <>
                                 {/* 29bo — where this league stands, so the week has its season beside it. */}
                                 <span className="num" data-wkseason={R.season ? `${R.season.w}-${R.season.l}${R.season.t ? `-${R.season.t}` : ""}` : ""}
-                                  title={R.season ? `${R.season.w}-${R.season.l}${R.season.t ? `-${R.season.t}` : ""} through week ${week}${R.season.medianGames ? `, plus ${R.season.mw}-${R.season.ml} in median games` : ""}. ${R.season.pf} points for, ${R.season.pa} against.` : undefined}
+                                  title={R.season ? `${R.season.w}-${R.season.l}${R.season.t ? `-${R.season.t}` : ""} through week ${week}${R.season.medianGames ? ` — ${R.season.hhW}-${R.season.hhL} head to head and ${R.season.mw}-${R.season.ml} against the median, the way this league counts it` : ""}. ${R.season.pf} points for, ${R.season.pa} against.` : undefined}
                                   style={{ textAlign: "right", fontSize: 12, fontWeight: 800, cursor: R.season ? "help" : undefined,
                                     color: R.season ? (R.season.w > R.season.l ? "var(--pos)" : R.season.l > R.season.w ? "var(--neg)" : "var(--ink)") : "var(--mut)" }}>
                                   {R.season ? <>{R.season.w}-{R.season.l}{R.season.t ? `-${R.season.t}` : ""}
-                                    {R.season.medianGames ? <span className="mut" style={{ fontSize: 9.5, fontWeight: 600 }}> +{R.season.mw}-{R.season.ml}</span> : null}</> : "—"}
+                                    {R.season.medianGames ? <span className="mut" style={{ fontSize: 9, fontWeight: 600 }}> med</span> : null}</> : "—"}
                                 </span>
                                 <span style={{ textAlign: "right" }}>{score}</span>
                                 <span style={{ textAlign: "right" }}>{medianCell}</span>
