@@ -104,7 +104,7 @@ const navTo = (route) => { if (typeof GLOBAL_NAV === "function") GLOBAL_NAV(rout
 // preferences carry forward via "run it back" copies rather than being lost year to year.
 export const CURRENT_SEASON = 2026;
 // Bump this whenever you deploy so you can confirm the new build is live (shown subtly in the footer).
-const BUILD_TAG = "2026.07.29bp";
+const BUILD_TAG = "2026.07.29bs";
 // Normalize a player name for cross-source matching (Sleeper picks ↔ engine players): lowercase,
 // strip punctuation and common suffixes (Jr/Sr/II/III), collapse spaces.
 export const normName = (s) => String(s || "").toLowerCase()
@@ -1051,6 +1051,82 @@ const TradeVerdict = ({ r, weeks, games, oddsShift }) => {
             <div className="mut" style={{ fontSize: 10.5, marginTop: 4, lineHeight: 1.45 }}>
               Season value spread over {G} weeks, so each player's bye counts as a zero week: a player projected for 18.7 next week averages a little lower here.
             </div>
+          </div>
+        );
+      })()}
+      {/* ⭐⭐⭐⭐⭐ 29br — THE FAIRNESS CHECK: does it help both teams, and does the market agree? Trey: "I want to
+          see that it makes sense for both teams, both teams improve, AND they might not do it because the
+          value in a vacuum might not make sense." Fit drives the decision and stays on top; this is the
+          second question, in its own block, with the trend on the men involved — because "Washington is
+          trending up and played really well" is the half of a trade partner's thinking that a projection
+          cannot see. */}
+      {me.isMe && r.fairness && (() => {
+        const F = r.fairness;
+        const tone = F.fair ? "var(--pos)" : F.favours === "you" ? "var(--gold)" : "var(--neg)";
+        const cell = (label, value, sub, col) => (
+          <div style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "7px 9px" }}>
+            <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em" }}>{label}</div>
+            <b className="num" style={{ fontSize: 15, color: col }}>{value}</b>
+            <div className="mut" style={{ fontSize: 10.5 }}>{sub}</div>
+          </div>
+        );
+        return (
+          <div data-tbfair={F.fair ? "fair" : F.favours} data-tbfairboth={F.bothImprove ? "1" : "0"}
+            style={{ border: `1px solid ${tone}`, borderRadius: 10, padding: "9px 12px", marginBottom: 11, background: "var(--panel)" }}>
+            <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 6, color: tone }}>
+              <i className="ti ti-scale" style={{ fontSize: 14, marginRight: 5 }} aria-hidden="true" />
+              {F.bothImprove ? "Helps both teams" : "Only one lineup improves"}
+              <span className="mut" style={{ fontWeight: 500 }}> · {F.fair ? "and the value is even" : `value tilts ${F.favours === "you" ? "your way" : "their way"}`}</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, fontSize: 12 }}>
+              {cell("Your lineup", `${F.meGain >= 0 ? "+" : ""}${F.meGain.toFixed(1)}`, "points a week", F.meGain >= 0 ? "var(--pos)" : "var(--neg)")}
+              {cell("Their lineup", `${F.themGain >= 0 ? "+" : ""}${F.themGain.toFixed(1)}`, "points a week, from their side", F.themGain >= 0 ? "var(--pos)" : "var(--neg)")}
+              {cell("Value in a vacuum", `${F.valueOut} → ${F.valueIn}`, F.fair ? "close enough to be fair" : `${Math.round(F.ratio * 100)}% of what you send`, tone)}
+            </div>
+            {/* ⭐⭐⭐⭐⭐ 29bs — EVERY TERM OF THE PRICE, ON SCREEN. Trey: "it shouldn't just be overall projection.
+                It should be some combination of positional scarcity, VBD, the opposite team need, upside /
+                trend, rest of season projection, team role." So each man's number is broken out: what he is
+                worth over a replacement starter for the REST of the season (scarcity and VBD together),
+                then the role he is playing now, then the form he is in, then the future where the league
+                keeps players. A reader who disagrees can see exactly which term to argue with. */}
+            {F.market && F.market.parts.length > 0 && (
+              <div data-tbmarket={String(F.market.parts.length)} style={{ marginTop: 8, borderTop: "1px solid var(--line)", paddingTop: 6 }}>
+                <div className="mut" style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 3 }}>What each man is worth, and why</div>
+                {F.market.parts.map((m, i) => (
+                  <div key={i} data-tbmarketrow={m.name} style={{ display: "flex", gap: 8, fontSize: 11.5, padding: "2px 0", alignItems: "baseline", flexWrap: "wrap" }}>
+                    <b style={{ minWidth: 0 }}>{m.name}</b>
+                    <span className="mut" style={{ fontSize: 10.5 }}>{m.pos} · {m.side === "in" ? "to you" : "to them"}</span>
+                    <b className="num" style={{ color: "var(--ink)" }}>{m.value}</b>
+                    {m.pick ? <span className="mut" style={{ fontSize: 10.5 }}>draft pick value</span> : (
+                      <span className="mut" style={{ fontSize: 10.5 }}>
+                        {m.parts.ros} over a replacement {m.pos} for the {m.parts.weeks} weeks left
+                        {m.parts.rolePct > 4 ? ` · role +${m.parts.rolePct}% (${m.parts.weekPts} this week against a ${m.parts.perGame} season rate, priced at ${m.parts.perGameEff} a game)` : ""}
+                        {m.parts.trendMult !== 1 ? ` · form ${m.parts.trendMult > 1 ? "+" : ""}${Math.round((m.parts.trendMult - 1) * 100)}%${m.parts.ppg != null ? ` (${m.parts.ppg} a game against ${m.parts.projPg})` : ""}` : ""}
+                        {m.parts.wNext > 0 ? ` · ${Math.round(m.parts.wNext * 100)}% of the price is next year (${m.parts.future} full-season value${m.parts.age ? `, age ${m.parts.age}` : ""})` : ""}
+                      </span>
+                    )}
+                  </div>
+                ))}
+                <div className="mut" style={{ fontSize: 10, marginTop: 3, lineHeight: 1.45 }}>
+                  Rest-of-season points above a replacement starter at that position (so scarcity is priced in), adjusted for
+                  the role he is playing now and the form he is in{F.market.parts.some((m) => m.parts && m.parts.wNext > 0) ? ", then blended with next year because this league keeps players" : ""}.
+                  Snap and target share are not in this app, so "role" is read from this week's projection against his own season rate.
+                </div>
+              </div>
+            )}
+            {F.trend.length > 0 && (
+              <div data-tbfairtrend={String(F.trend.length)} style={{ marginTop: 7, display: "flex", flexDirection: "column", gap: 2 }}>
+                {F.trend.map((t, i) => (
+                  <div key={i} style={{ fontSize: 11.5, display: "flex", gap: 6, alignItems: "baseline", flexWrap: "wrap" }}>
+                    <i className={`ti ti-arrow-${t.dir === "up" ? "up" : "down"}`} style={{ fontSize: 11, color: t.dir === "up" ? "var(--pos)" : "var(--neg)" }} aria-hidden="true" />
+                    <b>{t.name}</b>
+                    <span className="mut">{t.side === "in" ? "coming to you" : "going the other way"}</span>
+                    <span className="num mut">{t.ppg} a game against a {t.proj} projection{t.gp ? ` (${t.gp} games)` : ""}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="mut" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.5 }}>{F.why.join(" ")}</div>
           </div>
         );
       })()}
@@ -3949,7 +4025,17 @@ const DEFAULT_SCORING = {
 // level because it is set during the rebuild and read by the board, which renders long after.
 let PROJ_MISSING = [];
 
-function scoreFromStats(pos, s, sc) {
+/* ⭐ 29bq — EXPORTED so My Week can score a player's ACTUAL season-to-date line with his league's own
+   scoring. Trey, about a kicker on the wire: "he is also the K3 in the league and put up 7 and 16 in the
+   first 2" — projections alone cannot say that. */
+/* ⚠ 29bq — AND THE LEAGUE'S SETTINGS ARE A PATCH OVER THE DEFAULTS, NEVER THE WHOLE RULE BOOK. A hub cfg
+   carries only what the platform sent (a Sleeper league's `scoring` can be `{rec: 1, recTE: 1}`), so scoring
+   a KICKER with it alone multiplies by `undefined` and produces NaN — which reads on screen as "no data",
+   silently. Every caller that starts from a league cfg should use this. */
+export function scoreStatLine(pos, s, scoring) {
+  try { return scoreFromStats(pos, s, { ...DEFAULT_SCORING, ...(scoring || {}) }); } catch (e) { return null; }
+}
+export function scoreFromStats(pos, s, sc) {
   if (!s) return 0;
   if (pos === "K") {
     const made = s.fg || 0;
@@ -17051,6 +17137,70 @@ export function tradeEval(teams, opts) {
   const BANDS = [[4.0, 'A+'], [2.8, 'A'], [2.0, 'A-'], [1.3, 'B+'], [0.7, 'B'], [0.25, 'B-'], [-0.8, 'C'], [-1.5, 'C-'], [-2.8, 'D']];
   const letter = (BANDS.find(([cut]) => gScore >= cut) || [null, 'F'])[1];
   const grade = { letter, score: Math.round(gScore * 100) / 100, perWeek: Math.round(pw * 10) / 10, why: gWhy };
+  /* ⭐⭐⭐⭐⭐ 29br — FIT IS THE DECISION, VALUE IS THE SECOND QUESTION, AND THEY ARE OFTEN DIFFERENT ANSWERS.
+     Trey: "I love how this currently looks at the points added to my roster and the other roster... While
+     this is certainly how we should be thinking about decision making, I also want to think about
+     'fairness' of a deal as a secondary consideration. For example, Quinshon Judkins for Parker Washington
+     makes sense for both teams because the teams have a bigger need for a RB... With that said, Washington
+     is trending up, played really well, and projected for more points... I want to see that it makes sense
+     for both teams, both teams improve, AND they might not do it because the value in a vacuum might not
+     make sense."
+     Everything needed is already computed: each side's lineup change (FIT) and the value moving each way on
+     the shared share scale (VALUE IN A VACUUM). This bundles them with the one thing that was missing — who
+     is TRENDING, from what each man has actually scored against what he was projected to — so the block can
+     say "this helps you both, and they may still say no, because the man you are getting has been the
+     better player". `o.trendOf` is supplied by the hub, which holds this season's results. */
+  const fairness = (() => {
+    const meGain = Math.round(((mine.delta || 0) / G) * 10) / 10;
+    const themGain = Math.round(((theirs.delta || 0) / G) * 10) / 10;
+    const bothImprove = meGain > 0.05 && themGain > 0.05;
+    const favours = fairR >= FAIR ? 'even' : ((mine.assetsIn || 0) > (mine.assetsOut || 0) ? 'you' : 'them');
+    /* ⭐⭐⭐⭐⭐ 29bs — THE MARKET READ. `o.marketOf` prices each man on rest-of-season value over a replacement
+       starter, then adjusts for the role he is playing now and the form he is in, and (only in a league
+       that keeps players) blends the future by the window this hub is set to. See `marketOf` in TeamHub for
+       the full reasoning. Absent it, the fairness block falls back to the raw value-over-replacement totals
+       the verdict has always used. */
+    const market = (() => {
+      if (typeof o.marketOf !== 'function') return null;
+      const price = (ps) => ps.map((p) => o.marketOf(p)).filter(Boolean);
+      const inP = price(inMine), outP = price(outMine);
+      const sum = (xs) => Math.round(xs.reduce((a, x) => a + (Number(x.value) || 0), 0) * 10) / 10;
+      const vin = sum(inP), vout = sum(outP);
+      const hi = Math.max(vin, vout), lo = Math.min(vin, vout);
+      const r = hi > 0 ? Math.round((lo / hi) * 100) / 100 : 1;
+      return { in: vin, out: vout, ratio: r, fair: r >= FAIR, favours: r >= FAIR ? 'even' : (vin > vout ? 'you' : 'them'),
+        parts: [].concat(inP.map((x) => ({ ...x, side: 'in' })), outP.map((x) => ({ ...x, side: 'out' }))) };
+    })();
+    /* Whose hole does this fill? A man is worth more to a team that must start somebody at his position. */
+    const needs = typeof o.needOf === 'function'
+      ? { theirs: outMine.filter((p) => !isPick(p)).map((p) => ({ name: p.name, ...(o.needOf(them.rosterId, p.pos) || {}) })).filter((x) => x.pos),
+          mine: inMine.filter((p) => !isPick(p)).map((p) => ({ name: p.name, ...(o.needOf(me.rosterId, p.pos) || {}) })).filter((x) => x.pos) }
+      : null;
+    const trend = typeof o.trendOf === 'function'
+      ? [].concat(inMine.map((p) => ({ ...(o.trendOf(p) || {}), name: p.name, pos: p.pos, side: 'in' })),
+                  outMine.map((p) => ({ ...(o.trendOf(p) || {}), name: p.name, pos: p.pos, side: 'out' })))
+          .filter((t) => t.dir)
+      : [];
+    const hot = trend.filter((t) => t.side === 'in' && t.dir === 'up').map((t) => t.name);
+    const cold = trend.filter((t) => t.side === 'out' && t.dir === 'down').map((t) => t.name);
+    const why = [];
+    if (bothImprove) why.push(`Both lineups get better: you by ${meGain.toFixed(1)} a week, them by ${themGain.toFixed(1)}.`);
+    else if (meGain > 0.05) why.push(`Your lineup gets better by ${meGain.toFixed(1)} a week; theirs does not improve.`);
+    else if (themGain > 0.05) why.push(`Their lineup gets better by ${themGain.toFixed(1)} a week; yours does not.`);
+    const mFav = market ? market.favours : favours;
+    if (mFav === 'even') why.push('And the value moving each way is close enough that neither side is being asked for a favour.');
+    else why.push(`On value alone the deal tilts ${mFav === 'you' ? 'your way' : 'their way'} (${market ? market.out : Math.round(mine.assetsOut || 0)} out, ${market ? market.in : Math.round(mine.assetsIn || 0)} in), so ${mFav === 'you' ? 'they' : 'you'} may want more.`);
+    /* "The opposite team need" — the reason a lopsided-looking deal can still be the right one for both. */
+    const theirHoles = (needs && needs.theirs || []).filter((x) => x.short).map((x) => `${x.name} fills a ${x.pos} hole for them`);
+    const myHoles = (needs && needs.mine || []).filter((x) => x.short).map((x) => `${x.name} fills your ${x.pos} hole`);
+    if (theirHoles.length || myHoles.length) why.push(`${[].concat(myHoles, theirHoles).join('; ')} — need is why a deal that is not even on paper can still be the right trade for both sides.`);
+    if (hot.length) why.push(`${hot.join(' and ')} ${hot.length === 1 ? 'has' : 'have'} been playing above ${hot.length === 1 ? 'his' : 'their'} projection, which is the part a trade partner feels.`);
+    if (cold.length) why.push(`${cold.join(' and ')} ${cold.length === 1 ? 'has' : 'have'} been under ${cold.length === 1 ? 'his' : 'their'} projection lately.`);
+    return { bothImprove, meGain, themGain,
+      valueIn: market ? market.in : Math.round(mine.assetsIn || 0), valueOut: market ? market.out : Math.round(mine.assetsOut || 0),
+      ratio: market ? market.ratio : Math.round(fairR * 100) / 100, fair: market ? market.fair : fairR >= FAIR,
+      favours: mFav, market, needs, trend, why };
+  })();
   const willAccept = (verdictLong || verdict).key === 'good' || (verdictLong || verdict).key === 'future';
   const call = (() => {
     const wk = `${Math.abs(pw).toFixed(1)} a week`;
@@ -17094,6 +17244,7 @@ export function tradeEval(teams, opts) {
       myRank: { from: rankOf(powerBefore, me.rosterId), to: rankOf(powerAfter, me.rosterId) },
       theirRank: { from: rankOf(powerBefore, them.rosterId), to: rankOf(powerAfter, them.rosterId) } },
     assets: { ratio, shareRatio, fairRatio: fairR, fair: FAIR },
+    fairness,
     long,
     verdict: verdictLong || verdict,
   };
@@ -19533,8 +19684,106 @@ function TeamHub({ user, leagues, leagueId, onBack, onHome, onSignOut, onUpdate,
     return seasonRosterOf({ roster: out });
   })();
   const slotsOf = (r) => lineupSlots(r || [], cfg.sf).slots;
+  /* ⭐⭐⭐⭐ 29br — WHO HAS BEEN PLAYING ABOVE HIS PROJECTION. The fairness block's third line: this season's
+     actual points a game (scored with this league's settings, from the same `std` table the values blend in)
+     against the projection the pool carries. It is the part of a trade partner's thinking a projection alone
+     cannot see — "Washington is trending up, played really well". Three games minimum, because two good
+     Sundays is not a trend. */
+  const trendOf = (p) => {
+    if (!p || p.sid == null || !ictx.form) return null;
+    const rec = ictx.form[String(p.sid)];
+    if (!rec || !rec.gp || rec.gp < 3) return null;
+    const base = poolBySid && poolBySid.bySid ? poolBySid.bySid.get(String(p.sid)) : null;
+    const projPg = base && base.pts ? base.pts / GAMES_IN_SEASON : null;
+    const v = scoreStatLine(p.pos, rec.s, cfg.scoring);
+    if (!Number.isFinite(v) || !projPg) return null;
+    const ppg = Math.round((v / rec.gp) * 10) / 10;
+    const ratio = ppg / projPg;
+    return { ppg, proj: Math.round(projPg * 10) / 10, gp: rec.gp, ratio: Math.round(ratio * 100) / 100,
+      dir: ratio >= 1.15 ? "up" : ratio <= 0.85 ? "down" : null };
+  };
+  /* ⭐⭐⭐⭐⭐ 29bs — WHAT A PLAYER IS WORTH ON THE MARKET, WHICH IS NOT HIS PRESEASON PROJECTION.
+     Trey: "I'm not sure how you're determining what's 'fair' (especially re-draft vs. dynasty), but I did
+     want to note it shouldn't just be overall projection. It should be some combination of positional
+     scarcity, VBD, the opposite team need, upside / trend, rest of season projection, team role (i.e. did
+     they recently take over the starting job?)... I think too often trade calculators are reactive to
+     either pre-season projections OR they haven't caught up with recent hype/trends/upside."
+     So the fairness block prices a man like this, and shows every term so the read can be argued with:
+       · REST OF SEASON OVER A REPLACEMENT STARTER — scarcity and VBD in one number, and the only horizon
+         that matters in October. A per-game rate (already blended with this season's actual results, 29be,
+         and discounted for any injury, 29bb) minus this league's replacement line at his position, times
+         the weeks that are left. Kickers and defences keep the 15% streaming discount from 29bh.
+       · ROLE — his projection for THIS WEEK against his own season rate. A back-up who has just taken the
+         job projects far above his season average, and that gap is the only role signal Sleeper actually
+         publishes: there is no snap or target share in this app (it says so in My Teams, and would rather
+         be honest than fake one).
+       · FORM — what he has really scored per game against what he was projected to score, three games
+         minimum. Damped, because a hot month is evidence, not a promise.
+       · THE FUTURE — only in a league that keeps players, weighted by the window this hub is already set
+         to (win-now, balanced, rebuild), and with a plain age curve. A full season of a 23-year-old is
+         worth more to a rebuilder than a rest-of-season rental is.
+     ⚠ THIS DOES NOT MOVE THE GRADE. The grade is the FIT read — what the trade does to the two lineups —
+       and it stays exactly as it was; this is the second question ("would the market call this fair"),
+       kept separate on purpose so one cannot quietly swallow the other. */
+  const marketRepl = (() => { try { return replacementByPos(leagueTeams.map((t) => tradeRoster(t)), cfg.sf, leagueTeams.length || cfg.teams); } catch (e) { return {}; } })();
+  const clamp2 = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const AGE_MULT = (age) => (!age ? 1 : age <= 24 ? 1.15 : age <= 27 ? 1 : age <= 30 ? 0.85 : 0.7);
+  const marketWindow = () => {
+    if (!leagueKeepsPlayers(cfg)) return [1, 0];
+    if (activePosture === "rebuild") return [0.45, 0.55];
+    if (activePosture === "winnow") return [0.85, 0.15];
+    return [0.7, 0.3];
+  };
+  const marketOf = (p) => {
+    if (!p) return null;
+    const pos = String(p.pos || "").toUpperCase();
+    if (pos === "PICK") return { name: p.name, pos, value: Math.round(Number(p.pickValue) || 0), pick: true, parts: {} };
+    const seasonPts = Number(p.ptsSeason != null ? p.ptsSeason : p.pts) || 0;
+    const perGame = seasonPts / GAMES_IN_SEASON;
+    const replPg = (marketRepl[pos] || 0) / GAMES_IN_SEASON;
+    const weeks = Math.max(1, (ictx && ictx.weeksLeft) || 1);
+    const stream = ["K", "DEF", "DST", "PK"].includes(pos) ? 0.15 : 1;
+    const wk = weeklyMap[String(p.sid)];
+    const weekPts = wk && wk.pts != null ? Number(wk.pts) : null;
+    /* ⚠⚠ THE ROLE TERM HAS TO MOVE THE BASE, NOT MULTIPLY IT. First cut multiplied the rest-of-season number
+       by a role factor, which prices a man who has just taken the job at 1.3 × NOTHING: his season rate is a
+       bench body's, so his value over a replacement starter is zero and thirty per cent of zero is zero.
+       The man Sleeper projects for 18.4 this week IS a starter now, so the rate he is priced at moves to
+       (mostly) that number — regressed, because one week's projection is noisy, and never DOWN, because a
+       single bad matchup is not a demotion. This is the "have they caught up with the role change" test. */
+    const perGameEff = weekPts != null && perGame > 0 ? Math.max(perGame, 0.35 * perGame + 0.65 * weekPts) : perGame;
+    const rolePct = perGame > 0.5 ? Math.round((perGameEff / perGame - 1) * 100) : 0;
+    const ros = Math.max(0, perGameEff - replPg) * weeks * stream;
+    const t = trendOf(p);
+    const trendMult = t && t.ratio ? clamp2(1 + 0.4 * (clamp2(t.ratio, 0.6, 1.5) - 1), 0.85, 1.2) : 1;
+    const now = ros * trendMult;
+    const [wNow, wNext] = marketWindow();
+    const future = wNext > 0 ? Math.max(0, seasonPts - (marketRepl[pos] || 0)) * stream * AGE_MULT(p.age) : 0;
+    const value = Math.round((now * wNow + future * wNext) * 10) / 10;
+    return { name: p.name, pos, value,
+      parts: { ros: Math.round(ros * 10) / 10, weeks, rolePct,
+        trendMult: Math.round(trendMult * 100) / 100, future: Math.round(future * 10) / 10,
+        wNow, wNext, age: p.age || null, weekPts: weekPts != null ? Math.round(weekPts * 10) / 10 : null,
+        perGame: Math.round(perGame * 10) / 10, perGameEff: Math.round(perGameEff * 10) / 10, replPg: Math.round(replPg * 10) / 10,
+        ppg: t ? t.ppg : null, projPg: t ? t.proj : null, gp: t ? t.gp : null } };
+  };
+  /* ⭐⭐⭐⭐ AND WHETHER THE POSITION IS A HOLE FOR THE OTHER TEAM — "the opposite team need". A man is worth
+     more to a roster that has to start somebody there and cannot. Counted the way the rest of the hub
+     counts it: bodies at or above this league's replacement line, against the slots they must fill. */
+  const needOf = (rosterId, pos) => {
+    const t = leagueTeams.find((q) => String(q.rosterId) === String(rosterId));
+    const P = String(pos || "").toUpperCase();
+    if (!t || !reqStart[P]) return null;
+    const line = marketRepl[P] || 0;
+    const have = (tradeRoster(t) || []).filter((p) => String(p.pos).toUpperCase() === P && (Number(p.pts) || 0) >= line).length;
+    return { pos: P, have, need: reqStart[P], short: have < reqStart[P] };
+  };
   const tbOptsFor = (aId, bId, give, get) => ({
           shareOf,
+          /* 29bs — the market read behind the fairness block; see `marketOf`. */
+          marketOf, needOf,
+          /* 29br — the fairness block's trend line; see `trendOf`. */
+          trendOf,
           /* 29bl — the wire only counts for MY side: it is my baseline, not an observation about theirs. */
           freeAgents: String(aId) === String(data.myRosterId) ? faForTrade : undefined,
           slotsOf,
@@ -24449,8 +24698,13 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
           who is on bye, and in which of your leagues. */}
       {todoWeek ? (
         <div data-homeahead={String(todoWeek)} data-homepregame={ahead ? "0" : "1"}>
+          {/* ⭐⭐⭐⭐ 29br — THE LOOK-AHEAD TABLE HAD NO LOADING STATE, ONLY A GREY SENTENCE. Trey: "The loading
+              mechanism stopped on the 'this week' section... It's also taking 10-15 seconds to load." The
+              skeleton 29bf built for the live table was never wired to this branch, and this is the branch
+              the app shows from Tuesday to Thursday — so the one line of grey text WAS the loading state
+              for most of the week. Same component, same shimmer, and it names the leagues it is reading. */}
           {aheadData === "loading" || !aheadData ? (
-            <div className="mut" style={{ fontSize: 12 }}>Reading week {todoWeek} across your leagues…</div>
+            <HomeLeaguesLoading kind="week" count={(leagues || []).filter((l) => hubIdOfLeague(l)).length} />
           ) : aheadData.error || !aheadData.rows.length ? (
             <div className="mut" style={{ fontSize: 12 }}>Couldn't read week {todoWeek} yet.</div>
           ) : (
@@ -24826,7 +25080,7 @@ function HomeWeekStrip({ leagues, onGameDay, onReview, onOpenHub, onOpenTeam, we
                                 rows: (flags.rows || []).filter((x) => x.kind === (flags.sev === 3 ? "out" : flags.sev === 2 ? "check" : "bye"))
                                   .map((x) => ({ Player: x.name, Status: x.label, Pos: x.pos || "—",
                                     Proj: Number.isFinite(x.proj) ? r1(x.proj) : "—", tone: x.tone })),
-                                note: flags.gain > 0 ? `There is also +${flags.gain} available from this bench — see My Week.` : null,
+                                note: flags.gain > 0 ? `There is also +${flags.gain} available from this bench — see My Teams.` : null,
                               }) : undefined}
                               onMouseLeave={flags.sev > 0 ? hideTip : undefined} />
                           )}
@@ -25632,7 +25886,7 @@ function PaidHub({ user, leagues, allLeagues, funMocks, leaguesLoading, onSettin
                  below has its own Hub button, which is unambiguous about what it opens. */
             const items = seasonFirst
               ? [
-                ...(onMyWeek ? [{ k: "myweek", icon: "ti-first-aid-kit", label: "My Week", onClick: onMyWeek, primary: true,
+                ...(onMyWeek ? [{ k: "myweek", icon: "ti-first-aid-kit", label: "My Teams", onClick: onMyWeek, primary: true,
                   sub: "Availability · lineups · free agents · weather",
                   title: "Injuries, lineup changes, free agents and weather across every connected league, in one place" }] : []),
                 ...(onGameDay ? [{ k: "gameday", icon: "ti-activity-heartbeat", label: "Game Day", onClick: onGameDay,

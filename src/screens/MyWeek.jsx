@@ -57,7 +57,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import WeekStep from "../weekstep.jsx";
 import { api } from "../api.js";
-import { backendFormatKey, Dot, gradeHubTrade, GRADE_TONE } from "../App.jsx";
+import { backendFormatKey, Dot, gradeHubTrade, GRADE_TONE, scoreStatLine, normalizeHubCfg } from "../App.jsx";
 import { HoverTable, useHoverCard } from "../hovercard.jsx";
 import { useWide } from "../usewide.js";
 import { designationOf, lineupSwaps } from "../weekcache.js";
@@ -299,6 +299,18 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
     return m;
   }, [pack]);
 
+  /* ⭐⭐⭐⭐⭐ 29bq — WHAT HE HAS ACTUALLY DONE, NOT ONLY WHAT HE IS PROJECTED TO DO. Trey, on a kicker the
+     page would not recommend: "he is also the K3 in the league and put up 7 and 16 in the first 2." The
+     season-to-date table is one NFL-wide request (memoised in api.js, and the hub already asks for it), and
+     scoring it with each league's own settings is what makes "7.0 a game" comparable to a projection. */
+  const [std, setStd] = useState(undefined);
+  useEffect(() => {
+    if (!week) return;
+    let alive = true;
+    api.seasonToDate(week).then((r) => { if (alive) setStd(r || null); }).catch(() => { if (alive) setStd(null); });
+    return () => { alive = false; };
+  }, [week]);
+
   /* ⭐⭐⭐⭐ ONE PASS PER LEAGUE, AND EVERY VIEW READS ITS RESULT.
      Availability, lineup changes and free agents are three questions about the same three facts: who you are
      starting, what everyone projects this week, and who else you could play. Computing them together means
@@ -466,6 +478,15 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
         if (!pool2.length) return startingOver;
         return pool2.sort((x, y) => adpOf(y) - adpOf(x) || (ptsOf(x) || 0) - (ptsOf(y) || 0))[0];
       };
+      /* Points per game so far, in THIS league's scoring. Null when the table has not arrived or the man
+         has not played — never zero, which would read as "he is scoring nothing". */
+      const lgScoring = (() => { try { const c = normalizeHubCfg(hub.cfg); return (c && c.scoring) || null; } catch (e) { return null; } })();
+      const ppgOf = (sid) => {
+        const rec = std && std.players ? std.players[String(sid)] : null;
+        if (!rec || !rec.gp || !lgScoring) return null;
+        const v = scoreStatLine(posOf(sid), rec.s, lgScoring); return Number.isFinite(v) ? r1(v / rec.gp) : null;
+      };
+      const gpOf = (sid) => { const rec = std && std.players ? std.players[String(sid)] : null; return rec && rec.gp ? rec.gp : 0; };
       const nextOf = (sid) => {
         const rowsN = (hub.weeklyNext && hub.weeklyNext[String(sid)]) || null;
         return (hub.weeksNext || []).map((wk2, i) => {
@@ -507,10 +528,10 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
            otherwise take it (the gold row, since he is what you are really replacing), and the next weeks. */
         const holeAlts = positions.flatMap((pp) => claimable(pp).filter((f) => !(f.inj && f.inj.rank >= 3)).slice(0, 6))
           .sort((a, b) => b.pts - a.pts).slice(0, 8)
-          .map((f) => ({ name: f.name, team: f.team, pts: r1(f.pts), gain: r1(f.pts - benchPts), opp: f.opp, next: nextOf(f.sid) }));
+          .map((f) => ({ name: f.name, team: f.team, pts: r1(f.pts), gain: r1(f.pts - benchPts), opp: f.opp, next: nextOf(f.sid), ppg: ppgOf(f.sid), gp: gpOf(f.sid) }));
         const holeYours = benchBest
-          ? { name: `${nameOf(benchBest)} (your bench)`, team: teamOf(benchBest), pts: r1(benchPts), opp: (wkOf(benchBest) || {}).opp || null, next: nextOf(benchBest), mine: true }
-          : (empty ? null : { name: `${nameOf(sid)} (out)`, team: teamOf(sid), pts: 0, opp: (wkOf(sid) || {}).opp || null, next: nextOf(sid), mine: true });
+          ? { name: `${nameOf(benchBest)} (your bench)`, team: teamOf(benchBest), pts: r1(benchPts), opp: (wkOf(benchBest) || {}).opp || null, next: nextOf(benchBest), mine: true, ppg: ppgOf(benchBest), gp: gpOf(benchBest) }
+          : (empty ? null : { name: `${nameOf(sid)} (out)`, team: teamOf(sid), pts: 0, opp: (wkOf(sid) || {}).opp || null, next: nextOf(sid), mine: true, ppg: ppgOf(sid), gp: gpOf(sid) });
         fa.push({ kind: "hole", rank: 5, pos: best.pos, outName: empty ? "empty slot" : nameOf(sid), inName: best.name, inTeam: best.team,
           gain: r1(best.pts - benchPts), inPts: r1(best.pts), alts: holeAlts, yours: holeYours, weeksNext: hub.weeksNext || [],
           startOver: benchBest ? { name: nameOf(benchBest), pts: r1(benchPts) } : null,
@@ -560,24 +581,57 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
         const free = claimable(pos).filter((f) => !(f.inj && f.inj.rank >= 3));
         if (!free.length) return;
         const wkNext = hub.weeksNext || [];
-        const altsFrom = (baseline) => free.slice(0, 8).map((f) => ({ name: f.name, team: f.team, pts: r1(f.pts), gain: r1(f.pts - baseline), opp: f.opp, next: nextOf(f.sid) }));
-        /* ── starter upgrades ─────────────────────────────────────────────────────────────────── */
+        const altsFrom = (baseline) => free.slice(0, 8).map((f) => ({ name: f.name, team: f.team, pts: r1(f.pts), gain: r1(f.pts - baseline), opp: f.opp, next: nextOf(f.sid), ppg: ppgOf(f.sid), gp: gpOf(f.sid) }));
+        /* ⭐⭐⭐⭐⭐ 29bq — THREE WEEKS, NOT ONE, AND THAT IS THE WHOLE KICKER PROBLEM. Trey: "I think the Mevis
+           problem still exists. He isn't listed as a replacement despite the following facts: Mevis 6.7 /
+           6.92 / 6.92, Spencer Shrader 7.12 / 7.32 / 7.32, Tyler Loop 7.04 / 6.72 / 6.72."
+           Shrader beats Mevis in every week and by 1.2 across the three, and a one-week bar of a point could
+           never see it: week to week a kicker's edge is a rounding error, and the case for the claim is that
+           it repeats. So a row now fires on ANY of three tests, whichever is kindest:
+             · this week by the old bar (K/DEF a point, else 1.5 and 10%);
+             · the three-week total (this week plus the next two) by 1 for K/DEF, 3 for everyone else;
+             · he beats my man in EVERY week we can see, by anything, with at least half a point across them.
+               That last one is what a kicker upgrade actually looks like, and it is what Trey read off by
+               eye from the three columns.
+           ⚠ The three-week window deliberately SKIPS a bye (a null week), because a bye is not a worse
+             projection, and a man with nothing published anywhere still cannot be compared at all. */
+        const hz = (sid, ptsNow) => {
+          const rowsN = (nextOf(sid) || []).slice(0, 2).map((x) => x.pts);
+          const vals = [ptsNow, ...rowsN].filter((x) => x != null);
+          return { sum: vals.length ? r1(vals.reduce((a, b2) => a + b2, 0)) : null, weeks: vals.length, byWeek: [ptsNow, ...rowsN] };
+        };
         if (cur != null) {
-          const better = free.filter((f) => f.pts > cur);
+          const mineHz = hz(worstStart, cur);
+          const beatsEvery = (f) => {
+            const a = hz(f.sid, f.pts).byWeek, b2 = mineHz.byWeek;
+            const pairs = a.map((v, i) => [v, b2[i]]).filter(([x, y]) => x != null && y != null);
+            return pairs.length >= 2 && pairs.every(([x, y]) => x > y);
+          };
           const bar = kd ? 1 : Math.max(1.5, cur * 0.10);
+          const bar3 = kd ? 1 : 3;
+          const gain3 = (f) => { const a = hz(f.sid, f.pts); return a.sum != null && mineHz.sum != null && a.weeks === mineHz.weeks ? r1(a.sum - mineHz.sum) : null; };
+          const qualifies = (f) => f.pts - cur >= bar || (gain3(f) != null && gain3(f) >= bar3) || (beatsEvery(f) && (gain3(f) || 0) >= 0.5);
+          const better = free.filter((f) => f.pts > cur || (gain3(f) != null && gain3(f) > 0));
           const conv = (f) => f.pts - cur >= Math.max(3, cur * 0.20);
           const rows = [];
-          if (better.length && better[0].pts - cur >= bar) rows.push(better[0]);
-          if (!kd && rows.length) better.slice(1).forEach((f) => { if (rows.length < 3 && conv(f) && conv(rows[0])) rows.push(f); });
+          const first = better.find(qualifies);
+          if (first) rows.push(first);
+          if (!kd && rows.length) better.forEach((f) => { if (f !== rows[0] && rows.length < 3 && conv(f) && conv(rows[0])) rows.push(f); });
           rows.forEach((best) => {
             taken.add(best.name);
             const rel = releaseFor(pos, worstStart);
+            const g3 = gain3(best);
+            const every = beatsEvery(best);
             fa.push({ kind: "upgrade", rank: 2, pos, outName: nameOf(worstStart), inName: best.name, inTeam: best.team,
-              gain: r1(best.pts - cur), inPts: r1(best.pts), weeksNext: wkNext,
+              gain: r1(Math.max(best.pts - cur, g3 != null ? g3 : best.pts - cur)), inPts: r1(best.pts), weeksNext: wkNext,
               startOver: { name: nameOf(worstStart), pts: r1(cur) }, release: relInfo(rel),
-              alts: altsFrom(cur),
-              yours: { name: nameOf(worstStart), team: teamOf(worstStart), pts: r1(cur), opp: (wkOf(worstStart) || {}).opp || null, next: nextOf(worstStart), mine: true },
-              why: `projects ${r1(best.pts)}, ${r1(best.pts - cur)} more than ${nameOf(worstStart)}, the ${pos} you would drop from the lineup` });
+              alts: altsFrom(cur), horizon: g3 != null ? { gain: g3, weeks: mineHz.weeks, every } : null,
+              yours: { name: nameOf(worstStart), team: teamOf(worstStart), pts: r1(cur), opp: (wkOf(worstStart) || {}).opp || null, next: nextOf(worstStart), mine: true, ppg: ppgOf(worstStart), gp: gpOf(worstStart) },
+              why: best.pts - cur >= bar
+                ? `projects ${r1(best.pts)}, ${r1(best.pts - cur)} more than ${nameOf(worstStart)}, the ${pos} you would drop from the lineup`
+                : every
+                  ? `projects above ${nameOf(worstStart)} in each of the next ${mineHz.weeks} weeks, ${g3} more across them`
+                  : `projects ${g3} more than ${nameOf(worstStart)} over the next ${mineHz.weeks} weeks` });
           });
           if (rows.length) return;      // one claim per position: a starter upgrade outranks depth
         }
@@ -594,8 +648,8 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
           benchOver: bestBench != null ? { name: nameOf(bestBench), pts: r1(benchPts) } : null,
           release: relInfo(rel), alts: altsFrom(benchPts),
           yours: bestBench != null
-            ? { name: `${nameOf(bestBench)} (your best backup)`, team: teamOf(bestBench), pts: r1(benchPts), opp: (wkOf(bestBench) || {}).opp || null, next: nextOf(bestBench), mine: true }
-            : (worstStart != null ? { name: `${nameOf(worstStart)} (your ${pos})`, team: teamOf(worstStart), pts: r1(cur || 0), opp: (wkOf(worstStart) || {}).opp || null, next: nextOf(worstStart), mine: true } : null),
+            ? { name: `${nameOf(bestBench)} (your best backup)`, team: teamOf(bestBench), pts: r1(benchPts), opp: (wkOf(bestBench) || {}).opp || null, next: nextOf(bestBench), mine: true, ppg: ppgOf(bestBench), gp: gpOf(bestBench) }
+            : (worstStart != null ? { name: `${nameOf(worstStart)} (your ${pos})`, team: teamOf(worstStart), pts: r1(cur || 0), opp: (wkOf(worstStart) || {}).opp || null, next: nextOf(worstStart), mine: true, ppg: ppgOf(worstStart), gp: gpOf(worstStart) } : null),
           why: bestBench != null
             ? `projects ${r1(best.pts)} and would be your best backup ${pos}, ${r1(best.pts - benchPts)} ahead of ${nameOf(bestBench)}`
             : `projects ${r1(best.pts)} and you have no healthy backup ${pos} at all` });
@@ -615,7 +669,10 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
       const poolSize = [...freeByPos.values()].reduce((s, a) => s + a.length, 0);
       return { league, hub, avail, swaps, fa: faTrim, projKnown, poolSize, byeKnown: !!byeSet, week: hub.week };
     });
-  }, [rows, bySid]);
+    /* ⚠ 29bq — `std` IS A DEPENDENCY. It arrives a moment after the hubs do, and leaving it out meant every
+       row was computed against the initial `undefined`: the actual points-a-game column simply never
+       appeared, silently, on a build where the fetch was working perfectly. */
+  }, [rows, bySid, std]);
 
   /* One row per PLAYER across leagues, carrying every league he is in and the replacement suggested in each.
      A player you start in six leagues is one injury with six consequences, not six injuries — printing it
@@ -860,9 +917,11 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
     const best3 = Math.max(...rowsAll.map((x) => three(x) || 0));
     const cell = (x, i) => { const n = (x.next || [])[i]; if (!n || n.pts == null) return <span className="mut">—</span>;
       return <span>{n.pts}<span className="mut" style={{ fontSize: 9.5 }}>{n.opp ? ` ${n.opp}` : ""}</span></span>; };
+    const anyPpg = rowsAll.some((x) => x.ppg != null);
     const cols = [{ k: "Player", w: 150 }, { k: "This week", right: true, strong: true, tint: true },
       ...weeks.map((w2) => ({ k: `Wk ${w2}`, right: true, w: 74 })),
-      { k: "Next 3", right: true, strong: true }];
+      { k: "Next 3", right: true, strong: true },
+      ...(anyPpg ? [{ k: "So far", right: true, w: 76 }] : [])];
     const rows = rowsAll.map((x) => {
       const t3 = three(x);
       const row = {
@@ -875,6 +934,10 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
         tone: x.mine ? "var(--gold)" : "var(--pos)",
       };
       weeks.forEach((w2, i) => { row[`Wk ${w2}`] = cell(x, i); });
+      /* ⭐ 29bq — what he has actually scored, per game, in this league's scoring. A projection is a guess;
+         this is the record, and for a streaming position it is often the better argument. */
+      if (anyPpg) row["So far"] = x.ppg == null ? <span className="mut">—</span>
+        : <span>{x.ppg}<span className="mut" style={{ fontSize: 9.5 }}>{x.gp ? ` /${x.gp}g` : ""}</span></span>;
       return row;
     });
     return { key: `alts:${L.league.id}:${r.inName}`, width: 620, wrap: true, estHeight: 70 + rows.length * 22,
@@ -882,7 +945,7 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
       subtitle: `Week ${L.week || ""} projection first, then the next ${weeks.length || 0} weeks with the opponent`,
       cols, rows,
       note: weeks.length
-        ? `Your own player is the gold row. "Next 3" is the sum of those weeks, so a one-week matchup does not read as a season-long upgrade.${/^(K|DEF|DST)$/.test(String(r.pos)) ? " Kickers and defences get one row on the list; the rest are here." : ""}`
+        ? `Your own player is the gold row. "Next 3" is the sum of those weeks, so a one-week matchup does not read as a season-long upgrade.${anyPpg ? ' "So far" is his actual points a game this season, in your scoring.' : ""}${/^(K|DEF|DST)$/.test(String(r.pos)) ? " Kickers and defences get one row on the list; the rest are here." : ""}`
         : "The next weeks' projections are not published yet, so this is one week only." };
   };
   const txGrades = useMemo(() => {
@@ -1295,6 +1358,12 @@ export default function MyWeek({ user, leagues, onHome, onBack, backLabel, onOpe
                               <span className="mut" style={{ fontSize: 10.5, fontWeight: 400 }}> {r.pos}{r.inTeam ? ` · ${r.inTeam}` : ""}</span>
                             </div>
                             <div className="mut" style={{ fontSize: 11.5, marginTop: 2 }}>{r.why}</div>
+                            {r.horizon && r.horizon.gain != null && (
+                              <div className="mut" data-wkfahorizon={String(r.horizon.gain)} style={{ fontSize: 11, marginTop: 2 }}>
+                                Over the next {r.horizon.weeks} weeks: <b className="num" style={{ color: r.horizon.gain >= 0 ? "var(--pos)" : "var(--neg)" }}>{r.horizon.gain >= 0 ? "+" : ""}{r.horizon.gain}</b>
+                                {r.horizon.every ? " — and he projects higher in every one of them" : ""}
+                              </div>
+                            )}
                             {(r.startOver || r.benchOver) && (
                               <div data-wkfacompare style={{ fontSize: 11, marginTop: 3, display: "flex", gap: 12, flexWrap: "wrap" }}>
                                 {r.benchOver && (

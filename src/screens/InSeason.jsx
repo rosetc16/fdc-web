@@ -24,7 +24,7 @@ import GameDay from "./GameDay.jsx";
 import WeeklyReview from "./WeeklyReview.jsx";
 
 const TABS = [
-  ["myweek", "My Week", "ti-first-aid-kit", "What needs fixing before kickoff"],
+  ["myweek", "My Teams", "ti-first-aid-kit", "What needs fixing before kickoff"],
   ["gameday", "Game Day", "ti-activity-heartbeat", "Live scores and who to root for"],
   ["review", "Review", "ti-history", "What you could have done better"],
 ];
